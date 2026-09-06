@@ -21,8 +21,19 @@ on:
     branches: [main]
   pull_request:
 
+defaults:
+  run:
+    # Explicit, because the default shell for `run:` on Windows runners is not
+    # PowerShell. Left implicit, `$env:FOO` reaches the command as six literal
+    # characters and the resulting error blames whatever consumed it.
+    shell: pwsh
+
 env:
-  VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+  # Pinned to vcpkg.json's builtin-baseline. Manifest mode resolves that commit
+  # against the registry's git history, so the checkout must be able to reach
+  # it — cloning it ourselves is deterministic, where the runner image's
+  # preinstalled vcpkg is whatever age the image happens to be.
+  VCPKG_COMMIT: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -35,11 +46,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Module dependency direction
-        shell: pwsh
         run: ./tools/check-module-graph.ps1
 
       - name: Licence policy
-        shell: pwsh
         run: ./tools/licence-check.ps1
 
   # ---------------------------------------------------------------------------
@@ -69,16 +78,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Export vcpkg cache credentials
-        uses: actions/github-script@v7
-        with:
-          script: core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+      # Facts before theories. When a Windows CI build fails to configure, the
+      # question is always "which Visual Studio, which CMake, which vcpkg" —
+      # answering it in the log costs seconds and saves a round trip per guess.
+      - name: Diagnose toolchain
+        run: |
+          cmake --version
+          Write-Host "--- Visual Studio instances ---"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            & $vswhere -all -prerelease -products * -format value `
+              -property displayName,installationVersion,installationPath
+          } else {
+            Write-Host "vswhere.exe not present"
+          }
+          Write-Host "--- vcpkg ---"
+          Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
 
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          # Full history, not shallow. Manifest mode resolves the baseline
+          # through git, and vcpkg has been known to refuse to operate in a
+          # shallow clone. A minute of clone beats an error that reads as a
+          # missing port.
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      # PR 1 pulls only imgui and catch2, so this is a small cache. It exists to
+      # keep the matrix from rebuilding the same two ports four times.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ matrix.toolchain }}
+
+      # No -G: CMake picks the newest Visual Studio generator the image has, so
+      # this does not break the day the runner image moves to a new VS. No
+      # -DCMAKE_TOOLCHAIN_FILE either — CMakeLists.txt finds it from VCPKG_ROOT.
       - name: Configure
-        run: >
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-          ${{ matrix.cmake_args }}
-          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+        run: cmake -S . -B build -A x64 ${{ matrix.cmake_args }}
 
       - name: Build
         run: cmake --build build --config ${{ matrix.config }}
@@ -99,9 +145,22 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Configure and build the core
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DMV_BUILD_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      - name: Build the core
+        run: |
+          cmake -S . -B build -A x64 -DMV_BUILD_TESTS=OFF
           cmake --build build --config Release --target mediaviewer_core
 
       - name: Run the smoke test
@@ -123,7 +182,7 @@ jobs:
 
       - name: Configure and build
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          cmake -S . -B build -A x64
           cmake --build build --config Release
 
       - name: Restore the rolling baseline

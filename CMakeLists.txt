@@ -14,15 +14,29 @@
 cmake_minimum_required(VERSION 3.28)
 
 # The toolchain file must be set before project(). Prefer an explicit
-# -DCMAKE_TOOLCHAIN_FILE, then VCPKG_ROOT, then a sibling checkout.
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-  if(DEFINED ENV{VCPKG_ROOT})
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-        CACHE STRING "vcpkg toolchain")
-  elseif(EXISTS "$ENV{USERPROFILE}/vcpkg/scripts/buildsystems/vcpkg.cmake")
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{USERPROFILE}/vcpkg/scripts/buildsystems/vcpkg.cmake"
-        CACHE STRING "vcpkg toolchain")
+# -DCMAKE_TOOLCHAIN_FILE, then VCPKG_ROOT, then VCPKG_INSTALLATION_ROOT (the
+# name GitHub's hosted runners use), then a checkout beside the user profile.
+#
+# Finding it here rather than passing -DCMAKE_TOOLCHAIN_FILE on the command line
+# is deliberate: a path built by string interpolation in a CI `run:` step is
+# silently wrong when the step runs under a shell that does not expand it, and
+# the resulting CMake error names the toolchain file rather than the shell.
+foreach(candidate IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}"
+                           "$ENV{USERPROFILE}/vcpkg")
+  if(DEFINED CMAKE_TOOLCHAIN_FILE)
+    break()
   endif()
+  if(candidate AND EXISTS "${candidate}/scripts/buildsystems/vcpkg.cmake")
+    set(CMAKE_TOOLCHAIN_FILE "${candidate}/scripts/buildsystems/vcpkg.cmake"
+        CACHE STRING "vcpkg toolchain")
+    message(STATUS "vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+  endif()
+endforeach()
+
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+  message(FATAL_ERROR
+    "No vcpkg toolchain found. Set VCPKG_ROOT, or pass "
+    "-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake. See README.md.")
 endif()
 
 project(mediaviewer
