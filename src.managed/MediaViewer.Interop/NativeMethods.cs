@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+using System.Runtime.InteropServices;
+
+namespace MediaViewer.Interop;
+
+/// <summary>
+/// The raw P/Invoke surface. Nothing outside this file calls these directly —
+/// everything else goes through <see cref="MediaViewerSession"/>, which owns the
+/// SafeHandle and the copying rules.
+/// </summary>
+/// <remarks>
+/// plan/14-abi.md. Every entry point here is <c>__cdecl</c> and returns
+/// <see cref="MvStatus"/>; a bool or a -1 anywhere in this file is a bug.
+/// </remarks>
+internal static partial class NativeMethods
+{
+    internal const string Library = "mediaviewer_core";
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint mv_abi_version();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial IntPtr mv_status_name(MvStatus status);
+
+    // Returns a pointer the core owns, valid only until the next call on this
+    // thread. Callers copy immediately with Marshal.PtrToStringUTF8 and never
+    // store the pointer — hence IntPtr here rather than a marshalled string,
+    // which would hide the lifetime rule the header is explicit about.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial IntPtr mv_last_error_message();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial ulong mv_last_error_correlation_id();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_create(in MvSessionConfig config,
+                                                       out IntPtr session);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_retain(IntPtr session);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_release(IntPtr session);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_bump_generation(MvSessionHandle session,
+                                                                out uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_current_generation(MvSessionHandle session,
+                                                                   out uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial IntPtr mv_completion_wait_handle(MvSessionHandle session);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint mv_completion_drain(MvSessionHandle session,
+                                                     [Out] MvCompletion[] completions,
+                                                     uint capacity);
+
+    // The string is UTF-8, owned by the caller, and copied by the core before it
+    // returns. StringMarshalling.Utf8 pins a temporary for exactly the duration
+    // of the call, which is the contract.
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_echo(MvSessionHandle session, string utf8Text,
+                                                     out ulong jobId);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_session_job_stats(MvSessionHandle session,
+                                                          out MvJobStats stats);
+}

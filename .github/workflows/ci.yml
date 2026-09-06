@@ -1,0 +1,216 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# plan/09-build-and-test.md splits CI deliberately:
+#
+#   - Correctness, golden-image and fuzz suites run on hosted runners, where
+#     they belong.
+#   - The frame-time suite runs ONLY on a self-hosted runner with a real GPU, a
+#     pinned power profile and nothing else scheduled on it.
+#
+# "GitHub-hosted Windows runners have no usable GPU and noisy neighbours.
+#  PresentMon on a cloud VM cannot measure the D6 gate, and a green check that
+#  proves nothing is worse than no check, because people trust it."
+#
+# So the frametime job is gated on a self-hosted label and is skipped, loudly,
+# when no such runner exists. It is never faked on a hosted runner.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+defaults:
+  run:
+    # Explicit, because the default shell for `run:` on Windows runners is not
+    # PowerShell. Left implicit, `$env:FOO` reaches the command as six literal
+    # characters and the resulting error blames whatever consumed it.
+    shell: pwsh
+
+env:
+  # Pinned to vcpkg.json's builtin-baseline. Manifest mode resolves that commit
+  # against the registry's git history, so the checkout must be able to reach
+  # it — cloning it ourselves is deterministic, where the runner image's
+  # preinstalled vcpkg is whatever age the image happens to be.
+  VCPKG_COMMIT: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gates that need no compiler and must never be skipped.
+  # ---------------------------------------------------------------------------
+  policy:
+    name: Module graph + licence
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Module dependency direction
+        run: ./tools/check-module-graph.ps1
+
+      - name: Licence policy
+        run: ./tools/licence-check.ps1
+
+  # ---------------------------------------------------------------------------
+  # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
+  # it catches different bugs (plan/09).
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.toolchain }}, ${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: msvc
+            config: Release
+            cmake_args: ''
+          - toolchain: msvc
+            config: Debug
+            cmake_args: ''
+          - toolchain: clang-cl
+            config: Release
+            cmake_args: '-T ClangCL'
+          - toolchain: msvc-asan
+            config: Debug
+            cmake_args: '-DMV_ASAN=ON'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Facts before theories. When a Windows CI build fails to configure, the
+      # question is always "which Visual Studio, which CMake, which vcpkg" —
+      # answering it in the log costs seconds and saves a round trip per guess.
+      - name: Diagnose toolchain
+        run: |
+          cmake --version
+          Write-Host "--- Visual Studio instances ---"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            & $vswhere -all -prerelease -products * -format value `
+              -property displayName,installationVersion,installationPath
+          } else {
+            Write-Host "vswhere.exe not present"
+          }
+          Write-Host "--- vcpkg ---"
+          Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          # Full history, not shallow. Manifest mode resolves the baseline
+          # through git, and vcpkg has been known to refuse to operate in a
+          # shallow clone. A minute of clone beats an error that reads as a
+          # missing port.
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      # PR 1 pulls only imgui and catch2, so this is a small cache. It exists to
+      # keep the matrix from rebuilding the same two ports four times.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ matrix.toolchain }}
+
+      # No -G: CMake picks the newest Visual Studio generator the image has, so
+      # this does not break the day the runner image moves to a new VS. No
+      # -DCMAKE_TOOLCHAIN_FILE either — CMakeLists.txt finds it from VCPKG_ROOT.
+      - name: Configure
+        run: cmake -S . -B build -A x64 ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }}
+
+      - name: Unit tests
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # The C# side of the ABI: SafeHandle, struct layout, completion drain.
+  # ---------------------------------------------------------------------------
+  abi-smoke:
+    name: ABI smoke test (C#)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      - name: Build the core
+        run: |
+          cmake -S . -B build -A x64 -DMV_BUILD_TESTS=OFF
+          cmake --build build --config Release --target mediaviewer_core
+
+      - name: Run the smoke test
+        run: |
+          dotnet build src.managed/MediaViewer.AbiSmokeTest/MediaViewer.AbiSmokeTest.csproj -c Release
+          dotnet src.managed/MediaViewer.AbiSmokeTest/bin/Release/net8.0-windows/MediaViewer.AbiSmokeTest.dll build/bin/Release
+
+  # ---------------------------------------------------------------------------
+  # The D6 gate. Real GPU only.
+  # ---------------------------------------------------------------------------
+  frametime:
+    name: Frame-time gate (self-hosted GPU)
+    runs-on: [self-hosted, windows, gpu]
+    # Only on main: a self-hosted runner is one machine, and queueing every PR
+    # behind a 60-second soak per push makes people stop caring about the result.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release
+
+      - name: Restore the rolling baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: build/bin/Release/frametime-baseline.json
+          key: frametime-baseline-${{ runner.name }}
+
+      # PR 1's verify line, inherited by every later PR: presents at display
+      # refresh, zero dropped frames over 60 s. Also fails on p99 regressing
+      # more than 10 % against the rolling baseline, or any frame over 2x the
+      # refresh interval.
+      - name: 60-second soak
+        run: ./build/bin/Release/frametime.exe --seconds 60
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frametime-report
+          path: build/bin/Release/frametime-report.json
+
+      - name: Update the rolling baseline
+        if: success()
+        run: ./build/bin/Release/frametime.exe --seconds 60 --update-baseline
+
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: build/bin/Release/frametime-baseline.json
+          key: frametime-baseline-${{ runner.name }}

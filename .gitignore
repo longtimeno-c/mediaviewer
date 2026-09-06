@@ -1,0 +1,35 @@
+# Build output
+build/
+build-*/
+out/
+[Bb]in/
+[Oo]bj/
+
+# vcpkg manifest-mode install tree
+vcpkg_installed/
+
+# Frame-time harness artefacts. The report is per-run; the baseline is per-machine
+# and is restored from CI cache rather than committed — a baseline captured on a
+# noisy box lowers the bar for every later PR (plan/09).
+frametime-report.json
+frametime-baseline.json
+
+# The test corpus does not live in git (plan/09). Tens of GB of RAW, HEIC and 4K
+# video, most of it not redistributable. A manifest of (url, sha256, licence)
+# belongs here; the files do not.
+corpus/
+tests/corpus/
+
+# MSVC / VS
+.vs/
+*.user
+*.suo
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.aps
+
+# .NET
+*.nupkg
+project.lock.json
