@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# plan/09-build-and-test.md splits CI deliberately:
+#
+#   - Correctness, golden-image and fuzz suites run on hosted runners, where
+#     they belong.
+#   - The frame-time suite runs ONLY on a self-hosted runner with a real GPU, a
+#     pinned power profile and nothing else scheduled on it.
+#
+# "GitHub-hosted Windows runners have no usable GPU and noisy neighbours.
+#  PresentMon on a cloud VM cannot measure the D6 gate, and a green check that
+#  proves nothing is worse than no check, because people trust it."
+#
+# So the frametime job is gated on a self-hosted label and is skipped, loudly,
+# when no such runner exists. It is never faked on a hosted runner.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gates that need no compiler and must never be skipped.
+  # ---------------------------------------------------------------------------
+  policy:
+    name: Module graph + licence
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Module dependency direction
+        shell: pwsh
+        run: ./tools/check-module-graph.ps1
+
+      - name: Licence policy
+        shell: pwsh
+        run: ./tools/licence-check.ps1
+
+  # ---------------------------------------------------------------------------
+  # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
+  # it catches different bugs (plan/09).
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.toolchain }}, ${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: msvc
+            config: Release
+            cmake_args: ''
+          - toolchain: msvc
+            config: Debug
+            cmake_args: ''
+          - toolchain: clang-cl
+            config: Release
+            cmake_args: '-T ClangCL'
+          - toolchain: msvc-asan
+            config: Debug
+            cmake_args: '-DMV_ASAN=ON'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export vcpkg cache credentials
+        uses: actions/github-script@v7
+        with:
+          script: core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          ${{ matrix.cmake_args }}
+          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }}
+
+      - name: Unit tests
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # The C# side of the ABI: SafeHandle, struct layout, completion drain.
+  # ---------------------------------------------------------------------------
+  abi-smoke:
+    name: ABI smoke test (C#)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Configure and build the core
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DMV_BUILD_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+          cmake --build build --config Release --target mediaviewer_core
+
+      - name: Run the smoke test
+        run: |
+          dotnet build src.managed/MediaViewer.AbiSmokeTest/MediaViewer.AbiSmokeTest.csproj -c Release
+          dotnet src.managed/MediaViewer.AbiSmokeTest/bin/Release/net8.0-windows/MediaViewer.AbiSmokeTest.dll build/bin/Release
+
+  # ---------------------------------------------------------------------------
+  # The D6 gate. Real GPU only.
+  # ---------------------------------------------------------------------------
+  frametime:
+    name: Frame-time gate (self-hosted GPU)
+    runs-on: [self-hosted, windows, gpu]
+    # Only on main: a self-hosted runner is one machine, and queueing every PR
+    # behind a 60-second soak per push makes people stop caring about the result.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          cmake --build build --config Release
+
+      - name: Restore the rolling baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: build/bin/Release/frametime-baseline.json
+          key: frametime-baseline-${{ runner.name }}
+
+      # PR 1's verify line, inherited by every later PR: presents at display
+      # refresh, zero dropped frames over 60 s. Also fails on p99 regressing
+      # more than 10 % against the rolling baseline, or any frame over 2x the
+      # refresh interval.
+      - name: 60-second soak
+        run: ./build/bin/Release/frametime.exe --seconds 60
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frametime-report
+          path: build/bin/Release/frametime-report.json
+
+      - name: Update the rolling baseline
+        if: success()
+        run: ./build/bin/Release/frametime.exe --seconds 60 --update-baseline
+
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: build/bin/Release/frametime-baseline.json
+          key: frametime-baseline-${{ runner.name }}

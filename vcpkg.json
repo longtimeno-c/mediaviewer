@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "mediaviewer",
+  "version": "0.1.0",
+  "description": "Windows viewer for a real camera dump - photos and video in one folder.",
+  "license": "GPL-2.0-or-later",
+
+  "$comment-baseline": "Pinned. plan/09: reproducible builds beat fresh deps. Move it deliberately, in its own commit, with the frame-time suite re-run afterwards.",
+  "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+
+  "$comment-dependencies": [
+    "PR 1 needs imgui (present lab + F3 overlay) and catch2 (core tests) only.",
+    "The full v1 set from plan/09 is in $comment-v1-pending below, with the PR",
+    "that introduces each entry. They are added when their PR lands, not before:",
+    "a manifest that pulls ffmpeg and libheif on day one costs an hour of vcpkg",
+    "build per clean clone, to compile a window that clears to a colour.",
+    "",
+    "imgui takes dx11-binding and NOT win32-binding. That backend mutates",
+    "ImGuiIO from inside the window procedure, which would put the UI thread",
+    "inside the render thread's ImGui context. src/shell/input_state.h feeds",
+    "ImGui from the published snapshot instead - plan/02 threading model."
+  ],
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": ["dx11-binding"]
+    },
+    "catch2"
+  ],
+
+  "$comment-v1-pending": {
+    "PR 2": ["libjpeg-turbo", "libspng", "lcms"],
+    "PR 4": ["sqlite3", "directxtex"],
+    "PR 5a": ["ffmpeg[core,avcodec,avformat,avutil,swscale,swresample]"],
+    "PR 7": ["tiff", "libwebp", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],
+    "PR 8": ["exiv2"],
+    "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them.",
+    "note-exiv2": "GPL-2.0, and kept. The app is GPL-2.0-or-later (plan/11, settled in PR 1), so this is compliant rather than a trap.",
+    "note-v1.1": "libjxl, openexr, openjpeg and resvg arrive with their formats in v1.1 (D5). Do not add one to buy a format early."
+  },
+
+  "$comment-overrides": "Empty by design. Pin a specific port here only with a written reason; the baseline is the pin.",
+  "overrides": []
+}

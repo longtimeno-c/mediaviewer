@@ -118,12 +118,32 @@ trivially compliant at once, and matches what comparable tools do.
 
 ## Checklist for PR 1
 
-- [ ] Decide the app's own licence (drives everything else)
-- [ ] Decide the Exiv2 route: buy / go GPL / replace
-- [ ] FFmpeg configure line pinned, LGPL-only, no `--enable-gpl`, no `--enable-nonfree`
-- [ ] FFmpeg, libheif, libde265, LibRaw all built as DLLs
-- [ ] `THIRD-PARTY.md` generated and an About dialog that shows it
-- [ ] Source-offer page for the LGPL components, referenced from About
-- [ ] No software HEVC or AAC encoder anywhere in the dependency graph
-- [ ] CI check that fails the build if a GPL-configured FFmpeg or a LibRaw GPL demosaic pack
-      appears in the link line
+**Settled 2026-09-06.** The Store is not a requirement, so the app is
+**GPL-2.0-or-later** and Exiv2 is kept under the GPL. Full reasoning and consequences:
+[12-decision-log.md](12-decision-log.md#2026-09-06--pr-1-implemented).
+
+- [x] Decide the app's own licence — **GPL-2.0-or-later**. `LICENSE` is the GPL-2.0 text;
+      every source file carries an SPDX identifier.
+- [x] Decide the Exiv2 route — **go GPL**. Kept, no commercial licence, no replacement.
+- [x] FFmpeg configure line pinned, LGPL-only, no `--enable-gpl`, no `--enable-nonfree` —
+      recorded in `vcpkg.json` and enforced by `tools/licence-check.ps1`. **Our own GPL
+      licence does not relax this**: the objection to x264/x265 is patent exposure, not
+      copyleft.
+- [ ] FFmpeg, libheif, libde265, LibRaw all built as DLLs — *policy recorded and
+      CI-enforced; none of them are linked until PR 5a and PR 7.*
+- [x] `THIRD-PARTY.md` generated — lists what is linked today and the required linkage for
+      every planned dependency. The About dialog that shows it arrives with the chrome
+      (PR 3).
+- [ ] Source-offer page for the LGPL components, referenced from About — *PR 15, with the
+      release pipeline that produces it.*
+- [x] No software HEVC or AAC encoder anywhere in the dependency graph — enforced by
+      `tools/licence-check.ps1`.
+- [x] CI check that fails the build if a GPL-configured FFmpeg or a LibRaw GPL demosaic
+      pack appears in the link line — `tools/licence-check.ps1`, run on every push.
+
+### Consequence to carry forward
+
+Store MSIX is **off the table**. PR 15's "Store as a secondary channel if the licence
+permits" is now answered: it does not. The primary and only channel is a signed
+per-user installer with Velopack auto-update
+([13-updates-and-telemetry.md](13-updates-and-telemetry.md)).

@@ -134,11 +134,86 @@ is simpler while the kernels are not — so it stops arguing you back into writi
 
 ---
 
+## 2026-09-06 — PR 1 implemented
+
+### The licence decision, settled
+
+The open question was framed as a product question with one input: **do we need the
+Microsoft Store?** ([11-licensing.md](11-licensing.md)).
+
+**Answer: no.** Therefore:
+
+| | Decision |
+|---|---|
+| **App licence** | **GPL-2.0-or-later.** `LICENSE` is the GPL-2.0 text; every source file carries an SPDX identifier. |
+| **Exiv2** | **Kept, used under the GPL.** No commercial licence bought, no replacement written. |
+| **Consequence** | FFmpeg, libheif, libde265, LibRaw and Exiv2 are all trivially compliant at once, and any future GPL dependency is simply fine. |
+| **Cost accepted** | Direct download only. Store MSIX is off the table under some readings of its terms; PR 15's "Store as a secondary channel" line no longer applies. |
+
+The rules that do **not** relax because we went GPL, and are enforced by
+`tools/licence-check.ps1` in CI:
+
+- FFmpeg stays **LGPL-only** — no `--enable-gpl`, no `--enable-nonfree`. Our own licence
+  does not make x264 and x265 acceptable, because the objection to them is **patent
+  exposure**, not copyleft.
+- **No software HEVC or AAC encoder** anywhere in the dependency graph.
+- **No LibRaw GPL demosaic pack.**
+- FFmpeg, libheif, libde265, LibRaw and Exiv2 are **dynamically linked**. LGPL requires a
+  user be able to substitute their own build; that obligation is unaffected by our licence.
+
+`THIRD-PARTY.md` lists what is linked today and what each later PR will add, with the
+required linkage decided in advance rather than discovered afterwards.
+
+### Two corrections to the plan, found by implementing it
+
+| Doc | Said | Now | Why |
+|---|---|---|---|
+| [03-rendering.md](03-rendering.md) | Swapchain `Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB` | **Buffer `R8G8B8A8_UNORM`, render-target view `_SRGB`** | DXGI rejects every `_SRGB` format on a flip-model swapchain; the documented line is not creatable. **D6 is unchanged and fully honoured** — the hardware still does the linear-to-sRGB encode on write and the app still presents 8-bit sRGB. This is a mechanism correction, not a decision reversal. |
+| [10-roadmap.md](10-roadmap.md) | PR 1 hosts Dear ImGui with the standard Win32 + DX11 backends | **DX11 backend only; the platform layer is fed from the published input snapshot** | ImGui's Win32 backend mutates `ImGuiIO` from inside the window procedure, which puts the UI thread inside the render thread's ImGui context — a data race, and a direct contradiction of [02](02-architecture.md)'s "the UI thread publishes, the render thread consumes, they never share a mutable object." Feeding ImGui from the snapshot costs about fifteen lines. `imgui[win32-binding]` is therefore **not** in the vcpkg manifest. |
+
+### Design details settled while building
+
+| Question | Resolution |
+|---|---|
+| **What counts as a dropped frame?** | `DXGI_FRAME_STATISTICS`, not QPC intervals. A present the compositor silently held for an extra vblank still looks like a clean interval from inside the app. The QPC path is kept as a labelled fallback, and `meets_pr1_gate()` **requires** the authoritative source — an inferred zero is not the D6 gate. |
+| **`PresentCount` not advancing** | Not a fault. It advances when the compositor *displays* a frame, not when `Present()` returns, so a same-value sample is the common case. Treating it as a discontinuity made two thirds of a clean soak look like a measurement failure. The counters are cumulative, so nothing is lost by skipping such a sample. |
+| **Warm-up** | The first second is discarded before measuring, and the report states that it was. DWM has not picked the window up and the first frame carries ImGui's font-atlas upload; measuring them reports a stall that is not in the thing being verified. Declared, not quietly trimmed. |
+| **MMCSS on the render thread** | Registered as a `"Games"` multimedia task at `AVRT_PRIORITY_HIGH`. Thread priority alone does not stop the scheduler preempting a present loop on a machine doing anything else. |
+| **`publish_slot` is a seqlock, not a double buffer** | Double buffering looks sufficient and is not: with one producer and two slots, a consumer still copying the slot that was live two publishes ago gets overwritten mid-copy and reads a torn snapshot. |
+
+### The verify line, as measured
+
+> **"Presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle."**
+
+| Clause | Result |
+|---|---|
+| Presents at exactly display refresh | **Holds.** p50 = 16.700 ms against a 16.667 ms (60.00 Hz) panel, across every run. |
+| ~0 % CPU idle | **Holds.** 16 ms of CPU over 12 s wall with the animation off — 0.008 % of the machine — and the swapchain stops presenting entirely. |
+| 0 dropped frames over 60 s | **Not yet demonstrated.** 4-17 dropped frames per 60 s run on the development machine. |
+
+The third clause is **unproven, not failed**, and the instrument says which:
+**CPU frame time never exceeds 0.51 ms against a 16.67 ms budget** — the app is not late,
+the scheduler is. The drop count also varies by a factor of four between identical
+consecutive runs, which is the signature of a noisy machine rather than a systematic
+defect.
+
+This is precisely the situation [09-build-and-test.md](09-build-and-test.md) anticipated:
+the D6 gate needs a machine with a real GPU, a pinned power profile and nothing else
+scheduled on it. **No baseline is committed**, because a baseline captured here would
+bake in that noise and quietly lower the bar for every later PR. The gate is wired into
+CI behind a `[self-hosted, windows, gpu]` label and is skipped, rather than faked, when
+no such runner exists.
+
+**PR 2 must not start until this clause has been demonstrated on a quiet machine.**
+
+---
+
 ## Still open
 
 | Question | Blocks | Notes |
 |---|---|---|
-| **Do we need the Microsoft Store?** | PR 1 | The single input that decides the Exiv2 route and therefore the app's own licence. [11-licensing.md](11-licensing.md) |
+| ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
+| **A quiet machine for the D6 gate** | PR 2 | PR 1's "0 dropped frames over 60 s" is unproven on the development box, which is noisy. Needs the self-hosted GPU runner [09](09-build-and-test.md) already specifies. |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 | Validated early by design. Fallback is a WinUI app with `SwapChainPanel` and an accepted composed frame. |
 
 ## How to use this file
