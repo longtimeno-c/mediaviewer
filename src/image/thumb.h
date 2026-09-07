@@ -59,4 +59,11 @@ class thumb_store {
 [[nodiscard]] result<std::vector<std::uint8_t>> make_thumb_jpeg(
     std::span<const std::uint8_t> src_bytes, const job_context* ctx = nullptr);
 
+// Same cache spec (jpg512.1), for callers that already hold pixels rather than
+// an encoded file — the video poster frame, which image/ must not decode
+// itself (player/ owns FFmpeg, and image/ never depends on player/). `rgba` is
+// tightly packed and already no larger than kThumbLongEdge on its long edge.
+[[nodiscard]] result<std::vector<std::uint8_t>> encode_thumb_rgba(
+    std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height);
+
 }  // namespace mv::image

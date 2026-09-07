@@ -16,6 +16,19 @@ namespace MediaViewer.Interop;
 /// </remarks>
 public sealed class MediaViewerSession : IDisposable
 {
+    public MvVideoInfo VideoInfo { get { ThrowIfFailed(NativeMethods.mv_video_get_info(_handle, out var value)); return value; } }
+    public long VideoPosition { get { ThrowIfFailed(NativeMethods.mv_video_position(_handle, out var value)); return value; } }
+    public uint VideoState { get { ThrowIfFailed(NativeMethods.mv_video_state(_handle, out var value)); return value; } }
+    public void VideoPlay() => ThrowIfFailed(NativeMethods.mv_video_play(_handle));
+    public void VideoPause() => ThrowIfFailed(NativeMethods.mv_video_pause(_handle));
+    public void VideoSeek(long ns, bool exact) => ThrowIfFailed(NativeMethods.mv_video_seek(_handle, ns, exact ? 1 : 0));
+    public void VideoStep(int frames) => ThrowIfFailed(NativeMethods.mv_video_step(_handle, frames));
+    public void VideoRate(double rate) => ThrowIfFailed(NativeMethods.mv_video_set_rate(_handle, rate));
+    public void VideoVolume(float volume) => ThrowIfFailed(NativeMethods.mv_video_set_volume(_handle, volume));
+    public void VideoMuted(bool muted) => ThrowIfFailed(NativeMethods.mv_video_set_muted(_handle, muted ? 1 : 0));
+    public void VideoTrack(uint index) => ThrowIfFailed(NativeMethods.mv_video_select_audio_track(_handle, index));
+    public void VideoLoop(long a, long b) => ThrowIfFailed(NativeMethods.mv_video_set_loop(_handle, a, b));
+
     private readonly MvSessionHandle _handle;
     private MvCompletion[] _drainBuffer = new MvCompletion[256];
 

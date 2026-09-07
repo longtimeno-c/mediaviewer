@@ -16,6 +16,8 @@ namespace mv::io {
 // converted to UTF-16 for the Windows API; it is never logged (rule 6).
 [[nodiscard]] result<std::vector<std::uint8_t>> read_all(std::string_view utf8_path);
 
+[[nodiscard]] result<std::vector<std::uint8_t>> read_prefix(std::string_view utf8_path, std::size_t max_bytes);
+
 [[nodiscard]] expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> bytes);
 
 // True when `utf8_path` names an existing file (not a directory). Used to

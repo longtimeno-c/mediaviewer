@@ -47,9 +47,11 @@ public static partial class IslandHost
 
             if (args.Session != 0)
             {
+                StopVideoControls();
                 _folderSession?.Dispose();
                 _folderSession = MediaViewerSession.Borrow(checked((IntPtr)args.Session));
                 StartDrain();
+                StartVideoControls(parent);
             }
 
             _filmstrip?.Dispose();
@@ -93,6 +95,7 @@ public static partial class IslandHost
         {
             _completionWait?.Unregister(null);
             _completionWait = null;
+            StopVideoControls();
             _folderSession?.Dispose();
             _folderSession = null;
             if (_filmstrip is not null)
@@ -139,6 +142,7 @@ public static partial class IslandHost
         // is. Only the last selection in a batch is worth applying.
         int select = -1;
         bool? busy = null;
+        bool video = false;
         foreach (var c in _folderSession.Drain())
         {
             if (c.Kind is MvCompletionKind.FolderReady or MvCompletionKind.FolderChanged)
@@ -157,15 +161,27 @@ public static partial class IslandHost
                 select = (int)c.Payload;
                 busy = true;
             }
-            else if (c.Kind == MvCompletionKind.ImageOpened)
+            else if (c.Kind is MvCompletionKind.ImageOpened or MvCompletionKind.VideoOpened)
             {
                 // Published (or failed) for the current selection — either way
                 // there is nothing left to wait for.
                 busy = false;
+                video = true;
+            }
+            else if (c.Kind is MvCompletionKind.VideoState or MvCompletionKind.VideoEnded)
+            {
+                // The core changed state on its own (end of clip, device loss)
+                // or acknowledged a change we asked for. Either way the Play /
+                // Pause label and the transport strip react now instead of on
+                // the next 150 ms tick. The timer stays: it is the position
+                // pump for the scrubber and the clock, and no completion can
+                // replace something that moves continuously.
+                video = true;
             }
         }
         if (select >= 0) SetSelected(select);
         if (busy is bool want) SetBusy(want);
+        if (video) UpdateVideoControls();
     }
 
     private static void ReloadItems()

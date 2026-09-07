@@ -31,6 +31,7 @@ public static partial class IslandHost
     internal const int FilmstripArgsSize = 48;
     internal const int ShowArgsSize = 16;
     internal const int FlagsArgsSize = 8;
+    internal const int RateArgsSize = 8;
 
     internal static class Command
     {
@@ -51,6 +52,8 @@ public static partial class IslandHost
         public const int SetSettings = 15;
         public const int FolderReady = 16;
         public const int ToggleFilmstrip = 17;
+        public const int VideoActive = 18;
+        public const int SetRate = 19;
     }
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
@@ -82,6 +85,7 @@ public static partial class IslandHost
         if (Marshal.SizeOf<ChromeFilmstripArgs>() != FilmstripArgsSize) return -4;
         if (Marshal.SizeOf<ChromeShowArgs>() != ShowArgsSize) return -5;
         if (Marshal.SizeOf<ChromeFlagsArgs>() != FlagsArgsSize) return -6;
+        if (Marshal.SizeOf<ChromeRateArgs>() != RateArgsSize) return -7;
         return AttachArgsSize;
     }
 
@@ -200,6 +204,81 @@ public static partial class IslandHost
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
         }
+    }
+
+    /// <summary>
+    /// Native pushing the current playback rate in. The dropdown is a view of
+    /// the rate, never a second place it is decided — the keyboard is the one
+    /// router (plan/16), so Q/E and this menu cannot drift apart.
+    /// </summary>
+    public static int ApplyRate(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < RateArgsSize) return unchecked((int)0x80070057);
+            ChromeRateArgs args = Marshal.PtrToStructure<ChromeRateArgs>(arg);
+            SetSpeedSelection(args.Rate);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    // The ladder the keyboard steps through, mirrored from main.cpp's
+    // kRateLadder. Every value is exact in float, so no epsilon is needed.
+    private static readonly double[] SpeedLadder = { 0.25, 0.5, 1, 1.5, 2, 4 };
+    private static ComboBox? _speed;
+    private static bool _updatingSpeed;
+
+    private static string SpeedLabel(double rate) =>
+        rate == Math.Floor(rate) ? $"{rate:0}x" : $"{rate:0.##}x";
+
+    private static void SetSpeedSelection(double rate)
+    {
+        if (_speed is null) return;
+        int index = 0;
+        double best = double.MaxValue;
+        for (int i = 0; i < SpeedLadder.Length; ++i)
+        {
+            double delta = Math.Abs(SpeedLadder[i] - rate);
+            if (delta < best) { best = delta; index = i; }
+        }
+        _updatingSpeed = true;
+        _speed.SelectedIndex = index;
+        _updatingSpeed = false;
+    }
+
+    // The dropdown is dead weight with no clip open, and a speed control on a
+    // photo is a lie about what the key does.
+    private static void SetSpeedVisible(bool visible)
+    {
+        if (_speed is not null) _speed.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static ComboBox BuildSpeed()
+    {
+        _speed = new ComboBox
+        {
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            MinWidth = 88,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        foreach (double rate in SpeedLadder) _speed.Items.Add(SpeedLabel(rate));
+        _speed.SelectedIndex = 2;  // 1x
+        _speed.SelectionChanged += (_, _) =>
+        {
+            if (_updatingSpeed || _speed.SelectedIndex < 0) return;
+            Send(Command.SetRate, (float)SpeedLadder[_speed.SelectedIndex]);
+        };
+        ToolTipService.SetToolTip(_speed, "Playback speed — tap Q / E to step, hold to skim");
+        return _speed;
     }
 
     private static void EnsureApp()
@@ -685,7 +764,7 @@ public static partial class IslandHost
         };
         aboutFlyout.Content = new TextBlock
         {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nG opens the gallery, T shows or hides the filmstrip, F toggles the frame-time overlay. Wheel zooms toward the cursor; drag pans.",
+            Text = "MediaViewer — GPL-2.0-or-later\n\nG opens the gallery, T shows or hides the filmstrip, F toggles the frame-time overlay. On a clip: space plays/pauses, Q and E skim, J and L jump 10 s. Wheel zooms toward the cursor; drag pans.",
             Margin = new Thickness(12, 10, 12, 10),
             MaxWidth = 400,
             TextWrapping = TextWrapping.Wrap,
@@ -699,7 +778,10 @@ public static partial class IslandHost
             ShouldConstrainToRootBounds = false,
             MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
         };
-        openFlyout.Items.Add(Item("Image…", "Ctrl+O", () => Send(Command.Open)));
+        // Reads as "Open media" / "Open folder". The picker takes clips as well
+        // as photos, and calling it "Image" was the last place the UI still
+        // claimed this was a photo-only viewer.
+        openFlyout.Items.Add(Item("Media…", "Ctrl+O", () => Send(Command.Open)));
         openFlyout.Items.Add(Item("Folder…", null, () => Send(Command.OpenFolder)));
 
         Button? openBtn = null;
@@ -731,6 +813,7 @@ public static partial class IslandHost
         {
             Orientation = Orientation.Horizontal,
             Spacing = 2,
+            HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(8, 0, 8, 0),
         };
@@ -738,6 +821,19 @@ public static partial class IslandHost
         row.Children.Add(viewBtn);
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
+
+        var speed = BuildSpeed();
+        speed.HorizontalAlignment = HorizontalAlignment.Right;
+
+        // Menus left, speed far right. A StackPanel cannot pin one child to the
+        // right edge, so the bar row is a two-column Grid.
+        var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(row, 0);
+        bar.Children.Add(row);
+        Grid.SetColumn(speed, 1);
+        bar.Children.Add(speed);
 
         var root = new Grid
         {
@@ -749,8 +845,8 @@ public static partial class IslandHost
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
-        Grid.SetRow(row, 0);
-        root.Children.Add(row);
+        Grid.SetRow(bar, 0);
+        root.Children.Add(bar);
         Grid busy = BuildBusyBar();
         Grid.SetRow(busy, 0);
         root.Children.Add(busy);
@@ -788,6 +884,13 @@ internal struct ChromeResizeArgs
     public int Height;
     public int Dpi;
     public int Y;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct ChromeRateArgs
+{
+    public float Rate;
+    public int Reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]

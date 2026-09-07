@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 3
+#define MV_ABI_VERSION_MINOR 4
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -147,7 +147,19 @@ typedef enum mv_completion_kind {
   MV_COMPLETION_FOLDER_READY = 3,  /* PR 4. payload = item count. */
   MV_COMPLETION_FOLDER_CHANGED = 4,/* watcher; payload = item count. */
   MV_COMPLETION_THUMB_READY = 5,   /* payload = item index. */
-  MV_COMPLETION_FOLDER_SELECTED = 6 /* payload = selected index. */
+  MV_COMPLETION_FOLDER_SELECTED = 6,/* payload = selected index. */
+  /* PR 5. payload = duration in nanoseconds. */
+  MV_COMPLETION_VIDEO_OPENED = 7,
+  /* Reached the end of the clip. payload = 0. */
+  MV_COMPLETION_VIDEO_ENDED = 8,
+  /* Play/pause/stop changed. payload = mv_play_state. Pushed on EVERY
+   * transition, including ones the host asked for: telling the host about a
+   * change it requested is redundant but never wrong, and the alternative is
+   * threading "who caused this" through the command queue for no gain. Treat
+   * these as notifications, not as acknowledgements of your own calls. The
+   * ones that matter are the transitions the core makes on its own — reaching
+   * the end of a clip, device loss. */
+  MV_COMPLETION_VIDEO_STATE = 9
 } mv_completion_kind;
 
 typedef struct mv_completion {
@@ -281,6 +293,108 @@ MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t
                                                   uint32_t count);
 
 MV_API mv_status MV_CALL mv_folder_close(mv_session_t session);
+
+/* -------------------------------------------------------------------------
+ * PR 5 — video. plan/05-video-pipeline.md, plan/14-abi.md.
+ *
+ * Times are int64 NANOSECONDS everywhere, matching player::time_ns. No frame,
+ * texture or ID3D11* ever crosses this line (plan/14 "What crosses, and what
+ * does not"): the host learns a clip is open and sends it transport commands.
+ * Pixels stay in C++.
+ * ------------------------------------------------------------------------- */
+
+typedef enum mv_play_state {
+  MV_PLAY_STOPPED = 0,
+  MV_PLAY_PLAYING = 1,
+  MV_PLAY_PAUSED  = 2,
+  MV_PLAY_ENDED   = 3
+} mv_play_state;
+
+typedef enum mv_decoder_kind {
+  MV_DECODER_NONE = 0,
+  MV_DECODER_D3D11VA = 1, /* hardware, on our own device */
+  MV_DECODER_SOFTWARE = 2 /* CPU fallback. Must be visible, never silent. */
+} mv_decoder_kind;
+
+typedef struct mv_video_info {
+  int64_t  duration_ns;
+  uint32_t width;
+  uint32_t height;
+  double   frame_rate;      /* nominal only; presentation is on PTS */
+  uint32_t audio_tracks;
+  uint32_t video_tracks;
+  uint32_t decoder;         /* mv_decoder_kind */
+  uint32_t flags;           /* bit 0 = has audio, bit 1 = 10-bit */
+  char     codec_name[32];  /* NUL-terminated, e.g. "hevc" */
+} mv_video_info;
+
+/* The F3 overlay and any managed diagnostics read this. Counters are separated
+ * deliberately: a cadence hold is CORRECT on 24p content at 60 Hz, and merging
+ * it with a starvation hold makes healthy playback look broken. */
+typedef struct mv_video_stats {
+  int64_t  position_ns;
+  int64_t  audio_clock_ns;
+  double   err_ms_p50;
+  double   err_ms_p99;
+  double   drift_slope_ms_per_min;
+  double   playback_rate;
+  uint64_t frames_presented;
+  uint64_t frames_dropped_late;
+  uint64_t holds_cadence;
+  uint64_t holds_starved;
+  uint64_t device_rebuilds;
+  uint64_t position_discontinuities;
+  uint32_t audio_master;    /* 0 => host-clock fallback */
+  uint32_t fallback_reason;
+} mv_video_stats;
+
+/* [any-thread][no-block] Opens a clip. Returns immediately with a job id; the
+ * answer arrives as MV_COMPLETION_VIDEO_OPENED. Bumps the view generation, so
+ * in-flight work for the previous item is cancelled. */
+MV_API mv_status MV_CALL mv_video_open(mv_session_t session, const char* utf8_path,
+                                       uint64_t* out_job_id);
+
+/* [any-thread][no-block] Idempotent; closing nothing is not an error. */
+MV_API mv_status MV_CALL mv_video_close(mv_session_t session);
+
+/* [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_video_play(mv_session_t session);
+MV_API mv_status MV_CALL mv_video_pause(mv_session_t session);
+
+/* [any-thread][no-block] `exact` 0 while dragging the scrubber (nearest
+ * keyframe, no decode — instant); 1 on release or a typed position (decode
+ * forward to the exact frame). plan/05's fast-then-accurate rule. */
+MV_API mv_status MV_CALL mv_video_seek(mv_session_t session, int64_t position_ns,
+                                       int32_t exact);
+
+/* [any-thread][no-block] Paused only. +1 / -1. Backward is a keyframe seek plus
+ * a forward decode, so it is not as cheap as forward. */
+MV_API mv_status MV_CALL mv_video_step(mv_session_t session, int32_t frames);
+
+/* [any-thread][no-block] 0.25 .. 4.0, clamped. Pitch-corrected via a chained
+ * atempo filter (one instance only covers 0.5-2.0). */
+MV_API mv_status MV_CALL mv_video_set_rate(mv_session_t session, double rate);
+
+/* [any-thread][no-block] volume 0.0 .. 1.0. */
+MV_API mv_status MV_CALL mv_video_set_volume(mv_session_t session, float volume);
+MV_API mv_status MV_CALL mv_video_set_muted(mv_session_t session, int32_t muted);
+MV_API mv_status MV_CALL mv_video_select_audio_track(mv_session_t session, uint32_t index);
+
+/* [any-thread][no-block] A-B loop. b_ns < 0 clears it. */
+MV_API mv_status MV_CALL mv_video_set_loop(mv_session_t session, int64_t a_ns, int64_t b_ns);
+
+/* [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_video_position(mv_session_t session, int64_t* out_position_ns);
+MV_API mv_status MV_CALL mv_video_state(mv_session_t session, uint32_t* out_state);
+MV_API mv_status MV_CALL mv_video_get_info(mv_session_t session, mv_video_info* out_info);
+MV_API mv_status MV_CALL mv_video_get_stats(mv_session_t session, mv_video_stats* out_stats);
+
+/* [any-thread][no-block] True when the path is a clip we can open, by MAGIC
+ * BYTES not extension (CLAUDE.md: "Probe by magic bytes, never extension").
+ * Lets the shell decide image-vs-video without opening anything. */
+MV_API mv_status MV_CALL mv_probe_is_video(mv_session_t session, const char* utf8_path,
+                                           int32_t* out_is_video);
+
 
 #ifdef __cplusplus
 }  /* extern "C" */

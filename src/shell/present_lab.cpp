@@ -155,6 +155,8 @@ expected present_lab::rebuild_device() noexcept {
     imgui_ready_ = false;
   }
   blitter_.destroy();
+  video_blitter_.destroy();
+  current_video_ = {};
   current_image_.reset();
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
@@ -177,6 +179,7 @@ expected present_lab::rebuild_device() noexcept {
   if (!sc) return sc;
 
   if (auto blit = blitter_.create(device_.d3d()); !blit) return blit;
+  if (auto blit = video_blitter_.create(device_.d3d()); !blit) return blit;
 
   if (session_) {
     const status st = mv::abi::attach_device(session_, device_.d3d());
@@ -318,10 +321,10 @@ void present_lab::render_thread_main() noexcept {
       pacer_.set_refresh(swapchain_.refresh_interval_seconds());
       // Snap-fit on resize so dragging the window never waits on a spring
       // (PR 2 verify: stay smooth while a large decode is in flight).
-      if (current_image_ && camera_.fit_mode()) {
+      if ((current_image_ || current_video_.texture) && camera_.fit_mode()) {
         const auto view = usable_canvas(snapshot);
-        camera_.fit(static_cast<float>(current_image_->width),
-                    static_cast<float>(current_image_->height),
+        camera_.fit(static_cast<float>(media_width()),
+                    static_cast<float>(media_height()),
                     view.w, view.h, true);
       }
     }
@@ -333,11 +336,12 @@ void present_lab::render_thread_main() noexcept {
         if (!ready->device || !mine || ready->device.Get() != mine.Get()) {
           mv::abi::release_gpu_image(ready);
         } else {
+          current_video_ = {};
           current_image_.reset(ready);
           {
             const auto view = usable_canvas(snapshot);
-            camera_.fit(static_cast<float>(current_image_->width),
-                        static_cast<float>(current_image_->height),
+            camera_.fit(static_cast<float>(media_width()),
+                        static_cast<float>(media_height()),
                         view.w, view.h, true);
           }
           last_input_time_ = elapsed;
@@ -345,12 +349,28 @@ void present_lab::render_thread_main() noexcept {
         }
       }
     }
+    if (session_) {
+      std::uint32_t generation = 0;
+      (void)mv_session_current_generation(session_, &generation);
+      if (current_video_.texture && current_video_.generation != generation) { current_video_ = {}; redraw = true; }
+      player::video_frame unused;
+      (void)mv::abi::poll_video(session_, -1, unused, video_active_);
+      // A clip becoming open is a reason to paint. The loader signals the
+      // image-ready event when it publishes one, so the render thread does
+      // wake — but nothing here used to set `redraw`, so a paused clip (or one
+      // whose first frame had not landed by the wake) left the empty-canvas
+      // welcome on screen and parked again with painted_static_ already true.
+      const bool was_video_open = video_open_;
+      video_open_ = mv::abi::video_open(session_);
+      if (video_open_ != was_video_open) redraw = true;
+    }
+
     if (snapshot.fit_seq != seen_fit_seq_) {
       seen_fit_seq_ = snapshot.fit_seq;
-      if (current_image_) {
+      if (current_image_ || current_video_.texture) {
         const auto view = usable_canvas(snapshot);
-        camera_.fit(static_cast<float>(current_image_->width),
-                    static_cast<float>(current_image_->height),
+        camera_.fit(static_cast<float>(media_width()),
+                    static_cast<float>(media_height()),
                     view.w, view.h, false);
       }
       redraw = true;
@@ -362,47 +382,47 @@ void present_lab::render_thread_main() noexcept {
     }
     if (snapshot.zoom_in_seq != seen_zoom_in_seq_) {
       seen_zoom_in_seq_ = snapshot.zoom_in_seq;
-      if (current_image_) {
+      if (current_image_ || current_video_.texture) {
         const auto view = usable_canvas(snapshot);
         camera_.wheel_toward(view.w * 0.5f, view.h * 0.5f, 1.0f, view.w, view.h,
-                             static_cast<float>(current_image_->width),
-                             static_cast<float>(current_image_->height));
+                             static_cast<float>(media_width()),
+                             static_cast<float>(media_height()));
       }
       redraw = true;
     }
     if (snapshot.zoom_out_seq != seen_zoom_out_seq_) {
       seen_zoom_out_seq_ = snapshot.zoom_out_seq;
-      if (current_image_) {
+      if (current_image_ || current_video_.texture) {
         const auto view = usable_canvas(snapshot);
         camera_.wheel_toward(view.w * 0.5f, view.h * 0.5f, -1.0f, view.w, view.h,
-                             static_cast<float>(current_image_->width),
-                             static_cast<float>(current_image_->height));
+                             static_cast<float>(media_width()),
+                             static_cast<float>(media_height()));
       }
       redraw = true;
     }
     if (snapshot.zoom_preset_seq != seen_zoom_preset_seq_) {
       seen_zoom_preset_seq_ = snapshot.zoom_preset_seq;
-      if (current_image_) {
+      if (current_image_ || current_video_.texture) {
         const auto view = usable_canvas(snapshot);
-        camera_.set_zoom(snapshot.zoom_preset, static_cast<float>(current_image_->width),
-                         static_cast<float>(current_image_->height), view.w, view.h);
+        camera_.set_zoom(snapshot.zoom_preset, static_cast<float>(media_width()),
+                         static_cast<float>(media_height()), view.w, view.h);
       }
       redraw = true;
     }
 
     const float wheel = input_cursor_.consume_wheel(snapshot);
-    if (current_image_ && wheel != 0.0f) {
+    if ((current_image_ || current_video_.texture) && wheel != 0.0f) {
       const auto view = usable_canvas(snapshot);
       camera_.wheel_toward(snapshot.mouse_x - view.x, snapshot.mouse_y - view.y, wheel,
                            view.w, view.h,
-                           static_cast<float>(current_image_->width),
-                           static_cast<float>(current_image_->height));
+                           static_cast<float>(media_width()),
+                           static_cast<float>(media_height()));
       redraw = true;
     }
     {
       const bool left = snapshot.mouse_down[0];
       if (left && !was_left_down_) camera_.drag_begin();
-      if (left && was_left_down_ && current_image_) {
+      if (left && was_left_down_ && (current_image_ || current_video_.texture)) {
         camera_.drag_delta(snapshot.mouse_x - last_mouse_x_, snapshot.mouse_y - last_mouse_y_);
       }
       if (!left && was_left_down_) camera_.drag_end();
@@ -423,7 +443,10 @@ void present_lab::render_thread_main() noexcept {
     if (redraw) last_input_time_ = elapsed;
     const bool pan_tail = current_image_ && last_input_time_ >= 0.0 &&
                           (elapsed - last_input_time_) < 0.5;
-    const bool live = animating_ || camera_.moving() || pan_tail;
+    // "Clip open, no frame yet" is live: it ends the instant the first frame
+    // arrives, so this is a bounded wait for the decoder, not a spin.
+    const bool video_loading = video_open_ && !current_video_.texture;
+    const bool live = video_active_ || video_loading || animating_ || camera_.moving() || pan_tail;
     live_presenting_ = live;
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || snapshot.window_active);
@@ -477,6 +500,19 @@ void present_lab::render_thread_main() noexcept {
       continue;
     }
     pacer_.frame_begin();
+    // Sample the master only AFTER the frame-latency wait, immediately before drawing.
+    if (session_) {
+      player::video_frame frame;
+      const bool first_video = !current_video_.texture;
+      if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
+        current_image_.reset(); current_video_ = std::move(frame);
+        if (first_video) {
+          const auto view = usable_canvas(snapshot);
+          camera_.fit(media_width(), media_height(), view.w, view.h, true);
+        }
+      }
+    }
+
 
     const std::int64_t frame_qpc = qpc_now();
     const auto delta = static_cast<float>(qpc_seconds(frame_qpc - last_frame_qpc));
@@ -519,9 +555,22 @@ void present_lab::render_thread_main() noexcept {
       bp.window_h = view.h;
       bp.origin_x = view.x;
       bp.origin_y = view.y;
-      bp.image_w = static_cast<float>(current_image_->width);
-      bp.image_h = static_cast<float>(current_image_->height);
+      bp.image_w = static_cast<float>(media_width());
+      bp.image_h = static_cast<float>(media_height());
       blitter_.draw(device_.context(), current_image_->srv.Get(), bp);
+    }
+
+    if (current_video_.texture) {
+      const auto view = usable_canvas(snapshot);
+      D3D11_VIEWPORT vp{view.x, view.y, view.w, view.h, 0.0f, 1.0f};
+      device_.context()->RSSetViewports(1, &vp);
+      D3D11_TEXTURE2D_DESC desc{}; current_video_.texture->GetDesc(&desc);
+      gfx::video_blit_params bp;
+      bp.pan_x = camera_.pan_x(); bp.pan_y = camera_.pan_y(); bp.zoom = camera_.zoom();
+      bp.window_w = view.w; bp.window_h = view.h; bp.origin_x = view.x; bp.origin_y = view.y;
+      bp.image_w = media_width(); bp.image_h = media_height();
+      bp.texture_w = static_cast<float>(desc.Width); bp.texture_h = static_cast<float>(desc.Height);
+      video_blitter_.draw(device_.context(), current_video_.luma.Get(), current_video_.chroma.Get(), current_video_.colour, bp);
     }
 
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -583,6 +632,8 @@ void present_lab::render_thread_main() noexcept {
     imgui_ready_ = false;
   }
   blitter_.destroy();
+  video_blitter_.destroy();
+  current_video_ = {};
   current_image_.reset();
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
@@ -596,7 +647,10 @@ void present_lab::render_thread_main() noexcept {
 }
 
 void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seconds) noexcept {
-  if (current_image_) return;
+  // video_open_ and no texture is a clip still opening, not an empty window.
+  // Painting "drop a photo here" over it is the bug that made an open clip
+  // look like it had not opened at all.
+  if (current_image_ || current_video_.texture || video_open_) return;
 
   const auto w = static_cast<float>(snapshot.width);
   const auto h = static_cast<float>(snapshot.height);
@@ -628,9 +682,9 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   const ImU32 body = IM_COL32(150, 154, 164, 255);
   const ImU32 mute = IM_COL32(110, 114, 124, 255);
 
-  const char* heading = "Drop a photo here";
-  const char* sub = "JPEG, PNG or BMP. Open a folder from the bar, or Ctrl+O";
-  const char* keys = "0  fit     1  100%     + / -  zoom     F  overlay";
+  const char* heading = "Drop a photo or a clip here";
+  const char* sub = "JPEG, PNG, BMP, MP4, MOV, MKV, WebM, AVI, TS. Open a folder from the bar, or Ctrl+O";
+  const char* keys = "0  fit     1  100%     + / -  zoom     space  play/pause     q / e  skim     F  overlay";
 
   ImFont* font = ImGui::GetFont();
   const float title_fs = 22.0f * scale;
@@ -661,6 +715,17 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
   const double implied_hz =
       stats.refresh_interval_ms > 0.0 ? 1000.0 / stats.refresh_interval_ms : 0.0;
 
+  if (current_video_.texture && session_) {
+    mv_video_stats video{}; mv_video_info info{};
+    (void)mv_video_get_stats(session_, &video); (void)mv_video_get_info(session_, &info);
+    ImGui::Text("video %s | %s | %.2fx", info.codec_name,
+        info.decoder == MV_DECODER_D3D11VA ? "D3D11VA" : "SOFTWARE DECODE", video.playback_rate);
+    ImGui::Text("clock %s | error p50 %.2f p99 %.2f ms | drift %.3f ms/min",
+        video.audio_master ? "audio" : "host fallback", video.err_ms_p50, video.err_ms_p99, video.drift_slope_ms_per_min);
+    ImGui::Text("shown %llu dropped %llu cadence %llu starved %llu",
+        video.frames_presented, video.frames_dropped_late, video.holds_cadence, video.holds_starved);
+    ImGui::Separator();
+  }
   ImGui::Text("%ls", device_.info().description);
   ImGui::Text("display   %.3f ms  (%.2f Hz)", stats.refresh_interval_ms, implied_hz);
   ImGui::Text("swapchain %ux%u  %s", swapchain_.width(), swapchain_.height(),
@@ -701,12 +766,23 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
                        "not the D6 gate.");
   }
 
-  if (current_image_) {
+  // A clip is not an image. current_image_ is null the whole time a video is
+  // on the canvas, so the format/ICC/mip line belongs to the image branch
+  // only — reading it under "image OR video" dereferenced null and took the
+  // process down every time F3 was pressed on a clip, playing or paused.
+  // media_width()/media_height() are floats; %u on a vararg float is garbage
+  // even when the pointer happens to be live, so print the source dimensions.
+  if (current_image_ || current_video_.texture) {
     ImGui::Separator();
-    ImGui::Text("image    %ux%u  %s  %s  %u mips", current_image_->width, current_image_->height,
-                codec::format_name(current_image_->format),
-                current_image_->icc_tagged ? "ICC tagged" : "untagged (sRGB)",
-                current_image_->mip_levels);
+    if (current_image_) {
+      ImGui::Text("image    %ux%u  %s  %s  %u mips", current_image_->width,
+                  current_image_->height, codec::format_name(current_image_->format),
+                  current_image_->icc_tagged ? "ICC tagged" : "untagged (sRGB)",
+                  current_image_->mip_levels);
+    } else {
+      ImGui::Text("clip     %ux%u  %s", current_video_.width, current_video_.height,
+                  current_video_.ten_bit ? "P010" : "NV12");
+    }
     ImGui::Text("view     zoom %.2f  pan %.1f, %.1f  %s", camera_.zoom(), camera_.pan_x(),
                 camera_.pan_y(), camera_.fit_mode() ? "fit" : (camera_.zoom() == 1.0f ? "100%" : ""));
     ImGui::Text("decode is off the render thread — pan must not start one");
@@ -720,7 +796,7 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
                        : live_presenting_  ? "presenting"
                                            : "idle (not presenting)";
   ImGui::Text("%s   [space] sweep   [R] reset   [F] overlay", status);
-  if (current_image_) {
+  if (current_image_ || current_video_.texture) {
     ImGui::Text("[0] fit   [1] 100%%   [+]/[-] zoom   wheel   drag   drop / Ctrl+O");
   }
   ImGui::End();

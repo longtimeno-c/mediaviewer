@@ -22,6 +22,7 @@
 #include "canvas/camera.h"
 #include "core/spsc_ring.h"
 #include "gfx/blit.h"
+#include "gfx/video_blit.h"
 #include "gfx/device.h"
 #include "gfx/pacer.h"
 #include "gfx/swapchain.h"
@@ -35,6 +36,8 @@ struct lab_options {
   // Run for this many seconds, write the JSON report, then exit. 0 = run until
   // the window is closed. This is what tools/frametime drives.
   double soak_seconds = 0.0;
+  std::uint32_t av_soak_seconds = 0;
+  std::wstring av_csv;
   std::wstring json_report_path;
   // With a soak, exit non-zero if the PR 1 gate did not hold. CI wants this;
   // a human running the lab does not.
@@ -91,6 +94,23 @@ class present_lab {
   gfx::swapchain swapchain_;
   gfx::pacer pacer_;
   gfx::blitter blitter_;
+  gfx::video_blitter video_blitter_;
+  player::video_frame current_video_{};
+  bool video_active_ = false;
+  // A clip is open on the session — true before its first frame exists, which
+  // is the window in which the canvas must not paint the empty-window welcome.
+  bool video_open_ = false;
+  // 0 when nothing is open. These used to dereference current_image_ whenever
+  // no video texture was live and relied on every caller checking first — the
+  // same shape as the F3 crash, one guard away from being the same bug.
+  float media_width() const {
+    if (current_video_.texture) return static_cast<float>(current_video_.width);
+    return current_image_ ? static_cast<float>(current_image_->width) : 0.0f;
+  }
+  float media_height() const {
+    if (current_video_.texture) return static_cast<float>(current_video_.height);
+    return current_image_ ? static_cast<float>(current_image_->height) : 0.0f;
+  }
   canvas::camera camera_;
   mv::abi::gpu_image_ptr current_image_;
 

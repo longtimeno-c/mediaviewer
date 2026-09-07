@@ -9,6 +9,7 @@
 
 #include "core/status.h"
 #include "image/gpu_image.h"
+#include "player/video_source.h"
 #include "mediaviewer/mediaviewer.h"
 
 struct ID3D11Device;
@@ -33,6 +34,29 @@ MV_API void release_gpu_image(image::gpu_image* image);
 // thread waits on this alongside its own wake event so an idle still appears
 // without polling. Null if the session is null.
 [[nodiscard]] MV_API void* image_ready_wait_handle(mv_session_t session);
+
+[[nodiscard]] MV_API bool poll_video(mv_session_t session, player::time_ns vblank,
+                                      player::video_frame& frame, bool& active);
+
+// [any-thread][wait-free] True from the moment a clip is published on this
+// session until it is retired — i.e. before the first decoded frame exists.
+// The render thread needs the distinction: "no texture" is the empty window,
+// "no texture yet, clip open" is a clip loading, and the two must not paint
+// the same thing.
+[[nodiscard]] MV_API bool video_open(mv_session_t session) noexcept;
+
+// PR 5a video. Same wait-free handoff as take_ready_image, but a video frame is
+// its own type: two SRVs, an NV12/P010 format, a colour_desc and a PTS. It is
+// deliberately NOT forced into image::gpu_image.
+[[nodiscard]] MV_API player::video_frame* take_ready_video_frame(mv_session_t session,
+                                                                 std::uint32_t generation);
+MV_API void release_video_frame(player::video_frame* frame);
+
+struct video_frame_deleter {
+  void operator()(player::video_frame* p) const noexcept { release_video_frame(p); }
+};
+
+using video_frame_ptr = std::unique_ptr<player::video_frame, video_frame_deleter>;
 
 struct gpu_image_deleter {
   void operator()(image::gpu_image* p) const noexcept { release_gpu_image(p); }

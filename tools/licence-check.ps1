@@ -74,16 +74,63 @@ if (Test-Path $manifestPath) {
 }
 
 # --- 2. FFmpeg configure line, as actually built ---------------------------
-# vcpkg records the configure line in the port's build log and in FFMPEG's own
-# ffmpeg_version / config. Check whatever is present rather than assuming.
-if (-not $VcpkgInstalledRoot -and $env:VCPKG_ROOT) {
-    $VcpkgInstalledRoot = Join-Path $env:VCPKG_ROOT 'installed'
+# plan/11: "The configure line is checked directly rather than trusted."
+#
+# Scope matters as much as the check. This must look ONLY at the FFmpeg this
+# repo links, never at whatever ffmpeg happens to be on PATH -- a developer with
+# a GPL ffmpeg in PATH (a normal thing to have) must not fail an unrelated
+# build, and a GPL ffmpeg in a classic vcpkg root must not be mistaken for ours.
+# So: the explicit parameter, else the repo's own manifest-mode install tree.
+# Never $env:VCPKG_ROOT/installed, never PATH.
+if (-not $VcpkgInstalledRoot) {
+    $candidates = Get-ChildItem -Path $RepoRoot -Directory -Filter 'build*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'vcpkg_installed' } |
+        Where-Object { Test-Path $_ }
+    if ($candidates) { $VcpkgInstalledRoot = @($candidates)[0] }
 }
-if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
-    $configFiles = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File `
-        -Include 'FFMPEG_CONFIGURE*', 'ffmpeg-config*', 'config.h' -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match 'ffmpeg' }
 
+if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
+    # FFmpeg embeds its full configure string in the built libraries, so the
+    # binary we actually link is its own evidence. This survives vcpkg cleaning
+    # buildtrees, which the old log-file check did not -- that check passed
+    # vacuously because nothing it looked for is ever installed.
+    $ffmpegBinaries = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File `
+        -Include 'avutil*.dll', 'avcodec*.dll', 'avformat*.dll' -ErrorAction SilentlyContinue
+
+    $sawConfigureLine = $false
+    foreach ($binary in $ffmpegBinaries) {
+        $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
+        $text  = [System.Text.Encoding]::ASCII.GetString($bytes)
+        if ($text -notmatch '--toolchain|--prefix|--enable-') { continue }
+        $sawConfigureLine = $true
+
+        if ($text -match '--enable-gpl') {
+            Add-Violation 'FFmpeg configured GPL' `
+                "$($binary.Name) was built with --enable-gpl. plan/11: LGPL only, and --enable-gpl pulls in x264/x265."
+        }
+        if ($text -match '--enable-nonfree') {
+            Add-Violation 'FFmpeg configured nonfree' `
+                "$($binary.Name) was built with --enable-nonfree."
+        }
+        foreach ($encoder in @('--enable-libx264', '--enable-libx265', '--enable-libfdk-aac')) {
+            if ($text -match [regex]::Escape($encoder)) {
+                Add-Violation 'forbidden encoder in FFmpeg' `
+                    "$($binary.Name) was built with $encoder. plan/11: never bundle a software HEVC or AAC encoder."
+            }
+        }
+    }
+
+    # An FFmpeg present but unreadable is a silent pass, which is the failure
+    # mode this whole file exists to prevent. Say so rather than exit 0.
+    if ($ffmpegBinaries -and -not $sawConfigureLine) {
+        Add-Violation 'FFmpeg configure line not found' `
+            'FFmpeg libraries are installed but carry no readable configure string; the LGPL gate could not be evaluated.'
+    }
+
+    # Also honour any text form, if a future port installs one.
+    $configFiles = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File `
+        -Include 'FFMPEG_CONFIGURE*', 'ffmpeg-config*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match 'ffmpeg' }
     foreach ($file in $configFiles) {
         $content = Get-Content -Raw -LiteralPath $file.FullName
         if ($content -match '--enable-gpl') {
@@ -97,8 +144,11 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
     # --- 3. LGPL components must be DLLs, not static libs ------------------
     foreach ($lgpl in @('avcodec', 'avformat', 'avutil', 'swscale', 'swresample',
                         'heif', 'de265', 'raw', 'exiv2')) {
+        # An import library beside a DLL is normal and correct; what plan/11
+        # forbids is a .lib with NO .dll, which means the component was linked
+        # statically and the user cannot substitute their own build.
         $staticLibs = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter "*$lgpl*.lib" `
-            -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch 'x64-windows\\' }
+            -ErrorAction SilentlyContinue
         $dlls = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter "*$lgpl*.dll" `
             -ErrorAction SilentlyContinue
 

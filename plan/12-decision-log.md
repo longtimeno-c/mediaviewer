@@ -432,12 +432,50 @@ Speed is the constraint, not a vibe: key-repeat next stays inside the generation
 copy/move never runs on the UI thread; blinkies are off by default because they animate a
 present loop; pairing happens at scan.
 
+## 2026-09-07 — Video decode workers may issue copies on the immediate context (PR 5a)
+
+**Decision.** The video decode thread issues `CopySubresourceRegion` from the D3D11VA decoder pool
+into our presentation ring **on the immediate context**, holding the FFmpeg
+`AVHWDeviceContext` lock (`hwctx->lock(hwctx->lock_ctx)`, which defaults to the device's
+`ID3D10Multithread`) for the duration of the submit and nothing else.
+
+**Why this is a decision and not an implementation detail.** [02-architecture.md](02-architecture.md)'s
+thread table says the decode pool never touches the immediate context. That rule was written for the
+**still** path, where decode workers create immutable textures with `D3D11_SUBRESOURCE_DATA` and need
+no context at all. A D3D11VA output surface cannot be copied without one, so the rule cannot be
+applied literally to video. Read narrowly — video frame copy-out only — rather than reversed.
+
+**Why not a deferred context, which would have kept the table literal.** An `AVFrame` from
+`AV_HWDEVICE_TYPE_D3D11VA` is a *(pool texture, array slice index)* pair: `data[0]` is one texture
+array shared by the whole DPB, `data[1]` is the slice. A COM reference on that texture therefore
+reserves **nothing**. If a decode thread records the copy into a command list and releases the
+`AVFrame` immediately, the decoder is free to reuse the slice and overwrite it before the render
+thread calls `ExecuteCommandList`. The result is intermittent wrong-frame corruption that appears
+only under DPB pressure — i.e. on exactly the 4K clips in PR 5a's verify line, and never in a short
+test. The deferred context does not buy the early release it appears to buy; it hides the hold.
+
+Using the immediate context is what makes the early release **correct**: FFmpeg's d3d11va decode
+submits through an `ID3D11VideoContext` QI'd off that same immediate context, so D3D11's submission
+ordering guarantees our copy precedes the decoder's next write to that slice. That guarantee exists
+*only* while the copy goes to that same context. Moving it to a private or deferred context later to
+"reduce contention" silently removes it.
+
+**Constraints that come with the decision.** Copies only on that thread — no `Map`, no `Flush`, no
+`ClearState`, no query wait, no GPU sync of any kind. `extra_hw_frames` covers the presentation ring
+depth so a scheduling delay cannot starve the pool. Release the `AVFrame` immediately after submit.
+
+**How it gets reversed.** This is measured, not assumed. PR 1's present-loop verify is the gate: if
+p99 frame time regresses more than 10 %, or any frame exceeds 2× the refresh interval, the copy moves
+to the render thread with `extra_hw_frames` raised to cover the queue instead. Frame times with and
+without playback are reported as a comparison, not a pass/fail.
+
 ## Still open
 
 | Question | Blocks | Notes |
 |---|---|---|
 | ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
 | **A quiet machine for the D6 gate** | PR 1 verify (inherited) | Re-run 2026-09-07: one animated pass, one animated fail, idle contaminated by mouse. Still needs the self-hosted GPU runner [09](09-build-and-test.md). |
+| **PR 4's verify was never run** | PR 5 (inherited) | Three sessions held PR 4; the first hallucinated, the second committed `5eaa530` without reporting, the third confirmed it never owned the PR. Recorded state as of 2026-09-07: the 2000-JPEG scroll, the warm second-visit thumbnail check and the < 40 ms warm arrow-key number are **not run**; `tests/test_frametime.ps1` is **not run**; the plan edits in that commit to [10](10-roadmap.md) and [16](16-commands.md) are **unreviewed**. PR 5 is being built on top of this knowingly. |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 verify (inherited) | Command-bar island is in the tree. Filmstrip is a second island (PR 4). Present-loop + tab + flyout-over-canvas still unproven on a quiet GPU runner. Fallback unchanged: WinUI app with `SwapChainPanel` and an accepted composed frame. |
 
 ## How to use this file

@@ -15,6 +15,9 @@
 
 #include "abi/guard.h"
 #include "abi/native.h"
+#include "abi/video_session.h"
+#include "player/container_probe.h"
+#include "player/poster.h"
 #include "core/job_system.h"
 #include "core/spsc_ring.h"
 #include "core/status.h"
@@ -97,6 +100,12 @@ std::uint64_t current_correlation_id() noexcept { return t_error.current_correla
 struct mv_session {
   std::atomic<std::uint32_t> ref_count{1};
   mv::job_system jobs;
+  mv::abi::video_session video;
+
+  // [render-thread only] The last play state a VIDEO_STATE completion was
+  // pushed for. poll_video is the only writer and it runs on the render thread,
+  // so this needs no synchronisation of its own.
+  mv::player::play_state reported_video_state = mv::player::play_state::stopped;
 
   // Completions are produced by many worker threads and consumed by one
   // draining thread, so the SPSC ring is not the right shape here — this is the
@@ -211,6 +220,28 @@ void publish_ready(mv_session* session, mv_image_info info,
     delete old;
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
   }
+}
+
+// Worker-only probe; never read a whole multi-gigabyte clip to identify it.
+bool video_path(const std::string& path) {
+  auto head = mv::io::read_prefix(path, mv::player::probe_bytes);
+  return head && mv::player::is_video(mv::player::probe(head.value()));
+}
+status open_video_worker(mv_session* session, const std::string& path, const mv::job_context& ctx) {
+  auto device = session->copy_device();
+  if (!device) return status::device_lost;
+  auto result = mv::player::open_media(path.c_str(), device.Get());
+  if (!result) return result.error();
+  auto* source = result.value();
+  if (ctx.cancelled()) { mv::player::close_media(source); return status::cancelled; }
+  const auto info = source->info();
+  session->video.publish(source, ctx.gen());
+  mv_completion c{};
+  c.kind = MV_COMPLETION_VIDEO_OPENED; c.status = MV_OK;
+  c.generation = ctx.gen(); c.payload = info.duration_ns;
+  session->push_completion(c);
+  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+  return status::ok;
 }
 
 bool path_is_selected(mv_session* session, const std::string& path) {
@@ -339,14 +370,34 @@ void submit_thumb_at(mv_session* session, uint32_t index) {
             return status::ok;
           }
         }
-        auto bytes = mv::io::read_all(item.path);
-        if (!bytes) return bytes.error();
-        if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
-          return status::cancelled;
+        // A camera dump is photos and clips in one folder. Skipping the clips
+        // here is what listed every video as a blank tile: the strip and the
+        // gallery both read this path, so "no thumb" is the whole carousel.
+        // The poster frame is a one-shot software decode on this pool thread —
+        // it never touches the D3D11VA session the playing clip is using.
+        std::vector<std::uint8_t> jpeg_bytes;
+        if (video_path(item.path)) {
+          auto poster = mv::player::poster_frame(item.path.c_str(), mv::image::kThumbLongEdge, &ctx);
+          if (!poster) return poster.error();
+          if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+            return status::cancelled;
+          }
+          auto encoded = mv::image::encode_thumb_rgba(poster.value().rgba, poster.value().width,
+                                                      poster.value().height);
+          if (!encoded) return encoded.error();
+          jpeg_bytes = std::move(encoded).value();
+        } else {
+          auto bytes = mv::io::read_all(item.path);
+          if (!bytes) return bytes.error();
+          if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+            return status::cancelled;
+          }
+          auto jpeg = mv::image::make_thumb_jpeg(bytes.value(), &ctx);
+          if (!jpeg) return jpeg.error();
+          jpeg_bytes = std::move(jpeg).value();
         }
-        auto jpeg = mv::image::make_thumb_jpeg(bytes.value(), &ctx);
-        if (!jpeg) return jpeg.error();
-        auto stored = session->thumbs.store(key, jpeg.value());
+        const auto& jpeg = jpeg_bytes;
+        auto stored = session->thumbs.store(key, jpeg);
         if (!stored) return stored.error();
         std::lock_guard lock(session->folder_mutex);
         if (index < session->folder_items.size() &&
@@ -433,6 +484,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
+        }
+        if (video_path(path)) {
+          if (!path_is_selected(session, path)) return status::ok;
+          return open_video_worker(session, path, ctx);
         }
         auto bytes = mv::io::read_all(path);
         if (!bytes) return bytes.error();
@@ -789,13 +844,14 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
     std::string owned(utf8_path);
     const auto correlation = mv::abi::current_correlation_id();
-    const mv::generation gen = session->jobs.current_generation();
+    const mv::generation gen = session->jobs.bump_generation();
 
     const mv::job_id id = session->jobs.submit_at(
         gen,
         [session, path = std::move(owned)](const mv::job_context& ctx) -> status {
           if (ctx.cancelled()) return status::cancelled;
 
+          if (video_path(path)) return open_video_worker(session, path, ctx);
           auto bytes = mv::io::read_all(path);
           if (!bytes) return bytes.error();
           if (ctx.cancelled()) return status::cancelled;
@@ -1058,6 +1114,132 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
   }));
 }
 
+mv_status MV_CALL mv_video_open(mv_session_t session, const char* path, uint64_t* job) {
+  return mv_image_open(session, path, job);
+}
+mv_status MV_CALL mv_video_close(mv_session_t session) {
+  if (!session) return MV_ERR_INVALID_ARG;
+  session->jobs.bump_generation();
+  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+  return MV_OK;
+}
+mv_status MV_CALL mv_video_play(mv_session_t session) {
+  return static_cast<mv_status>(guard("mv_video_play", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.play(); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_pause(mv_session_t session) {
+  return static_cast<mv_status>(guard("mv_video_pause", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.pause(); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_seek(mv_session_t session, int64_t position, int32_t exact) {
+  return static_cast<mv_status>(guard("mv_video_seek", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.seek(position, exact != 0); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_step(mv_session_t session, int32_t frames) {
+  return static_cast<mv_status>(guard("mv_video_step", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.step(frames); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_rate(mv_session_t session, double rate) {
+  return static_cast<mv_status>(guard("mv_video_set_rate", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.set_rate(rate); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_volume(mv_session_t session, float volume) {
+  return static_cast<mv_status>(guard("mv_video_set_volume", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.set_volume(volume); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_muted(mv_session_t session, int32_t muted) {
+  return static_cast<mv_status>(guard("mv_video_set_muted", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.set_muted(muted != 0); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_select_audio_track(mv_session_t session, uint32_t index) {
+  return static_cast<mv_status>(guard("mv_video_select_audio_track", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.select_audio_track(index); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_loop(mv_session_t session, int64_t a, int64_t b) {
+  return static_cast<mv_status>(guard("mv_video_set_loop", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.command([=](mv::player::media_source& s) { s.set_loop(a, b); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_position(mv_session_t session, int64_t* out) {
+  if (!session || !out) return MV_ERR_INVALID_ARG;
+  mv::player::media_info info; mv::player::clock_stats stats; mv::player::play_state state;
+  session->video.snapshot(info, stats, *out, state); return MV_OK;
+}
+mv_status MV_CALL mv_video_state(mv_session_t session, uint32_t* out) {
+  if (!session || !out) return MV_ERR_INVALID_ARG;
+  mv::player::media_info info; mv::player::clock_stats stats;
+  mv::player::play_state state; mv::player::time_ns position;
+  session->video.snapshot(info, stats, position, state); *out = static_cast<uint32_t>(state); return MV_OK;
+}
+mv_status MV_CALL mv_video_get_info(mv_session_t session, mv_video_info* out) {
+  if (!session || !out) return MV_ERR_INVALID_ARG;
+  mv::player::media_info info; mv::player::clock_stats stats;
+  mv::player::play_state state; mv::player::time_ns position;
+  session->video.snapshot(info, stats, position, state);
+  *out = {}; out->duration_ns = info.duration_ns; out->width = info.video.width; out->height = info.video.height;
+  out->frame_rate = info.video.frame_rate; out->audio_tracks = info.audio_tracks; out->video_tracks = info.video_tracks;
+  out->decoder = static_cast<uint32_t>(info.video.decoder);
+  out->flags = (info.has_audio ? 1u : 0u) | (info.video.ten_bit ? 2u : 0u);
+  std::memcpy(out->codec_name, info.video.codec_name, sizeof(out->codec_name)); return MV_OK;
+}
+mv_status MV_CALL mv_video_get_stats(mv_session_t session, mv_video_stats* out) {
+  if (!session || !out) return MV_ERR_INVALID_ARG;
+  mv::player::media_info info; mv::player::clock_stats stats;
+  mv::player::play_state state; mv::player::time_ns position;
+  session->video.snapshot(info, stats, position, state);
+  *out = {}; out->position_ns = position; out->audio_clock_ns = stats.audio_clock_ns;
+  out->err_ms_p50 = stats.err_ms_p50; out->err_ms_p99 = stats.err_ms_p99;
+  out->drift_slope_ms_per_min = stats.drift_slope_ms_per_min; out->playback_rate = stats.playback_rate;
+  out->frames_presented = stats.counters.presented; out->frames_dropped_late = stats.counters.dropped_late;
+  out->holds_cadence = stats.counters.held_cadence; out->holds_starved = stats.counters.held_starved;
+  out->device_rebuilds = stats.counters.device_rebuilds; out->position_discontinuities = stats.position_discontinuities;
+  out->audio_master = stats.audio_master ? 1u : 0u; out->fallback_reason = static_cast<uint32_t>(stats.fallback);
+  return MV_OK;
+}
+mv_status MV_CALL mv_probe_is_video(mv_session_t session, const char* path, int32_t* out) {
+  return static_cast<mv_status>(guard("mv_probe_is_video", [&]() -> status {
+    MV_REQUIRE(session && path && out, "session, path and output required");
+    auto head = mv::io::read_prefix(path, mv::player::probe_bytes);
+    if (!head) return head.error();
+    *out = mv::player::is_video(mv::player::probe(head.value())) ? 1 : 0; return status::ok;
+  }));
+}
+
 }  // extern "C"
 
 namespace mv::abi {
@@ -1122,5 +1304,57 @@ void* image_ready_wait_handle(mv_session_t session) {
 }
 
 void release_gpu_image(image::gpu_image* image) { delete image; }
+bool poll_video(mv_session_t session, player::time_ns vblank, player::video_frame& frame, bool& active) {
+  if (!session) { active = false; return false; }
+  const bool changed =
+      session->video.tick(session->jobs.current_generation(), vblank, frame, active);
+
+  // MV_COMPLETION_VIDEO_STATE / _VIDEO_ENDED have been declared since ABI 0.4
+  // and were never pushed, so the chrome had no way to learn about a state the
+  // core changes on its own — reaching the end of a clip, most of all — and
+  // could only find out on its next poll. plan/14: the ABI is designed, not
+  // retrofitted, and declared surface that nothing sends is not a design.
+  //
+  // Every transition is pushed, not only the self-initiated ones: telling the
+  // host about a change it asked for is redundant, never wrong, and the
+  // alternative is threading "who caused this" through the command queue for
+  // no gain. The host must therefore treat these as notifications, not as
+  // acknowledgements of its own calls.
+  // The payload is documented as an mv_play_state, so the two enums have to
+  // agree rung for rung — the cast below is the whole contract.
+  static_assert(static_cast<int>(player::play_state::stopped) == MV_PLAY_STOPPED);
+  static_assert(static_cast<int>(player::play_state::playing) == MV_PLAY_PLAYING);
+  static_assert(static_cast<int>(player::play_state::paused) == MV_PLAY_PAUSED);
+  static_assert(static_cast<int>(player::play_state::ended) == MV_PLAY_ENDED);
+  const auto state = session->video.play_state_now();
+  if (state != session->reported_video_state) {
+    session->reported_video_state = state;
+    mv_completion c{};
+    c.kind = MV_COMPLETION_VIDEO_STATE;
+    c.status = MV_OK;
+    c.generation = session->jobs.current_generation();
+    c.payload = static_cast<int64_t>(state);
+    session->push_completion(c);
+    if (state == player::play_state::ended) {
+      mv_completion ended{};
+      ended.kind = MV_COMPLETION_VIDEO_ENDED;
+      ended.status = MV_OK;
+      ended.generation = c.generation;
+      session->push_completion(ended);
+    }
+  }
+  return changed;
+}
+bool video_open(mv_session_t session) noexcept {
+  return session != nullptr && session->video.open();
+}
+player::video_frame* take_ready_video_frame(mv_session_t session, std::uint32_t generation) {
+  (void)generation;
+  player::video_frame frame; bool active = false;
+  if (!poll_video(session, 16'666'667, frame, active)) return nullptr;
+  return new player::video_frame(std::move(frame));
+}
+void release_video_frame(player::video_frame* frame) { delete frame; }
+
 
 }  // namespace mv::abi
