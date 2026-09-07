@@ -39,6 +39,7 @@ with no .NET present; without `dotnet` on `PATH` the lab runs as it did in PR 2
 git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
 & $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = "$env:USERPROFILE\vcpkg"
+./tools/install-windows-app-runtime.ps1   # unpackaged WinUI 2.4 runtime
 
 # configure and build
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
