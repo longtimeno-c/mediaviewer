@@ -96,9 +96,22 @@ void box_fit_rgba(const display_image& src, std::uint32_t dst_w, std::uint32_t d
 
 thumb_store::~thumb_store() { close(); }
 
+bool thumb_store::is_open() const noexcept {
+  std::lock_guard lock(mutex_);
+  return db_ != nullptr;
+}
+
 expected thumb_store::open(std::string_view dir_utf8) {
-  close();
   if (dir_utf8.empty()) return err(status::invalid_arg);
+
+  std::lock_guard lock(mutex_);
+  // Already serving this directory. Reopening would close a handle that
+  // lookups on other pool threads are about to use.
+  if (db_ != nullptr && dir_ == dir_utf8) return {};
+  if (db_ != nullptr) {
+    sqlite3_close(db_);
+    db_ = nullptr;
+  }
   dir_.assign(dir_utf8);
   const std::string db_path = join_dir(dir_, "thumbs.sqlite");
   sqlite3* db = nullptr;
@@ -117,6 +130,7 @@ expected thumb_store::open(std::string_view dir_utf8) {
 }
 
 void thumb_store::close() noexcept {
+  std::lock_guard lock(mutex_);
   if (db_) {
     sqlite3_close(db_);
     db_ = nullptr;
@@ -125,6 +139,7 @@ void thumb_store::close() noexcept {
 }
 
 result<std::string> thumb_store::lookup(const thumb_key& key) {
+  std::lock_guard lock(mutex_);
   if (!db_) return err(status::internal);
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_,
@@ -143,16 +158,46 @@ result<std::string> thumb_store::lookup(const thumb_key& key) {
   }
   sqlite3_finalize(stmt);
   if (file.empty()) return std::string{};
-  return join_dir(dir_, file);
+
+  // The row is not proof the bytes survived. Clearing the thumbs directory
+  // while thumbs.sqlite lives on used to leave every item pointing at a file
+  // that is not there, with no path back to regenerating it.
+  std::string path = join_dir(dir_, file);
+  if (!io::file_exists(path)) {
+    sqlite3_stmt* del = nullptr;
+    if (sqlite3_prepare_v2(db_,
+                           "DELETE FROM thumbs WHERE path=? AND mtime=? AND size=? AND spec=?;",
+                           -1, &del, nullptr) == SQLITE_OK) {
+      sqlite3_bind_text(del, 1, key.path.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(del, 2, key.mtime_unix);
+      sqlite3_bind_int64(del, 3, static_cast<sqlite3_int64>(key.size));
+      sqlite3_bind_text(del, 4, kThumbSpec, -1, SQLITE_STATIC);
+      sqlite3_step(del);
+      sqlite3_finalize(del);
+    }
+    return std::string{};
+  }
+  return path;
 }
 
 result<std::string> thumb_store::store(const thumb_key& key, std::span<const std::uint8_t> jpeg) {
-  if (!db_ || jpeg.empty()) return err(status::invalid_arg);
-  const std::string file = cache_name(key);
-  const std::string path = join_dir(dir_, file);
+  if (jpeg.empty()) return err(status::invalid_arg);
+
+  // Snapshot the directory, then write the file with the lock released: every
+  // pool thread stores thumbs, and serializing them on one mutex would undo
+  // the point of having a pool.
+  std::string file = cache_name(key);
+  std::string path;
+  {
+    std::lock_guard lock(mutex_);
+    if (!db_) return err(status::invalid_arg);
+    path = join_dir(dir_, file);
+  }
   auto written = io::write_all(path, jpeg);
   if (!written) return err(written.error());
 
+  std::lock_guard lock(mutex_);
+  if (!db_) return err(status::internal);
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_,
                          "INSERT OR REPLACE INTO thumbs(path,mtime,size,spec,file) "
@@ -175,8 +220,22 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
                                                   const job_context* ctx) {
   result<display_image> decoded = err(status::unsupported_format);
   if (codec::probe(src_bytes) == codec::format_family::jpeg) {
-    for (int denom : {8, 4, 1}) {
-      auto raster = codec::decode_jpeg(src_bytes, ctx, denom);
+    // Pick the coarsest DCT scale that still leaves at least kThumbLongEdge to
+    // downsample from. The old fixed {8, 4, 1} ladder took the first scale that
+    // decoded, so a 1024px JPEG produced a 128px "512" thumb.
+    int denom = 1;
+    if (auto size = codec::jpeg_dimensions(src_bytes)) {
+      const std::uint32_t edge = size.value().width > size.value().height ? size.value().width
+                                                                          : size.value().height;
+      for (int candidate : {8, 4, 2}) {
+        if (edge / static_cast<std::uint32_t>(candidate) >= kThumbLongEdge) {
+          denom = candidate;
+          break;
+        }
+      }
+    }
+    for (int attempt : {denom, 1}) {
+      auto raster = codec::decode_jpeg(src_bytes, ctx, attempt);
       if (!raster) {
         if (raster.error() == status::cancelled) return err(status::cancelled);
         continue;

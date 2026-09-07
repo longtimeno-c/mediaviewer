@@ -3,9 +3,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <cwchar>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "fixtures.h"
 #include "io/paths.h"
@@ -30,14 +33,25 @@ struct session_guard {
   session_guard& operator=(const session_guard&) = delete;
 };
 
+// GetTempFileNameW derives its name from the clock and only guarantees the
+// name is free of a *file*. These tests leave their directories behind, so a
+// later run drew a name whose directory (and its thumbs/ child) already
+// existed and the CreateDirectoryW assert failed. Keep trying until we own a
+// genuinely fresh directory.
 std::wstring temp_dir() {
   wchar_t root[MAX_PATH]{};
   REQUIRE(::GetTempPathW(MAX_PATH, root) > 0);
-  wchar_t path[MAX_PATH]{};
-  REQUIRE(::GetTempFileNameW(root, L"mvf", 0, path) != 0);
-  ::DeleteFileW(path);
-  REQUIRE(::CreateDirectoryW(path, nullptr));
-  return path;
+  static std::atomic<unsigned> counter{0};
+  for (unsigned attempt = 0; attempt < 512; ++attempt) {
+    wchar_t path[MAX_PATH]{};
+    std::swprintf(path, MAX_PATH, L"%smvf%lu_%u", root,
+                  static_cast<unsigned long>(::GetCurrentProcessId()),
+                  counter.fetch_add(1, std::memory_order_relaxed));
+    if (::CreateDirectoryW(path, nullptr)) return path;
+    REQUIRE(::GetLastError() == ERROR_ALREADY_EXISTS);
+  }
+  FAIL("could not create a unique temp directory");
+  return {};
 }
 
 std::string utf8(const std::wstring& w) {
@@ -102,6 +116,56 @@ TEST_CASE("mv_folder_open lists stills and serves item names", "[abi][folder]") 
   uint32_t bytes = 0;
   REQUIRE(mv_folder_item_name(session.handle, 0, name, sizeof(name), &bytes) == MV_OK);
   REQUIRE(std::string(name) == "one.bmp");
+
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+TEST_CASE("scrubbing a folder abandons the decodes it passed", "[abi][folder][cancellation]") {
+  // The regression: folder decodes were submitted at background_generation, so
+  // ctx.cancelled() was always false and nothing a held arrow key queued could
+  // ever be abandoned. Forty steps left forty full decodes (plus prefetch) to
+  // finish after the key came up — plan/02's "chewing gum".
+  const auto dir = temp_dir();
+  constexpr int files = 40;
+  for (int i = 0; i < files; ++i) {
+    wchar_t name[32]{};
+    std::swprintf(name, 32, L"img%02d.bmp", i);
+    write_bmp(dir, name);
+  }
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), nullptr, &job) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, nullptr));
+
+  mv_job_stats before{};
+  REQUIRE(mv_session_job_stats(session.handle, &before) == MV_OK);
+
+  // A held arrow key, as fast as the message loop can deliver it.
+  for (uint32_t i = 1; i < files; ++i) {
+    uint64_t select_job = 0;
+    REQUIRE(mv_folder_select(session.handle, i, &select_job) == MV_OK);
+  }
+
+  mv_job_stats after{};
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  bool drained = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    REQUIRE(mv_session_job_stats(session.handle, &after) == MV_OK);
+    if (after.queue_depth == 0 && after.completed + after.cancelled >= after.submitted) {
+      drained = true;
+      break;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  REQUIRE(drained);
+
+  // Something was thrown away. If the count is unchanged, the decodes went back
+  // to being uncancellable background work.
+  REQUIRE(after.cancelled > before.cancelled);
 
   REQUIRE(mv_folder_close(session.handle) == MV_OK);
   mv::io::set_thumb_cache_dir_override({});

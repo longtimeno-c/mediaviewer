@@ -23,6 +23,8 @@ public static partial class IslandHost
     private static readonly ObservableCollection<FolderItemVm> Items = new();
     private static ItemsRepeater? _repeater;
     private static ScrollViewer? _filmstripScroll;
+    private static FrameworkElement? _filmstripRoot;
+    private static int _selectedIndex = -1;
     private const int FilmstripDip = 112;
     private const double ItemStride = 102; // 96 width + 6 spacing
 
@@ -99,7 +101,10 @@ public static partial class IslandHost
                 _filmstrip.Dispose();
                 _filmstrip = null;
             }
+            _filmstripRoot = null;
             Items.Clear();
+            _selectedIndex = -1;
+            SetBusy(false);
             return 0;
         }
         catch (Exception ex)
@@ -127,11 +132,20 @@ public static partial class IslandHost
     private static void DrainFolder()
     {
         if (_folderSession is null) return;
+
+        // Coalesce. Holding an arrow key produces a selection change per key
+        // repeat; walking every view model and forcing a layout pass for each
+        // one turns the UI thread into the bottleneck the decode pool no longer
+        // is. Only the last selection in a batch is worth applying.
+        int select = -1;
+        bool? busy = null;
         foreach (var c in _folderSession.Drain())
         {
             if (c.Kind is MvCompletionKind.FolderReady or MvCompletionKind.FolderChanged)
             {
                 ReloadItems();
+                select = -1;
+                busy = null;
             }
             else if (c.Kind == MvCompletionKind.ThumbReady && c.Status == MvStatus.Ok)
             {
@@ -140,15 +154,25 @@ public static partial class IslandHost
             }
             else if (c.Kind == MvCompletionKind.FolderSelected && c.Status == MvStatus.Ok)
             {
-                SetSelected((int)c.Payload);
+                select = (int)c.Payload;
+                busy = true;
+            }
+            else if (c.Kind == MvCompletionKind.ImageOpened)
+            {
+                // Published (or failed) for the current selection — either way
+                // there is nothing left to wait for.
+                busy = false;
             }
         }
+        if (select >= 0) SetSelected(select);
+        if (busy is bool want) SetBusy(want);
     }
 
     private static void ReloadItems()
     {
         if (_folderSession is null) return;
         Items.Clear();
+        _selectedIndex = -1;
         uint count = _folderSession.FolderCount;
         for (uint i = 0; i < count; ++i)
         {
@@ -166,20 +190,32 @@ public static partial class IslandHost
         {
             if (Items[i].Selected) { selected = i; break; }
         }
+        _selectedIndex = selected;
         if (selected >= 0) ScrollTo(selected);
+        UpdateGalleryCount();
+        // The native side does not drain completions while an island is
+        // attached, so this is how it learns a listing landed and how many
+        // items it has — which is what decides whether the strip and the
+        // gallery are worth putting on screen at all.
+        Send(Command.FolderReady, Items.Count);
     }
 
     private static void SetSelected(int index)
     {
-        for (int i = 0; i < Items.Count; ++i)
-            Items[i].Selected = i == index;
+        // Touch two items, not two thousand: the old loop was O(folder) per key
+        // repeat and every write raised PropertyChanged.
+        if (_selectedIndex >= 0 && _selectedIndex < Items.Count) Items[_selectedIndex].Selected = false;
+        if (index >= 0 && index < Items.Count) Items[index].Selected = true;
+        _selectedIndex = index;
         ScrollTo(index);
+        GalleryScrollTo(index);
     }
 
     private static void ScrollTo(int index)
     {
         if (index < 0 || index >= Items.Count) return;
-        _repeater?.UpdateLayout();
+        // No UpdateLayout() here. A synchronous layout pass of the strip on
+        // every arrow-key repeat is the UI thread doing the pool's old job.
         UIElement? el = _repeater?.TryGetElement(index);
         if (el is not null)
         {
@@ -223,13 +259,15 @@ public static partial class IslandHost
             if (e.Key == Windows.System.VirtualKey.Left) { Send(Command.Prev); e.Handled = true; }
             if (e.Key == Windows.System.VirtualKey.Right) { Send(Command.Next); e.Handled = true; }
         };
-        return new Grid
+        var root = new Grid
         {
             RequestedTheme = ElementTheme.Dark,
             Background = Brush(Canvas),
             Height = FilmstripDip,
             Children = { scroll },
         };
+        _filmstripRoot = root;
+        return root;
     }
 
     private sealed class FilmstripFactory : IElementFactory

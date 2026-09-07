@@ -138,8 +138,17 @@ struct mv_session {
   mv::io::directory_watcher watcher;
   mv::image::thumb_store thumbs;
 
+  // A decode already queued or running for a path at this generation. Without
+  // it, a held arrow key re-submits the same neighbours every step as the LRU
+  // churns, and the pool decodes the same JPEG four times over.
+  struct inflight_decode {
+    std::string path;
+    mv::generation gen = 0;
+  };
+
   std::mutex lru_mutex;
   std::vector<lru_slot> lru;
+  std::vector<inflight_decode> decode_inflight;
 
   void push_completion(const mv_completion& c) noexcept {
     {
@@ -224,6 +233,20 @@ std::unique_ptr<mv::image::gpu_image> clone_gpu(const mv::image::gpu_image& src)
   return p;
 }
 
+// plan/02 sizes the viewer cache in bytes, not entries: five 45 MP stills and
+// five phone JPEGs are the same count and a 10x difference in VRAM. A fixed
+// count of 5 also meant the +/-2 prefetch window evicted itself, so every step
+// re-decoded neighbours it had just paid for.
+constexpr std::size_t lru_byte_budget = 512ull * 1024 * 1024;
+constexpr std::size_t lru_min_entries = 3;
+constexpr std::size_t lru_max_entries = 12;
+
+std::size_t gpu_bytes(const mv::image::gpu_image& gpu) noexcept {
+  // RGBA8; a full mip chain adds a third again.
+  const std::size_t top = static_cast<std::size_t>(gpu.width) * gpu.height * 4;
+  return gpu.mip_levels > 1 ? top + top / 3 : top;
+}
+
 void lru_put(mv_session* session, std::string path, const mv::image::gpu_image& gpu,
              mv_image_info info) {
   std::lock_guard lock(session->lru_mutex);
@@ -238,7 +261,14 @@ void lru_put(mv_session* session, std::string path, const mv::image::gpu_image& 
   slot.gpu = clone_gpu(gpu);
   slot.info = info;
   session->lru.push_back(std::move(slot));
-  while (session->lru.size() > 5) session->lru.erase(session->lru.begin());
+
+  std::size_t total = 0;
+  for (const auto& s : session->lru) total += s.gpu ? gpu_bytes(*s.gpu) : 0;
+  while (session->lru.size() > lru_max_entries ||
+         (session->lru.size() > lru_min_entries && total > lru_byte_budget)) {
+    total -= session->lru.front().gpu ? gpu_bytes(*session->lru.front().gpu) : 0;
+    session->lru.erase(session->lru.begin());
+  }
 }
 
 bool lru_publish(mv_session* session, const std::string& path) {
@@ -349,66 +379,138 @@ void submit_thumb_jobs(mv_session* session, uint32_t first, uint32_t count) {
   for (uint32_t i = first; i < last; ++i) submit_thumb_at(session, i);
 }
 
-void submit_decode_to_lru(mv_session* session, std::string path) {
+void push_image_opened(mv_session* session, std::uint64_t correlation, mv::generation gen,
+                       status result) {
+  mv_completion c{};
+  c.kind = MV_COMPLETION_IMAGE_OPENED;
+  c.status = static_cast<uint32_t>(result);
+  c.correlation_id = correlation;
+  c.generation = gen;
+  if (result == status::ok) {
+    std::lock_guard lock(session->image_mutex);
+    c.payload = (static_cast<int64_t>(session->info.width) << 32) |
+                static_cast<int64_t>(session->info.height);
+  }
+  session->push_completion(c);
+}
+
+bool claim_decode(mv_session* session, const std::string& path, mv::generation gen) {
+  std::lock_guard lock(session->lru_mutex);
+  for (const auto& d : session->decode_inflight) {
+    // Only a job at *this* generation counts. An older one is already doomed by
+    // the navigation that bumped the counter, so it must not suppress the
+    // decode of the image the user has actually landed on.
+    if (d.gen == gen && d.path == path) return false;
+  }
+  session->decode_inflight.push_back({path, gen});
+  return true;
+}
+
+void release_decode(mv_session* session, const std::string& path, mv::generation gen) {
+  std::lock_guard lock(session->lru_mutex);
+  for (auto it = session->decode_inflight.begin(); it != session->decode_inflight.end(); ++it) {
+    if (it->gen == gen && it->path == path) {
+      session->decode_inflight.erase(it);
+      return;
+    }
+  }
+}
+
+// A folder decode is view-tied work, not background work. plan/02: "Navigating
+// away bumps the generation; in-flight decodes check it and abandon. Without
+// this, fast arrow-key scrubbing through a folder queues 200 decodes and the
+// app feels like it's chewing gum." Submitting these at background_generation
+// opted every one of them out of exactly that, so holding an arrow key queued
+// five uncancellable full decodes (each with a CPU Mitchell mip pyramid) per
+// step and the pool spent a second finishing dead work after the key came up.
+void submit_decode_to_lru(mv_session* session, std::string path, mv::generation gen) {
+  if (!claim_decode(session, path, gen)) return;
   const std::uint32_t folder_gen = session->folder_generation.load(std::memory_order_relaxed);
+  const auto correlation = mv::abi::current_correlation_id();
   (void)session->jobs.submit_at(
-      mv::background_generation,
-      [session, path = std::move(path), folder_gen](const mv::job_context& ctx) -> status {
+      gen,
+      [session, path, folder_gen, correlation](const mv::job_context& ctx) -> status {
+        if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
         }
         auto bytes = mv::io::read_all(path);
         if (!bytes) return bytes.error();
-        if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
-          return status::cancelled;
-        }
+        if (ctx.cancelled()) return status::cancelled;
 
-        auto maybe_publish = [&](const mv::image::display_image& cpu,
-                                 std::unique_ptr<mv::image::gpu_image> gpu,
-                                 bool into_lru) {
-          const mv_image_info info = info_from(cpu);
-          if (into_lru && gpu) lru_put(session, path, *gpu, info);
-          if (path_is_selected(session, path) && gpu) {
-            publish_ready(session, info, nullptr, std::move(gpu));
-          }
-        };
-
-        if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
-          if (auto dev = session->copy_device()) {
-            auto uploaded = mv::image::upload(dev.Get(), preview.value(), 0, &ctx, 1);
-            if (uploaded) {
-              auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
-              maybe_publish(preview.value(), std::move(gpu), false);
+        // First pixel is the DCT 1/4 preview, and only for the image actually
+        // on screen — a prefetched neighbour has nothing to show it on.
+        if (path_is_selected(session, path)) {
+          if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
+            if (ctx.cancelled()) return status::cancelled;
+            if (auto dev = session->copy_device()) {
+              auto uploaded = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx, 1);
+              if (uploaded) {
+                auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+                if (path_is_selected(session, path)) {
+                  publish_ready(session, info_from(preview.value()), nullptr, std::move(gpu));
+                  push_image_opened(session, correlation, ctx.gen(), status::ok);
+                }
+              } else if (uploaded.error() == status::cancelled) {
+                return status::cancelled;
+              }
             }
+          } else if (preview.error() == status::cancelled) {
+            return status::cancelled;
           }
-        } else if (preview.error() == status::cancelled) {
-          return status::cancelled;
         }
 
         auto decoded = mv::image::decode_bytes(bytes.value(), &ctx);
         if (!decoded) return decoded.error();
+        if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
         }
         auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
         const mv_image_info info = info_from(*cpu);
-        auto dev = session->copy_device();
-        if (!dev) {
-          if (path_is_selected(session, path)) publish_ready(session, info, cpu, nullptr);
+
+        auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
+          auto dev = session->copy_device();
+          if (!dev) {
+            if (path_is_selected(session, path)) publish_ready(session, info, cpu, nullptr);
+            return status::ok;
+          }
+          auto uploaded = mv::image::upload(dev.Get(), *cpu, ctx.gen(), &ctx, mip_limit);
+          if (!uploaded) return uploaded.error();
+          if (ctx.cancelled()) return status::cancelled;
+          auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+          lru_put(session, path, *gpu, info);
+          if (path_is_selected(session, path)) {
+            publish_ready(session, info, cpu, std::move(gpu));
+            push_image_opened(session, correlation, ctx.gen(), status::ok);
+          }
           return status::ok;
+        };
+
+        // The CPU mip pyramid of a large still costs more than the decode did.
+        // Get the top level on screen first, then pay for the pyramid — same
+        // staging mv_image_open already uses (plan/04).
+        const bool large =
+            static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
+        if (large && path_is_selected(session, path)) {
+          const status first = upload_and_publish(1);
+          if (first != status::ok) return first;
+          if (ctx.cancelled()) return status::cancelled;
         }
-        auto uploaded = mv::image::upload(dev.Get(), *cpu, 0, &ctx);
-        if (!uploaded) return uploaded.error();
-        auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
-        lru_put(session, path, *gpu, info);
-        if (path_is_selected(session, path)) {
-          publish_ready(session, info, cpu, std::move(gpu));
+        return upload_and_publish(0);
+      },
+      [session, path, correlation](mv::job_id, mv::generation gen, status result) {
+        release_decode(session, path, gen);
+        // A failure on the visible image still has to clear the host's
+        // "loading" state; success already reported at publish time.
+        if (result != status::ok && result != status::cancelled &&
+            path_is_selected(session, path)) {
+          push_image_opened(session, correlation, gen, result);
         }
-        return status::ok;
       });
 }
 
-void submit_prefetch(mv_session* session, uint32_t index) {
+void submit_prefetch(mv_session* session, uint32_t index, mv::generation gen) {
   std::vector<std::string> paths;
   {
     std::lock_guard lock(session->folder_mutex);
@@ -432,7 +534,7 @@ void submit_prefetch(mv_session* session, uint32_t index) {
         }
       }
     }
-    if (!hit) submit_decode_to_lru(session, p);
+    if (!hit) submit_decode_to_lru(session, p, gen);
   }
 }
 
@@ -482,8 +584,9 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::dir_entry> liste
     if (i != selected) submit_thumb_at(session, i);
   }
   if (!selected_path.empty()) {
-    submit_decode_to_lru(session, selected_path);
-    submit_prefetch(session, selected);
+    const mv::generation gen = session->jobs.current_generation();
+    submit_decode_to_lru(session, selected_path, gen);
+    submit_prefetch(session, selected, gen);
   }
   push_folder_selected(session, selected);
 }
@@ -897,7 +1000,7 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
       session->folder_selected = index;
       path = session->folder_items[index].path;
     }
-    session->jobs.bump_generation();
+    const mv::generation gen = session->jobs.bump_generation();
     const auto correlation = mv::abi::current_correlation_id();
     push_folder_selected(session, index);
     if (lru_publish(session, path)) {
@@ -913,12 +1016,12 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
       }
       session->push_completion(c);
       if (out_job_id) *out_job_id = 0;
-      submit_prefetch(session, index);
+      submit_prefetch(session, index, gen);
       return status::ok;
     }
     if (out_job_id) *out_job_id = 0;
-    submit_decode_to_lru(session, std::move(path));
-    submit_prefetch(session, index);
+    submit_decode_to_lru(session, std::move(path), gen);
+    submit_prefetch(session, index, gen);
     return status::ok;
   }));
 }

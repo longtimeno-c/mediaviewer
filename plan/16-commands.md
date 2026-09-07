@@ -106,7 +106,8 @@ Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal t
 | `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 9), from the viewer, no edit pane required |
 | `I` | Metadata pane (PR 8) |
 | `E` | Adjust pane (PR 10) |
-| `T` | Filmstrip show/hide |
+| `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
+| `G` | Gallery: full-client thumbnail grid of the folder. `Esc` or `Enter` leaves it; `Enter` and a click open the item under the cursor (PR 4) |
 | `Ctrl+Shift+E` | Folder tree show/focus |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 8 can fill it) |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |

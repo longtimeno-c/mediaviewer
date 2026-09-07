@@ -94,6 +94,10 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
   if (find == INVALID_HANDLE_VALUE) return err(status::io);
 
   std::vector<dir_entry> out;
+  // Sort keys stay UTF-16. CompareStringA reads its arguments in the process
+  // ANSI codepage, not UTF-8, so sorting the encoded names put every non-ASCII
+  // filename in mojibake order.
+  std::vector<std::wstring> keys;
   try {
     do {
       if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
@@ -112,6 +116,7 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
       e.size = static_cast<std::uint64_t>(sz.QuadPart);
       e.mtime_unix = unix_from_filetime(fd.ftLastWriteTime);
       out.push_back(std::move(e));
+      keys.emplace_back(fd.cFileName);
     } while (::FindNextFileW(find, &fd));
   } catch (const std::bad_alloc&) {
     ::FindClose(find);
@@ -119,10 +124,24 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
   }
   ::FindClose(find);
 
-  std::sort(out.begin(), out.end(), [](const dir_entry& a, const dir_entry& b) {
-    return ::CompareStringA(LOCALE_INVARIANT, NORM_IGNORECASE, a.name_utf8.c_str(), -1,
-                            b.name_utf8.c_str(), -1) == CSTR_LESS_THAN;
-  });
+  try {
+    std::vector<std::uint32_t> order(out.size());
+    for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&keys](std::uint32_t a, std::uint32_t b) {
+      const int cmp = ::CompareStringOrdinal(keys[a].c_str(), -1, keys[b].c_str(), -1, TRUE);
+      // CompareStringOrdinal returns 0 only on a bad argument. Fall back to a
+      // total order rather than handing std::sort an inconsistent comparator.
+      if (cmp == 0) return keys[a] < keys[b];
+      return cmp == CSTR_LESS_THAN;
+    });
+
+    std::vector<dir_entry> sorted;
+    sorted.reserve(out.size());
+    for (std::uint32_t i : order) sorted.push_back(std::move(out[i]));
+    out = std::move(sorted);
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
   return out;
 }
 
@@ -160,7 +179,8 @@ directory_watcher::directory_watcher() = default;
 directory_watcher::~directory_watcher() { stop(); }
 
 expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* user) {
-  stop();
+  std::lock_guard lock(mutex_);
+  stop_locked();
   if (utf8_dir.empty() || !cb) return err(status::invalid_arg);
   const std::wstring wide = wide_from_utf8(utf8_dir);
   if (wide.empty()) return err(status::invalid_arg);
@@ -208,7 +228,10 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
         }
         DWORD transferred = 0;
         if (!::GetOverlappedResult(raw->dir, &ov, &transferred, FALSE)) continue;
-        if (transferred == 0) continue;
+        // transferred == 0 means the notification buffer overflowed and the
+        // records were discarded. That is precisely the camera-dump copy case,
+        // and skipping the callback there desynced the listing permanently.
+        // A relist is the recovery, so fire either way.
         if (raw->cb) raw->cb(raw->user);
       }
 
@@ -225,6 +248,11 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
 }
 
 void directory_watcher::stop() noexcept {
+  std::lock_guard lock(mutex_);
+  stop_locked();
+}
+
+void directory_watcher::stop_locked() noexcept {
   if (!impl_) return;
   impl_->running.store(false, std::memory_order_release);
   if (impl_->stop) ::SetEvent(impl_->stop);

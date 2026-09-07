@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,16 +34,24 @@ class thumb_store {
   thumb_store(const thumb_store&) = delete;
   thumb_store& operator=(const thumb_store&) = delete;
 
+  // Idempotent: opening an already-open store on the same directory is a
+  // no-op rather than a close/reopen. Thumb jobs run on every pool thread and
+  // the check-then-open they used to do could close the handle out from under
+  // a lookup already in flight.
   [[nodiscard]] expected open(std::string_view dir_utf8);
   void close() noexcept;
-  [[nodiscard]] bool is_open() const noexcept { return db_ != nullptr; }
+  [[nodiscard]] bool is_open() const noexcept;
 
-  // Miss is status::io with an empty... no: miss is ok + empty string.
+  // Hit is ok + the thumbnail's path; miss is ok + an empty string. A row
+  // whose file has since been deleted is a miss, and the row is dropped.
   [[nodiscard]] result<std::string> lookup(const thumb_key& key);
   [[nodiscard]] result<std::string> store(const thumb_key& key,
                                           std::span<const std::uint8_t> jpeg);
 
  private:
+  // sqlite3 is compiled serialized, so the handle itself is safe to share.
+  // This guards `db_` and `dir_` against open/close racing a lookup.
+  mutable std::mutex mutex_;
   sqlite3* db_ = nullptr;
   std::string dir_;
 };

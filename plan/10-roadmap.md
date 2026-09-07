@@ -65,6 +65,13 @@ SQLite + on-disk **JPEG-512** thumbnail cache keyed by `(path, mtime, size, spec
 with spec `jpg512.1`, visible-first generation, directional prefetch of ±2 decoded
 textures into a five-slot GPU LRU with generation-counter cancellation.
 
+The **gallery** (`G`) is a third island: a full-client thumbnail grid between the command
+bar and the client bottom, over the same listing, the same `Items`, and the same thumbnail
+cache as the filmstrip. Opening a single image lists its folder the same way a folder open
+does — arrows and the gallery work — but the filmstrip is a preference per open mode
+(`Settings`, persisted to `%LocalAppData%\MediaViewer\settings.ini`), defaulting to on for
+a folder open and off for a single image.
+
 PR 3's island is a **top strip**. The filmstrip is a **bottom strip** on the same
 HWND — not a full-client island, not `SwapChainPanel`, not thumbs blitted onto the
 photo swapchain. Completions are drained by C# once the island is attached

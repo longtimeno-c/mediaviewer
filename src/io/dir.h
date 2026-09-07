@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,11 +40,20 @@ class directory_watcher {
 
   // `cb` runs on the watch thread. It must not block and must not re-enter
   // the watcher. Submit a job from it.
+  //
+  // start() and stop() are safe to call concurrently from different threads:
+  // the ABI stops a watcher on the UI thread while a pool thread may still be
+  // starting one for a folder the user has already navigated away from.
   [[nodiscard]] expected start(std::string_view utf8_dir, callback cb, void* user);
   void stop() noexcept;
 
  private:
   struct impl;
+
+  // Precondition: `mutex_` is held.
+  void stop_locked() noexcept;
+
+  std::mutex mutex_;
   std::unique_ptr<impl> impl_;
 };
 

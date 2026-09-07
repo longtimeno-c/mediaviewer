@@ -27,7 +27,13 @@ enum chrome_command : int {
   chrome_cmd_select_item = 8,  // arg is the folder index
   chrome_cmd_prev = 9,
   chrome_cmd_next = 10,
-  chrome_cmd_open_folder = 11, // folder picker
+  chrome_cmd_open_folder = 11,     // folder picker
+  chrome_cmd_toggle_gallery = 12,
+  chrome_cmd_close_gallery = 13,
+  chrome_cmd_gallery_activate = 14,  // arg is the folder index: select and leave the gallery
+  chrome_cmd_set_settings = 15,      // arg is a view_settings flag word
+  chrome_cmd_folder_ready = 16,      // arg is the item count the island just listed
+  chrome_cmd_toggle_filmstrip = 17,
 };
 
 using chrome_command_fn = void (*)(void* context, int command, float arg);
@@ -67,6 +73,26 @@ struct chrome_filmstrip_args {
 };
 
 static_assert(sizeof(chrome_filmstrip_args) == 48, "keep in sync with ChromeFilmstripArgs");
+
+// Show/hide plus the geometry for the state being entered. Native owns the
+// layout maths for both states so the island never has to guess where
+// "offscreen" is: hiding moves the bridge below the client area, which is the
+// one place a stray child window cannot eat a click meant for the canvas.
+struct chrome_show_args {
+  std::int32_t visible;
+  std::int32_t width;
+  std::int32_t height;
+  std::int32_t y;
+};
+
+static_assert(sizeof(chrome_show_args) == 16, "keep in sync with ChromeShowArgs");
+
+struct chrome_flags_args {
+  std::int32_t flags;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_flags_args) == 8, "keep in sync with ChromeFlagsArgs");
 
 struct chrome_navigate_args {
   std::int32_t reverse;  // non-zero = Shift+Tab
@@ -123,6 +149,30 @@ class chrome_host {
   void resize_filmstrip(int width, int client_height, std::uint32_t dpi) noexcept;
   [[nodiscard]] bool filmstrip_attached() const noexcept { return filmstrip_attached_; }
 
+  // The strip stays attached when hidden: it owns the completion drain that
+  // feeds both it and the gallery, so tearing it down to hide 112 DIP would
+  // also stop the folder listening ([12](12-decision-log.md) 2026-09-07).
+  void show_filmstrip(bool visible, int width, int client_height, std::uint32_t dpi) noexcept;
+  [[nodiscard]] bool filmstrip_visible() const noexcept {
+    return filmstrip_attached_ && filmstrip_visible_;
+  }
+
+  // Full-client thumbnail grid, below the command bar. Same island model as
+  // the filmstrip — chrome over the swapchain, never a XAML canvas (rule 2).
+  [[nodiscard]] expected attach_gallery(HWND parent, void* context, chrome_command_fn on_command,
+                                        void* session, int width, int height,
+                                        std::uint32_t dpi) noexcept;
+  void resize_gallery(int width, int client_height, std::uint32_t dpi) noexcept;
+  void show_gallery(bool visible, int width, int client_height, std::uint32_t dpi) noexcept;
+  [[nodiscard]] bool gallery_attached() const noexcept { return gallery_attached_; }
+  [[nodiscard]] bool gallery_visible() const noexcept {
+    return gallery_attached_ && gallery_visible_;
+  }
+
+  // Push the persisted toggles into the settings menu so the menu and the
+  // keyboard cannot disagree about what is on.
+  void apply_settings(std::int32_t flags) noexcept;
+
   // True when the island consumed the message (do not Translate/Dispatch).
   [[nodiscard]] bool pre_translate(MSG* msg) noexcept;
 
@@ -150,7 +200,16 @@ class chrome_host {
   chrome_entry_fn attach_filmstrip_ = nullptr;
   chrome_entry_fn resize_filmstrip_ = nullptr;
   chrome_entry_fn detach_filmstrip_ = nullptr;
+  chrome_entry_fn show_filmstrip_ = nullptr;
+  chrome_entry_fn attach_gallery_ = nullptr;
+  chrome_entry_fn resize_gallery_ = nullptr;
+  chrome_entry_fn show_gallery_ = nullptr;
+  chrome_entry_fn detach_gallery_ = nullptr;
+  chrome_entry_fn apply_settings_ = nullptr;
   bool filmstrip_attached_ = false;
+  bool filmstrip_visible_ = false;
+  bool gallery_attached_ = false;
+  bool gallery_visible_ = false;
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

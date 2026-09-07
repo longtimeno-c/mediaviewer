@@ -210,8 +210,15 @@ expected chrome_host::load() noexcept {
   attach_filmstrip_ = get_entry(L"AttachFilmstrip");
   resize_filmstrip_ = get_entry(L"ResizeFilmstrip");
   detach_filmstrip_ = get_entry(L"DetachFilmstrip");
+  show_filmstrip_ = get_entry(L"ShowFilmstrip");
+  attach_gallery_ = get_entry(L"AttachGallery");
+  resize_gallery_ = get_entry(L"ResizeGallery");
+  show_gallery_ = get_entry(L"ShowGallery");
+  detach_gallery_ = get_entry(L"DetachGallery");
+  apply_settings_ = get_entry(L"ApplySettings");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
-      !resize_filmstrip_ || !detach_filmstrip_) {
+      !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
+      !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !apply_settings_) {
     return err(status::internal);
   }
 
@@ -288,11 +295,18 @@ expected chrome_host::attach_filmstrip(HWND parent, void* context, chrome_comman
     return err(status::internal);
   }
   filmstrip_attached_ = true;
+  filmstrip_visible_ = true;  // AttachFilmstrip builds it on screen
   return {};
 }
 
 void chrome_host::resize_filmstrip(int width, int client_height, std::uint32_t dpi) noexcept {
   if (!filmstrip_attached_ || !resize_filmstrip_) return;
+  if (!filmstrip_visible_) {
+    // Hidden: keep it parked below the client area so a resize does not walk
+    // it back on screen.
+    show_filmstrip(false, width, client_height, dpi);
+    return;
+  }
   const int strip = chrome_filmstrip_height_px(dpi);
   chrome_resize_args args{};
   args.width = width;
@@ -300,6 +314,84 @@ void chrome_host::resize_filmstrip(int width, int client_height, std::uint32_t d
   args.dpi = static_cast<std::int32_t>(dpi);
   args.y = client_height > strip ? client_height - strip : 0;
   (void)resize_filmstrip_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_filmstrip(bool visible, int width, int client_height,
+                                 std::uint32_t dpi) noexcept {
+  if (!filmstrip_attached_ || !show_filmstrip_) return;
+  const int strip = chrome_filmstrip_height_px(dpi);
+  chrome_show_args args{};
+  args.visible = visible ? 1 : 0;
+  args.width = visible ? width : 1;
+  args.height = visible ? strip : 1;
+  args.y = visible ? (client_height > strip ? client_height - strip : 0) : client_height;
+  (void)show_filmstrip_(&args, static_cast<std::int32_t>(sizeof(args)));
+  filmstrip_visible_ = visible;
+}
+
+expected chrome_host::attach_gallery(HWND parent, void* context, chrome_command_fn on_command,
+                                     void* session, int width, int height,
+                                     std::uint32_t dpi) noexcept {
+  if (!loaded() || !attach_gallery_) return err(status::internal);
+  if (!parent) return err(status::invalid_arg);
+  if (gallery_attached_) {
+    if (detach_gallery_) (void)detach_gallery_(nullptr, 0);
+    gallery_attached_ = false;
+    gallery_visible_ = false;
+  }
+
+  chrome_filmstrip_args args{};
+  args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
+  args.context = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(context));
+  args.on_command = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(on_command));
+  args.session = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(session));
+  args.client_width = width;
+  args.client_height = height;
+  args.dpi = static_cast<std::int32_t>(dpi);
+
+  const int rc = attach_gallery_(&args, static_cast<std::int32_t>(sizeof(args)));
+  if (rc != 0) {
+    MV_LOG_WARN("chrome: AttachGallery failed (%d)", rc);
+    return err(status::internal);
+  }
+  gallery_attached_ = true;
+  gallery_visible_ = false;  // AttachGallery builds it parked offscreen
+  return {};
+}
+
+void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi) noexcept {
+  if (!gallery_attached_ || !resize_gallery_) return;
+  if (!gallery_visible_) {
+    show_gallery(false, width, client_height, dpi);
+    return;
+  }
+  const int bar = chrome_bar_height_px(dpi);
+  chrome_resize_args args{};
+  args.width = width;
+  args.height = client_height > bar ? client_height - bar : 1;
+  args.dpi = static_cast<std::int32_t>(dpi);
+  args.y = bar;
+  (void)resize_gallery_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_gallery(bool visible, int width, int client_height,
+                               std::uint32_t dpi) noexcept {
+  if (!gallery_attached_ || !show_gallery_) return;
+  const int bar = chrome_bar_height_px(dpi);
+  chrome_show_args args{};
+  args.visible = visible ? 1 : 0;
+  args.width = visible ? width : 1;
+  args.height = visible ? (client_height > bar ? client_height - bar : 1) : 1;
+  args.y = visible ? bar : client_height;
+  (void)show_gallery_(&args, static_cast<std::int32_t>(sizeof(args)));
+  gallery_visible_ = visible;
+}
+
+void chrome_host::apply_settings(std::int32_t flags) noexcept {
+  if (!attached_ || !apply_settings_) return;
+  chrome_flags_args args{};
+  args.flags = flags;
+  (void)apply_settings_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {
@@ -315,9 +407,15 @@ bool chrome_host::navigate_focus(bool reverse) noexcept {
 }
 
 void chrome_host::detach() noexcept {
+  if (gallery_attached_ && detach_gallery_) {
+    (void)detach_gallery_(nullptr, 0);
+    gallery_attached_ = false;
+    gallery_visible_ = false;
+  }
   if (filmstrip_attached_ && detach_filmstrip_) {
     (void)detach_filmstrip_(nullptr, 0);
     filmstrip_attached_ = false;
+    filmstrip_visible_ = false;
   }
   if (attached_ && detach_) {
     (void)detach_(nullptr, 0);

@@ -18,4 +18,8 @@ namespace mv::io {
 
 [[nodiscard]] expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> bytes);
 
+// True when `utf8_path` names an existing file (not a directory). Used to
+// validate a cache row before trusting it; never reports why it failed.
+[[nodiscard]] bool file_exists(std::string_view utf8_path) noexcept;
+
 }  // namespace mv::io

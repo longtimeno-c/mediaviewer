@@ -57,17 +57,23 @@ struct canvas_view {
   float h = 1.0f;
 };
 
+// Gap between the photo and the filmstrip (and a smaller one under the bar)
+// so chrome never sits on the pixels.
+constexpr float kCanvasGutterDip = 16.0f;
+
 canvas_view usable_canvas(const input_snapshot& s) noexcept {
   canvas_view v;
   v.w = static_cast<float>(s.width);
   v.h = static_cast<float>(s.height);
+  const float scale = s.dpi_scale > 0.0f ? s.dpi_scale : 1.0f;
+  const float gutter = kCanvasGutterDip * scale;
   const float top = static_cast<float>(s.chrome_height_px);
   const float bottom = static_cast<float>(s.chrome_bottom_px);
   if (top > 0.0f && top < v.h) {
-    v.y = top;
-    v.h -= top;
+    v.y = top + gutter;
+    v.h -= top + gutter;
   }
-  if (bottom > 0.0f && bottom < v.h) v.h -= bottom;
+  if (bottom > 0.0f && bottom < v.h) v.h -= bottom + gutter;
   if (v.h < 1.0f) v.h = 1.0f;
   return v;
 }

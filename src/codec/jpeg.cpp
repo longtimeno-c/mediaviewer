@@ -195,6 +195,38 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   return out;
 }
 
+result<jpeg_size> jpeg_dimensions(std::span<const std::uint8_t> bytes) {
+  if (probe(bytes) != format_family::jpeg) return err(status::unsupported_format);
+  if (bytes.size() < 4) return err(status::corrupt);
+
+  jpeg_decompress_struct cinfo{};
+  jpeg_error_trap jerr{};
+  cinfo.err = jpeg_std_error(&jerr.pub);
+  jerr.pub.error_exit = jpeg_error_exit;
+  jerr.pub.output_message = [](j_common_ptr) {};
+
+#pragma warning(push)
+#pragma warning(disable : 4611)
+  if (setjmp(jerr.jump)) {
+#pragma warning(pop)
+    jpeg_destroy_decompress(&cinfo);
+    return err(status::corrupt);
+  }
+
+  jpeg_create_decompress(&cinfo);
+  jpeg_mem_src(&cinfo, const_cast<unsigned char*>(bytes.data()),
+               static_cast<unsigned long>(bytes.size()));
+  if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+    jpeg_destroy_decompress(&cinfo);
+    return err(status::corrupt);
+  }
+  const jpeg_size size{static_cast<std::uint32_t>(cinfo.image_width),
+                       static_cast<std::uint32_t>(cinfo.image_height)};
+  jpeg_destroy_decompress(&cinfo);
+  if (size.width == 0 || size.height == 0) return err(status::corrupt);
+  return size;
+}
+
 struct jpeg_enc_trap {
   jpeg_error_mgr pub;
   jmp_buf jump;
@@ -203,6 +235,7 @@ struct jpeg_enc_trap {
   std::size_t out_cap = 0;
   unsigned char chunk[4096]{};
   unsigned char* row = nullptr;
+  bool oom = false;
 };
 
 void jpeg_enc_error_exit(j_common_ptr cinfo) {
@@ -243,10 +276,11 @@ result<std::vector<std::uint8_t>> encode_jpeg_rgba(std::span<const std::uint8_t>
 #pragma warning(disable : 4611)
   if (setjmp(trap.jump)) {
 #pragma warning(pop)
+    const bool oom = trap.oom;
     jpeg_destroy_compress(&cinfo);
     std::free(trap.out);
     std::free(trap.row);
-    return err(status::internal);
+    return err(oom ? status::out_of_memory : status::internal);
   }
 
   jpeg_create_compress(&cinfo);
@@ -257,9 +291,17 @@ result<std::vector<std::uint8_t>> encode_jpeg_rgba(std::span<const std::uint8_t>
     c->dest->next_output_byte = t->chunk;
     c->dest->free_in_buffer = sizeof(t->chunk);
   };
+  // Returning FALSE from empty_output_buffer means "I/O suspended" to libjpeg,
+  // which the compressor caller is not implementing — the result is undefined,
+  // not an error. Go out through error_exit so the setjmp handler frees and
+  // reports. Same for term_destination, where the old silent return produced a
+  // truncated JPEG that then got cached as if it were valid.
   dest.empty_output_buffer = [](j_compress_ptr c) -> boolean {
     auto* t = reinterpret_cast<jpeg_enc_trap*>(c->err);
-    if (!jpeg_enc_grow(t, sizeof(t->chunk))) return FALSE;
+    if (!jpeg_enc_grow(t, sizeof(t->chunk))) {
+      t->oom = true;
+      (*c->err->error_exit)(reinterpret_cast<j_common_ptr>(c));
+    }
     std::memcpy(t->out + t->out_len, t->chunk, sizeof(t->chunk));
     t->out_len += sizeof(t->chunk);
     c->dest->next_output_byte = t->chunk;
@@ -270,7 +312,10 @@ result<std::vector<std::uint8_t>> encode_jpeg_rgba(std::span<const std::uint8_t>
     auto* t = reinterpret_cast<jpeg_enc_trap*>(c->err);
     const std::size_t used = sizeof(t->chunk) - c->dest->free_in_buffer;
     if (used == 0) return;
-    if (!jpeg_enc_grow(t, used)) return;
+    if (!jpeg_enc_grow(t, used)) {
+      t->oom = true;
+      (*c->err->error_exit)(reinterpret_cast<j_common_ptr>(c));
+    }
     std::memcpy(t->out + t->out_len, t->chunk, used);
     t->out_len += used;
   };

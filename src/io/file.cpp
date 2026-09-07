@@ -103,4 +103,26 @@ expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> byt
   return {};
 }
 
+bool file_exists(std::string_view utf8_path) noexcept {
+  if (utf8_path.empty()) return false;
+
+  const int wide_n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_path.data(),
+                                           static_cast<int>(utf8_path.size()), nullptr, 0);
+  if (wide_n <= 0) return false;
+
+  std::wstring wide;
+  try {
+    wide.assign(static_cast<std::size_t>(wide_n), L'\0');
+  } catch (const std::bad_alloc&) {
+    return false;
+  }
+  if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_path.data(),
+                            static_cast<int>(utf8_path.size()), wide.data(), wide_n) <= 0) {
+    return false;
+  }
+
+  const DWORD attr = ::GetFileAttributesW(wide.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
 }  // namespace mv::io

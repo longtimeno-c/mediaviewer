@@ -32,6 +32,7 @@
 #include "mediaviewer/mediaviewer.h"
 #include "shell/chrome_host.h"
 #include "shell/present_lab.h"
+#include "shell/settings.h"
 
 namespace {
 
@@ -42,6 +43,13 @@ using mv::shell::present_lab;
 constexpr wchar_t kWindowClass[] = L"MediaViewer.PresentLab";
 constexpr wchar_t kWindowTitle[] = L"MediaViewer — present lab";
 
+// What the user asked for, which is not the same as what is on screen. A
+// folder open is "browse this folder"; an image open is "show me this file",
+// and the folder behind it is still listed so arrows and the gallery work
+// (plan/10 PR 4 — one folder navigation model) without the strip taking a
+// slice of the canvas the user did not ask to give up.
+enum class open_mode { none, folder, image };
+
 struct app_state {
   present_lab lab;
   input_snapshot input;
@@ -49,6 +57,9 @@ struct app_state {
   bool tracking_mouse = false;
   bool chrome_enabled = true;
   bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
+  open_mode mode = open_mode::none;
+  bool gallery_visible = false;
+  mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
 };
@@ -73,6 +84,8 @@ std::string utf8_from_wide(std::wstring_view wide) {
   return out;
 }
 
+void apply_view_state(app_state* app) noexcept;
+
 void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
   if (!app || !app->session || wide_dir.empty()) return;
   const std::string dir = utf8_from_wide(wide_dir);
@@ -83,6 +96,7 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
                        &job_id);
   ++app->input.activity_seq;
   publish(app);
+  apply_view_state(app);
 }
 
 void open_path(app_state* app, std::wstring_view wide_path) {
@@ -91,9 +105,13 @@ void open_path(app_state* app, std::wstring_view wide_path) {
   if (utf8.empty()) return;
   auto dir = mv::io::is_directory(utf8);
   if (dir && dir.value()) {
+    app->mode = open_mode::folder;
+    app->gallery_visible = false;
     open_folder(app, wide_path, {});
     return;
   }
+  app->mode = open_mode::image;
+  app->gallery_visible = false;
   const auto slash = wide_path.find_last_of(L"\\/");
   if (slash == std::wstring_view::npos) {
     mv_session_bump_generation(app->session, nullptr);
@@ -175,6 +193,40 @@ void folder_step(app_state* app, int delta) {
   folder_select(app, static_cast<std::uint32_t>(next));
 }
 
+std::uint32_t folder_count(app_state* app) noexcept {
+  std::uint32_t count = 0;
+  if (!app || !app->session) return 0;
+  if (mv_folder_count(app->session, &count) != MV_OK) return 0;
+  return count;
+}
+
+// The gallery is only a view of a folder. One file in the directory is the
+// image already on screen, so there is nothing to lay out in a grid.
+bool gallery_available(app_state* app) noexcept {
+  return app && app->chrome.gallery_attached() && folder_count(app) > 1;
+}
+
+void set_gallery(app_state* app, bool visible) {
+  if (!app) return;
+  if (visible && !gallery_available(app)) return;
+  if (app->gallery_visible == visible) return;
+  app->gallery_visible = visible;
+  apply_view_state(app);
+}
+
+void toggle_filmstrip_setting(app_state* app) {
+  if (!app) return;
+  // T toggles the strip for the mode you are in, and that is the preference
+  // that gets written: turning it off while browsing a folder should not also
+  // turn it off for the single images you open from Explorer.
+  bool& flag = app->mode == open_mode::image ? app->settings.filmstrip_for_image
+                                             : app->settings.filmstrip_for_folder;
+  flag = !flag;
+  mv::shell::save_view_settings(app->settings);
+  app->chrome.apply_settings(app->settings.flags());
+  apply_view_state(app);
+}
+
 void chrome_on_command(void* ctx, int command, float arg) {
   auto* app = static_cast<app_state*>(ctx);
   if (!app) return;
@@ -203,6 +255,30 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_next:
       folder_step(app, 1);
       return;
+    case mv::shell::chrome_cmd_toggle_gallery:
+      set_gallery(app, !app->gallery_visible);
+      return;
+    case mv::shell::chrome_cmd_close_gallery:
+      set_gallery(app, false);
+      return;
+    case mv::shell::chrome_cmd_gallery_activate:
+      folder_select(app, static_cast<std::uint32_t>(arg));
+      set_gallery(app, false);
+      return;
+    case mv::shell::chrome_cmd_toggle_filmstrip:
+      toggle_filmstrip_setting(app);
+      return;
+    case mv::shell::chrome_cmd_set_settings:
+      app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
+      mv::shell::save_view_settings(app->settings);
+      app->chrome.apply_settings(app->settings.flags());
+      apply_view_state(app);
+      return;
+    case mv::shell::chrome_cmd_folder_ready:
+      // The island owns the completion drain (plan/12 2026-09-07), so this is
+      // how the native side learns that a listing landed.
+      apply_view_state(app);
+      return;
     default: return;
   }
   ++app->input.activity_seq;
@@ -214,7 +290,11 @@ void chrome_on_command(void* ctx, int command, float arg) {
 bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   if (!app) return false;
   if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
-  if ((msg.lParam & (1 << 30)) != 0) return false;
+  const bool repeat = (msg.lParam & (1 << 30)) != 0;
+  const bool arrow = msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT;
+  // Ignore typematic repeats except Left/Right, which should walk the folder
+  // while the key is held.
+  if (repeat && !arrow) return false;
 
   switch (msg.wParam) {
     case VK_F3:
@@ -227,6 +307,12 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
     case 'R':
       ++app->input.reset_stats_seq;
       break;
+    case 'G':
+      set_gallery(app, !app->gallery_visible);
+      return true;
+    case 'T':
+      toggle_filmstrip_setting(app);
+      return true;
     case '0':
       ++app->input.fit_seq;
       break;
@@ -257,6 +343,13 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
       folder_step(app, 1);
       return true;
     case VK_ESCAPE:
+      // Esc leaves the gallery before it leaves the app. Closing the window
+      // out from under someone who was only backing out of the grid is the
+      // kind of thing you do exactly once.
+      if (app->gallery_visible) {
+        set_gallery(app, false);
+        return true;
+      }
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
     default:
@@ -277,6 +370,7 @@ void layout_chrome(app_state* app) noexcept {
   const int height = rc.bottom - rc.top;
   app->chrome.resize(width, bar, dpi);
   if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
+  if (app->chrome.gallery_attached()) app->chrome.resize_gallery(width, height, dpi);
 }
 
 bool attach_chrome(app_state* app) {
@@ -292,6 +386,12 @@ bool attach_chrome(app_state* app) {
   const int height = rc.bottom - rc.top;
   (void)app->chrome.attach_filmstrip(app->window, app, &chrome_on_command, app->session,
                                      rc.right - rc.left, height, dpi);
+  // The strip is attached visible; nothing is open yet, so park it until a
+  // listing says otherwise.
+  app->chrome.show_filmstrip(false, rc.right - rc.left, height, dpi);
+  (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
+                                   rc.right - rc.left, height, dpi);
+  app->chrome.apply_settings(app->settings.flags());
   return true;
 }
 
@@ -305,9 +405,40 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   app->input.chrome_height_px =
       app->chrome_on_screen ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi)) : 0;
   app->input.chrome_bottom_px =
-      app->chrome.filmstrip_attached()
+      app->chrome.filmstrip_visible()
           ? static_cast<std::uint32_t>(mv::shell::chrome_filmstrip_height_px(dpi))
           : 0;
+}
+
+// Single place that decides which islands are on screen, so the strip, the
+// gallery and the canvas rectangle can never disagree. Cheap and idempotent:
+// the show_* calls are no-ops when nothing changed.
+void apply_view_state(app_state* app) noexcept {
+  if (!app || !app->window || !app->chrome.attached()) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+
+  const bool have_folder = folder_count(app) > 1;
+  if (!have_folder) app->gallery_visible = false;
+
+  const bool want_filmstrip =
+      have_folder && !app->gallery_visible &&
+      (app->mode == open_mode::image ? app->settings.filmstrip_for_image
+       : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
+                                        : false);
+  if (want_filmstrip != app->chrome.filmstrip_visible()) {
+    app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+  }
+  if (app->gallery_visible != app->chrome.gallery_visible()) {
+    app->chrome.show_gallery(app->gallery_visible, width, height, dpi);
+  }
+  update_client_metrics(app, app->window);
+  ++app->input.resize_seq;
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -538,6 +669,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // boundary stops being tested by the thing that matters most.
   app_state app;
   app.chrome_enabled = chrome_enabled;
+  app.settings = mv::shell::load_view_settings();
   mv_session_config config{};
   config.worker_count = 0;
   config.enable_etw = 1;
@@ -592,6 +724,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   if (app.chrome_enabled && !attach_chrome(&app)) {
     MV_LOG_WARN("chrome: island did not attach; command bar is unavailable");
     app.chrome_on_screen = false;
+  }
+  if (app.chrome_enabled) {
     update_client_metrics(&app, hwnd);
     ++app.input.resize_seq;
     publish(&app);

@@ -27,7 +27,7 @@ are inherited and not yet demonstrated on a quiet GPU runner. See
 |---|---|
 | **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Open a folder, drop a JPEG/PNG/BMP, or pass a path on the command line. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom, Left/Right browse. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay. WinUI command bar (top) and filmstrip (bottom) are `DesktopWindowXamlSource` islands; the canvas is not a `SwapChainPanel`. |
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP decode, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU. |
-| **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
+| **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
@@ -82,8 +82,10 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 | `Ctrl+O` | open an image (JPEG/PNG/BMP) |
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
+| `G` | gallery: thumbnail grid of the folder. Click or `Enter` opens an item, `Esc` leaves |
+| `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
-| `Esc` | quit |
+| `Esc` | leave the gallery, else quit |
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
@@ -92,9 +94,15 @@ springs back to centre. Drop a file on the window.
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, or a positional
 file or folder. The command bar is also on the island: Open (image or folder), View (zoom in/out,
-fit, 50 / 100 / 200 / 400 %, overlay), About. The filmstrip along the bottom is an
-`ItemsRepeater`; thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. With no
+fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), Settings, About. The filmstrip along
+the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. With no
 folder open the canvas is a drop target, not the present-lab sweep.
+
+Opening a single image lists its folder too, so `Left` / `Right` and the gallery work on the
+files beside it. Whether the filmstrip comes with it is a preference: **Settings** has
+*Filmstrip when opening a folder* (on by default) and *Filmstrip when opening an image* (off),
+persisted to `%LocalAppData%\MediaViewer\settings.ini`. `T` toggles the one for the
+mode you are in. Both take effect immediately — no restart.
 
 ## Test
 
@@ -196,9 +204,17 @@ Portable `io/dir.h`, Windows impl in `io/dir_win.cpp`. The filmstrip is a second
 XAML island on the same HWND (bottom strip), not a full-client island and not
 thumbs blitted onto the photo swapchain. SQLite + on-disk JPEG-512 cache keyed
 by `(path, mtime, size, spec)` with spec `jpg512.1`. Visible-first generation,
-directional prefetch of ±2 into a five-slot GPU LRU. On-disk BC7 waits; DirectXTex
-is not a PR 4 dependency. Completions are drained by C# once the island is
-attached.
+directional prefetch of +/-2 into a byte-budgeted GPU LRU (512 MB, 3-12 entries --
+five 45 MP stills and five phone JPEGs are the same count and a 10x difference in
+VRAM). On-disk BC7 waits; DirectXTex is not a PR 4 dependency. Completions are
+drained by C# once the island is attached.
+
+Browsing is view-tied work. Selecting an item bumps the job generation, so the
+decodes and prefetches a held arrow key ran past are abandoned rather than
+finished for an image nobody is looking at, and the pool serves foreground work
+ahead of the background thumbnail sweep. A selection that has to wait on a decode
+raises a load indicator under the command bar after 150 ms; a hit in the viewer
+LRU publishes in the same drain and never shows one.
 
 The 2000-JPEG scroll and under-40 ms warm-browse clauses are interactive, not CI.
 `ctest` covers listing, cache hits, and ABI folder/thumb jobs.

@@ -3,6 +3,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
+#include <cwchar>
 #include <fstream>
 #include <string>
 
@@ -11,14 +13,22 @@
 
 namespace {
 
+// See the note in test_folder.cpp: GetTempFileNameW's clock-derived names
+// collide with the directories these tests leave behind.
 std::wstring temp_dir() {
   wchar_t root[MAX_PATH]{};
   REQUIRE(::GetTempPathW(MAX_PATH, root) > 0);
-  wchar_t path[MAX_PATH]{};
-  REQUIRE(::GetTempFileNameW(root, L"mvd", 0, path) != 0);
-  ::DeleteFileW(path);
-  REQUIRE(::CreateDirectoryW(path, nullptr));
-  return path;
+  static std::atomic<unsigned> counter{0};
+  for (unsigned attempt = 0; attempt < 512; ++attempt) {
+    wchar_t path[MAX_PATH]{};
+    std::swprintf(path, MAX_PATH, L"%smvd%lu_%u", root,
+                  static_cast<unsigned long>(::GetCurrentProcessId()),
+                  counter.fetch_add(1, std::memory_order_relaxed));
+    if (::CreateDirectoryW(path, nullptr)) return path;
+    REQUIRE(::GetLastError() == ERROR_ALREADY_EXISTS);
+  }
+  FAIL("could not create a unique temp directory");
+  return {};
 }
 
 std::string utf8(const std::wstring& w) {

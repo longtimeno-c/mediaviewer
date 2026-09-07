@@ -260,6 +260,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/present_lab.cpp
   src/shell/chrome_host.cpp
   src/shell/chrome_host.h
+  src/shell/settings.cpp
+  src/shell/settings.h
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
@@ -353,6 +355,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir.cpp
     tests/test_folder.cpp
     src/shell/chrome_host.cpp
+    src/shell/settings.cpp
     src/shell/app.manifest
   )
   target_link_libraries(mv_tests PRIVATE

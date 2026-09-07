@@ -208,3 +208,43 @@ TEST_CASE("job exceptions complete with errors and the worker survives callbacks
   REQUIRE(oom.load() == 1);
   REQUIRE(jobs.completed() == 3);
 }
+
+TEST_CASE("view-tied work does not queue behind the background sweep",
+          "[core][jobs][priority]") {
+  // Opening a camera dump queues a thumbnail job per file at
+  // background_generation. With one FIFO queue the first arrow press landed
+  // behind all of them and the image took a second to appear. Foreground work
+  // jumps that queue.
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+
+  std::atomic<bool> release{false};
+  std::atomic<int> order{0};
+  std::atomic<int> view_rank{-1};
+
+  // Occupy the single worker so everything after this queues up behind it.
+  jobs.submit_at(mv::background_generation, [&](const mv::job_context&) {
+    while (!release.load(std::memory_order_acquire)) std::this_thread::sleep_for(1ms);
+    return mv::status::ok;
+  });
+
+  constexpr int sweep = 200;
+  for (int i = 0; i < sweep; ++i) {
+    jobs.submit_at(mv::background_generation, [&](const mv::job_context&) {
+      order.fetch_add(1);
+      return mv::status::ok;
+    });
+  }
+
+  // Submitted last; must run first.
+  jobs.submit([&](const mv::job_context&) {
+    view_rank.store(order.fetch_add(1));
+    return mv::status::ok;
+  });
+
+  release.store(true, std::memory_order_release);
+  REQUIRE(wait_for([&] { return view_rank.load() >= 0; }));
+  REQUIRE(view_rank.load() == 0);
+
+  jobs.shutdown();
+}
