@@ -9,9 +9,15 @@
 // a deviation from the plan.
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 
+#include "core/spsc_ring.h"
+#include "player/audio_block.h"
 #include "player/audio_sink.h"
+#include "player/presenter.h"
 #include "player/video_source.h"
 
 namespace mv::player {
@@ -82,6 +88,109 @@ struct clock_stats {
   // non-zero does not pass; it gets re-run.
   std::uint64_t position_discontinuities = 0;
   std::uint64_t host_clock_gaps          = 0;  // machine slept / power-throttled mid-soak
+};
+
+// Where "flat drift" is actually measured. No thread, no device, no endpoint,
+// no allocation — which is exactly why it is the piece that gets tested
+// headlessly, and why the 30-minute verify has a testable core at all.
+//
+// Two series on purpose. The per-present ring feeds the live graph; the 1 Hz
+// long-horizon series is what the slope is fitted over. 240 presents is about
+// four seconds and physically cannot show a 30-minute ramp, which is the whole
+// thing we are trying to catch.
+class drift_tracker {
+ public:
+  static constexpr std::size_t live_size    = 240;   // gfx::pacer::history_size idiom
+  static constexpr std::size_t horizon_size = 2048;  // 1 Hz -> ~34 minutes
+
+  void reset() noexcept;
+
+  // [render-thread] One presented frame. `host_ns` is a monotonic host reading;
+  // a jump in it means the machine slept or power-throttled, which poisons the
+  // run and is counted rather than averaged over.
+  void observe(double err_ms, time_ns host_ns) noexcept;
+  void note_position_discontinuity() noexcept;
+
+  // Least-squares slope over the long-horizon series, ms per minute. THE gate.
+  // The instantaneous error is flat by construction — the presenter drops and
+  // holds to force it flat — so only this slope distinguishes a correct clock
+  // from a broken position query.
+  [[nodiscard]] double slope_ms_per_min() const noexcept;
+
+  void fill(clock_stats& out) const noexcept;
+
+  [[nodiscard]] const std::array<float, live_size>& live() const noexcept;
+  [[nodiscard]] std::size_t live_cursor() const noexcept;
+  [[nodiscard]] std::span<const float> horizon() const noexcept;  // the CSV
+
+ private:
+  std::array<float, live_size>    live_{};
+  std::array<float, horizon_size> horizon_{};
+  std::size_t   live_cursor_    = 0;
+  std::size_t   horizon_count_  = 0;
+  time_ns       last_host_ns_   = 0;
+  std::uint64_t discontinuities_ = 0;
+  std::uint64_t host_gaps_       = 0;
+};
+
+// Owns the audio sink, the audio thread, the block ring and the drift series.
+//
+// The audio thread touches ONLY the ring and the sink: never FFmpeg, never a
+// lock a decode worker holds, never an allocation (CLAUDE.md rule 1). Starved,
+// it writes silence and counts it rather than stalling.
+class av_clock {
+ public:
+  av_clock() noexcept;
+  ~av_clock();
+
+  av_clock(const av_clock&) = delete;
+  av_clock& operator=(const av_clock&) = delete;
+
+  // Opens the endpoint and starts the audio thread. An endpoint that will not
+  // open still returns ok and falls back to the host clock with
+  // fallback = device_open_failed: a clip must play even with no working audio
+  // device. Only a programming error returns an error here.
+  [[nodiscard]] expected start(std::uint32_t sample_rate, std::uint32_t channels) noexcept;
+
+  // No audio track at all -> host clock is master from the start.
+  void start_host_only() noexcept;
+  void stop() noexcept;
+
+  // [decode-thread][no-block] False when the ring is full; the caller backs off
+  // rather than blocking.
+  [[nodiscard]] bool submit(const audio_block& block) noexcept;
+
+  // [any-thread][no-block] The master clock: stream-relative ns, rate-scaled.
+  [[nodiscard]] time_ns now_ns() const noexcept;
+
+  void set_rate(double rate) noexcept;
+  void set_paused(bool paused) noexcept;
+  void set_volume(float volume) noexcept;
+  void set_muted(bool muted) noexcept;
+
+  // Re-seed after a seek. Blocks at a stale generation are discarded.
+  void seeked(time_ns to_ns, std::uint32_t generation) noexcept;
+
+  // [render-thread][no-block] What the presenter decided, fed back so the
+  // series and the counters see it. Republishes the stats snapshot.
+  void record_present(const present_decision& decision, bool showed) noexcept;
+
+  [[nodiscard]] clock_stats stats() const noexcept;
+
+  // The overlay and the soak acquire here. shell -> player is legal.
+  [[nodiscard]] publish_slot<clock_stats>& published() noexcept;
+
+  // Test seam: inject a fake endpoint. Takes ownership.
+  //
+  // This is not a convenience. Two of the three clauses in PR 5b's verify line
+  // — device loss recovery and the silent-clip fallback — cannot be tested
+  // deterministically without it, and on a machine with no audio device they
+  // cannot be tested at all.
+  void set_sink_for_test(audio_sink* sink) noexcept;
+
+ private:
+  struct impl;
+  impl* impl_ = nullptr;
 };
 
 }  // namespace mv::player

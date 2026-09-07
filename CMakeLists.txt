@@ -146,6 +146,7 @@ add_library(mv_gfx STATIC
   src/gfx/swapchain.h
   src/gfx/blit.h
   src/gfx/video_blit.cpp
+  src/gfx/video_blit.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
 )
@@ -254,6 +255,7 @@ add_library(mv_player STATIC
   src/player/audio_block.h
   src/player/av_clock.h
   src/player/presenter.h
+  src/player/video_internal.h
 )
 target_include_directories(mv_player PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
@@ -405,6 +407,10 @@ if(MV_BUILD_TESTS)
     tests/test_folder.cpp
     tests/test_presenter.cpp
     tests/test_colour_desc.cpp
+    tests/test_video_ring.cpp
+    tests/test_video_colour.cpp
+    tests/test_av_clock.cpp
+    tests/test_audio_sink.cpp
     src/shell/chrome_host.cpp
     src/shell/settings.cpp
     src/shell/app.manifest
