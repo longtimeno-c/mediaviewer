@@ -36,9 +36,25 @@ void notify_done(const job_record& job, status result) noexcept {
 struct job_system::impl {
   std::mutex mutex;
   std::condition_variable cv;
-  std::deque<job_record> queue;
+  // Two queues, not one. A view-tied job (the image the user is looking at)
+  // must never queue behind the thumbnail sweep of a 2000-file camera dump:
+  // FIFO across both meant the first arrow press after opening a folder waited
+  // for every thumb job ahead of it (plan/02, "nothing blocks the view").
+  std::deque<job_record> foreground;
+  std::deque<job_record> background;
   std::vector<std::thread> workers;
   bool running = false;
+
+  [[nodiscard]] bool empty() const noexcept {
+    return foreground.empty() && background.empty();
+  }
+
+  job_record pop() noexcept {
+    auto& q = foreground.empty() ? background : foreground;
+    job_record job = std::move(q.front());
+    q.pop_front();
+    return job;
+  }
 };
 
 job_system::job_system() noexcept = default;
@@ -72,16 +88,15 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         job_record job;
         {
           std::unique_lock lock(impl_->mutex);
-          impl_->cv.wait(lock, [this] { return !impl_->running || !impl_->queue.empty(); });
-          if (!impl_->running && impl_->queue.empty()) return;
-          job = std::move(impl_->queue.front());
-          impl_->queue.pop_front();
+          impl_->cv.wait(lock, [this] { return !impl_->running || !impl_->empty(); });
+          if (!impl_->running && impl_->empty()) return;
+          job = impl_->pop();
         }
 
         // Cancellation check before doing any work: navigating away while a
         // hundred decodes are queued must cost approximately nothing.
         const generation now = generation_.load(std::memory_order_relaxed);
-        if (job.gen != now) {
+        if (job.gen != background_generation && job.gen != now) {
           trace::job_cancelled(job.id, job.gen);
           cancelled_.fetch_add(1, std::memory_order_relaxed);
           notify_done(job, status::cancelled);
@@ -122,7 +137,9 @@ void job_system::shutdown() noexcept {
     std::lock_guard lock(impl_->mutex);
     if (!impl_->running) return;
     impl_->running = false;
-    abandoned.swap(impl_->queue);
+    abandoned.swap(impl_->foreground);
+    for (auto& job : impl_->background) abandoned.push_back(std::move(job));
+    impl_->background.clear();
   }
   impl_->cv.notify_all();
 
@@ -152,7 +169,8 @@ job_id job_system::submit_at(generation gen, job_fn fn, job_done_fn on_done) noe
   {
     std::lock_guard lock(impl_->mutex);
     if (!impl_->running) return invalid_job;
-    impl_->queue.push_back(job_record{id, gen, std::move(fn), std::move(on_done)});
+    auto& q = gen == background_generation ? impl_->background : impl_->foreground;
+    q.push_back(job_record{id, gen, std::move(fn), std::move(on_done)});
   }
   submitted_.fetch_add(1, std::memory_order_relaxed);
   trace::job_submit(id, gen);
@@ -167,7 +185,7 @@ generation job_system::bump_generation() noexcept {
 std::size_t job_system::queue_depth() const noexcept {
   if (!impl_) return 0;
   std::lock_guard lock(impl_->mutex);
-  return impl_->queue.size();
+  return impl_->foreground.size() + impl_->background.size();
 }
 
 }  // namespace mv

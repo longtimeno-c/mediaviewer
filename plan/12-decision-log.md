@@ -309,13 +309,136 @@ missing as a document. [15-platforms.md](15-platforms.md) is that document.
 Do not implement Metal, Swift, or a `*_mac.cpp` during PRs 1–15. Do not skip a D9 port
 in those PRs in order to call Win32 from `image/`, `player/`, `edit/`, or `meta/`.
 
+## 2026-09-07 — PR 3 island shape, and what that forces on PR 4
+
+PR 3 hosted WinUI 3 as a `DesktopWindowXamlSource` **top strip** on the native Win32
+HWND (48 DIP command bar). The canvas is still the D3D11 swapchain. Flyouts use
+`ShouldConstrainToRootBounds = false` so they are siblings of the swapchain, not
+clipped by the strip. Chrome talks to the lab through a blittable command callback
+(`chrome_command_fn`); it does not own the `mv_session` and does not drain completions.
+`MediaViewer.Interop` exists and is unused by the island. Completions are drained on
+the native UI thread in `main.cpp`, for logging.
+
+That is enough chrome to put a filmstrip on, and it closes the "is the island even a
+window we can host?" question. It does **not** close PR 3's verify line (zero dropped
+frames with chrome on screen, tab traversal, flyout over canvas) nor PR 1's inherited
+present-loop gate. Those stay inherited. PR 4 starts on top of this host because the
+owner asked to, not because those gates are green.
+
+What PR 4 must not do, given that host:
+
+| Temptation | Why not |
+|---|---|
+| Grow the command-bar island over the full client | The island would eat canvas mouse-move (plan/02) and cover the swapchain. |
+| One rectangular island with a "hole" for the canvas | `DesktopWindowXamlSource` is one rect. |
+| `SwapChainPanel` for the photo | D1 amendment; PR 3 already refused this. |
+| Marshal decoded frames / RGBA into C# `Image.Source` | plan/14: pixels do not cross the ABI. The *canvas* is never a XAML `Image`. |
+| Draw 20 filmstrip thumbs onto the swapchain every frame | Makes filmstrip scroll a present-loop problem. PR 3 put chrome in XAML so scrolling chrome does not fight `Present`. |
+
+**Calls for PR 4:**
+
+1. **Second island, bottom strip**, same parent HWND, same hostfxr host. Top = command
+   bar, bottom = filmstrip. `input_snapshot` gains `chrome_bottom_px`; `usable_canvas`
+   subtracts both. Do not put the filmstrip in the command-bar island.
+2. **`ItemsRepeater` lives in that island.** Virtualizing filmstrip is why D1 picked
+   WinUI. Item chrome (selection ring, filename) is XAML. The main photo stays on the
+   swapchain.
+3. **Thumbnails that the island displays are JPEG files on disk**, spec `jpg512.1`,
+   keyed in SQLite by `(path, mtime, size, spec)`. The ABI returns a UTF-8 path, not
+   pixels. C# `BitmapImage` loads that file. This is a path, not a decoded frame.
+4. **On-disk BC7 is deferred.** The roadmap named BC7 because it is the GPU-resident
+   form (1/4 the VRAM, upload without recompression). A BC7 blob cannot be an
+   `Image.Source`. Keep BC7 as the cache format if thumbs ever need to sit in VRAM
+   (native overlay, Explorer handler in PR 14). Do not pull DirectXTex in PR 4.
+5. **C# borrows the session and drains completions.** Pass `mv_session_t` into the
+   filmstrip attach payload; C# `retain`s and wraps it in `SafeHandle`. Native stops
+   draining when the island is attached — two drainers race. `--no-chrome` keeps the
+   native drain. This is the plan/14 shape PR 3 postponed because the command bar
+   did not need it.
+6. **Warm arrow-key browse (< 40 ms) is a five-slot GPU LRU** of decoded textures
+   (current ± 2), not a second `mv_image_open` that replaces the canvas. Prefetch
+   jobs use the view generation; thumb jobs use a folder generation so arrow-key
+   bumps do not cancel the filmstrip.
+
+`IThumbnailCache` as a first-sight seed is still allowed later. It is not on the
+verify line. Skip it in PR 4.
+
+D9 starts here: `io/dir.h` is portable; `ReadDirectoryChangesW` lives in
+`io/dir_win.cpp`. `tools/check-hostable-core.ps1` fails `d3d11.h` / `windows.h` /
+`atlbase.h` in `core/`, `codec/`, `canvas/`, `image/`, `meta/`, `player/`, `edit/`.
+`io/*.h` is in that net too; `*_win.cpp` under `io/` and `gfx/` is not.
+
+## 2026-09-07 — Frame-time CI: skip when no GPU runner, do not fail-closed
+
+PR 1 recorded: missing GPU-runner configuration produces a **failed hosted check**. It
+is not a pass or a silent skip.
+
+That fail-closed throw is what turned **Frame-time gate (self-hosted GPU)** red on
+every PR, including this one, in ~16 s on `windows-latest`. No soak ran. The D6 gate
+was no closer to proven; the rest of CI looked broken.
+
+**Reversed, reporting only.** The job now has an `if:` and runs solely on
+`[self-hosted, windows, gpu]` after `MV_GPU_RUNNER_ENABLED=true`. Unset, or a fork PR:
+the job is skipped. Hosted Windows is not used as a fail vehicle.
+
+This does not waive D6, does not measure on hosted runners, and does not invent a GPU.
+A skip is not a pass. GitHub will treat that skip as success for merge if the check is
+required; do not require it until a runner exists. The open item below is unchanged.
+
+Why reverse the reporting:
+
+- The PR 2 sequencing call already said work continues without waiting on a quiet
+  machine that does not exist yet. Fail-closed CI contradicted that by blocking every
+  later PR.
+- "A green check that proves nothing is worse than no check" still holds. Skip is the
+  no-check. A hosted failure that never ran `frametime.exe` was a red check that also
+  proved nothing.
+
+---
+
+## 2026-09-07 — Keyboard-complete v1; remap is v1.1
+
+The owner asked to make the Windows app fully usable without a mouse, with configurable
+keybinds, and to take other speed-safe viewer features while ignoring Mac.
+
+This is not a reversal of D1–D9. D1 already named FastStone keyboard/IME as the reason
+chrome is WinUI. The roadmap already had "keyboard-only browse" on PR 6 and listed
+keymap customization as v1.1. Those were named, not specified — the same hole [14] filled
+for the ABI.
+
+**Call:**
+
+| | |
+|---|---|
+| **v1** | One command table, one key router on the UI thread, a FastStone-class default map, `?` overlay, `Ctrl+K` palette, focus that crosses islands. Every later PR registers commands into that table. |
+| **v1.1** | Remap UI, import/export, alternate layouts (FastStone / IrfanView / vim). Same argument as batch metadata: do not build the editor before the defaults have been used. |
+| **Where** | [16-commands.md](16-commands.md). PR 6 is the first cut and the mouse-free verify. |
+
+Also written down, all speed-constrained (no decode on keydown, no second present path):
+
+- **RAW+JPEG pairing** as one filmstrip stop (the DSLR equivalent of Live Photos). PR 7.
+- **Companion hiding** (`.xmp`, `.thm`, `.aae`, voice memos, system files). Listing filter.
+- **Folder tree** as a third island, left, hidden by default. Slips to PR 8 if PR 6 overruns.
+- **Marks** (not Explorer multi-select) + `F7`/`F8` copy-to / move-to on the I/O thread.
+- **Sticky zoom**, loupe, hold-previous (existing five-slot LRU), display-referred blinkies,
+  pixel grid, checkerboard, always-on-top, on-canvas info, AF-point quads, one-pixel eyedropper.
+- **Space** becomes next-image (play/pause on video). Lab sweep does not ship.
+
+Rejected as v1, with reasons in 16: keymap editor, compare workspace, burst-stack heuristic,
+print, card ingest, GPS map, PiP, peaking/zebras, catalog/albums, AI, slideshow crossfade.
+Hold-previous is the cheap cousin of compare. Burst-stack waits because it can hide files.
+
+Speed is the constraint, not a vibe: key-repeat next stays inside the generation counter;
+copy/move never runs on the UI thread; blinkies are off by default because they animate a
+present loop; pairing happens at scan.
+
 ## Still open
 
 | Question | Blocks | Notes |
 |---|---|---|
 | ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
 | **A quiet machine for the D6 gate** | PR 1 verify (inherited) | Re-run 2026-09-07: one animated pass, one animated fail, idle contaminated by mouse. Still needs the self-hosted GPU runner [09](09-build-and-test.md). |
-| **Do WinUI 3 XAML islands hold up?** | PR 3 | Validated early by design. Fallback is a WinUI app with `SwapChainPanel` and an accepted composed frame. |
+| **Do WinUI 3 XAML islands hold up?** | PR 3 verify (inherited) | Command-bar island is in the tree. Filmstrip is a second island (PR 4). Present-loop + tab + flyout-over-canvas still unproven on a quiet GPU runner. Fallback unchanged: WinUI app with `SwapChainPanel` and an accepted composed frame. |
 
 ## How to use this file
 

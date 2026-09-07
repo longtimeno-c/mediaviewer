@@ -51,6 +51,12 @@ within ~30 ms:
 Full-quality decode of a 45 MP RAW takes 200–600 ms no matter what. The user must never *see*
 that.
 
+**Apply EXIF/container orientation on the display path**, never as a surprise 90° pixel
+rotate of the original. Untagged = identity. A toggle "ignore orientation" exists for the
+file that was saved already rotated *and* tagged; default is honour the tag. This is a
+viewer correctness requirement, not an edit op — `[` `]` in PR 9 *writes* orientation
+(lossless JPEG transform or metadata).
+
 ## Tiled pyramid for large images
 
 Above ~64 MP (gigapixel panoramas, scanned film, PSDs), do not hold one giant texture:
@@ -91,20 +97,80 @@ other half of the complaint is a viewer that hides it entirely.
 
 If pairing detection fails, degrade to showing both — never hide a file.
 
+Hover-to-play is the mouse path. **`;` plays the motion once and returns to the still** —
+required for keyboard-only browse ([16-commands.md](16-commands.md)). Hold-to-play on a
+key that key-repeats into *next* (`Space`) is forbidden.
+
+## RAW + JPEG — the other pairing
+
+A card dump from a camera set to RAW+JPEG is the DSLR/mirrorless equivalent of Live
+Photos, and it is **not** two navigation stops.
+
+| On disk | Detection |
+|---|---|
+| `DSC_0123.NEF` + `DSC_0123.JPG` (any RAW ext + JPEG/HEIC, same basename) | Basename match, ignoring case and the known RAW/JPEG extension sets |
+
+**v1 behaviour: one item, not two.** The JPEG (or HEIC) is first pixel and the filmstrip
+thumb; the RAW is the edit source once PR 7/10 can open it. A RAW-only badge if no JPEG
+sits beside it. "Open RAW" / "Open JPEG" remains reachable from the command palette so a
+paired file is never trapped.
+
+If pairing is ambiguous (three files, mixed stems), degrade to showing them separately —
+never hide a file.
+
+Implement with the format set that can actually open both halves: **PR 7**, not PR 4
+(PR 4 is JPEG/PNG/BMP only). Scan-time pairing, not per-next.
+
+Burst-stacking by timestamp window is **v1.1**. It is a heuristic and can hide files;
+exact pairing (Live Photo content id, RAW+JPEG basename) is the v1 rule.
+
+## Companion files — hide, do not navigate
+
+The filmstrip skips files that are not the thing you meant to arrow through. They stay on
+disk and stay reachable from the palette / Explorer.
+
+| Companion | Rule |
+|---|---|
+| `.xmp` sidecar | Hide. Attached to the primary |
+| `.thm` / `.THM` | Hide. Canon thumbnail |
+| `.aae` | Hide. Apple edits |
+| Voice-memo `.wav` next to a JPEG/RAW of the same stem | Hide. Paletted "Play voice memo" |
+| `._*` / `Thumbs.db` / `desktop.ini` / `.DS_Store` | Hide |
+| Hidden / system attribute | Hide unless the user toggles "show hidden" |
+
+This is a listing filter, not a delete. It is what makes a 2000-file dump not 3500 stops
+of sidecars. PR 4 can hide `.xmp` / system files; the RAW-related rows wait for PR 7.
+
+## Sticky zoom
+
+Culling a burst at 100 % must not refit every `→`. Toggle `S`: keep zoom and pan centre as
+a fraction of the image when advancing. Default off (fit-each, today's lab). Camera state
+only — does not disable prefetch or the generation counter ([16-commands.md](16-commands.md)).
+
 ## Thumbnails / filmstrip
 
-- Persistent thumbnail cache: a single append-only file plus an index (or SQLite with WAL), keyed
-  by `(path, size, mtime, content-hash-of-first-64 KB)`.
-- Store as **BC7-compressed** 512 px squares — 1/4 the VRAM, negligible quality loss at that size,
-  and uploadable without recompression.
+- Persistent thumbnail cache: SQLite with WAL plus files on disk, keyed by
+  `(path, mtime, size, spec)`.
+- **PR 4 spec `jpg512.1`:** JPEG, long edge 512, written next to the database.
+  The ABI returns a UTF-8 path. The filmstrip island loads it with `BitmapImage`.
+  Pixels do not cross the ABI ([14](14-abi.md), [12](12-decision-log.md) 2026-09-07).
+- **Later spec (not PR 4):** BC7-compressed 512 px squares — 1/4 the VRAM,
+  uploadable without recompression — when a thumb has to be GPU-resident
+  (native overlay, Explorer handler). DirectXTex arrives with that spec.
+- The content-hash-of-first-64 KB extra key is optional hardening, not on the
+  PR 4 verify line. mtime+size is the hit; a rewritten file of equal length at
+  the same timestamp is accepted as the same thumb until a later spec.
 - Populate from the OS thumbnail cache (`IThumbnailCache`) on first sight for instant results,
-  then replace with your own higher-quality render in the background.
+  then replace with your own higher-quality render in the background. **Not in PR 4.**
 
 ## Animation (GIF/APNG/WebP/animated AVIF/HEIC sequences)
 
 Treat as a mini video: decode frames ahead into a small ring, present on the render thread against
 QPC time with per-frame delays honored (clamp `delay < 20 ms` to 100 ms, matching browser behavior
-for legacy GIFs). Loop counts respected. Scrubbable.
+for legacy GIFs). Loop counts respected. Scrubbable. When the current item is animated, **Space
+is play/pause** and `,` `.` step frames — same commands as video
+([16-commands.md](16-commands.md)). TIFF pages, ICO sizes, and HEIC sequences are
+`Ctrl+PageUp` / `Ctrl+PageDown` inside one folder stop, not extra filmstrip items.
 
 ## Color
 

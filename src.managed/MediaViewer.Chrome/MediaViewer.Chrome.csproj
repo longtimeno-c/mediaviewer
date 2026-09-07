@@ -28,6 +28,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\MediaViewer.Interop\MediaViewer.Interop.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="$(MSBuildThisFileDirectory)..\..\assets\fonts\CozetteVector.ttf"
              Link="CozetteVector.ttf"
              CopyToOutputDirectory="PreserveNewest"

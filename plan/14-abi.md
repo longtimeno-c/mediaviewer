@@ -136,12 +136,66 @@ else: drain.
 ## What crosses, and what does not
 
 **Crosses:** open/close, navigation intent, edit-stack parameters, metadata property lists, job
-submission and progress, transport commands, settings.
+submission and progress, transport commands, settings, folder item records, **UTF-8 paths to
+on-disk thumbnails**. A `command_id` integer enum may be shared so C# and C++ agree on
+canvas-owned effects. **Bindings never cross** — the keymap is host chrome
+([16-commands.md](16-commands.md)).
 
 **Does not cross:** pixels, textures, decoded frames, `ID3D11*` anything. The swapchain lives
 entirely in C++ ([03-rendering.md](03-rendering.md)); managed code learns a canvas *exists* and
 sends it a size and input events. A single decoded frame must never be marshalled — if you find a
-design where it is, the boundary is in the wrong place.
+design where it is, the boundary is in the wrong place. A thumbnail JPEG *file path* is a path,
+not a frame; a `uint8_t*` of decoded RGBA for the filmstrip is a frame and is forbidden.
+
+## PR 4 — folder, thumbs, prefetch
+
+Same shape as `mv_image_open`: requests return a job id, answers arrive as completions.
+Bump **view** generation on `mv_folder_select` (it is a new view intent). Thumb jobs ride a
+separate **folder** generation so arrow-key bumps do not cancel the filmstrip.
+
+```c
+typedef enum mv_completion_kind {
+  /* ... PR 1–2 ... */
+  MV_COMPLETION_FOLDER_READY  = 3,  /* payload = item count */
+  MV_COMPLETION_FOLDER_CHANGED = 4, /* watcher; payload = item count */
+  MV_COMPLETION_THUMB_READY   = 5   /* payload = item index */
+} mv_completion_kind;
+
+typedef struct mv_folder_item {
+  uint32_t index;
+  uint32_t flags;          /* bit 0 = selected */
+  uint64_t size_bytes;
+  int64_t  mtime_unix;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} mv_folder_item;
+
+/* [any-thread][no-block] Copy the directory path. Completions: FOLDER_READY. */
+mv_status mv_folder_open(mv_session_t, const char* utf8_dir, uint64_t* out_job_id);
+
+/* [any-thread][no-block] */
+mv_status mv_folder_count(mv_session_t, uint32_t* out_count);
+mv_status mv_folder_item_at(mv_session_t, uint32_t index, mv_folder_item* out);
+/* Name / path / thumb path: caller buffer, UTF-8, NUL-terminated if cap allows.
+ * out_bytes is the required size including NUL. MV_ERR_INVALID_ARG if cap is 0.
+ * Thumb path is empty until THUMB_READY for that index. */
+mv_status mv_folder_item_name(mv_session_t, uint32_t index, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_folder_item_path(mv_session_t, uint32_t index, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_folder_item_thumb_path(mv_session_t, uint32_t index, char* utf8, uint32_t cap, uint32_t* out_bytes);
+
+/* [any-thread][no-block] Bump view generation, publish LRU hit or open, prefetch ±2. */
+mv_status mv_folder_select(mv_session_t, uint32_t index, uint64_t* out_job_id);
+
+mv_status mv_folder_close(mv_session_t);
+```
+
+Visible-first thumbs: after `FOLDER_READY`, the host tells the core which indices are on
+screen with `mv_folder_thumbs_visible(session, first, count)` (`[no-block]`). The core
+submits those first, then the rest at the folder generation. Skipping this call still
+generates every thumb; it just is not visible-first.
+
+The five-slot GPU LRU is native-only (`native.h`), same as `take_ready_image`. C# never
+sees a texture.
 
 ## PR 1 deliverable
 

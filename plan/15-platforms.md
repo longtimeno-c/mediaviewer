@@ -75,6 +75,9 @@ host cannot replace.
 - Paths across the C ABI stay **UTF-8**. The Windows host converts at the boundary.
 - Canvas input is a **POD snapshot** the host publishes ([02](02-architecture.md)).
   The Mac host publishes the same struct from AppKit / SwiftUI events.
+- **Key bindings live in the host** ([16-commands.md](16-commands.md)). The core sees
+  command effects through the ABI, never `VK_*` or Win32 accelerators. The Mac host
+  writes its own default map; it does not import a XAML keymap.
 - Completions stay a queue the host pumps. C++ does not call a WinUI dispatcher
   *or* `DispatchQueue.main`.
 - **No empty `*_mac.cpp` in PRs 1–15.** A stub that does not present is not a port
@@ -83,9 +86,15 @@ host cannot replace.
 - **No Swift project, no Metal, no Cocoa, no Catalyst in v1.**
 
 `tools/check-module-graph.ps1` already forbids native modules depending on `shell/`.
-From PR 4, extend it (or a sibling) so `image/`, `player/`, `edit/`, `meta/`,
-`canvas/`, `codec/`, and `core/` cannot include `d3d11.h`, `<windows.h>`, or
-`<atlbase.h>`. A leak that “saves a day” in PR 5a is a rewrite in PR 16.
+`tools/check-hostable-core.ps1` (PR 4) fails a direct `#include` of `d3d11.h`,
+`<windows.h>`, or `<atlbase.h>` from `core/`, `codec/`, `canvas/`, `image/`,
+`meta/`, `player/`, `edit/`, and from `io/*.h`. Windows I/O and watch stay in
+`io/*_win.cpp`. A leak that “saves a day” in PR 5a is a rewrite in PR 16.
+
+`image/gpu_image.h` still pulls D3D11 *transitively* through `gfx/device.h`. That
+is a PR 2 leftover, not a licence to add more. Do not include `gfx/device.h` from
+new headers above `gfx/`. Opaque GPU resources (pimpl, `native.h` accessors) are
+the fix when a new type would otherwise leak `ID3D11*` upward.
 
 The narrow port, when F starts, is a header plus a real `*_win.cpp` and `*_mac.cpp`
 for: gfx (device, texture, blit, present), io (async read, directory watch, atomic

@@ -44,6 +44,10 @@ Views the UI needs:
 design for all of them, but do not build a batch engine before the read pane has been used in
 anger — batch date-shift, copy-metadata, strip-on-share, and filename templating are v1.1.
 
+Ratings are a **keyboard cull**, not only a pane field. Numpad `0`–`5` (or `Ctrl+Shift+0`–`5`)
+write the same three-field path. Number-row `0`/`1` stay fit/100 % — do not steal zoom
+([16-commands.md](16-commands.md)).
+
 Editing metadata is where you can lose someone's photos. Rules:
 
 - **Atomic writes only**: write to `name.ext.tmp` in the same directory, `FlushFileBuffers`, then
@@ -57,7 +61,21 @@ Editing metadata is where you can lose someone's photos. Rules:
 - Batch editing across a selection, with per-file success/failure reporting — never a silent
   partial success.
 
-## Useful features that fall out of this
+## Overlays that fall out of the read model (v1)
+
+These are why PR 8 is not only a pane. They read properties **already parsed** — no extra
+file I/O on toggle ([16-commands.md](16-commands.md)):
+
+- **On-canvas info (`O`)** — filename, index, dimensions, then exposure triangle / lens
+  once the property model is filled.
+- **AF-point quads** — Canon/Nikon/Sony/Fuji maker notes as a few coloured rectangles in
+  image space. Off by default. A FastRawViewer-class cull feature; cheap.
+- **Eyedropper** — one-pixel staging readback on demand, sRGB 8-bit + hex. Never download
+  the whole texture.
+- **Sort by date taken** — the listing key PR 4 could not have without parsing. PR 4 sorts
+  by name/mtime/size/type; this is the missing one.
+
+## Useful features that fall out of this (v1.1)
 
 - Date/time shift (fix a camera set to the wrong timezone) across a selection.
 - Copy metadata from one file to many.
@@ -65,3 +83,4 @@ Editing metadata is where you can lose someone's photos. Rules:
 - Strip-all-metadata-on-copy ("share safely") — one click, produces a sanitized copy, never
   mutating the original.
 - Filename templating from metadata for batch rename: `{date:yyyy-MM-dd}_{camera}_{seq:0000}`.
+- Colour labels / keywords. `U` is reserved to clear a label; a no-op until this lands.

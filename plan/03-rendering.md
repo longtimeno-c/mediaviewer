@@ -64,6 +64,10 @@ unchanged either way.
    image). Any input, animation, or video frame → present every vblank. Transition into the
    active state on the *first* input event, and keep presenting for ~500 ms after the last one so
    a flick-scroll doesn't stutter at the tail.
+   Viewer overlays (info, AF points, pixel grid, loupe) are extra draws in this same present
+   and still idle-stop when they are not animating. **Clipping blinkies are the exception**:
+   they animate, so they present until toggled off. They are off by default
+   ([16-commands.md](16-commands.md)).
    **Idle wait is `INFINITE` (or the soak deadline).** A worker finishing a texture the canvas
    should show must wake the render thread. Draining `MV_COMPLETION_IMAGE_OPENED` on the UI
    thread and only logging it leaves the image sitting in `ready` until the next mouse-move.

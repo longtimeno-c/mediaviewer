@@ -58,9 +58,25 @@ accepted composed frame *before* any panes are built on it.
 *PR 5 is split into 5a/5b/5c. Numbering after it is unchanged.*
 
 ### PR 4 — Folder, filmstrip, thumbnails
-Folder listing + sort, `ReadDirectoryChangesW` watcher, `ItemsRepeater` filmstrip, SQLite + on-disk
-BC7 thumbnail cache keyed by `(path, mtime, size, spec)`, visible-first generation, directional
-prefetch of ±2 decoded textures with generation-counter cancellation.
+Folder listing + sort (**name, mtime, size, type** — EXIF date-taken waits for PR 8),
+`ReadDirectoryChangesW` watcher (portable `io/dir.h`, Windows
+impl in `io/dir_win.cpp`), second XAML island with an `ItemsRepeater` filmstrip,
+SQLite + on-disk **JPEG-512** thumbnail cache keyed by `(path, mtime, size, spec)`
+with spec `jpg512.1`, visible-first generation, directional prefetch of ±2 decoded
+textures into a five-slot GPU LRU with generation-counter cancellation.
+
+The **gallery** (`G`) is a third island: a full-client thumbnail grid between the command
+bar and the client bottom, over the same listing, the same `Items`, and the same thumbnail
+cache as the filmstrip. Opening a single image lists its folder the same way a folder open
+does — arrows and the gallery work — but the filmstrip is a preference per open mode
+(`Settings`, persisted to `%LocalAppData%\MediaViewer\settings.ini`), defaulting to on for
+a folder open and off for a single image.
+
+PR 3's island is a **top strip**. The filmstrip is a **bottom strip** on the same
+HWND — not a full-client island, not `SwapChainPanel`, not thumbs blitted onto the
+photo swapchain. Completions are drained by C# once the island is attached
+([12](12-decision-log.md) 2026-09-07, [14](14-abi.md)). On-disk BC7 waits until a
+thumb has to be GPU-resident; DirectXTex is not a PR 4 dependency.
 
 **Verify:** 2000 mixed JPEGs — filmstrip scrolls without a hitch, second folder visit has
 near-instant thumbnails, arrow-key browse shows the next image in < 40 ms warm.
@@ -92,22 +108,36 @@ speed.
 
 ### PR 5c — Transport
 Dual-mode seek, frame step, speed 0.25x-4x (chained `atempo`), volume, track selection, resume
-position, A-B loop, SMTC + media keys, scrub-preview thumbnails.
+position, A-B loop, SMTC + media keys, scrub-preview thumbnails. Bindings in
+[16-commands.md](16-commands.md): Space play/pause on a clip, `J` `K` `L`, `,` `.`.
 
 **Verify:** scrubbing feels instant; frame step lands on exact frames in both directions; media keys
 and the OS overlay work; resume returns to the right position.
 
 ### PR 6 — Viewer completeness
-Fullscreen, slideshow, fit/100 %/fill, animated GIF/APNG/WebP on the QPC frame clock, Recycle Bin
-delete with confirm, drag-and-drop in, argv handling.
+Fullscreen, slideshow **as a mode** (no transition pass), fit/100 %/fill, animated GIF/APNG/WebP
+on the QPC frame clock, Recycle Bin delete with confirm, drag-and-drop in, argv handling.
 
-**Verify:** keyboard-only browse of a real folder; a file dropped into the folder appears without
-restart; animation timing matches a browser.
+This is also the PR that makes the app **keyboard-complete for browse**. One key router, a
+default map, `?` overlay, `Ctrl+K` palette, marks, copy-to / move-to (`F7`/`F8`), status,
+typeahead, sticky zoom, companion hiding, loupe, hold-previous, display-referred clipping
+blinkies, pixel grid, canvas background/checkerboard, always-on-top, fullscreen chrome
+hide. Folder tree as a **third island, left, hidden by default** — slip to PR 8 if this
+slice overruns, but `chrome_left_px` and the command id still land here.
+Space becomes next-image (play/pause on video/animation); the lab sweep does not ship.
+Full spec: [16-commands.md](16-commands.md). **Remap UI is v1.1**, not this PR.
+
+**Verify:** keyboard-only browse of a real folder — open, next/prev, zoom/fit/100 %, mark,
+copy-to a destination, delete to Recycle Bin, fullscreen, slideshow start/stop — without
+the mouse, with `?` listing those bindings; a file dropped into the folder appears without
+restart; animation timing matches a browser; PR 1's present-loop still holds.
 
 ### PR 7 — The camera-dump formats
 TIFF, WebP, ICO, **HEIC/HEIF**, **AVIF** — bundled, OS-codec-probed first (D3, D5). **RAW** via
 LibRaw with embedded-preview-as-first-pixel, then full decode into the same texture slot. Tiled
-pyramid for images above ~64 MP. Broken-file corpus and per-decoder libFuzzer harnesses land in CI
+pyramid for images above ~64 MP. **RAW+JPEG pairing** and **Live Photo pairing** land here
+(one filmstrip stop, JPEG/still as first pixel — [04-image-pipeline.md](04-image-pipeline.md)).
+Broken-file corpus and per-decoder libFuzzer harnesses land in CI
 here.
 
 Crash reporting (Crashpad, out-of-process) lands here too — this is the PR where hostile real-world
@@ -115,28 +145,38 @@ files first meet your decoders ([13-updates-and-telemetry.md](13-updates-and-tel
 
 **Verify:** iPhone HEIC opens on a clean VM with no Store packs; a CR2/NEF/ARW shows in preview
 time comparable to a JPEG and the full decode replaces it without a visible pop; **original RAW
-bytes unchanged**; nothing in the broken corpus crashes or hangs; a deliberately-corrupted RAW
-produces a minidump containing **no path, filename, or pixel data**.
+bytes unchanged**; a RAW+JPEG pair is **one** filmstrip entry and one arrow-key stop; an
+iPhone Live Photo is one entry and `;` plays the motion; nothing in the broken corpus
+crashes or hangs; a deliberately-corrupted RAW produces a minidump containing **no path,
+filename, or pixel data**.
 
 ## Milestone C — It's useful (PR 8–11)
 
 ### PR 8 — Metadata (read)
 Exiv2 + libavformat, unified property model, summary card + searchable full tree + per-stream video
-inspector.
+inspector. On-canvas info overlay fills the exposure triangle; AF-point quads from maker
+notes; one-pixel eyedropper; sort-by-date-taken. `I` focuses the pane
+([16-commands.md](16-commands.md)).
 
 **Verify:** JPEG with EXIF, PNG with XMP, HEIC, and an MP4 all populate; missing metadata renders as
-empty fields, never an error.
+empty fields, never an error; toggling AF points and the info overlay does not re-read the
+file.
 
 ### PR 9 — Geometry edits + export
 `EditStack`, GPU op chain at viewport resolution, rotate/flip/crop/straighten/resize. Export with a
 metadata preservation policy. **Lossless JPEG** rotate and MCU-aligned crop where applicable.
+`[` `]` from the viewer invoke lossless rotate without opening the adjust pane. Crop is a
+mode on the command table (`Enter` commit, `Esc` cancel).
 
 **Verify:** crop + export a JPEG — on-disk dimensions and EXIF orientation match; reset returns the
-original pixels exactly; lossless rotate produces a file with no recompression.
+original pixels exactly; lossless rotate produces a file with no recompression; keyboard-only
+rotate of a JPEG in the viewer writes that file.
 
 ### PR 10 — Colour adjusts (the v1 set)
 Exposure, contrast, saturation, temperature/tint as GPU shaders on the live preview. Histogram and
-clipping warnings. Export bakes the stack at full resolution.
+clipping warnings. Export bakes the stack at full resolution. Viewer `C` blinkies become
+accurate on RAW once the full decode exists; until then they stay display-referred.
+`E` focuses the adjust pane.
 
 **Verify:** dragging a slider is shader-only with no re-decode, updating within one refresh interval
 on a 45 MP RAW; export matches the preview within 8-bit rounding. **The adjust pane stays disabled
@@ -147,12 +187,15 @@ shows ([07-photo-editing.md](07-photo-editing.md)).
 ### PR 11 — Metadata (write) — narrow on purpose
 **Rating, orientation, and user comment only.** Atomic write via `ReplaceFileW`, snapshot before the
 first write in a session, preserve maker notes, **XMP sidecar for RAW — never rewrite the original**.
+Numpad `0`–`5` (or `Ctrl+Shift+0`–`5`) write rating; number-row `0`/`1` remain zoom
+([16-commands.md](16-commands.md)).
 
 Batch date-shift, copy-metadata, strip-on-share, and filename templating are **v1.1**. Do not build
 a batch engine before the pane has been read in anger.
 
 **Verify:** write-then-read round-trips preserve maker notes byte-for-byte across the corpus; a
-process killed mid-write leaves the original intact.
+process killed mid-write leaves the original intact; rating a JPEG from the numpad round-trips
+without opening the pane.
 
 ## Milestone D — It trims video (PR 12–13)
 
@@ -160,7 +203,8 @@ process killed mid-write leaves the original intact.
 In/out markers with the **keyframe grid drawn on the scrub bar**. Path 1: keyframe trim, stream
 copy, instant. Path 2: full re-encode, frame-accurate, **explicitly labelled slower**, using
 hardware encoders only ([11-licensing.md](11-licensing.md)). Cancellable job queue panel. A–B loop
-preview of the proposed range. **Smart cut is v1.1** (D7).
+preview of the proposed range. Trim mode takes `[` `]` for in/out
+([16-commands.md](16-commands.md)). **Smart cut is v1.1** (D7).
 
 **Verify:** keyframe trim of a 1 GB MP4 completes in seconds with proportional output size; the
 re-encode path is frame-accurate; **the source file is never modified**; cancelling leaves no
@@ -181,7 +225,9 @@ default photo viewer?" — Yes opens Default Apps; No is remembered and never as
 Settings keeps the same action. Stills only, not video. Skip if already default.
 `IThumbnailProvider` and property handler so **Explorer** gains your format support, jump
 list, taskbar transport buttons, drag-out via `CFSTR_FILEDESCRIPTOR`, single-instance-with-tabs,
-settings.
+settings. Keyboard twins of drag-out land here if not already wired in PR 6: `Ctrl+C`
+(`CF_HDROP`), `Ctrl+Shift+C` (path), `Ctrl+Alt+C` (flattened view), `Ctrl+Shift+S` (Share)
+([16-commands.md](16-commands.md)).
 
 **The shell handlers run out-of-process (`DllSurrogate`), with timeouts and no state shared with the
 app.** In-process, one malformed HEIC in a folder someone browses takes down Explorer
@@ -272,10 +318,11 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 | Video | **Smart cut** (D7), subtitle rendering beyond plain text, HDR passthrough |
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
-| Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating |
+| Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating, colour labels, keywords |
+| Viewer | Keymap editor + alternate layouts, side-by-side compare, burst-stack grouping, print/contact sheet, card ingest with verify, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Store MSIX as a secondary channel, per-machine MSI for enterprise |
-| Platform | Windows ARM64, Intel Macs, compare/side-by-side, keymap customization. **Apple Silicon macOS is Milestone F, not v1.1.** |
+| Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS is Milestone F, not v1.1.** |
 
 ## Sequencing advice
 
@@ -286,6 +333,8 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 - **Formats (PR 7) before editors.** Coverage is what makes a viewer worth switching to; editing is
   what makes people stay.
 - **Resist the NLE, and resist the develop module.** Both are real products; neither is this one.
+  Resist the keymap editor and the compare workspace in v1 the same way: the default map and
+  hold-previous are the daily path; the editors wait ([16-commands.md](16-commands.md)).
 - **PR 1-7 is the app you would use daily**, and that is a believable target on a tight calendar for
   one person. Milestone C is what makes it worth other people switching to.
 - **Do not plan v1 as "3 months full-time."** That number was the original overconfidence surviving

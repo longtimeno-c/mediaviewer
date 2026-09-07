@@ -34,6 +34,9 @@ jobs:
       - name: Module dependency direction
         run: ./tools/check-module-graph.ps1
 
+      - name: Hostable core (D9)
+        run: ./tools/check-hostable-core.ps1
+
       - name: Licence policy
         run: ./tools/licence-check.ps1
 
@@ -167,23 +170,18 @@ jobs:
   # ---------------------------------------------------------------------------
   frametime:
     name: Frame-time gate (self-hosted GPU)
-    # Without opt-in, route to hosted Windows to fail immediately instead of
-    # queueing for 24 hours. Fork code must not execute on a persistent runner.
-    runs-on: ${{ vars.MV_GPU_RUNNER_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "windows", "gpu"]') || 'windows-latest' }}
+    # Skip when no GPU runner is opted in. Hosted Windows cannot measure D6, and
+    # failing the whole workflow for that used to red-X every PR on a machine
+    # that does not exist. A skip is not a pass. Fork code must not execute on
+    # the persistent runner. If the variable is set but the runner is missing,
+    # GitHub still queues — set MV_GPU_RUNNER_ENABLED only after provisioning.
+    if: ${{ vars.MV_GPU_RUNNER_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 15
     concurrency:
       group: frametime-gpu
       cancel-in-progress: false
     steps:
-      - name: Require configured GPU runner
-        env:
-          GPU_ENABLED: ${{ vars.MV_GPU_RUNNER_ENABLED }}
-          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
-        run: |
-          if ($env:GPU_ENABLED -ne 'true' -or $env:FORK_PR -eq 'true') {
-            throw 'Frame-time gate not measured. Configure an interactive [self-hosted, windows, gpu] runner and MV_GPU_RUNNER_ENABLED=true. For forks, review and test a trusted in-repository branch. See README.md.'
-          }
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4

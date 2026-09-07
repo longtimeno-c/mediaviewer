@@ -121,8 +121,8 @@ endif()
 # tools/check-module-graph.ps1 enforces it in CI.
 # ---------------------------------------------------------------------------
 add_library(mv_core STATIC
-  src/core/job_system.cpp
-  src/core/trace.cpp
+  src/core/job_system_win.cpp
+  src/core/trace_win.cpp
   src/core/job_system.h
   src/core/result.h
   src/core/spsc_ring.h
@@ -157,8 +157,12 @@ add_library(mv::gfx ALIAS mv_gfx)
 add_library(mv_io STATIC
   src/io/file.cpp
   src/io/file.h
+  src/io/dir_win.cpp
+  src/io/dir.h
+  src/io/paths_win.cpp
+  src/io/paths.h
 )
-target_link_libraries(mv_io PUBLIC mv_core)
+target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32)
 add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
@@ -194,18 +198,22 @@ add_library(mv::codec ALIAS mv_codec)
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
 
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
+
 add_library(mv_image STATIC
   src/image/colour.cpp
   src/image/pipeline.cpp
   src/image/upload.cpp
+  src/image/thumb.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/upload.h
   src/image/gpu_image.h
+  src/image/thumb.h
 )
 target_link_libraries(mv_image
   PUBLIC mv_codec mv_gfx
-  PRIVATE lcms2::lcms2)
+  PRIVATE mv_io lcms2::lcms2 unofficial::sqlite3::sqlite3)
 add_library(mv::image ALIAS mv_image)
 
 # ---------------------------------------------------------------------------
@@ -252,6 +260,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/present_lab.cpp
   src/shell/chrome_host.cpp
   src/shell/chrome_host.h
+  src/shell/settings.cpp
+  src/shell/settings.h
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
@@ -259,12 +269,14 @@ add_executable(mediaviewer_lab WIN32
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_gfx
   mv_canvas
+  mv_io
   mediaviewer_core
   imgui::imgui
   dwmapi
   shell32
   comdlg32
   ole32     # CoInitializeEx for the WinUI island STA
+  uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
 )
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
@@ -281,6 +293,7 @@ set(MV_CHROME_PROJ "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/MediaView
 set(MV_CHROME_SOURCES
   ${MV_CHROME_PROJ}
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Filmstrip.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
 )
 if(DOTNET_EXE)
@@ -339,7 +352,10 @@ if(MV_BUILD_TESTS)
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_chrome_host.cpp
+    tests/test_dir.cpp
+    tests/test_folder.cpp
     src/shell/chrome_host.cpp
+    src/shell/settings.cpp
     src/shell/app.manifest
   )
   target_link_libraries(mv_tests PRIVATE
@@ -353,7 +369,9 @@ if(MV_BUILD_TESTS)
     ${MV_SPNG_TARGET}
     lcms2::lcms2
     Catch2::Catch2WithMain
-    ole32)
+    ole32
+    uuid
+    mv_io)
   target_include_directories(mv_tests PRIVATE src src/abi/include)
 
   include(Catch)

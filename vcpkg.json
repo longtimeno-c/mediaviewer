@@ -28,12 +28,14 @@
     "catch2",
     "libjpeg-turbo",
     "libspng",
-    "lcms"
+    "lcms",
+    "sqlite3"
   ],
 
   "$comment-v1-pending": {
     "PR 2": "landed: libjpeg-turbo, libspng, lcms",
-    "PR 4": ["sqlite3", "directxtex"],
+    "PR 4": "landed: sqlite3. JPEG-512 thumbs in the island; DirectXTex/BC7 waits until a thumb must be GPU-resident (plan/12 2026-09-07).",
+    "PR 4-deferred": ["directxtex"],
     "PR 5a": ["ffmpeg[core,avcodec,avformat,avutil,swscale,swresample]"],
     "PR 7": ["tiff", "libwebp", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],
     "PR 8": ["exiv2"],

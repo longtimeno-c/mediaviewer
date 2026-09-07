@@ -25,6 +25,10 @@ using generation = std::uint32_t;
 
 inline constexpr job_id invalid_job = 0;
 
+// Generation 0 is not a view intent: queued work is not abandoned when the
+// user arrows to the next photo. Thumb jobs use it (PR 4).
+inline constexpr generation background_generation = 0;
+
 // Handed to every running job. The job checks `cancelled()` at whatever
 // granularity it can abandon at — a tile boundary, a scanline block, a packet.
 class job_context {
@@ -38,7 +42,9 @@ class job_context {
   [[nodiscard]] std::uint32_t worker_index() const noexcept { return worker_; }
 
   // True once the view intent this job was submitted for has moved on.
+  // Background jobs (generation 0) are not view-tied.
   [[nodiscard]] bool cancelled() const noexcept {
+    if (gen_ == background_generation) return false;
     return current_->load(std::memory_order_relaxed) != gen_;
   }
 

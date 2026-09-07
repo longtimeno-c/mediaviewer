@@ -111,7 +111,8 @@ adopt as the plan.
 - **Flush decoders on every seek** (`avcodec_flush_buffers`) and bump the frame generation counter
   so in-flight frames from before the seek are discarded.
 - Frame step forward/back when paused (back-step = seek to prior keyframe, decode forward to
-  `n-1`). Bind to `,` / `.` and to arrow keys while paused.
+  `n-1`). Bind to `,` / `.` and to arrow keys while paused. Space is play/pause on a clip
+  (it is *next image* on a still). Full transport map: [16-commands.md](16-commands.md).
 - Speed 0.25×–4× with pitch-corrected audio. **`atempo` accepts 0.5–2.0 per instance**, so the
   extremes need a chain (`atempo=0.5,atempo=0.5` for 0.25×); build the chain from the ratio rather
   than assuming one filter.

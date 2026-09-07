@@ -5,10 +5,27 @@
 #include <objbase.h>
 
 #include "shell/chrome_host.h"
+#include "shell/settings.h"
 
 TEST_CASE("chrome attach args stay 40 bytes") {
   REQUIRE(sizeof(mv::shell::chrome_attach_args) == 40);
   REQUIRE(sizeof(mv::shell::chrome_resize_args) == 16);
+  REQUIRE(sizeof(mv::shell::chrome_filmstrip_args) == 48);
+  REQUIRE(sizeof(mv::shell::chrome_show_args) == 16);
+  REQUIRE(sizeof(mv::shell::chrome_flags_args) == 8);
+}
+
+TEST_CASE("view settings round-trip through the flag word") {
+  mv::shell::view_settings settings;
+  REQUIRE(settings.filmstrip_for_folder);
+  REQUIRE_FALSE(settings.filmstrip_for_image);
+  REQUIRE(settings.flags() == mv::shell::kSettingFilmstripFolder);
+
+  settings.filmstrip_for_image = true;
+  const auto round = mv::shell::view_settings::from_flags(settings.flags());
+  REQUIRE(round.filmstrip_for_folder);
+  REQUIRE(round.filmstrip_for_image);
+  REQUIRE(mv::shell::view_settings::from_flags(0).flags() == 0);
 }
 
 TEST_CASE("chrome bar height is 48 DIP") {

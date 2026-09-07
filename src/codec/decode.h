@@ -21,9 +21,23 @@ namespace mv::codec {
 [[nodiscard]] result<raster> decode_jpeg(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr,
                                          int scale_denom = 1);
+
+struct jpeg_size {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+};
+
+// Reads the JPEG header only — no pixels, no scanlines. Lets a caller choose
+// `scale_denom` from the real dimensions instead of guessing.
+[[nodiscard]] result<jpeg_size> jpeg_dimensions(std::span<const std::uint8_t> bytes);
 [[nodiscard]] result<raster> decode_png(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_bmp(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
+
+// RGBA8 in, JPEG bytes out. `quality` is 1–100. Used for the filmstrip cache
+// (plan/04 spec jpg512.1); not an export path.
+[[nodiscard]] result<std::vector<std::uint8_t>> encode_jpeg_rgba(
+    std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height, int quality);
 
 }  // namespace mv::codec

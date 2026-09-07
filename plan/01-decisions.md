@@ -107,7 +107,9 @@ chrome.
 
 Three things drive it. **ImGui chrome loses the users you're building for** — someone coming from
 FastStone wants a virtualizing filmstrip, a real folder tree, keyboard/IME behaviour, and
-accessibility, and "I'll write my own" is a year of work that isn't the product. **C++/WinRT XAML
+accessibility, and "I'll write my own" is a year of work that isn't the product. The keyboard
+model — one command table, mouse-free v1, remap in v1.1 — is [16-commands.md](16-commands.md).
+Do not satisfy this sentence with a command bar full of unbound buttons. **C++/WinRT XAML
 is a well-known velocity tax** and you'd pay it on exactly the surfaces that are pure chrome:
 filmstrip, folder tree, metadata pane, settings. **The core doesn't care** — it never sees XAML,
 never sees C#, and stays language-agnostic behind a flat C ABI, which is also what makes the

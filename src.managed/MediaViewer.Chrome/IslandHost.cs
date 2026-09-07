@@ -8,6 +8,8 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
+using Windows.Foundation;
 using Windows.Graphics;
 using Windows.UI;
 
@@ -22,10 +24,13 @@ namespace MediaViewer.Chrome;
 /// Pixels never cross this line. The island is command-bar chrome; pan/zoom
 /// stay on the native window procedure (plan/02, plan/14).
 /// </remarks>
-public static class IslandHost
+public static partial class IslandHost
 {
     internal const int AttachArgsSize = 40;
     internal const int ResizeArgsSize = 16;
+    internal const int FilmstripArgsSize = 48;
+    internal const int ShowArgsSize = 16;
+    internal const int FlagsArgsSize = 8;
 
     internal static class Command
     {
@@ -36,7 +41,28 @@ public static class IslandHost
         public const int ZoomOut = 5;
         public const int ZoomPreset = 6;
         public const int Overlay = 7;
+        public const int SelectItem = 8;
+        public const int Prev = 9;
+        public const int Next = 10;
+        public const int OpenFolder = 11;
+        public const int ToggleGallery = 12;
+        public const int CloseGallery = 13;
+        public const int GalleryActivate = 14;
+        public const int SetSettings = 15;
+        public const int FolderReady = 16;
+        public const int ToggleFilmstrip = 17;
     }
+
+    // Mirrors mv::shell::view_settings. The native side owns the file; the
+    // menu is a view of it, pushed in by ApplySettings so a T keypress and the
+    // checkmarks cannot drift apart.
+    internal static class SettingFlag
+    {
+        public const int FilmstripForFolder = 1 << 0;
+        public const int FilmstripForImage = 1 << 1;
+    }
+
+    private static int _settingFlags = SettingFlag.FilmstripForFolder;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeCommand(IntPtr context, int command, float arg);
@@ -53,6 +79,9 @@ public static class IslandHost
         _ = sizeBytes;
         if (Marshal.SizeOf<ChromeAttachArgs>() != AttachArgsSize) return -2;
         if (Marshal.SizeOf<ChromeResizeArgs>() != ResizeArgsSize) return -3;
+        if (Marshal.SizeOf<ChromeFilmstripArgs>() != FilmstripArgsSize) return -4;
+        if (Marshal.SizeOf<ChromeShowArgs>() != ShowArgsSize) return -5;
+        if (Marshal.SizeOf<ChromeFlagsArgs>() != FlagsArgsSize) return -6;
         return AttachArgsSize;
     }
 
@@ -81,10 +110,10 @@ public static class IslandHost
             _source.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Constrain the island to the bar before assigning content so a
             // full-client default size never covers the canvas.
-            Move(args.ClientWidth, args.ClientHeight);
+            Move(_source, args.ClientWidth, args.ClientHeight, 0);
             _source.TakeFocusRequested += OnTakeFocusRequested;
             _source.Content = BuildChrome();
-            Move(args.ClientWidth, args.ClientHeight);
+            Move(_source, args.ClientWidth, args.ClientHeight, 0);
             return 0;
         }
         catch (Exception ex)
@@ -101,7 +130,7 @@ public static class IslandHost
         {
             if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
-            Move(args.Width, args.Height);
+            Move(_source, args.Width, args.Height, args.Y);
             return 0;
         }
         catch (Exception ex)
@@ -156,6 +185,23 @@ public static class IslandHost
         }
     }
 
+    public static int ApplySettings(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
+            ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
+            _settingFlags = args.Flags;
+            RefreshSettingsMenu();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
     private static void EnsureApp()
     {
         if (_dispatcher is not null) return;
@@ -170,12 +216,13 @@ public static class IslandHost
         _onCommand?.Invoke(_context, command, arg);
     }
 
-    private static void Move(int width, int height)
+    private static void Move(DesktopWindowXamlSource? source, int width, int height, int y)
     {
-        if (_source?.SiteBridge is null) return;
+        if (source?.SiteBridge is null) return;
         int w = Math.Max(width, 1);
         int h = Math.Max(height, 1);
-        _source.SiteBridge.MoveAndResize(new RectInt32(0, 0, w, h));
+        int top = Math.Max(y, 0);
+        source.SiteBridge.MoveAndResize(new RectInt32(0, top, w, h));
     }
 
     private static void OnTakeFocusRequested(DesktopWindowXamlSource sender,
@@ -467,6 +514,138 @@ public static class IslandHost
     private static MenuFlyoutSeparator Sep() =>
         new() { Foreground = Brush(Hairline), Background = Brush(Hairline) };
 
+    // Loading indicator. A decode that misses the viewer cache is not
+    // instantaneous on a camera dump, and a viewer that shows the previous
+    // photo with no sign that a new one is coming reads as a hang. This is the
+    // chrome's job: the canvas is native and ImGui is the F3 instrument, never
+    // shipped UI (D1).
+    private static Grid? _busyTrack;
+    private static Border? _busyBar;
+    private static TranslateTransform? _busySlide;
+    private static Storyboard? _busyAnim;
+    private static DispatcherQueueTimer? _busyDelay;
+    private static bool _busyVisible;
+
+    private const double BusyBarWidth = 140;
+
+    private static Grid BuildBusyBar()
+    {
+        _busySlide = new TranslateTransform { X = -BusyBarWidth };
+        _busyBar = new Border
+        {
+            Background = Brush(Title),
+            Width = BusyBarWidth,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            RenderTransform = _busySlide,
+        };
+        _busyTrack = new Grid
+        {
+            Height = 2,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Visibility = Visibility.Collapsed,
+            Children = { _busyBar },
+        };
+        _busyTrack.SizeChanged += (_, e) =>
+        {
+            // The track has to clip by hand: a Grid does not, and the sweep runs
+            // off both ends by a full bar width.
+            _busyTrack.Clip = new RectangleGeometry
+            {
+                Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height),
+            };
+            RestartBusyAnimation(e.NewSize.Width);
+        };
+        return _busyTrack;
+    }
+
+    private static void RestartBusyAnimation(double trackWidth)
+    {
+        _busyAnim?.Stop();
+        _busyAnim = null;
+        if (_busySlide is null || trackWidth <= 0 || !_busyVisible) return;
+
+        var slide = new DoubleAnimation
+        {
+            From = -BusyBarWidth,
+            To = trackWidth,
+            Duration = new Duration(TimeSpan.FromMilliseconds(1100)),
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        Storyboard.SetTarget(slide, _busySlide);
+        Storyboard.SetTargetProperty(slide, "X");
+        _busyAnim = new Storyboard();
+        _busyAnim.Children.Add(slide);
+        _busyAnim.Begin();
+    }
+
+    /// <summary>
+    /// Shows or hides the load indicator. Showing is delayed: a hit in the
+    /// viewer cache publishes in the same drain as the selection change, and a
+    /// bar that flashes on every arrow key is worse than no bar at all.
+    /// </summary>
+    private static void SetBusy(bool busy)
+    {
+        _busyDelay?.Stop();
+        if (!busy)
+        {
+            ApplyBusy(false);
+            return;
+        }
+        if (_busyVisible || _dispatcher is null) return;
+        _busyDelay ??= _dispatcher.DispatcherQueue.CreateTimer();
+        _busyDelay.Interval = TimeSpan.FromMilliseconds(150);
+        _busyDelay.IsRepeating = false;
+        _busyDelay.Tick -= OnBusyDelay;
+        _busyDelay.Tick += OnBusyDelay;
+        _busyDelay.Start();
+    }
+
+    private static void OnBusyDelay(DispatcherQueueTimer sender, object args) => ApplyBusy(true);
+
+    private static void ApplyBusy(bool visible)
+    {
+        if (_busyVisible == visible) return;
+        _busyVisible = visible;
+        if (_busyTrack is null) return;
+        _busyTrack.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (visible) RestartBusyAnimation(_busyTrack.ActualWidth);
+        else
+        {
+            _busyAnim?.Stop();
+            _busyAnim = null;
+        }
+    }
+
+    private static MenuFlyout? _settingsFlyout;
+
+    private static bool HasFlag(int flag) => (_settingFlags & flag) != 0;
+
+    // Native owns the file. Send the whole word, let it persist, and wait for
+    // ApplySettings to come back before the menu changes — one direction, so
+    // a failed write cannot leave a lying checkmark on screen.
+    private static void SetFlag(int flag, bool on)
+    {
+        int next = on ? _settingFlags | flag : _settingFlags & ~flag;
+        Send(Command.SetSettings, next);
+    }
+
+    private static void RefreshSettingsMenu()
+    {
+        if (_settingsFlyout is null) return;
+        _settingsFlyout.Items.Clear();
+        _settingsFlyout.Items.Add(
+            Item("Filmstrip when opening a folder",
+                 HasFlag(SettingFlag.FilmstripForFolder) ? "on" : "off",
+                 () => SetFlag(SettingFlag.FilmstripForFolder,
+                               !HasFlag(SettingFlag.FilmstripForFolder))));
+        _settingsFlyout.Items.Add(
+            Item("Filmstrip when opening an image",
+                 HasFlag(SettingFlag.FilmstripForImage) ? "on" : "off",
+                 () => SetFlag(SettingFlag.FilmstripForImage,
+                               !HasFlag(SettingFlag.FilmstripForImage))));
+    }
+
     private static UIElement BuildChrome()
     {
         var viewFlyout = new MenuFlyout
@@ -483,7 +662,21 @@ public static class IslandHost
         viewFlyout.Items.Add(Item("200 %", null, () => Send(Command.ZoomPreset, 2.0f)));
         viewFlyout.Items.Add(Item("400 %", null, () => Send(Command.ZoomPreset, 4.0f)));
         viewFlyout.Items.Add(Sep());
+        viewFlyout.Items.Add(Sep());
+        viewFlyout.Items.Add(Item("Gallery", "G", () => Send(Command.ToggleGallery)));
+        viewFlyout.Items.Add(Item("Filmstrip", "T", () => Send(Command.ToggleFilmstrip)));
+        viewFlyout.Items.Add(Sep());
         viewFlyout.Items.Add(Item("Frame-time overlay", "F", () => Send(Command.Overlay)));
+
+        _settingsFlyout = new MenuFlyout
+        {
+            ShouldConstrainToRootBounds = false,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        // Rebuild on open as well as on ApplySettings, so the on/off column is
+        // right even if a keyboard toggle raced the last push.
+        _settingsFlyout.Opening += (_, _) => RefreshSettingsMenu();
+        RefreshSettingsMenu();
 
         var aboutFlyout = new Flyout
         {
@@ -492,7 +685,7 @@ public static class IslandHost
         };
         aboutFlyout.Content = new TextBlock
         {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nF toggles the frame-time overlay. Wheel zooms toward the cursor; drag pans.",
+            Text = "MediaViewer — GPL-2.0-or-later\n\nG opens the gallery, T shows or hides the filmstrip, F toggles the frame-time overlay. Wheel zooms toward the cursor; drag pans.",
             Margin = new Thickness(12, 10, 12, 10),
             MaxWidth = 400,
             TextWrapping = TextWrapping.Wrap,
@@ -501,13 +694,32 @@ public static class IslandHost
             FontSize = UiFontSize,
         };
 
-        var open = TextButton("Open", () => Send(Command.Open));
+        var openFlyout = new MenuFlyout
+        {
+            ShouldConstrainToRootBounds = false,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        openFlyout.Items.Add(Item("Image…", "Ctrl+O", () => Send(Command.Open)));
+        openFlyout.Items.Add(Item("Folder…", null, () => Send(Command.OpenFolder)));
+
+        Button? openBtn = null;
+        openBtn = TextButton("Open", () =>
+        {
+            if (openBtn is not null) FlyoutBase.ShowAttachedFlyout(openBtn);
+        });
+        FlyoutBase.SetAttachedFlyout(openBtn, openFlyout);
         Button? viewBtn = null;
         viewBtn = TextButton("View", () =>
         {
             if (viewBtn is not null) FlyoutBase.ShowAttachedFlyout(viewBtn);
         });
         FlyoutBase.SetAttachedFlyout(viewBtn, viewFlyout);
+        Button? settingsBtn = null;
+        settingsBtn = TextButton("Settings", () =>
+        {
+            if (settingsBtn is not null) FlyoutBase.ShowAttachedFlyout(settingsBtn);
+        });
+        FlyoutBase.SetAttachedFlyout(settingsBtn, _settingsFlyout);
         Button? aboutBtn = null;
         aboutBtn = TextButton("About", () =>
         {
@@ -522,8 +734,9 @@ public static class IslandHost
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(8, 0, 8, 0),
         };
-        row.Children.Add(open);
+        row.Children.Add(openBtn);
         row.Children.Add(viewBtn);
+        row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
 
         var root = new Grid
@@ -538,6 +751,9 @@ public static class IslandHost
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
         Grid.SetRow(row, 0);
         root.Children.Add(row);
+        Grid busy = BuildBusyBar();
+        Grid.SetRow(busy, 0);
+        root.Children.Add(busy);
         var rule = new Border { Background = Brush(Hairline) };
         Grid.SetRow(rule, 1);
         root.Children.Add(rule);
@@ -570,6 +786,19 @@ internal struct ChromeResizeArgs
 {
     public int Width;
     public int Height;
+    public int Dpi;
+    public int Y;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct ChromeFilmstripArgs
+{
+    public ulong ParentHwnd;
+    public ulong Context;
+    public ulong OnCommand;
+    public ulong Session;
+    public int ClientWidth;
+    public int ClientHeight;
     public int Dpi;
     public int Reserved;
 }

@@ -72,3 +72,8 @@ rather than a "quality" slider with no units.
   confirm explicitly for any in-place replacement.
 - Preview the cut before committing by setting the player's A–B loop to the proposed range — free,
   instant, and exactly what the output will be.
+- In/out markers are keys as well as a mouse on the scrub bar: `[` / `]` in trim mode
+  ([16-commands.md](16-commands.md)). Arming trim is a command (`Ctrl+T` or the command
+  bar); until then those keys rotate stills. The job queue panel is keyboard-reachable
+  (`Esc` out, `Delete` cancel focused job) — a modal progress dialog would fail the
+  mouse-free bar.
