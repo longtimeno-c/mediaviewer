@@ -75,11 +75,52 @@ TEST_CASE("zoom out floors at 50 percent and recentres", "[canvas]") {
   cam.drag_end();
   REQUIRE(cam.target_pan_x() != 2000.0f);
 
+  // Back out to the rest pose. This image fits at 0.2, so the floor is fit, not
+  // 50 %: the wheel has to be able to return to the view it opened on. It used
+  // to stop at 0.5 here — two and a half times the opening size, with the whole
+  // image no longer on screen and no way back except the Fit command.
   cam.wheel_toward(100.0f, 80.0f, -40.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
-  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.5f, 1e-5f));
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(opening, 1e-5f));
   REQUIRE_THAT(cam.target_pan_x(), WithinAbs(2000.0f, 1e-3f));
   REQUIRE_THAT(cam.target_pan_y(), WithinAbs(1500.0f, 1e-3f));
+  // Bottoming out on fit IS fit mode, so a later resize re-fits.
+  REQUIRE(cam.fit_mode());
+}
+
+TEST_CASE("zoom out floors at 50 percent when the image is small enough to fit",
+          "[canvas]") {
+  // The other half of the same rule, and the one that must not change: this
+  // image fits at 4x, so 50 % is well below fit and the wheel may letterbox
+  // down to it.
+  camera cam;
+  cam.fit(200.0f, 150.0f, 800.0f, 600.0f, true);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(4.0f, 1e-5f));
+
+  cam.wheel_toward(400.0f, 300.0f, -40.0f, 800.0f, 600.0f, 200.0f, 150.0f);
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.5f, 1e-5f));
   REQUIRE_FALSE(cam.fit_mode());
+}
+
+TEST_CASE("a 4K clip can always be zoomed back out to the whole frame", "[canvas]") {
+  // The reported bug, in the shape it was reported: a 4K clip in a windowed
+  // canvas fits below 50 %, so wheeling in and back out has to return to the
+  // whole frame rather than stopping half-way and leaving the viewer clipped in.
+  camera cam;
+  const float w = 1600.0f, h = 900.0f;
+  cam.fit(3840.0f, 2160.0f, w, h, true);
+  const float opening = cam.zoom();
+  REQUIRE(opening < 0.5f);
+
+  for (int i = 0; i < 6; ++i) cam.wheel_toward(800.0f, 450.0f, 1.0f, w, h, 3840.0f, 2160.0f);
+  REQUIRE(cam.target_zoom() > opening);
+
+  for (int i = 0; i < 40; ++i) cam.wheel_toward(800.0f, 450.0f, -1.0f, w, h, 3840.0f, 2160.0f);
+  // Wheeling to the floor leaves the rubber band dipped below the rest pose;
+  // it pops back once the wheel stops, so settle before reading the result.
+  for (int i = 0; i < 240; ++i) cam.step(1.0f / 60.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(opening, 0.002f));
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(1920.0f, 0.05f));
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(1080.0f, 0.05f));
 }
 
 TEST_CASE("zoom out past fit rubber-bands then pops back", "[canvas]") {

@@ -102,6 +102,11 @@ struct mv_session {
   mv::job_system jobs;
   mv::abi::video_session video;
 
+  // [render-thread only] The last play state a VIDEO_STATE completion was
+  // pushed for. poll_video is the only writer and it runs on the render thread,
+  // so this needs no synchronisation of its own.
+  mv::player::play_state reported_video_state = mv::player::play_state::stopped;
+
   // Completions are produced by many worker threads and consumed by one
   // draining thread, so the SPSC ring is not the right shape here — this is the
   // one MPMC-ish edge in the design and it takes a short-held mutex rather than
@@ -1301,7 +1306,44 @@ void* image_ready_wait_handle(mv_session_t session) {
 void release_gpu_image(image::gpu_image* image) { delete image; }
 bool poll_video(mv_session_t session, player::time_ns vblank, player::video_frame& frame, bool& active) {
   if (!session) { active = false; return false; }
-  return session->video.tick(session->jobs.current_generation(), vblank, frame, active);
+  const bool changed =
+      session->video.tick(session->jobs.current_generation(), vblank, frame, active);
+
+  // MV_COMPLETION_VIDEO_STATE / _VIDEO_ENDED have been declared since ABI 0.4
+  // and were never pushed, so the chrome had no way to learn about a state the
+  // core changes on its own — reaching the end of a clip, most of all — and
+  // could only find out on its next poll. plan/14: the ABI is designed, not
+  // retrofitted, and declared surface that nothing sends is not a design.
+  //
+  // Every transition is pushed, not only the self-initiated ones: telling the
+  // host about a change it asked for is redundant, never wrong, and the
+  // alternative is threading "who caused this" through the command queue for
+  // no gain. The host must therefore treat these as notifications, not as
+  // acknowledgements of its own calls.
+  // The payload is documented as an mv_play_state, so the two enums have to
+  // agree rung for rung — the cast below is the whole contract.
+  static_assert(static_cast<int>(player::play_state::stopped) == MV_PLAY_STOPPED);
+  static_assert(static_cast<int>(player::play_state::playing) == MV_PLAY_PLAYING);
+  static_assert(static_cast<int>(player::play_state::paused) == MV_PLAY_PAUSED);
+  static_assert(static_cast<int>(player::play_state::ended) == MV_PLAY_ENDED);
+  const auto state = session->video.play_state_now();
+  if (state != session->reported_video_state) {
+    session->reported_video_state = state;
+    mv_completion c{};
+    c.kind = MV_COMPLETION_VIDEO_STATE;
+    c.status = MV_OK;
+    c.generation = session->jobs.current_generation();
+    c.payload = static_cast<int64_t>(state);
+    session->push_completion(c);
+    if (state == player::play_state::ended) {
+      mv_completion ended{};
+      ended.kind = MV_COMPLETION_VIDEO_ENDED;
+      ended.status = MV_OK;
+      ended.generation = c.generation;
+      session->push_completion(ended);
+    }
+  }
+  return changed;
 }
 bool video_open(mv_session_t session) noexcept {
   return session != nullptr && session->video.open();

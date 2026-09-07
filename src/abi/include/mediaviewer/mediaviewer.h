@@ -152,9 +152,13 @@ typedef enum mv_completion_kind {
   MV_COMPLETION_VIDEO_OPENED = 7,
   /* Reached the end of the clip. payload = 0. */
   MV_COMPLETION_VIDEO_ENDED = 8,
-  /* Play/pause/stop changed. payload = mv_play_state. Sent for state the core
-   * changes on its own (end of clip, device loss); a host-initiated pause does
-   * not need to be told back to the host. */
+  /* Play/pause/stop changed. payload = mv_play_state. Pushed on EVERY
+   * transition, including ones the host asked for: telling the host about a
+   * change it requested is redundant but never wrong, and the alternative is
+   * threading "who caused this" through the command queue for no gain. Treat
+   * these as notifications, not as acknowledgements of your own calls. The
+   * ones that matter are the transitions the core makes on its own — reaching
+   * the end of a clip, device loss. */
   MV_COMPLETION_VIDEO_STATE = 9
 } mv_completion_kind;
 

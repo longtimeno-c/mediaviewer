@@ -47,3 +47,15 @@ project.lock.json
 # below to be reachable at all.
 tools/testmedia/*
 !tools/testmedia/generate.sh
+
+# Local harness output. `--av-soak --csv` and the frame-time gate both write
+# reports next to wherever you ran them, and both keep getting picked up by a
+# `git add -A`. They are measurements of one machine on one afternoon, not
+# source: the numbers that matter go in the PR or the README, not in history.
+scratch-av.csv
+drift.csv
+soak.json
+
+# Scratch notes. Working files for a slice in progress, not the plan — the
+# plan is plan/.
+PR5UInotes.txt

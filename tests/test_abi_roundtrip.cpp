@@ -18,6 +18,9 @@
 #include <thread>
 #include <vector>
 
+#include "abi/native.h"
+#include "corpus.h"
+#include "gfx/device.h"
 #include "mediaviewer/mediaviewer.h"
 
 using namespace std::chrono_literals;
@@ -277,4 +280,72 @@ TEST_CASE("status names are stable and never null", "[abi]") {
   REQUIRE(std::string(mv_status_name(MV_OK)) == "OK");
   REQUIRE(std::string(mv_status_name(MV_ERR_CANCELLED)) == "CANCELLED");
   REQUIRE(std::string(mv_status_name(static_cast<mv_status>(9999))) == "UNKNOWN");
+}
+
+// MV_COMPLETION_VIDEO_STATE and _VIDEO_ENDED were declared at ABI 0.4 and never
+// pushed by anything, so the chrome polled play state on a 150 ms timer and had
+// no way at all to learn about a transition the core makes on its own. plan/14:
+// the ABI is designed, not retrofitted — declared surface nothing sends is not
+// a design, it is a promise the header is making on the core's behalf.
+//
+// This test is the promise, made falsifiable: open a clip, drain, and require
+// that a VIDEO_STATE actually arrives carrying an mv_play_state.
+TEST_CASE("declared video completions are pushed, not just declared",
+          "[abi][video][integration]") {
+  MV_REQUIRE_CLIP(path, "av_transport.mp4");
+
+  mv::gfx::device device;
+  REQUIRE(device.create(nullptr));
+  session_guard session(2);
+  REQUIRE(mv::abi::attach_device(session.handle, device.d3d()) == mv::status::ok);
+
+  uint64_t job = 0;
+  REQUIRE(mv_video_open(session.handle, path.c_str(), &job) == MV_OK);
+
+  // poll_video is what pushes the completion, and only the render thread calls
+  // it — so this loop is standing in for the present loop.
+  mv::player::video_frame frame;
+  bool active = false;
+  bool saw_state = false;
+  int64_t reported = -1;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < deadline && !saw_state) {
+    (void)mv::abi::poll_video(session.handle, 16'666'667, frame, active);
+    mv_completion drained[32]{};
+    const uint32_t n = mv_completion_drain(session.handle, drained, 32);
+    for (uint32_t i = 0; i < n; ++i) {
+      if (drained[i].kind == MV_COMPLETION_VIDEO_STATE) {
+        saw_state = true;
+        reported = drained[i].payload;
+      }
+    }
+    std::this_thread::sleep_for(2ms);
+  }
+
+  REQUIRE(saw_state);
+  // Payload is documented as an mv_play_state. Opening plays, so anything but
+  // stopped means the cast survived the trip.
+  REQUIRE(reported != MV_PLAY_STOPPED);
+  REQUIRE(reported <= MV_PLAY_ENDED);
+
+  // Closing retires the clip, which is a transition the host did not perform on
+  // the media_source itself — exactly the case the header says these exist for.
+  REQUIRE(mv_video_close(session.handle) == MV_OK);
+  bool saw_stopped = false;
+  const auto close_deadline = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < close_deadline && !saw_stopped) {
+    (void)mv::abi::poll_video(session.handle, 16'666'667, frame, active);
+    mv_completion drained[32]{};
+    const uint32_t n = mv_completion_drain(session.handle, drained, 32);
+    for (uint32_t i = 0; i < n; ++i) {
+      if (drained[i].kind == MV_COMPLETION_VIDEO_STATE &&
+          drained[i].payload == MV_PLAY_STOPPED) {
+        saw_stopped = true;
+      }
+    }
+    std::this_thread::sleep_for(2ms);
+  }
+  REQUIRE(saw_stopped);
+
+  mv::abi::detach_device(session.handle);
 }

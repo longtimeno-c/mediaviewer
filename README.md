@@ -173,6 +173,13 @@ within 1 ms/min, with no position discontinuities and no host-clock gaps; 1 is a
 real failure, 3 means the clip ended early, 4 means the run was too short to
 count. Audio must be the master for a clip that has an audio track, or it fails.
 
+**The drift figure only means something with the audio master.** On a clip with no
+audio track the clock falls back to the host (`clock host fallback` in the F3
+overlay) and the slope is measuring the host clock against itself, so a large
+number there — tens of ms/min — is an artefact of the fallback, not a defect. Read
+the `audio_master` column in the CSV before reading the slope. That is the whole
+reason the corpus now carries an audio-bearing 31-minute clip.
+
 ## Where this actually is
 
 PR 1's verify line is:
@@ -199,7 +206,12 @@ swapchain, not the sweep bar.
 - Idle: zero presents and no input during the measured window, with process CPU time at
   most 1% of **one CPU core**. This makes ~0% independent of the machine's core count.
   A cursor in the lab window counts as input and fails the idle gate; park it off the
-  client area.
+  client area. When a run does fail, read `idle_input_events` before calling it a
+  regression: observed failures on the development box have had it exactly equal to
+  `idle_presents` — one present per real input event and none otherwise, which is the
+  loop working correctly while somebody's mouse crossed the window. A genuine idle
+  regression presents with `idle_input_events` at zero. This is the "quiet machine"
+  caveat in [plan/12-decision-log.md](plan/12-decision-log.md) showing up in practice.
 - Missing refresh information, statistics gaps, interrupted runs, device rebuilds, and
   failing child exit codes cannot pass. Short `--seconds` runs are diagnostic only.
 - A saved baseline additionally gates p99 regressions greater than 10%. Use a separate

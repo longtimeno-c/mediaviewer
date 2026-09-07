@@ -26,10 +26,14 @@ class camera {
                 float window_h) noexcept;
 
   // Wheel zoom toward the cursor. `notches` is the usual WHEEL_DELTA units
-  // already divided to ±1 per detent. Zoom-out floors at 50 %, not at fit —
-  // except while already in fit-to-window below 50 %, where the rest pose
-  // stays fit. Rubber-band dips the *target*; pop-back starts after the
-  // wheel stops. Displayed zoom is never teleported.
+  // already divided to ±1 per detent. Zoom-out floors at 50 %, or at fit when
+  // the media is large enough that fit is below 50 % — so the wheel can always
+  // get back to the whole frame it opened on, which a 4K clip in a windowed
+  // canvas otherwise could not. The floor follows the geometry, not the mode:
+  // it must not depend on fit_mode_, because zooming in clears that and zooming
+  // in is what happens before anyone wants to zoom out. Rubber-band dips the
+  // *target*; pop-back starts after the wheel stops. Displayed zoom is never
+  // teleported.
   void wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
                     float window_h, float image_w, float image_h) noexcept;
 

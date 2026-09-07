@@ -42,9 +42,22 @@ float rubber_target(float current, float rest, float notches) noexcept {
   return z;
 }
 
-// Wheel rest pose: 50 %, unless Fit has already taken us below that.
-float wheel_rest(float fit, bool fitted) noexcept {
-  if (fitted && fit > 0.0f && fit < kMinZoom) return fit;
+// Wheel rest pose: 50 %, or Fit when the media is big enough that Fit is
+// smaller than 50 %.
+//
+// This used to be gated on `fitted` — the rest pose only dropped to Fit while
+// the camera was STILL in fit mode. Zooming in clears fit mode, which is the
+// one thing guaranteed to have happened before anybody wants to zoom back out,
+// so the escape hatch was unreachable exactly when it was needed: open a 4K
+// clip (Fit ~0.42 in a windowed canvas), wheel in, wheel out, and the floor was
+// 50 % — more than twice the size you started at, with no way back to the whole
+// frame except the Fit command. That reads as "I am clipped in and cannot get
+// out", and it is why this is keyed off the geometry rather than off a mode.
+//
+// Small media is unaffected: when Fit is above 50 % the rest pose stays 50 %,
+// so zooming out past Fit into a letterbox still works as documented.
+float wheel_rest(float fit) noexcept {
+  if (fit > 0.0f && fit < kMinZoom) return fit;
   return kMinZoom;
 }
 
@@ -99,7 +112,7 @@ void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float win
   if (notches == 0.0f) return;
   const float fit = fit_zoom(image_w, image_h, window_w, window_h);
   if (fit <= 0.0f) return;
-  const float rest = wheel_rest(fit, fit_mode_);
+  const float rest = wheel_rest(fit);
 
   // While rubber-banding the displayed zoom is below the rest pose; zoom-in
   // should lift off from what the user sees, not jump to rest first.

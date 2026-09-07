@@ -31,6 +31,14 @@ class video_session {
   // still what is on screen, and a lab that has stopped presenting has no
   // reason to paint again.
   [[nodiscard]] bool open() const noexcept { return open_.load(std::memory_order_acquire); }
+
+  // [any-thread][wait-free] The play state without taking the mutex. tick()
+  // publishes it; poll_video reads it to decide whether a VIDEO_STATE
+  // completion is due. snapshot() would have meant the render thread blocking
+  // on a lock a decode command can hold (CLAUDE.md rule 1).
+  [[nodiscard]] player::play_state play_state_now() const noexcept {
+    return static_cast<player::play_state>(state_atomic_.load(std::memory_order_acquire));
+  }
   void command(std::function<void(player::media_source&)> command) {
     std::lock_guard lock(mutex_); commands_.push_back(std::move(command));
   }
@@ -44,6 +52,8 @@ class video_session {
       info_ = {}; stats_ = {}; state_ = player::play_state::stopped;
       commands_.clear();
       open_.store(pending_ != nullptr, std::memory_order_release);
+      state_atomic_.store(static_cast<std::uint8_t>(player::play_state::stopped),
+                          std::memory_order_release);
     }
     if (!current_ && pending_ && pending_gen_ == generation) {
       current_ = pending_; pending_ = nullptr; current_gen_ = generation;
@@ -60,6 +70,7 @@ class video_session {
       }
       info_ = current_->info(); stats_ = current_->stats();
       position_ = current_->position_ns(); state_ = current_->state();
+      state_atomic_.store(static_cast<std::uint8_t>(state_), std::memory_order_release);
     }
     active = current_ && current_->needs_present();
     active_.store(active);
@@ -91,6 +102,8 @@ class video_session {
   player::video_frame* held_ = nullptr;
   std::uint32_t current_gen_ = 0;
   std::atomic<bool> active_{false}, open_{false}, running_{true};
+  std::atomic<std::uint8_t> state_atomic_{
+      static_cast<std::uint8_t>(player::play_state::stopped)};
   spsc_ring<player::media_source*, 64> retired_;
   std::atomic<unsigned> signal_{0};
   std::thread cleaner_;
