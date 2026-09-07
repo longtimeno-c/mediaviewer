@@ -68,7 +68,9 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 | `Ctrl+O` | open JPEG/PNG/BMP |
 | `Esc` | quit |
 
-Wheel zooms toward the cursor; drag pans. Drop a file on the window.
+Wheel zooms toward the cursor; drag pans. Zoom-out stops at the opening fit
+view and springs back to centre — it will not shrink the image into the
+letterbox. Drop a file on the window.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--open <path>`, or a positional path.

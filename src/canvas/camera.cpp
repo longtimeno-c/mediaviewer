@@ -8,9 +8,16 @@ namespace mv::canvas {
 
 namespace {
 
-constexpr float kMinZoom = 0.02f;
 constexpr float kMaxZoom = 64.0f;
 constexpr float kWheelFactor = 1.15f;
+// Relative slack so "already at fit" survives a few frames of float error
+// without treating a real zoom-in as the floor.
+constexpr float kFitLockEps = 1e-4f;
+
+bool at_or_below_fit(float zoom, float fit) noexcept {
+  if (fit <= 0.0f) return false;
+  return zoom <= fit * (1.0f + kFitLockEps);
+}
 
 }  // namespace
 
@@ -19,12 +26,6 @@ void camera::reset() noexcept { *this = camera{}; }
 float camera::fit_zoom(float image_w, float image_h, float window_w, float window_h) noexcept {
   if (image_w <= 0.0f || image_h <= 0.0f || window_w <= 0.0f || window_h <= 0.0f) return 1.0f;
   return std::min(window_w / image_w, window_h / image_h);
-}
-
-void camera::clamp_zoom(float image_w, float image_h, float window_w, float window_h) noexcept {
-  const float fit = fit_zoom(image_w, image_h, window_w, window_h);
-  const float lo = std::min(kMinZoom, fit * 0.25f);
-  target_zoom_ = std::clamp(target_zoom_, lo, kMaxZoom);
 }
 
 void camera::fit(float image_w, float image_h, float window_w, float window_h,
@@ -49,9 +50,27 @@ void camera::one_to_one() noexcept {
 void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
                           float window_h, float image_w, float image_h) noexcept {
   if (notches == 0.0f) return;
-  const float old_zoom = target_zoom_;
+  const float fit = fit_zoom(image_w, image_h, window_w, window_h);
+  const float old_zoom = target_zoom_ > 0.0f ? target_zoom_ : fit;
+
+  // Zoom-out floors at the opening view. Further notches are a no-op so the
+  // image does not shrink into the letterbox, and so a fitted view stays put
+  // instead of bouncing on every detent.
+  if (notches < 0.0f && at_or_below_fit(old_zoom, fit)) {
+    this->fit(image_w, image_h, window_w, window_h, false);
+    return;
+  }
+
   target_zoom_ = old_zoom * std::pow(kWheelFactor, notches);
-  clamp_zoom(image_w, image_h, window_w, window_h);
+  if (target_zoom_ > kMaxZoom) target_zoom_ = kMaxZoom;
+
+  if (notches < 0.0f && at_or_below_fit(target_zoom_, fit)) {
+    // Last step that would pass the floor: spring back to centred fit rather
+    // than stopping at an off-centre composition the size of the window.
+    this->fit(image_w, image_h, window_w, window_h, false);
+    return;
+  }
+
   const float img_x = target_pan_x_ + (mouse_x - window_w * 0.5f) / old_zoom;
   const float img_y = target_pan_y_ + (mouse_y - window_h * 0.5f) / old_zoom;
   target_pan_x_ = img_x - (mouse_x - window_w * 0.5f) / target_zoom_;
@@ -60,13 +79,13 @@ void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float win
 }
 
 void camera::drag_begin() noexcept {
+  if (fit_mode_) return;  // opening view is locked until the user zooms in
   dragging_ = true;
-  fit_mode_ = false;
   pan_vx_ = pan_vy_ = 0.0f;
 }
 
 void camera::drag_delta(float dx_screen, float dy_screen) noexcept {
-  if (!dragging_ || zoom_ == 0.0f) return;
+  if (!dragging_ || fit_mode_ || zoom_ == 0.0f) return;
   // Dragging is direct: springs would lag the cursor and feel like the image
   // is on a rubber band. Targets and currents move together; velocity stays 0.
   const float dx = dx_screen / zoom_;

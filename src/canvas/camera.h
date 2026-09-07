@@ -20,7 +20,8 @@ class camera {
   void one_to_one() noexcept;
 
   // Wheel zoom toward the cursor. `notches` is the usual WHEEL_DELTA units
-  // already divided to ±1 per detent.
+  // already divided to ±1 per detent. Zoom-out floors at fit (the opening
+  // view) and springs back to centre; it does not shrink past that.
   void wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
                     float window_h, float image_w, float image_h) noexcept;
 
@@ -46,8 +47,6 @@ class camera {
                                       float window_h) noexcept;
 
  private:
-  void clamp_zoom(float image_w, float image_h, float window_w, float window_h) noexcept;
-
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;
   float pan_vx_ = 0.0f;
