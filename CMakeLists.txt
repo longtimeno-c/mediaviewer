@@ -248,6 +248,8 @@ add_library(mv_player STATIC
   # 5c — transport
   src/player/transport.cpp
   src/player/presenter.cpp
+  src/player/container_probe.cpp
+  src/player/poster.cpp
   # headers, listed so they show up in the IDE
   src/player/media_source.h
   src/player/video_source.h
@@ -256,6 +258,8 @@ add_library(mv_player STATIC
   src/player/av_clock.h
   src/player/presenter.h
   src/player/transport.h
+  src/player/container_probe.h
+  src/player/poster.h
   src/player/video_internal.h
 )
 # SYSTEM, deliberately. FFmpeg's own public headers trip C4244 (libavutil's
@@ -292,6 +296,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 # ---------------------------------------------------------------------------
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
+  src/abi/video_session.h
   src/abi/guard.h
   src/abi/include/mediaviewer/mediaviewer.h
 )
@@ -326,6 +331,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/app.manifest
 )
 target_link_libraries(mediaviewer_lab PRIVATE
+  mv_player
   mv_gfx
   mv_canvas
   mv_io
@@ -353,6 +359,7 @@ set(MV_CHROME_SOURCES
   ${MV_CHROME_PROJ}
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Filmstrip.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Video.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
 )
 if(DOTNET_EXE)
@@ -415,11 +422,14 @@ if(MV_BUILD_TESTS)
     tests/test_folder.cpp
     tests/test_presenter.cpp
     tests/test_colour_desc.cpp
+    tests/test_video_transport.cpp
     tests/test_video_ring.cpp
     tests/test_video_colour.cpp
     tests/test_av_clock.cpp
     tests/test_audio_sink.cpp
     tests/test_transport.cpp
+    tests/test_container_probe.cpp
+    tests/test_corpus.cpp
     src/shell/chrome_host.cpp
     src/shell/settings.cpp
     src/shell/app.manifest
@@ -442,7 +452,14 @@ if(MV_BUILD_TESTS)
   target_include_directories(mv_tests PRIVATE src src/abi/include)
 
   include(Catch)
-  catch_discover_tests(mv_tests)
+  # A Catch2 SKIP exits 0, so ctest counted every corpus-gated video test as
+  # Passed: a clean clone reported "100% tests passed" with twelve cases —
+  # hardware decode, colour, seek, frame step, texture leaks, the video ABI —
+  # silently absent. Matching Catch2's own SKIPPED marker makes ctest report
+  # them as Skipped instead, so the summary says how much was not proved.
+  # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
+  # a missing clip into a failure in CI.
+  catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()

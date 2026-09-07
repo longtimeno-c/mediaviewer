@@ -60,6 +60,8 @@ class audio_sink {
   // the client and re-seeds WITHOUT interrupting video (verify line).
   [[nodiscard]] virtual bool device_changed() const noexcept = 0;
 
+  virtual void set_paused(bool) noexcept {}
+
   virtual void set_volume(float volume) noexcept = 0;  // 0.0 .. 1.0
   virtual void set_muted(bool muted) noexcept = 0;
 };

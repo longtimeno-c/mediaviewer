@@ -85,16 +85,11 @@ TEST_CASE("a frame late by less than one interval is still shown", "[presenter]"
   REQUIRE(d.action == present_action::show);
 }
 
-TEST_CASE("playback rate scales the lateness tolerance", "[presenter]") {
-  // At 4x, a vblank of wall clock covers 4 vblanks of stream time, so the
-  // tolerance must shrink or we present stale frames and call it on time.
-  const time_ns clock = ms(1000);
-  const time_ns late_by = vblank_60hz / 2;  // half an interval at 1x
-
-  REQUIRE(choose(at(clock, clock + vblank_60hz - late_by, true, 1.0)).action ==
-          present_action::show);
-  REQUIRE(choose(at(clock, clock + vblank_60hz - late_by, true, 4.0)).action ==
-          present_action::drop);
+TEST_CASE("playback rate converts display intervals to stream time", "[presenter]") {
+  const auto d = choose(at(ms(1000), ms(1050), true, 4.0));
+  REQUIRE(d.target_ns == ms(1000) + 4 * vblank_60hz);
+  REQUIRE(d.action == present_action::show);
+  REQUIRE(choose(at(ms(1000), ms(980), true, 4.0)).action == present_action::drop);
 }
 
 TEST_CASE("reported error is signed and in milliseconds", "[presenter]") {

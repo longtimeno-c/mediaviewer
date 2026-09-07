@@ -215,10 +215,17 @@ expected chrome_host::load() noexcept {
   resize_gallery_ = get_entry(L"ResizeGallery");
   show_gallery_ = get_entry(L"ShowGallery");
   detach_gallery_ = get_entry(L"DetachGallery");
+  attach_transport_ = get_entry(L"AttachTransport");
+  resize_transport_ = get_entry(L"ResizeTransport");
+  show_transport_ = get_entry(L"ShowTransport");
+  detach_transport_ = get_entry(L"DetachTransport");
   apply_settings_ = get_entry(L"ApplySettings");
+  apply_rate_ = get_entry(L"ApplyRate");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
-      !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !apply_settings_) {
+      !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
+      !resize_transport_ || !show_transport_ || !detach_transport_ || !apply_settings_ ||
+      !apply_rate_) {
     return err(status::internal);
   }
 
@@ -387,11 +394,88 @@ void chrome_host::show_gallery(bool visible, int width, int client_height,
   gallery_visible_ = visible;
 }
 
+// The transport stacks ON TOP of the filmstrip, not over it: `filmstrip_px` is
+// the bottom chrome already spoken for, and the strip's top edge is measured up
+// from there. Native owns this maths for the same reason it owns the
+// filmstrip's — the island must never have to guess where "offscreen" is.
+namespace {
+int transport_top(int client_height, int filmstrip_px, int strip) noexcept {
+  const int bottom = client_height - filmstrip_px;
+  return bottom > strip ? bottom - strip : 0;
+}
+}  // namespace
+
+expected chrome_host::attach_transport(HWND parent, void* context, chrome_command_fn on_command,
+                                       void* session, int width, int height,
+                                       std::uint32_t dpi) noexcept {
+  if (!loaded() || !attach_transport_) return err(status::internal);
+  if (!parent) return err(status::invalid_arg);
+  if (transport_attached_) {
+    if (detach_transport_) (void)detach_transport_(nullptr, 0);
+    transport_attached_ = false;
+    transport_visible_ = false;
+  }
+
+  chrome_filmstrip_args args{};
+  args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
+  args.context = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(context));
+  args.on_command = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(on_command));
+  args.session = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(session));
+  args.client_width = width;
+  args.client_height = height;
+  args.dpi = static_cast<std::int32_t>(dpi);
+
+  const int rc = attach_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
+  if (rc != 0) {
+    MV_LOG_WARN("chrome: AttachTransport failed (%d)", rc);
+    return err(status::internal);
+  }
+  transport_attached_ = true;
+  transport_visible_ = false;  // AttachTransport parks it: no clip is open yet
+  return {};
+}
+
+void chrome_host::resize_transport(int width, int client_height, int filmstrip_px,
+                                   std::uint32_t dpi) noexcept {
+  if (!transport_attached_ || !resize_transport_) return;
+  if (!transport_visible_) {
+    show_transport(false, width, client_height, filmstrip_px, dpi);
+    return;
+  }
+  const int strip = chrome_transport_height_px(dpi);
+  chrome_resize_args args{};
+  args.width = width;
+  args.height = strip;
+  args.dpi = static_cast<std::int32_t>(dpi);
+  args.y = transport_top(client_height, filmstrip_px, strip);
+  (void)resize_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_transport(bool visible, int width, int client_height, int filmstrip_px,
+                                 std::uint32_t dpi) noexcept {
+  if (!transport_attached_ || !show_transport_) return;
+  const int strip = chrome_transport_height_px(dpi);
+  chrome_show_args args{};
+  args.visible = visible ? 1 : 0;
+  args.width = visible ? width : 1;
+  args.height = visible ? strip : 1;
+  args.y = visible ? transport_top(client_height, filmstrip_px, strip) : client_height;
+  (void)show_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
+  transport_visible_ = visible;
+}
+
 void chrome_host::apply_settings(std::int32_t flags) noexcept {
   if (!attached_ || !apply_settings_) return;
   chrome_flags_args args{};
   args.flags = flags;
   (void)apply_settings_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::apply_rate(float rate) noexcept {
+  if (!attached_ || !apply_rate_) return;
+  chrome_rate_args args{};
+  args.rate = rate;
+  (void)apply_rate_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {
@@ -407,6 +491,11 @@ bool chrome_host::navigate_focus(bool reverse) noexcept {
 }
 
 void chrome_host::detach() noexcept {
+  if (transport_attached_ && detach_transport_) {
+    (void)detach_transport_(nullptr, 0);
+    transport_attached_ = false;
+    transport_visible_ = false;
+  }
   if (gallery_attached_ && detach_gallery_) {
     (void)detach_gallery_(nullptr, 0);
     gallery_attached_ = false;

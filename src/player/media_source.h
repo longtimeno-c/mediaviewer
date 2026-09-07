@@ -34,6 +34,7 @@ class media_source {
 
   [[nodiscard]] virtual media_info  info()  const noexcept = 0;
   [[nodiscard]] virtual play_state  state() const noexcept = 0;
+  [[nodiscard]] virtual bool needs_present() const noexcept { return state() == play_state::playing; }
   [[nodiscard]] virtual time_ns position_ns() const noexcept = 0;
 
   virtual void play()  noexcept = 0;

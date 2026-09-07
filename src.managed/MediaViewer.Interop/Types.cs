@@ -27,6 +27,9 @@ public enum MvCompletionKind : uint
     FolderChanged = 4,
     ThumbReady = 5,
     FolderSelected = 6,
+    VideoOpened = 7,
+    VideoEnded = 8,
+    VideoState = 9,
 }
 
 /// <summary>Mirrors <c>mv_session_config</c>.</summary>
@@ -109,4 +112,14 @@ public sealed class MediaViewerException : Exception
 
     public MvStatus Status { get; }
     public ulong CorrelationId { get; }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct MvVideoInfo
+{
+    public long DurationNs;
+    public uint Width, Height;
+    public double FrameRate;
+    public uint AudioTracks, VideoTracks, Decoder, Flags;
+    public fixed byte CodecName[32];
 }

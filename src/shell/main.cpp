@@ -20,6 +20,7 @@
 #include "io/dir.h"
 
 #include <cmath>
+#include <iterator>
 #include <cwchar>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +34,7 @@
 #include "shell/chrome_host.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
+#include "shell/av_soak.h"
 
 namespace {
 
@@ -59,6 +61,21 @@ struct app_state {
   bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
   open_mode mode = open_mode::none;
   bool gallery_visible = false;
+  // Set by the island's playback poll (chrome_cmd_video_active). The transport
+  // strip follows it, so it appears with a clip and leaves with it.
+  bool video_on = false;
+  // Where a skim burst is heading, as opposed to where the clip currently is.
+  // A non-exact seek lands on the preceding keyframe, so re-reading the
+  // position each repeat asks to move 2 s from a point the last press already
+  // rounded backwards — five presses on a 4 s GOP moved one GOP. Intent has to
+  // accumulate; only the landing is quantised.
+  std::int64_t skim_target_ns = 0;
+  std::uint64_t skim_tick_ms = 0;
+  // A/D are two commands on one key: tap steps the speed, hold skims. Which
+  // one it was is only knowable at key-up, so the down edge records and the up
+  // edge decides.
+  bool skim_shuttled = false;
+  int  rate_index = 2;  // kRateLadder: 1.00x
   mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
@@ -124,7 +141,7 @@ void open_path(app_state* app, std::wstring_view wide_path) {
   open_folder(app, wide_path.substr(0, slash), wide_path);
 }
 
-void open_image(app_state* app, std::wstring_view wide_path) { open_path(app, wide_path); }
+void open_media(app_state* app, std::wstring_view wide_path) { open_path(app, wide_path); }
 
 bool pick_folder(HWND hwnd, std::wstring& out) {
   IFileOpenDialog* dlg = nullptr;
@@ -162,7 +179,7 @@ void open_file_dialog(app_state* app, HWND hwnd) {
   ofn.hwndOwner = hwnd;
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"Images (JPEG, PNG, BMP)\0*.jpg;*.jpeg;*.png;*.bmp\0All files\0*.*\0";
+  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts\0All files\0*.*\0";
   ofn.nFilterIndex = 1;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
   if (::GetOpenFileNameW(&ofn)) open_path(app, file);
@@ -200,6 +217,70 @@ void folder_step(app_state* app, int delta) {
   const int next = static_cast<int>(selected) + delta;
   if (next < 0 || next >= static_cast<int>(count)) return;
   folder_select(app, static_cast<std::uint32_t>(next));
+}
+
+// Skim, not transport: J/L are the +/-10 s jumps, A/D are the shuttle you hold
+// down to find a moment. 2 s per repeat lands about where a scrubber drag does.
+constexpr std::int64_t kSkimStepNs = 2'000'000'000;
+// plan/16: J / L are the +/-10 s transport jumps.
+constexpr std::int64_t kTransportStepNs = 10'000'000'000;
+
+// plan/16's Video mode: "current item is a clip, playing or paused". Stopped
+// means no clip, so A/D fall back to browse prev/next.
+// How long a skim burst stays "the same burst". Longer than key-repeat's
+// ~30 ms cadence, short enough that a second press a beat later starts from
+// where the clip actually is.
+constexpr std::uint64_t kSkimBurstMs = 700;
+
+// The speed ladder, shared with the command bar's dropdown. Every value is
+// exactly representable in float, so the rate native applies and the rate the
+// dropdown shows can be compared without an epsilon.
+constexpr double kRateLadder[] = {0.25, 0.5, 1.0, 1.5, 2.0, 4.0};
+constexpr int kRateLadderCount = static_cast<int>(std::size(kRateLadder));
+constexpr int kRateDefaultIndex = 2;  // 1.00x
+
+bool video_mode(app_state* app) noexcept {
+  if (!app || !app->session) return false;
+  std::uint32_t state = MV_PLAY_STOPPED;
+  if (mv_video_state(app->session, &state) != MV_OK) return false;
+  return state != MV_PLAY_STOPPED;
+}
+
+// Native decides the rate and then tells the dropdown, rather than the two
+// agreeing by luck. Same one-direction rule as the settings flags.
+void apply_rate(app_state* app, int index) noexcept {
+  if (!app || !app->session) return;
+  if (index < 0) index = 0;
+  if (index >= kRateLadderCount) index = kRateLadderCount - 1;
+  app->rate_index = index;
+  (void)mv_video_set_rate(app->session, kRateLadder[index]);
+  app->chrome.apply_rate(static_cast<float>(kRateLadder[index]));
+}
+
+// Nearest rung to a rate the island picked, so the keyboard carries on from
+// wherever the dropdown left off.
+int rate_index_for(double rate) noexcept {
+  int best = kRateDefaultIndex;
+  double best_delta = 1e9;
+  for (int i = 0; i < kRateLadderCount; ++i) {
+    const double delta = rate > kRateLadder[i] ? rate - kRateLadder[i] : kRateLadder[i] - rate;
+    if (delta < best_delta) { best_delta = delta; best = i; }
+  }
+  return best;
+}
+
+bool skim(app_state* app, std::int64_t delta_ns, bool exact) noexcept {
+  if (!app || !app->session) return false;
+  const std::uint64_t now = ::GetTickCount64();
+  std::int64_t base = app->skim_target_ns;
+  if (app->skim_tick_ms == 0 || now - app->skim_tick_ms > kSkimBurstMs) {
+    if (mv_video_position(app->session, &base) != MV_OK) return false;
+  }
+  std::int64_t want = base + delta_ns;
+  if (want < 0) want = 0;
+  app->skim_target_ns = want;
+  app->skim_tick_ms = now;
+  return mv_video_seek(app->session, want, exact ? 1u : 0u) == MV_OK;
 }
 
 std::uint32_t folder_count(app_state* app) noexcept {
@@ -288,6 +369,19 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->chrome.apply_settings(app->settings.flags());
       apply_view_state(app);
       return;
+    case mv::shell::chrome_cmd_set_rate:
+      apply_rate(app, rate_index_for(static_cast<double>(arg)));
+      return;
+    case mv::shell::chrome_cmd_video_active: {
+      const bool on = arg != 0.0f;
+      if (app->video_on == on) return;
+      app->video_on = on;
+      // A freshly opened media_source starts at 1.00x, so the ladder and the
+      // dropdown have to start there too rather than inheriting the last clip.
+      if (on) apply_rate(app, kRateDefaultIndex);
+      apply_view_state(app);
+      return;
+    }
     case mv::shell::chrome_cmd_folder_ready:
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
@@ -303,20 +397,83 @@ void chrome_on_command(void* ctx, int command, float arg) {
 // command bar and the overlay sat under it — both looked like "F does nothing".
 bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   if (!app) return false;
+  // A/D on a clip are decided at key-up, because tap and hold are two different
+  // commands on one key: a tap steps the playback speed, a hold shuttles. The
+  // hold is recognised by typematic repeat having fired at least once.
+  if (msg.message == WM_KEYUP && (msg.wParam == 'A' || msg.wParam == 'D')) {
+    if (!video_mode(app)) return false;
+    const int direction = msg.wParam == 'D' ? 1 : -1;
+    if (app->skim_shuttled) {
+      // Settle the shuttle on the exact frame, the way letting go of the
+      // scrubber does — otherwise it stops on whatever keyframe the last cheap
+      // seek happened to land on.
+      (void)mv_video_seek(app->session, app->skim_target_ns, 1);
+      app->skim_shuttled = false;
+      app->skim_tick_ms = 0;
+    } else {
+      apply_rate(app, app->rate_index + direction);
+    }
+    return true;
+  }
   if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
   const bool repeat = (msg.lParam & (1 << 30)) != 0;
-  const bool arrow = msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT;
-  // Ignore typematic repeats except Left/Right, which should walk the folder
-  // while the key is held.
+  const bool arrow = msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT ||
+                     msg.wParam == 'A' || msg.wParam == 'D';
+  // Ignore typematic repeats except Left/Right and A/D, which should walk the
+  // folder — or skim the clip — while the key is held.
   if (repeat && !arrow) return false;
 
   switch (msg.wParam) {
+    // plan/16: A/D are browse prev/next, and Video mode reinterprets them as
+    // skim. A held key shuttles on the non-exact seek (nearest keyframe) so it
+    // cannot queue a decode-forward per repeat; a single tap, and the end of a
+    // burst, settle exactly where asked. Same two modes as the scrubber drag
+    // and its release (plan/05).
+    case 'A':
+    case 'D': {
+      const int direction = msg.wParam == 'D' ? 1 : -1;
+      if (!video_mode(app)) {
+        folder_step(app, direction);
+        return true;
+      }
+      // The down edge of a tap does nothing: it is not yet known to be a tap.
+      // The first typematic repeat is what makes it a hold, and from there
+      // every repeat shuttles on the cheap seek (nearest keyframe) so a held
+      // key cannot queue a decode-forward per repeat (plan/16 speed rule 1).
+      if (!repeat) {
+        app->skim_shuttled = false;
+        app->skim_tick_ms = 0;
+        return true;
+      }
+      app->skim_shuttled = true;
+      (void)skim(app, direction * kSkimStepNs, false);
+      return true;
+    }
     case VK_F3:
     case 'F':
       ++app->input.toggle_overlay_seq;
       break;
+    // plan/16: J / K / L are -10 s / pause / +10 s. The code had J at -5 s and
+    // L as bare play, which is not the same command as "+10 s" — holding L
+    // never moved the position at all.
+    case 'J':
+    case 'L': {
+      const int64_t direction = msg.wParam == 'L' ? 1 : -1;
+      app->skim_tick_ms = 0;  // a jump is not part of a skim burst
+      (void)skim(app, direction * kTransportStepNs, true);
+      break;
+    }
+    case 'K': (void)mv_video_pause(app->session); break;
+    case VK_OEM_COMMA: (void)mv_video_step(app->session, -1); break;
+    case VK_OEM_PERIOD: (void)mv_video_step(app->session, 1); break;
     case VK_SPACE:
-      ++app->input.toggle_animation_seq;
+      {
+        uint32_t state = MV_PLAY_STOPPED;
+        (void)mv_video_state(app->session, &state);
+        if (state == MV_PLAY_PLAYING) (void)mv_video_pause(app->session);
+        else if (state != MV_PLAY_STOPPED) (void)mv_video_play(app->session);
+        else ++app->input.toggle_animation_seq;
+      }
       break;
     case 'R':
       ++app->input.reset_stats_seq;
@@ -384,6 +541,8 @@ void layout_chrome(app_state* app) noexcept {
   const int height = rc.bottom - rc.top;
   app->chrome.resize(width, bar, dpi);
   if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
+  const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
+  if (app->chrome.transport_attached()) app->chrome.resize_transport(width, height, strip, dpi);
   if (app->chrome.gallery_attached()) app->chrome.resize_gallery(width, height, dpi);
 }
 
@@ -403,6 +562,8 @@ bool attach_chrome(app_state* app) {
   // The strip is attached visible; nothing is open yet, so park it until a
   // listing says otherwise.
   app->chrome.show_filmstrip(false, rc.right - rc.left, height, dpi);
+  (void)app->chrome.attach_transport(app->window, app, &chrome_on_command, app->session,
+                                     rc.right - rc.left, height, dpi);
   (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
                                    rc.right - rc.left, height, dpi);
   app->chrome.apply_settings(app->settings.flags());
@@ -418,10 +579,12 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   app->input.dpi_scale = static_cast<float>(dpi) / 96.0f;
   app->input.chrome_height_px =
       app->chrome_on_screen ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi)) : 0;
-  app->input.chrome_bottom_px =
-      app->chrome.filmstrip_visible()
-          ? static_cast<std::uint32_t>(mv::shell::chrome_filmstrip_height_px(dpi))
-          : 0;
+  // Both bottom strips reserve canvas. The transport is only ever up while a
+  // clip is playing or paused, and reserving is what keeps it off the video.
+  int bottom = 0;
+  if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
+  if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
+  app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
 }
 
 // Single place that decides which islands are on screen, so the strip, the
@@ -448,6 +611,16 @@ void apply_view_state(app_state* app) noexcept {
   }
   if (app->gallery_visible != app->chrome.gallery_visible()) {
     app->chrome.show_gallery(app->gallery_visible, width, height, dpi);
+  }
+  // Auto show/hide: a clip is open, and the grid is not covering everything.
+  // Ordered after the filmstrip so the strip height it stacks on is current.
+  const bool want_transport = app->video_on && !app->gallery_visible;
+  const int strip = app->chrome.filmstrip_visible()
+                        ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
+  if (want_transport != app->chrome.transport_visible()) {
+    app->chrome.show_transport(want_transport, width, height, strip, dpi);
+  } else if (want_transport) {
+    app->chrome.resize_transport(width, height, strip, dpi);
   }
   update_client_metrics(app, app->window);
   ++app->input.resize_seq;
@@ -573,7 +746,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_DROPFILES: {
       auto drop = reinterpret_cast<HDROP>(wparam);
       wchar_t path[MAX_PATH]{};
-      if (::DragQueryFileW(drop, 0, path, MAX_PATH) > 0) open_image(app, path);
+      if (::DragQueryFileW(drop, 0, path, MAX_PATH) > 0) open_media(app, path);
       ::DragFinish(drop);
       return 0;
     }
@@ -630,6 +803,14 @@ bool parse_options(lab_options& options, std::wstring& open_path, bool& chrome_e
           ok = false;
         }
       }
+    } else if (arg == L"--av-soak") {
+      std::wstring value; next(value);
+      wchar_t* end = nullptr;
+      const auto seconds = std::wcstoul(value.c_str(), &end, 10);
+      if (value.empty() || *end || seconds == 0 || seconds > 86400) { error = L"--av-soak requires 1..86400 seconds"; ok = false; }
+      else options.av_soak_seconds = static_cast<std::uint32_t>(seconds);
+    } else if (arg == L"--csv") {
+      next(options.av_csv);
     } else if (arg == L"--json") {
       next(options.json_report_path);
     } else if (arg == L"--gate") {
@@ -675,6 +856,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     return 2;
   }
 
+  if (options.av_soak_seconds) {
+    const auto clip = utf8_from_wide(open_path);
+    const auto csv = utf8_from_wide(options.av_csv);
+    return mv::shell::run_av_soak({clip.c_str(), options.av_soak_seconds, csv.c_str()});
+  }
   mv::trace::provider_register();
 
   // The ABI round-trip, exercised from the native side as well as from C#: the
@@ -744,7 +930,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ++app.input.resize_seq;
     publish(&app);
   }
-  if (!open_path.empty()) open_image(&app, open_path);
+  if (!open_path.empty()) open_media(&app, open_path);
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

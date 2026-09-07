@@ -35,6 +35,16 @@ MV_API void release_gpu_image(image::gpu_image* image);
 // without polling. Null if the session is null.
 [[nodiscard]] MV_API void* image_ready_wait_handle(mv_session_t session);
 
+[[nodiscard]] MV_API bool poll_video(mv_session_t session, player::time_ns vblank,
+                                      player::video_frame& frame, bool& active);
+
+// [any-thread][wait-free] True from the moment a clip is published on this
+// session until it is retired — i.e. before the first decoded frame exists.
+// The render thread needs the distinction: "no texture" is the empty window,
+// "no texture yet, clip open" is a clip loading, and the two must not paint
+// the same thing.
+[[nodiscard]] MV_API bool video_open(mv_session_t session) noexcept;
+
 // PR 5a video. Same wait-free handoff as take_ready_image, but a video frame is
 // its own type: two SRVs, an NV12/P010 format, a colour_desc and a PTS. It is
 // deliberately NOT forced into image::gpu_image.

@@ -38,4 +38,12 @@ project.lock.json
 # PR 5 test corpus — generated locally, never committed.
 # plan/09: "Do not put the RAW corpus in git." Same rule for 4K video clips:
 # they live in the repo so every session can reach them, and stay out of history.
-tools/testmedia/
+#
+# The GENERATOR is not corpus. Ignoring the whole directory took generate.sh
+# with it, so a clean clone had no clips AND no way to make them, and every
+# real-clip test skipped while ctest still reported success. Ignore the
+# contents, keep the script. A directory-level ignore also stops git
+# descending, so this has to be `dir/*` rather than `dir/` for the negation
+# below to be reachable at all.
+tools/testmedia/*
+!tools/testmedia/generate.sh

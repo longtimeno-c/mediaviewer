@@ -9,7 +9,9 @@ present_decision choose(const presenter_input& in) noexcept {
   // plan/03 has the render loop wait on the frame-latency waitable BEFORE
   // recording, so the frame we decide now reaches the glass about one refresh
   // from now. plan/05: present the frame closest to master + one vblank.
-  const time_ns target = in.master_clock_ns + in.vblank_ns;
+  const double rate = in.playback_rate > 0.0 ? in.playback_rate : 1.0;
+  const time_ns interval = static_cast<time_ns>(static_cast<double>(in.vblank_ns) * rate);
+  const time_ns target = in.master_clock_ns + interval;
   out.target_ns = target;
 
   if (!in.has_next) {
@@ -31,12 +33,8 @@ present_decision choose(const presenter_input& in) noexcept {
     return out;
   }
 
-  // Late. One frame interval of tolerance, scaled by playback rate: at 2x a
-  // frame's worth of wall-clock time is half as long, so a fixed tolerance
-  // would drop frames that are actually on time.
-  const double rate = in.playback_rate > 0.0 ? in.playback_rate : 1.0;
-  const time_ns interval =
-      in.vblank_ns > 0 ? static_cast<time_ns>(static_cast<double>(in.vblank_ns) / rate) : 0;
+  // Both delta and interval are STREAM time. At 4x, one display interval
+  // covers four times as much stream time; dividing here drops on-time frames.
 
   if (-delta > interval) {
     // plan/05: "if the next frame is already late by more than a frame

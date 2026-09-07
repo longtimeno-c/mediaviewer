@@ -40,6 +40,9 @@ struct present_counters {
 // thread publishes, the render thread and the F3 overlay acquire. POD only —
 // player/ never makes an ImGui call; all ImGui stays in shell/present_lab.cpp.
 struct clock_stats {
+  std::uint64_t decode_errors = 0;
+  std::uint64_t surface_waits = 0;
+  std::uint64_t ring_backpressure = 0;
   bool                  audio_master = true;
   clock_fallback_reason fallback     = clock_fallback_reason::none;
   decoder_kind          decoder      = decoder_kind::none;

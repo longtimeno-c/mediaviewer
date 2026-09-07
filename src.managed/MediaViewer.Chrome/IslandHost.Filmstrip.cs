@@ -47,9 +47,11 @@ public static partial class IslandHost
 
             if (args.Session != 0)
             {
+                StopVideoControls();
                 _folderSession?.Dispose();
                 _folderSession = MediaViewerSession.Borrow(checked((IntPtr)args.Session));
                 StartDrain();
+                StartVideoControls(parent);
             }
 
             _filmstrip?.Dispose();
@@ -93,6 +95,7 @@ public static partial class IslandHost
         {
             _completionWait?.Unregister(null);
             _completionWait = null;
+            StopVideoControls();
             _folderSession?.Dispose();
             _folderSession = null;
             if (_filmstrip is not null)
@@ -157,7 +160,7 @@ public static partial class IslandHost
                 select = (int)c.Payload;
                 busy = true;
             }
-            else if (c.Kind == MvCompletionKind.ImageOpened)
+            else if (c.Kind is MvCompletionKind.ImageOpened or MvCompletionKind.VideoOpened)
             {
                 // Published (or failed) for the current selection — either way
                 // there is nothing left to wait for.

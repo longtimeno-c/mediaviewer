@@ -40,6 +40,12 @@ arrow key. **One router, on the UI thread, in the native window procedure.**
 Dispatch is an array index, not a string lookup. The palette filters the same static table
 in memory. No I/O on keydown.
 
+**Tap and hold may be two commands on one key**, and `A` / `D` on a clip are the case that
+earns it: a tap is a discrete adjustment (speed), a hold is a continuous one (skim). The
+distinction is typematic repeat — the down edge of a tap does nothing, the first repeat makes
+it a hold, and key-up decides. This is a shape to use sparingly; it is here because shuttling
+and speed are the same gesture at two durations, not to double the key count.
+
 **Modes** (a handful, not a modal editor):
 
 | Mode | When | Arrow keys mean |
@@ -80,7 +86,7 @@ Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal t
 
 | Key | Command |
 |---|---|
-| `←` `→` or `A` `D` | Previous / next |
+| `←` `→` or `A` `D` | Previous / next. On a clip `A` `D` become speed (tap) and skim (hold) — see Video below; `←` `→` stay prev / next in every mode |
 | `Space` / `Backspace` | Next / previous. **Space is not the lab sweep after PR 6.** On a video or animation, Space is play/pause |
 | `Home` / `End` | First / last |
 | `PageUp` / `PageDown` | Skip ~10, or previous / next *folder* when the folder tree is populated |
@@ -155,6 +161,8 @@ file manager for a card dump.
 | Key | Command |
 |---|---|
 | `Space` | Play / pause |
+| tap `A` `D` | **Playback speed** one rung down / up the ladder 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a *view* of this: native owns the rate, pushes it to the island, and the dropdown posts back — one router, never two owners |
+| hold `A` `D` | **Skim** −2 s / +2 s per key repeat. Non-exact seek (nearest keyframe) while held, so a shuttle cannot queue a decode-forward per repeat; the release settles exactly, the same two modes as a scrubber drag and its release. Intent accumulates across the burst — re-reading the position each repeat asks to move from a point the last press already rounded backwards |
 | `J` `K` `L` | −10 s / pause / +10 s |
 | `,` `.` | Frame step (already in [05-video-pipeline.md](05-video-pipeline.md)) |
 | `Shift+M` | Mute (`M` is not mute — reserved so a FastStone-layout preset can put Move on `M` in v1.1) |
@@ -314,7 +322,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | PR | What lands |
 |---|---|
 | 4 | Arrow next/prev, sort (name/mtime/size/type), five-slot LRU that hold-previous will use. No command table yet |
-| 5c | Transport commands, SMTC, `,` `.`, media keys |
+| 5c | Transport commands, SMTC, `,` `.`, media keys, `A` `D` tap-speed / hold-skim, speed dropdown at the bar's right, bottom-centre transport strip |
 | **6** | Router, default browse/view/slideshow map, `?`, palette, Space semantics, marks, F7/F8, status, typeahead, sticky zoom, companions-as-hidden, loupe, hold-previous, blinkies (display-referred), pixel grid, background, folder tree island (or slip), always-on-top, fullscreen chrome hide, animation play/pause |
 | 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop |
 | 8 | `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
