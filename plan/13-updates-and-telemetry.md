@@ -172,6 +172,9 @@ One screen on first run, a real choice, no dark pattern, no pre-ticked box, and 
 turns it off later and actually does. For an app whose whole job is looking at people's private
 photos, anything else is a betrayal of the use case — and it will be the thing people write about.
 
+Do not follow it with a second modal. The default-photo-viewer prompt in
+[09](09-build-and-test.md) waits until after this choice, on the next successful still open.
+
 **Be honest that the update check itself is a network call.** It reveals IP, version, and rough
 timing even with telemetry off. Say so in the privacy note, and offer a setting to disable
 automatic checks for users who want the app fully offline.

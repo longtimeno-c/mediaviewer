@@ -1,18 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-#
-# plan/09-build-and-test.md splits CI deliberately:
-#
-#   - Correctness, golden-image and fuzz suites run on hosted runners, where
-#     they belong.
-#   - The frame-time suite runs ONLY on a self-hosted runner with a real GPU, a
-#     pinned power profile and nothing else scheduled on it.
-#
-# "GitHub-hosted Windows runners have no usable GPU and noisy neighbours.
-#  PresentMon on a cloud VM cannot measure the D6 gate, and a green check that
-#  proves nothing is worse than no check, because people trust it."
-#
-# So the frametime job is gated on a self-hosted label and is skipped, loudly,
-# when no such runner exists. It is never faked on a hosted runner.
+# Correctness runs hosted. The performance gate requires an explicitly
+# provisioned interactive GPU runner; missing configuration fails promptly.
 
 name: CI
 
@@ -20,12 +8,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 defaults:
   run:
-    # Explicit, because the default shell for `run:` on Windows runners is not
-    # PowerShell. Left implicit, `$env:FOO` reaches the command as six literal
-    # characters and the resulting error blames whatever consumed it.
     shell: pwsh
 
 env:
@@ -173,11 +159,23 @@ jobs:
   # ---------------------------------------------------------------------------
   frametime:
     name: Frame-time gate (self-hosted GPU)
-    runs-on: [self-hosted, windows, gpu]
-    # Only on main: a self-hosted runner is one machine, and queueing every PR
-    # behind a 60-second soak per push makes people stop caring about the result.
-    if: github.ref == 'refs/heads/main'
+    # Without opt-in, route to hosted Windows to fail immediately instead of
+    # queueing for 24 hours. Fork code must not execute on a persistent runner.
+    runs-on: ${{ vars.MV_GPU_RUNNER_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "windows", "gpu"]') || 'windows-latest' }}
+    timeout-minutes: 15
+    concurrency:
+      group: frametime-gpu
+      cancel-in-progress: false
     steps:
+      - name: Require configured GPU runner
+        env:
+          GPU_ENABLED: ${{ vars.MV_GPU_RUNNER_ENABLED }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if ($env:GPU_ENABLED -ne 'true' -or $env:FORK_PR -eq 'true') {
+            throw 'Frame-time gate not measured. Configure an interactive [self-hosted, windows, gpu] runner and MV_GPU_RUNNER_ENABLED=true. For forks, review and test a trusted in-repository branch. See README.md.'
+          }
+
       - uses: actions/checkout@v4
 
       - name: Configure and build
@@ -185,32 +183,35 @@ jobs:
           cmake -S . -B build -A x64
           cmake --build build --config Release
 
+      - name: Swapchain recovery and handle ownership
+        run: ./build/bin/Release/mv_swapchain_recovery.exe
+
       - name: Restore the rolling baseline
         uses: actions/cache/restore@v4
         with:
           path: build/bin/Release/frametime-baseline.json
-          key: frametime-baseline-${{ runner.name }}
+          key: frametime-v2-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: frametime-v2-${{ runner.name }}-
 
-      # PR 1's verify line, inherited by every later PR: presents at display
-      # refresh, zero dropped frames over 60 s. Also fails on p99 regressing
-      # more than 10 % against the rolling baseline, or any frame over 2x the
-      # refresh interval.
-      - name: 60-second soak
-        run: ./build/bin/Release/frametime.exe --seconds 60
+      - name: Animated (cached blit) and idle 60-second gates
+        env:
+          UPDATE_BASELINE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          $soakArgs = @('--seconds', '60')
+          if ($env:UPDATE_BASELINE -eq 'true') { $soakArgs += '--update-baseline' }
+          ./build/bin/Release/frametime.exe @soakArgs
 
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: frametime-report
-          path: build/bin/Release/frametime-report.json
-
-      - name: Update the rolling baseline
-        if: success()
-        run: ./build/bin/Release/frametime.exe --seconds 60 --update-baseline
+          path: |
+            build/bin/Release/frametime-report.json
+            build/bin/Release/frametime-idle-report.json
 
       - uses: actions/cache/save@v4
-        if: success()
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           path: build/bin/Release/frametime-baseline.json
-          key: frametime-baseline-${{ runner.name }}
+          key: frametime-v2-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}

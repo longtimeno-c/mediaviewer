@@ -53,9 +53,10 @@ Read in order:
   ([11-licensing.md](11-licensing.md), [12](12-decision-log.md)).
 - **Whether WinUI 3 XAML islands hold up** — validated in PR 3, before any panes are built on them.
   Fallback: a WinUI app with `SwapChainPanel` and an accepted composed frame.
-- **A quiet machine for the D6 gate.** PR 1's "0 dropped frames over 60 s" is measured but not yet
-  demonstrated: the development box drops 4-17 frames per run while the app's own frame never
-  exceeds 0.51 ms of a 16.67 ms budget. Needs the self-hosted GPU runner
-  [09](09-build-and-test.md) already specifies. Blocks starting PR 2.
+- **A quiet machine for the D6 gate.** PR 1's corrected animated and idle instruments
+  require a passing 60-second run each. A 2026-09-07 re-run on the development box
+  passed one animated soak and dropped frames on another; idle zero-presents was not
+  established with the window under a cursor. The gate is inherited, not waived.
+  See [12](12-decision-log.md) and the root README.
 
 Everything else is decided; [12-decision-log.md](12-decision-log.md) records why.

@@ -67,7 +67,7 @@ class swapchain {
   [[nodiscard]] DXGI_FORMAT format() const noexcept { return format_; }
   [[nodiscard]] bool tearing_supported() const noexcept { return tearing_supported_; }
 
-  // The refresh interval of the output this swapchain is on, in seconds.
+  // The current output interval in seconds, or zero when unavailable.
   // Re-queried on WM_DISPLAYCHANGE and on window move (plan/03).
   [[nodiscard]] double refresh_interval_seconds() const noexcept { return refresh_seconds_; }
   void refresh_output_info() noexcept;
@@ -94,7 +94,7 @@ class swapchain {
   std::uint32_t height_ = 0;
   DXGI_FORMAT format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
   bool tearing_supported_ = false;
-  double refresh_seconds_ = 1.0 / 60.0;
+  double refresh_seconds_ = 0.0;
 };
 
 }  // namespace mv::gfx

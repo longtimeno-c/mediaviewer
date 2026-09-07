@@ -108,6 +108,23 @@ for legacy GIFs). Loop counts respected. Scrubbable.
 
 ## Color
 
-Read the ICC profile (`APP2`/`iCCP`/`colr` box) and transform via **LittleCMS** to linear scRGB at
-decode time, cached as an FP16 or RGB10A2 texture. Untagged JPEG → assume sRGB. Untagged RAW →
-camera matrix from LibRaw.
+Read the ICC profile (`APP2`/`iCCP`/`colr` box) and transform via **LittleCMS** to linear Rec.709
+at decode time. Untagged JPEG → assume sRGB. Untagged RAW → camera matrix from LibRaw.
+Display-referred sources then **sRGB-encode with no tone map** (D6, [03](03-rendering.md)).
+
+The **viewer LRU** is 8-bit sRGB (or RGB10A2), not FP16 — [02](02-architecture.md). FP16 is the
+edit working space, promoted when an edit stack is active. The linear hop still happens at
+decode (ICC → linear → sRGB OETF); skipping it and treating a tagged file as sRGB is a bug.
+
+- LittleCMS calls on the decode pool use a **per-job `cmsContext`**. The default/global context
+  is not thread-safe; two tagged files at once is a data race.
+- A **broken profile is not untagged sRGB.** Fail the transform (`corrupt` / `unsupported`).
+  Copying the encoded bytes through with `icc_tagged = false` still treats tagged pixels as
+  sRGB, which is the D6 bug. The overlay must not claim ICC correctness it did not deliver.
+- PNG `gAMA`/`cHRM` without `iCCP` is not a substitute for a profile; do not invent one.
+
+## Mips (until the compute pass in [03](03-rendering.md))
+
+CPU Mitchell is acceptable for PR 2. **Each level's size is D3D11's rule: `max(1, floor(prev/2))`.**
+Ceil (`(w+1)/2`) uploads the wrong pitch into `CreateTexture2D` on any odd dimension. Filter in
+linear, then encode; do not box-filter 8-bit sRGB.

@@ -14,10 +14,15 @@
 #include <vector>
 
 #include "abi/guard.h"
+#include "abi/native.h"
 #include "core/job_system.h"
 #include "core/spsc_ring.h"
 #include "core/status.h"
 #include "core/trace.h"
+#include "gfx/device.h"
+#include "image/pipeline.h"
+#include "image/upload.h"
+#include "io/file.h"
 
 // The enum values on both sides of the line must stay numerically identical.
 // If someone reorders mv::status, this stops the build rather than shipping a
@@ -36,6 +41,7 @@ static_assert(static_cast<int>(mv::status::internal) == MV_ERR_INTERNAL, "mv_sta
 
 static_assert(sizeof(mv_completion) == 40, "mv_completion layout is part of the ABI");
 static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the ABI");
+static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the ABI");
 
 namespace mv::abi {
 
@@ -97,12 +103,26 @@ struct mv_session {
   std::vector<mv_completion> completions;
   HANDLE completion_event = nullptr;
 
+  std::mutex device_mutex;
+  mv::gfx::com_ptr<ID3D11Device> device;
+
+  std::mutex image_mutex;
+  std::atomic<mv::image::gpu_image*> ready{nullptr};
+  std::shared_ptr<mv::image::display_image> cpu;
+  mv_image_info info{};
+  HANDLE image_ready_event = nullptr;
+
   void push_completion(const mv_completion& c) noexcept {
     {
       std::lock_guard lock(completion_mutex);
       completions.push_back(c);
     }
     if (completion_event) ::SetEvent(completion_event);
+  }
+
+  mv::gfx::com_ptr<ID3D11Device> copy_device() {
+    std::lock_guard lock(device_mutex);
+    return device;
   }
 };
 
@@ -116,6 +136,31 @@ using mv::status;
 // null — the SafeHandle on the managed side is what actually prevents
 // use-after-free, which is why plan/14 makes it non-negotiable.
 constexpr bool valid(mv_session_t s) noexcept { return s != nullptr; }
+
+mv_image_info info_from(const mv::image::display_image& cpu) noexcept {
+  mv_image_info info{};
+  info.width = cpu.width;
+  info.height = cpu.height;
+  info.format = static_cast<uint32_t>(cpu.format);
+  info.icc_tagged = cpu.icc_tagged ? 1u : 0u;
+  info.transfer_intent = static_cast<uint32_t>(cpu.intent);
+  return info;
+}
+
+bool publish_view(mv_session* session, const mv::job_context& ctx, mv_image_info info,
+                  std::shared_ptr<mv::image::display_image> cpu,
+                  std::unique_ptr<mv::image::gpu_image> gpu) {
+  std::lock_guard lock(session->image_mutex);
+  if (ctx.gen() != session->jobs.current_generation()) return false;
+  session->info = info;
+  if (cpu) session->cpu = std::move(cpu);
+  if (gpu) {
+    mv::image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
+    delete old;
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -151,11 +196,18 @@ mv_status MV_CALL mv_session_create(const mv_session_config* config, mv_session_
     session->completion_event = ::CreateEventW(nullptr, TRUE /*manual reset*/,
                                                FALSE /*non-signalled*/, nullptr);
     if (!session->completion_event) return status::internal;
+    session->image_ready_event = ::CreateEventW(nullptr, FALSE /*auto-reset*/,
+                                                FALSE /*non-signalled*/, nullptr);
+    if (!session->image_ready_event) {
+      ::CloseHandle(session->completion_event);
+      return status::internal;
+    }
 
     session->completions.reserve(256);
 
     const status started = session->jobs.start(workers);
     if (started != status::ok) {
+      ::CloseHandle(session->image_ready_event);
       ::CloseHandle(session->completion_event);
       return started;
     }
@@ -181,7 +233,9 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     // Last reference. Shut the pool down first: in-flight jobs hold a raw
     // pointer to this session and must all be joined before it dies.
     session->jobs.shutdown();
+    delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
     if (session->completion_event) ::CloseHandle(session->completion_event);
+    if (session->image_ready_event) ::CloseHandle(session->image_ready_event);
     delete session;
     return status::ok;
   }));
@@ -280,4 +334,173 @@ mv_status MV_CALL mv_session_job_stats(mv_session_t session, mv_job_stats* out_s
   }));
 }
 
+mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uint64_t* out_job_id) {
+  return static_cast<mv_status>(guard("mv_image_open", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr, "utf8_path must not be null");
+    MV_REQUIRE(utf8_path[0] != '\0', "utf8_path must not be empty");
+
+    std::string owned(utf8_path);
+    const auto correlation = mv::abi::current_correlation_id();
+    const mv::generation gen = session->jobs.current_generation();
+
+    const mv::job_id id = session->jobs.submit_at(
+        gen,
+        [session, path = std::move(owned)](const mv::job_context& ctx) -> status {
+          if (ctx.cancelled()) return status::cancelled;
+
+          auto bytes = mv::io::read_all(path);
+          if (!bytes) return bytes.error();
+          if (ctx.cancelled()) return status::cancelled;
+
+          // First pixel: JPEG DCT 1/4. Fit-to-window of the preview fills the
+          // same rect as the full image; 100 % during load is briefly small.
+          if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
+            if (ctx.cancelled()) return status::cancelled;
+            std::unique_ptr<mv::image::gpu_image> gpu;
+            if (auto dev = session->copy_device()) {
+              auto uploaded = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx);
+              if (uploaded) {
+                gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+              } else if (uploaded.error() == status::cancelled) {
+                return status::cancelled;
+              }
+            }
+            if (gpu) {
+              (void)publish_view(session, ctx, info_from(preview.value()), nullptr, std::move(gpu));
+            }
+          } else if (preview.error() == status::cancelled) {
+            return status::cancelled;
+          }
+
+          auto decoded = mv::image::decode_bytes(bytes.value(), &ctx);
+          if (!decoded) return decoded.error();
+          if (ctx.cancelled()) return status::cancelled;
+
+          auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
+          const mv_image_info info = info_from(*cpu);
+          // CPU cache first so a device rebuild can re-upload if CreateTexture2D
+          // is still in flight against the old device (plan/12).
+          if (!publish_view(session, ctx, info, cpu, nullptr)) return status::cancelled;
+
+          const bool large =
+              static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
+          auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
+            auto dev = session->copy_device();
+            if (!dev) return status::ok;
+            auto uploaded = mv::image::upload(dev.Get(), *cpu, ctx.gen(), &ctx, mip_limit);
+            if (!uploaded) return uploaded.error();
+            if (ctx.cancelled()) return status::cancelled;
+            auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+            if (!publish_view(session, ctx, info, nullptr, std::move(gpu))) {
+              return status::cancelled;
+            }
+            return status::ok;
+          };
+
+          if (large) {
+            const status first = upload_and_publish(1);
+            if (first != status::ok) return first;
+            if (ctx.cancelled()) return status::cancelled;
+          }
+          return upload_and_publish(0);
+        },
+        [session, correlation](mv::job_id id, mv::generation gen, status result) {
+          int64_t payload = 0;
+          if (result == status::ok) {
+            std::lock_guard lock(session->image_mutex);
+            payload = (static_cast<int64_t>(session->info.width) << 32) |
+                      static_cast<int64_t>(session->info.height);
+          }
+          mv_completion c{};
+          c.kind = MV_COMPLETION_IMAGE_OPENED;
+          c.status = static_cast<uint32_t>(result);
+          c.job_id = id;
+          c.correlation_id = correlation;
+          c.generation = gen;
+          c.payload = payload;
+          session->push_completion(c);
+        });
+
+    if (id == mv::invalid_job) return status::internal;
+    if (out_job_id) *out_job_id = id;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_session_image_info(mv_session_t session, mv_image_info* out_info) {
+  return static_cast<mv_status>(guard("mv_session_image_info", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_info != nullptr, "out_info must not be null");
+    std::lock_guard lock(session->image_mutex);
+    *out_info = session->info;
+    return status::ok;
+  }));
+}
+
 }  // extern "C"
+
+namespace mv::abi {
+
+status attach_device(mv_session_t session, ID3D11Device* device) {
+  if (!session || !device) return status::invalid_arg;
+  {
+    std::lock_guard lock(session->device_mutex);
+    session->device = device;
+  }
+  delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
+
+  const generation gen = session->jobs.current_generation();
+  gfx::com_ptr<ID3D11Device> dev = session->copy_device();
+  if (!dev) return status::ok;
+
+  // Re-upload from the CPU cache on a worker, never on the render thread.
+  const job_id id = session->jobs.submit_at(
+      gen,
+      [session, dev](const job_context& ctx) -> status {
+        if (ctx.cancelled()) return status::cancelled;
+        std::shared_ptr<image::display_image> cpu;
+        {
+          std::lock_guard lock(session->image_mutex);
+          cpu = session->cpu;
+        }
+        if (!cpu || cpu->width == 0) return status::ok;
+        auto uploaded = image::upload(dev.Get(), *cpu, ctx.gen(), &ctx);
+        if (!uploaded) return uploaded.error();
+        if (ctx.cancelled()) return status::cancelled;
+        auto gpu = std::make_unique<image::gpu_image>(std::move(uploaded).value());
+        std::lock_guard lock(session->image_mutex);
+        if (ctx.gen() != session->jobs.current_generation()) return status::cancelled;
+        if (session->cpu != cpu) return status::cancelled;
+        image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
+        delete old;
+        if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+        return status::ok;
+      });
+  (void)id;
+  return status::ok;
+}
+
+void detach_device(mv_session_t session) {
+  if (!session) return;
+  // In-flight CreateTexture2D against this device must not publish onto the
+  // next one (plan/12). CPU cache is kept; attach_device re-uploads.
+  session->jobs.bump_generation();
+  delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
+  std::lock_guard lock(session->device_mutex);
+  session->device.Reset();
+}
+
+image::gpu_image* take_ready_image(mv_session_t session) {
+  if (!session) return nullptr;
+  return session->ready.exchange(nullptr, std::memory_order_acq_rel);
+}
+
+void* image_ready_wait_handle(mv_session_t session) {
+  if (!session) return nullptr;
+  return session->image_ready_event;
+}
+
+void release_gpu_image(image::gpu_image* image) { delete image; }
+
+}  // namespace mv::abi

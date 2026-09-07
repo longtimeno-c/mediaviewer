@@ -25,11 +25,14 @@
       "name": "imgui",
       "features": ["dx11-binding"]
     },
-    "catch2"
+    "catch2",
+    "libjpeg-turbo",
+    "libspng",
+    "lcms"
   ],
 
   "$comment-v1-pending": {
-    "PR 2": ["libjpeg-turbo", "libspng", "lcms"],
+    "PR 2": "landed: libjpeg-turbo, libspng, lcms",
     "PR 4": ["sqlite3", "directxtex"],
     "PR 5a": ["ffmpeg[core,avcodec,avformat,avutil,swscale,swresample]"],
     "PR 7": ["tiff", "libwebp", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],

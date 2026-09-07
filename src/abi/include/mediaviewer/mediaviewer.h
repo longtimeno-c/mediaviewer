@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 1
+#define MV_ABI_VERSION_MINOR 2
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -135,11 +135,15 @@ MV_API mv_status MV_CALL mv_session_current_generation(mv_session_t session,
  * decode worker, completions naturally batched (a folder scan finishing 400
  * thumbnails is ONE drain, not 400 marshalling hops), and the core stays
  * testable headlessly with no dispatcher at all.
+ *
+ * IMAGE_OPENED means pixels may be ready on the native canvas. Draining this
+ * queue does not wake an idle render thread; the lab/shell must
+ * (plan/03-rendering.md rule 4).
  * ------------------------------------------------------------------------- */
 typedef enum mv_completion_kind {
   MV_COMPLETION_NONE = 0,
-  MV_COMPLETION_ECHO = 1  /* PR 1's round-trip proof. Real kinds arrive with
-                           * the subsystems that raise them. */
+  MV_COMPLETION_ECHO = 1,         /* PR 1's round-trip proof. */
+  MV_COMPLETION_IMAGE_OPENED = 2  /* PR 2. payload = (width << 32) | height. */
 } mv_completion_kind;
 
 typedef struct mv_completion {
@@ -196,6 +200,31 @@ typedef struct mv_job_stats {
 } mv_job_stats;
 
 MV_API mv_status MV_CALL mv_session_job_stats(mv_session_t session, mv_job_stats* out_stats);
+
+/* ---------------------------------------------------------------------------
+ * Image open — same shape as echo: returns a job id immediately, the answer
+ * arrives as MV_COMPLETION_IMAGE_OPENED. Pixels never cross this line
+ * (plan/14). The native present lab binds the D3D device out of band and
+ * takes the resulting texture on the render thread.
+ * ------------------------------------------------------------------------- */
+
+typedef struct mv_image_info {
+  uint32_t width;
+  uint32_t height;
+  uint32_t format;          /* 1 JPEG, 2 PNG, 3 BMP — matches codec::format_family */
+  uint32_t icc_tagged;      /* non-zero if an ICC profile (or sRGB chunk) was used */
+  uint32_t transfer_intent; /* 0 = display-referred (no tone map) */
+  uint32_t reserved;
+} mv_image_info;
+
+/* [any-thread][no-block] `utf8_path` is owned by the caller and copied before
+ * this returns. Submit at the current generation; bump first when replacing
+ * the view. */
+MV_API mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path,
+                                       uint64_t* out_job_id);
+
+/* [any-thread][no-block] Last successfully opened image, if any. */
+MV_API mv_status MV_CALL mv_session_image_info(mv_session_t session, mv_image_info* out_info);
 
 #ifdef __cplusplus
 }  /* extern "C" */

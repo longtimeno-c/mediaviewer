@@ -179,41 +179,114 @@ required linkage decided in advance rather than discovered afterwards.
 | **`PresentCount` not advancing** | Not a fault. It advances when the compositor *displays* a frame, not when `Present()` returns, so a same-value sample is the common case. Treating it as a discontinuity made two thirds of a clean soak look like a measurement failure. The counters are cumulative, so nothing is lost by skipping such a sample. |
 | **Warm-up** | The first second is discarded before measuring, and the report states that it was. DWM has not picked the window up and the first frame carries ImGui's font-atlas upload; measuring them reports a stall that is not in the thing being verified. Declared, not quietly trimmed. |
 | **MMCSS on the render thread** | Registered as a `"Games"` multimedia task at `AVRT_PRIORITY_HIGH`. Thread priority alone does not stop the scheduler preempting a present loop on a machine doing anything else. |
-| **`publish_slot` is a seqlock, not a double buffer** | Double buffering looks sufficient and is not: with one producer and two slots, a consumer still copying the slot that was live two publishes ago gets overwritten mid-copy and reads a torn snapshot. |
+| **`publish_slot` is a wait-free triple buffer** | The producer and consumer each own a slot and exchange through a third. Two slots permit overwrite during a read; a seqlock requires retries and can starve the render thread. The triple buffer has no retry loop. |
 
-### The verify line, as measured
+### Verify status after review (2026-09-07)
 
 > **"Presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle."**
 
-| Clause | Result |
-|---|---|
-| Presents at exactly display refresh | **Holds.** p50 = 16.700 ms against a 16.667 ms (60.00 Hz) panel, across every run. |
-| ~0 % CPU idle | **Holds.** 16 ms of CPU over 12 s wall with the animation off — 0.008 % of the machine — and the swapchain stops presenting entirely. |
-| 0 dropped frames over 60 s | **Not yet demonstrated.** 4-17 dropped frames per 60 s run on the development machine. |
+The original numbers are not proof of this gate. They used a fallback 60 Hz rate,
+`SyncRefreshCount` instead of `PresentRefreshCount`, and did not require complete
+measurement coverage. Low elapsed CPU-frame time alone cannot establish the cause of
+a missed presentation. The parked-cursor bug also invalidated the general idle claim.
+The revised instrument must be rerun; PR 2 remains dependent on a passing GPU gate.
 
-The third clause is **unproven, not failed**, and the instrument says which:
-**CPU frame time never exceeds 0.51 ms against a 16.67 ms budget** — the app is not late,
-the scheduler is. The drop count also varies by a factor of four between identical
-consecutive runs, which is the signature of a noisy machine rather than a systematic
-defect.
+### PR 1 review corrections (2026-09-07)
 
-This is precisely the situation [09-build-and-test.md](09-build-and-test.md) anticipated:
-the D6 gate needs a machine with a real GPU, a pinned power profile and nothing else
-scheduled on it. **No baseline is committed**, because a baseline captured here would
-bake in that noise and quietly lower the bar for every later PR. The gate is wired into
-CI behind a `[self-hosted, windows, gpu]` label and is skipped, rather than faked, when
-no such runner exists.
+- Keep wait-before-render and `Present(1, 0)` for the composition path. The waitable
+  object bounds queue depth; sync interval 1 controls display duration. The earlier
+  plan/02 `Present(0)` example was not evidence of a double-vsync bug.
+- Query the host monitor's active display path for the rational refresh rate. Unknown
+  or ambiguous rates are zero and cannot pass the gate.
+- Track `PresentCount` with `PresentRefreshCount`, retaining the last displayed
+  baseline across duplicate polls. Missing statistics invalidate the entire window.
+- Require full 60-second windows, refresh-matched cadence, and separate idle CPU and
+  presentation counts. The operational tolerances are documented in the root README.
+- Input snapshots carry cumulative wheel units and an activity sequence. Consumers
+  take differences once; a parked cursor is not ongoing activity. Visible commands
+  request redraws. Idle waits still honor the soak deadline.
+- Resize failures restore the old RTV where possible and trigger recovery in the lab.
+  A same-size request recreates a missing view. Close each frame-latency handle.
+- Worker exceptions become error completions. Completion callbacks are called once;
+  exceptions from them are logged and contained without retrying their side effects.
+- Both soaks must pass before the existing animated report can become the baseline.
+  CI uses immutable, uniquely keyed caches and never reruns a soak just to save it.
+- Missing GPU-runner configuration produces a failed hosted check. It is not a pass
+  or a silent skip. Runner provisioning and required branch checks remain repository
+  administration tasks; the workflow does not invent a GPU.
 
-**PR 2 must not start until this clause has been demonstrated on a quiet machine.**
+Design-history notes from the implementation live here. The unconditional render-thread
+join handles self-termination; testing `running_` before joining had left a joinable
+thread at destruction. The sRGB buffer/view distinction and snapshot-fed ImGui platform
+input are mechanism corrections, not changes to D1 or D6.
 
 ---
+
+## 2026-09-07 — PR 2 started
+
+PR 2 (still decode + pan/zoom) began from `pr1-present-lab` at the owner's request, with the D6 "0 dropped frames over 60 s" clause still **unproven** on the development box.
+
+This is a sequencing call, not a reversal of D6:
+
+- The present-loop verify is still inherited. No frame-time baseline is committed.
+- The self-hosted GPU runner specified in [09](09-build-and-test.md) is still what closes the gate.
+- Starting the decode/pan work does not lower the bar; it just stops the rest of the app waiting on a quiet machine that does not exist yet.
+
+## 2026-09-07 — PR 1/PR 2 review (development box)
+
+The corrected instrument was re-run. This is status, not a waiver.
+
+| Soak | Result | Why it is not the gate |
+|---|---|---|
+| Animated 60 s | One run: 3597 frames, 0 drops, DXGI statistics complete, `meets_pr1_gate` true. An earlier run the same night: 4 dropped-frame events, 6 missed refreshes, 2 statistics gaps. | Repeatable on a quiet GPU runner, not a single pass on a noisy desk. |
+| Idle 60 s | Process CPU ~0.2–0.5 % of one core when measured. Zero-presents was not established: the lab window received mouse input (53–60 activity events). A truncated 57 s sample with 0 presents was cut off before the window closed. | Idle is invalidated by any cursor in the client area. |
+| Combined `frametime --seconds 60` | Fail (idle). | Both soaks must pass. |
+
+`frametime.exe` opens a generated BMP on the animated soak so the blit path is paced. Idle stays empty so a still that lands after warmup cannot fail the zero-present gate. Unit tests cover colour and decode shape, not a 12 MP pan.
+
+PR 2 review found constraints that were implicit and are now written into [02](02-architecture.md), [03](03-rendering.md), [04](04-image-pipeline.md), [09](09-build-and-test.md), and [14](14-abi.md). None reverse D1–D8:
+
+- An idle renderer (rule 4: stop presenting) must be **woken** when a worker publishes a texture the canvas should show. Draining `MV_COMPLETION_IMAGE_OPENED` on the UI thread and logging it is not enough; the 500 ms input tail does not cover a 60 MP decode. Device-loss re-upload has the same requirement.
+- CPU mip dimensions must match D3D11: `max(1, floor(prev/2))`. Ceil produces a chain `CreateTexture2D` cannot consume.
+- LittleCMS on the decode pool needs a **per-job `cmsContext`**. The default/global context is not thread-safe.
+- The ready GPU image is an SPSC/atomic handoff. The render thread must not take a mutex a worker holds.
+- Device rebuild bumps the job generation (or equivalent) so in-flight `CreateTexture2D` against the old device cannot be published onto the new one.
+- `CreateTexture2D` on a multithread-protected device still serializes with the immediate context. The ~2 ms upload budget in [03](03-rendering.md) applies to that path; "the worker did it" is not a pass around the hitch.
+- A broken ICC profile is not a licence to treat tagged bytes as sRGB (**D6**). Fail the transform; do not fail-open.
+- `mv_image_open` follows a generation bump. Opening without bumping replaces rather than cancels.
+
+The current tree still has several of these as defects. Recording them here is so they are not re-discovered as taste.
+
+## 2026-09-07 — Default-app prompt (PR 14)
+
+Associations were specified as register + Default Apps deep link, never a silent hijack
+([09](09-build-and-test.md), [10](10-roadmap.md)). That left becoming the default as
+something the user had to discover in Windows Settings on their own.
+
+**Added: ask once, after the first successful still open.** "Make MediaViewer your
+default photo viewer?" Yes opens Default Apps focused on this app. No / dismiss is
+remembered; Settings keeps the same action. Skip if already default.
+
+Why this shape:
+
+- Windows 10+ does not let an app write `UserChoice`. A prompt that claimed to "set
+  default" without opening Settings would be a lie, and writing the key ourselves is
+  the silent hijack the plan already forbids.
+- Asking at install, or on an empty first launch, is a codec-pack-shaped nag in front
+  of photos the user has not seen work yet. Asking after a successful still open is
+  the moment the app has earned the question.
+- Stills only. Taking `.mp4` / `.mov` in the same prompt would steal the existing
+  video player by surprise. Video stays on "Open with" plus a Settings row.
+- Do not stack with the telemetry first-run screen ([13](13-updates-and-telemetry.md)).
+
+This does not reverse D1–D8. It is a PR 14 product call, not a new contested decision.
 
 ## Still open
 
 | Question | Blocks | Notes |
 |---|---|---|
 | ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
-| **A quiet machine for the D6 gate** | PR 2 | PR 1's "0 dropped frames over 60 s" is unproven on the development box, which is noisy. Needs the self-hosted GPU runner [09](09-build-and-test.md) already specifies. |
+| **A quiet machine for the D6 gate** | PR 1 verify (inherited) | Re-run 2026-09-07: one animated pass, one animated fail, idle contaminated by mouse. Still needs the self-hosted GPU runner [09](09-build-and-test.md). |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 | Validated early by design. Fallback is a WinUI app with `SwapChainPanel` and an accepted composed frame. |
 
 ## How to use this file

@@ -13,11 +13,15 @@
 #include <shellapi.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <commdlg.h>
 
+#include <cmath>
+#include <cwchar>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "abi/guard.h"
 #include "core/trace.h"
@@ -47,7 +51,41 @@ app_state* state_from(HWND hwnd) noexcept {
 void publish(app_state* app) noexcept {
   app->lab.publish(app->input);
   app->lab.wake();
-  app->input.wheel = 0.0f;  // wheel is a delta; consume it once published
+}
+
+std::string utf8_from_wide(std::wstring_view wide) {
+  if (wide.empty()) return {};
+  const int n = ::WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
+                                      nullptr, 0, nullptr, nullptr);
+  if (n <= 0) return {};
+  std::string out(static_cast<std::size_t>(n), '\0');
+  ::WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out.data(), n,
+                        nullptr, nullptr);
+  return out;
+}
+
+void open_image(app_state* app, std::wstring_view wide_path) {
+  if (!app || !app->session || wide_path.empty()) return;
+  const std::string utf8 = utf8_from_wide(wide_path);
+  if (utf8.empty()) return;
+  mv_session_bump_generation(app->session, nullptr);
+  uint64_t job_id = 0;
+  (void)mv_image_open(app->session, utf8.c_str(), &job_id);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+void open_dialog(app_state* app, HWND hwnd) {
+  wchar_t file[MAX_PATH]{};
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = hwnd;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter = L"Images (JPEG, PNG, BMP)\0*.jpg;*.jpeg;*.png;*.bmp\0All files\0*.*\0";
+  ofn.nFilterIndex = 1;
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+  if (::GetOpenFileNameW(&ofn)) open_image(app, file);
 }
 
 void update_client_metrics(app_state* app, HWND hwnd) noexcept {
@@ -112,6 +150,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSEMOVE: {
+      if (!app->input.mouse_in_client ||
+          app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
+          app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam))) {
+        ++app->input.activity_seq;
+      }
       app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
       app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
       app->input.mouse_in_client = true;
@@ -125,6 +168,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSELEAVE: {
+      ++app->input.activity_seq;
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
       publish(app);
@@ -139,6 +183,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                         : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? 1
                                                                          : 2;
       app->input.mouse_down[index] = down;
+      ++app->input.activity_seq;
       if (down) ::SetCapture(hwnd);
       else if (!app->input.mouse_down[0] && !app->input.mouse_down[1] &&
                !app->input.mouse_down[2]) {
@@ -149,8 +194,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSEWHEEL: {
-      app->input.wheel +=
-          static_cast<float>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<float>(WHEEL_DELTA);
+      app->input.wheel_total += GET_WHEEL_DELTA_WPARAM(wparam);
+      ++app->input.activity_seq;
       publish(app);
       return 0;
     }
@@ -161,10 +206,27 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case VK_F3:     ++app->input.toggle_overlay_seq; break;
         case VK_SPACE:  ++app->input.toggle_animation_seq; break;
         case 'R':       ++app->input.reset_stats_seq; break;
+        case '0':       ++app->input.fit_seq; break;
+        case '1':       ++app->input.one_to_one_seq; break;
+        case 'O':
+          if (::GetKeyState(VK_CONTROL) & 0x8000) {
+            open_dialog(app, hwnd);
+            return 0;
+          }
+          return 0;
         case VK_ESCAPE: ::PostMessageW(hwnd, WM_CLOSE, 0, 0); return 0;
         default: return 0;
       }
+      ++app->input.activity_seq;
       publish(app);
+      return 0;
+    }
+
+    case WM_DROPFILES: {
+      auto drop = reinterpret_cast<HDROP>(wparam);
+      wchar_t path[MAX_PATH]{};
+      if (::DragQueryFileW(drop, 0, path, MAX_PATH) > 0) open_image(app, path);
+      ::DragFinish(drop);
       return 0;
     }
 
@@ -192,7 +254,7 @@ void enable_dark_titlebar(HWND hwnd) noexcept {
   (void)::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
-bool parse_options(lab_options& options, std::wstring& error) {
+bool parse_options(lab_options& options, std::wstring& open_path, std::wstring& error) {
   int argc = 0;
   LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
   if (!argv) return true;
@@ -208,7 +270,15 @@ bool parse_options(lab_options& options, std::wstring& error) {
     if (arg == L"--soak") {
       std::wstring value;
       next(value);
-      if (ok) options.soak_seconds = ::_wtof(value.c_str());
+      if (ok) {
+        wchar_t* end = nullptr;
+        options.soak_seconds = std::wcstod(value.c_str(), &end);
+        if (end == value.c_str() || *end != L'\0' || !std::isfinite(options.soak_seconds) ||
+            options.soak_seconds <= 0.0 || options.soak_seconds > 86400.0) {
+          error = L"--soak must be a number in (0, 86400]";
+          ok = false;
+        }
+      }
     } else if (arg == L"--json") {
       next(options.json_report_path);
     } else if (arg == L"--gate") {
@@ -217,6 +287,10 @@ bool parse_options(lab_options& options, std::wstring& error) {
       options.overlay_visible = false;
     } else if (arg == L"--static") {
       options.start_animating = false;
+    } else if (arg == L"--open") {
+      next(open_path);
+    } else if (!arg.empty() && arg[0] != L'-') {
+      open_path = std::wstring(arg);
     } else {
       error = L"unrecognised argument: " + std::wstring(arg);
       ok = false;
@@ -236,7 +310,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   lab_options options;
   std::wstring parse_error;
-  if (!parse_options(options, parse_error)) {
+  std::wstring open_path;
+  if (!parse_options(options, open_path, parse_error)) {
     ::MessageBoxW(nullptr, parse_error.c_str(), kWindowTitle, MB_ICONERROR | MB_OK);
     return 2;
   }
@@ -279,7 +354,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
 
   enable_dark_titlebar(hwnd);
+  ::DragAcceptFiles(hwnd, TRUE);
   update_client_metrics(&app, hwnd);
+  app.lab.bind_session(app.session);
   app.lab.publish(app.input);
 
   if (auto started = app.lab.start(hwnd, options); !started) {
@@ -290,6 +367,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   ::ShowWindow(hwnd, show_command);
   ::UpdateWindow(hwnd);
+  if (!open_path.empty()) open_image(&app, open_path);
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

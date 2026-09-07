@@ -4,8 +4,9 @@ A Windows viewer for a real camera dump — photos and video in one folder. Open
 instantly, pans without a dropped frame, shows and edits metadata, does the everyday photo
 edits, and trims video without re-encoding.
 
-**Status: PR 1 of 15.** There is a present lab, a native core, and a C ABI. There is not yet
-a viewer — it cannot open an image. See [Where this actually is](#where-this-actually-is).
+**Status: PR 2 of 15.** The present lab opens JPEG, PNG and BMP, colour-manages them,
+and pans/zooms on the same swapchain. PR 1's present-loop verify is inherited and not
+yet demonstrated on a quiet GPU runner. See [Where this actually is](#where-this-actually-is).
 
 **Licence: GPL-2.0-or-later** ([LICENSE](LICENSE)). Settled in PR 1; the reasoning is in
 [plan/11-licensing.md](plan/11-licensing.md).
@@ -16,8 +17,8 @@ a viewer — it cannot open an image. See [Where this actually is](#where-this-a
 
 | | |
 |---|---|
-| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain, an animated sweep bar, and an F3 frame-time overlay reading real present-to-present intervals. This is the instrument PR 1 exists to build, and under the [D1 amendment](plan/12-decision-log.md) its window and swapchain **are** the app — PR 3 hosts WinUI chrome inside them rather than re-implementing presentation. |
-| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system with generation-based cancellation, `result<T>`, lock-free rings, ETW tracepoints. |
+| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Drop a JPEG/PNG/BMP, or pass a path on the command line. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %. Decode and ICC convert run on the worker pool; pan never re-decodes. The F3 overlay still reads real present-to-present intervals. Under the [D1 amendment](plan/12-decision-log.md) this window and swapchain **are** the app — PR 3 hosts WinUI chrome inside them. |
+| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP decode, LCMS colour, immutable GPU upload, pan/zoom camera. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. No WinUI yet; PR 1 has none by design. |
 
@@ -39,8 +40,9 @@ cmake --build build --config Release
 ```
 
 CMake finds vcpkg from `VCPKG_ROOT`, or from `%USERPROFILE%\vcpkg`, or from an explicit
-`-DCMAKE_TOOLCHAIN_FILE`. PR 1 pulls only `imgui` and `catch2`; the rest of the v1 dependency
-set arrives with the PR that needs it, listed in [`vcpkg.json`](vcpkg.json).
+`-DCMAKE_TOOLCHAIN_FILE`. PR 2 pulls `imgui`, `catch2`, `libjpeg-turbo`, `libspng` and
+`lcms`; the rest of the v1 set arrives with the PR that needs it, listed in
+[`vcpkg.json`](vcpkg.json).
 
 Other configurations:
 
@@ -53,22 +55,30 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 
 ```powershell
 .\build\bin\Release\mediaviewer_lab.exe
+.\build\bin\Release\mediaviewer_lab.exe path\to\photo.jpg
 ```
 
 | Key | |
 |---|---|
 | `F3` | frame-time overlay |
-| `Space` | animation on/off — with it off the app stops presenting entirely (~0 % CPU) |
+| `Space` | animation on/off — with it off (and the image settled) the app stops presenting entirely (~0 % CPU) |
 | `R` | reset the measurement window |
+| `0` | fit to window |
+| `1` | 100 % |
+| `Ctrl+O` | open JPEG/PNG/BMP |
 | `Esc` | quit |
 
+Wheel zooms toward the cursor; drag pans. Zoom-out stops at the opening fit
+view and springs back to centre — it will not shrink the image into the
+letterbox. Drop a file on the window.
+
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
-line fails), `--no-overlay`, `--static`.
+line fails), `--no-overlay`, `--static`, `--open <path>`, or a positional path.
 
 ## Test
 
 ```powershell
-# native unit tests
+# native unit tests and synthetic harness regression tests
 ctest --test-dir build -C Release --output-on-failure
 
 # the ABI, end to end from C#: SafeHandle, struct layout, completion drain
@@ -89,38 +99,85 @@ PR 1's verify line is:
 
 > **Presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle.**
 
-Measured on the development machine (60.00 Hz panel):
+The earlier measurements do not establish this verify line: review found an assumed
+60 Hz refresh rate, incomplete statistics coverage, and an idle-input bug. A 2026-09-07
+re-run of the corrected instrument on the development box passed one 60 s animated soak
+and dropped frames on another the same night; idle zero-presents was not established
+while the window could receive mouse input. The harness must pass both soaks on the
+intended GPU runner before PR 1 is considered verified. See
+[plan/12-decision-log.md](plan/12-decision-log.md).
 
-| Clause | Result |
-|---|---|
-| Presents at exactly display refresh | **Holds** — p50 = 16.700 ms against a 16.667 ms refresh interval, every run |
-| ~0 % CPU idle | **Holds** — 0.008 % of the machine with the animation off, and presentation stops entirely |
-| 0 dropped frames over 60 s | **Not yet demonstrated** — 4–17 per run here |
+`frametime.exe` runs an animated soak and a static idle soak, each with one second of
+warm-up followed by at least 60 seconds of measurement. It writes
+`frametime-report.json` and `frametime-idle-report.json` beside the executable.
+The animated soak opens a generated BMP so the cached-image blit is on the
+swapchain, not the sweep bar.
 
-The third clause is unproven rather than failed, and the instrument says which: **the app's
-own CPU frame time never exceeds 0.51 ms of a 16.67 ms budget**, and the drop count varies
-by a factor of four between identical consecutive runs. That is a busy desktop, not a
-systematic defect — and it is exactly what
-[plan/09-build-and-test.md](plan/09-build-and-test.md) predicted when it required a
-self-hosted runner with a real GPU, a pinned power profile, and nothing else scheduled on
-it.
+- Animated: zero missed refreshes, continuous DXGI presentation statistics, frame counts
+  and mean cadence within 2% of the current display rate, and p50 within 2% plus the
+  histogram's 0.05 ms resolution. No interval may exceed twice the refresh interval.
+- Idle: zero presents and no input during the measured window, with process CPU time at
+  most 1% of **one CPU core**. This makes ~0% independent of the machine's core count.
+  A cursor in the lab window counts as input and fails the idle gate; park it off the
+  client area.
+- Missing refresh information, statistics gaps, interrupted runs, device rebuilds, and
+  failing child exit codes cannot pass. Short `--seconds` runs are diagnostic only.
+- A saved baseline additionally gates p99 regressions greater than 10%. Use a separate
+  baseline path for a different display mode. Old schema-1 baselines are not accepted.
 
-**No baseline is committed**, because one captured here would bake that noise in and quietly
-lower the bar for every later PR. The CI job is wired up behind a `[self-hosted, windows,
-gpu]` label and is skipped, not faked, when no such runner exists.
+To save the exact animated report after both soaks and the regression check pass:
 
-Every later PR inherits this verify line. That is the mechanism that stops smoothness
-eroding one feature at a time.
+```powershell
+.\build\bin\Release\frametime.exe --seconds 60 --update-baseline
+```
+
+CI runs the gate on PRs and main. Provision an interactive Windows runner labelled
+`self-hosted`, `windows`, `gpu`, with a visible desktop, fixed refresh, pinned power
+profile, and no competing GPU work. Set repository variable `MV_GPU_RUNNER_ENABLED`
+to `true` **only after provisioning it**. Leave it unset when no runner is available:
+the gate then fails promptly on hosted Windows with a configuration message, instead
+of queueing for a nonexistent runner or claiming a pass. An enabled runner that later
+goes offline is still subject to GitHub's queue timeout. Fork PRs fail this check with
+instructions to test a reviewed in-repository branch; they do not execute on the
+persistent GPU runner.
+
+Make **Frame-time gate (self-hosted GPU)** a required branch-protection check. Baseline
+cache entries use unique keys and only successful main pushes publish a new baseline;
+PR runs compare against the restored main baseline. The repository changes cannot
+provision a runner or configure branch protection by themselves.
+
+Every later PR inherits this verify line.
+
+PR 2's verify line is:
+
+> **A 12 MP JPEG pans at refresh with zero decode on mouse move; dragging the window
+> while a 60 MP PNG loads stays smooth; a tagged AdobeRGB JPEG renders correctly and
+> an untagged one is treated as sRGB, with no tone-map applied to either (D6).**
+
+Colour is covered by the unit tests (untagged mid-grey stays mid-grey; tagged AdobeRGB
+does not decode as sRGB). `frametime.exe` still soaks the **empty** present loop — an
+animated bar, then idle. It does not `--open` an image, so the pan-at-refresh clause is
+not measured yet. Pan itself does not start a decode (mouse move only updates the
+camera); that is architectural, not a 12 MP soak. TIFF is not in until PR 7.
+
+Known holes on this slice, recorded in [plan/03-rendering.md](plan/03-rendering.md) and
+[plan/04-image-pipeline.md](plan/04-image-pipeline.md): an idle renderer must be woken
+when a decode completes; CPU mip sizes must match D3D11's floor chain; LittleCMS needs a
+per-job context on the pool.
 
 ## Layout
 
 ```
 src/core        job system, result<T>, lock-free rings, ETW
-src/gfx         D3D11 device, flip-model swapchain, frame pacer
+src/io          whole-file reads (worker threads only)
+src/codec       JPEG / PNG / BMP, magic-byte probe
+src/image       LCMS colour, CPU mips, immutable GPU upload
+src/canvas      pan/zoom springs
+src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
 src/abi         the flat C ABI — the top of the native graph
 src/shell       Win32 window, render thread, present lab
 src.managed/    C# interop (SafeHandle, completion pump)
-tests/          Catch2 suites for core, gfx and the ABI
+tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI
 tools/          frametime harness, module-graph and licence gates
 plan/           the spec
 ```

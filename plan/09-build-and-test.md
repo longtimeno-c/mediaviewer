@@ -36,11 +36,18 @@ and `openjpeg` move in at v1.1 with their formats (D5).
    truncated, wrong-length chunks, absurd dimension headers. Nothing may crash or hang.
 3. **Fuzzing.** libFuzzer harness per decoder against the corpus, run in CI nightly. Decoders
    parse untrusted input; this is where your CVEs live.
-4. **Frame-time regression harness** (`tools/frametime`). Scripted sessions — open a 45 MP RAW,
-   zoom to 400 %, pan a circle, arrow through 50 files, play 4K HEVC for 30 s — captured with
-   **PresentMon**/ETW. CI fails the build if p99 frame time regresses > 10 % or any frame exceeds
+4. **Frame-time regression harness** (`tools/frametime`). PR 1/PR 2: an animated 60 s soak and a
+   static idle soak of the **empty** present loop (sweeping bar, then stop presenting). It does
+   not `--open` an image; passing it is not the PR 2 pan-at-refresh clause. Later scripted
+   sessions — open a 12 MP JPEG and pan, drag the window while a 60 MP PNG loads, then a 45 MP
+   RAW, 4K HEVC — are additive. Captured with **DXGI frame statistics** (and PresentMon/ETW
+   when available). CI fails the build if p99 frame time regresses > 10 % or any frame exceeds
    2× the refresh interval. **Treat a dropped frame as a test failure, not a nuisance.** This is
    how "butter smooth" survives contact with feature work.
+
+   Idle is invalidated by any input, including a cursor in the lab client area. Park it off the
+   window. A development box that can pass one animated soak and drop frames on the next is not
+   the GPU runner; see [12](12-decision-log.md).
 5. **Memory-leak and handle-leak** checks across a 500-file browse loop.
 
 ## Performance targets (make these explicit and enforced)
@@ -105,7 +112,21 @@ and it does not belong in Git LFS at that size either.
 - Per-monitor-v2 DPI manifest, dark-mode title bar (`DWMWA_USE_IMMERSIVE_DARK_MODE`), Mica
   backdrop, snap layouts.
 - File associations via the standard `ProgId`/`OpenWithProgids` registry keys, plus a
-  **Default Apps** deep link; never silently hijack associations.
+  **Default Apps** deep link; never silently hijack associations. Windows 10+ will not
+  let an app write `UserChoice` itself — "set as default" means sending the user to
+  Settings.
+
+  **Ask once, after the first successful still open**, not at install and not on an
+  empty first launch: "Make MediaViewer your default photo viewer?" Yes opens Default
+  Apps focused on this app. No / dismiss is remembered; never ask again. Settings
+  keeps the same action so a later change is one click. Skip the prompt if we are
+  already the default. The prompt covers the **D5 still set** (JPEG, PNG, BMP, GIF,
+  TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW) — not video. Video stays on "Open with" and
+  a separate Settings row so we do not steal Movies & TV / VLC by surprise.
+
+  Do not stack this with the telemetry first-run screen ([13](13-updates-and-telemetry.md)).
+  If both would fire, finish the telemetry choice first; the default-app ask waits
+  until the next successful still open.
 - Shell verbs ("Open with MediaViewer", "Edit"), thumbnail provider (`IThumbnailProvider`) and
   property handler so *Explorer itself* gets your format support for HEIC/AVIF/RAW.
 

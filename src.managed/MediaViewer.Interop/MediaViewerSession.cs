@@ -94,6 +94,28 @@ public sealed class MediaViewerSession : IDisposable
     }
 
     /// <summary>
+    /// Submits an image open and returns its job id immediately. The answer
+    /// arrives as <see cref="MvCompletionKind.ImageOpened"/>. Pixels never
+    /// cross the ABI.
+    /// </summary>
+    public ulong OpenImage(string utf8Path)
+    {
+        ArgumentNullException.ThrowIfNull(utf8Path);
+        ThrowIfFailed(NativeMethods.mv_session_bump_generation(_handle, out _));
+        ThrowIfFailed(NativeMethods.mv_image_open(_handle, utf8Path, out ulong jobId));
+        return jobId;
+    }
+
+    public MvImageInfo ImageInfo
+    {
+        get
+        {
+            ThrowIfFailed(NativeMethods.mv_session_image_info(_handle, out MvImageInfo info));
+            return info;
+        }
+    }
+
+    /// <summary>
     /// Bumps the view generation. Everything queued or running at the old
     /// generation is abandoned at its next check.
     /// </summary>

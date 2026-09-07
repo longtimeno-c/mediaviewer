@@ -121,6 +121,14 @@ means:
   400 marshalling hops,
 - the core stays testable headlessly, with no dispatcher at all.
 
+`MV_COMPLETION_IMAGE_OPENED` means new pixels may be ready on the native canvas. The UI thread
+draining the queue does **not** wake an idle render thread by itself — the lab (and later the
+shell) must `wake()` the presenter. See [03](03-rendering.md) rule 4.
+
+`mv_image_open` is submitted at the **current** generation. The caller bumps first when the open
+is a new view intent (the native lab does; C# `OpenImage` must too). Opening without a bump
+replaces rather than cancels.
+
 A direct callback form (`mv_set_callback` with `user_data`) may exist for the **canvas input path
 only**, where per-mouse-move latency matters and the call is already on the UI thread. Everywhere
 else: drain.

@@ -27,7 +27,9 @@ struct input_snapshot {
 
   float mouse_x = 0.0f;
   float mouse_y = 0.0f;
-  float wheel = 0.0f;                  // accumulated notches
+  // Cumulative native wheel units. Coalescing publications cannot lose deltas.
+  std::int64_t wheel_total = 0;
+  std::uint64_t activity_seq = 0;
   bool mouse_down[3] = {false, false, false};
   bool mouse_in_client = false;
 
@@ -37,6 +39,8 @@ struct input_snapshot {
   std::uint32_t toggle_overlay_seq = 0;   // F3
   std::uint32_t toggle_animation_seq = 0; // Space
   std::uint32_t reset_stats_seq = 0;      // R
+  std::uint32_t fit_seq = 0;              // 0
+  std::uint32_t one_to_one_seq = 0;       // 1
 
   bool window_visible = true;
   bool window_active = true;
@@ -45,6 +49,23 @@ struct input_snapshot {
   // change, or the window moving to a monitor on a different adapter.
   std::uint32_t resize_seq = 0;
   std::uint32_t display_change_seq = 0;
+};
+
+// Consumer-owned state: repeated reads of a snapshot never replay input.
+struct input_cursor {
+  std::int64_t wheel_total = 0;
+  std::uint64_t activity_seq = 0;
+
+  float consume_wheel(const input_snapshot& s) noexcept {
+    const auto delta = s.wheel_total - wheel_total;
+    wheel_total = s.wheel_total;
+    return static_cast<float>(delta) / 120.0f;
+  }
+  bool consume_activity(const input_snapshot& s) noexcept {
+    const bool changed = s.activity_seq != activity_seq;
+    activity_seq = s.activity_seq;
+    return changed;
+  }
 };
 
 }  // namespace mv::shell

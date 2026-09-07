@@ -13,14 +13,18 @@ This file is generated as part of the build and shown in the About dialog. It li
 **everything currently linked**, not everything the plan intends to link — entries are
 added by the PR that adds the dependency.
 
-## Currently linked (PR 1)
+## Currently linked (PR 2)
 
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
 | [Dear ImGui](https://github.com/ocornut/imgui) | 1.92.8 | MIT | Static | Present lab and the F3 debug overlay only. Never shipped chrome (D1). |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | Static, tests only | Not in a shipped binary. |
+| [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo) | 3.2.0 | IJG / BSD-3 | Dynamic (vcpkg x64-windows) | JPEG decode. |
+| [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. |
+| [Little CMS (lcms2)](https://github.com/mm2/Little-CMS) | 2.19.1 | MIT | Dynamic (vcpkg x64-windows) | ICC → linear Rec.709 → sRGB. No tone-map on display-referred sources (D6). |
+| zlib | 1.3.2 | Zlib | Dynamic | Transitive, via libspng. |
 | .NET 8 / runtime libraries | 8.0 | MIT | Framework | Interop assembly only. |
-| Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
+| Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
 
 ## Planned, with the PR that introduces each
 
@@ -29,9 +33,6 @@ is settled before it arrives, rather than discovered afterwards.
 
 | Component | Licence | Required linkage | Arrives in |
 |---|---|---|---|
-| libjpeg-turbo | IJG / BSD-3 | Static | PR 2 |
-| libspng | BSD-2 | Static | PR 2 |
-| Little CMS (lcms2) | MIT | Static | PR 2 |
 | SQLite | Public domain | Static | PR 4 |
 | DirectXTex | MIT | Static | PR 4 |
 | **FFmpeg** | **LGPL-2.1+** | **Dynamic (DLL)** | PR 5a |

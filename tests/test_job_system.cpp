@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -185,4 +186,25 @@ TEST_CASE("many producers submit concurrently without loss", "[core][jobs]") {
 
   REQUIRE(wait_for([&] { return completions.load() == producers * per_producer; }, 30s));
   REQUIRE(jobs.submitted() == producers * per_producer);
+}
+
+TEST_CASE("job exceptions complete with errors and the worker survives callbacks", "[core][jobs]") {
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  std::atomic<int> internal{0}, oom{0}, done{0};
+  jobs.submit([](const mv::job_context&) -> mv::status { throw std::runtime_error("job"); },
+              [&](mv::job_id, mv::generation, mv::status s) {
+                if (s == mv::status::internal) ++internal;
+                throw std::runtime_error("callback");
+              });
+  jobs.submit([](const mv::job_context&) -> mv::status { throw std::bad_alloc(); },
+              [&](mv::job_id, mv::generation, mv::status s) {
+                if (s == mv::status::out_of_memory) ++oom;
+              });
+  jobs.submit([](const mv::job_context&) { return mv::status::ok; },
+              [&](mv::job_id, mv::generation, mv::status) { ++done; });
+  REQUIRE(wait_for([&] { return done.load() == 1; }));
+  REQUIRE(internal.load() == 1);
+  REQUIRE(oom.load() == 1);
+  REQUIRE(jobs.completed() == 3);
 }

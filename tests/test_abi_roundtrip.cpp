@@ -70,6 +70,8 @@ TEST_CASE("every fallible call returns a status, never a bool", "[abi]") {
   REQUIRE(mv_session_current_generation(nullptr, nullptr) == MV_ERR_INVALID_ARG);
   REQUIRE(mv_session_echo(nullptr, "x", nullptr) == MV_ERR_INVALID_ARG);
   REQUIRE(mv_session_job_stats(nullptr, nullptr) == MV_ERR_INVALID_ARG);
+  REQUIRE(mv_image_open(nullptr, "x", nullptr) == MV_ERR_INVALID_ARG);
+  REQUIRE(mv_session_image_info(nullptr, nullptr) == MV_ERR_INVALID_ARG);
 }
 
 TEST_CASE("a failure leaves a message and a correlation id", "[abi]") {

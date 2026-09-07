@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <thread>
+#include <limits>
 
 #include "gfx/pacer.h"
 
@@ -129,4 +130,79 @@ TEST_CASE("reset_window clears the histogram but keeps the refresh interval",
   REQUIRE(stats.max_ms == 0.0);
   REQUIRE(stats.refresh_interval_ms > 8.0);
   REQUIRE(stats.refresh_interval_ms < 8.5);
+}
+
+TEST_CASE("display statistics use presentation vblanks and retain duplicate baselines", "[gfx][pacer]") {
+  mv::gfx::display_statistics tracker;
+  DXGI_FRAME_STATISTICS fs{};
+  fs.PresentCount = 10;
+  fs.PresentRefreshCount = 100;
+  fs.SyncRefreshCount = 500;
+  REQUIRE_FALSE(tracker.observe(S_OK, fs).valid); // establishes baseline
+  fs.SyncRefreshCount += 20; // scheduler clock changes without a displayed frame
+  REQUIRE(tracker.observe(S_OK, fs).valid);
+  ++fs.PresentCount;
+  fs.PresentRefreshCount += 3;
+  const auto missed = tracker.observe(S_OK, fs);
+  REQUIRE(missed.valid);
+  REQUIRE(missed.presents == 1);
+  REQUIRE(missed.missed_refreshes == 2);
+  fs.PresentCount += 3;
+  fs.PresentRefreshCount += 3;
+  REQUIRE(tracker.observe(S_OK, fs).missed_refreshes == 0);
+}
+
+TEST_CASE("display statistics handle wrap, resets and missing coverage", "[gfx][pacer]") {
+  mv::gfx::display_statistics tracker;
+  DXGI_FRAME_STATISTICS fs{};
+  fs.PresentCount = 0xffffffffu;
+  fs.PresentRefreshCount = 0xfffffffeu;
+  (void)tracker.observe(S_OK, fs);
+  fs.PresentCount = 0;
+  fs.PresentRefreshCount = 1;
+  REQUIRE(tracker.observe(S_OK, fs).missed_refreshes == 2);
+  REQUIRE_FALSE(tracker.observe(E_FAIL, fs).valid);
+  REQUIRE_FALSE(tracker.observe(S_OK, fs).valid); // re-establish, no bridging a gap
+  REQUIRE(tracker.observe(DXGI_ERROR_FRAME_STATISTICS_DISJOINT, fs).discontinuity);
+  fs.PresentCount = 100;
+  fs.PresentRefreshCount = 200;
+  (void)tracker.observe(S_OK, fs);
+  fs.PresentCount = 1;
+  fs.PresentRefreshCount = 1;
+  REQUIRE(tracker.observe(S_OK, fs).discontinuity);
+}
+
+TEST_CASE("PR1 gate requires a full refresh-matched trusted window", "[gfx][gate]") {
+  mv::gfx::pace_stats s;
+  s.frames = s.displayed_presents = 3600;
+  s.elapsed_seconds = 60.0;
+  s.refresh_interval_ms = s.mean_ms = 1000.0 / 60.0;
+  s.p50_ms = 16.7;
+  s.max_ms = 17.0;
+  s.source = mv::gfx::drop_source::frame_statistics;
+  REQUIRE(s.meets_pr1_gate());
+  SECTION("too short") { s.elapsed_seconds = 59.0; }
+  SECTION("unknown refresh") { s.refresh_interval_ms = 0.0; }
+  SECTION("incorrect cadence") { s.p50_ms = 8.35; }
+  SECTION("too few application frames") { s.frames = 100; }
+  SECTION("stale display statistics") { s.displayed_presents = 0; }
+  SECTION("statistics gap followed by valid samples") { s.statistics_unavailable_frames = 1; }
+  SECTION("discontinuity") { s.statistics_discontinuities = 1; }
+  SECTION("drop") { s.dropped_frames = 1; }
+  SECTION("bad numeric value") { s.mean_ms = std::numeric_limits<double>::quiet_NaN(); }
+  SECTION("stall") { s.max_ms = 40; }
+  REQUIRE_FALSE(s.meets_pr1_gate());
+}
+
+TEST_CASE("idle gate requires actual CPU measurement and zero presentations", "[gfx][gate]") {
+  mv::gfx::idle_stats s;
+  s.elapsed_seconds = 60;
+  s.cpu_percent = 0.05;
+  REQUIRE(s.meets_pr1_gate());
+  SECTION("short") { s.elapsed_seconds = 59; }
+  SECTION("CPU busy") { s.cpu_percent = 2; }
+  SECTION("CPU unavailable") { s.cpu_percent = -1; }
+  SECTION("presented") { s.presents = 1; }
+  SECTION("input interfered") { s.input_events = 1; }
+  REQUIRE_FALSE(s.meets_pr1_gate());
 }

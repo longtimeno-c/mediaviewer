@@ -175,7 +175,10 @@ PNG/JPEG, audio extract, clip → GIF/WebP with a two-pass palette.
 
 ### PR 14 — Windows integration
 File associations via `ProgId`/`OpenWithProgids` + a Default Apps deep link (never a silent
-hijack), `IThumbnailProvider` and property handler so **Explorer** gains your format support, jump
+hijack). **One prompt after the first successful still open** — "Make MediaViewer your
+default photo viewer?" — Yes opens Default Apps; No is remembered and never asked again.
+Settings keeps the same action. Stills only, not video. Skip if already default.
+`IThumbnailProvider` and property handler so **Explorer** gains your format support, jump
 list, taskbar transport buttons, drag-out via `CFSTR_FILEDESCRIPTOR`, single-instance-with-tabs,
 settings.
 
@@ -186,7 +189,9 @@ boilerplate.
 
 **Verify:** double-clicking a HEIC in Explorer opens the app and Explorer shows your thumbnail; a
 **deliberately corrupted** HEIC in a browsed folder leaves Explorer running; uninstall removes every
-association.
+association. First successful still open shows the default-app prompt; declining leaves existing
+defaults unchanged and does not show it again; accepting opens Default Apps rather than writing
+`UserChoice`; an install-and-quit with no image open never prompts.
 
 ### PR 15 — Package & ship
 Signed per-user installer with Velopack auto-update (staged rollout, signed manifest, rollback),

@@ -70,11 +70,23 @@ Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path.
 
 ## Open — do not silently decide
 
-- **Exiv2 licence** (buy commercial / GPL-2.0 the app / replace) blocks PR 1 and decides
-  the app's own licence. `plan/11-licensing.md`. Ask.
-- **`SwapChainPanel` vs HWND island** is answered by PR 3's verify line, not by preference.
+- **A quiet machine for the D6 gate.** PR 1's 60 s animated and idle soaks are still
+  unproven on a dedicated GPU runner. PR 2 inherits that gate; it is not waived.
+  `plan/12-decision-log.md`.
+- **Whether WinUI 3 XAML islands hold up** is answered by PR 3, not by preference.
+  The canvas is already native (D1 amendment). Fallback: a WinUI app with
+  `SwapChainPanel` and an accepted composed frame.
 
 ## How to implement
+
+Builds, tests, policy checks, and local validation runs are authorized as part of
+implementation. Run the checks needed to verify a change without asking for
+confirmation each time, including the present lab and frame-time soaks.
+
+Other agents may be working in the same checkout. Preserve their edits and do
+not revert unrelated changes. If concurrent work prevents a meaningful build,
+validate the current PR in an isolated checkout and report which source was
+tested. Keep changes to shared files compatible with the other work.
 
 Work is **one PR slice from `plan/10-roadmap.md`**. Do not start PR N+1 until N's verify
 holds **and** PR 1's present-loop verify still holds.
