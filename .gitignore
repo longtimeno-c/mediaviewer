@@ -34,3 +34,8 @@ tests/corpus/
 # .NET
 *.nupkg
 project.lock.json
+
+# PR 5 test corpus — generated locally, never committed.
+# plan/09: "Do not put the RAW corpus in git." Same rule for 4K video clips:
+# they live in the repo so every session can reach them, and stay out of history.
+tools/testmedia/

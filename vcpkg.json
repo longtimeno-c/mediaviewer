@@ -25,6 +25,11 @@
       "name": "imgui",
       "features": ["dx11-binding"]
     },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"]
+    },
     "catch2",
     "libjpeg-turbo",
     "libspng",
@@ -36,10 +41,10 @@
     "PR 2": "landed: libjpeg-turbo, libspng, lcms",
     "PR 4": "landed: sqlite3. JPEG-512 thumbs in the island; DirectXTex/BC7 waits until a thumb must be GPU-resident (plan/12 2026-09-07).",
     "PR 4-deferred": ["directxtex"],
-    "PR 5a": ["ffmpeg[core,avcodec,avformat,avutil,swscale,swresample]"],
+    "PR 5a": "landed: ffmpeg. NOTE the feature names here are the port's, not the plan's shorthand: `core` and `avutil` are NOT features of ffmpeg (avutil is always built), and passing them fails vcpkg outright. avfilter is required for PR 5c's atempo chain; dav1d is the AV1 software fallback (BSD-2, LGPL-compatible) for GPUs without an AV1 profile.",
     "PR 7": ["tiff", "libwebp", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],
     "PR 8": ["exiv2"],
-    "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them.",
+    "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them, and it now reads the configure string embedded in the built avutil/avcodec DLLs rather than a log vcpkg deletes. Verified on the pinned baseline: the port configures --enable-d3d11va --enable-dxva2 --enable-shared with --disable-libx264 --disable-libx265 --disable-libfdk-aac and no --enable-gpl.",
     "note-exiv2": "GPL-2.0, and kept. The app is GPL-2.0-or-later (plan/11, settled in PR 1), so this is compliant rather than a trap.",
     "note-v1.1": "libjxl, openexr, openjpeg and resvg arrive with their formats in v1.1 (D5). Do not add one to buy a format early."
   },

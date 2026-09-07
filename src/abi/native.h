@@ -9,6 +9,7 @@
 
 #include "core/status.h"
 #include "image/gpu_image.h"
+#include "player/video_source.h"
 #include "mediaviewer/mediaviewer.h"
 
 struct ID3D11Device;
@@ -33,6 +34,19 @@ MV_API void release_gpu_image(image::gpu_image* image);
 // thread waits on this alongside its own wake event so an idle still appears
 // without polling. Null if the session is null.
 [[nodiscard]] MV_API void* image_ready_wait_handle(mv_session_t session);
+
+// PR 5a video. Same wait-free handoff as take_ready_image, but a video frame is
+// its own type: two SRVs, an NV12/P010 format, a colour_desc and a PTS. It is
+// deliberately NOT forced into image::gpu_image.
+[[nodiscard]] MV_API player::video_frame* take_ready_video_frame(mv_session_t session,
+                                                                 std::uint32_t generation);
+MV_API void release_video_frame(player::video_frame* frame);
+
+struct video_frame_deleter {
+  void operator()(player::video_frame* p) const noexcept { release_video_frame(p); }
+};
+
+using video_frame_ptr = std::unique_ptr<player::video_frame, video_frame_deleter>;
 
 struct gpu_image_deleter {
   void operator()(image::gpu_image* p) const noexcept { release_gpu_image(p); }

@@ -3,7 +3,10 @@
 # D9 / plan/15-platforms.md: from PR 4, new native code above gfx/ does not
 # include Windows-only headers a Metal host cannot replace.
 #
-# Direct #include of d3d11.h, windows.h, or atlbase.h is forbidden in:
+# Direct #include of d3d11.h, dxgi.h, windows.h, atlbase.h, the WASAPI/COM
+# headers (audioclient.h, mmdeviceapi.h, audiopolicy.h, mmreg.h, avrt.h,
+# endpointvolume.h, functiondiscoverykeys_devpkey.h, combaseapi.h, objbase.h,
+# wrl/*), or d3d12.h is forbidden in:
 #   core/, codec/, canvas/, image/, meta/, player/, edit/, and io/*.h
 #
 # Windows I/O stays in io/*_win.cpp (and the existing io/file.cpp). gfx/ is
@@ -25,7 +28,7 @@ if (-not $SourceRoot) {
 $SourceRoot = (Resolve-Path $SourceRoot).Path
 
 $bannedModules = @('core', 'codec', 'canvas', 'image', 'meta', 'player', 'edit')
-$pattern = '^\s*#\s*include\s*[<"](d3d11[^"]*|dxgi[^"]*|windows\.h|atlbase\.h|winuser\.h)'
+$pattern = '^\s*#\s*include\s*[<"](d3d11[^"]*|dxgi[^"]*|windows\.h|atlbase\.h|winuser\.h|audioclient\.h|audiopolicy\.h|mmdeviceapi\.h|mmreg\.h|mmsystem\.h|avrt\.h|endpointvolume\.h|functiondiscoverykeys[^"]*|combaseapi\.h|objbase\.h|wrl/[^"]*|d3d12[^"]*)'
 
 $violations = @()
 

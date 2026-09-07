@@ -145,6 +145,9 @@ add_library(mv_gfx STATIC
   src/gfx/pacer.h
   src/gfx/swapchain.h
   src/gfx/blit.h
+  src/gfx/video_blit.cpp
+  src/gfx/colour_desc.cpp
+  src/gfx/colour_desc.h
 )
 target_link_libraries(mv_gfx
   PUBLIC mv_core
@@ -217,6 +220,50 @@ target_link_libraries(mv_image
 add_library(mv::image ALIAS mv_image)
 
 # ---------------------------------------------------------------------------
+# mv_player — demux, decode, A/V clock, transport (PR 5a/5b/5c)
+#
+# Depends downward only: player -> {codec, gfx, io, core}. Never image, never
+# shell (tools/check-module-graph.ps1). FFmpeg is LGPL and dynamically linked;
+# tools/licence-check.ps1 reads the configure string out of the built DLLs.
+#
+# The file list is complete for PR 5 on purpose: three sessions share this
+# checkout, and CMakeLists.txt is the one file they would all otherwise edit.
+# Fill in a stub rather than adding a target source.
+# ---------------------------------------------------------------------------
+find_package(FFMPEG REQUIRED)
+
+add_library(mv_player STATIC
+  # 5a — silent video into the same swapchain
+  src/player/demux.cpp
+  src/player/video_decode.cpp
+  src/player/frame_ring.cpp
+  src/player/video_source.cpp
+  src/player/media_source.cpp
+  src/player/hwdecode_win.cpp      # D9: the only player/ file that may see d3d11.h
+  # 5b — audio and the clock
+  src/player/audio_decode.cpp
+  src/player/av_clock.cpp
+  src/player/audio_win.cpp         # D9: the only player/ file that may see WASAPI
+  # 5c — transport
+  src/player/transport.cpp
+  src/player/presenter.cpp
+  # headers, listed so they show up in the IDE
+  src/player/media_source.h
+  src/player/video_source.h
+  src/player/audio_sink.h
+  src/player/audio_block.h
+  src/player/av_clock.h
+  src/player/presenter.h
+)
+target_include_directories(mv_player PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_player
+  PUBLIC mv_core mv_gfx
+  PRIVATE mv_codec mv_io ${FFMPEG_LIBRARIES}
+          mfplat mfuuid ole32 uuid avrt ksuser)
+add_library(mv::player ALIAS mv_player)
+
+# ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (plan/03)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
@@ -242,7 +289,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -258,6 +305,8 @@ find_package(imgui CONFIG REQUIRED)
 add_executable(mediaviewer_lab WIN32
   src/shell/main.cpp
   src/shell/present_lab.cpp
+  src/shell/av_soak.cpp
+  src/shell/av_soak.h
   src/shell/chrome_host.cpp
   src/shell/chrome_host.h
   src/shell/settings.cpp
@@ -354,6 +403,8 @@ if(MV_BUILD_TESTS)
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
     tests/test_folder.cpp
+    tests/test_presenter.cpp
+    tests/test_colour_desc.cpp
     src/shell/chrome_host.cpp
     src/shell/settings.cpp
     src/shell/app.manifest
@@ -361,6 +412,7 @@ if(MV_BUILD_TESTS)
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx
+    mv_player
     mv_codec
     mv_image
     mv_canvas

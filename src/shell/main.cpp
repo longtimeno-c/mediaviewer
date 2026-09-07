@@ -170,7 +170,16 @@ void open_file_dialog(app_state* app, HWND hwnd) {
 
 void open_folder_dialog(app_state* app, HWND hwnd) {
   std::wstring folder;
-  if (pick_folder(hwnd, folder)) open_folder(app, folder, {});
+  if (!pick_folder(hwnd, folder)) return;
+  // Picking a folder is the same intent as one on the command line or dropped
+  // on the window: "browse this folder". open_path sets the mode for those two
+  // routes; this one has to set it as well. Leaving it at `none` is not a
+  // cosmetic slip — apply_view_state has no preference to consult for `none`,
+  // so the strip stays off for a folder the user explicitly asked for, and T
+  // then only flips the persisted flag behind an unchanged screen.
+  app->mode = open_mode::folder;
+  app->gallery_visible = false;
+  open_folder(app, folder, {});
 }
 
 void folder_select(app_state* app, std::uint32_t index) {
@@ -216,6 +225,11 @@ void set_gallery(app_state* app, bool visible) {
 
 void toggle_filmstrip_setting(app_state* app) {
   if (!app) return;
+  // Nothing open yet means there is no mode to toggle for. Writing the folder
+  // preference here would change what the *next* folder does from an empty
+  // window, with nothing on screen to show it happened — a persisted setting
+  // silently flipped by a key that looked like it did nothing.
+  if (app->mode == open_mode::none) return;
   // T toggles the strip for the mode you are in, and that is the preference
   // that gets written: turning it off while browsing a folder should not also
   // turn it off for the single images you open from Explorer.
