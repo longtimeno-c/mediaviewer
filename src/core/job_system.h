@@ -51,11 +51,13 @@ class job_context {
 
 // A job body. Runs on a pool thread; must never touch the D3D11 immediate
 // context and must never block on the UI or render thread.
+// Exceptions become out_of_memory (bad_alloc) or internal completions.
 using job_fn = std::function<status(const job_context&)>;
 
 // Called on the pool thread when a job finishes, including when it was
 // cancelled before it ran. This is where the ABI layer pushes a completion
 // record — it does NOT marshal to a dispatcher (plan/14-abi.md).
+// Must not throw. Violations are logged and contained; callbacks are not retried.
 using job_done_fn = std::function<void(job_id, generation, status)>;
 
 class job_system {

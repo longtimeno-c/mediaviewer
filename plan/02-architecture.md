@@ -52,8 +52,16 @@ one MPMC job queue. No mutex is ever held across a call you don't own.
 
 **Free-threaded resource creation.** D3D11 device creation calls are thread-safe. Decode workers
 call `CreateTexture2D` with `D3D11_SUBRESOURCE_DATA` directly (immutable, `USAGE_IMMUTABLE`) —
-no staging copy on the render thread, no `Map` contention on the immediate context. This one
-choice removes the classic hitch when a large image lands.
+no staging copy on the render thread, no `Map` contention on the immediate context. Enable
+`ID3D10Multithread` protection because PR 5a also hands this device to FFmpeg.
+
+That flag **serializes** worker creates with the immediate context. A 60 MP upload can still
+stall `Present`; the ~2 ms budget in [03](03-rendering.md) applies. "The worker did it" is not
+a pass around the hitch.
+
+The ready GPU image is an **SPSC or atomic handoff**. The render thread must not take a mutex
+a worker holds — including a short `image_mutex` on every frame to poll `ready`. Device rebuild
+bumps the job generation so in-flight creates against the old device are abandoned.
 
 ## The frame loop
 
@@ -61,16 +69,20 @@ choice removes the classic hitch when a large image lands.
 render thread:
   wait on swapchain frame-latency-waitable-object   // paces us to the display
   t = QPC now
-  snapshot = ui_state.acquire()                     // lock-free double-buffered publish
+  snapshot = ui_state.acquire()                     // wait-free triple-buffered publish
   drain gpu_ready_queue  (bounded: <= 2 ms of uploads per frame)
   animate(t)                                        // springs, not fixed-step tweens
   record + draw
-  Present(0, tearing_ok ? ALLOW_TEARING : 0)
+  Present(tearing_ok ? 0 : 1, tearing_ok ? ALLOW_TEARING : 0)
 ```
 
 The UI thread *publishes* a state snapshot; the render thread *consumes* one. They never share a
 mutable object. UI logic running long (a folder scan callback, a metadata parse) can never stall a
 frame.
+
+When the renderer is idle (not presenting), a completion that changes what is on the canvas must
+**wake** it. The UI thread draining `mv_completion_drain` and logging is not that wake.
+See [03](03-rendering.md) rule 4.
 
 ## Platform floor
 
@@ -84,7 +96,9 @@ discovering the floor by shipping.
 Every job carries a generation counter tied to the current "view intent" (which file is on
 screen). Navigating away bumps the generation; in-flight decodes check it at tile boundaries and
 abandon. Without this, fast arrow-key scrubbing through a folder queues 200 decodes and the app
-feels like it's chewing gum.
+feels like it's chewing gum. **`mv_image_open` follows a bump** — opening without bumping
+replaces rather than cancels. Device rebuild bumps too, so GPU creates cannot outlive the
+device they were made on.
 
 ## Memory budgets
 

@@ -14,13 +14,19 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 
+#include "abi/native.h"
+#include "canvas/camera.h"
 #include "core/spsc_ring.h"
+#include "gfx/blit.h"
 #include "gfx/device.h"
 #include "gfx/pacer.h"
 #include "gfx/swapchain.h"
+#include "image/gpu_image.h"
+#include "mediaviewer/mediaviewer.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -44,6 +50,9 @@ class present_lab {
 
   present_lab(const present_lab&) = delete;
   present_lab& operator=(const present_lab&) = delete;
+
+  // The session owns decode jobs and the ready GPU image. Bound before start.
+  void bind_session(mv_session_t session) noexcept { session_ = session; }
 
   // Called from the UI thread once the window exists.
   [[nodiscard]] expected start(HWND window, const lab_options& options) noexcept;
@@ -72,20 +81,26 @@ class present_lab {
   [[nodiscard]] expected rebuild_device() noexcept;
   void draw_frame(const input_snapshot& snapshot, double elapsed_seconds) noexcept;
   void draw_overlay(const input_snapshot& snapshot) noexcept;
-  void write_json_report() const noexcept;
+  bool write_json_report() const noexcept;
 
   HWND window_ = nullptr;
   lab_options options_{};
+  mv_session_t session_ = nullptr;
 
   gfx::device device_;
   gfx::swapchain swapchain_;
   gfx::pacer pacer_;
+  gfx::blitter blitter_;
+  canvas::camera camera_;
+  mv::abi::gpu_image_ptr current_image_;
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;
   std::atomic<bool> running_{false};
   std::atomic<bool> finished_{false};
   HANDLE wake_event_ = nullptr;
+  HANDLE ready_event_ = nullptr;
+  std::atomic<int> start_error_{0};
   int exit_code_ = 0;
 
   // Render-thread-only state.
@@ -94,13 +109,26 @@ class present_lab {
   bool occluded_ = false;
   bool imgui_ready_ = false;
   bool warmed_up_ = false;
+  bool measurement_valid_ = true;
+  bool soak_complete_ = false;
+  std::uint64_t total_presents_ = 0;
+  bool was_presenting_ = false;
+  input_cursor input_cursor_;
+  gfx::idle_stats idle_stats_;
+  std::int64_t measurement_start_qpc_ = 0;
+  double idle_start_cpu_seconds_ = -1.0;
   std::uint32_t seen_overlay_seq_ = 0;
   std::uint32_t seen_animation_seq_ = 0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
+  std::uint32_t seen_fit_seq_ = 0;
+  std::uint32_t seen_one_seq_ = 0;
   double animation_phase_ = 0.0;
   double last_input_time_ = 0.0;
+  float last_mouse_x_ = 0.0f;
+  float last_mouse_y_ = 0.0f;
+  bool was_left_down_ = false;
 };
 
 }  // namespace mv::shell

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gfx/swapchain.h"
 
+#include <cwchar>
+#include <vector>
+
 #include "core/trace.h"
 
 namespace mv::gfx {
@@ -40,12 +43,7 @@ expected swapchain::create(device& dev, HWND window, const swapchain_desc& desc)
   width_ = desc.width ? desc.width : 1;
   height_ = desc.height ? desc.height : 1;
 
-  // FLIP_DISCARD does not accept an _SRGB buffer format. The plan writes
-  // "Format = R8G8B8A8_UNORM_SRGB", which DXGI rejects on a flip-model
-  // swapchain. D6 is still honoured exactly: the BUFFER is R8G8B8A8_UNORM and
-  // the render-target VIEW is _SRGB, so the hardware still does the linear to
-  // sRGB encode on write and the app still presents 8-bit sRGB.
-  // Recorded in plan/12-decision-log.md under 2026-09-06 PR 1.
+  // Flip-model buffers are UNORM; the sRGB RTV encodes linear writes (D6).
   format_ = desc.hdr_output ? DXGI_FORMAT_R16G16B16A16_FLOAT   // scRGB, v1.1 (D6)
                             : DXGI_FORMAT_R8G8B8A8_UNORM;
 
@@ -147,8 +145,8 @@ void swapchain::destroy() noexcept {
   comp_visual_.Reset();
   comp_target_.Reset();
   comp_device_.Reset();
-  // The waitable handle is owned by the swapchain; releasing the swapchain
-  // closes it. Do not CloseHandle it.
+  // GetFrameLatencyWaitableObject transfers handle ownership to the caller.
+  if (waitable_) ::CloseHandle(waitable_);
   waitable_ = nullptr;
   swapchain_.Reset();
   device_ = nullptr;
@@ -162,8 +160,8 @@ bool swapchain::wait_for_next_frame(std::uint32_t timeout_ms) noexcept {
 
 HRESULT swapchain::present(bool allow_tearing) noexcept {
   if (!swapchain_) return DXGI_ERROR_INVALID_CALL;
-  // Tearing requires sync interval 0 and the flag together; anything else is a
-  // vsync present. Never Sleep, never spin: the waitable object did the pacing.
+  // The waitable object bounds queue depth. Sync interval 1 retains each
+  // frame for a vblank; it does not add a second mandatory CPU-side wait.
   const bool tear = allow_tearing && tearing_supported_;
   return swapchain_->Present(tear ? 0u : 1u, tear ? DXGI_PRESENT_ALLOW_TEARING : 0u);
 }
@@ -177,7 +175,7 @@ expected swapchain::resize(std::uint32_t width, std::uint32_t height) noexcept {
   if (!swapchain_) return err(status::internal);
   width = width ? width : 1;
   height = height ? height : 1;
-  if (width == width_ && height == height_) return {};
+  if (width == width_ && height == height_) return rtv_ ? expected{} : create_rtv();
 
   rtv_.Reset();
   if (device_ && device_->context()) {
@@ -190,7 +188,16 @@ expected swapchain::resize(std::uint32_t width, std::uint32_t height) noexcept {
   if (tearing_supported_) flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
   const HRESULT hr = swapchain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags);
-  if (FAILED(hr)) return err(from_hresult(hr));
+  if (FAILED(hr)) {
+    // Some drivers discard the buffers even when ResizeBuffers fails. Try
+    // the old view first, then recreate the previous size if necessary.
+    // Still report the original failure so the caller can rebuild or abort.
+    if (from_hresult(hr) != status::device_lost && !create_rtv()) {
+      if (SUCCEEDED(swapchain_->ResizeBuffers(0, width_, height_, DXGI_FORMAT_UNKNOWN, flags)))
+        (void)create_rtv();
+    }
+    return err(from_hresult(hr));
+  }
 
   width_ = width;
   height_ = height;
@@ -199,41 +206,47 @@ expected swapchain::resize(std::uint32_t width, std::uint32_t height) noexcept {
 }
 
 void swapchain::refresh_output_info() noexcept {
-  refresh_seconds_ = 1.0 / 60.0;
-  if (!swapchain_ || !device_) return;
-
-  com_ptr<IDXGIOutput> output;
-  if (FAILED(swapchain_->GetContainingOutput(output.GetAddressOf())) || !output) return;
-
-  DXGI_OUTPUT_DESC odesc{};
-  if (FAILED(output->GetDesc(&odesc))) return;
-
-  // The monitor settings give an integer refresh; FindClosestMatchingMode then
-  // reports the exact rational, which is what pacing needs (59.94, not 60).
+  // GetContainingOutput is invalid on composition swapchains. Match the host
+  // monitor to an active display path and read its current rational rate.
+  // Zero means unknown: guessing 60 Hz must never certify a measurement.
+  refresh_seconds_ = 0.0;
+  if (!window_) return;
   MONITORINFOEXW mi{};
   mi.cbSize = sizeof(mi);
-  if (!::GetMonitorInfoW(odesc.Monitor, &mi)) return;
-
-  DEVMODEW dm{};
-  dm.dmSize = sizeof(dm);
-  if (!::EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) ||
-      dm.dmDisplayFrequency <= 1) {
-    return;
-  }
-  refresh_seconds_ = 1.0 / static_cast<double>(dm.dmDisplayFrequency);
-
-  DXGI_MODE_DESC want{};
-  want.Width = static_cast<UINT>(odesc.DesktopCoordinates.right - odesc.DesktopCoordinates.left);
-  want.Height = static_cast<UINT>(odesc.DesktopCoordinates.bottom - odesc.DesktopCoordinates.top);
-  want.Format = format_;
-  want.RefreshRate.Numerator = dm.dmDisplayFrequency;
-  want.RefreshRate.Denominator = 1;
-
-  DXGI_MODE_DESC closest{};
-  if (SUCCEEDED(output->FindClosestMatchingMode(&want, &closest, device_->d3d())) &&
-      closest.RefreshRate.Numerator > 0 && closest.RefreshRate.Denominator > 0) {
-    refresh_seconds_ = static_cast<double>(closest.RefreshRate.Denominator) /
-                       static_cast<double>(closest.RefreshRate.Numerator);
+  if (!::GetMonitorInfoW(::MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &mi)) return;
+  try {
+    // Topology can change between sizing and querying; retry with a bound.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      UINT32 path_count = 0, mode_count = 0;
+      if (::GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) !=
+          ERROR_SUCCESS) return;
+      std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+      std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+      const LONG rc = ::QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(),
+                                           &mode_count, modes.data(), nullptr);
+      if (rc == ERROR_INSUFFICIENT_BUFFER) continue;
+      if (rc != ERROR_SUCCESS) return;
+      for (UINT32 i = 0; i < path_count; ++i) {
+        const auto& path = paths[i];
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+        source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source),
+                         path.sourceInfo.adapterId, path.sourceInfo.id};
+        if (::DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+            std::wcscmp(source.viewGdiDeviceName, mi.szDevice) != 0) continue;
+        const auto rate = path.targetInfo.refreshRate;
+        if (rate.Numerator == 0 || rate.Denominator == 0) return;
+        const double seconds = static_cast<double>(rate.Denominator) / rate.Numerator;
+        // A cloned source with differing target rates is ambiguous.
+        if (refresh_seconds_ != 0.0 && refresh_seconds_ != seconds) {
+          refresh_seconds_ = 0.0;
+          return;
+        }
+        refresh_seconds_ = seconds;
+      }
+      return;
+    }
+  } catch (...) {
+    refresh_seconds_ = 0.0;
   }
 }
 

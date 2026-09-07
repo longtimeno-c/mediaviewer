@@ -96,6 +96,39 @@ using (var session = MediaViewerSession.Create(workerCount: 2, enableEtw: false)
     Check("a second drain reports nothing", session.Drain().Length == 0);
 
     Console.WriteLine();
+    Console.WriteLine("image open (BMP via the ABI, no pixels marshalled)");
+    string bmpPath = Path.Combine(Path.GetTempPath(), "mv-smoke.bmp");
+    // 2x2 24-bit BMP, untagged.
+    byte[] bmp =
+    {
+        0x42, 0x4D, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00,
+        0x28, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00,
+        0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00,
+    };
+    File.WriteAllBytes(bmpPath, bmp);
+    uint genBeforeOpen = session.CurrentGeneration;
+    ulong imageJob = session.OpenImage(bmpPath);
+    Check("open returned a job id immediately", imageJob != 0);
+    Check("open bumps generation", session.CurrentGeneration == genBeforeOpen + 1);
+    Check("completion signal fired for image", session.CompletionSignal.WaitOne(TimeSpan.FromSeconds(5)));
+    ReadOnlySpan<MvCompletion> opened = session.Drain();
+    Check("exactly one image completion", opened.Length == 1);
+    if (opened.Length == 1)
+    {
+        Check("kind is ImageOpened", opened[0].Kind == MvCompletionKind.ImageOpened);
+        Check("status is Ok", opened[0].Status == MvStatus.Ok);
+        Check("payload width is 2", (opened[0].Payload >> 32) == 2);
+        Check("payload height is 2", (opened[0].Payload & 0xffffffffL) == 2);
+    }
+    MvImageInfo info = session.ImageInfo;
+    Check("image info width", info.Width == 2);
+    Check("image info height", info.Height == 2);
+    try { File.Delete(bmpPath); } catch { /* temp */ }
+
+    Console.WriteLine();
     Console.WriteLine("batching");
     // plan/14: a folder scan finishing 400 thumbnails must be one drain, not
     // 400 marshalling hops.

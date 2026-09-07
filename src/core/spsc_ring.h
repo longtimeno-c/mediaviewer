@@ -72,18 +72,7 @@ class spsc_ring {
 // with an exchange. Neither side ever writes a slot the other is holding, so
 // there is nothing to tear, and neither side ever waits.
 //
-// Two simpler things were tried first and are recorded here because both look
-// correct:
-//
-//   - **Double buffering.** With one producer and two slots, a consumer still
-//     copying the slot that was live two publishes ago is overwritten mid-copy
-//     and reads a torn snapshot.
-//
-//   - **A seqlock.** Correct, but the reader retries while a publish is in
-//     flight — so a producer in a tight loop starves it indefinitely. The
-//     render thread is the consumer here. A primitive it can livelock on is the
-//     wrong primitive, however rarely the UI thread would really publish that
-//     fast.
+// The slot ownership invariant makes reads bounded; design history is in plan/12.
 template <typename T>
 class publish_slot {
   static_assert(std::is_trivially_copyable_v<T>, "snapshots are POD");

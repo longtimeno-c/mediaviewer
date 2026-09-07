@@ -4,25 +4,14 @@
 //   "Verify: presents at exactly display refresh, 0 dropped frames over 60 s,
 //    ~0 % CPU idle."  (plan/10-roadmap.md, PR 1)
 //
-// Two independent measurements, because either one alone lies:
-//
-//   1. QPC present-to-present intervals. Cheap, always available, and what the
-//      F3 overlay shows. But a present that the compositor silently held for an
-//      extra refresh can still look like a clean interval from inside the app.
-//
-//   2. DXGI_FRAME_STATISTICS.SyncRefreshCount. This is the authoritative one:
-//      it counts vblanks, so a delta greater than one refresh per present IS a
-//      dropped frame, measured by the display rather than inferred by us.
-//      Composition swapchains do not always provide it; when they do not, we
-//      fall back to (1) with a 1.5x-refresh threshold and SAY SO, because a
-//      green number that proves nothing is worse than no number.
-//
-// plan/09: "Treat a dropped frame as a test failure, not a nuisance."
+// QPC measures application cadence; PresentCount/PresentRefreshCount measure
+// displayed progress. Missing display statistics invalidate the whole window.
 #pragma once
 
 #include <dxgi1_6.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 
 namespace mv::gfx {
@@ -31,6 +20,23 @@ enum class drop_source : std::uint8_t {
   none,               // no frames presented yet
   frame_statistics,   // authoritative: DXGI told us vblanks were missed
   interval_heuristic, // inferred from QPC intervals; weaker, and labelled so
+};
+
+struct display_sample {
+  bool valid = false;
+  bool discontinuity = false;
+  std::uint32_t presents = 0;
+  std::uint32_t missed_refreshes = 0;
+};
+
+// Pure counter tracking, independently testable without a GPU or a clock.
+class display_statistics {
+ public:
+  display_sample observe(HRESULT result, const DXGI_FRAME_STATISTICS& sample) noexcept;
+ private:
+  bool have_previous_ = false;
+  std::uint32_t present_count_ = 0;
+  std::uint32_t refresh_count_ = 0;
 };
 
 struct pace_stats {
@@ -44,6 +50,8 @@ struct pace_stats {
   // not a dropped frame and silently treating it as one turns the gate into
   // noise. A soak with many of these is a measurement to distrust.
   std::uint64_t statistics_discontinuities = 0;
+  std::uint64_t statistics_unavailable_frames = 0;
+  std::uint64_t displayed_presents = 0;
 
   double last_present_to_present_ms = 0.0;
   double last_cpu_frame_ms = 0.0;
@@ -53,10 +61,8 @@ struct pace_stats {
   double p99_ms = 0.0;
   double max_ms = 0.0;
 
-  // Time spent inside our own frame: wait returns, we record, we Present. This
-  // is what separates "we were late" from "the scheduler took our slice". If
-  // cpu_max stays far under the refresh interval while frames still drop, the
-  // app is not the problem and the machine is.
+  // Wall time from frame begin through Present, excluding the waitable wait.
+  // Includes scheduling delays; this is not process CPU utilization.
   double cpu_mean_ms = 0.0;
   double cpu_p99_ms = 0.0;
   double cpu_max_ms = 0.0;
@@ -66,16 +72,39 @@ struct pace_stats {
 
   drop_source source = drop_source::none;
 
-  // The verify line, evaluated: presenting at refresh with nothing dropped.
+  // 60 measured seconds; 2% cadence tolerance plus histogram quantization.
   [[nodiscard]] bool meets_pr1_gate() const noexcept {
-    return frames > 0 && dropped_frames == 0 && source == drop_source::frame_statistics &&
-           statistics_discontinuities == 0;
+    if (!std::isfinite(refresh_interval_ms) || refresh_interval_ms <= 0.0 ||
+        !std::isfinite(elapsed_seconds) || elapsed_seconds < 60.0 ||
+        !std::isfinite(mean_ms) || !std::isfinite(p50_ms) || !std::isfinite(max_ms)) return false;
+    const double expected_frames = elapsed_seconds * 1000.0 / refresh_interval_ms;
+    return frames >= expected_frames * 0.98 && frames <= expected_frames * 1.02 &&
+           displayed_presents >= expected_frames * 0.98 &&
+           displayed_presents <= expected_frames * 1.02 &&
+           std::abs(mean_ms - refresh_interval_ms) <= refresh_interval_ms * 0.02 &&
+           std::abs(p50_ms - refresh_interval_ms) <= refresh_interval_ms * 0.02 + 0.05 &&
+           max_ms <= refresh_interval_ms * 2.0 && dropped_frames == 0 &&
+           missed_refreshes == 0 && source == drop_source::frame_statistics &&
+           statistics_discontinuities == 0 && statistics_unavailable_frames == 0;
+  }
+};
+
+struct idle_stats {
+  double elapsed_seconds = 0.0;
+  // Process kernel + user time / wall time, as a percentage of ONE CPU core.
+  double cpu_percent = -1.0;
+  std::uint64_t presents = 0;
+  std::uint64_t input_events = 0;
+  [[nodiscard]] bool meets_pr1_gate() const noexcept {
+    return std::isfinite(elapsed_seconds) && elapsed_seconds >= 60.0 &&
+           std::isfinite(cpu_percent) && cpu_percent >= 0.0 && cpu_percent <= 1.0 &&
+           presents == 0 && input_events == 0;
   }
 };
 
 class pacer {
  public:
-  // `refresh_seconds` comes from the swapchain's containing output and is
+  // `refresh_seconds` comes from the host monitor's active display path and is
   // re-supplied whenever the window moves monitors (plan/03).
   void begin_session(double refresh_seconds) noexcept;
   void set_refresh(double refresh_seconds) noexcept;
@@ -120,11 +149,9 @@ class pacer {
   std::int64_t frame_begin_qpc_ = 0;
 
   // DXGI frame-statistics tracking.
-  std::uint32_t last_present_count_ = 0;
-  std::uint32_t last_sync_refresh_count_ = 0;
-  bool have_last_statistics_ = false;
+  display_statistics display_statistics_;
 
-  double refresh_seconds_ = 1.0 / 60.0;
+  double refresh_seconds_ = 0.0;
   double interval_sum_ms_ = 0.0;
   double max_ms_ = 0.0;
   double cpu_sum_ms_ = 0.0;
@@ -136,6 +163,8 @@ class pacer {
   std::uint64_t dropped_frames_ = 0;
   std::uint64_t missed_refreshes_ = 0;
   std::uint64_t discontinuities_ = 0;
+  std::uint64_t unavailable_frames_ = 0;
+  std::uint64_t displayed_presents_ = 0;
   drop_source source_ = drop_source::none;
 };
 

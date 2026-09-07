@@ -22,6 +22,7 @@ public enum MvCompletionKind : uint
 {
     None = 0,
     Echo = 1,
+    ImageOpened = 2,
 }
 
 /// <summary>Mirrors <c>mv_session_config</c>.</summary>
@@ -63,6 +64,18 @@ public struct MvJobStats
     public ulong QueueDepth;
     public uint WorkerCount;
     public uint Generation;
+}
+
+/// <summary>Mirrors <c>mv_image_info</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct MvImageInfo
+{
+    public uint Width;
+    public uint Height;
+    public uint Format;
+    public uint IccTagged;
+    public uint TransferIntent;
+    public uint Reserved;
 }
 
 /// <summary>

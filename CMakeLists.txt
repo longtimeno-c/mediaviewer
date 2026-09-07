@@ -99,6 +99,16 @@ if(MV_ASAN)
     target_link_options(mv_project_options INTERFACE /INCREMENTAL:NO)
     # ASan is incompatible with the /RTC checks MSVC adds in Debug.
     string(REGEX REPLACE "/RTC[^ ]*" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    # vcpkg static libs (Catch2 today; later C++ ports) are built without
+    # /fsanitize=address. MSVC STL ASan container annotations change object ABI
+    # (annotate_string / annotate_vector / annotate_optional) and the linker
+    # refuses to mix them (LNK2038). Disable the annotations so our objects
+    # match the vcpkg ABI. Heap, stack, and global ASan checks still run.
+    # https://learn.microsoft.com/cpp/sanitizers/error-container-overflow
+    target_compile_definitions(mv_project_options INTERFACE
+      _DISABLE_VECTOR_ANNOTATION
+      _DISABLE_STRING_ANNOTATION
+      _DISABLE_OPTIONAL_ANNOTATION)
   endif()
 endif()
 
@@ -130,14 +140,84 @@ add_library(mv_gfx STATIC
   src/gfx/device.cpp
   src/gfx/pacer.cpp
   src/gfx/swapchain.cpp
+  src/gfx/blit.cpp
   src/gfx/device.h
   src/gfx/pacer.h
   src/gfx/swapchain.h
+  src/gfx/blit.h
 )
 target_link_libraries(mv_gfx
   PUBLIC mv_core
-  PRIVATE d3d11 dxgi dcomp)
+  PRIVATE d3d11 dxgi dcomp d3dcompiler)
 add_library(mv::gfx ALIAS mv_gfx)
+
+# ---------------------------------------------------------------------------
+# mv_io — whole-file reads (worker threads only)
+# ---------------------------------------------------------------------------
+add_library(mv_io STATIC
+  src/io/file.cpp
+  src/io/file.h
+)
+target_link_libraries(mv_io PUBLIC mv_core)
+add_library(mv::io ALIAS mv_io)
+
+# ---------------------------------------------------------------------------
+# mv_codec — JPEG / PNG / BMP, magic-byte probe (plan/04)
+# ---------------------------------------------------------------------------
+find_package(JPEG REQUIRED)
+find_package(spng CONFIG REQUIRED)
+if(TARGET spng::spng)
+  set(MV_SPNG_TARGET spng::spng)
+elseif(TARGET spng::spng_static)
+  set(MV_SPNG_TARGET spng::spng_static)
+else()
+  message(FATAL_ERROR "libspng imported target not found")
+endif()
+
+add_library(mv_codec STATIC
+  src/codec/probe.cpp
+  src/codec/decode.cpp
+  src/codec/jpeg.cpp
+  src/codec/png.cpp
+  src/codec/bmp.cpp
+  src/codec/decode.h
+  src/codec/format.h
+  src/codec/raster.h
+)
+target_link_libraries(mv_codec
+  PUBLIC mv_core
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+add_library(mv::codec ALIAS mv_codec)
+
+# ---------------------------------------------------------------------------
+# mv_image — colour (LCMS) + immutable GPU upload
+# ---------------------------------------------------------------------------
+find_package(lcms2 CONFIG REQUIRED)
+
+add_library(mv_image STATIC
+  src/image/colour.cpp
+  src/image/pipeline.cpp
+  src/image/upload.cpp
+  src/image/colour.h
+  src/image/pipeline.h
+  src/image/upload.h
+  src/image/gpu_image.h
+)
+target_link_libraries(mv_image
+  PUBLIC mv_codec mv_gfx
+  PRIVATE lcms2::lcms2)
+add_library(mv::image ALIAS mv_image)
+
+# ---------------------------------------------------------------------------
+# mv_canvas — pan/zoom springs (plan/03)
+# ---------------------------------------------------------------------------
+add_library(mv_canvas STATIC
+  src/canvas/camera.cpp
+  src/canvas/camera.h
+  src/canvas/spring.h
+)
+target_link_libraries(mv_canvas PUBLIC mv_core)
+add_library(mv::canvas ALIAS mv_canvas)
 
 # ---------------------------------------------------------------------------
 # mediaviewer_core — the shared library exposing the flat C ABI.
@@ -154,7 +234,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -176,10 +256,12 @@ add_executable(mediaviewer_lab WIN32
 )
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_gfx
+  mv_canvas
   mediaviewer_core
   imgui::imgui
   dwmapi
   shell32
+  comdlg32
   avrt      # MMCSS for the render thread
 )
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
@@ -208,16 +290,39 @@ if(MV_BUILD_TESTS)
     tests/test_job_system.cpp
     tests/test_abi_roundtrip.cpp
     tests/test_pacer.cpp
+    tests/test_input_state.cpp
+    tests/test_probe.cpp
+    tests/test_decode.cpp
+    tests/test_colour.cpp
+    tests/test_camera.cpp
+    tests/test_abi_image.cpp
+    tests/test_upload.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx
+    mv_codec
+    mv_image
+    mv_canvas
     mediaviewer_core
+    JPEG::JPEG
+    ${MV_SPNG_TARGET}
+    lcms2::lcms2
     Catch2::Catch2WithMain)
   target_include_directories(mv_tests PRIVATE src src/abi/include)
 
   include(Catch)
   catch_discover_tests(mv_tests)
+
+  add_executable(mv_frametime_fixture tests/frametime_fixture.cpp)
+  add_executable(mv_swapchain_recovery tests/swapchain_recovery.cpp)
+  target_link_libraries(mv_swapchain_recovery PRIVATE mv_gfx)
+  target_link_libraries(mv_frametime_fixture PRIVATE mv_project_options)
+  add_test(NAME frametime_harness COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+    -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frametime.ps1"
+    -Harness $<TARGET_FILE:mv_frametime> -Fixture $<TARGET_FILE:mv_frametime_fixture>
+    -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}/frametime-tests")
+  set_tests_properties(frametime_harness PROPERTIES TIMEOUT 60)
 
   # The DLL must sit beside the test exe for the P/Invoke-shaped ABI tests.
   add_custom_command(TARGET mv_tests POST_BUILD

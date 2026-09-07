@@ -20,6 +20,17 @@ struct job_record {
   job_fn fn;
   job_done_fn on_done;
 };
+
+void notify_done(const job_record& job, status result) noexcept {
+  if (!job.on_done) return;
+  try {
+    job.on_done(job.id, job.gen, result);
+  } catch (...) {
+    // A callback may already have side effects; never invoke it a second time.
+    MV_LOG_ERROR("job_system: completion callback threw for job %llu",
+                 static_cast<unsigned long long>(job.id));
+  }
+}
 }  // namespace
 
 struct job_system::impl {
@@ -73,13 +84,20 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         if (job.gen != now) {
           trace::job_cancelled(job.id, job.gen);
           cancelled_.fetch_add(1, std::memory_order_relaxed);
-          if (job.on_done) job.on_done(job.id, job.gen, status::cancelled);
+          notify_done(job, status::cancelled);
           continue;
         }
 
         trace::job_begin(job.id, i);
         const job_context ctx(job.id, job.gen, &generation_, i);
-        const status result = job.fn ? job.fn(ctx) : status::invalid_arg;
+        status result = status::invalid_arg;
+        try {
+          if (job.fn) result = job.fn(ctx);
+        } catch (const std::bad_alloc&) {
+          result = status::out_of_memory;
+        } catch (...) {
+          result = status::internal;
+        }
         trace::job_end(job.id, static_cast<std::int32_t>(result));
 
         if (result == status::cancelled) {
@@ -87,7 +105,7 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         } else {
           completed_.fetch_add(1, std::memory_order_relaxed);
         }
-        if (job.on_done) job.on_done(job.id, job.gen, result);
+        notify_done(job, result);
       }
     });
   }
@@ -117,7 +135,7 @@ void job_system::shutdown() noexcept {
   // that will not arrive.
   for (auto& job : abandoned) {
     cancelled_.fetch_add(1, std::memory_order_relaxed);
-    if (job.on_done) job.on_done(job.id, job.gen, status::cancelled);
+    notify_done(job, status::cancelled);
   }
 
   impl_.reset();
