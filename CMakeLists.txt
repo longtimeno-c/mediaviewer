@@ -250,6 +250,8 @@ find_package(imgui CONFIG REQUIRED)
 add_executable(mediaviewer_lab WIN32
   src/shell/main.cpp
   src/shell/present_lab.cpp
+  src/shell/chrome_host.cpp
+  src/shell/chrome_host.h
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
@@ -262,9 +264,45 @@ target_link_libraries(mediaviewer_lab PRIVATE
   dwmapi
   shell32
   comdlg32
+  ole32     # CoInitializeEx for the WinUI island STA
   avrt      # MMCSS for the render thread
 )
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
+add_custom_command(TARGET mediaviewer_lab POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
+          "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
+  COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+
+# PR 3: publish the C# WinUI chrome beside the lab so hostfxr can load it.
+# The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
+find_program(DOTNET_EXE dotnet)
+set(MV_CHROME_PROJ "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj")
+set(MV_CHROME_SOURCES
+  ${MV_CHROME_PROJ}
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
+)
+if(DOTNET_EXE)
+  # Publish beside the lab on every lab link so `cmake --build --target
+  # mediaviewer_lab` is enough to load the island. LINK_DEPENDS republishes
+  # when the C# sources change without a native rebuild.
+  add_custom_command(TARGET mediaviewer_lab POST_BUILD
+    COMMAND ${DOTNET_EXE} publish ${MV_CHROME_PROJ}
+            --nologo
+            --configuration $<IF:$<CONFIG:Debug>,Debug,Release>
+            -r win-x64
+            --no-self-contained
+            -p:Platform=x64
+            -o $<TARGET_FILE_DIR:mediaviewer_lab>
+    COMMENT "Publishing MediaViewer.Chrome beside mediaviewer_lab"
+    VERBATIM
+  )
+  set_property(TARGET mediaviewer_lab APPEND PROPERTY LINK_DEPENDS ${MV_CHROME_SOURCES})
+  add_custom_target(mv_chrome DEPENDS mediaviewer_lab ${MV_CHROME_SOURCES})
+else()
+  message(STATUS "dotnet not found — lab will run without WinUI chrome (pass --no-chrome)")
+endif()
 
 # ---------------------------------------------------------------------------
 # tools/frametime — the frame-time regression harness (plan/09).
@@ -276,6 +314,9 @@ target_link_libraries(mv_frametime PRIVATE mv_core)
 target_include_directories(mv_frametime PRIVATE src)
 set_target_properties(mv_frametime PROPERTIES OUTPUT_NAME "frametime")
 add_dependencies(mv_frametime mediaviewer_lab)
+if(TARGET mv_chrome)
+  add_dependencies(mv_frametime mv_chrome)
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -297,6 +338,9 @@ if(MV_BUILD_TESTS)
     tests/test_camera.cpp
     tests/test_abi_image.cpp
     tests/test_upload.cpp
+    tests/test_chrome_host.cpp
+    src/shell/chrome_host.cpp
+    src/shell/app.manifest
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -308,11 +352,15 @@ if(MV_BUILD_TESTS)
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     lcms2::lcms2
-    Catch2::Catch2WithMain)
+    Catch2::Catch2WithMain
+    ole32)
   target_include_directories(mv_tests PRIVATE src src/abi/include)
 
   include(Catch)
   catch_discover_tests(mv_tests)
+  if(TARGET mv_chrome)
+    add_dependencies(mv_tests mv_chrome)
+  endif()
 
   add_executable(mv_frametime_fixture tests/frametime_fixture.cpp)
   add_executable(mv_swapchain_recovery tests/swapchain_recovery.cpp)

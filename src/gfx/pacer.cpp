@@ -139,13 +139,16 @@ void pacer::frame_end(IDXGISwapChain* swapchain) noexcept {
 
     displayed_presents_ += display.presents;
     if (display.discontinuity) ++discontinuities_;
+    const double refresh_ms = refresh_seconds_ * 1000.0;
     if (!display.valid) {
       ++unavailable_frames_;
-      const double refresh_ms = refresh_seconds_ * 1000.0;
       if (refresh_ms > 0.0 && interval_ms > refresh_ms * 1.5) {
         missed_this_frame =
             static_cast<std::uint32_t>((interval_ms / refresh_ms) - 0.5);
       }
+    } else {
+      missed_this_frame =
+          reconcile_missed_refreshes(display.missed_refreshes, interval_ms, refresh_ms);
     }
     // A later valid sample must not erase earlier gaps in coverage.
     source_ = unavailable_frames_ == 0 ? drop_source::frame_statistics

@@ -13,7 +13,7 @@ This file is generated as part of the build and shown in the About dialog. It li
 **everything currently linked**, not everything the plan intends to link — entries are
 added by the PR that adds the dependency.
 
-## Currently linked (PR 2)
+## Currently linked (PR 3)
 
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
@@ -23,8 +23,10 @@ added by the PR that adds the dependency.
 | [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. |
 | [Little CMS (lcms2)](https://github.com/mm2/Little-CMS) | 2.19.1 | MIT | Dynamic (vcpkg x64-windows) | ICC → linear Rec.709 → sRGB. No tone-map on display-referred sources (D6). |
 | zlib | 1.3.2 | Zlib | Dynamic | Transitive, via libspng. |
-| .NET 8 / runtime libraries | 8.0 | MIT | Framework | Interop assembly only. |
+| .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 15. |
+| [Windows App SDK / WinUI 3](https://github.com/microsoft/WindowsAppSDK) | 2.4.0 | MIT | Framework package | Command bar chrome in a `DesktopWindowXamlSource` island. Not the canvas. Runtime must be installed on the machine (unpackaged). |
 | Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
+| [Cozette](https://github.com/the-moonwitch/Cozette) | 1.30.0 | MIT | Bundled TTF | Empty canvas and chrome labels. Bitmap terminal face (Proggy/Dina lineage); `CozetteVector.ttf` for WinUI. Licence: `assets/fonts/LICENSE-Cozette.txt`. |
 
 ## Planned, with the PR that introduces each
 

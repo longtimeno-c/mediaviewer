@@ -19,9 +19,17 @@ class camera {
   // 100 %. Keeps the current centre.
   void one_to_one() noexcept;
 
+  // Jump to an absolute zoom in [50 %, 6400 %]. 50 % is allowed even when
+  // that is smaller than fit (letterboxed). Fit-to-window is a separate
+  // command and may go below 50 % on a huge image.
+  void set_zoom(float zoom, float image_w, float image_h, float window_w,
+                float window_h) noexcept;
+
   // Wheel zoom toward the cursor. `notches` is the usual WHEEL_DELTA units
-  // already divided to ±1 per detent. Zoom-out floors at fit (the opening
-  // view) and springs back to centre; it does not shrink past that.
+  // already divided to ±1 per detent. Zoom-out floors at 50 %, not at fit —
+  // except while already in fit-to-window below 50 %, where the rest pose
+  // stays fit. Rubber-band dips the *target*; pop-back starts after the
+  // wheel stops. Displayed zoom is never teleported.
   void wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
                     float window_h, float image_w, float image_h) noexcept;
 
@@ -47,6 +55,8 @@ class camera {
                                       float window_h) noexcept;
 
  private:
+  void clear_rubber() noexcept;
+
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;
   float pan_vx_ = 0.0f;
@@ -56,6 +66,9 @@ class camera {
   float target_pan_x_ = 0.0f;
   float target_pan_y_ = 0.0f;
   float target_zoom_ = 1.0f;
+  float rubber_fit_zoom_ = 0.0f;
+  float rubber_idle_ = 0.0f;
+  bool rubber_held_ = false;
   bool fit_mode_ = true;
   bool dragging_ = false;
 };

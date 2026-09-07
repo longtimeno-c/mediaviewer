@@ -15,6 +15,8 @@ cbuffer Camera : register(b0) {
   float _pad0;
   float2 window_size;
   float2 image_size;
+  float2 origin;
+  float2 _pad1;
 };
 
 Texture2D img : register(t0);
@@ -61,7 +63,7 @@ float4 sample_catmull(Texture2D tex, float2 uv, float2 tex_size) {
 }
 
 float4 ps_main(VSOut vin) : SV_Target {
-  float2 image_px = pan + (vin.pos.xy - window_size * 0.5) / zoom;
+  float2 image_px = pan + (vin.pos.xy - (origin + window_size * 0.5)) / zoom;
   float2 uv = image_px / image_size;
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(0.016, 0.018, 0.024, 1.0);
@@ -83,6 +85,8 @@ struct alignas(16) blit_cb {
   float pad0;
   float window_w, window_h;
   float image_w, image_h;
+  float origin_x, origin_y;
+  float pad1, pad2;
 };
 
 expected compile(const char* entry, const char* target, com_ptr<ID3DBlob>& blob) {
@@ -173,6 +177,8 @@ void blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* image,
   cb.window_h = p.window_h;
   cb.image_w = p.image_w;
   cb.image_h = p.image_h;
+  cb.origin_x = p.origin_x;
+  cb.origin_y = p.origin_y;
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (SUCCEEDED(ctx->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {

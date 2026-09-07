@@ -88,11 +88,11 @@ expected swapchain::create(device& dev, HWND window, const swapchain_desc& desc)
   }
 
   // Composition swapchains are never presented to an HWND directly; they live
-  // in a DComp visual tree. That tree is also the shape PR 3 hosts its XAML
-  // islands beside.
+  // in a DComp visual tree. topmost = FALSE so WinUI island child HWNDs (PR 3)
+  // sit above the swapchain; TRUE would hide the command bar under the canvas.
   hr = ::DCompositionCreateDevice(nullptr, IID_PPV_ARGS(comp_device_.GetAddressOf()));
   if (FAILED(hr)) { destroy(); return err(from_hresult(hr)); }
-  hr = comp_device_->CreateTargetForHwnd(window, TRUE, comp_target_.GetAddressOf());
+  hr = comp_device_->CreateTargetForHwnd(window, FALSE, comp_target_.GetAddressOf());
   if (FAILED(hr)) { destroy(); return err(from_hresult(hr)); }
   hr = comp_device_->CreateVisual(comp_visual_.GetAddressOf());
   if (FAILED(hr)) { destroy(); return err(from_hresult(hr)); }

@@ -132,6 +132,18 @@ TEST_CASE("reset_window clears the histogram but keeps the refresh interval",
   REQUIRE(stats.refresh_interval_ms < 8.5);
 }
 
+TEST_CASE("DXGI idle-gap misses are not drops when QPC is one refresh", "[gfx][pacer]") {
+  // Interactive lab: resume after idle, QPC ~16.7 ms, DXGI reports the idle
+  // vblanks (50–120) as missed refreshes on the first scored present.
+  REQUIRE(mv::gfx::reconcile_missed_refreshes(57, 16.7, 16.68) == 0);
+  REQUIRE(mv::gfx::reconcile_missed_refreshes(1, 16.7, 16.68) == 0);
+  REQUIRE(mv::gfx::reconcile_missed_refreshes(0, 16.7, 16.68) == 0);
+  // A real miss: ~2× refresh. DXGI and QPC agree.
+  REQUIRE(mv::gfx::reconcile_missed_refreshes(1, 33.4, 16.68) == 1);
+  REQUIRE(mv::gfx::reconcile_missed_refreshes(2, 50.0, 16.68) == 2);
+  REQUIRE(mv::gfx::reconcile_missed_refreshes(114, 16.7, 0.0) == 114);
+}
+
 TEST_CASE("display statistics use presentation vblanks and retain duplicate baselines", "[gfx][pacer]") {
   mv::gfx::display_statistics tracker;
   DXGI_FRAME_STATISTICS fs{};

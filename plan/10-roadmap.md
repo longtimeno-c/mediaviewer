@@ -2,7 +2,8 @@
 
 Re-cut against the decisions in [01-decisions.md](01-decisions.md): **v1 is a viewer with light
 edits** (D4), on the **camera-dump format set** (D5), with a **C# WinUI 3 shell over a C++ core**
-(D1) and **FFmpeg video on one present path** (D2).
+(D1) and **FFmpeg video on one present path** (D2). **v1 is Windows** (PR 1–15). macOS is
+Milestone F (PR 16–20) — a later host of the same core, not a UI-only port (**D9**).
 
 Work is sliced into **independently runnable PRs, each with a verify line**. Do not start PR N+1
 until N's verify holds **and PR 1's present-loop verify still holds** — that second clause is what
@@ -207,6 +208,58 @@ RAW and HEIC files first hit decoders you've never tested against them.
 **Verify:** clean VM → install → open a real camera dump → browse, crop, trim, export, with no
 SmartScreen block and **no missing-codec dialog anywhere**.
 
+## Milestone F — It opens on a Mac (PR 16–20)
+
+Windows v1 is the product through PR 15. Mac is a **later host of the same core**, not a
+UI-only follow-up and not a dual-track of PRs 4–15. Decode, colour, EditStack, metadata, and
+the C ABI transfer. Present, hardware decode, audio, I/O, chrome, and the installer do not.
+Full split and the hostable-core rule: [15-platforms.md](15-platforms.md).
+
+Do not start F until PR 15's verify holds **and** PR 1's present-loop verify still holds on
+Windows. F has its own present-loop gate.
+
+### PR 16 — Metal present lab
+AppKit window, `CAMetalLayer`, display-link pacing, idle → stop presenting, F3 overlay,
+`frametime` on Darwin. **No SwiftUI yet** — this is the Mac instrument, kept as a debug
+harness the way the Win32 lab is.
+
+**Verify:** presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle,
+**on Apple Silicon, measured from the Metal / display-link side**. A Windows DXGI soak is
+not this verify.
+
+### PR 17 — Still decode + pan/zoom, on Metal
+Same ABI and decoders as PR 2. Immutable Metal texture upload from the worker pool, fit /
+wheel-zoom-toward-cursor / drag-pan. First blit shader gets its MSL twin.
+
+**Verify:** a 12 MP JPEG pans at refresh with zero decode on mouse move; a tagged AdobeRGB
+JPEG renders correctly and an untagged one is treated as sRGB, with **no tone-map applied
+to either** (D6).
+
+### PR 18 — SwiftUI chrome, hosted in the AppKit window
+**The canvas is not ported to SwiftUI.** PR 16's AppKit window and `CAMetalLayer` stay;
+SwiftUI chrome is hosted inside them. Command bar and window chrome only.
+
+**Verify:** zero dropped frames while panning a cached image at display refresh, unchanged
+from PR 17 now that chrome is on screen. Focus and keyboard traversal cross the SwiftUI /
+canvas boundary; a popover opens over the canvas without clipping.
+
+### PR 19 — VideoToolbox + Core Audio
+FFmpeg + VideoToolbox on *your* `MTLDevice`, copy out of the decoder pool into a
+presentation ring you own, NV12 and 10-bit sample paths, HDR→SDR in the MSL twin. Core
+Audio is the master clock. **`AVPlayer` is forbidden.**
+
+**Verify:** 4K 10-bit HEVC plays at full rate with VideoToolbox active, on a clean Mac with
+no extra codec packs; an iPhone HLG clip looks correct; A/V drift flat over 30 minutes;
+photo → video → photo leaks no textures.
+
+### PR 20 — Finder + notarized ship
+UTIs for the D5 still set, never a silent default-app hijack. Quick Look / thumbnails in a
+**separate process**. Notarized Sparkle, Apple Silicon only.
+
+**Verify:** double-clicking a HEIC in Finder opens the app; a deliberately corrupted HEIC
+in a browsed folder leaves Finder running; a clean Mac → install from the notarized image
+→ open a real camera dump, with no Gatekeeper block and no codec dialog.
+
 ---
 
 ## v1.1 and beyond — same architecture, more of it
@@ -222,7 +275,7 @@ SmartScreen block and **no missing-codec dialog anywhere**.
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating |
 | Security | AppContainer decode process (D8) |
 | Distribution | Store MSIX as a secondary channel, per-machine MSI for enterprise |
-| Platform | ARM64, compare/side-by-side, keymap customization |
+| Platform | Windows ARM64, Intel Macs, compare/side-by-side, keymap customization. **Apple Silicon macOS is Milestone F, not v1.1.** |
 
 ## Sequencing advice
 
@@ -240,3 +293,6 @@ SmartScreen block and **no missing-codec dialog anywhere**.
   integration, out-of-process handlers, packaging) are each multi-week for one person on their own.
   Size the milestones, ship them in order, and let the calendar report itself rather than being
   promised up front.
+- **Do not start Milestone F during Windows v1, and do not call it a UI port.** From PR 4, keep
+  Win32 / D3D11 out of `image/`, `player/`, `edit/`, and `meta/` so F is a host + backends.
+  Chrome is written twice (D1). The Metal present lab is PR 16, not a weekend on top of PR 15.

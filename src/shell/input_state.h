@@ -23,6 +23,7 @@ struct input_snapshot {
   // layout. PerMonitorV2, so both change on WM_DPICHANGED.
   std::uint32_t width = 0;
   std::uint32_t height = 0;
+  std::uint32_t chrome_height_px = 0;  // command-bar strip; overlay sits below it
   float dpi_scale = 1.0f;
 
   float mouse_x = 0.0f;
@@ -36,11 +37,15 @@ struct input_snapshot {
   // Latched edge-triggered commands. The render thread compares the counter to
   // the one it last saw, so a keypress can never be missed between frames and
   // can never be double-counted.
-  std::uint32_t toggle_overlay_seq = 0;   // F3
+  std::uint32_t toggle_overlay_seq = 0;   // F / F3
   std::uint32_t toggle_animation_seq = 0; // Space
   std::uint32_t reset_stats_seq = 0;      // R
   std::uint32_t fit_seq = 0;              // 0
   std::uint32_t one_to_one_seq = 0;       // 1
+  std::uint32_t zoom_in_seq = 0;          // +
+  std::uint32_t zoom_out_seq = 0;         // -
+  std::uint32_t zoom_preset_seq = 0;
+  float zoom_preset = 1.0f;               // applied when zoom_preset_seq bumps
 
   bool window_visible = true;
   bool window_active = true;
