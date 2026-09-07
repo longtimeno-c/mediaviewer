@@ -684,7 +684,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
 
   const char* heading = "Drop a photo or a clip here";
   const char* sub = "JPEG, PNG, BMP, MP4, MOV, MKV, WebM, AVI, TS. Open a folder from the bar, or Ctrl+O";
-  const char* keys = "0  fit     1  100%     + / -  zoom     space  play/pause     a / d  skim     F  overlay";
+  const char* keys = "0  fit     1  100%     + / -  zoom     space  play/pause     q / e  skim     F  overlay";
 
   ImFont* font = ImGui::GetFont();
   const float title_fs = 22.0f * scale;

@@ -88,7 +88,8 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 | `Space` | on a clip: play/pause. Otherwise the lab sweep on/off — overlay **animating**, not "a photo is open". Sweep off and settled → stop presenting (~0 % CPU) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([plan/16](plan/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
-| `A` / `D` | on a clip, two commands on one key: **tap** steps playback speed (0.25 / 0.5 / 1 / 1.5 / 2 / 4), **hold** skims ±2 s per key repeat and settles on an exact seek when released. Off a clip, previous / next beside the arrows |
+| `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
+| `Q` / `E` | on a clip, two commands on one key: **tap** steps playback speed (0.25 / 0.5 / 1 / 1.5 / 2 / 4), **hold** skims ±2 s per key repeat and settles on an exact seek when released. Off a clip they do nothing |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |

@@ -209,7 +209,7 @@ public static partial class IslandHost
     /// <summary>
     /// Native pushing the current playback rate in. The dropdown is a view of
     /// the rate, never a second place it is decided — the keyboard is the one
-    /// router (plan/16), so A/D and this menu cannot drift apart.
+    /// router (plan/16), so Q/E and this menu cannot drift apart.
     /// </summary>
     public static int ApplyRate(IntPtr arg, int sizeBytes)
     {
@@ -277,7 +277,7 @@ public static partial class IslandHost
             if (_updatingSpeed || _speed.SelectedIndex < 0) return;
             Send(Command.SetRate, (float)SpeedLadder[_speed.SelectedIndex]);
         };
-        ToolTipService.SetToolTip(_speed, "Playback speed — tap A / D to step, hold to skim");
+        ToolTipService.SetToolTip(_speed, "Playback speed — tap Q / E to step, hold to skim");
         return _speed;
     }
 
@@ -764,7 +764,7 @@ public static partial class IslandHost
         };
         aboutFlyout.Content = new TextBlock
         {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nG opens the gallery, T shows or hides the filmstrip, F toggles the frame-time overlay. On a clip: space plays/pauses, A and D skim, J and L jump 10 s. Wheel zooms toward the cursor; drag pans.",
+            Text = "MediaViewer — GPL-2.0-or-later\n\nG opens the gallery, T shows or hides the filmstrip, F toggles the frame-time overlay. On a clip: space plays/pauses, Q and E skim, J and L jump 10 s. Wheel zooms toward the cursor; drag pans.",
             Margin = new Thickness(12, 10, 12, 10),
             MaxWidth = 400,
             TextWrapping = TextWrapping.Wrap,

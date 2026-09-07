@@ -71,7 +71,7 @@ struct app_state {
   // accumulate; only the landing is quantised.
   std::int64_t skim_target_ns = 0;
   std::uint64_t skim_tick_ms = 0;
-  // A/D are two commands on one key: tap steps the speed, hold skims. Which
+  // Q/E are two commands on one key: tap steps the speed, hold skims. Which
   // one it was is only knowable at key-up, so the down edge records and the up
   // edge decides.
   bool skim_shuttled = false;
@@ -219,14 +219,14 @@ void folder_step(app_state* app, int delta) {
   folder_select(app, static_cast<std::uint32_t>(next));
 }
 
-// Skim, not transport: J/L are the +/-10 s jumps, A/D are the shuttle you hold
+// Skim, not transport: J/L are the +/-10 s jumps, Q/E are the shuttle you hold
 // down to find a moment. 2 s per repeat lands about where a scrubber drag does.
 constexpr std::int64_t kSkimStepNs = 2'000'000'000;
 // plan/16: J / L are the +/-10 s transport jumps.
 constexpr std::int64_t kTransportStepNs = 10'000'000'000;
 
 // plan/16's Video mode: "current item is a clip, playing or paused". Stopped
-// means no clip, so A/D fall back to browse prev/next.
+// means no clip, so Q/E do nothing and the key goes to the island.
 // How long a skim burst stays "the same burst". Longer than key-repeat's
 // ~30 ms cadence, short enough that a second press a beat later starts from
 // where the clip actually is.
@@ -397,12 +397,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
 // command bar and the overlay sat under it — both looked like "F does nothing".
 bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   if (!app) return false;
-  // A/D on a clip are decided at key-up, because tap and hold are two different
+  // Q/E on a clip are decided at key-up, because tap and hold are two different
   // commands on one key: a tap steps the playback speed, a hold shuttles. The
   // hold is recognised by typematic repeat having fired at least once.
-  if (msg.message == WM_KEYUP && (msg.wParam == 'A' || msg.wParam == 'D')) {
+  if (msg.message == WM_KEYUP && (msg.wParam == 'Q' || msg.wParam == 'E')) {
     if (!video_mode(app)) return false;
-    const int direction = msg.wParam == 'D' ? 1 : -1;
+    const int direction = msg.wParam == 'E' ? 1 : -1;
     if (app->skim_shuttled) {
       // Settle the shuttle on the exact frame, the way letting go of the
       // scrubber does — otherwise it stops on whatever keyframe the last cheap
@@ -417,25 +417,33 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   }
   if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
   const bool repeat = (msg.lParam & (1 << 30)) != 0;
-  const bool arrow = msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT ||
-                     msg.wParam == 'A' || msg.wParam == 'D';
-  // Ignore typematic repeats except Left/Right and A/D, which should walk the
-  // folder — or skim the clip — while the key is held.
-  if (repeat && !arrow) return false;
+  const bool holdable = msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT ||
+                        msg.wParam == 'A' || msg.wParam == 'D' ||
+                        msg.wParam == 'Q' || msg.wParam == 'E';
+  // Ignore typematic repeats except the keys where holding means something:
+  // Left/Right and A/D walk the folder, Q/E skim the clip.
+  if (repeat && !holdable) return false;
 
   switch (msg.wParam) {
-    // plan/16: A/D are browse prev/next, and Video mode reinterprets them as
-    // skim. A held key shuttles on the non-exact seek (nearest keyframe) so it
-    // cannot queue a decode-forward per repeat; a single tap, and the end of a
-    // burst, settle exactly where asked. Same two modes as the scrubber drag
-    // and its release (plan/05).
+    // plan/16: A/D are browse prev/next, in every mode. They used to be
+    // reinterpreted as the clip's speed/skim pair, which meant the two most
+    // obvious "walk the folder" keys stopped walking the folder the moment a
+    // clip was open. Transport lives on Q/E instead.
     case 'A':
-    case 'D': {
-      const int direction = msg.wParam == 'D' ? 1 : -1;
-      if (!video_mode(app)) {
-        folder_step(app, direction);
-        return true;
-      }
+    case 'D':
+      folder_step(app, msg.wParam == 'D' ? 1 : -1);
+      return true;
+    // plan/16: Q/E are the clip's two-commands-on-one-key pair — tap steps the
+    // playback speed, hold shuttles. A held key shuttles on the non-exact seek
+    // (nearest keyframe) so it cannot queue a decode-forward per repeat; a
+    // single tap, and the end of a burst, settle exactly where asked. Same two
+    // modes as the scrubber drag and its release (plan/05).
+    case 'Q':
+    case 'E': {
+      // Nothing to scrub or speed up on a still, and swallowing the key there
+      // would take it from the island for no reason.
+      if (!video_mode(app)) return false;
+      const int direction = msg.wParam == 'E' ? 1 : -1;
       // The down edge of a tap does nothing: it is not yet known to be a tap.
       // The first typematic repeat is what makes it a hold, and from there
       // every repeat shuttles on the cheap seek (nearest keyframe) so a held
