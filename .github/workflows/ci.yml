@@ -64,6 +64,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Versioned aka.ms URL, not /stable/: that alias redirects to Bing HTML.
+      - name: Install Windows App SDK runtime
+        run: ./tools/install-windows-app-runtime.ps1
+
       # Facts before theories. When a Windows CI build fails to configure, the
       # question is always "which Visual Studio, which CMake, which vcpkg" —
       # answering it in the log costs seconds and saves a round trip per guess.
@@ -177,6 +185,13 @@ jobs:
           }
 
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Windows App SDK runtime
+        run: ./tools/install-windows-app-runtime.ps1
 
       - name: Configure and build
         run: |

@@ -2,12 +2,15 @@
 
 ## The recommendation
 
-**C# WinUI 3 shell + C++20 core, Direct3D 11 canvas.** Not straight C, not Node/npm.
+**C++20 core behind a flat C ABI. Native chrome per OS: C# WinUI 3 on Windows, SwiftUI/AppKit on
+macOS. Native canvas per OS: Direct3D 11, Metal.** Not straight C, not Node/npm, not a shared UI
+toolkit.
 
-The core — decode, render, edit, metadata — is a UI-free C++ static lib behind a flat C ABI. The
-chrome is C# WinUI 3, because a daily-driver viewer needs a virtualizing filmstrip, accessibility,
-and IME, and hand-rolling those is a year that isn't the product. See **D1** below for the full
-comparison; it replaces an earlier Win32 + Dear ImGui recommendation.
+The core — decode, render, edit, metadata — is a UI-free C++ lib behind a flat C ABI. Chrome is
+native because a daily-driver viewer needs a virtualizing filmstrip, accessibility, and IME, and
+hand-rolling those is a year that isn't the product. See **D1** and **D9** below. The Windows
+side replaces an earlier Win32 + Dear ImGui recommendation; the Mac side is the same argument
+in SwiftUI, not a port of XAML.
 
 ## Why not JavaScript (Electron / Tauri / "nitro" native modules)
 
@@ -64,18 +67,25 @@ determine smoothness here. D3D12 would buy you lower CPU driver overhead on draw
 scenes; a media viewer draws roughly ten quads a frame. The bottleneck is decode and upload, not
 submission. **Do not spend the D3D12 complexity budget.**
 
+**D9 does not reopen this.** Vulkan / MoltenVK / wgpu as a "portable GPU" is the same complexity
+budget spent to make Windows worse. macOS gets Metal as that OS's first present path, not as a
+layer under D3D11.
+
 ---
 
 # Contested decisions
 
-Six decisions here are genuinely arguable. Each records the options, the call, and *why* — so the
+These decisions are genuinely arguable. Each records the options, the call, and *why* — so the
 reasoning survives even though the competing draft it was argued against is gone. **Reversibility
 is the deciding column**: a decision that's cheap to revisit doesn't deserve much agonizing; one
 that isn't, does.
 
 Decision log with dates: [12-decision-log.md](12-decision-log.md).
 
-## D1 — App shell: **C# WinUI 3 chrome + C++ core** ✅ decided
+## D1 — App shell: **native chrome + C++ core** ✅ decided
+
+Windows: **C# WinUI 3**. macOS (Milestone F): **SwiftUI hosted in AppKit**. Same C++ core, same
+ABI. ImGui is the present lab and the F3 overlay on both, never shipped chrome.
 
 An earlier draft of this plan said Win32 + DComp + Dear ImGui. That was wrong for the shipped app,
 and wrong for a specific reason: it was arguing against WinUI's *frame cost* and never priced the
@@ -100,8 +110,10 @@ FastStone wants a virtualizing filmstrip, a real folder tree, keyboard/IME behav
 accessibility, and "I'll write my own" is a year of work that isn't the product. **C++/WinRT XAML
 is a well-known velocity tax** and you'd pay it on exactly the surfaces that are pure chrome:
 filmstrip, folder tree, metadata pane, settings. **The core doesn't care** — it never sees XAML,
-never sees C#, and stays language-agnostic behind a flat C ABI, which is also what makes a future
-mobile or CLI wrapper possible.
+never sees C#, and stays language-agnostic behind a flat C ABI, which is also what makes the
+**macOS host** (D9) — SwiftUI talking to the same header — possible without rewriting decode.
+From PR 4 the core stays hostable; the Mac host itself is Milestone F, not a hope and not a
+v1 slip ([15-platforms.md](15-platforms.md)).
 
 Consequences, all accepted deliberately:
 
@@ -145,7 +157,11 @@ What this costs, stated honestly:
 Everything else in D1 stands. The core is still UI-free C++ behind a flat C ABI; the shell is still
 the thin part.
 
-## D2 — Video: **FFmpeg + D3D11VA on your own present path** ✅ decided
+## D2 — Video: **FFmpeg + OS hwdecode on your own present path** ✅ decided
+
+Windows: FFmpeg + **D3D11VA** on *your* `ID3D11Device`. macOS: FFmpeg + **VideoToolbox** on
+*your* `MTLDevice`. One pipeline per OS, one canvas, no codec packs, no second player HWND /
+`AVPlayer`.
 
 An earlier draft said libmpv. The structural objection to it is correct: **child-HWND mpv is a
 second canvas.** That's the flicker-on-resize, your-shaders-don't-apply problem, and the escape
@@ -203,7 +219,9 @@ only job, and the user does not come back to try again.
 Probe the OS codec first — it may be hardware-backed — and fall back to the bundled decoder
 silently. Keep the install-prompt path for HEVC **encode** only, and for any distribution channel
 where a bundled decoder must be disabled for licensing reasons
-([11-licensing.md](11-licensing.md)).
+([11-licensing.md](11-licensing.md)). On Windows the probe is MF / DXVA; on macOS it is
+VideoToolbox / ImageIO. The bundled fallback is what makes both honest (D3, D9) and is what
+keeps golden images matching across OS.
 
 ## D4 — v1 scope: **viewer with light edits** ✅ decided
 
@@ -286,6 +304,60 @@ An AppContainer decode process is the right security endgame — it converts an 
 into a crashed helper. It is also a pure win with no product-visible change, which is exactly why
 it can never justify delaying v1. Fuzz the decoders from PR 6 in the meantime
 ([09-build-and-test.md](09-build-and-test.md)).
+
+## D9 — Platforms: **Windows v1, hostable core, macOS as Milestone F** ✅ decided
+
+v1 is Windows. From PR 4 the native core is kept hostable so a Mac app is a second host of
+the same decode / colour / edit / metadata library, not a rewrite of those. The Mac app is
+**Milestone F** ([10-roadmap.md](10-roadmap.md)), after Windows ships.
+
+A draft of this section put both platforms in v1. That is the right way to *not forget* a
+port and the wrong way to *schedule* one: every remaining Windows PR would wait on a Metal
+present lab the Windows user does not need. Treating Mac as “just SwiftUI on the existing
+C++” is the other failure mode — chrome is half the work; present, VideoToolbox, Core Audio,
+I/O, and notarization are the other half. Recorded in [12](12-decision-log.md).
+
+| | **Windows only, rewrite Mac later** | **Windows v1, hostable core, Mac as Milestone F** ✅ | **Windows and macOS in v1** |
+|---|---|---|---|
+| Windows v1 date | Unchanged | Unchanged — hostable-core tax per PR from 4 | **Slips** — two hosts, two present labs, two chromes, two ship pipelines |
+| Present path | One, forever Windows-shaped | One per OS; Mac proven in F | One per OS, both green before v1 |
+| Chrome | WinUI baked into the core | WinUI now; SwiftUI in F; same C ABI | WinUI and SwiftUI in parallel from PR 4 |
+| Mac later | A rewrite of decode *and* present | A host + backends, specified now | The remaining Windows PRs become dual-track |
+| Reversibility | Hard (wrong direction) | Easy if Mac never happens | Hard — a Metal lab in v1 is sunk cost |
+
+**Call: v1 is a Windows app. macOS is the next product, specified now, built after PR 15.**
+D1–D8 stand, with the per-OS reading below. PR 1–3 are not retrofitted. Do not implement
+Metal, Swift, or a `*_mac.cpp` during PRs 1–15.
+
+What this costs, stated honestly:
+
+- **Chrome is written twice.** Filmstrip, folder tree, metadata pane, adjust pane, settings:
+  WinUI on Windows, SwiftUI on Mac. Sharing them by rewriting in C++ throws D1 away. Sharing
+  them via Qt/Flutter/MAUI throws D1 away a different way.
+- **A Metal present lab in PR 16**, the Mac equivalent of PR 1, with its own 60 s animated
+  and idle soaks. A Windows DXGI pass is not a Mac pass.
+- **Hand-written HLSL and MSL twins** from the first kernel the Mac path needs. No SPIR-V, no
+  shader compiler, no third language.
+- **Two shipping pipelines:** Velopack + Authenticode, and notarized Sparkle. Neither Store
+  (GPL).
+- A **narrow** gfx/io/audio/hwdecode/encode port — a header plus a real `*_win.cpp` and
+  `*_mac.cpp`. Not a general RHI, not empty stubs, not Vulkan. The Mac files arrive with
+  Milestone F, as implementations, not as v1 placeholders.
+- **Apple Silicon + macOS 14 only.** Intel Macs are a second GPU story for a dying install
+  base. Windows floor stays 10 21H2 x64; Windows ARM64 waits.
+
+D1, per OS: native chrome + C++ core. Windows remains C# WinUI 3 hosted in the native window.
+macOS is SwiftUI hosted in an AppKit window that owns a `CAMetalLayer`. ImGui is the present
+lab and the F3 overlay on both, never shipped chrome.
+
+D2, per OS: FFmpeg + hardware decode on *your* device, presented on the same swapchain as
+photos. Windows remains D3D11VA; macOS is VideoToolbox. `IMFMediaEngine` stays a Windows-only
+escape hatch. **`AVPlayer` is forbidden** — it is the Mac version of child-HWND mpv.
+
+Forbidden, unchanged: **do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second
+present path on one OS.** Metal is macOS's first present path, not a second one on Windows.
+
+Full rule set, PR-by-PR: [15-platforms.md](15-platforms.md).
 
 ---
 

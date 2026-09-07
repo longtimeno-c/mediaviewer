@@ -2,11 +2,14 @@
 
 A Windows viewer for a real camera dump — photos and video in one folder. Opens everything
 instantly, pans without a dropped frame, shows and edits metadata, does the everyday photo
-edits, and trims video without re-encoding.
+edits, and trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is
+kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
+port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 2 of 15.** The present lab opens JPEG, PNG and BMP, colour-manages them,
-and pans/zooms on the same swapchain. PR 1's present-loop verify is inherited and not
-yet demonstrated on a quiet GPU runner. See [Where this actually is](#where-this-actually-is).
+**Status: PR 3 of 15.** The present lab still owns the Win32 window and D3D11
+swapchain. WinUI 3 chrome is hosted inside it as a XAML island (command bar only).
+PR 1's present-loop verify is inherited and not yet demonstrated on a quiet GPU
+runner. See [Where this actually is](#where-this-actually-is).
 
 **Licence: GPL-2.0-or-later** ([LICENSE](LICENSE)). Settled in PR 1; the reasoning is in
 [plan/11-licensing.md](plan/11-licensing.md).
@@ -17,22 +20,26 @@ yet demonstrated on a quiet GPU runner. See [Where this actually is](#where-this
 
 | | |
 |---|---|
-| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Drop a JPEG/PNG/BMP, or pass a path on the command line. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %. Decode and ICC convert run on the worker pool; pan never re-decodes. The F3 overlay still reads real present-to-present intervals. Under the [D1 amendment](plan/12-decision-log.md) this window and swapchain **are** the app — PR 3 hosts WinUI chrome inside them. |
+| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Drop a JPEG/PNG/BMP, or pass a path on the command line. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay. A WinUI command bar is hosted as a `DesktopWindowXamlSource` island along the top; the canvas is not a `SwapChainPanel`. |
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP decode, LCMS colour, immutable GPU upload, pan/zoom camera. |
+| **`MediaViewer.Chrome.dll`** | C# WinUI 3 command bar, loaded by the lab through hostfxr. Open, View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. No WinUI yet; PR 1 has none by design. |
+| **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. |
 
 ## Build
 
 You need **Visual Studio 2022** (or Build Tools) with the C++ workload, the **Windows 10/11
-SDK**, **CMake ≥ 3.28**, **vcpkg**, and the **.NET 8 SDK** (for the interop assembly only —
-the core builds and tests with no .NET present).
+SDK**, **CMake ≥ 3.28**, **vcpkg**, the **.NET 8 SDK**, and the **Windows App SDK 2.4
+runtime** (the command-bar island is unpackaged). The native core still builds and tests
+with no .NET present; without `dotnet` on `PATH` the lab runs as it did in PR 2
+(`--no-chrome`).
 
 ```powershell
 # once
 git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
 & $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = "$env:USERPROFILE\vcpkg"
+./tools/install-windows-app-runtime.ps1   # unpackaged WinUI 2.4 runtime
 
 # configure and build
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -60,20 +67,23 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 
 | Key | |
 |---|---|
-| `F3` | frame-time overlay |
-| `Space` | animation on/off — with it off (and the image settled) the app stops presenting entirely (~0 % CPU) |
+| `F` / `F3` | frame-time overlay (off at launch with chrome) |
+| `Space` | lab sweep on/off — overlay **animating**, not "a photo is open". Sweep off and settled → stop presenting (~0 % CPU) |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
+| `+` / `-` | zoom in / out |
 | `Ctrl+O` | open JPEG/PNG/BMP |
+| `Tab` | focus the command bar island |
 | `Esc` | quit |
 
-Wheel zooms toward the cursor; drag pans. Zoom-out stops at the opening fit
-view and springs back to centre — it will not shrink the image into the
-letterbox. Drop a file on the window.
+Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
+still go smaller on a huge image) and rubber-bands a little past that, then
+springs back to centre. Drop a file on the window.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
-line fails), `--no-overlay`, `--static`, `--open <path>`, or a positional path.
+line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, or a positional
+path. The command bar is also on the island: Open, View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About. With no image open the canvas is a drop target, not the present-lab sweep.
 
 ## Test
 
@@ -84,6 +94,9 @@ ctest --test-dir build -C Release --output-on-failure
 # the ABI, end to end from C#: SafeHandle, struct layout, completion drain
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
 dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release
+
+# WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
+dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
 
 # policy gates (both run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only
@@ -148,6 +161,17 @@ provision a runner or configure branch protection by themselves.
 
 Every later PR inherits this verify line.
 
+PR 3's verify line is:
+
+> **Zero dropped frames while panning a cached image at the display's refresh rate,
+> unchanged from PR 2 now that chrome is on screen — if hosting chrome costs frames,
+> that is the bug. Focus and tab traversal cross the island boundary correctly; a
+> flyout opens over the canvas without clipping.**
+
+The island is a command bar, not a `SwapChainPanel`. `--no-chrome` is a diagnostic
+escape, not the shipped shape. Focus/tab and flyout-over-canvas still need a human
+pass; the unit tests cover hostfxr load and struct layout, not those.
+
 PR 2's verify line is:
 
 > **A 12 MP JPEG pans at refresh with zero decode on mouse move; dragging the window
@@ -175,8 +199,8 @@ src/image       LCMS colour, CPU mips, immutable GPU upload
 src/canvas      pan/zoom springs
 src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
 src/abi         the flat C ABI — the top of the native graph
-src/shell       Win32 window, render thread, present lab
-src.managed/    C# interop (SafeHandle, completion pump)
+src/shell       Win32 window, render thread, present lab, hostfxr island host
+src.managed/    C# interop and WinUI chrome (hosted as an island, not the app)
 tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI
 tools/          frametime harness, module-graph and licence gates
 plan/           the spec
@@ -194,15 +218,19 @@ and nothing may depend on `shell`. That is what keeps the core testable with no 
 
 The parts worth knowing before touching anything:
 
-- **[plan/10-roadmap.md](plan/10-roadmap.md)** — 15 PR-sized slices, each with a verify line.
-  Work is one slice; PR N+1 does not start until N's verify holds *and* PR 1's still does.
-- **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D8, the decisions that do not get
+- **[plan/10-roadmap.md](plan/10-roadmap.md)** — 15 Windows PR-sized slices, then Milestone F
+  (Mac, PR 16–20), each with a verify line. Work is one slice; PR N+1 does not start until
+  N's verify holds *and* PR 1's still does.
+- **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](plan/12-decision-log.md)** — why a call was reversed, so it
   does not get quietly re-reversed.
 - **[plan/14-abi.md](plan/14-abi.md)** — the C ABI, specified rather than named.
+- **[plan/15-platforms.md](plan/15-platforms.md)** — v1 is Windows; from PR 4 the core stays
+  hostable; macOS is Milestone F (D9), not a SwiftUI-only port.
 
 Rules that do not bend: nothing blocking touches the UI or render thread; the canvas is a
-D3D11 swapchain, never XAML; first pixel is never the full decode; zero dropped frames
-panning a cached image, measured rather than eyeballed; never modify an original; nothing
-about a user's files leaves the machine; never require a Store codec pack.
+native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never the full
+decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
+modify an original; nothing about a user's files leaves the machine; never require a Store
+codec pack.

@@ -281,6 +281,34 @@ Why this shape:
 
 This does not reverse D1–D8. It is a PR 14 product call, not a new contested decision.
 
+## 2026-09-07 — D9: macOS is Milestone F, not a UI port and not dual-track v1
+
+The owner asked to add Mac support as a step on the plan, with the working assumption that
+it is a UI update because the C++ core would keep working.
+
+That assumption is half right. **Decode, colour, EditStack, metadata, canvas springs, and
+the C ABI transfer.** Present, GPU backend, hardware decode, audio clock, async I/O,
+directory watch, chrome, and the installer do not. A Windows DXGI soak is not a Mac pass.
+
+Two rejected shapes, both written down so they are not re-proposed:
+
+| Rejected | Why |
+|---|---|
+| **Mac in v1** (parallel SwiftUI / Metal from PR 4) | Slips every remaining Windows PR for a present lab the Windows user does not need. |
+| **Mac as “just SwiftUI” after PR 15** | Ships a Mac app with no present-loop gate, no VideoToolbox path, and `AVPlayer` as the panic fallback — the Mac version of child-HWND mpv (D2). |
+
+**Call: v1 stays Windows. From PR 4 the core is kept hostable. Mac is Milestone F
+(PR 16–20)** — Metal present lab, stills on Metal, SwiftUI hosted in AppKit, VideoToolbox +
+Core Audio, Finder + notarized Sparkle. Apple Silicon + macOS 14 only. Intel Macs and
+Windows ARM64 wait.
+
+This is not a reversal of D1–D8. It writes down D9, which was named in the index and
+missing as a document. [15-platforms.md](15-platforms.md) is that document.
+[01-decisions.md](01-decisions.md) and [10-roadmap.md](10-roadmap.md) now match it.
+
+Do not implement Metal, Swift, or a `*_mac.cpp` during PRs 1–15. Do not skip a D9 port
+in those PRs in order to call Win32 from `image/`, `player/`, `edit/`, or `meta/`.
+
 ## Still open
 
 | Question | Blocks | Notes |

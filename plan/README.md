@@ -2,7 +2,9 @@
 
 A Windows viewer for a real camera dump — photos and video in one folder — that opens everything
 instantly, pans without a dropped frame, shows and edits metadata, does the everyday photo edits,
-and trims video without re-encoding.
+and trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is kept
+hostable; macOS is Milestone F, a later host of the same core, not a UI-only port
+([15-platforms.md](15-platforms.md), **D9**).
 
 **Stack:** native Win32 shell owning a Direct3D 11 canvas · WinUI 3 chrome hosted as XAML islands (C#) ·
 C++20 core behind a flat C ABI · FFmpeg +
@@ -16,7 +18,7 @@ Read in order:
 
 | Doc | What it decides |
 |---|---|
-| [01-decisions.md](01-decisions.md) | Stack choice, why not Electron/npm, and the pros/cons of all eight contested decisions |
+| [01-decisions.md](01-decisions.md) | Stack choice, why not Electron/npm, and the pros/cons of the contested decisions |
 | [02-architecture.md](02-architecture.md) | Module layout, threading model, data flow |
 | [03-rendering.md](03-rendering.md) | D3D11 flip model, frame pacing, colour, the "butter" part |
 | [04-image-pipeline.md](04-image-pipeline.md) | Decoders per format, tiling, caching, prefetch |
@@ -25,17 +27,20 @@ Read in order:
 | [07-photo-editing.md](07-photo-editing.md) | Non-destructive GPU edit stack, v1 vs v1.1 ops |
 | [08-video-editing.md](08-video-editing.md) | Two-path trim now, smart cut later |
 | [09-build-and-test.md](09-build-and-test.md) | CMake/vcpkg, perf regression harness, fuzzing |
-| [10-roadmap.md](10-roadmap.md) | 15 PR-sized slices, each with a verify line |
+| [10-roadmap.md](10-roadmap.md) | 15 Windows PR-sized slices, then Milestone F (Mac, PR 16–20), each with a verify line |
 | [11-licensing.md](11-licensing.md) | FFmpeg LGPL, codec patents, the Exiv2 GPL trap — settle in PR 1 |
 | [12-decision-log.md](12-decision-log.md) | What changed, when, and why |
 | [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | Auto-update channel, crash reporting, the privacy line |
 | [14-abi.md](14-abi.md) | The C ABI between the C# shell and the C++ core — specified, not just named |
+| [15-platforms.md](15-platforms.md) | Windows v1, hostable core from PR 4, macOS as Milestone F — **D9**. Not a UI-only port. |
 
 ## The rules that don't bend
 
 1. **Nothing that can block touches the UI or render thread** — no decode, no I/O, no encode.
-2. **The canvas is a native D3D11 swapchain**, never `SwapChainPanel`, never a XAML `Image` or
-   `MediaPlayerElement`. C++ owns presentation; chrome is hosted inside it.
+2. **The canvas is a native swapchain C++ owns**, never `SwapChainPanel`, never a XAML `Image` or
+   `MediaPlayerElement`. On Windows that swapchain is D3D11. One present path per OS; Metal is
+   the macOS sequel (Milestone F), not a second Windows path ([15-platforms.md](15-platforms.md)).
+   Chrome is hosted inside the native window.
 3. **First pixel is never the full decode**: memory cache → disk thumb → embedded RAW preview →
    downscaled decode. Full resolution is a refinement.
 4. **Zero dropped frames while panning a cached image at display refresh** — measured in CI, every

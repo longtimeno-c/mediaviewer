@@ -91,6 +91,17 @@ path — **`IoRing` is Windows 11 only** and is an optional fast path at best, n
 this out loud in code review whenever someone reaches for a Win11-only API; the alternative is
 discovering the floor by shipping.
 
+macOS is Milestone F ([15-platforms.md](15-platforms.md)): Apple Silicon, macOS 14+. Intel Macs
+and Windows ARM64 wait. The Mac host is a later sibling of `shell/`, talking to the same `abi/`.
+
+## Hostable core (D9) — from PR 4
+
+`HWND`, `ID3D11*`, `wchar_t` paths, `OVERLAPPED`, and WASAPI stay in `shell/` and the Windows
+backends under `gfx/`, `io/`, and `player/`. Headers consumed above `gfx/` do not include
+`d3d11.h`. Paths across the C ABI are UTF-8. Completions are a queue the host pumps — C++ does
+not call a WinUI dispatcher or, later, `DispatchQueue.main`. No empty `*_mac.cpp` in v1; the
+Mac files arrive with Milestone F as real implementations.
+
 ## Cancellation
 
 Every job carries a generation counter tied to the current "view intent" (which file is on

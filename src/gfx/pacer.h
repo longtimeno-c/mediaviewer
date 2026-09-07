@@ -29,6 +29,18 @@ struct display_sample {
   std::uint32_t missed_refreshes = 0;
 };
 
+// DXGI PresentRefreshCount keeps ticking while the lab is idle. After we
+// resume, GetFrameStatistics can report those idle vblanks as missed refreshes
+// on a frame whose QPC present-to-present interval is one refresh. Trust QPC
+// when they disagree; a real miss is a ~2× refresh interval, not 16.7 ms with
+// 57 DXGI misses.
+[[nodiscard]] inline std::uint32_t reconcile_missed_refreshes(
+    std::uint32_t dxgi_missed, double interval_ms, double refresh_ms) noexcept {
+  if (dxgi_missed == 0 || refresh_ms <= 0.0) return dxgi_missed;
+  if (interval_ms < refresh_ms * 1.5) return 0;
+  return dxgi_missed;
+}
+
 // Pure counter tracking, independently testable without a GPU or a clock.
 class display_statistics {
  public:

@@ -2,7 +2,8 @@
 
 Windows viewer for a real camera dump — photos and video in one folder. Opens everything
 instantly, pans without a dropped frame, shows and edits metadata, does everyday photo
-edits, trims video without re-encoding.
+edits, trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is
+kept hostable; macOS is Milestone F (`plan/15-platforms.md`, D9), not a UI-only port.
 
 **v1 is a viewer with light edits, on the camera-dump format set.** Not a develop module.
 Not an NLE. Not a movie player.
@@ -33,16 +34,19 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/11-licensing.md` | Linkage, FFmpeg configure, Exiv2 |
 | `plan/12-decision-log.md` | Why a call was reversed — do not re-reverse quietly |
 | `plan/13-updates-and-telemetry.md` | Updater, crash reports, privacy line |
+| `plan/14-abi.md` | C ABI between host and core |
+| `plan/15-platforms.md` | Windows v1, hostable core from PR 4, macOS as Milestone F — **D9**. Read before any new Win32/D3D11 leak out of `shell/` / `gfx/` |
 
-If a change would contradict a **D1–D8** decision, stop and say so. Do not “just this once.”
+If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.
 
 ## Rules that don't bend
 
 1. **Nothing that can block touches the UI or render thread** — no decode, no I/O, no encode.
-2. **The canvas is a D3D11 swapchain**, never a XAML `Image` or `MediaPlayerElement`. If
-   `SwapChainPanel` cannot hold the pacing gate, drop to a native HWND/DComp island. Never
-   silently degrade the canvas to XAML.
+2. **The canvas is a native swapchain C++ owns**, never a XAML `Image` or `MediaPlayerElement`.
+   On Windows that swapchain is D3D11. If `SwapChainPanel` cannot hold the pacing gate, drop
+   to a native HWND/DComp island. Never silently degrade the canvas to XAML. One present path
+   per OS — Metal is the macOS sequel, not a second Windows path.
 3. **First pixel is never the full decode**: memory cache → disk thumb → embedded RAW
    preview → downscaled decode. Full resolution is a refinement.
 4. **Zero dropped frames while panning a cached image at display refresh** — measured, not
@@ -65,8 +69,9 @@ If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | v1 trim = keyframe stream-copy **or** full re-encode, both labelled. Smart cut is v1.1. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
+| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is Milestone F (PR 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. No Metal, no Swift project, no empty `*_mac.cpp`, no Vulkan in v1. |
 
-Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path.
+Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path **on one OS**.
 
 ## Open — do not silently decide
 
@@ -93,8 +98,10 @@ holds **and** PR 1's present-loop verify still holds.
 
 - The verify line is the success criterion. Quote it before you start; do not invent a
   different one.
-- Do not implement v1.1 ops, formats, smart cut, HDR swapchain, or AppContainer “while
-  you're here.” The stack is designed to take them later; adding them now is scope.
+- Do not implement v1.1 ops, formats, smart cut, HDR swapchain, AppContainer, or Milestone F
+  (the macOS host) “while you're here.” The stack is designed to take them later; adding them
+  now is scope. From PR 4, do not skip a D9 port in order to call Win32 from `image/`,
+  `player/`, `edit/`, or `meta/`. Mac is PR 16–20, not a UI-only follow-up.
 - Do not add a format that is not in the D5 v1 set.
 - Do not build a batch metadata engine before the read pane has been used (PR 11 writes
   rating, orientation, and user comment only).
@@ -130,11 +137,12 @@ Deliberately narrow subset: RAII, `std::unique_ptr` / `ComPtr`, `std::span`,
 No deep template metaprogramming. Compile `/W4 /WX /permissive- /GR- /utf-8`.
 
 Dependencies point **downward only**:
-`app → ui → {edit, player, image, meta} → {codec, gfx, io} → core`.
-No back-edges. After D1, chrome is C#; the native top is the C ABI.
+`shell → abi → {canvas, edit, player, image, meta} → {codec, gfx, io} → core`.
+No back-edges. After D1, chrome is C#; the native top is the C ABI. From PR 4, `HWND` /
+`ID3D11*` / `wchar_t` paths stay in `shell/` and the D3D11 backend (`plan/15-platforms.md`).
 
 Five thread roles. UI and render **never** wait on I/O, decode, or a lock a worker holds.
-Decode workers create **immutable** `ID3D11Texture2D`s with `D3D11_SUBRESOURCE_DATA`
+Decode workers create **immutable** GPU textures with `D3D11_SUBRESOURCE_DATA` on Windows
 (free-threaded device). Communication is SPSC rings of POD plus one MPMC job queue.
 Every job carries a **generation counter** tied to view intent; navigation bumps it.
 
@@ -145,8 +153,8 @@ Designed in PR 1, not retrofitted.
 - Opaque handles, POD structs, no C++ types, no STL, no exceptions across the line.
 - Every call returns a status code. Catch everything at the boundary.
 - C# wraps every native resource in `SafeHandle` / `IDisposable`.
-- C++ does not call the WinUI dispatcher. Completions are a queue the shell pumps, or a
-  documented any-thread callback that C# marshals.
+- C++ does not call the WinUI dispatcher (or any host dispatcher). Completions are a queue
+  the shell pumps, or a documented any-thread callback that the host marshals.
 - Give every core call a correlation id so a managed error can be tied to the native
   failure (crash reporting, `plan/13-updates-and-telemetry.md`).
 
@@ -191,16 +199,18 @@ from stacks. Minidump filter must exclude decoded image heaps. Ask before first 
 ## Planned layout
 
 ```
-src/core     arena, job system, result<T>, logging, ETW
-src/io       async reads, directory watcher
+src/core     arena, job system, result<T>, logging (ETW is the Windows backend)
+src/io       async reads, directory watcher — portable headers, Windows impl in v1
 src/codec    decoder registry — one TU per format family
 src/image    Image, colour, tiles, GPU upload, VRAM LRU
-src/gfx      D3D11, swapchain, pacer, shaders, compositor
-src/player   demux/decode, A/V clock, WASAPI, transport
+src/gfx      D3D11 backend in v1; headers consumed above gfx/ do not include d3d11.h (D9)
+src/player   demux/decode, A/V clock policy, transport; hwdecode/audio are ports
 src/meta     Exiv2 / libavformat, property model, writers
 src/edit     EditStack, GPU ops, export
-src/ui       present-lab / canvas input only (chrome is C#)
-src/app      C ABI surface; C# shell is a sibling project
+src/canvas   pan/zoom/springs; host publishes a POD input snapshot
+src/abi      C ABI surface
+src/shell    Windows host (Win32 window, islands, CLI). Mac host is a later sibling
+src.managed  C# WinUI 3 chrome
 tests/
 tools/       frametime harness, golden-image runner, fuzzers
 plan/        spec — not code

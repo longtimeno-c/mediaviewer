@@ -48,6 +48,27 @@ double process_cpu_seconds() noexcept {
   return static_cast<double>(ticks(kernel) + ticks(user)) / 10000000.0;
 }
 
+// Usable canvas below the command-bar strip. Camera, blit, and wheel-toward
+// all share this rect so a fitted image is not hidden under the island.
+struct canvas_view {
+  float x = 0.0f;
+  float y = 0.0f;
+  float w = 1.0f;
+  float h = 1.0f;
+};
+
+canvas_view usable_canvas(const input_snapshot& s) noexcept {
+  canvas_view v;
+  v.w = static_cast<float>(s.width);
+  v.h = static_cast<float>(s.height);
+  const float chrome = static_cast<float>(s.chrome_height_px);
+  if (chrome > 0.0f && chrome < v.h) {
+    v.y = chrome;
+    v.h -= chrome;
+  }
+  return v;
+}
+
 const char* drop_source_label(gfx::drop_source s) noexcept {
   switch (s) {
     case gfx::drop_source::frame_statistics:   return "DXGI frame statistics";
@@ -179,6 +200,27 @@ void present_lab::render_thread_main() noexcept {
   ImGui::CreateContext();
   ImGui::GetIO().IniFilename = nullptr;   // no imgui.ini beside the exe
   ImGui::StyleColorsDark();
+  {
+    // Same CozetteVector.ttf the chrome island loads, so empty-canvas type
+    // and the Open/View/About bar match. 16 px is a readable terminal size.
+    // Falls back to ImGui's embedded ProggyClean if the file is missing.
+    char exe[MAX_PATH]{};
+    if (::GetModuleFileNameA(nullptr, exe, MAX_PATH) > 0) {
+      char* slash = nullptr;
+      for (char* p = exe; *p; ++p) {
+        if (*p == '\\' || *p == '/') slash = p;
+      }
+      if (slash) {
+        *slash = '\0';
+        char font_path[MAX_PATH]{};
+        if (::sprintf_s(font_path, "%s\\CozetteVector.ttf", exe) > 0) {
+          if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16.0f)) {
+            ImGui::GetIO().FontDefault = font;
+          }
+        }
+      }
+    }
+  }
 
   if (auto built = rebuild_device(); !built) {
     MV_LOG_ERROR("present_lab: device creation failed (%s)", status_name(built.error()));
@@ -268,10 +310,10 @@ void present_lab::render_thread_main() noexcept {
       // Snap-fit on resize so dragging the window never waits on a spring
       // (PR 2 verify: stay smooth while a large decode is in flight).
       if (current_image_ && camera_.fit_mode()) {
+        const auto view = usable_canvas(snapshot);
         camera_.fit(static_cast<float>(current_image_->width),
                     static_cast<float>(current_image_->height),
-                    static_cast<float>(snapshot.width),
-                    static_cast<float>(snapshot.height), true);
+                    view.w, view.h, true);
       }
     }
 
@@ -283,10 +325,12 @@ void present_lab::render_thread_main() noexcept {
           mv::abi::release_gpu_image(ready);
         } else {
           current_image_.reset(ready);
-          camera_.fit(static_cast<float>(current_image_->width),
-                      static_cast<float>(current_image_->height),
-                      static_cast<float>(snapshot.width),
-                      static_cast<float>(snapshot.height), true);
+          {
+            const auto view = usable_canvas(snapshot);
+            camera_.fit(static_cast<float>(current_image_->width),
+                        static_cast<float>(current_image_->height),
+                        view.w, view.h, true);
+          }
           last_input_time_ = elapsed;
           redraw = true;
         }
@@ -295,10 +339,10 @@ void present_lab::render_thread_main() noexcept {
     if (snapshot.fit_seq != seen_fit_seq_) {
       seen_fit_seq_ = snapshot.fit_seq;
       if (current_image_) {
+        const auto view = usable_canvas(snapshot);
         camera_.fit(static_cast<float>(current_image_->width),
                     static_cast<float>(current_image_->height),
-                    static_cast<float>(snapshot.width),
-                    static_cast<float>(snapshot.height), false);
+                    view.w, view.h, false);
       }
       redraw = true;
     }
@@ -307,12 +351,41 @@ void present_lab::render_thread_main() noexcept {
       camera_.one_to_one();
       redraw = true;
     }
+    if (snapshot.zoom_in_seq != seen_zoom_in_seq_) {
+      seen_zoom_in_seq_ = snapshot.zoom_in_seq;
+      if (current_image_) {
+        const auto view = usable_canvas(snapshot);
+        camera_.wheel_toward(view.w * 0.5f, view.h * 0.5f, 1.0f, view.w, view.h,
+                             static_cast<float>(current_image_->width),
+                             static_cast<float>(current_image_->height));
+      }
+      redraw = true;
+    }
+    if (snapshot.zoom_out_seq != seen_zoom_out_seq_) {
+      seen_zoom_out_seq_ = snapshot.zoom_out_seq;
+      if (current_image_) {
+        const auto view = usable_canvas(snapshot);
+        camera_.wheel_toward(view.w * 0.5f, view.h * 0.5f, -1.0f, view.w, view.h,
+                             static_cast<float>(current_image_->width),
+                             static_cast<float>(current_image_->height));
+      }
+      redraw = true;
+    }
+    if (snapshot.zoom_preset_seq != seen_zoom_preset_seq_) {
+      seen_zoom_preset_seq_ = snapshot.zoom_preset_seq;
+      if (current_image_) {
+        const auto view = usable_canvas(snapshot);
+        camera_.set_zoom(snapshot.zoom_preset, static_cast<float>(current_image_->width),
+                         static_cast<float>(current_image_->height), view.w, view.h);
+      }
+      redraw = true;
+    }
 
     const float wheel = input_cursor_.consume_wheel(snapshot);
     if (current_image_ && wheel != 0.0f) {
-      camera_.wheel_toward(snapshot.mouse_x, snapshot.mouse_y, wheel,
-                           static_cast<float>(snapshot.width),
-                           static_cast<float>(snapshot.height),
+      const auto view = usable_canvas(snapshot);
+      camera_.wheel_toward(snapshot.mouse_x - view.x, snapshot.mouse_y - view.y, wheel,
+                           view.w, view.h,
                            static_cast<float>(current_image_->width),
                            static_cast<float>(current_image_->height));
       redraw = true;
@@ -333,13 +406,30 @@ void present_lab::render_thread_main() noexcept {
     // plan/03 rule 4: idle means stop presenting entirely (0 % GPU on a static
     // image), and keep presenting for ~500 ms after the last input so a flick
     // does not stutter at the tail.
+    //
+    // The empty window is static. A 500 ms refresh-rate tail there (and a fake
+    // tail from last_input_time=0 at launch) kept Present running while the
+    // WinUI island composed — DXGI counted those as missed frames, and the
+    // overlay froze on them. Paint once, then wait.
     if (redraw) last_input_time_ = elapsed;
-    const bool recently_active = (elapsed - last_input_time_) < 0.5;
-    const bool wants_frame =
-        snapshot.window_visible && !occluded_ &&
-        (animating_ || recently_active || camera_.moving());
+    const bool pan_tail = current_image_ && last_input_time_ >= 0.0 &&
+                          (elapsed - last_input_time_) < 0.5;
+    const bool live = animating_ || camera_.moving() || pan_tail;
+    live_presenting_ = live;
+    const bool allowed = snapshot.window_visible && !occluded_ &&
+                         (options_.soak_seconds > 0.0 || snapshot.window_active);
+    bool wants_frame = false;
+    if (allowed) {
+      if (live) {
+        wants_frame = true;
+        painted_static_ = false;
+      } else {
+        wants_frame = !painted_static_ || redraw;
+      }
+    }
 
     if (!wants_frame) {
+      if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
       was_presenting_ = false;
       // Idle has no polling timer, except occlusion probes and soak deadlines.
       DWORD timeout = occluded_ ? 200u : INFINITE;
@@ -404,17 +494,22 @@ void present_lab::render_thread_main() noexcept {
     device_.context()->ClearRenderTargetView(rtv, clear);
 
     if (current_image_ && current_image_->srv) {
+      const auto view = usable_canvas(snapshot);
       D3D11_VIEWPORT vp{};
-      vp.Width = static_cast<float>(swapchain_.width());
-      vp.Height = static_cast<float>(swapchain_.height());
+      vp.TopLeftX = view.x;
+      vp.TopLeftY = view.y;
+      vp.Width = view.w;
+      vp.Height = view.h;
       vp.MaxDepth = 1.0f;
       device_.context()->RSSetViewports(1, &vp);
       gfx::blit_params bp{};
       bp.pan_x = camera_.pan_x();
       bp.pan_y = camera_.pan_y();
       bp.zoom = camera_.zoom();
-      bp.window_w = static_cast<float>(swapchain_.width());
-      bp.window_h = static_cast<float>(swapchain_.height());
+      bp.window_w = view.w;
+      bp.window_h = view.h;
+      bp.origin_x = view.x;
+      bp.origin_y = view.y;
       bp.image_w = static_cast<float>(current_image_->width);
       bp.image_h = static_cast<float>(current_image_->height);
       blitter_.draw(device_.context(), current_image_->srv.Get(), bp);
@@ -430,6 +525,7 @@ void present_lab::render_thread_main() noexcept {
     if (hr == S_OK) {
       ++total_presents_;
       pacer_.frame_end(swapchain_.dxgi());
+      if (!live) painted_static_ = true;
     }
     else measurement_valid_ = false;
 
@@ -492,39 +588,63 @@ void present_lab::render_thread_main() noexcept {
 
 void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seconds) noexcept {
   if (current_image_) return;
-  if (!animating_) return;
-
-  // A bar sweeping at a constant rate. This is the oldest judder instrument
-  // there is and still the best one: a single dropped frame shows up as a
-  // visible hitch in the sweep, before any number on the overlay changes.
-  animation_phase_ = std::fmod(elapsed_seconds * 0.35, 1.0);
 
   const auto w = static_cast<float>(snapshot.width);
   const auto h = static_cast<float>(snapshot.height);
   if (w <= 0.0f || h <= 0.0f) return;
 
-  const float bar_width = 6.0f * snapshot.dpi_scale;
-  const float x = static_cast<float>(animation_phase_) * (w - bar_width);
-
   ImDrawList* bg = ImGui::GetBackgroundDrawList();
-  bg->AddRectFilled(ImVec2(x, 0.0f), ImVec2(x + bar_width, h),
-                    IM_COL32(230, 230, 235, 255));
+  const float chrome = static_cast<float>(snapshot.chrome_height_px);
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
 
-  // Static reference ticks, so the sweep has something to be judged against.
-  for (int i = 1; i < 10; ++i) {
-    const float tx = w * (static_cast<float>(i) / 10.0f);
-    bg->AddLine(ImVec2(tx, h - 24.0f * snapshot.dpi_scale), ImVec2(tx, h),
-                IM_COL32(90, 95, 110, 255), 1.0f);
+  if (animating_) {
+    // Present-lab judder instrument. Space turns it on; the default empty
+    // view is the welcome below, not this sweep.
+    animation_phase_ = std::fmod(elapsed_seconds * 0.35, 1.0);
+    const float bar_width = 6.0f * scale;
+    const float x = static_cast<float>(animation_phase_) * (w - bar_width);
+    bg->AddRectFilled(ImVec2(x, chrome), ImVec2(x + bar_width, h),
+                      IM_COL32(230, 230, 235, 255));
+    for (int i = 1; i < 10; ++i) {
+      const float tx = w * (static_cast<float>(i) / 10.0f);
+      bg->AddLine(ImVec2(tx, h - 24.0f * scale), ImVec2(tx, h),
+                  IM_COL32(90, 95, 110, 255), 1.0f);
+    }
+    return;
   }
+
+  const float cx = w * 0.5f;
+  const float cy = chrome + (h - chrome) * 0.5f;
+  const ImU32 title = IM_COL32(220, 222, 228, 255);
+  const ImU32 body = IM_COL32(150, 154, 164, 255);
+  const ImU32 mute = IM_COL32(110, 114, 124, 255);
+
+  const char* heading = "Drop a photo here";
+  const char* sub = "JPEG, PNG or BMP. Open from the bar, or Ctrl+O";
+  const char* keys = "0  fit     1  100%     + / -  zoom     F  overlay";
+
+  ImFont* font = ImGui::GetFont();
+  const float title_fs = 22.0f * scale;
+  const float body_fs = 16.0f * scale;  // matches the chrome bar
+  const auto measure = [&](const char* s, float fs) {
+    return font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
+  };
+  const ImVec2 hs = measure(heading, title_fs);
+  const ImVec2 ss = measure(sub, body_fs);
+  const ImVec2 ks = measure(keys, body_fs);
+  bg->AddText(font, title_fs, ImVec2(cx - hs.x * 0.5f, cy - 48.0f * scale), title, heading);
+  bg->AddText(font, body_fs, ImVec2(cx - ss.x * 0.5f, cy - 10.0f * scale), body, sub);
+  bg->AddText(font, body_fs, ImVec2(cx - ks.x * 0.5f, cy + 26.0f * scale), mute, keys);
 }
 
 void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
   const auto stats = pacer_.stats();
   const float pad = 12.0f * snapshot.dpi_scale;
+  const float top = static_cast<float>(snapshot.chrome_height_px) + pad;
 
-  ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(pad, top), ImGuiCond_Always);
   ImGui::SetNextWindowBgAlpha(0.82f);
-  ImGui::Begin("Frame time (F3)", nullptr,
+  ImGui::Begin("Frame time (F)", nullptr,
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                    ImGuiWindowFlags_NoNav);
@@ -554,11 +674,11 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
 
   ImGui::Separator();
 
-  // The verify line, stated as a result rather than left for the reader to
-  // work out from the numbers above.
-  const bool gate = stats.meets_pr1_gate();
-  const ImVec4 colour = gate ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f)
-                             : ImVec4(0.95f, 0.55f, 0.35f, 1.0f);
+  // Colour the drop count, not the 60 s soak gate — interactively that gate
+  // is almost always false and painted every empty window orange.
+  const bool clean = stats.dropped_frames == 0 && stats.missed_refreshes == 0;
+  const ImVec4 colour = clean ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f)
+                              : ImVec4(0.95f, 0.55f, 0.35f, 1.0f);
   ImGui::TextColored(colour, "dropped %llu  (%llu missed refreshes)",
                      static_cast<unsigned long long>(stats.dropped_frames),
                      static_cast<unsigned long long>(stats.missed_refreshes));
@@ -584,10 +704,15 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
   }
 
   ImGui::Separator();
-  ImGui::Text("%s   [space] animation   [R] reset   [F3] overlay",
-              animating_ ? "animating" : "idle (not presenting)");
+  // Space is the lab sweep, not "is a photo open". A still image is meant to
+  // stop presenting; pan/zoom/the 500 ms input tail are presenting without
+  // the sweep, and must not be labelled idle.
+  const char* status = animating_          ? "animating (lab sweep)"
+                       : live_presenting_  ? "presenting"
+                                           : "idle (not presenting)";
+  ImGui::Text("%s   [space] sweep   [R] reset   [F] overlay", status);
   if (current_image_) {
-    ImGui::Text("[0] fit   [1] 100%%   wheel zoom   drag pan   drop / Ctrl+O");
+    ImGui::Text("[0] fit   [1] 100%%   [+]/[-] zoom   wheel   drag   drop / Ctrl+O");
   }
   ImGui::End();
 }

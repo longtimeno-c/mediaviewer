@@ -39,7 +39,7 @@ struct lab_options {
   // With a soak, exit non-zero if the PR 1 gate did not hold. CI wants this;
   // a human running the lab does not.
   bool gate_exit_code = false;
-  bool start_animating = true;
+  bool start_animating = false;
   bool overlay_visible = true;
 };
 
@@ -113,6 +113,8 @@ class present_lab {
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
   bool was_presenting_ = false;
+  bool painted_static_ = false;
+  bool live_presenting_ = false;  // this frame: sweep, springs, or input tail
   input_cursor input_cursor_;
   gfx::idle_stats idle_stats_;
   std::int64_t measurement_start_qpc_ = 0;
@@ -124,8 +126,11 @@ class present_lab {
   std::uint32_t seen_display_seq_ = 0;
   std::uint32_t seen_fit_seq_ = 0;
   std::uint32_t seen_one_seq_ = 0;
+  std::uint32_t seen_zoom_in_seq_ = 0;
+  std::uint32_t seen_zoom_out_seq_ = 0;
+  std::uint32_t seen_zoom_preset_seq_ = 0;
   double animation_phase_ = 0.0;
-  double last_input_time_ = 0.0;
+  double last_input_time_ = -1.0;  // < 0: no input yet, do not fake a 500 ms tail
   float last_mouse_x_ = 0.0f;
   float last_mouse_y_ = 0.0f;
   bool was_left_down_ = false;

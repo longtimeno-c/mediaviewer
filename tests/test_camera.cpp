@@ -61,7 +61,7 @@ TEST_CASE("drag pan is direct, not sprung", "[canvas]") {
   cam.drag_end();
 }
 
-TEST_CASE("zoom out floors at the opening fit view and recentres", "[canvas]") {
+TEST_CASE("zoom out floors at 50 percent and recentres", "[canvas]") {
   camera cam;
   cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
   const float opening = cam.zoom();
@@ -76,17 +76,97 @@ TEST_CASE("zoom out floors at the opening fit view and recentres", "[canvas]") {
   REQUIRE(cam.target_pan_x() != 2000.0f);
 
   cam.wheel_toward(100.0f, 80.0f, -40.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
-  REQUIRE_THAT(cam.target_zoom(), WithinAbs(opening, 1e-5f));
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.5f, 1e-5f));
   REQUIRE_THAT(cam.target_pan_x(), WithinAbs(2000.0f, 1e-3f));
   REQUIRE_THAT(cam.target_pan_y(), WithinAbs(1500.0f, 1e-3f));
-  REQUIRE(cam.fit_mode());
+  REQUIRE_FALSE(cam.fit_mode());
+}
 
-  const float zoom_before = cam.target_zoom();
-  const float pan_before = cam.target_pan_x();
-  cam.wheel_toward(100.0f, 80.0f, -8.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
-  REQUIRE_THAT(cam.target_zoom(), WithinAbs(zoom_before, 1e-6f));
-  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(pan_before, 1e-6f));
+TEST_CASE("zoom out past fit rubber-bands then pops back", "[canvas]") {
+  camera cam;
+  cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  const float opening = cam.zoom();
+
+  cam.wheel_toward(400.0f, 300.0f, -1.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(opening, 1e-5f));
+  REQUIRE(cam.target_zoom() < opening);
+  REQUIRE(cam.target_zoom() > opening * 0.84f);
   REQUIRE(cam.fit_mode());
+  REQUIRE(cam.moving());
+
+  for (int i = 0; i < 8; ++i) cam.step(1.0f / 60.0f);
+  REQUIRE(cam.zoom() < opening);
+
+  for (int i = 0; i < 180; ++i) cam.step(1.0f / 60.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(opening, 0.002f));
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(2000.0f, 0.05f));
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(1500.0f, 0.05f));
+  REQUIRE_FALSE(cam.moving());
+}
+
+TEST_CASE("rubber-band zoom out has a hard floor", "[canvas]") {
+  camera cam;
+  cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  const float opening = cam.zoom();
+  for (int i = 0; i < 16; ++i)
+    cam.wheel_toward(400.0f, 300.0f, -1.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(opening, 1e-5f));
+  REQUIRE(cam.target_zoom() >= opening * 0.84f - 1e-4f);
+  REQUIRE(cam.target_zoom() <= opening);
+  REQUIRE(cam.fit_mode());
+}
+
+TEST_CASE("held zoom-out does not teleport displayed zoom", "[canvas]") {
+  camera cam;
+  cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  const float opening = cam.zoom();
+  cam.wheel_toward(400.0f, 300.0f, -1.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
+  const float after_first = cam.zoom();
+  REQUIRE_THAT(after_first, WithinAbs(opening, 1e-6f));
+  cam.wheel_toward(400.0f, 300.0f, -1.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(after_first, 1e-6f));
+  cam.step(1.0f / 60.0f);
+  const float after_step = cam.zoom();
+  cam.wheel_toward(400.0f, 300.0f, -1.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(after_step, 1e-6f));
+  REQUIRE(cam.target_zoom() < opening);
+}
+
+TEST_CASE("set_zoom 50 percent works even when smaller than fit", "[canvas]") {
+  camera cam;
+  cam.fit(1000.0f, 1000.0f, 800.0f, 600.0f, true);
+  REQUIRE(cam.zoom() > 0.5f);
+  cam.set_zoom(0.5f, 1000.0f, 1000.0f, 800.0f, 600.0f);
+  REQUIRE_FALSE(cam.fit_mode());
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.5f, 1e-5f));
+}
+
+TEST_CASE("set_zoom will not go below 50 percent", "[canvas]") {
+  camera cam;
+  cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  cam.one_to_one();
+  cam.set_zoom(0.1f, 4000.0f, 3000.0f, 800.0f, 600.0f);
+  REQUIRE_FALSE(cam.fit_mode());
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.5f, 1e-5f));
+}
+
+TEST_CASE("set_zoom presets keep the centre", "[canvas]") {
+  camera cam;
+  cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  cam.set_zoom(2.0f, 4000.0f, 3000.0f, 800.0f, 600.0f);
+  REQUIRE_FALSE(cam.fit_mode());
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(2.0f, 1e-5f));
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(2000.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(1500.0f, 1e-3f));
+}
+
+TEST_CASE("fit to a chrome-inset window is not the full client", "[canvas]") {
+  camera full;
+  camera inset;
+  full.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  inset.fit(4000.0f, 3000.0f, 800.0f, 552.0f, true);  // 48 DIP bar at 96 dpi
+  REQUIRE(inset.zoom() < full.zoom());
+  REQUIRE_THAT(inset.zoom(), WithinAbs(552.0f / 3000.0f, 1e-5f));
 }
 
 TEST_CASE("the opening view does not pan", "[canvas]") {

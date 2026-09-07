@@ -10,6 +10,7 @@
 // WinUI 3 chrome inside it as XAML content islands.
 
 #include <windows.h>
+#include <objbase.h>
 #include <shellapi.h>
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -26,6 +27,7 @@
 #include "abi/guard.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
+#include "shell/chrome_host.h"
 #include "shell/present_lab.h"
 
 namespace {
@@ -42,6 +44,10 @@ struct app_state {
   input_snapshot input;
   mv_session_t session = nullptr;
   bool tracking_mouse = false;
+  bool chrome_enabled = true;
+  bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
+  HWND window = nullptr;
+  mv::shell::chrome_host chrome;
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -88,12 +94,107 @@ void open_dialog(app_state* app, HWND hwnd) {
   if (::GetOpenFileNameW(&ofn)) open_image(app, file);
 }
 
+void chrome_on_command(void* ctx, int command, float arg) {
+  auto* app = static_cast<app_state*>(ctx);
+  if (!app) return;
+  switch (command) {
+    case mv::shell::chrome_cmd_open:
+      if (app->window) open_dialog(app, app->window);
+      return;
+    case mv::shell::chrome_cmd_fit:         ++app->input.fit_seq; break;
+    case mv::shell::chrome_cmd_one_to_one:  ++app->input.one_to_one_seq; break;
+    case mv::shell::chrome_cmd_zoom_in:     ++app->input.zoom_in_seq; break;
+    case mv::shell::chrome_cmd_zoom_out:    ++app->input.zoom_out_seq; break;
+    case mv::shell::chrome_cmd_zoom_preset:
+      app->input.zoom_preset = arg;
+      ++app->input.zoom_preset_seq;
+      break;
+    case mv::shell::chrome_cmd_overlay:     ++app->input.toggle_overlay_seq; break;
+    default: return;
+  }
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// App-level keys, even when the XAML island has focus. F3 was landing in the
+// command bar and the overlay sat under it — both looked like "F does nothing".
+bool handle_app_key(app_state* app, const MSG& msg) noexcept {
+  if (!app) return false;
+  if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
+  if ((msg.lParam & (1 << 30)) != 0) return false;
+
+  switch (msg.wParam) {
+    case VK_F3:
+    case 'F':
+      ++app->input.toggle_overlay_seq;
+      break;
+    case VK_SPACE:
+      ++app->input.toggle_animation_seq;
+      break;
+    case 'R':
+      ++app->input.reset_stats_seq;
+      break;
+    case '0':
+      ++app->input.fit_seq;
+      break;
+    case '1':
+      ++app->input.one_to_one_seq;
+      break;
+    case VK_OEM_PLUS:
+    case VK_ADD:
+      ++app->input.zoom_in_seq;
+      break;
+    case VK_OEM_MINUS:
+    case VK_SUBTRACT:
+      ++app->input.zoom_out_seq;
+      break;
+    case 'O':
+      if (::GetKeyState(VK_CONTROL) & 0x8000) {
+        if (app->window) open_dialog(app, app->window);
+        return true;
+      }
+      return false;
+    case VK_ESCAPE:
+      if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+      return true;
+    default:
+      return false;
+  }
+  ++app->input.activity_seq;
+  publish(app);
+  return true;
+}
+
+void layout_chrome(app_state* app) noexcept {
+  if (!app || !app->window || !app->chrome.attached()) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  app->chrome.resize(rc.right - rc.left, bar, dpi);
+}
+
+bool attach_chrome(app_state* app) {
+  if (!app || !app->chrome_enabled || !app->window) return false;
+  if (auto loaded = app->chrome.load(); !loaded) return false;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  auto attached = app->chrome.attach(app->window, app, &chrome_on_command,
+                                     rc.right - rc.left, bar, dpi);
+  return static_cast<bool>(attached);
+}
+
 void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   RECT rc{};
   ::GetClientRect(hwnd, &rc);
   app->input.width = static_cast<std::uint32_t>(rc.right - rc.left);
   app->input.height = static_cast<std::uint32_t>(rc.bottom - rc.top);
-  app->input.dpi_scale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0f;
+  const auto dpi = ::GetDpiForWindow(hwnd);
+  app->input.dpi_scale = static_cast<float>(dpi) / 96.0f;
+  app->input.chrome_height_px =
+      app->chrome_on_screen ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi)) : 0;
 }
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -114,6 +215,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       } else {
         app->input.window_visible = true;
         update_client_metrics(app, hwnd);
+        layout_chrome(app);
         ++app->input.resize_seq;
       }
       publish(app);
@@ -129,6 +231,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                      suggested->right - suggested->left, suggested->bottom - suggested->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
       update_client_metrics(app, hwnd);
+      layout_chrome(app);
       ++app->input.resize_seq;
       publish(app);
       return 0;
@@ -201,24 +304,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_KEYDOWN: {
-      if ((lparam & (1 << 30)) != 0) return 0;  // ignore auto-repeat
-      switch (wparam) {
-        case VK_F3:     ++app->input.toggle_overlay_seq; break;
-        case VK_SPACE:  ++app->input.toggle_animation_seq; break;
-        case 'R':       ++app->input.reset_stats_seq; break;
-        case '0':       ++app->input.fit_seq; break;
-        case '1':       ++app->input.one_to_one_seq; break;
-        case 'O':
-          if (::GetKeyState(VK_CONTROL) & 0x8000) {
-            open_dialog(app, hwnd);
-            return 0;
-          }
-          return 0;
-        case VK_ESCAPE: ::PostMessageW(hwnd, WM_CLOSE, 0, 0); return 0;
-        default: return 0;
+      if ((lparam & (1 << 30)) != 0) return 0;
+      if (wparam == VK_TAB && app->chrome.attached()) {
+        const bool reverse = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        (void)app->chrome.navigate_focus(reverse);
       }
-      ++app->input.activity_seq;
-      publish(app);
       return 0;
     }
 
@@ -238,6 +328,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_DESTROY:
+      app->chrome.detach();
       ::PostQuitMessage(0);
       return 0;
 
@@ -254,12 +345,14 @@ void enable_dark_titlebar(HWND hwnd) noexcept {
   (void)::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
-bool parse_options(lab_options& options, std::wstring& open_path, std::wstring& error) {
+bool parse_options(lab_options& options, std::wstring& open_path, bool& chrome_enabled,
+                   std::wstring& error) {
   int argc = 0;
   LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
   if (!argv) return true;
 
   bool ok = true;
+  bool static_requested = false;
   for (int i = 1; i < argc && ok; ++i) {
     const std::wstring_view arg{argv[i]};
     const auto next = [&](std::wstring& out) {
@@ -286,9 +379,11 @@ bool parse_options(lab_options& options, std::wstring& open_path, std::wstring& 
     } else if (arg == L"--no-overlay") {
       options.overlay_visible = false;
     } else if (arg == L"--static") {
-      options.start_animating = false;
+      static_requested = true;
     } else if (arg == L"--open") {
       next(open_path);
+    } else if (arg == L"--no-chrome") {
+      chrome_enabled = false;
     } else if (!arg.empty() && arg[0] != L'-') {
       open_path = std::wstring(arg);
     } else {
@@ -297,6 +392,8 @@ bool parse_options(lab_options& options, std::wstring& open_path, std::wstring& 
     }
   }
   ::LocalFree(argv);
+  // Interactive: drop-target empty view. Soak: the PR 1 sweep unless --static.
+  options.start_animating = options.soak_seconds > 0.0 && !static_requested;
   return ok;
 }
 
@@ -308,10 +405,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // failure mode is a blurry window nobody files a bug about.
   ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+  // WinUI islands require an STA. GetOpenFileName wants one too.
+  (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
   lab_options options;
   std::wstring parse_error;
   std::wstring open_path;
-  if (!parse_options(options, open_path, parse_error)) {
+  bool chrome_enabled = true;
+  if (!parse_options(options, open_path, chrome_enabled, parse_error)) {
     ::MessageBoxW(nullptr, parse_error.c_str(), kWindowTitle, MB_ICONERROR | MB_OK);
     return 2;
   }
@@ -323,6 +424,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // interop uses. If the shell ever reaches around the ABI, the two-language
   // boundary stops being tested by the thing that matters most.
   app_state app;
+  app.chrome_enabled = chrome_enabled;
   mv_session_config config{};
   config.worker_count = 0;
   config.enable_etw = 1;
@@ -355,9 +457,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   enable_dark_titlebar(hwnd);
   ::DragAcceptFiles(hwnd, TRUE);
+  app.window = hwnd;
+  app.chrome_on_screen = app.chrome_enabled;
   update_client_metrics(&app, hwnd);
   app.lab.bind_session(app.session);
   app.lab.publish(app.input);
+
+  // Overlay is the F3 instrument — off until asked, so launch does not freeze
+  // a startup-miss overlay on an idle window. Soak keeps it (and animates
+  // unless --static). Interactive empty view is the drop target, not the sweep.
+  if (options.soak_seconds == 0.0) options.overlay_visible = false;
 
   if (auto started = app.lab.start(hwnd, options); !started) {
     ::MessageBoxA(nullptr, "render thread failed to start", "MediaViewer", MB_ICONERROR | MB_OK);
@@ -367,10 +476,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   ::ShowWindow(hwnd, show_command);
   ::UpdateWindow(hwnd);
+  if (app.chrome_enabled && !attach_chrome(&app)) {
+    MV_LOG_WARN("chrome: island did not attach; command bar is unavailable");
+    app.chrome_on_screen = false;
+    update_client_metrics(&app, hwnd);
+    ++app.input.resize_seq;
+    publish(&app);
+  }
   if (!open_path.empty()) open_image(&app, open_path);
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (handle_app_key(&app, msg)) continue;
+    if (app.chrome.pre_translate(&msg)) continue;
     ::TranslateMessage(&msg);
     ::DispatchMessageW(&msg);
 

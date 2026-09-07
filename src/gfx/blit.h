@@ -17,6 +17,10 @@ struct blit_params {
   float window_h = 1.0f;
   float image_w = 1.0f;
   float image_h = 1.0f;
+  // Top-left of the usable canvas in swapchain pixels. The command-bar strip
+  // is above this; fit/pan are in this rect, not the full client.
+  float origin_x = 0.0f;
+  float origin_y = 0.0f;
 };
 
 class blitter {
