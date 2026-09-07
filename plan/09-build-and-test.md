@@ -142,7 +142,8 @@ and it does not belong in Git LFS at that size either.
 - Jump list of recents, taskbar thumbnail transport buttons, SMTC (`SystemMediaTransportControls`)
   so media keys and the OS overlay work.
 - Drag-and-drop in and out (`IDataObject` with `CFSTR_FILEDESCRIPTOR` so you can drag an edited
-  copy directly into another app).
+  copy directly into another app). Keyboard twins in [16-commands.md](16-commands.md):
+  `Ctrl+C` / `Ctrl+Shift+C` / `Ctrl+Alt+C` / `Ctrl+Shift+S`.
 - Command line: `mediaviewer <path...>`, `--slideshow`, `--fullscreen`, `--compare`.
 - Single-instance-with-tabs by default (named pipe hands the path to the running instance),
   overridable.

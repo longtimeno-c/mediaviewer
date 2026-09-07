@@ -17,7 +17,8 @@ src/
   shell/       Win32 top-level window, swapchain host, island bridge, CLI, associations
 
 src.managed/   C# — WinUI 3 chrome hosted as XAML islands
-  panes/       filmstrip, folder tree, metadata pane, adjust pane, job queue
+  MediaViewer.Chrome/  islands: command bar (top) + filmstrip (bottom) + folder tree (left, PR 6, hidden by default)
+  panes/       folder tree, metadata pane, adjust pane, job queue, command palette (later PRs)
   interop/     SafeHandle wrappers, completion pump, P/Invoke surface
 tests/
 tools/         frame-time harness, golden-image runner, corpus fuzzers
@@ -32,6 +33,21 @@ greps includes; it takes 20 lines and saves the project.
 Note what changed after **D1**: there is no C++ `ui/` module any more. Chrome is C# XAML; the only
 input C++ handles is the canvas itself (pan, zoom, gestures), because that path must not take a
 marshalling hop per mouse-move.
+
+PR 3's host is one `DesktopWindowXamlSource` per chrome strip on the native HWND, not a
+WinUI `Window`. PR 4 adds the filmstrip as a **second** island (bottom). PR 6 adds a
+**third**, the folder tree, as a left strip **hidden by default** (`chrome_left_px = 0`
+until shown). Do not grow a strip over the canvas; mouse-move on the photo must stay in
+the window procedure. `usable_canvas` subtracts top + bottom + left.
+
+**Keys are not per-island accelerators.** One router on the UI thread maps key → command
+id, except when a XAML text box has focus. Bindings live in the host; the core sees
+existing ABI calls. Full table, default map, and the mouse-free verify:
+[16-commands.md](16-commands.md).
+
+The C# side depends on **`abi` alone** — from PR 4 the filmstrip island borrows the
+`mv_session` (`retain` + `SafeHandle`) and drains completions. Native drains only
+when chrome is off (`--no-chrome`).
 
 ## Threading model (this is the whole ballgame)
 

@@ -113,9 +113,13 @@ The architecture above is what you build. The **op set** ships in two waves:
 | Rotate, flip, crop, straighten, resize | Perspective/keystone, lens correction |
 | Exposure, contrast, saturation, temperature/tint | Highlights/shadows/whites/blacks, vibrance |
 | Histogram + clipping warnings | Tone curve (RGB + per-channel), per-band HSL, colour grading |
-| Lossless JPEG rotate / MCU-aligned crop | Sharpen, noise reduction, dehaze, vignette, grain |
+| Lossless JPEG rotate / MCU-aligned crop, invokable from the viewer (`[` `]`) without opening the adjust pane | Sharpen, noise reduction, dehaze, vignette, grain |
 | Export with resize + metadata policy | Local adjustments: gradients, brush masks, healing/clone, red-eye |
 | | Full RAW develop: highlight recovery, lens profiles, dual-illuminant WB |
+
+**Viewer clipping (`C`)** is a shader on the display blit, not an edit op. PR 6 may blink
+display-referred luminance; **accurate RAW clip waits for the full LibRaw decode**, same
+rule as the adjust pane. Focus peaking, zebras, and channel isolation are v1.1.
 
 Nothing in the v1.1 column requires a design change — each is one more compute shader appended to
 the fixed pipeline order and one more parameter block in the stack. **What must be right in v1 is
