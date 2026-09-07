@@ -257,7 +257,14 @@ add_library(mv_player STATIC
   src/player/presenter.h
   src/player/video_internal.h
 )
-target_include_directories(mv_player PRIVATE ${FFMPEG_INCLUDE_DIRS})
+# SYSTEM, deliberately. FFmpeg's own public headers trip C4244 (libavutil's
+# common.h narrows int -> uint8_t/int16_t in its inline helpers), and CLAUDE.md
+# compiles /W4 /WX, so an ordinary include of <libavutil/common.h> fails the
+# build inside a dependency we do not control. Marking the directory SYSTEM
+# suppresses warnings from THEIR headers while leaving /W4 /WX fully in force on
+# ours -- which is the point. Relaxing /WX for mv_player instead would silence
+# our own warnings too, in the one module doing the hardest threading in the app.
+target_include_directories(mv_player SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_player
   PUBLIC mv_core mv_gfx
