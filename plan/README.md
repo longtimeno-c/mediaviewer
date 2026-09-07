@@ -33,6 +33,7 @@ Read in order:
 | [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | Auto-update channel, crash reporting, the privacy line |
 | [14-abi.md](14-abi.md) | The C ABI between the C# shell and the C++ core — specified, not just named |
 | [15-platforms.md](15-platforms.md) | Windows v1, hostable core from PR 4, macOS as Milestone F — **D9**. Not a UI-only port. |
+| [16-commands.md](16-commands.md) | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. |
 
 ## The rules that don't bend
 

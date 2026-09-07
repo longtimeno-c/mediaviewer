@@ -17,13 +17,17 @@ namespace mv::shell {
 
 // Commands the island posts back. The C# side uses the same integers.
 enum chrome_command : int {
-  chrome_cmd_open = 1,
+  chrome_cmd_open = 1,         // image picker
   chrome_cmd_fit = 2,
   chrome_cmd_one_to_one = 3,
   chrome_cmd_zoom_in = 4,
   chrome_cmd_zoom_out = 5,
   chrome_cmd_zoom_preset = 6,  // arg is the zoom factor (0.5, 1, 2, 4)
   chrome_cmd_overlay = 7,
+  chrome_cmd_select_item = 8,  // arg is the folder index
+  chrome_cmd_prev = 9,
+  chrome_cmd_next = 10,
+  chrome_cmd_open_folder = 11, // folder picker
 };
 
 using chrome_command_fn = void (*)(void* context, int command, float arg);
@@ -46,10 +50,23 @@ struct chrome_resize_args {
   std::int32_t width;
   std::int32_t height;
   std::int32_t dpi;
-  std::int32_t reserved;
+  std::int32_t y;  // client-pixel top of the island (0 for the command bar)
 };
 
 static_assert(sizeof(chrome_resize_args) == 16, "keep in sync with ChromeResizeArgs");
+
+struct chrome_filmstrip_args {
+  std::uint64_t parent_hwnd;
+  std::uint64_t context;
+  std::uint64_t on_command;
+  std::uint64_t session;  // borrowed mv_session_t
+  std::int32_t  client_width;
+  std::int32_t  client_height;
+  std::int32_t  dpi;
+  std::int32_t  reserved;
+};
+
+static_assert(sizeof(chrome_filmstrip_args) == 48, "keep in sync with ChromeFilmstripArgs");
 
 struct chrome_navigate_args {
   std::int32_t reverse;  // non-zero = Shift+Tab
@@ -60,10 +77,16 @@ using chrome_entry_fn = int (*)(void* arg, std::int32_t arg_size_in_bytes);
 
 // DIP height of the command-bar strip. Physical pixels = this * dpi / 96.
 inline constexpr int kChromeBarDip = 48;
+inline constexpr int kFilmstripDip = 112;
 
 [[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi) noexcept {
   if (dpi == 0) dpi = 96;
   return static_cast<int>((kChromeBarDip * static_cast<int>(dpi) + 48) / 96);
+}
+
+[[nodiscard]] inline int chrome_filmstrip_height_px(std::uint32_t dpi) noexcept {
+  if (dpi == 0) dpi = 96;
+  return static_cast<int>((kFilmstripDip * static_cast<int>(dpi) + 48) / 96);
 }
 
 class chrome_host {
@@ -94,6 +117,12 @@ class chrome_host {
 
   void resize(int width, int height, std::uint32_t dpi) noexcept;
 
+  [[nodiscard]] expected attach_filmstrip(HWND parent, void* context, chrome_command_fn on_command,
+                                          void* session, int width, int height,
+                                          std::uint32_t dpi) noexcept;
+  void resize_filmstrip(int width, int client_height, std::uint32_t dpi) noexcept;
+  [[nodiscard]] bool filmstrip_attached() const noexcept { return filmstrip_attached_; }
+
   // True when the island consumed the message (do not Translate/Dispatch).
   [[nodiscard]] bool pre_translate(MSG* msg) noexcept;
 
@@ -118,6 +147,10 @@ class chrome_host {
   chrome_entry_fn resize_ = nullptr;
   chrome_entry_fn detach_ = nullptr;
   chrome_entry_fn navigate_ = nullptr;
+  chrome_entry_fn attach_filmstrip_ = nullptr;
+  chrome_entry_fn resize_filmstrip_ = nullptr;
+  chrome_entry_fn detach_filmstrip_ = nullptr;
+  bool filmstrip_attached_ = false;
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

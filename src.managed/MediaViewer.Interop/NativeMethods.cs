@@ -91,4 +91,48 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_session_image_info(MvSessionHandle session,
                                                            out MvImageInfo info);
+
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_open(MvSessionHandle session, string utf8Dir,
+                                                    string? utf8SelectPath, out ulong jobId);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_count(MvSessionHandle session, out uint count);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_item_at(MvSessionHandle session, uint index,
+                                                       out MvFolderItem item);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_item_name(MvSessionHandle session, uint index,
+                                                         IntPtr utf8, uint cap, out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_item_path(MvSessionHandle session, uint index,
+                                                         IntPtr utf8, uint cap, out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_item_thumb_path(MvSessionHandle session, uint index,
+                                                               IntPtr utf8, uint cap,
+                                                               out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_select(MvSessionHandle session, uint index,
+                                                      out ulong jobId);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_thumbs_visible(MvSessionHandle session, uint first,
+                                                              uint count);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_close(MvSessionHandle session);
 }

@@ -24,6 +24,7 @@ struct input_snapshot {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint32_t chrome_height_px = 0;  // command-bar strip; overlay sits below it
+  std::uint32_t chrome_bottom_px = 0;  // filmstrip strip; canvas sits above it
   float dpi_scale = 1.0f;
 
   float mouse_x = 0.0f;

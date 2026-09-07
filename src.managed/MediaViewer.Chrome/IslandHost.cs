@@ -22,10 +22,11 @@ namespace MediaViewer.Chrome;
 /// Pixels never cross this line. The island is command-bar chrome; pan/zoom
 /// stay on the native window procedure (plan/02, plan/14).
 /// </remarks>
-public static class IslandHost
+public static partial class IslandHost
 {
     internal const int AttachArgsSize = 40;
     internal const int ResizeArgsSize = 16;
+    internal const int FilmstripArgsSize = 48;
 
     internal static class Command
     {
@@ -36,6 +37,10 @@ public static class IslandHost
         public const int ZoomOut = 5;
         public const int ZoomPreset = 6;
         public const int Overlay = 7;
+        public const int SelectItem = 8;
+        public const int Prev = 9;
+        public const int Next = 10;
+        public const int OpenFolder = 11;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -53,6 +58,7 @@ public static class IslandHost
         _ = sizeBytes;
         if (Marshal.SizeOf<ChromeAttachArgs>() != AttachArgsSize) return -2;
         if (Marshal.SizeOf<ChromeResizeArgs>() != ResizeArgsSize) return -3;
+        if (Marshal.SizeOf<ChromeFilmstripArgs>() != FilmstripArgsSize) return -4;
         return AttachArgsSize;
     }
 
@@ -81,10 +87,10 @@ public static class IslandHost
             _source.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Constrain the island to the bar before assigning content so a
             // full-client default size never covers the canvas.
-            Move(args.ClientWidth, args.ClientHeight);
+            Move(_source, args.ClientWidth, args.ClientHeight, 0);
             _source.TakeFocusRequested += OnTakeFocusRequested;
             _source.Content = BuildChrome();
-            Move(args.ClientWidth, args.ClientHeight);
+            Move(_source, args.ClientWidth, args.ClientHeight, 0);
             return 0;
         }
         catch (Exception ex)
@@ -101,7 +107,7 @@ public static class IslandHost
         {
             if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
-            Move(args.Width, args.Height);
+            Move(_source, args.Width, args.Height, args.Y);
             return 0;
         }
         catch (Exception ex)
@@ -170,12 +176,13 @@ public static class IslandHost
         _onCommand?.Invoke(_context, command, arg);
     }
 
-    private static void Move(int width, int height)
+    private static void Move(DesktopWindowXamlSource? source, int width, int height, int y)
     {
-        if (_source?.SiteBridge is null) return;
+        if (source?.SiteBridge is null) return;
         int w = Math.Max(width, 1);
         int h = Math.Max(height, 1);
-        _source.SiteBridge.MoveAndResize(new RectInt32(0, 0, w, h));
+        int top = Math.Max(y, 0);
+        source.SiteBridge.MoveAndResize(new RectInt32(0, top, w, h));
     }
 
     private static void OnTakeFocusRequested(DesktopWindowXamlSource sender,
@@ -501,7 +508,20 @@ public static class IslandHost
             FontSize = UiFontSize,
         };
 
-        var open = TextButton("Open", () => Send(Command.Open));
+        var openFlyout = new MenuFlyout
+        {
+            ShouldConstrainToRootBounds = false,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        openFlyout.Items.Add(Item("Image…", "Ctrl+O", () => Send(Command.Open)));
+        openFlyout.Items.Add(Item("Folder…", null, () => Send(Command.OpenFolder)));
+
+        Button? openBtn = null;
+        openBtn = TextButton("Open", () =>
+        {
+            if (openBtn is not null) FlyoutBase.ShowAttachedFlyout(openBtn);
+        });
+        FlyoutBase.SetAttachedFlyout(openBtn, openFlyout);
         Button? viewBtn = null;
         viewBtn = TextButton("View", () =>
         {
@@ -522,7 +542,7 @@ public static class IslandHost
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(8, 0, 8, 0),
         };
-        row.Children.Add(open);
+        row.Children.Add(openBtn);
         row.Children.Add(viewBtn);
         row.Children.Add(aboutBtn);
 
@@ -570,6 +590,19 @@ internal struct ChromeResizeArgs
 {
     public int Width;
     public int Height;
+    public int Dpi;
+    public int Y;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct ChromeFilmstripArgs
+{
+    public ulong ParentHwnd;
+    public ulong Context;
+    public ulong OnCommand;
+    public ulong Session;
+    public int ClientWidth;
+    public int ClientHeight;
     public int Dpi;
     public int Reserved;
 }

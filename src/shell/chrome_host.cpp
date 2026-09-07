@@ -207,7 +207,11 @@ expected chrome_host::load() noexcept {
   resize_ = get_entry(L"Resize");
   detach_ = get_entry(L"Detach");
   navigate_ = get_entry(L"NavigateFocus");
-  if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_) {
+  attach_filmstrip_ = get_entry(L"AttachFilmstrip");
+  resize_filmstrip_ = get_entry(L"ResizeFilmstrip");
+  detach_filmstrip_ = get_entry(L"DetachFilmstrip");
+  if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
+      !resize_filmstrip_ || !detach_filmstrip_) {
     return err(status::internal);
   }
 
@@ -255,7 +259,47 @@ void chrome_host::resize(int width, int height, std::uint32_t dpi) noexcept {
   args.width = width;
   args.height = height;
   args.dpi = static_cast<std::int32_t>(dpi);
+  args.y = 0;
   (void)resize_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+expected chrome_host::attach_filmstrip(HWND parent, void* context, chrome_command_fn on_command,
+                                       void* session, int width, int height,
+                                       std::uint32_t dpi) noexcept {
+  if (!loaded() || !attach_filmstrip_) return err(status::internal);
+  if (!parent) return err(status::invalid_arg);
+  if (filmstrip_attached_) {
+    if (detach_filmstrip_) (void)detach_filmstrip_(nullptr, 0);
+    filmstrip_attached_ = false;
+  }
+
+  chrome_filmstrip_args args{};
+  args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
+  args.context = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(context));
+  args.on_command = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(on_command));
+  args.session = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(session));
+  args.client_width = width;
+  args.client_height = height;
+  args.dpi = static_cast<std::int32_t>(dpi);
+
+  const int rc = attach_filmstrip_(&args, static_cast<std::int32_t>(sizeof(args)));
+  if (rc != 0) {
+    MV_LOG_WARN("chrome: AttachFilmstrip failed (%d)", rc);
+    return err(status::internal);
+  }
+  filmstrip_attached_ = true;
+  return {};
+}
+
+void chrome_host::resize_filmstrip(int width, int client_height, std::uint32_t dpi) noexcept {
+  if (!filmstrip_attached_ || !resize_filmstrip_) return;
+  const int strip = chrome_filmstrip_height_px(dpi);
+  chrome_resize_args args{};
+  args.width = width;
+  args.height = strip;
+  args.dpi = static_cast<std::int32_t>(dpi);
+  args.y = client_height > strip ? client_height - strip : 0;
+  (void)resize_filmstrip_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {
@@ -271,6 +315,10 @@ bool chrome_host::navigate_focus(bool reverse) noexcept {
 }
 
 void chrome_host::detach() noexcept {
+  if (filmstrip_attached_ && detach_filmstrip_) {
+    (void)detach_filmstrip_(nullptr, 0);
+    filmstrip_attached_ = false;
+  }
   if (attached_ && detach_) {
     (void)detach_(nullptr, 0);
     attached_ = false;

@@ -36,6 +36,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/13-updates-and-telemetry.md` | Updater, crash reports, privacy line |
 | `plan/14-abi.md` | C ABI between host and core |
 | `plan/15-platforms.md` | Windows v1, hostable core from PR 4, macOS as Milestone F — **D9**. Read before any new Win32/D3D11 leak out of `shell/` / `gfx/` |
+| `plan/16-commands.md` | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. Read before adding a key, overlay, or chrome command |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.

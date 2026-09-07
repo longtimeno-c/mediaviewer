@@ -15,6 +15,9 @@
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <commdlg.h>
+#include <shobjidl.h>
+
+#include "io/dir.h"
 
 #include <cmath>
 #include <cwchar>
@@ -70,18 +73,71 @@ std::string utf8_from_wide(std::wstring_view wide) {
   return out;
 }
 
-void open_image(app_state* app, std::wstring_view wide_path) {
-  if (!app || !app->session || wide_path.empty()) return;
-  const std::string utf8 = utf8_from_wide(wide_path);
-  if (utf8.empty()) return;
-  mv_session_bump_generation(app->session, nullptr);
+void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
+  if (!app || !app->session || wide_dir.empty()) return;
+  const std::string dir = utf8_from_wide(wide_dir);
+  if (dir.empty()) return;
+  const std::string select = utf8_from_wide(wide_select);
   uint64_t job_id = 0;
-  (void)mv_image_open(app->session, utf8.c_str(), &job_id);
+  (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
+                       &job_id);
   ++app->input.activity_seq;
   publish(app);
 }
 
-void open_dialog(app_state* app, HWND hwnd) {
+void open_path(app_state* app, std::wstring_view wide_path) {
+  if (!app || wide_path.empty()) return;
+  const std::string utf8 = utf8_from_wide(wide_path);
+  if (utf8.empty()) return;
+  auto dir = mv::io::is_directory(utf8);
+  if (dir && dir.value()) {
+    open_folder(app, wide_path, {});
+    return;
+  }
+  const auto slash = wide_path.find_last_of(L"\\/");
+  if (slash == std::wstring_view::npos) {
+    mv_session_bump_generation(app->session, nullptr);
+    uint64_t job_id = 0;
+    (void)mv_image_open(app->session, utf8.c_str(), &job_id);
+    ++app->input.activity_seq;
+    publish(app);
+    return;
+  }
+  open_folder(app, wide_path.substr(0, slash), wide_path);
+}
+
+void open_image(app_state* app, std::wstring_view wide_path) { open_path(app, wide_path); }
+
+bool pick_folder(HWND hwnd, std::wstring& out) {
+  IFileOpenDialog* dlg = nullptr;
+  if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dlg)))) {
+    return false;
+  }
+  FILEOPENDIALOGOPTIONS opt{};
+  dlg->GetOptions(&opt);
+  dlg->SetOptions(opt | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+  const HRESULT shown = dlg->Show(hwnd);
+  if (shown != S_OK) {
+    dlg->Release();
+    return false;
+  }
+  IShellItem* item = nullptr;
+  if (FAILED(dlg->GetResult(&item))) {
+    dlg->Release();
+    return false;
+  }
+  PWSTR path = nullptr;
+  if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+    out = path;
+    ::CoTaskMemFree(path);
+  }
+  item->Release();
+  dlg->Release();
+  return !out.empty();
+}
+
+void open_file_dialog(app_state* app, HWND hwnd) {
   wchar_t file[MAX_PATH]{};
   OPENFILENAMEW ofn{};
   ofn.lStructSize = sizeof(ofn);
@@ -91,7 +147,32 @@ void open_dialog(app_state* app, HWND hwnd) {
   ofn.lpstrFilter = L"Images (JPEG, PNG, BMP)\0*.jpg;*.jpeg;*.png;*.bmp\0All files\0*.*\0";
   ofn.nFilterIndex = 1;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
-  if (::GetOpenFileNameW(&ofn)) open_image(app, file);
+  if (::GetOpenFileNameW(&ofn)) open_path(app, file);
+}
+
+void open_folder_dialog(app_state* app, HWND hwnd) {
+  std::wstring folder;
+  if (pick_folder(hwnd, folder)) open_folder(app, folder, {});
+}
+
+void folder_select(app_state* app, std::uint32_t index) {
+  if (!app || !app->session) return;
+  uint64_t job = 0;
+  if (mv_folder_select(app->session, index, &job) == MV_OK) {
+    ++app->input.activity_seq;
+    publish(app);
+  }
+}
+
+void folder_step(app_state* app, int delta) {
+  if (!app || !app->session) return;
+  uint32_t count = 0;
+  uint32_t selected = 0;
+  if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return;
+  if (mv_folder_selected(app->session, &selected) != MV_OK) return;
+  const int next = static_cast<int>(selected) + delta;
+  if (next < 0 || next >= static_cast<int>(count)) return;
+  folder_select(app, static_cast<std::uint32_t>(next));
 }
 
 void chrome_on_command(void* ctx, int command, float arg) {
@@ -99,7 +180,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
   if (!app) return;
   switch (command) {
     case mv::shell::chrome_cmd_open:
-      if (app->window) open_dialog(app, app->window);
+      if (app->window) open_file_dialog(app, app->window);
+      return;
+    case mv::shell::chrome_cmd_open_folder:
+      if (app->window) open_folder_dialog(app, app->window);
       return;
     case mv::shell::chrome_cmd_fit:         ++app->input.fit_seq; break;
     case mv::shell::chrome_cmd_one_to_one:  ++app->input.one_to_one_seq; break;
@@ -110,6 +194,15 @@ void chrome_on_command(void* ctx, int command, float arg) {
       ++app->input.zoom_preset_seq;
       break;
     case mv::shell::chrome_cmd_overlay:     ++app->input.toggle_overlay_seq; break;
+    case mv::shell::chrome_cmd_select_item:
+      folder_select(app, static_cast<std::uint32_t>(arg));
+      return;
+    case mv::shell::chrome_cmd_prev:
+      folder_step(app, -1);
+      return;
+    case mv::shell::chrome_cmd_next:
+      folder_step(app, 1);
+      return;
     default: return;
   }
   ++app->input.activity_seq;
@@ -150,10 +243,19 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
       break;
     case 'O':
       if (::GetKeyState(VK_CONTROL) & 0x8000) {
-        if (app->window) open_dialog(app, app->window);
+        if (app->window) {
+          if (::GetKeyState(VK_SHIFT) & 0x8000) open_folder_dialog(app, app->window);
+          else open_file_dialog(app, app->window);
+        }
         return true;
       }
       return false;
+    case VK_LEFT:
+      folder_step(app, -1);
+      return true;
+    case VK_RIGHT:
+      folder_step(app, 1);
+      return true;
     case VK_ESCAPE:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
@@ -171,7 +273,10 @@ void layout_chrome(app_state* app) noexcept {
   ::GetClientRect(app->window, &rc);
   const auto dpi = ::GetDpiForWindow(app->window);
   const int bar = mv::shell::chrome_bar_height_px(dpi);
-  app->chrome.resize(rc.right - rc.left, bar, dpi);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  app->chrome.resize(width, bar, dpi);
+  if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
 }
 
 bool attach_chrome(app_state* app) {
@@ -183,7 +288,11 @@ bool attach_chrome(app_state* app) {
   const int bar = mv::shell::chrome_bar_height_px(dpi);
   auto attached = app->chrome.attach(app->window, app, &chrome_on_command,
                                      rc.right - rc.left, bar, dpi);
-  return static_cast<bool>(attached);
+  if (!attached) return false;
+  const int height = rc.bottom - rc.top;
+  (void)app->chrome.attach_filmstrip(app->window, app, &chrome_on_command, app->session,
+                                     rc.right - rc.left, height, dpi);
+  return true;
 }
 
 void update_client_metrics(app_state* app, HWND hwnd) noexcept {
@@ -195,6 +304,10 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   app->input.dpi_scale = static_cast<float>(dpi) / 96.0f;
   app->input.chrome_height_px =
       app->chrome_on_screen ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi)) : 0;
+  app->input.chrome_bottom_px =
+      app->chrome.filmstrip_attached()
+          ? static_cast<std::uint32_t>(mv::shell::chrome_filmstrip_height_px(dpi))
+          : 0;
 }
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -492,18 +605,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::TranslateMessage(&msg);
     ::DispatchMessageW(&msg);
 
-    // Drain the core's completion queue on the UI thread — the shape the C#
-    // shell uses in PR 3. C++ never marshals to a dispatcher (plan/14).
-    mv_completion completions[64];
-    while (const uint32_t n = mv_completion_drain(app.session, completions, 64)) {
-      for (uint32_t i = 0; i < n; ++i) {
-        MV_LOG_INFO("completion: kind=%u job=%llu status=%s payload=%lld",
-                    completions[i].kind,
-                    static_cast<unsigned long long>(completions[i].job_id),
-                    mv_status_name(static_cast<mv_status>(completions[i].status)),
-                    static_cast<long long>(completions[i].payload));
+    // When the island is attached it borrows the session and drains. Two
+    // drainers race (plan/12 PR 4). --no-chrome keeps the native drain.
+    if (!app.chrome.filmstrip_attached()) {
+      mv_completion completions[64];
+      while (const uint32_t n = mv_completion_drain(app.session, completions, 64)) {
+        for (uint32_t i = 0; i < n; ++i) {
+          MV_LOG_INFO("completion: kind=%u job=%llu status=%s payload=%lld",
+                      completions[i].kind,
+                      static_cast<unsigned long long>(completions[i].job_id),
+                      mv_status_name(static_cast<mv_status>(completions[i].status)),
+                      static_cast<long long>(completions[i].payload));
+        }
+        if (n < 64) break;
       }
-      if (n < 64) break;
     }
   }
 

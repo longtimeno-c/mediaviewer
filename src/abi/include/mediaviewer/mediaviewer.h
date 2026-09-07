@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 2
+#define MV_ABI_VERSION_MINOR 3
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -142,8 +142,12 @@ MV_API mv_status MV_CALL mv_session_current_generation(mv_session_t session,
  * ------------------------------------------------------------------------- */
 typedef enum mv_completion_kind {
   MV_COMPLETION_NONE = 0,
-  MV_COMPLETION_ECHO = 1,         /* PR 1's round-trip proof. */
-  MV_COMPLETION_IMAGE_OPENED = 2  /* PR 2. payload = (width << 32) | height. */
+  MV_COMPLETION_ECHO = 1,          /* PR 1's round-trip proof. */
+  MV_COMPLETION_IMAGE_OPENED = 2,  /* PR 2. payload = (width << 32) | height. */
+  MV_COMPLETION_FOLDER_READY = 3,  /* PR 4. payload = item count. */
+  MV_COMPLETION_FOLDER_CHANGED = 4,/* watcher; payload = item count. */
+  MV_COMPLETION_THUMB_READY = 5,   /* payload = item index. */
+  MV_COMPLETION_FOLDER_SELECTED = 6 /* payload = selected index. */
 } mv_completion_kind;
 
 typedef struct mv_completion {
@@ -225,6 +229,58 @@ MV_API mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_pa
 
 /* [any-thread][no-block] Last successfully opened image, if any. */
 MV_API mv_status MV_CALL mv_session_image_info(mv_session_t session, mv_image_info* out_info);
+
+/* ---------------------------------------------------------------------------
+ * Folder — listing, watch, thumbs, select (PR 4)
+ *
+ * Same shape as image open: the scan returns a job id, FOLDER_READY carries
+ * the count. Item strings are copied into a caller buffer (never a pointer
+ * the core retains). Thumbnails are on-disk JPEG paths, never pixels.
+ * ------------------------------------------------------------------------- */
+
+typedef struct mv_folder_item {
+  uint32_t index;
+  uint32_t flags;       /* bit 0 = selected */
+  uint64_t size_bytes;
+  int64_t  mtime_unix;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} mv_folder_item;
+
+/* [any-thread][no-block] `utf8_dir` is copied. `utf8_select_path` may be NULL;
+ * when set, that file is selected after the scan (otherwise index 0). */
+MV_API mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
+                                        const char* utf8_select_path, uint64_t* out_job_id);
+
+/* [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_count(mv_session_t session, uint32_t* out_count);
+MV_API mv_status MV_CALL mv_folder_item_at(mv_session_t session, uint32_t index,
+                                           mv_folder_item* out_item);
+
+/* Caller buffer, UTF-8. `out_bytes` (optional) is the required size including
+ * NUL. `cap == 0` returns the size and MV_ERR_INVALID_ARG. Truncates with NUL
+ * if cap is too small and still reports the full size in out_bytes. */
+MV_API mv_status MV_CALL mv_folder_item_name(mv_session_t session, uint32_t index, char* utf8,
+                                             uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_folder_item_path(mv_session_t session, uint32_t index, char* utf8,
+                                             uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_folder_item_thumb_path(mv_session_t session, uint32_t index,
+                                                   char* utf8, uint32_t cap, uint32_t* out_bytes);
+
+/* [any-thread][no-block] Bump view generation, publish an LRU hit or open,
+ * prefetch ±2. Pushes MV_COMPLETION_FOLDER_SELECTED. */
+MV_API mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index,
+                                          uint64_t* out_job_id);
+
+/* [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_selected(mv_session_t session, uint32_t* out_index);
+
+/* [any-thread][no-block] Visible-first thumbs. Skipping still generates every
+ * thumb, just not visible-first. */
+MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t first,
+                                                  uint32_t count);
+
+MV_API mv_status MV_CALL mv_folder_close(mv_session_t session);
 
 #ifdef __cplusplus
 }  /* extern "C" */

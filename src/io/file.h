@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -14,5 +15,7 @@ namespace mv::io {
 // Reads the entire file at `utf8_path` into memory. The path is UTF-8 and is
 // converted to UTF-16 for the Windows API; it is never logged (rule 6).
 [[nodiscard]] result<std::vector<std::uint8_t>> read_all(std::string_view utf8_path);
+
+[[nodiscard]] expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> bytes);
 
 }  // namespace mv::io

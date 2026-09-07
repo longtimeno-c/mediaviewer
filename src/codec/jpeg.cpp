@@ -195,4 +195,130 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   return out;
 }
 
+struct jpeg_enc_trap {
+  jpeg_error_mgr pub;
+  jmp_buf jump;
+  unsigned char* out = nullptr;
+  std::size_t out_len = 0;
+  std::size_t out_cap = 0;
+  unsigned char chunk[4096]{};
+  unsigned char* row = nullptr;
+};
+
+void jpeg_enc_error_exit(j_common_ptr cinfo) {
+  auto* trap = reinterpret_cast<jpeg_enc_trap*>(cinfo->err);
+  longjmp(trap->jump, 1);
+}
+
+bool jpeg_enc_grow(jpeg_enc_trap* trap, std::size_t extra) {
+  const std::size_t need = trap->out_len + extra;
+  if (need <= trap->out_cap) return true;
+  std::size_t cap = trap->out_cap ? trap->out_cap : 4096;
+  while (cap < need) cap *= 2;
+  auto* p = static_cast<unsigned char*>(std::realloc(trap->out, cap));
+  if (!p) return false;
+  trap->out = p;
+  trap->out_cap = cap;
+  return true;
+}
+
+result<std::vector<std::uint8_t>> encode_jpeg_rgba(std::span<const std::uint8_t> rgba,
+                                                   std::uint32_t width, std::uint32_t height,
+                                                   int quality) {
+  if (width == 0 || height == 0 || quality < 1 || quality > 100) {
+    return err(status::invalid_arg);
+  }
+  const std::uint64_t need = static_cast<std::uint64_t>(width) * height * 4ull;
+  if (rgba.size() < need) return err(status::invalid_arg);
+
+  jpeg_compress_struct cinfo{};
+  jpeg_enc_trap trap{};
+  trap.pub.error_exit = jpeg_enc_error_exit;
+  cinfo.err = jpeg_std_error(&trap.pub);
+  trap.pub.error_exit = jpeg_enc_error_exit;
+
+  // C4611: longjmp skips C++ destructors. Everything live across this setjmp
+  // is POD or a malloc the jump handler frees.
+#pragma warning(push)
+#pragma warning(disable : 4611)
+  if (setjmp(trap.jump)) {
+#pragma warning(pop)
+    jpeg_destroy_compress(&cinfo);
+    std::free(trap.out);
+    std::free(trap.row);
+    return err(status::internal);
+  }
+
+  jpeg_create_compress(&cinfo);
+
+  jpeg_destination_mgr dest{};
+  dest.init_destination = [](j_compress_ptr c) {
+    auto* t = reinterpret_cast<jpeg_enc_trap*>(c->err);
+    c->dest->next_output_byte = t->chunk;
+    c->dest->free_in_buffer = sizeof(t->chunk);
+  };
+  dest.empty_output_buffer = [](j_compress_ptr c) -> boolean {
+    auto* t = reinterpret_cast<jpeg_enc_trap*>(c->err);
+    if (!jpeg_enc_grow(t, sizeof(t->chunk))) return FALSE;
+    std::memcpy(t->out + t->out_len, t->chunk, sizeof(t->chunk));
+    t->out_len += sizeof(t->chunk);
+    c->dest->next_output_byte = t->chunk;
+    c->dest->free_in_buffer = sizeof(t->chunk);
+    return TRUE;
+  };
+  dest.term_destination = [](j_compress_ptr c) {
+    auto* t = reinterpret_cast<jpeg_enc_trap*>(c->err);
+    const std::size_t used = sizeof(t->chunk) - c->dest->free_in_buffer;
+    if (used == 0) return;
+    if (!jpeg_enc_grow(t, used)) return;
+    std::memcpy(t->out + t->out_len, t->chunk, used);
+    t->out_len += used;
+  };
+  cinfo.dest = &dest;
+
+  cinfo.image_width = width;
+  cinfo.image_height = height;
+  cinfo.input_components = 3;
+  cinfo.in_color_space = JCS_RGB;
+  jpeg_set_defaults(&cinfo);
+  jpeg_set_quality(&cinfo, quality, TRUE);
+  jpeg_start_compress(&cinfo, TRUE);
+
+  trap.row = static_cast<unsigned char*>(std::malloc(static_cast<std::size_t>(width) * 3u));
+  if (!trap.row) {
+    jpeg_destroy_compress(&cinfo);
+    std::free(trap.out);
+    return err(status::out_of_memory);
+  }
+
+  while (cinfo.next_scanline < cinfo.image_height) {
+    const std::uint8_t* src =
+        rgba.data() + static_cast<std::size_t>(cinfo.next_scanline) * width * 4u;
+    for (std::uint32_t x = 0; x < width; ++x) {
+      trap.row[x * 3u + 0] = src[x * 4u + 0];
+      trap.row[x * 3u + 1] = src[x * 4u + 1];
+      trap.row[x * 3u + 2] = src[x * 4u + 2];
+    }
+    JSAMPROW rows[1] = {trap.row};
+    jpeg_write_scanlines(&cinfo, rows, 1);
+  }
+
+  jpeg_finish_compress(&cinfo);
+  jpeg_destroy_compress(&cinfo);
+  std::free(trap.row);
+  trap.row = nullptr;
+
+  std::vector<std::uint8_t> out;
+  try {
+    out.assign(trap.out, trap.out + trap.out_len);
+  } catch (const std::bad_alloc&) {
+    std::free(trap.out);
+    return err(status::out_of_memory);
+  }
+  std::free(trap.out);
+  if (out.empty()) return err(status::internal);
+  return out;
+}
+
 }  // namespace mv::codec
+

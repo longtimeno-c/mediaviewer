@@ -61,11 +61,14 @@ canvas_view usable_canvas(const input_snapshot& s) noexcept {
   canvas_view v;
   v.w = static_cast<float>(s.width);
   v.h = static_cast<float>(s.height);
-  const float chrome = static_cast<float>(s.chrome_height_px);
-  if (chrome > 0.0f && chrome < v.h) {
-    v.y = chrome;
-    v.h -= chrome;
+  const float top = static_cast<float>(s.chrome_height_px);
+  const float bottom = static_cast<float>(s.chrome_bottom_px);
+  if (top > 0.0f && top < v.h) {
+    v.y = top;
+    v.h -= top;
   }
+  if (bottom > 0.0f && bottom < v.h) v.h -= bottom;
+  if (v.h < 1.0f) v.h = 1.0f;
   return v;
 }
 
@@ -620,7 +623,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   const ImU32 mute = IM_COL32(110, 114, 124, 255);
 
   const char* heading = "Drop a photo here";
-  const char* sub = "JPEG, PNG or BMP. Open from the bar, or Ctrl+O";
+  const char* sub = "JPEG, PNG or BMP. Open a folder from the bar, or Ctrl+O";
   const char* keys = "0  fit     1  100%     + / -  zoom     F  overlay";
 
   ImFont* font = ImGui::GetFont();

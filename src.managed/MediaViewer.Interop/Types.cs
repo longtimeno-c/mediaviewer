@@ -23,6 +23,10 @@ public enum MvCompletionKind : uint
     None = 0,
     Echo = 1,
     ImageOpened = 2,
+    FolderReady = 3,
+    FolderChanged = 4,
+    ThumbReady = 5,
+    FolderSelected = 6,
 }
 
 /// <summary>Mirrors <c>mv_session_config</c>.</summary>
@@ -76,6 +80,17 @@ public struct MvImageInfo
     public uint IccTagged;
     public uint TransferIntent;
     public uint Reserved;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct MvFolderItem
+{
+    public uint Index;
+    public uint Flags;
+    public ulong SizeBytes;
+    public long MtimeUnix;
+    public uint Reserved0;
+    public uint Reserved1;
 }
 
 /// <summary>

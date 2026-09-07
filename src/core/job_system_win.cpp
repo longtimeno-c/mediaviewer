@@ -81,7 +81,7 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         // Cancellation check before doing any work: navigating away while a
         // hundred decodes are queued must cost approximately nothing.
         const generation now = generation_.load(std::memory_order_relaxed);
-        if (job.gen != now) {
+        if (job.gen != background_generation && job.gen != now) {
           trace::job_cancelled(job.id, job.gen);
           cancelled_.fetch_add(1, std::memory_order_relaxed);
           notify_done(job, status::cancelled);

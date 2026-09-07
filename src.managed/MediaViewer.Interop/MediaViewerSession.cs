@@ -52,6 +52,17 @@ public sealed class MediaViewerSession : IDisposable
     /// mismatched core DLL must fail loudly. The alternative is a struct layout
     /// change nobody notices until a field reads garbage.
     /// </remarks>
+    /// <summary>
+    /// Borrows a session the native host already owns. Retains so Dispose is a
+    /// matching release; the host keeps its own reference.
+    /// </summary>
+    public static MediaViewerSession Borrow(IntPtr native)
+    {
+        if (native == IntPtr.Zero) throw new ArgumentNullException(nameof(native));
+        ThrowIfFailed(NativeMethods.mv_session_retain(native));
+        return new MediaViewerSession(new MvSessionHandle(native));
+    }
+
     public static MediaViewerSession Create(uint workerCount = 0, bool enableEtw = true)
     {
         Version abi = AbiVersion;
@@ -104,6 +115,55 @@ public sealed class MediaViewerSession : IDisposable
         ThrowIfFailed(NativeMethods.mv_session_bump_generation(_handle, out _));
         ThrowIfFailed(NativeMethods.mv_image_open(_handle, utf8Path, out ulong jobId));
         return jobId;
+    }
+
+    public uint FolderCount
+    {
+        get
+        {
+            ThrowIfFailed(NativeMethods.mv_folder_count(_handle, out uint count));
+            return count;
+        }
+    }
+
+    public MvFolderItem FolderItemAt(uint index)
+    {
+        ThrowIfFailed(NativeMethods.mv_folder_item_at(_handle, index, out MvFolderItem item));
+        return item;
+    }
+
+    public string FolderItemName(uint index) => ReadFolderString(NativeMethods.mv_folder_item_name, index);
+    public string FolderItemPath(uint index) => ReadFolderString(NativeMethods.mv_folder_item_path, index);
+    public string FolderItemThumbPath(uint index) =>
+        ReadFolderString(NativeMethods.mv_folder_item_thumb_path, index);
+
+    public ulong FolderSelect(uint index)
+    {
+        ThrowIfFailed(NativeMethods.mv_folder_select(_handle, index, out ulong jobId));
+        return jobId;
+    }
+
+    public void FolderThumbsVisible(uint first, uint count) =>
+        ThrowIfFailed(NativeMethods.mv_folder_thumbs_visible(_handle, first, count));
+
+    private delegate MvStatus FolderStringFn(MvSessionHandle session, uint index, IntPtr utf8,
+                                             uint cap, out uint outBytes);
+
+    private string ReadFolderString(FolderStringFn fn, uint index)
+    {
+        uint need = 0;
+        fn(_handle, index, IntPtr.Zero, 0, out need);
+        if (need <= 1) return string.Empty;
+        IntPtr buf = Marshal.AllocHGlobal((int)need);
+        try
+        {
+            ThrowIfFailed(fn(_handle, index, buf, need, out _));
+            return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
     }
 
     public MvImageInfo ImageInfo
