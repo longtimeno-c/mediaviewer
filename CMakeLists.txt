@@ -255,6 +255,7 @@ add_library(mv_player STATIC
   src/player/audio_block.h
   src/player/av_clock.h
   src/player/presenter.h
+  src/player/transport.h
   src/player/video_internal.h
 )
 # SYSTEM, deliberately. FFmpeg's own public headers trip C4244 (libavutil's
@@ -418,6 +419,7 @@ if(MV_BUILD_TESTS)
     tests/test_video_colour.cpp
     tests/test_av_clock.cpp
     tests/test_audio_sink.cpp
+    tests/test_transport.cpp
     src/shell/chrome_host.cpp
     src/shell/settings.cpp
     src/shell/app.manifest
