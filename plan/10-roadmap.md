@@ -120,7 +120,7 @@ on the QPC frame clock, Recycle Bin delete with confirm, drag-and-drop in **and 
 handling.
 
 This is also the PR that makes the app **keyboard-complete for browse**. One key router, a
-default map, `?` overlay, `Ctrl+K` palette, marks, copy-to / move-to (`F7`/`F8`), status,
+default map, `?` overlay, marks, copy-to / move-to (`F7`/`F8`), status,
 typeahead, sticky zoom, companion hiding, loupe, hold-previous, display-referred clipping
 blinkies, pixel grid, canvas background/checkerboard, always-on-top, fullscreen chrome
 hide. Folder tree as a **third island, left, hidden by default** — slip to PR 8 if this

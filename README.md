@@ -16,8 +16,8 @@ FFmpeg demux and decode, D3D11VA on the lab's own device, NV12/P010 sampled and
 tone-mapped in one shader, a WASAPI audio master clock, and a transport (seek,
 frame step, speed, A-B loop, resume, media keys). Photos and clips are one
 folder and one present path. PR 6 makes browse keyboard-complete: one key
-router over a live command table, `?` shortcuts and a `Ctrl+K` palette built
-from that table, a Settings screen that remaps it, marks, copy/move-to, Recycle
+router over a live command table, `?` shortcuts built from that table, a
+Settings screen that remaps it, marks, copy/move-to, Recycle
 Bin delete, fullscreen, slideshow as a mode, fit/fill/100 %, gallery drag-and-drop,
 and animated GIF/APNG/WebP on the frame clock.
 
@@ -158,7 +158,6 @@ A one-pixel grid appears at 400 % and above.
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
 | `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
-| `Ctrl+K` | command palette: type to find any command, `Enter` runs it |
 | `Ctrl+G` | go to an item by its number in the folder |
 | `/` | find an item by name. With the filmstrip or gallery focused, just type |
 | `Ctrl+Shift+E` | folder tree — arrives in PR 8; for now it beeps |
@@ -375,7 +374,7 @@ PR 6's verify line is:
 What is demonstrated, on the same developer box:
 
 - Every verify binding is in the one command table, and the table the `?` sheet
-  and palette receive lists each of them (`test_key_router.cpp`); no command is
+  receives lists each of them (`test_key_router.cpp`); no command is
   left pending.
 - Copy/move never overwrite (`name (n).ext`), a cross-volume move is copy,
   verify, delete, and a drive with no Recycle Bin refuses rather than deleting
@@ -389,7 +388,7 @@ What is demonstrated, on the same developer box:
   with the chrome attached.
 - Display colour (review 43): an 8-bit LittleCMS LUT matches the previous float
   pipeline within one code per channel, sRGB-in-effect profiles copy through, and
-  a 2048² tagged frame converts in under 60 ms in Release (`test_gif_webp.cpp`).
+  a 2048² tagged frame converts in under 80 ms in Release (`test_gif_webp.cpp`).
 - The lab JSON report (schema 2) includes animation frames shown/made, late
   frames, mean delay and last make/ICC times (review 44), so an animation soak
   can fail on a stalled decode, not only on dropped presents.
@@ -491,7 +490,7 @@ src/shell       Win32 window, render thread, present lab, hostfxr island host,
                 key router and live command table, marks, slideshow, file jobs,
                 Settings persistence
 src.managed/    C# interop and WinUI chrome (hosted as an island, not the app):
-                command bar, filmstrip, gallery, `?` sheet, palette, Settings,
+                command bar, filmstrip, gallery, `?` sheet, Settings,
                 file drag/drop
 tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI, folder,
                 key router, file ops, slideshow, animation

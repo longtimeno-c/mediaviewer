@@ -125,7 +125,7 @@ struct app_state {
   WINDOWPLACEMENT windowed_placement{sizeof(WINDOWPLACEMENT)};
   LONG_PTR windowed_style = 0;
   bool topmost = false;  // Ctrl+Shift+A
-  bool popup_open = false;       // a `?` / palette / go-to / find flyout is up
+  bool popup_open = false;       // a `?` / go-to / find flyout is up
   bool settings_open = false;    // settings screen covering the canvas
   bool file_drag_armed = false;
   int file_drag_x = 0;
@@ -289,11 +289,15 @@ void open_file_dialog(app_state* app, HWND hwnd) {
   ofn.nFilterIndex = 1;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
   if (::GetOpenFileNameW(&ofn)) open_path(app, file);
+  focus_canvas(app);
 }
 
 void open_folder_dialog(app_state* app, HWND hwnd) {
   std::wstring folder;
-  if (!pick_folder(hwnd, folder)) return;
+  if (!pick_folder(hwnd, folder)) {
+    focus_canvas(app);
+    return;
+  }
   // Picking a folder is the same intent as one on the command line or dropped
   // on the window: "browse this folder". open_path sets the mode for those two
   // routes; this one has to set it as well. Leaving it at `none` is not a
@@ -303,6 +307,7 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   app->mode = open_mode::folder;
   app->gallery_visible = false;
   open_folder(app, folder, {});
+  focus_canvas(app);
 }
 
 // The folder item's full path, UTF-8, or empty. UI thread; a copy out of the
@@ -357,6 +362,9 @@ void reveal_current_in_explorer(app_state* app) noexcept {
   }
   (void)::SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
   ::ILFree(pidl);
+  // Explorer may have taken the foreground. If we still own it, put keys
+  // back on the canvas — otherwise A/D wait for deactivate/reactivate.
+  if (app->window && ::GetForegroundWindow() == app->window) focus_canvas(app);
 }
 
 // Shell IDataObject for the file, so Explorer / other apps receive a real
@@ -677,12 +685,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->popup_open = arg != 0.0f;
       // Fullscreen parks the bar again once nothing hangs off it. Do not
       // SetFocus here: Closed of a replaced flyout can arrive after the
-      // palette's filter already took keyboard focus.
+      // a replacement flyout's field already took keyboard focus.
       if (!app->popup_open && app->fullscreen) layout_chrome(app);
       return;
     default:
-      // A palette entry: any command id, through the same switch as its key
-      // (plan/16: "Running an entry is the same dispatch as a key").
+      // Island chrome can post a command id (help, open, …) through the same
+      // switch as its key.
       if (command > 0 && command < mv::shell::kCommandCount &&
           !mv::shell::is_reserved_notification(command)) {
         (void)run_command(app, static_cast<mv::shell::command_id>(command));
@@ -980,7 +988,7 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::popup:
       app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
-      // Closing `?` / the palette must not leave the island HWND focused, or
+      // Closing `?` / go-to / find must not leave the island HWND focused, or
       // the next letter waits for an Alt+Tab before it routes again.
       focus_canvas(app);
       return;
@@ -1444,11 +1452,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     }
 
-    // plan/16 `?` and Ctrl+K, plus Ctrl+G go-to and `/` find: XAML flyouts on
-    // the command bar, never composited on the swapchain. A palette entry
-    // comes back through chrome_on_command into this same switch.
+    // plan/16 `?`, Ctrl+G go-to and `/` find: XAML flyouts on the command bar.
     case help:
-    case palette:
     case go_to:
     case typeahead: {
       if (!app->chrome.attached()) return false;
@@ -1460,10 +1465,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         if (app->fullscreen) layout_chrome(app);
         return true;
       }
-      const mv::shell::chrome_popup kind = command == help      ? mv::shell::chrome_popup::help
-                                           : command == palette ? mv::shell::chrome_popup::palette
-                                           : command == go_to   ? mv::shell::chrome_popup::go_to
-                                                                : mv::shell::chrome_popup::find;
+      const mv::shell::chrome_popup kind = command == help  ? mv::shell::chrome_popup::help
+                                           : command == go_to ? mv::shell::chrome_popup::go_to
+                                                              : mv::shell::chrome_popup::find;
       // `?` lists the bindings of the mode underneath (as if the canvas had
       // focus), not of the island it was opened from.
       mv::shell::view_state underneath = view_state_of(app);

@@ -353,7 +353,7 @@ TEST_CASE("island focus keeps in-pane traversal and still takes global keys", "[
   REQUIRE(r.on_key(down(key::f3), s).command == command_id::overlay);
   // Review note 38: characters are the strip's typeahead, not commands (this
   // used to assert D → next and 0 → fit from the strip).
-  REQUIRE(r.on_key(down(char_key('K'), mod_ctrl), s).command == command_id::palette);
+  REQUIRE(r.on_key(down(char_key('O'), mod_ctrl), s).command == command_id::open);
 }
 
 TEST_CASE("typing in the strip or gallery reaches typeahead, not the router", "[shell][router]") {
@@ -366,7 +366,6 @@ TEST_CASE("typing in the strip or gallery reaches typeahead, not the router", "[
       REQUIRE_FALSE(r.on_key(down(char_key(c), mod_shift), s).handled);
     }
     REQUIRE(r.on_key(down(key::f3), s).command == command_id::overlay);
-    REQUIRE(r.on_key(down(char_key('K'), mod_ctrl), s).command == command_id::palette);
     REQUIRE(r.on_key(down(char_key('O'), mod_ctrl), s).command == command_id::open);
   }
   // On the canvas the same letters are still commands.
@@ -395,8 +394,8 @@ TEST_CASE("command bar and transport do not swallow A/D/Q/E", "[shell][router]")
   REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
 }
 
-TEST_CASE("the palette never offers a command that needs a key-up", "[shell][commands]") {
-  // Review note 39: a palette entry has no release, so a hold would stick.
+TEST_CASE("describe_commands marks hold commands as not runnable", "[shell][commands]") {
+  // The fifth column is 0 for a command that needs a key-up (hold Z, hold Q).
   for (const binding& b : default_bindings()) {
     if (b.policy == repeat_policy::momentary) {
       REQUIRE_FALSE(palette_runnable(b.command));
@@ -565,7 +564,7 @@ TEST_CASE("holding Z turns the arrows into loupe nudges", "[shell][router]") {
   REQUIRE_FALSE(r.on_key(down(key::left), s).handled);
 }
 
-TEST_CASE("key labels read the way the ? sheet and palette show them", "[shell][commands]") {
+TEST_CASE("key labels read the way the ? sheet shows them", "[shell][commands]") {
   REQUIRE(key_label(char_key('O'), mod_ctrl) == "Ctrl+O");
   REQUIRE(key_label(char_key('O'), mod_ctrl | mod_shift) == "Ctrl+Shift+O");
   REQUIRE(key_label(key::space, mod_shift) == "Shift+Space");
@@ -602,7 +601,6 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
   REQUIRE(has("Slideshow", "F5"));
   REQUIRE(has("Pause slideshow", "Space"));
   REQUIRE(has("Keyboard shortcuts", "?"));
-  REQUIRE(has("Command palette", "Ctrl+K"));
   REQUIRE(has("Settings", "Ctrl+,"));
   REQUIRE(has("Loupe", "hold Z"));
   REQUIRE(has("Skip forward 2 s", "E"));
@@ -635,7 +633,7 @@ TEST_CASE("Esc closes an open popup before anything else", "[shell][router]") {
   const auto esc = r.on_key(down(key::escape), s);
   REQUIRE(esc.handled);
   REQUIRE(esc.back == back_target::popup);
-  // A text box inside the popup (palette filter) blurs, which closes it too.
+  // A text field inside the popup (go-to / find) blurs, which closes it too.
   s.focus = focus_kind::text;
   REQUIRE(r.on_key(down(key::escape), s).back == back_target::blur_text);
 }

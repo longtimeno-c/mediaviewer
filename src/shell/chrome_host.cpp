@@ -371,7 +371,7 @@ expected chrome_host::attach_filmstrip(HWND parent, void* context, chrome_comman
     return err(status::internal);
   }
   filmstrip_attached_ = true;
-  filmstrip_visible_ = true;  // AttachFilmstrip builds it on screen
+  filmstrip_visible_ = false;  // parked, no content until the first show
   return {};
 }
 

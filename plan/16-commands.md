@@ -2,7 +2,7 @@
 
 v1 is **fully usable without a mouse.** That is a product requirement, not a settings page.
 Configurable keymaps landed in PR 6 (plan/12 2026-09-13) once the default map was in daily
-use. The Settings screen remaps the **same live table** the router, `?`, and the palette
+use. The Settings screen remaps the **same live table** the router and `?`
 read. Reset restores `default_bindings()`. Import/export JSON and named alternate layouts
 (FastStone / IrfanView / vim) stay v1.1.
 
@@ -20,7 +20,6 @@ per key-repeat is a bug, not a feature. The present-loop gate from PR 1 still ho
 | One complete default map covering browse, view, video, edit, metadata, trim. Settings remaps that table; `?` stays in sync | Import/export JSON, alternate layouts (FastStone / IrfanView / vim); colour scheme + user font ([10-roadmap.md](10-roadmap.md) v1.1) |
 | Every command has a key, including ones that currently look like buttons | Per-profile maps, user chords beyond a couple of prefixes |
 | `?` overlay listing the **current mode's** bindings | |
-| Command palette (`Ctrl+K`) so nothing has to be memorised | |
 | Focus model that crosses canvas + XAML islands | |
 
 The Mac host (Milestone F) writes chrome twice (**D9**). Bindings live in the host; the
@@ -32,13 +31,13 @@ in `image/`, `player/`, `edit/`, or `meta/`.
 Islands each registering `KeyboardAccelerator`s is how you get two handlers and a swallowed
 arrow key. **One router, on the UI thread, in the native window procedure.**
 
-1. If a XAML text control has focus (rename, search, user comment, palette filter), keys go
+1. If a XAML text control has focus (rename, search, user comment, go-to / find), keys go
    to the island. `Esc` blurs back to the canvas.
 2. Else map `(key, mods, mode)` → `command_id` through the default table and dispatch.
 3. Mouse-move, wheel, and pan/zoom springs stay native on the canvas HWND — no marshalling
    hop per mouse-move ([02-architecture.md](02-architecture.md)).
 
-Dispatch is an array index, not a string lookup. The palette filters the same static table
+Dispatch is an array index, not a string lookup. `?` lists the same static table
 in memory. No I/O on keydown.
 
 Symbol keys bind to the **character** the active layout produces (`?`, `+`, `\`), not to a US
@@ -218,15 +217,17 @@ default 4 s. Shuffle visits every item once per round, starting from the current
 `.` blacks the canvas out and the canvas idles. The advance tick is a UI-thread timer: between
 advances a still is zero presents.
 
-### Command palette and `?`
+### `?`
 
-- `Ctrl+K` (also `Ctrl+Shift+P`) opens a searchable list of every registered command with
-  the current binding shown. Running an entry is the same dispatch as a key.
-- `?` toggles a mode-sensitive cheat sheet over the canvas. Chrome, not a settings page.
-  People learn FastStone this way.
+`?` toggles a mode-sensitive cheat sheet over the canvas. Chrome, not a settings page.
+People learn FastStone this way. It is a XAML flyout with
+`ShouldConstrainToRootBounds = false` so it is not clipped by a strip (PR 3). It
+does not composite onto the swapchain.
 
-Both are XAML flyouts with `ShouldConstrainToRootBounds = false` so they are not clipped
-by a strip (PR 3). They do not composite onto the swapchain.
+A searchable command palette (`Ctrl+K`) was in this slice and was dropped: a
+text field in the island flyout fail-fasts, and keys that are already bindings
+never reach the filter. Settings search and `?` cover find-a-command. See
+[12-decision-log.md](12-decision-log.md).
 
 ## Folder tree
 
@@ -358,7 +359,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 |---|---|
 | 4 | Arrow next/prev, sort (name/mtime/size/type), five-slot LRU that hold-previous will use. No command table yet |
 | 5c | Transport commands, SMTC, `,` `.`, media keys, `Q` `E` tap-speed / hold-skim, speed dropdown at the bar's right, bottom-centre transport strip |
-| **6** | Router, default browse/view/slideshow map, `?`, palette, Space semantics, marks, F7/F8, status, typeahead, sticky zoom, companions-as-hidden, loupe, hold-previous, blinkies (display-referred), pixel grid, background, folder tree island (or slip), always-on-top, fullscreen chrome hide, animation play/pause |
+| **6** | Router, default browse/view/slideshow map, `?`, Space semantics, marks, F7/F8, status, typeahead, sticky zoom, companions-as-hidden, loupe, hold-previous, blinkies (display-referred), pixel grid, background, folder tree island (or slip), always-on-top, fullscreen chrome hide, animation play/pause |
 | 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop |
 | 8 | `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
 | 9 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops) |
@@ -381,5 +382,5 @@ No new hot-path ABI. Commands invoke existing session calls (`mv_folder_select`,
 the public header as integers so C# and C++ agree on canvas-owned effects; bindings never
 cross the line.
 
-Pixels still do not cross ([14-abi.md](14-abi.md)). The palette and `?` are chrome.
+Pixels still do not cross ([14-abi.md](14-abi.md)). `?` is chrome.
 )

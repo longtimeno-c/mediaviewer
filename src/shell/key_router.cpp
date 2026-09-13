@@ -31,10 +31,10 @@ mode resolve_mode(const view_state& s) noexcept {
 
 back_target resolve_back(const view_state& s) noexcept {
   if (s.focus == focus_kind::text) return back_target::blur_text;
-  // A `?` / palette / go-to / find flyout closes before anything under it.
+  // A `?` / go-to / find flyout closes before anything under it.
   if (s.popup_open) return back_target::popup;
   if (s.settings_open) return back_target::settings;
-  // 6f: an open `?` / palette flyout must close before anything below. It
+  // 6f: an open `?` / go-to / find flyout must close before anything below. It
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.
   if (s.crop) return back_target::crop;
@@ -167,7 +167,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   // Review note 38 / plan/12 2026-09-13: with the strip or the gallery focused,
   // a character typed without Ctrl or Alt is typeahead, not a command — so
   // letter bindings added later cannot eat it either. Named keys (F3, arrows)
-  // and chords (Ctrl+K) still route. Command-bar and transport focus is not
+  // and chords (Ctrl+O) still route. Command-bar and transport focus is not
   // this case; those keys belong to the mode underneath.
   if (const auto raw = static_cast<std::uint16_t>(e.k);
       m == mode::island && (e.mods & (mod_ctrl | mod_alt)) == 0 && raw >= 0x21 && raw <= 0x7E) {

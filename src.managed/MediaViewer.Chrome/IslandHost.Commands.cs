@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 using System.Runtime.InteropServices;
+using Microsoft.UI;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// plan/16 "Command palette and `?`": XAML flyouts on the command bar, built
-/// from the same static table the native router dispatches from (native pushes
-/// it once, via SetCommandTable). Running a palette entry sends its command id
-/// back; native runs it through the same switch as the key. Nothing here
-/// composites onto the swapchain.
+/// plan/16 `?`, go-to and find: XAML flyouts on the command bar, built from
+/// the same static table the native router dispatches from (native pushes it
+/// once, via SetCommandTable). Nothing here composites onto the swapchain.
 /// </summary>
 public static partial class IslandHost
 {
@@ -50,6 +52,9 @@ public static partial class IslandHost
 
     private static readonly List<CommandRow> CommandRows = new();
     private static Flyout? _popup;
+    // Go-to / find type onto a label. Report text focus so the router yields
+    // keys (plan/16) without putting a TextBox in the Flyout.
+    private static bool _popupTakesText;
 
     // Explorer-style typeahead in the strip and the gallery (plan/16,
     // plan/12 2026-09-13): what was typed within 300 ms of the last key.
@@ -113,11 +118,10 @@ public static partial class IslandHost
                 return 1;
             }
 
-            Control? focusTarget = null;
+            UIElement? focusTarget = null;
             UIElement? content = args.Kind switch
             {
                 PopupKind.Help => BuildHelp(args.ModeMask),
-                PopupKind.Palette => BuildPalette(out focusTarget),
                 PopupKind.GoTo => BuildGoTo(out focusTarget),
                 PopupKind.Find => BuildFind(out focusTarget),
                 _ => null,
@@ -128,6 +132,7 @@ public static partial class IslandHost
                 return 1;
             }
 
+            _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find;
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
@@ -138,16 +143,18 @@ public static partial class IslandHost
             flyout.Opened += (_, _) =>
             {
                 Send(Command.Popup, 1);
+                if (_popupTakesText) Send(Command.FocusChanged, FocusKind.Text);
                 focusTarget?.Focus(FocusState.Keyboard);
             };
             flyout.Closed += (_, _) =>
             {
                 // Only the flyout that is still current reports closing; a flyout
                 // replaced by the next one must not clear its state or steal
-                // the replacement's text focus (palette filter, go-to, find).
+                // the replacement's text focus (go-to, find).
                 if (_popup is null || ReferenceEquals(_popup, flyout))
                 {
                     _popup = null;
+                    _popupTakesText = false;
                     Send(Command.Popup, 0);
                     RestoreCanvasFocus();
                 }
@@ -172,15 +179,13 @@ public static partial class IslandHost
     }
 
     // Bindings grouped by command, in table order; `modeMask` 0 means all modes.
-    // The palette asks for runnable ones only (review note 39).
-    private static List<CommandEntry> Entries(int modeMask, bool runnableOnly = false)
+    private static List<CommandEntry> Entries(int modeMask)
     {
         var entries = new List<CommandEntry>();
         var byId = new Dictionary<int, CommandEntry>();
         foreach (CommandRow row in CommandRows)
         {
             if (modeMask != 0 && (row.Modes & modeMask) == 0) continue;
-            if (runnableOnly && !row.Runnable) continue;
             if (!byId.TryGetValue(row.Id, out CommandEntry? entry))
             {
                 entry = new CommandEntry { Id = row.Id, Name = row.Name, Keys = row.Keys };
@@ -205,24 +210,14 @@ public static partial class IslandHost
     };
 
     // `?`: a mode-sensitive cheat sheet, generated from the table so it cannot
-    // drift from what the keys do.
+    // drift from what the keys do. No TextBox: a text control in a Flyout
+    // hanging off a DesktopWindowXamlSource is a Microsoft.UI.Xaml fail-fast
+    // (0xC000027B).
     private static UIElement BuildHelp(int modeMask)
     {
         var list = new StackPanel { Spacing = 2, Margin = new Thickness(12, 8, 12, 10) };
         list.Children.Add(Label("Keyboard shortcuts", UiFontSize + 2));
-        list.Children.Add(Label("Esc closes. Type to filter, or Ctrl+K for the palette.", UiFontSize, mute: true));
-        var search = new TextBox
-        {
-            PlaceholderText = "Search commands or keys",
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
-            Margin = new Thickness(0, 6, 0, 8),
-        };
-        list.Children.Add(search);
-        var rows = new StackPanel { Spacing = 2 };
-        var empty = Label("No matching shortcuts", UiFontSize, mute: true);
-        empty.Visibility = Visibility.Collapsed;
+        list.Children.Add(Label("Esc closes.", UiFontSize, mute: true));
         foreach (CommandEntry entry in Entries(modeMask))
         {
             var row = new Grid { ColumnSpacing = 16 };
@@ -234,31 +229,8 @@ public static partial class IslandHost
             Grid.SetColumn(name, 1);
             row.Children.Add(keys);
             row.Children.Add(name);
-            row.Tag = entry.Keys + " " + entry.Name;
-            rows.Children.Add(row);
+            list.Children.Add(row);
         }
-        list.Children.Add(rows);
-        list.Children.Add(empty);
-        search.KeyDown += (_, e) =>
-        {
-            if (e.Key != Windows.System.VirtualKey.Escape || string.IsNullOrEmpty(search.Text)) return;
-            search.Text = "";
-            e.Handled = true;
-        };
-        search.TextChanged += (_, _) =>
-        {
-            string q = search.Text.Trim();
-            int shown = 0;
-            foreach (UIElement child in rows.Children)
-            {
-                if (child is not Grid row) continue;
-                string hay = row.Tag as string ?? "";
-                bool match = q.Length == 0 || hay.Contains(q, StringComparison.OrdinalIgnoreCase);
-                row.Visibility = match ? Visibility.Visible : Visibility.Collapsed;
-                if (match) shown++;
-            }
-            empty.Visibility = shown == 0 ? Visibility.Visible : Visibility.Collapsed;
-        };
         return new ScrollViewer
         {
             Content = list,
@@ -268,127 +240,311 @@ public static partial class IslandHost
         };
     }
 
-    private static TextBox Input(string placeholder, double width) => new()
+    // Type-in field with no WinUI TextBox: that control in a Flyout or this
+    // island is a Microsoft.UI.Xaml fail-fast (0xC000027B). Settings filter
+    // uses the same stand-in.
+    private sealed class FakeInput : ContentControl
     {
-        PlaceholderText = placeholder,
-        FontFamily = UiFont,
-        FontSize = UiFontSize,
-        Width = width,
-    };
+        private readonly TextBlock _label;
+        private readonly Rectangle _caret;
+        private readonly Border _inner;
+        private readonly string _placeholder;
+        private Microsoft.UI.Dispatching.DispatcherQueueTimer? _blink;
+        private bool _selectAll;
+        private bool _tookChar;
 
-    // Ctrl+K: every command, filtered as you type; Enter runs the top one (or
-    // the one chosen with the arrows). Same dispatch as the key.
-    private static UIElement BuildPalette(out Control focusTarget)
-    {
-        List<CommandEntry> all = Entries(0, runnableOnly: true);
-        TextBox filter = Input("Type a command", 420);
-        var list = new ListView
-        {
-            MaxHeight = 420,
-            Width = 420,
-            SelectionMode = ListViewSelectionMode.Single,
-            IsItemClickEnabled = true,
-            ItemsSource = all,
-        };
+        public string Text { get; private set; } = "";
+        public event Action? Changed;
+        public event Action? Submitted;
+        public event Action? MoveDown;
 
-        void Run(CommandEntry? entry)
+        public FakeInput(string placeholder, double width = 0)
         {
-            if (entry is null) return;
-            ClosePopup();
-            Send(entry.Id);
+            _placeholder = placeholder;
+            ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
+            if (width > 0) Width = width;
+            else HorizontalAlignment = HorizontalAlignment.Stretch;
+            IsTabStop = true;
+            AllowFocusOnInteraction = true;
+            UseSystemFocusVisuals = true;
+            _label = new TextBlock
+            {
+                FontFamily = UiFont,
+                FontSize = UiFontSize,
+                Foreground = Brush(Body),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false,
+            };
+            _caret = new Rectangle
+            {
+                Width = 1,
+                Height = UiFontSize + 4,
+                Fill = Brush(Title),
+                Margin = new Thickness(1, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+                IsHitTestVisible = false,
+            };
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            row.Children.Add(_label);
+            row.Children.Add(_caret);
+            _inner = new Border
+            {
+                Child = row,
+                Background = Brush(Canvas),
+                BorderBrush = Brush(Hairline),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(10, 6, 10, 6),
+                MinHeight = 32,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+            };
+            Content = _inner;
+            HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            Paint();
+            GotFocus += (_, _) => { StartCaret(); Paint(); };
+            LostFocus += (_, _) =>
+            {
+                StopCaret();
+                _selectAll = false;
+                Paint();
+            };
+            PointerPressed += (_, e) =>
+            {
+                Focus(FocusState.Pointer);
+                _selectAll = Text.Length > 0;
+                Paint();
+                e.Handled = true;
+            };
+            CharacterReceived += (_, e) =>
+            {
+                char c = e.Character;
+                if (char.IsControl(c)) return;
+                _tookChar = true;
+                Append(c);
+                e.Handled = true;
+            };
+            KeyDown += (_, e) =>
+            {
+                _tookChar = false;
+                if (e.Key == Windows.System.VirtualKey.Enter)
+                {
+                    Submitted?.Invoke();
+                    e.Handled = true;
+                }
+                else if (e.Key == Windows.System.VirtualKey.Down)
+                {
+                    MoveDown?.Invoke();
+                    e.Handled = true;
+                }
+                else if (e.Key == Windows.System.VirtualKey.Back && Text.Length > 0)
+                {
+                    Text = _selectAll ? "" : Text[..^1];
+                    _selectAll = false;
+                    Changed?.Invoke();
+                    Paint();
+                    e.Handled = true;
+                }
+                else if (e.Key == Windows.System.VirtualKey.A && Down(Windows.System.VirtualKey.Control)
+                         && Text.Length > 0)
+                {
+                    _selectAll = true;
+                    Paint();
+                    e.Handled = true;
+                }
+            };
+            KeyUp += (_, e) =>
+            {
+                // This island sometimes never raises CharacterReceived on a
+                // ContentControl; letters still have to reach the filter.
+                if (_tookChar) return;
+                if (!TryCharFromKey(e, out char c)) return;
+                Append(c);
+                e.Handled = true;
+            };
         }
 
-        filter.TextChanged += (_, _) =>
+        private void Append(char c)
         {
-            string q = filter.Text.Trim();
-            var shown = new List<CommandEntry>();
-            foreach (CommandEntry e in all)
-            {
-                if (q.Length == 0 ||
-                    e.Name.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                    e.Keys.Contains(q, StringComparison.OrdinalIgnoreCase))
-                {
-                    shown.Add(e);
-                }
-            }
-            list.ItemsSource = shown;
-            if (shown.Count > 0) list.SelectedIndex = 0;
-        };
-        filter.KeyDown += (_, e) =>
+            Text = _selectAll ? c.ToString() : Text + c;
+            _selectAll = false;
+            Changed?.Invoke();
+            Paint();
+        }
+
+        private static bool TryCharFromKey(KeyRoutedEventArgs e, out char c)
         {
-            if (e.Key == Windows.System.VirtualKey.Enter)
+            c = '\0';
+            if (Down(Windows.System.VirtualKey.Control) || Down(Windows.System.VirtualKey.Menu))
+                return false;
+            int v = (int)e.OriginalKey;
+            if (v >= (int)Windows.System.VirtualKey.A && v <= (int)Windows.System.VirtualKey.Z)
             {
-                Run(list.SelectedItem as CommandEntry ??
-                    (list.ItemsSource is List<CommandEntry> l && l.Count > 0 ? l[0] : null));
-                e.Handled = true;
+                c = (char)v;
+                if (!Down(Windows.System.VirtualKey.Shift)) c = char.ToLowerInvariant(c);
+                return true;
             }
-            else if (e.Key == Windows.System.VirtualKey.Down && list.Items.Count > 0)
+            if (v >= (int)Windows.System.VirtualKey.Number0 &&
+                v <= (int)Windows.System.VirtualKey.Number9)
             {
-                if (list.SelectedIndex < 0) list.SelectedIndex = 0;
-                list.Focus(FocusState.Keyboard);
-                e.Handled = true;
+                c = (char)v;
+                return true;
             }
-        };
-        list.ItemClick += (_, e) => Run(e.ClickedItem as CommandEntry);
-        list.KeyDown += (_, e) =>
+            return false;
+        }
+
+        public void SetText(string value)
         {
-            if (e.Key == Windows.System.VirtualKey.Enter)
-            {
-                Run(list.SelectedItem as CommandEntry);
-                e.Handled = true;
-            }
-        };
-        focusTarget = filter;
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10) };
-        panel.Children.Add(filter);
-        panel.Children.Add(list);
-        return panel;
+            string next = value ?? "";
+            if (next == Text) return;
+            Text = next;
+            _selectAll = false;
+            Paint();
+        }
+
+        private void Paint()
+        {
+            bool empty = Text.Length == 0;
+            _label.Text = empty ? (FocusState != FocusState.Unfocused ? "" : _placeholder) : Text;
+            _label.Foreground = Brush(empty ? Body : Title);
+            _caret.Visibility = FocusState == FocusState.Unfocused
+                ? Visibility.Collapsed : Visibility.Visible;
+            _caret.Opacity = 1;
+            _inner.BorderBrush = Brush(FocusState == FocusState.Unfocused ? Hairline : Title);
+            _inner.BorderThickness = new Thickness(FocusState == FocusState.Unfocused ? 1 : 2);
+        }
+
+        private void StartCaret()
+        {
+            if (_dispatcher is null) return;
+            _blink ??= _dispatcher.DispatcherQueue.CreateTimer();
+            _blink.Interval = TimeSpan.FromMilliseconds(530);
+            _blink.IsRepeating = true;
+            _blink.Tick -= OnBlink;
+            _blink.Tick += OnBlink;
+            _caret.Visibility = Visibility.Visible;
+            _caret.Opacity = 1;
+            _blink.Start();
+        }
+
+        private void StopCaret()
+        {
+            _blink?.Stop();
+            _caret.Opacity = 1;
+        }
+
+        private void OnBlink(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+        {
+            if (FocusState == FocusState.Unfocused) return;
+            _caret.Opacity = _caret.Opacity > 0.5 ? 0 : 1;
+        }
     }
 
-    // Ctrl+G: go to an item by its position in the folder.
-    private static UIElement BuildGoTo(out Control focusTarget)
+    private static TextBlock QueryLabel(string prompt) => new()
     {
-        TextBox box = Input(Items.Count > 0 ? $"Go to 1 – {Items.Count}" : "Nothing open", 220);
-        box.KeyDown += (_, e) =>
+        Text = prompt,
+        FontFamily = UiFont,
+        FontSize = UiFontSize,
+        Foreground = Brush(Body),
+        TextWrapping = TextWrapping.NoWrap,
+    };
+
+    private static void SetQuery(TextBlock label, string prompt, string text)
+    {
+        bool empty = text.Length == 0;
+        label.Text = empty ? prompt : text;
+        label.Foreground = Brush(empty ? Body : Title);
+    }
+
+    // Ctrl+G: go to an item by its position in the folder. No TextBox: same
+    // fail-fast as Settings (0xC000027B). Type onto this label; Enter jumps.
+    private static UIElement BuildGoTo(out UIElement focusTarget)
+    {
+        string query = "";
+        string prompt = Items.Count > 0 ? $"Go to 1 – {Items.Count}" : "Nothing open";
+        TextBlock label = QueryLabel(prompt);
+        var panel = new StackPanel { Spacing = 4, Margin = new Thickness(10), IsTabStop = true };
+        panel.Children.Add(label);
+        panel.CharacterReceived += (_, e) =>
         {
-            if (e.Key != Windows.System.VirtualKey.Enter) return;
+            char c = e.Character;
+            if (char.IsControl(c)) return;
+            query += c;
+            SetQuery(label, prompt, query);
             e.Handled = true;
-            if (int.TryParse(box.Text.Trim(), out int n) && n >= 1 && n <= Items.Count)
+        };
+        panel.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
             {
-                ClosePopup();
-                Send(Command.SelectItem, n - 1);
+                if (int.TryParse(query.Trim(), out int n) && n >= 1 && n <= Items.Count)
+                {
+                    ClosePopup();
+                    Send(Command.SelectItem, n - 1);
+                }
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Back && query.Length > 0)
+            {
+                query = query[..^1];
+                SetQuery(label, prompt, query);
+                e.Handled = true;
             }
         };
-        focusTarget = box;
-        var panel = new StackPanel { Spacing = 4, Margin = new Thickness(10) };
-        panel.Children.Add(box);
+        focusTarget = panel;
         return panel;
     }
 
     // `/` from the canvas: find by name in the already-loaded listing.
-    private static UIElement BuildFind(out Control focusTarget)
+    private static UIElement BuildFind(out UIElement focusTarget)
     {
-        TextBox box = Input("Find by name", 320);
+        string query = "";
+        const string prompt = "Find by name";
+        TextBlock label = QueryLabel(prompt);
         TextBlock match = Label("", UiFontSize, mute: true);
         int found = -1;
-        box.TextChanged += (_, _) =>
+
+        void Apply()
         {
-            found = FindByName(box.Text.Trim(), prefixOnly: false);
+            SetQuery(label, prompt, query);
+            found = FindByName(query.Trim(), prefixOnly: false);
             match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})"
-                       : box.Text.Length > 0 ? "No match" : "";
-        };
-        box.KeyDown += (_, e) =>
-        {
-            if (e.Key != Windows.System.VirtualKey.Enter) return;
-            e.Handled = true;
-            if (found < 0) return;
-            ClosePopup();
-            Send(Command.SelectItem, found);
-        };
-        focusTarget = box;
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10) };
-        panel.Children.Add(box);
+                       : query.Length > 0 ? "No match" : "";
+        }
+
+        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10), IsTabStop = true };
+        panel.Children.Add(label);
         panel.Children.Add(match);
+        panel.CharacterReceived += (_, e) =>
+        {
+            char c = e.Character;
+            if (char.IsControl(c)) return;
+            query += c;
+            Apply();
+            e.Handled = true;
+        };
+        panel.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
+            {
+                if (found >= 0)
+                {
+                    ClosePopup();
+                    Send(Command.SelectItem, found);
+                }
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Back && query.Length > 0)
+            {
+                query = query[..^1];
+                Apply();
+                e.Handled = true;
+            }
+        };
+        focusTarget = panel;
         return panel;
     }
 
