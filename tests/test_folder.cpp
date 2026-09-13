@@ -42,16 +42,21 @@ std::wstring temp_dir() {
   wchar_t root[MAX_PATH]{};
   REQUIRE(::GetTempPathW(MAX_PATH, root) > 0);
   static std::atomic<unsigned> counter{0};
-  for (unsigned attempt = 0; attempt < 512; ++attempt) {
+  // No statement after a FAIL: Debug /W4 /WX reports it unreachable (C4702).
+  std::wstring made;
+  for (unsigned attempt = 0; made.empty() && attempt < 512; ++attempt) {
     wchar_t path[MAX_PATH]{};
     std::swprintf(path, MAX_PATH, L"%smvf%lu_%u", root,
                   static_cast<unsigned long>(::GetCurrentProcessId()),
                   counter.fetch_add(1, std::memory_order_relaxed));
-    if (::CreateDirectoryW(path, nullptr)) return path;
-    REQUIRE(::GetLastError() == ERROR_ALREADY_EXISTS);
+    if (::CreateDirectoryW(path, nullptr)) {
+      made = path;
+    } else {
+      REQUIRE(::GetLastError() == ERROR_ALREADY_EXISTS);
+    }
   }
-  FAIL("could not create a unique temp directory");
-  return {};
+  REQUIRE_FALSE(made.empty());  // could not create a unique temp directory
+  return made;
 }
 
 std::string utf8(const std::wstring& w) {

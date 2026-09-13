@@ -27,6 +27,7 @@ public static partial class IslandHost
         public const int Palette = 2;
         public const int GoTo = 3;
         public const int Find = 4;
+        public const int Settings = 5;
     }
 
     private sealed class CommandRow
@@ -36,6 +37,7 @@ public static partial class IslandHost
         public string Name = "";
         public string Keys = "";
         public bool Runnable;  // false: needs a key-up (hold Z, hold Q), so `?` only
+        public int Row = -1;   // live-table index; Settings remaps this row
     }
 
     private sealed class CommandEntry
@@ -67,13 +69,17 @@ public static partial class IslandHost
             foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
                 string[] f = line.Split('\t');
-                if (f.Length != 5) continue;
+                if (f.Length < 5) continue;
                 if (!int.TryParse(f[0], out int id) || !int.TryParse(f[1], out int modes)) continue;
+                int row = -1;
+                if (f.Length >= 6) int.TryParse(f[5], out row);
                 CommandRows.Add(new CommandRow
                 {
                     Id = id, Modes = modes, Name = f[2], Keys = f[3], Runnable = f[4] == "1",
+                    Row = row,
                 });
             }
+            RefreshSettingsKeys();
             return 0;
         }
         catch (Exception ex)
@@ -90,7 +96,16 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < PopupArgsSize) return unchecked((int)0x80070057);
             ChromePopupArgs args = Marshal.PtrToStructure<ChromePopupArgs>(arg);
             ClosePopup();
-            if (args.Kind == PopupKind.Close) return 0;
+            if (args.Kind == PopupKind.Close)
+            {
+                HideSettingsScreen();
+                return 0;
+            }
+            if (args.Kind == PopupKind.Settings)
+            {
+                ShowSettingsScreen();
+                return 0;
+            }
 
             if (_source?.Content is not FrameworkElement anchor)
             {
@@ -128,11 +143,13 @@ public static partial class IslandHost
             flyout.Closed += (_, _) =>
             {
                 // Only the flyout that is still current reports closing; a flyout
-                // replaced by the next one must not clear its state.
+                // replaced by the next one must not clear its state or steal
+                // the replacement's text focus (palette filter, go-to, find).
                 if (_popup is null || ReferenceEquals(_popup, flyout))
                 {
                     _popup = null;
                     Send(Command.Popup, 0);
+                    RestoreCanvasFocus();
                 }
             };
             _popup = flyout;
@@ -212,7 +229,7 @@ public static partial class IslandHost
             Content = list,
             MaxHeight = 560,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            IsTabStop = true,  // keyboard focus lands here, so Esc reaches the router
+            IsTabStop = true,  // so the flyout holds focus and does not light-dismiss
         };
     }
 

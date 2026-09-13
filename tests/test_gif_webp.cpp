@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "codec/decode.h"
+#include "fixtures.h"
 #include "image/colour.h"
 
 using namespace mv::codec;
@@ -319,7 +320,173 @@ std::vector<std::uint8_t> srgb_icc() {
   return bytes;
 }
 
+std::vector<std::uint8_t> save_profile(cmsHPROFILE profile) {
+  REQUIRE(profile != nullptr);
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile, nullptr, &size));
+  std::vector<std::uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile, bytes.data(), &size));
+  cmsCloseProfile(profile);
+  return bytes;
+}
+
+// Display P3: P3 primaries, D65, the sRGB curve.
+std::vector<std::uint8_t> display_p3_icc() {
+  cmsCIExyY d65 = {0.3127, 0.3290, 1.0};
+  cmsCIExyYTRIPLE p3 = {{0.680, 0.320, 1.0}, {0.265, 0.690, 1.0}, {0.150, 0.060, 1.0}};
+  const double params[5] = {2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045};
+  cmsToneCurve* curve = cmsBuildParametricToneCurve(nullptr, 4, params);
+  REQUIRE(curve != nullptr);
+  cmsToneCurve* curves[3] = {curve, curve, curve};
+  cmsHPROFILE profile = cmsCreateRGBProfile(&d65, &p3, curves);
+  cmsFreeToneCurve(curve);
+  return save_profile(profile);
+}
+
+// An RGB profile with Rec.709 primaries and a plain gamma 2.2: close to sRGB,
+// but not sRGB, so it must not take the copy-through.
+std::vector<std::uint8_t> gamma22_icc() {
+  cmsCIExyY d65 = {0.3127, 0.3290, 1.0};
+  cmsCIExyYTRIPLE rec709 = {{0.640, 0.330, 1.0}, {0.300, 0.600, 1.0}, {0.150, 0.060, 1.0}};
+  cmsToneCurve* curve = cmsBuildGamma(nullptr, 2.2);
+  REQUIRE(curve != nullptr);
+  cmsToneCurve* curves[3] = {curve, curve, curve};
+  cmsHPROFILE profile = cmsCreateRGBProfile(&d65, &rec709, curves);
+  cmsFreeToneCurve(curve);
+  return save_profile(profile);
+}
+
+// The pre-note-43 conversion, kept here as the reference: LCMS float pipeline
+// to linear Rec.709 with no optimisation, then a per-channel sRGB encode.
+std::vector<std::uint8_t> slow_reference(const std::vector<std::uint8_t>& icc,
+                                         const std::vector<std::uint8_t>& rgba) {
+  cmsHPROFILE in = cmsOpenProfileFromMem(icc.data(), static_cast<cmsUInt32Number>(icc.size()));
+  REQUIRE(in != nullptr);
+  cmsCIExyY d65 = {0.3127, 0.3290, 1.0};
+  cmsCIExyYTRIPLE rec709 = {{0.640, 0.330, 1.0}, {0.300, 0.600, 1.0}, {0.150, 0.060, 1.0}};
+  cmsToneCurve* linear = cmsBuildGamma(nullptr, 1.0);
+  cmsToneCurve* curves[3] = {linear, linear, linear};
+  cmsHPROFILE out = cmsCreateRGBProfile(&d65, &rec709, curves);
+  cmsFreeToneCurve(linear);
+  cmsHTRANSFORM xform = cmsCreateTransform(in, TYPE_RGB_8, out, TYPE_RGB_FLT,
+                                           INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE);
+  cmsCloseProfile(in);
+  cmsCloseProfile(out);
+  REQUIRE(xform != nullptr);
+  const std::size_t pixels = rgba.size() / 4;
+  std::vector<std::uint8_t> rgb(pixels * 3);
+  for (std::size_t p = 0; p < pixels; ++p) std::memcpy(&rgb[p * 3], &rgba[p * 4], 3);
+  std::vector<float> lin(pixels * 3);
+  cmsDoTransform(xform, rgb.data(), lin.data(), static_cast<cmsUInt32Number>(pixels));
+  cmsDeleteTransform(xform);
+  std::vector<std::uint8_t> result = rgba;
+  for (std::size_t i = 0; i < pixels * 3; ++i) {
+    const float l = std::clamp(lin[i], 0.0f, 1.0f);
+    const float s = l <= 0.0031308f ? 12.92f * l : 1.055f * std::pow(l, 1.0f / 2.4f) - 0.055f;
+    result[i / 3 * 4 + i % 3] =
+        static_cast<std::uint8_t>(std::lround(std::clamp(s, 0.0f, 1.0f) * 255.0f));
+  }
+  return result;
+}
+
+// Every 17th code on each channel (16³ colours, edges included), alpha varied.
+mv::codec::raster colour_grid(const std::vector<std::uint8_t>& icc) {
+  mv::codec::raster raster;
+  raster.width = 64;
+  raster.height = 64;
+  raster.format = format_family::webp;
+  raster.icc = icc;
+  raster.rgba.resize(64 * 64 * 4);
+  std::size_t p = 0;
+  for (int r = 0; r < 16; ++r) {
+    for (int g = 0; g < 16; ++g) {
+      for (int b = 0; b < 16; ++b, ++p) {
+        raster.rgba[p * 4 + 0] = static_cast<std::uint8_t>(r * 17);
+        raster.rgba[p * 4 + 1] = static_cast<std::uint8_t>(g * 17);
+        raster.rgba[p * 4 + 2] = static_cast<std::uint8_t>(b * 17);
+        raster.rgba[p * 4 + 3] = static_cast<std::uint8_t>((p * 7) & 0xFF);
+      }
+    }
+  }
+  return raster;
+}
+
 }  // namespace
+
+TEST_CASE("sRGB-in-effect profiles are recognised; wide-gamut ones are not", "[image][colour]") {
+  REQUIRE(mv::image::is_srgb_icc(srgb_icc()));
+  REQUIRE_FALSE(mv::image::is_srgb_icc(display_p3_icc()));
+  REQUIRE_FALSE(mv::image::is_srgb_icc(fixtures::adobe_rgb_icc()));
+  REQUIRE_FALSE(mv::image::is_srgb_icc(gamma22_icc()));
+  REQUIRE_FALSE(mv::image::is_srgb_icc(std::vector<std::uint8_t>{1, 2, 3, 4}));
+  REQUIRE_FALSE(mv::image::is_srgb_icc({}));
+}
+
+TEST_CASE("the 8-bit display transform matches the float reference within one code",
+          "[image][colour][d6]") {
+  // Review note 43: the fast LUT path must be the same colour as the float
+  // pipeline it replaced. sRGB is a copy-through, so it is held to the same bar.
+  const std::pair<const char*, std::vector<std::uint8_t>> profiles[] = {
+      {"sRGB", srgb_icc()},
+      {"Display P3", display_p3_icc()},
+      {"AdobeRGB", fixtures::adobe_rgb_icc()},
+      {"Rec.709 gamma 2.2", gamma22_icc()},
+  };
+  for (const auto& [name, icc] : profiles) {
+    CAPTURE(name);
+    const auto grid = colour_grid(icc);
+    const auto expected = slow_reference(icc, grid.rgba);
+    auto got = mv::image::to_display(mv::codec::raster(grid));
+    REQUIRE(got);
+    REQUIRE(got->icc_tagged);
+    int max_error = 0;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      const int e = std::abs(static_cast<int>(got->rgba[i]) - static_cast<int>(expected[i]));
+      max_error = std::max(max_error, e);
+    }
+    REQUIRE(max_error <= 1);
+    for (std::size_t p = 0; p < grid.rgba.size(); p += 4) {
+      REQUIRE(got->rgba[p + 3] == grid.rgba[p + 3]);  // alpha is untouched
+    }
+  }
+  // A grey profile on RGB pixels still fails rather than displaying as sRGB.
+  auto grey_icc = save_profile(cmsCreateGrayProfile(cmsD50_xyY(), [] {
+    static cmsToneCurve* g = cmsBuildGamma(nullptr, 2.2);
+    return g;
+  }()));
+  REQUIRE_FALSE(mv::image::display_transform::create(grey_icc));
+}
+
+TEST_CASE("a 2048 x 2048 tagged frame converts inside a frame budget", "[image][colour][perf]") {
+  // Review note 43: 755 ms per frame starved a 25 fps animation. Timed in
+  // optimised builds only; a Debug LCMS proves nothing about speed.
+  mv::codec::raster raster;
+  raster.width = 2048;
+  raster.height = 2048;
+  raster.format = format_family::webp;
+  raster.icc = fixtures::adobe_rgb_icc();
+  raster.rgba.resize(static_cast<std::size_t>(2048) * 2048 * 4);
+  for (std::size_t i = 0; i < raster.rgba.size(); ++i) {
+    raster.rgba[i] = static_cast<std::uint8_t>((i * 2654435761u) >> 24);
+  }
+  auto transform = mv::image::display_transform::create(raster.icc);
+  REQUIRE(transform);
+  double best_ms = 1e9;
+  for (int run = 0; run < 3; ++run) {
+    mv::codec::raster copy(raster);
+    const auto start = std::chrono::steady_clock::now();
+    auto applied = transform.value()->apply(std::move(copy));
+    const auto end = std::chrono::steady_clock::now();
+    REQUIRE(applied);
+    best_ms = std::min(best_ms, std::chrono::duration<double, std::milli>(end - start).count());
+  }
+  CAPTURE(best_ms);
+#ifdef NDEBUG
+  REQUIRE(best_ms < 60.0);
+#else
+  SUCCEED("timing is not asserted in a Debug build");
+#endif
+}
 
 TEST_CASE("a reused display transform matches the one-shot conversion", "[image][colour]") {
   const auto icc = srgb_icc();
@@ -388,10 +555,11 @@ TEST_CASE("write a large ICC-tagged animated WebP for the pacing check", "[.make
   WebPAnimEncoderDelete(encoder);
   WebPPictureFree(&picture);
 
-  // Add the ICCP chunk.
+  // Add the ICCP chunk. AdobeRGB, not sRGB: an sRGB profile is now a
+  // copy-through (review note 43) and would not exercise the transform.
   WebPMux* mux = WebPMuxCreate(&assembled, 1);
   REQUIRE(mux != nullptr);
-  const auto icc = srgb_icc();
+  const auto icc = fixtures::adobe_rgb_icc();
   const WebPData profile{icc.data(), icc.size()};
   REQUIRE(WebPMuxSetChunk(mux, "ICCP", &profile, 1) == WEBP_MUX_OK);
   WebPData tagged;

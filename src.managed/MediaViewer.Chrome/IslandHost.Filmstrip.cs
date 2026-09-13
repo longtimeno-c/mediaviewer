@@ -194,6 +194,7 @@ public static partial class IslandHost
             {
                 Index = (int)i,
                 Name = _folderSession.FolderItemName(i),
+                Path = _folderSession.FolderItemPath(i),
                 ThumbPath = _folderSession.FolderItemThumbPath(i),
                 Selected = (rec.Flags & 1) != 0,
             });
@@ -281,6 +282,7 @@ public static partial class IslandHost
             Children = { scroll },
         };
         _filmstripRoot = root;
+        WireFileDrop(root);
         return root;
     }
 
@@ -331,7 +333,8 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
             };
-            border.PointerPressed += (_, _) => Send(Command.SelectItem, vm.Index);
+            border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
+            WireFileDrag(border, vm);
             return border;
         }
 
@@ -348,6 +351,7 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     private bool _selected;
     public int Index { get; set; }
     public string Name { get; set; } = "";
+    public string Path { get; set; } = "";
     public bool Selected
     {
         get => _selected;

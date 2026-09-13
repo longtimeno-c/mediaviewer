@@ -59,14 +59,16 @@ inline constexpr int kModCombos = 8;
 
 // plan/16 "Modes". Derived from state at keydown (key_router.h), never kept on
 // a stack that can go stale when navigation lands somewhere else. Crop and the
-// panes arrive with their PRs; a focused island is `island`, where in-pane
-// traversal keys fall through to XAML.
+// panes arrive with their PRs. `island` is the filmstrip or the gallery, where
+// in-pane traversal keys fall through to XAML and letters are typeahead. The
+// command bar and the transport keep the mode underneath (plan/12 2026-09-13).
 enum class mode : std::uint8_t {
   browse = 0,
   video = 1,      // current item is a clip or an animation
   slideshow = 2,
-  island = 3,     // filmstrip, gallery, command bar or transport has focus
+  island = 3,     // focused thumbnail island; visible gallery takes precedence
   loupe = 4,      // Z held on the canvas: arrows nudge the loupe point
+  gallery = 5,    // visible gallery owns navigation, even with canvas focus
   count
 };
 
@@ -78,7 +80,8 @@ inline constexpr mode_mask kVideo = 1 << 1;
 inline constexpr mode_mask kSlideshow = 1 << 2;
 inline constexpr mode_mask kIsland = 1 << 3;
 inline constexpr mode_mask kLoupe = 1 << 4;
-inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland | kLoupe;
+inline constexpr mode_mask kGallery = 1 << 5;
+inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -88,8 +91,8 @@ inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland |
 enum class repeat_policy : std::uint8_t {
   edge,       // down edge only; repeats fall through unhandled
   repeat,     // every down, including typematic repeat
-  tap_hold,   // plan/16: down does nothing; first repeat makes it a hold
-              // (`hold` per repeat, `release` on key-up); no repeat = `command`
+  tap_hold,   // `command` on down (a tap skips immediately); first typematic
+              // repeat makes it a hold (`hold` per repeat, `release` on key-up)
   momentary,  // `command` on down, `release` on up (hold Z, hold `\`)
 };
 
@@ -179,6 +182,13 @@ enum class command_id : std::uint16_t {
   go_to,
   folder_tree,
   typeahead,  // `/` from the canvas: find an item by name
+  reveal_in_explorer,  // Ctrl+E: open the folder and select the current file
+  gallery_up,
+  gallery_down,
+  gallery_open_selected,
+  open_settings,  // Ctrl+, and the Settings button: the settings screen
+  gallery_larger,
+  gallery_smaller,
   count
 };
 
@@ -207,6 +217,13 @@ struct command_info {
 };
 
 [[nodiscard]] std::span<const binding> default_bindings() noexcept;
+// The table the router, `?` and Settings share. Starts as default_bindings;
+// remaps edit it in place so those three cannot drift.
+[[nodiscard]] std::span<const binding> live_bindings() noexcept;
+void reset_live_bindings() noexcept;
+// Change row `index` to (k, mods). A collision in overlapping modes swaps the
+// two rows so nothing is left unbound. False if index is out of range.
+[[nodiscard]] bool rebind_live(int index, key k, std::uint8_t mods) noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.

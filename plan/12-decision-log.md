@@ -604,6 +604,43 @@ hiding the companion is the same scan-time step, so it moves with it.
 **Wrap.** "Wrap at end of folder: on by default, toggle in settings" lands in PR 6: a `wrap`
 setting (default on) used by arrow keys, Space, `A` / `D` and the slideshow alike.
 
+## 2026-09-13 — PR 6: Settings screen remaps the live command table
+
+[16](16-commands.md) parked remap UI in v1.1 so the default map could be used in anger
+first. It has been: the Settings flyout was three toggles, and changing a key meant
+editing the table. Decision: Settings is its own screen (the command-bar island expands
+over the canvas). It holds view defaults (filmstrip, wrap, sticky zoom, background) and
+every binding. A clash swaps the two rows so nothing is left unbound. Persist diffs in
+`settings.ini` `[keys]`. `?` and the palette call `describe_commands()` on the live
+table, so they cannot drift. Reset writes the factory `kBindings` back.
+
+JSON import/export and named layouts stay v1.1.
+
+**How it gets reversed.** Only if the remap UI is unused and the extra island-resize
+path fights the present-loop gate; then drop the screen and keep the live table for a
+later PR.
+
+## 2026-09-13 — PR 6: tap `Q`/`E` skips; chrome focus is not a mode
+
+**Tap `Q`/`E` is skip, not speed.** [16](16-commands.md) had tap `Q`/`E` step the speed ladder
+and hold skim ±2 s. In use, those keys were the skip keys: a tap that waited for key-up to
+change speed felt like a dead key, and hold-to-skim was invisible if the tap never fired.
+Decision: tap `Q`/`E` skips ±2 s on the down edge (exact seek); hold still skims (non-exact,
+settle on release). Speed stays on the command-bar dropdown and on `Shift+Q` / `Shift+E`.
+`J`/`L` remain ±10 s.
+
+**Command-bar / transport / `?` flyout focus is not island mode.** The typeahead rule
+(filmstrip or gallery, plan/12 earlier today) was implemented as "any non-canvas focus
+swallows letter keys". Clicking Play, opening `?`, or a flyout popup HWND then made `A`/`D`
+(and `Q`/`E`) do nothing until the window was deactivated and the canvas HWND took focus
+again. Island mode is the filmstrip and the gallery. The command bar, the transport, and a
+cheat-sheet flyout keep the mode underneath; Esc still closes the flyout first via
+`popup_open`.
+
+**How it gets reversed.** Speed-on-tap only if a remap UI (v1.1) wants the FastStone-era
+pair back; do not silently steal skip. Do not put command-bar focus back in island mode to
+"make Tab easier" — that is how the keys die.
+
 ## Still open
 
 | Question | Blocks | Notes |
@@ -613,6 +650,37 @@ setting (default on) used by arrow keys, Space, `A` / `D` and the slideshow alik
 | **PR 4's verify was never run** | PR 5 (inherited) | Three sessions held PR 4; the first hallucinated, the second committed `5eaa530` without reporting, the third confirmed it never owned the PR. Recorded state as of 2026-09-07: the 2000-JPEG scroll, the warm second-visit thumbnail check and the < 40 ms warm arrow-key number are **not run**; `tests/test_frametime.ps1` is **not run**; the plan edits in that commit to [10](10-roadmap.md) and [16](16-commands.md) are **unreviewed**. PR 5 is being built on top of this knowingly. |
 | **Settings writes on the UI thread** | PR 15 (settings) | `settings.ini` writes (filmstrip toggles since PR 4, F7 / F8 destinations since PR 6) run on the UI thread, against rule 1. They are small, and a destination is only written when it changes, but they belong on the I/O worker. Recorded 2026-09-13 so the rule does not erode quietly. |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 verify (inherited) | Command-bar island is in the tree. Filmstrip is a second island (PR 4). Present-loop + tab + flyout-over-canvas still unproven on a quiet GPU runner. Fallback unchanged: WinUI app with `SwapChainPanel` and an accepted composed frame. |
+
+## Gallery keyboard controls (2026-09-13)
+
+At the user's request, View now offers Full screen with F11 (F remains an alias).
+The visible gallery has its own navigation mode so W/S move by row and Enter opens
+the selected item in the normal viewer, even if focus remains on the canvas after G.
+The user's clarification removes Enter's fullscreen behavior: it leaves any active
+slideshow/fullscreen and restores the filmstrip according to the existing toggle.
+Slideshow moves from Enter to F5; Enter on the canvas has no fullscreen action.
+Gallery navigation letters take
+precedence over typeahead; text fields and filmstrip typeahead keep their bindings.
+
+The gallery also gains thumbnail resizing on +/− (= aliases +), as separate
+commands in the shared binding table for the concurrent Settings/remapping work.
+Existing command IDs and binding row positions are retained. The gallery's
+typeahead exception follows the resolved command so remapped resizing and
+navigation keys work. Thumbnail size is session-local, initially 152 DIP with
+24 DIP steps bounded to 80–344 DIP; resizing preserves selection and updates only
+realised tiles plus the uniform grid layout.
+
+## Settings focus and layout (2026-09-13)
+
+Settings owns keyboard input through XAML dispatch, including Escape. A false
+return from ContentPreTranslateMessage is not evidence that XAML declined a key;
+running viewer shortcuts at that point stole replacement keys before capture.
+Opening Settings releases viewer holds, sizes the island before measuring the
+screen, and focuses an actual control. The root follows the island viewport
+without toggling between a fixed 48 DIP height and full height. Shortcut buttons
+keep focus and scroll position while their labels update in place. Capture has
+an explicit prompt, Escape/Cancel, and consumes the captured key's repeats and
+release so Enter/Space cannot reactivate the button. Tab remains in Settings.
 
 ## How to use this file
 

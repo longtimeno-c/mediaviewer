@@ -43,12 +43,21 @@ enum chrome_command : int {
   // Island notifications added after the command table filled the low ids
   // live above every command id, so the two ranges never meet.
   chrome_cmd_popup = 1000,           // arg != 0 while a `?` / palette / go-to / find flyout is up
+  chrome_cmd_rebind = 1001,          // packed: row | (key << 8) | (mods << 20)
+  chrome_cmd_reset_keys = 1002,      // restore the default map
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
 
 // Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
-enum class chrome_popup : std::int32_t { close = 0, help = 1, palette = 2, go_to = 3, find = 4 };
+enum class chrome_popup : std::int32_t {
+  close = 0,
+  help = 1,
+  palette = 2,
+  go_to = 3,
+  find = 4,
+  settings = 5,
+};
 
 struct chrome_popup_args {
   std::int32_t kind;       // chrome_popup
@@ -98,7 +107,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_prev, chrome_cmd_next, chrome_cmd_open_folder, chrome_cmd_toggle_gallery,
       chrome_cmd_close_gallery, chrome_cmd_gallery_activate, chrome_cmd_set_settings,
       chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
-      chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup};
+      chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
+      chrome_cmd_reset_keys};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -303,6 +313,8 @@ class chrome_host {
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
+  void navigate_gallery(std::int32_t direction, std::int32_t index) noexcept;
+  void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
 
   // True when the island consumed the message (do not Translate/Dispatch).
   [[nodiscard]] bool pre_translate(MSG* msg) noexcept;
@@ -349,6 +361,8 @@ class chrome_host {
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
+  chrome_entry_fn navigate_gallery_ = nullptr;
+  chrome_entry_fn scale_gallery_ = nullptr;
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool filmstrip_attached_ = false;

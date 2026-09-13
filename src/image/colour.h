@@ -34,6 +34,16 @@ struct display_image {
 // note 34 — building a LittleCMS transform costs milliseconds). It owns its own
 // cmsContext, so one instance must stay on one thread at a time. to_display
 // builds a fresh one per call.
+// Whether `icc` is sRGB in effect: an RGB matrix/shaper profile whose colorants
+// and tone curves match sRGB within an 8-bit step. Such a file displays as-is
+// on the v1 8-bit sRGB swapchain, so it skips LCMS (review note 43). A corrupt
+// profile is not sRGB.
+[[nodiscard]] bool is_srgb_icc(std::span<const std::uint8_t> icc) noexcept;
+
+// ICC → sRGB for the v1 8-bit display path: one LCMS 8-bit to 8-bit transform
+// with its precomputed LUT (colorimetrically ICC → linear → sRGB encode, no
+// tone-map; D6's FP16 working space is the edit path). An sRGB-in-effect
+// profile is a copy-through.
 class display_transform {
  public:
   [[nodiscard]] static result<std::unique_ptr<display_transform>> create(
@@ -50,7 +60,8 @@ class display_transform {
  private:
   display_transform() = default;
   void* context_ = nullptr;    // cmsContext
-  void* transform_ = nullptr;  // cmsHTRANSFORM
+  void* transform_ = nullptr;  // cmsHTRANSFORM; null when the profile is sRGB
+  bool passthrough_ = false;   // the profile is sRGB in effect: copy through
 };
 
 }  // namespace mv::image

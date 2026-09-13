@@ -42,6 +42,12 @@ view_settings load_view_settings() noexcept {
                               settings.filmstrip_for_image ? 1 : 0, path.c_str()) != 0;
   settings.wrap =
       ::GetPrivateProfileIntW(kSection, L"wrap", settings.wrap ? 1 : 0, path.c_str()) != 0;
+  settings.sticky_zoom =
+      ::GetPrivateProfileIntW(kSection, L"sticky_zoom", settings.sticky_zoom ? 1 : 0, path.c_str()) !=
+      0;
+  const int bg =
+      ::GetPrivateProfileIntW(kSection, L"background", settings.background, path.c_str());
+  settings.background = static_cast<std::uint8_t>(bg < 0 ? 0 : bg > 3 ? 3 : bg);
   return settings;
 }
 
@@ -149,6 +155,65 @@ void save_view_settings(const view_settings& settings) noexcept {
   ::WritePrivateProfileStringW(kSection, L"filmstrip_for_image",
                                settings.filmstrip_for_image ? L"1" : L"0", path.c_str());
   ::WritePrivateProfileStringW(kSection, L"wrap", settings.wrap ? L"1" : L"0", path.c_str());
+  ::WritePrivateProfileStringW(kSection, L"sticky_zoom", settings.sticky_zoom ? L"1" : L"0",
+                               path.c_str());
+  wchar_t bg[4]{};
+  (void)::swprintf_s(bg, L"%u", static_cast<unsigned>(settings.background));
+  ::WritePrivateProfileStringW(kSection, L"background", bg, path.c_str());
+}
+
+namespace {
+
+constexpr wchar_t kKeys[] = L"keys";
+
+}  // namespace
+
+std::vector<key_override> load_key_overrides() noexcept {
+  try {
+    std::vector<key_override> out;
+    const std::wstring path = settings_path();
+    if (path.empty()) return out;
+    const int n = ::GetPrivateProfileIntW(kKeys, L"n", 0, path.c_str());
+    for (int i = 0; i < n && i < 255; ++i) {
+      wchar_t key[16]{};
+      (void)::swprintf_s(key, L"r%d", i);
+      wchar_t value[64]{};
+      ::GetPrivateProfileStringW(kKeys, key, L"", value, 64, path.c_str());
+      if (value[0] == L'\0') continue;
+      int row = 0, k = 0, mods = 0;
+      if (::swscanf_s(value, L"%d,%d,%d", &row, &k, &mods) != 3) continue;
+      if (row < 0 || k <= 0 || mods < 0 || mods >= 8) continue;
+      out.push_back(key_override{row, static_cast<std::uint16_t>(k),
+                                 static_cast<std::uint8_t>(mods)});
+    }
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+
+void save_key_overrides(std::span<const key_override> list) noexcept {
+  try {
+    const std::wstring path = settings_path();
+    if (path.empty()) return;
+    wchar_t nbuf[8]{};
+    (void)::swprintf_s(nbuf, L"%zu", list.size());
+    ::WritePrivateProfileStringW(kKeys, L"n", nbuf, path.c_str());
+    for (int i = 0; i < 255; ++i) {
+      wchar_t key[16]{};
+      (void)::swprintf_s(key, L"r%d", i);
+      if (static_cast<std::size_t>(i) < list.size()) {
+        wchar_t value[64]{};
+        (void)::swprintf_s(value, L"%d,%u,%u", list[static_cast<std::size_t>(i)].row,
+                           static_cast<unsigned>(list[static_cast<std::size_t>(i)].k),
+                           static_cast<unsigned>(list[static_cast<std::size_t>(i)].mods));
+        ::WritePrivateProfileStringW(kKeys, key, value, path.c_str());
+      } else {
+        ::WritePrivateProfileStringW(kKeys, key, nullptr, path.c_str());
+      }
+    }
+  } catch (...) {
+  }
 }
 
 }  // namespace mv::shell

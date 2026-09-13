@@ -6,10 +6,13 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -165,10 +168,14 @@ struct mv_session {
 
   // The animation's colour transform, built once per published source (review
   // note 34) instead of per frame. Touched only by the animation decode thread
-  // (the texture maker below), so it needs no lock; keyed by the source's ICC
-  // buffer and the generation so a new animation never reuses an old one.
+  // (the texture maker below), so it needs no lock. Keyed by the generation and
+  // the profile itself (its size and first 64 bytes, which hold the header's
+  // size, class, colour space and date) so a new animation never reuses an old
+  // one, not by a buffer address that could be reused.
+  static constexpr std::size_t kIccKeyBytes = 64;
   std::unique_ptr<mv::image::display_transform> anim_transform;
-  const std::uint8_t* anim_icc_key = nullptr;
+  std::size_t anim_icc_size = 0;
+  std::array<std::uint8_t, kIccKeyBytes> anim_icc_head{};
   std::uint32_t anim_icc_gen = 0;
   std::atomic<std::uint32_t> anim_icc_us{0};  // F3: last frame's colour conversion
 
@@ -193,11 +200,19 @@ struct mv_session {
         if (info.icc.empty()) {
           display = mv::image::to_display(std::move(raster));  // copy-through
         } else {
-          if (!anim_transform || anim_icc_key != info.icc.data() || anim_icc_gen != generation) {
-            auto made = mv::image::display_transform::create(info.icc);
+          const std::span<const std::uint8_t> icc(info.icc.data(), info.icc.size());
+          const std::span<const std::uint8_t> head =
+              icc.first(std::min<std::size_t>(icc.size(), kIccKeyBytes));
+          const bool same_profile = anim_transform && anim_icc_gen == generation &&
+                                    anim_icc_size == icc.size() &&
+                                    std::equal(head.begin(), head.end(), anim_icc_head.begin());
+          if (!same_profile) {
+            auto made = mv::image::display_transform::create(icc);
             if (!made) return nullptr;  // D6: a broken profile is not untagged sRGB
             anim_transform = std::move(made).value();
-            anim_icc_key = info.icc.data();
+            anim_icc_size = icc.size();
+            anim_icc_head.fill(0);
+            std::copy(head.begin(), head.end(), anim_icc_head.begin());
             anim_icc_gen = generation;
           }
           display = anim_transform->apply(std::move(raster));

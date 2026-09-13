@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <vector>
 #include <lcms2.h>
 
 namespace mv::image {
@@ -10,31 +12,63 @@ namespace {
 
 constexpr std::size_t kTile = 256 * 256;
 
+// An 8-bit step is 1/255 ≈ 0.0039; half of that keeps a match invisible.
+constexpr double kSrgbTolerance = 0.0015;
+
 void lcms_silence(cmsContext, cmsUInt32Number, const char*) {}
 
-cmsHPROFILE linear_rec709(cmsContext ctx) {
-  cmsCIExyY d65 = {0.3127, 0.3290, 1.0};
-  cmsCIExyYTRIPLE primaries = {
-      {0.640, 0.330, 1.0},
-      {0.300, 0.600, 1.0},
-      {0.150, 0.060, 1.0},
-  };
-  cmsToneCurve* g = cmsBuildGamma(ctx, 1.0);
-  if (!g) return nullptr;
-  cmsToneCurve* curves[3] = {g, g, g};
-  cmsHPROFILE profile = cmsCreateRGBProfileTHR(ctx, &d65, &primaries, curves);
-  cmsFreeToneCurve(g);
-  return profile;
+bool same_xyz(const cmsCIEXYZ* a, const cmsCIEXYZ* b) noexcept {
+  return a && b && std::fabs(a->X - b->X) < kSrgbTolerance &&
+         std::fabs(a->Y - b->Y) < kSrgbTolerance && std::fabs(a->Z - b->Z) < kSrgbTolerance;
 }
 
-std::uint8_t srgb_encode(float linear) noexcept {
-  linear = std::clamp(linear, 0.0f, 1.0f);
-  const float s = (linear <= 0.0031308f) ? 12.92f * linear
-                                         : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
-  return static_cast<std::uint8_t>(std::lround(std::clamp(s, 0.0f, 1.0f) * 255.0f));
+bool same_curve(const cmsToneCurve* a, const cmsToneCurve* b) noexcept {
+  if (!a || !b) return false;
+  for (int i = 0; i <= 64; ++i) {
+    const float x = static_cast<float>(i) / 64.0f;
+    if (std::fabs(cmsEvalToneCurveFloat(a, x) - cmsEvalToneCurveFloat(b, x)) > kSrgbTolerance) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Matrix/shaper RGB with sRGB's (D50-adapted) colorants and sRGB's curve on
+// every channel: relative-colorimetric to sRGB is the identity within 8 bits.
+bool is_srgb_profile(cmsContext lcms, cmsHPROFILE in) {
+  if (cmsGetColorSpace(in) != cmsSigRgbData || !cmsIsMatrixShaper(in)) return false;
+  cmsHPROFILE ref = cmsCreate_sRGBProfileTHR(lcms);
+  if (!ref) return false;
+  bool same = true;
+  for (const cmsTagSignature tag :
+       {cmsSigRedColorantTag, cmsSigGreenColorantTag, cmsSigBlueColorantTag}) {
+    same = same && same_xyz(static_cast<const cmsCIEXYZ*>(cmsReadTag(in, tag)),
+                            static_cast<const cmsCIEXYZ*>(cmsReadTag(ref, tag)));
+  }
+  for (const cmsTagSignature tag : {cmsSigRedTRCTag, cmsSigGreenTRCTag, cmsSigBlueTRCTag}) {
+    same = same && same_curve(static_cast<const cmsToneCurve*>(cmsReadTag(in, tag)),
+                              static_cast<const cmsToneCurve*>(cmsReadTag(ref, tag)));
+  }
+  cmsCloseProfile(ref);
+  return same;
 }
 
 }  // namespace
+
+bool is_srgb_icc(std::span<const std::uint8_t> icc) noexcept {
+  if (icc.empty()) return false;
+  cmsContext lcms = cmsCreateContext(nullptr, nullptr);
+  if (!lcms) return false;
+  cmsSetLogErrorHandlerTHR(lcms, lcms_silence);
+  bool srgb = false;
+  if (cmsHPROFILE in =
+          cmsOpenProfileFromMemTHR(lcms, icc.data(), static_cast<cmsUInt32Number>(icc.size()))) {
+    srgb = is_srgb_profile(lcms, in);
+    cmsCloseProfile(in);
+  }
+  cmsDeleteContext(lcms);
+  return srgb;
+}
 
 result<std::unique_ptr<display_transform>> display_transform::create(
     std::span<const std::uint8_t> icc) {
@@ -49,18 +83,28 @@ result<std::unique_ptr<display_transform>> display_transform::create(
     cmsDeleteContext(lcms);
     return err(status::corrupt);
   }
-  cmsHPROFILE out = linear_rec709(lcms);
-  if (!out) {
-    cmsCloseProfile(in);
-    cmsDeleteContext(lcms);
-    return err(status::internal);
+
+  cmsHTRANSFORM xform = nullptr;
+  const bool passthrough = is_srgb_profile(lcms, in);
+  if (!passthrough) {
+    cmsHPROFILE out = cmsCreate_sRGBProfileTHR(lcms);
+    if (!out) {
+      cmsCloseProfile(in);
+      cmsDeleteContext(lcms);
+      return err(status::internal);
+    }
+    // Review note 43: 8-bit in, 8-bit out, optimisation allowed, so LCMS
+    // precomputes its device link (a matrix-shaper pair stays a matrix with
+    // curve tables; a LUT profile gets a high-resolution grid) instead of
+    // evaluating a float pipeline per pixel. Relative colorimetric to sRGB is
+    // the same ICC → linear → sRGB encode as before, within an 8-bit step.
+    xform = cmsCreateTransformTHR(lcms, in, TYPE_RGBA_8, out, TYPE_RGBA_8,
+                                  INTENT_RELATIVE_COLORIMETRIC,
+                                  cmsFLAGS_COPY_ALPHA | cmsFLAGS_HIGHRESPRECALC);
+    cmsCloseProfile(out);
   }
-  cmsHTRANSFORM xform =
-      cmsCreateTransformTHR(lcms, in, TYPE_RGB_8, out, TYPE_RGB_FLT, INTENT_RELATIVE_COLORIMETRIC,
-                            cmsFLAGS_NOOPTIMIZE);
   cmsCloseProfile(in);
-  cmsCloseProfile(out);
-  if (!xform) {
+  if (!passthrough && !xform) {
     cmsDeleteContext(lcms);
     return err(status::corrupt);
   }
@@ -68,9 +112,10 @@ result<std::unique_ptr<display_transform>> display_transform::create(
     auto made = std::unique_ptr<display_transform>(new display_transform());
     made->context_ = lcms;
     made->transform_ = xform;
+    made->passthrough_ = passthrough;
     return made;
   } catch (...) {
-    cmsDeleteTransform(xform);
+    if (xform) cmsDeleteTransform(xform);
     cmsDeleteContext(lcms);
     return err(status::out_of_memory);
   }
@@ -82,11 +127,10 @@ display_transform::~display_transform() {
 }
 
 result<display_image> display_transform::apply(codec::raster&& src, const job_context* ctx) const {
-  if (!transform_ || src.width == 0 || src.height == 0 ||
+  if ((!transform_ && !passthrough_) || src.width == 0 || src.height == 0 ||
       src.rgba.size() != static_cast<std::size_t>(src.width) * src.height * 4) {
     return err(status::corrupt);
   }
-  const auto xform = static_cast<cmsHTRANSFORM>(transform_);
 
   display_image dst;
   dst.width = src.width;
@@ -95,27 +139,20 @@ result<display_image> display_transform::apply(codec::raster&& src, const job_co
   dst.intent = src.intent;
   dst.icc_tagged = true;
   dst.rgba = std::move(src.rgba);
+  if (passthrough_) {
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    return dst;
+  }
 
+  const auto xform = static_cast<cmsHTRANSFORM>(transform_);
   const std::size_t pixels = static_cast<std::size_t>(dst.width) * dst.height;
-  std::vector<std::uint8_t> rgb(kTile * 3);
-  std::vector<float> linear(kTile * 3);
-
+  std::vector<std::uint8_t> tile(kTile * 4);
   for (std::size_t i = 0; i < pixels; i += kTile) {
     if (ctx && ctx->cancelled()) return err(status::cancelled);
     const std::size_t n = std::min(kTile, pixels - i);
-    for (std::size_t p = 0; p < n; ++p) {
-      const std::uint8_t* s = dst.rgba.data() + (i + p) * 4;
-      rgb[p * 3 + 0] = s[0];
-      rgb[p * 3 + 1] = s[1];
-      rgb[p * 3 + 2] = s[2];
-    }
-    cmsDoTransform(xform, rgb.data(), linear.data(), static_cast<cmsUInt32Number>(n));
-    for (std::size_t p = 0; p < n; ++p) {
-      std::uint8_t* d = dst.rgba.data() + (i + p) * 4;
-      d[0] = srgb_encode(linear[p * 3 + 0]);
-      d[1] = srgb_encode(linear[p * 3 + 1]);
-      d[2] = srgb_encode(linear[p * 3 + 2]);
-    }
+    std::uint8_t* row = dst.rgba.data() + i * 4;
+    cmsDoTransform(xform, row, tile.data(), static_cast<cmsUInt32Number>(n));
+    std::memcpy(row, tile.data(), n * 4);
   }
   return dst;
 }

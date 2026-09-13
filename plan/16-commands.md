@@ -1,9 +1,10 @@
 # 16 — Commands, keyboard, and mouse-free use
 
 v1 is **fully usable without a mouse.** That is a product requirement, not a settings page.
-Configurable keymaps are **v1.1** ([10-roadmap.md](10-roadmap.md)). Do not build a remap UI
-before the default map has been used in anger — same argument as batch metadata in
-[06-metadata.md](06-metadata.md).
+Configurable keymaps landed in PR 6 (plan/12 2026-09-13) once the default map was in daily
+use. The Settings screen remaps the **same live table** the router, `?`, and the palette
+read. Reset restores `default_bindings()`. Import/export JSON and named alternate layouts
+(FastStone / IrfanView / vim) stay v1.1.
 
 D1 exists because FastStone users bounce without keyboard behaviour. PR 6's verify line is
 the first falsifiable cut of this doc; later PRs **register commands into the same table**
@@ -16,7 +17,7 @@ per key-repeat is a bug, not a feature. The present-loop gate from PR 1 still ho
 
 | v1 (PR 6, then additive) | v1.1 |
 |---|---|
-| One complete default map covering browse, view, video, edit, metadata, trim | Remap UI, import/export JSON, alternate layouts (FastStone / IrfanView / vim) |
+| One complete default map covering browse, view, video, edit, metadata, trim. Settings remaps that table; `?` stays in sync | Import/export JSON, alternate layouts (FastStone / IrfanView / vim) |
 | Every command has a key, including ones that currently look like buttons | Per-profile maps, user chords beyond a couple of prefixes |
 | `?` overlay listing the **current mode's** bindings | |
 | Command palette (`Ctrl+K`) so nothing has to be memorised | |
@@ -48,11 +49,11 @@ Keyboard pan moves a tenth of the canvas per step, whatever the zoom, through th
 At fit it is not a pan: `↑` `↓` fall through, except that `↓` in fullscreen reveals the strips
 (and a clip's transport) for 3 s after the last navigation; the bottom hot-edge does the same.
 
-**Tap and hold may be two commands on one key**, and `A` / `D` on a clip are the case that
-earns it: a tap is a discrete adjustment (speed), a hold is a continuous one (skim). The
-distinction is typematic repeat — the down edge of a tap does nothing, the first repeat makes
-it a hold, and key-up decides. This is a shape to use sparingly; it is here because shuttling
-and speed are the same gesture at two durations, not to double the key count.
+**Tap and hold may be two commands on one key**, and `Q` / `E` on a clip are the case that
+earns it: a tap is a discrete skip (±2 s), a hold is a continuous skim. The distinction is
+typematic repeat — the down edge fires the tap so a skip does not wait for key-up, the first
+repeat makes it a hold, and key-up settles. This is a shape to use sparingly; it is here
+because skip and shuttle are the same gesture at two durations, not to double the key count.
 
 **Modes** (a handful, not a modal editor):
 
@@ -62,7 +63,7 @@ and speed are the same gesture at two durations, not to double the key count.
 | **Filmstrip** | Bottom island focused | Prev / next thumb; `Enter` focuses canvas |
 | **Pane** | Folder tree / metadata / adjust / jobs | In-pane traversal; `Esc` returns to canvas |
 | **Video** | Current item is a clip, playing or paused | Frame step when paused (`,` `.` and arrows); `J` `K` `L` transport |
-| **Slideshow** | After `Enter` | Next on a timer; `Esc` leaves |
+| **Slideshow** | After `F5` | Next on a timer; `Esc` leaves |
 | **Crop** | Adjust geometry (PR 9) | Nudge crop; `Enter` commits, `Esc` cancels |
 
 `Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas. The gallery
@@ -101,9 +102,13 @@ Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal t
 | `PageUp` / `PageDown` | Skip ~10, or previous / next *folder* when the folder tree is populated |
 | `Delete` | Recycle Bin, confirm (PR 6). Marks if any, else current |
 | `F2` | Rename, IME-aware |
-| `Enter` | Slideshow |
-| `F` | Fullscreen. `F3` stays the frame-time overlay |
-| `Ctrl+O` | Open folder |
+| `Enter` | Open the gallery selection in the normal viewer, with the filmstrip if enabled. No fullscreen or slideshow action from the canvas |
+| `F5` | Slideshow |
+| `F11` / `F` | Fullscreen, also available from View → Full screen. `F3` stays the frame-time overlay |
+| `Ctrl+O` | Open media (file picker) |
+| `Ctrl+Shift+O` | Open folder |
+| `Ctrl+E` | Show the current file in Explorer, selected |
+| `Ctrl+,` | Settings (view defaults and remappable keys) |
 | `Ctrl+W` / `Alt+F4` | Close window |
 | `Ctrl+Tab` | Next tab (PR 14) |
 
@@ -115,14 +120,14 @@ Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal t
 | `1` | 100 % |
 | `2` `3` | 200 % / 400 % |
 | `4` | Fill |
-| `+` `-` | Zoom toward centre when no cursor; toward cursor when there is one |
+| `+` `-` | Zoom toward centre when no cursor; toward cursor when there is one. In the gallery, enlarge / shrink thumbnails instead (`=` also enlarges): 24 DIP steps, 80–344 DIP, initially 152 DIP. Keep the selection visible and retain the chosen size for the session. Separate gallery commands in the shared table allow independent remapping |
 | `Ctrl+0` | Reset pan/zoom (not rating-0 — rating is `Ctrl+Shift+0` or numpad, see below) |
 | `H` / `V` | Flip horizontal / vertical |
 | `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 9), from the viewer, no edit pane required |
 | `I` | Metadata pane (PR 8) |
 | `E` | Adjust pane (PR 10) — **collides with `Q` `E` transport below, landed in 5c. PR 10 picks a different key; this row is not a claim on `E`.** |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
-| `G` | Gallery: full-client thumbnail grid of the folder. `Esc` or `Enter` leaves it; `Enter` and a click open the item under the cursor (PR 4) |
+| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it |
 | `Ctrl+Shift+E` | Folder tree show/focus |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 8 can fill it) |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |
@@ -180,8 +185,9 @@ next one slides into its place (the previous one at the end).
 | Key | Command |
 |---|---|
 | `Space` | Play / pause |
-| tap `Q` `E` | **Playback speed** one rung down / up the ladder 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a *view* of this: native owns the rate, pushes it to the island, and the dropdown posts back — one router, never two owners |
+| tap `Q` `E` | **Skip** −2 s / +2 s, exact. Fires on the down edge so a tap does not wait for key-up. (Tap used to step playback speed; that moved to `Shift+Q` / `Shift+E` and the command-bar dropdown, plan/12 2026-09-13.) |
 | hold `Q` `E` | **Skim** −2 s / +2 s per key repeat. Non-exact seek (nearest keyframe) while held, so a shuttle cannot queue a decode-forward per repeat; the release settles exactly, the same two modes as a scrubber drag and its release. Intent accumulates across the burst — re-reading the position each repeat asks to move from a point the last press already rounded backwards |
+| `Shift+Q` `Shift+E` | **Playback speed** one rung down / up the ladder 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a *view* of this: native owns the rate, pushes it to the island, and the dropdown posts back — one router, never two owners |
 | `J` `K` `L` | −10 s / pause / +10 s |
 | `,` `.` | Frame step (already in [05-video-pipeline.md](05-video-pipeline.md)) |
 | `Shift+M` | Mute (`M` is not mute — reserved so a FastStone-layout preset can put Move on `M` in v1.1) |
@@ -193,7 +199,7 @@ next one slides into its place (the previous one at the end).
 
 | Key | Command |
 |---|---|
-| `Enter` | Start |
+| `F5` | Start |
 | `Space` | Pause |
 | `+` `-` | Interval |
 | `.` | Blackout |
@@ -204,7 +210,7 @@ No transition pass. Next is the same navigation command as browse, on a timer, s
 and the generation counter stay in play. A crossfade is two textures in the present loop
 for a feature nobody opens a camera dump for.
 
-PR 6 specifics. `Enter` starts from the canvas in browse (fullscreen if the window is not; leaving
+PR 6 specifics. `F5` starts from the canvas in browse (fullscreen if the window is not; leaving
 puts it back). A clip advances at **whichever is later**: the interval, or the end of the clip
 while it plays; a paused clip goes on the interval. A finite animation is the same; one that loops
 forever goes on the interval. Intervals step 1 / 2 / 3 / 4 / 5 / 7 / 10 / 15 / 20 / 30 / 60 s,
@@ -363,8 +369,10 @@ Later slices **add rows to the table**. They do not grow a second router.
 
 **Verify (PR 6, additive with the existing line):** keyboard-only browse of a real folder —
 open, next/prev, zoom/fit/100 %, mark, copy-to a destination, delete to Recycle Bin,
-fullscreen, slideshow start/stop — without the mouse, with the `?` overlay listing those
-bindings, and with PR 1's present-loop still holding.
+fullscreen, slideshow start/stop — without the mouse, with `?` listing those bindings,
+and with PR 1's present-loop still holding. The roadmap line
+([10-roadmap.md](10-roadmap.md) PR 6) adds a file dropped into the folder appearing
+without restart and animation timing matching a browser.
 
 ## ABI
 

@@ -63,7 +63,9 @@ float4 sample_catmull(Texture2D tex, float2 uv, float2 tex_size) {
     float4 c3 = texel(tex, i + int2( 2, y), tex_size);
     rows[y + 1] = catmull_rom_1d(c0, c1, c2, c3, f.x);
   }
-  return catmull_rom_1d(rows[0], rows[1], rows[2], rows[3], f.y);
+  // Catmull-Rom rings. Unclamped overshoot encodes per-channel on the sRGB
+  // RTV and reads as magenta / cyan fringes along edges ("pink shapes").
+  return saturate(catmull_rom_1d(rows[0], rows[1], rows[2], rows[3], f.y));
 }
 
 // Linear values: the render target view is _SRGB and encodes on write.

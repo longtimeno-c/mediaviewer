@@ -150,7 +150,7 @@ public static partial class IslandHost
         _seek.AddHandler(UIElement.PointerPressedEvent,
                          new PointerEventHandler((_, _) => { _draggingSeek = true; }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,
-                         new PointerEventHandler((_, _) => FinishSeek()), true);
+                         new PointerEventHandler((_, _) => { FinishSeek(); RestoreCanvasFocus(); }), true);
         _seek.PointerCaptureLost += (_, _) => FinishSeek();
         _seek.ValueChanged += (_, e) =>
         {

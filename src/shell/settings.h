@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,6 +21,9 @@ namespace mv::shell {
 inline constexpr std::int32_t kSettingFilmstripFolder = 1 << 0;
 inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
 inline constexpr std::int32_t kSettingWrap = 1 << 2;  // plan/16: wrap at folder ends
+inline constexpr std::int32_t kSettingStickyZoom = 1 << 3;
+inline constexpr std::int32_t kSettingBackgroundShift = 4;
+inline constexpr std::int32_t kSettingBackgroundMask = 3 << kSettingBackgroundShift;
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
 // its 112 DIP. Opening one image is a viewing intent: the folder is still
@@ -31,11 +35,15 @@ struct view_settings {
   // Arrow keys, Space and the slideshow go round from the last item to the
   // first. On by default (plan/16).
   bool wrap = true;
+  bool sticky_zoom = false;
+  std::uint8_t background = 0;  // 0 canvas, 1 gray, 2 white, 3 checkerboard
 
   [[nodiscard]] std::int32_t flags() const noexcept {
     return (filmstrip_for_folder ? kSettingFilmstripFolder : 0) |
            (filmstrip_for_image ? kSettingFilmstripImage : 0) |
-           (wrap ? kSettingWrap : 0);
+           (wrap ? kSettingWrap : 0) |
+           (sticky_zoom ? kSettingStickyZoom : 0) |
+           ((static_cast<std::int32_t>(background) & 3) << kSettingBackgroundShift);
   }
 
   [[nodiscard]] static view_settings from_flags(std::int32_t flags) noexcept {
@@ -43,9 +51,20 @@ struct view_settings {
     s.filmstrip_for_folder = (flags & kSettingFilmstripFolder) != 0;
     s.filmstrip_for_image = (flags & kSettingFilmstripImage) != 0;
     s.wrap = (flags & kSettingWrap) != 0;
+    s.sticky_zoom = (flags & kSettingStickyZoom) != 0;
+    s.background = static_cast<std::uint8_t>((flags & kSettingBackgroundMask) >> kSettingBackgroundShift);
     return s;
   }
 };
+
+struct key_override {
+  int row = 0;
+  std::uint16_t k = 0;
+  std::uint8_t mods = 0;
+};
+
+[[nodiscard]] std::vector<key_override> load_key_overrides() noexcept;
+void save_key_overrides(std::span<const key_override> list) noexcept;
 
 // Never fails loudly: a missing or unreadable file is the defaults above.
 [[nodiscard]] view_settings load_view_settings() noexcept;

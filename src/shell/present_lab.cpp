@@ -365,6 +365,14 @@ void present_lab::render_thread_main() noexcept {
       }
     }
 
+    if (snapshot.discard_media_seq != seen_discard_seq_) {
+      seen_discard_seq_ = snapshot.discard_media_seq;
+      current_image_.reset();
+      previous_image_.reset();
+      anim_frame_.reset();
+      current_video_ = {};
+      redraw = true;
+    }
     if (session_) {
       if (image::gpu_image* ready = mv::abi::take_ready_image(session_)) {
         gfx::com_ptr<ID3D11Device> mine;
@@ -487,7 +495,11 @@ void present_lab::render_thread_main() noexcept {
             anim_schedule_.stepped(delay_ms);
             anim_seeking_ = false;
           } else {
+            const std::uint32_t late_before = anim_schedule_.late();
             anim_schedule_.shown(delay_ms, now_ms, slack_ms);
+            anim_late_total_ += anim_schedule_.late() - late_before;
+            ++anim_frames_shown_;
+            anim_delay_sum_ms_ += delay_ms;
           }
           redraw = true;
         }
@@ -1125,6 +1137,14 @@ bool present_lab::write_json_report() const noexcept {
   }
 
   const auto s = pacer_.stats();
+  // Review note 44: pacing alone passes a starved animation (the cost sits on
+  // the decode thread), so the report carries the animation's own cadence.
+  const auto anim = mv::abi::animation_stats_now(session_);
+  const double mean_delay_ms =
+      anim_frames_shown_ > 0
+          ? static_cast<double>(anim_delay_sum_ms_) / static_cast<double>(anim_frames_shown_)
+          : 0.0;
+  const double nominal_fps = mean_delay_ms > 0.0 ? 1000.0 / mean_delay_ms : 0.0;
   std::fprintf(f,
                "{\n"
                "  \"schema\": 2,\n"
@@ -1151,6 +1171,13 @@ bool present_lab::write_json_report() const noexcept {
                "  \"idle_cpu_percent\": %.6f,\n"
                "  \"idle_presents\": %llu,\n"
                "  \"idle_input_events\": %llu,\n"
+               "  \"animation_frames_shown\": %llu,\n"
+               "  \"animation_frames_made\": %llu,\n"
+               "  \"animation_late\": %llu,\n"
+               "  \"animation_mean_delay_ms\": %.3f,\n"
+               "  \"animation_nominal_fps\": %.3f,\n"
+               "  \"animation_last_make_ms\": %.3f,\n"
+               "  \"animation_last_icc_ms\": %.3f,\n"
                "  \"meets_pr1_gate\": %s\n"
                "}\n",
                kWarmupSeconds,
@@ -1170,6 +1197,12 @@ bool present_lab::write_json_report() const noexcept {
                idle_stats_.elapsed_seconds, idle_stats_.cpu_percent,
                static_cast<unsigned long long>(idle_stats_.presents),
                static_cast<unsigned long long>(idle_stats_.input_events),
+               static_cast<unsigned long long>(anim_frames_shown_),
+               static_cast<unsigned long long>(anim.frames_made),
+               static_cast<unsigned long long>(anim_late_total_),
+               mean_delay_ms, nominal_fps,
+               static_cast<double>(anim.last_upload_us) / 1000.0,
+               static_cast<double>(anim.last_icc_us) / 1000.0,
                soak_complete_ && measurement_valid_ && exit_code_ == 0 &&
                    (options_.start_animating ? s.meets_pr1_gate() : idle_stats_.meets_pr1_gate())
                    ? "true" : "false");

@@ -174,13 +174,19 @@ is play/pause** and `,` `.` step frames — same commands as video
 
 ## Color
 
-Read the ICC profile (`APP2`/`iCCP`/`colr` box) and transform via **LittleCMS** to linear Rec.709
-at decode time. Untagged JPEG → assume sRGB. Untagged RAW → camera matrix from LibRaw.
-Display-referred sources then **sRGB-encode with no tone map** (D6, [03](03-rendering.md)).
+Read the ICC profile (`APP2`/`iCCP`/`colr` box) and transform via **LittleCMS** at decode
+time. Untagged JPEG → assume sRGB. Untagged RAW → camera matrix from LibRaw.
+Display-referred sources **sRGB-encode with no tone map** (D6, [03](03-rendering.md)).
+
+The v1 **display** path is 8-bit in, 8-bit sRGB out: LittleCMS builds its device-link LUT
+once per profile (`cmsFLAGS_HIGHRESPRECALC`). An RGB matrix/shaper that matches sRGB
+within an 8-bit step is a copy-through — that file already is sRGB, not a tagged-as-sRGB
+bug. Wide-gamut and LUT profiles still convert. The colourimetric hop remains ICC →
+linear → sRGB encode; treating a tagged Display P3 / Adobe RGB file as sRGB is still a
+bug. The float Rec.709 working space is the edit path (PR 10), not the viewer blit.
 
 The **viewer LRU** is 8-bit sRGB (or RGB10A2), not FP16 — [02](02-architecture.md). FP16 is the
-edit working space, promoted when an edit stack is active. The linear hop still happens at
-decode (ICC → linear → sRGB OETF); skipping it and treating a tagged file as sRGB is a bug.
+edit working space, promoted when an edit stack is active.
 
 - LittleCMS calls on the decode pool use a **per-job `cmsContext`**. The default/global context
   is not thread-safe; two tagged files at once is a data race.

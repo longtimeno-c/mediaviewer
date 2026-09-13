@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/key_router.h"
 
+#include <span>
+
 namespace mv::shell {
 namespace {
 
@@ -12,7 +14,15 @@ constexpr int slot(key k, std::uint8_t mods, mode m) noexcept {
 }  // namespace
 
 mode resolve_mode(const view_state& s) noexcept {
-  if (s.focus != focus_kind::canvas) return mode::island;
+  if (s.gallery_open && !s.popup_open) return mode::gallery;
+  // Island mode is in-pane traversal and typeahead (plan/16, plan/12 2026-09-13):
+  // the filmstrip and the gallery. The command bar, the transport, and a `?`
+  // flyout's popup HWND are not a mode — A/D still walk the folder, Q/E still
+  // skip a clip. Treating them as island was why those keys died until the
+  // window was deactivated and the canvas HWND took focus again.
+  if (s.focus == focus_kind::filmstrip || s.focus == focus_kind::gallery) {
+    return mode::island;
+  }
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
   if (s.item == item_kind::clip || s.item == item_kind::animation) return mode::video;
@@ -23,6 +33,7 @@ back_target resolve_back(const view_state& s) noexcept {
   if (s.focus == focus_kind::text) return back_target::blur_text;
   // A `?` / palette / go-to / find flyout closes before anything under it.
   if (s.popup_open) return back_target::popup;
+  if (s.settings_open) return back_target::settings;
   // 6f: an open `?` / palette flyout must close before anything below. It
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.
@@ -37,8 +48,13 @@ back_target resolve_back(const view_state& s) noexcept {
   return back_target::none;
 }
 
-key_router::key_router() noexcept {
-  const auto rows = default_bindings();
+key_router::key_router() noexcept { rebuild(live_bindings()); }
+
+void key_router::rebuild(std::span<const binding> rows) noexcept {
+  index_.fill(0);
+  rows_ = rows.data();
+  row_count_ = rows.size();
+  held_ = {};
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const binding& b = rows[i];
     if (static_cast<int>(b.k) <= 0 || static_cast<int>(b.k) >= kKeyCount) continue;
@@ -55,8 +71,10 @@ key_router::key_router() noexcept {
 const binding* key_router::lookup(key k, std::uint8_t mods, mode m) const noexcept {
   if (static_cast<int>(k) <= 0 || static_cast<int>(k) >= kKeyCount) return nullptr;
   if (mods >= kModCombos || m >= mode::count) return nullptr;
+  if (!rows_ || row_count_ == 0) return nullptr;
   const auto cell = index_[static_cast<std::size_t>(slot(k, mods, m))];
-  return cell == 0 ? nullptr : &default_bindings()[cell - 1u];
+  if (cell == 0 || cell > row_count_) return nullptr;
+  return &rows_[cell - 1u];
 }
 
 key_router::held* key_router::find_held(key k) noexcept {
@@ -95,8 +113,14 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     const bool repeated = h->repeated;
     *h = held{};
     if (b->policy == repeat_policy::momentary) return {b->release, back_target::none, true};
-    return {repeated ? b->release : b->command, back_target::none, true};
+    // Tap already ran on down. A hold owes its settle; a tap does not.
+    return {repeated ? b->release : command_id::none, back_target::none, true};
   }
+
+  // Settings owns keyboard input all the way through XAML dispatch. Its
+  // PreviewKeyDown captures bindings; Esc cancels capture before closing it.
+  // ContentPreTranslateMessage returning false does not mean XAML declined it.
+  if (s.settings_open) return {};
 
   // A text control owns every key except the one that leaves it.
   if (s.focus == focus_kind::text) {
@@ -117,15 +141,38 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   }
 
   const mode m = resolve_mode(s);
-  // Review note 38: with the strip or the gallery focused, a character typed
-  // without Ctrl or Alt is typeahead, not a command — so letter bindings added
-  // later cannot eat it either. Named keys (F3, arrows) and chords (Ctrl+K)
-  // still route.
+  const binding* b = lookup(e.k, e.mods, m);
+  // Gallery navigation is available immediately after G, regardless of which
+  // HWND still has focus. Other letters remain available for typeahead.
+  if (m == mode::gallery && (e.mods & (mod_ctrl | mod_alt)) == 0 &&
+      static_cast<std::uint16_t>(e.k) >= 0x21 &&
+      static_cast<std::uint16_t>(e.k) <= 0x7E) {
+    // Check the resolved command, not its default key: Settings may remap it.
+    if (!b) return {};
+    switch (b->command) {
+      case command_id::gallery_up:
+      case command_id::gallery_down:
+      case command_id::gallery_open_selected:
+      case command_id::gallery_larger:
+      case command_id::gallery_smaller:
+      case command_id::prev:
+      case command_id::next:
+      case command_id::toggle_gallery:
+      case command_id::fullscreen:
+      case command_id::help:
+        break;
+      default: return {};
+    }
+  }
+  // Review note 38 / plan/12 2026-09-13: with the strip or the gallery focused,
+  // a character typed without Ctrl or Alt is typeahead, not a command — so
+  // letter bindings added later cannot eat it either. Named keys (F3, arrows)
+  // and chords (Ctrl+K) still route. Command-bar and transport focus is not
+  // this case; those keys belong to the mode underneath.
   if (const auto raw = static_cast<std::uint16_t>(e.k);
       m == mode::island && (e.mods & (mod_ctrl | mod_alt)) == 0 && raw >= 0x21 && raw <= 0x7E) {
     return {};
   }
-  const binding* b = lookup(e.k, e.mods, m);
   if (!b && m == mode::loupe) {
     // The loupe layers over the mode underneath: only the arrows (and Z / \)
     // mean something else while Z is held. Space, marks, Delete and transport
@@ -157,11 +204,11 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       }
       h = claim_held(e.k);
       if (!h) return {};
-      // The down edge of a tap does nothing: it is not yet known to be one.
-      // A repeat with no recorded down (focus arrived mid-hold) starts the
-      // hold from here.
+      // Tap fires on the down edge so Q/E skip without waiting for key-up.
+      // The first typematic repeat makes it a hold; a repeat with no recorded
+      // down (focus arrived mid-hold) starts the hold from here.
       *h = held{b, e.k, e.repeat};
-      if (!e.repeat) return {command_id::none, back_target::none, true};
+      if (!e.repeat) return {b->command, back_target::none, true};
       return {b->hold, back_target::none, true};
     }
   }

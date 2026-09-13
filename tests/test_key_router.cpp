@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include "shell/commands.h"
 #include "shell/key_router.h"
@@ -94,6 +95,10 @@ TEST_CASE("the PR 3-5 island command ids keep their wire values", "[shell][comma
   REQUIRE(static_cast<int>(command_id::gallery_activate) == 14);
   REQUIRE(static_cast<int>(command_id::toggle_filmstrip) == 17);
   REQUIRE(static_cast<int>(command_id::back) == 21);
+  REQUIRE(static_cast<int>(command_id::clipping) == 46);
+  REQUIRE(static_cast<int>(command_id::help) == 75);
+  REQUIRE(static_cast<int>(command_id::reveal_in_explorer) == 80);
+  REQUIRE(static_cast<int>(command_id::open_settings) == 84);
 }
 
 TEST_CASE("number row is zoom, never rating", "[shell][commands]") {
@@ -115,6 +120,10 @@ TEST_CASE("PR 5 transport keys are table rows in video mode only", "[shell][rout
   REQUIRE(r.lookup(char_key('L'), mod_none, mode::video)->command == command_id::jump_forward);
   REQUIRE(r.lookup(char_key(','), mod_none, mode::video)->command == command_id::frame_back);
   REQUIRE(r.lookup(char_key('.'), mod_none, mode::video)->command == command_id::frame_forward);
+  REQUIRE(r.lookup(char_key('Q'), mod_none, mode::video)->command == command_id::skim_back);
+  REQUIRE(r.lookup(char_key('E'), mod_none, mode::video)->command == command_id::skim_forward);
+  REQUIRE(r.lookup(char_key('Q'), mod_shift, mode::video)->command == command_id::rate_down);
+  REQUIRE(r.lookup(char_key('E'), mod_shift, mode::video)->command == command_id::rate_up);
   // Q/E on a still fall through to the island rather than being swallowed.
   REQUIRE(r.lookup(char_key('Q'), mod_none, mode::browse) == nullptr);
   REQUIRE(r.lookup(char_key('E'), mod_none, mode::browse) == nullptr);
@@ -133,6 +142,129 @@ TEST_CASE("mode is derived from state, not remembered", "[shell][router]") {
   REQUIRE(resolve_mode(s) == mode::slideshow);
   s.focus = focus_kind::filmstrip;
   REQUIRE(resolve_mode(s) == mode::island);
+  // Command bar, transport and a flyout HWND are not a mode: A/D and Q/E
+  // still do what they do on the canvas.
+  s.focus = focus_kind::command_bar;
+  REQUIRE(resolve_mode(s) == mode::slideshow);
+  s.slideshow = false;
+  s.item = item_kind::clip;
+  REQUIRE(resolve_mode(s) == mode::video);
+  s.focus = focus_kind::transport;
+  REQUIRE(resolve_mode(s) == mode::video);
+  s.focus = focus_kind::gallery;
+  REQUIRE(resolve_mode(s) == mode::island);
+}
+
+TEST_CASE("F11 toggles fullscreen across viewing modes without repeating", "[shell][router]") {
+  for (const auto focus : {focus_kind::canvas, focus_kind::command_bar,
+                           focus_kind::filmstrip, focus_kind::gallery, focus_kind::transport}) {
+    key_router r;
+    auto s = still();
+    s.focus = focus;
+    for (const bool gallery : {false, true}) {
+      s.gallery_open = gallery;
+      REQUIRE(r.on_key(down(key::f11), s).command == command_id::fullscreen);
+      REQUIRE_FALSE(r.on_key(rep(key::f11), s).handled);
+    }
+    s.focus = focus_kind::text;
+    REQUIRE_FALSE(r.on_key(down(key::f11), s).handled);
+  }
+}
+
+TEST_CASE("Settings owns shortcuts and Escape until XAML dispatch completes", "[shell][router]") {
+  key_router r;
+  for (const auto focus : {focus_kind::canvas, focus_kind::command_bar, focus_kind::filmstrip,
+                           focus_kind::gallery, focus_kind::transport, focus_kind::text}) {
+    auto s = clip();
+    s.focus = focus;
+    s.settings_open = true;
+    s.fullscreen = true;
+    s.gallery_open = true;
+    s.slideshow = true;
+    // Existing viewer bindings must neither run nor eat a replacement chord.
+    for (const auto& b : default_bindings()) {
+      REQUIRE_FALSE(r.on_key(down(b.k, b.mods), s).handled);
+      REQUIRE_FALSE(r.on_key(rep(b.k, b.mods), s).handled);
+    }
+    REQUIRE_FALSE(r.on_key(down(key::escape), s).handled);
+    s.settings_open = false;
+    s.focus = focus_kind::canvas;
+    REQUIRE(r.on_key(down(key::f11), s).command == command_id::fullscreen);
+  }
+}
+
+TEST_CASE("entering Settings can release active viewer holds without firing taps", "[shell][router]") {
+  key_router r;
+  REQUIRE(r.on_key(down(char_key('Z')), still()).command == command_id::loupe);
+  REQUIRE(r.on_key(down(char_key('Q')), clip()).handled);
+  command_id released[key_router::kHeldSlots]{};
+  REQUIRE(r.cancel_holds(released) == 1);
+  REQUIRE(released[0] == command_id::loupe_release);
+  auto s = clip();
+  s.settings_open = true;
+  REQUIRE_FALSE(r.on_key(up(char_key('Q')), s).handled);
+  REQUIRE_FALSE(r.on_key(up(char_key('Z')), s).handled);
+}
+
+TEST_CASE("gallery thumbnail sizing has its own defaults and supports remapping", "[shell][router]") {
+  key_router r;
+  r.rebuild(default_bindings());
+  auto s = still();
+  s.gallery_open = true;
+  for (const auto focus : {focus_kind::canvas, focus_kind::gallery, focus_kind::command_bar}) {
+    s.focus = focus;
+    REQUIRE(r.on_key(down(char_key('+')), s).command == command_id::gallery_larger);
+    REQUIRE(r.on_key(down(char_key('=')), s).command == command_id::gallery_larger);
+    REQUIRE(r.on_key(rep(char_key('-')), s).command == command_id::gallery_smaller);
+  }
+  s.focus = focus_kind::text;
+  REQUIRE_FALSE(r.on_key(down(char_key('+')), s).handled);
+  REQUIRE(r.on_key(down(char_key('+')), still()).command == command_id::zoom_in);
+  REQUIRE(r.on_key(down(char_key('-')), still()).command == command_id::zoom_out);
+  auto show = still();
+  show.slideshow = true;
+  REQUIRE(r.on_key(down(char_key('+')), show).command == command_id::slideshow_faster);
+
+  // A Settings remap to a letter must not be swallowed by gallery typeahead.
+  std::vector<binding> remapped(default_bindings().begin(), default_bindings().end());
+  for (auto& b : remapped) {
+    if (b.command == command_id::gallery_larger && b.k == char_key('+')) b.k = char_key('U');
+  }
+  r.rebuild(remapped);
+  s.focus = focus_kind::gallery;
+  REQUIRE(r.on_key(down(char_key('U')), s).command == command_id::gallery_larger);
+  REQUIRE_FALSE(r.on_key(down(char_key('+')), s).handled);
+}
+
+TEST_CASE("visible gallery owns row navigation and Enter before focus moves", "[shell][router]") {
+  key_router r;
+  for (const auto focus : {focus_kind::canvas, focus_kind::command_bar,
+                           focus_kind::gallery, focus_kind::filmstrip}) {
+    auto s = clip();
+    s.gallery_open = true;
+    s.focus = focus;
+    REQUIRE(resolve_mode(s) == mode::gallery);
+    REQUIRE(r.on_key(down(char_key('W')), s).command == command_id::gallery_up);
+    REQUIRE(r.on_key(rep(char_key('S')), s).command == command_id::gallery_down);
+    REQUIRE(r.on_key(down(key::up), s).command == command_id::gallery_up);
+    REQUIRE(r.on_key(down(key::down), s).command == command_id::gallery_down);
+    REQUIRE(r.on_key(down(char_key('A')), s).command == command_id::prev);
+    REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+    REQUIRE(r.on_key(down(key::enter), s).command == command_id::gallery_open_selected);
+    REQUIRE_FALSE(r.on_key(rep(key::enter), s).handled);
+    s.focus = focus_kind::text;
+    REQUIRE_FALSE(r.on_key(down(char_key('W')), s).handled);
+    REQUIRE_FALSE(r.on_key(down(key::enter), s).handled);
+  }
+  REQUIRE_FALSE(r.on_key(down(key::enter), still()).handled);
+  REQUIRE_FALSE(r.on_key(down(key::enter), clip()).handled);
+  REQUIRE(r.on_key(down(key::f5), still()).command == command_id::slideshow_start);
+  REQUIRE(r.on_key(down(key::f5), clip()).command == command_id::slideshow_start);
+  // No default Enter binding can start fullscreen or a slideshow in any mode.
+  for (const auto& b : default_bindings()) {
+    if (b.k != key::enter || b.mods != mod_none) continue;
+    REQUIRE(b.command == command_id::gallery_open_selected);
+  }
 }
 
 TEST_CASE("Space: next on a still, play/pause on a clip, pause in a slideshow", "[shell][router]") {
@@ -242,6 +374,27 @@ TEST_CASE("typing in the strip or gallery reaches typeahead, not the router", "[
   REQUIRE(r.on_key(down(char_key('0')), still()).command == command_id::fit);
 }
 
+TEST_CASE("command bar and transport do not swallow A/D/Q/E", "[shell][router]") {
+  key_router r;
+  view_state s = still();
+  s.focus = focus_kind::command_bar;
+  REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('A')), s).command == command_id::prev);
+  REQUIRE(r.on_key(down(char_key('0')), s).command == command_id::fit);
+  s = clip();
+  s.focus = focus_kind::transport;
+  REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('E')), s).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(char_key('E')), s).command == command_id::none);
+  REQUIRE(r.on_key(down(char_key('E'), mod_shift), s).command == command_id::rate_up);
+  REQUIRE(r.on_key(down(key::space), s).command == command_id::play_pause);
+  // A `?` flyout is command-bar-classified; Esc still closes it first.
+  s.focus = focus_kind::command_bar;
+  s.popup_open = true;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::popup);
+  REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+}
+
 TEST_CASE("the palette never offers a command that needs a key-up", "[shell][commands]") {
   // Review note 39: a palette entry has no release, so a hold would stick.
   for (const binding& b : default_bindings()) {
@@ -250,18 +403,19 @@ TEST_CASE("the palette never offers a command that needs a key-up", "[shell][com
       REQUIRE_FALSE(palette_runnable(b.release));
     } else if (b.policy == repeat_policy::tap_hold) {
       REQUIRE(palette_runnable(b.command));  // the tap is an ordinary command
-      REQUIRE_FALSE(palette_runnable(b.hold));
+      if (b.hold != b.command) REQUIRE_FALSE(palette_runnable(b.hold));
       REQUIRE_FALSE(palette_runnable(b.release));
     }
   }
   REQUIRE_FALSE(palette_runnable(command_id::loupe));
   REQUIRE_FALSE(palette_runnable(command_id::hold_previous));
-  REQUIRE_FALSE(palette_runnable(command_id::skim_forward));
+  REQUIRE(palette_runnable(command_id::skim_forward));  // tap skip is runnable
+  REQUIRE_FALSE(palette_runnable(command_id::skim_settle));
   REQUIRE(palette_runnable(command_id::rate_up));
   REQUIRE(palette_runnable(command_id::fit));
   const std::string table = describe_commands();
-  REQUIRE(table.find("\tLoupe\thold Z\t0\n") != std::string::npos);
-  REQUIRE(table.find("\tFit\t0\t1\n") != std::string::npos);
+  REQUIRE(table.find("\tLoupe\thold Z\t0\t") != std::string::npos);
+  REQUIRE(table.find("\tFit\t0\t1\t") != std::string::npos);
 }
 
 TEST_CASE("edge keys ignore typematic repeat; walk keys repeat", "[shell][router]") {
@@ -278,7 +432,7 @@ TEST_CASE("edge keys ignore typematic repeat; walk keys repeat", "[shell][router
   }
 }
 
-TEST_CASE("Q/E: a tap steps the speed, a hold skims and settles on release", "[shell][router]") {
+TEST_CASE("Q/E: a tap skips, a hold skims and settles on release", "[shell][router]") {
   key_router r;
   const auto s = clip();
   const key q = char_key('Q');
@@ -286,10 +440,12 @@ TEST_CASE("Q/E: a tap steps the speed, a hold skims and settles on release", "[s
 
   auto first = r.on_key(down(q), s);
   REQUIRE(first.handled);
-  REQUIRE(first.command == command_id::none);  // not yet known to be a tap
-  REQUIRE(r.on_key(up(q), s).command == command_id::rate_down);
+  REQUIRE(first.command == command_id::skim_back);  // tap fires on down
+  auto tap_up = r.on_key(up(q), s);
+  REQUIRE(tap_up.handled);
+  REQUIRE(tap_up.command == command_id::none);  // already skipped; no second fire
 
-  REQUIRE(r.on_key(down(e), s).command == command_id::none);
+  REQUIRE(r.on_key(down(e), s).command == command_id::skim_forward);
   REQUIRE(r.on_key(rep(e), s).command == command_id::skim_forward);
   REQUIRE(r.on_key(rep(e), s).command == command_id::skim_forward);
   REQUIRE(r.on_key(up(e), s).command == command_id::skim_settle);
@@ -301,7 +457,7 @@ TEST_CASE("Q/E: a tap steps the speed, a hold skims and settles on release", "[s
   REQUIRE(r.on_key(rep(q), s).command == command_id::skim_back);
   REQUIRE(r.on_key(up(q), s).command == command_id::skim_settle);
 
-  REQUIRE(r.on_key(down(q), s).handled);
+  REQUIRE(r.on_key(down(q), s).command == command_id::skim_back);
   command_id released[key_router::kHeldSlots]{};
   REQUIRE(r.cancel_holds(released) == 0);  // an unfinished tap owes nothing
   REQUIRE_FALSE(r.on_key(up(q), s).handled);
@@ -314,14 +470,14 @@ TEST_CASE("holds are per key: a second hold cannot swallow the first release", "
   const key q = char_key('Q');
   const key e = char_key('E');
   REQUIRE(r.on_key(down(z), s).command == command_id::loupe);
-  REQUIRE(r.on_key(down(q), s).command == command_id::none);
-  REQUIRE(r.on_key(up(q), s).command == command_id::rate_down);
+  REQUIRE(r.on_key(down(q), s).command == command_id::skim_back);
+  REQUIRE(r.on_key(up(q), s).command == command_id::none);
   REQUIRE(r.on_key(up(z), s).command == command_id::loupe_release);
 
   // Hold Q, then hold E: both settle.
-  REQUIRE(r.on_key(down(q), s).command == command_id::none);
+  REQUIRE(r.on_key(down(q), s).command == command_id::skim_back);
   REQUIRE(r.on_key(rep(q), s).command == command_id::skim_back);
-  REQUIRE(r.on_key(down(e), s).command == command_id::none);
+  REQUIRE(r.on_key(down(e), s).command == command_id::skim_forward);
   REQUIRE(r.on_key(rep(e), s).command == command_id::skim_forward);
   REQUIRE(r.on_key(up(q), s).command == command_id::skim_settle);
   REQUIRE(r.on_key(up(e), s).command == command_id::skim_settle);
@@ -338,7 +494,7 @@ TEST_CASE("losing activation fires the releases held keys owe", "[shell][router]
   key_router r;
   const auto s = clip();
   REQUIRE(r.on_key(down(char_key('Z')), s).command == command_id::loupe);
-  REQUIRE(r.on_key(down(char_key('E')), s).command == command_id::none);
+  REQUIRE(r.on_key(down(char_key('E')), s).command == command_id::skim_forward);
   REQUIRE(r.on_key(rep(char_key('E')), s).command == command_id::skim_forward);
   command_id released[key_router::kHeldSlots]{};
   const auto n = r.cancel_holds(released);
@@ -430,6 +586,8 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
   // delete to Recycle Bin, fullscreen, slideshow start/stop, and `?` itself.
   REQUIRE(has("Open media…", "Ctrl+O"));
   REQUIRE(has("Open folder…", "Ctrl+Shift+O"));
+  REQUIRE(has("Show in Explorer", "Ctrl+E"));
+  REQUIRE(has("Keyboard shortcuts", "?"));
   REQUIRE(has("Next", "Right"));
   REQUIRE(has("Previous", "Left"));
   REQUIRE(has("Next", "Space"));
@@ -441,12 +599,15 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
   REQUIRE(has("Copy to…", "Shift+F7"));
   REQUIRE(has("Delete to Recycle Bin", "Delete"));
   REQUIRE(has("Fullscreen", "F"));
-  REQUIRE(has("Slideshow", "Enter"));
+  REQUIRE(has("Slideshow", "F5"));
   REQUIRE(has("Pause slideshow", "Space"));
   REQUIRE(has("Keyboard shortcuts", "?"));
   REQUIRE(has("Command palette", "Ctrl+K"));
+  REQUIRE(has("Settings", "Ctrl+,"));
   REQUIRE(has("Loupe", "hold Z"));
-  REQUIRE(has("Skim forward", "hold E"));
+  REQUIRE(has("Skip forward 2 s", "E"));
+  REQUIRE(has("Skip forward 2 s", "hold E"));
+  REQUIRE(has("Faster", "Shift+E"));
   // Island-only and release commands are not offered to run.
   REQUIRE(table.find("\tSelect item\t") == std::string::npos);
   REQUIRE(table.find("\tLoupe off\t") == std::string::npos);
@@ -457,7 +618,7 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     const std::size_t end = table.find('\n', pos);
     REQUIRE(end != std::string::npos);
     const std::string row = table.substr(pos, end - pos);
-    REQUIRE(std::count(row.begin(), row.end(), '\t') == 4);
+    REQUIRE(std::count(row.begin(), row.end(), '\t') == 5);
     pos = end + 1;
     ++lines;
   }
@@ -497,6 +658,11 @@ TEST_CASE("unbound keys and Alt combinations fall through", "[shell][router]") {
   REQUIRE_FALSE(r.on_key(down(key::tab), s).handled);
   REQUIRE_FALSE(r.on_key(down(char_key('Y')), s).handled);
   REQUIRE(r.on_key(down(char_key('W'), mod_ctrl), s).command == command_id::close_window);
+  REQUIRE(r.on_key(down(char_key('O'), mod_ctrl), s).command == command_id::open);
+  REQUIRE(r.on_key(down(char_key('O'), mod_ctrl | mod_shift), s).command == command_id::open_folder);
+  REQUIRE(r.on_key(down(char_key('E'), mod_ctrl), s).command == command_id::reveal_in_explorer);
+  REQUIRE(r.on_key(down(char_key('?')), s).command == command_id::help);
+  REQUIRE(r.on_key(down(char_key(','), mod_ctrl), s).command == command_id::open_settings);
   REQUIRE(r.lookup(key::none, mod_none, mode::browse) == nullptr);
   REQUIRE(r.lookup(key::count, mod_none, mode::browse) == nullptr);
 }
@@ -518,4 +684,34 @@ TEST_CASE("symbol keys are characters, independent of the Shift that made them",
   REQUIRE(r.on_key(down(char_key('=')), s).command == command_id::zoom_in);
   REQUIRE(char_key('d') == char_key('D'));
   REQUIRE(char_key(' ') == key::none);
+}
+
+TEST_CASE("remapping a key updates the live table the router and ? share", "[shell][commands]") {
+  struct reset {
+    reset() { reset_live_bindings(); }
+    ~reset() { reset_live_bindings(); }
+  } guard;
+  int row_a = -1;
+  int row_d = -1;
+  const auto def = default_bindings();
+  for (int i = 0; i < static_cast<int>(def.size()); ++i) {
+    if (def[static_cast<std::size_t>(i)].k == char_key('A') && def[static_cast<std::size_t>(i)].mods == mod_none)
+      row_a = i;
+    if (def[static_cast<std::size_t>(i)].k == char_key('D') && def[static_cast<std::size_t>(i)].mods == mod_none)
+      row_d = i;
+  }
+  REQUIRE(row_a >= 0);
+  REQUIRE(row_d >= 0);
+  REQUIRE(rebind_live(row_d, char_key('A'), mod_none));  // swap with A
+  REQUIRE(live_bindings()[static_cast<std::size_t>(row_d)].k == char_key('A'));
+  REQUIRE(live_bindings()[static_cast<std::size_t>(row_a)].k == char_key('D'));
+  key_router r;
+  r.rebuild(live_bindings());
+  REQUIRE(r.on_key(down(char_key('A')), still()).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('D')), still()).command == command_id::prev);
+  const std::string table = describe_commands();
+  REQUIRE(table.find("\tNext\tA\t") != std::string::npos);
+  reset_live_bindings();
+  r.rebuild(live_bindings());
+  REQUIRE(r.on_key(down(char_key('A')), still()).command == command_id::prev);
 }

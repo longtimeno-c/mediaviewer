@@ -22,9 +22,13 @@ TEST_CASE("view settings round-trip through the flag word") {
   REQUIRE(settings.flags() == (mv::shell::kSettingFilmstripFolder | mv::shell::kSettingWrap));
 
   settings.filmstrip_for_image = true;
+  settings.sticky_zoom = true;
+  settings.background = 3;
   const auto round = mv::shell::view_settings::from_flags(settings.flags());
   REQUIRE(round.filmstrip_for_folder);
   REQUIRE(round.filmstrip_for_image);
+  REQUIRE(round.sticky_zoom);
+  REQUIRE(round.background == 3);
   REQUIRE(mv::shell::view_settings::from_flags(0).flags() == 0);
 }
 

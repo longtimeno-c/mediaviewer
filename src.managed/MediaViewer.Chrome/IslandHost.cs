@@ -57,6 +57,14 @@ public static partial class IslandHost
         public const int FocusChanged = 20;
         // Notifications added after the command table filled the low ids.
         public const int Popup = 1000;
+        public const int Rebind = 1001;
+        public const int ResetKeys = 1002;
+        // Command-table ids sent the same way as a palette entry (commands.h).
+        public const int Clipping = 46;
+        public const int Fullscreen = 41;
+        public const int Help = 75;
+        public const int RevealInExplorer = 80;
+        public const int OpenSettings = 84;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -66,7 +74,7 @@ public static partial class IslandHost
             {
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
-                ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup,
+                ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
             };
             unchecked
             {
@@ -95,6 +103,9 @@ public static partial class IslandHost
         public const int FilmstripForFolder = 1 << 0;
         public const int FilmstripForImage = 1 << 1;
         public const int Wrap = 1 << 2;
+        public const int StickyZoom = 1 << 3;
+        public const int BackgroundShift = 4;
+        public const int BackgroundMask = 3 << 4;
     }
 
     private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap;
@@ -355,6 +366,7 @@ public static partial class IslandHost
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
             RefreshSettingsMenu();
+            RefreshSettingsScreen();
             return 0;
         }
         catch (Exception ex)
@@ -435,7 +447,8 @@ public static partial class IslandHost
             if (_updatingSpeed || _speed.SelectedIndex < 0) return;
             Send(Command.SetRate, (float)SpeedLadder[_speed.SelectedIndex]);
         };
-        ToolTipService.SetToolTip(_speed, "Playback speed — tap Q / E to step, hold to skim");
+        ToolTipService.SetToolTip(_speed, "Playback speed. Q / E skip ±2 s (hold to skim)");
+        _speed.DropDownClosed += (_, _) => RestoreCanvasFocus();
         return _speed;
     }
 
@@ -509,6 +522,12 @@ public static partial class IslandHost
         XamlSourceFocusNavigationReason reason = args.Request.Reason;
         if (reason is XamlSourceFocusNavigationReason.First or XamlSourceFocusNavigationReason.Last)
         {
+            if (_settingsVisible && sender == _source)
+            {
+                // Tab stays in Settings instead of stranding focus on the canvas.
+                sender.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
+                return;
+            }
             IntPtr hwnd = Win32Interop.GetWindowFromWindowId(sender.SiteBridge.WindowId);
             IntPtr root = GetAncestor(hwnd, GaRoot);
             if (root != IntPtr.Zero) SetFocus(root);
@@ -675,6 +694,9 @@ public static partial class IslandHost
             FontWeight = Microsoft.UI.Text.FontWeights.Normal,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
+            // Clicking Open / Play / More must not park keyboard focus on the
+            // island, or A/D/Q/E wait for the window to be deactivated.
+            AllowFocusOnInteraction = false,
         };
         ControlTemplate? template = FlatButtonTemplate();
         if (template is not null) button.Template = template;
@@ -908,6 +930,30 @@ public static partial class IslandHost
         Send(Command.SetSettings, next);
     }
 
+    private static void RefreshOpenMenu(MenuFlyout flyout)
+    {
+        flyout.Items.Clear();
+        flyout.Items.Add(Item("Media…", "Ctrl+O", () => Send(Command.Open)));
+        flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => Send(Command.OpenFolder)));
+        flyout.Items.Add(Sep());
+        string? name = _selectedIndex >= 0 && _selectedIndex < Items.Count
+            ? Items[_selectedIndex].Name
+            : null;
+        if (string.IsNullOrEmpty(name))
+        {
+            MenuFlyoutItem empty = Item("Open: (nothing open)", "Ctrl+E", () => { });
+            empty.IsEnabled = false;
+            flyout.Items.Add(empty);
+        }
+        else
+        {
+            MenuFlyoutItem reveal = Item("Open: " + name, "Ctrl+E", () => Send(Command.RevealInExplorer));
+            string path = Items[_selectedIndex].Path;
+            if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
+            flyout.Items.Add(reveal);
+        }
+    }
+
     private static void RefreshSettingsMenu()
     {
         if (_settingsFlyout is null) return;
@@ -944,11 +990,13 @@ public static partial class IslandHost
         viewFlyout.Items.Add(Item("200 %", null, () => Send(Command.ZoomPreset, 2.0f)));
         viewFlyout.Items.Add(Item("400 %", null, () => Send(Command.ZoomPreset, 4.0f)));
         viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Sep());
         viewFlyout.Items.Add(Item("Gallery", "G", () => Send(Command.ToggleGallery)));
+        viewFlyout.Items.Add(Item("Full screen", "F11", () => Send(Command.Fullscreen)));
         viewFlyout.Items.Add(Item("Filmstrip", "T", () => Send(Command.ToggleFilmstrip)));
         viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Frame-time overlay", "F", () => Send(Command.Overlay)));
+        viewFlyout.Items.Add(Item("Clipping warnings", "C", () => Send(Command.Clipping)));
+        viewFlyout.Items.Add(Item("Frame-time overlay", "F3", () => Send(Command.Overlay)));
+        viewFlyout.Items.Add(Item("Keyboard shortcuts", "?", () => Send(Command.Help)));
 
         _settingsFlyout = new MenuFlyout
         {
@@ -984,8 +1032,8 @@ public static partial class IslandHost
         // Reads as "Open media" / "Open folder". The picker takes clips as well
         // as photos, and calling it "Image" was the last place the UI still
         // claimed this was a photo-only viewer.
-        openFlyout.Items.Add(Item("Media…", "Ctrl+O", () => Send(Command.Open)));
-        openFlyout.Items.Add(Item("Folder…", null, () => Send(Command.OpenFolder)));
+        openFlyout.Opening += (_, _) => RefreshOpenMenu(openFlyout);
+        RefreshOpenMenu(openFlyout);
 
         Button? openBtn = null;
         openBtn = TextButton("Open", () =>
@@ -1000,11 +1048,7 @@ public static partial class IslandHost
         });
         FlyoutBase.SetAttachedFlyout(viewBtn, viewFlyout);
         Button? settingsBtn = null;
-        settingsBtn = TextButton("Settings", () =>
-        {
-            if (settingsBtn is not null) FlyoutBase.ShowAttachedFlyout(settingsBtn);
-        });
-        FlyoutBase.SetAttachedFlyout(settingsBtn, _settingsFlyout);
+        settingsBtn = TextButton("Settings", () => Send(Command.OpenSettings));
         Button? aboutBtn = null;
         aboutBtn = TextButton("About", () =>
         {
@@ -1027,25 +1071,29 @@ public static partial class IslandHost
 
         var speed = BuildSpeed();
         speed.HorizontalAlignment = HorizontalAlignment.Right;
+        Button helpBtn = TextButton("?", () => Send(Command.Help));
+        ToolTipService.SetToolTip(helpBtn, "Keyboard shortcuts  ?");
 
-        // Menus left, speed far right. A StackPanel cannot pin one child to the
-        // right edge, so the bar row is a two-column Grid.
+        // Menus left, speed then `?` on the far right.
         var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
         Grid.SetColumn(speed, 1);
         bar.Children.Add(speed);
+        Grid.SetColumn(helpBtn, 2);
+        bar.Children.Add(helpBtn);
 
         var root = new Grid
         {
             RequestedTheme = ElementTheme.Dark,
             Background = Brush(Canvas),
-            Height = 48,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
         Grid.SetRow(bar, 0);
@@ -1053,9 +1101,18 @@ public static partial class IslandHost
         Grid busy = BuildBusyBar();
         Grid.SetRow(busy, 0);
         root.Children.Add(busy);
+        _chromeRoot = root;
+        WireFileDrop(root);
+        _settingsHost = BuildSettingsScreen();
+        _settingsHost.Visibility = Visibility.Collapsed;
+        Grid.SetRow(_settingsHost, 1);
+        root.Children.Add(_settingsHost);
         var rule = new Border { Background = Brush(Hairline) };
-        Grid.SetRow(rule, 1);
+        Grid.SetRow(rule, 2);
         root.Children.Add(rule);
+        root.PreviewKeyDown += OnSettingsKeyDown;
+        root.PreviewKeyUp += OnSettingsKeyUp;
+        root.KeyDown += OnSettingsNavigationKeyDown;
         return root;
     }
 
@@ -1066,6 +1123,22 @@ public static partial class IslandHost
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr hWnd);
+
+    // The native canvas HWND. Clicking chrome, closing a flyout, or finishing
+    // a scrub must put keys back here so the router sees them.
+    private static void RestoreCanvasFocus()
+    {
+        if (_settingsVisible)
+        {
+            FocusSettings();
+            return;
+        }
+        DesktopWindowXamlSource? source = _source ?? _filmstrip ?? _transport ?? _gallery;
+        if (source?.SiteBridge is null) return;
+        IntPtr hwnd = Win32Interop.GetWindowFromWindowId(source.SiteBridge.WindowId);
+        IntPtr root = GetAncestor(hwnd, GaRoot);
+        if (root != IntPtr.Zero) SetFocus(root);
+    }
 }
 
 [StructLayout(LayoutKind.Sequential)]

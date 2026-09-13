@@ -102,8 +102,8 @@ TEST_CASE("a second hold does not swallow the first hold's release", "[shell][ro
   const key q = char_key('Q');
 
   REQUIRE(r.on_key(down(z), s).command == command_id::loupe);
-  REQUIRE(r.on_key(down(q), s).handled);
-  REQUIRE(r.on_key(up(q), s).command == command_id::rate_down);
+  REQUIRE(r.on_key(down(q), s).command == command_id::skim_back);
+  REQUIRE(r.on_key(up(q), s).command == command_id::none);
   // The loupe was never let go of; its key-up must still turn it off.
   REQUIRE(r.on_key(up(z), s).command == command_id::loupe_release);
 }
@@ -114,13 +114,13 @@ TEST_CASE("overlapping Q and E holds each settle", "[shell][router][review]") {
   const key q = char_key('Q');
   const key e = char_key('E');
 
-  (void)r.on_key(down(q), s);
+  REQUIRE(r.on_key(down(q), s).command == command_id::skim_back);
   REQUIRE(r.on_key(rep(q), s).command == command_id::skim_back);
-  (void)r.on_key(down(e), s);
+  REQUIRE(r.on_key(down(e), s).command == command_id::skim_forward);
   const auto q_up = r.on_key(up(q), s);
   // Letting go of Q after a hold is a settle, even with E now down.
   REQUIRE(q_up.command == command_id::skim_settle);
-  REQUIRE(r.on_key(up(e), s).command == command_id::rate_up);
+  REQUIRE(r.on_key(up(e), s).command == command_id::none);  // E was a tap (no repeat)
 }
 
 TEST_CASE("momentary held across a mode change still releases", "[shell][router][review]") {

@@ -225,6 +225,8 @@ expected chrome_host::load() noexcept {
   shutdown_for_exit_ = get_entry(L"ShutdownForExit");
   set_command_table_ = get_entry(L"SetCommandTable");
   show_popup_ = get_entry(L"ShowPopup");
+  navigate_gallery_ = get_entry(L"NavigateGallery");
+  scale_gallery_ = get_entry(L"ScaleGallery");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -559,6 +561,20 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   args.kind = static_cast<std::int32_t>(kind);
   args.mode_mask = mode_mask;
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {
+  if (!attached_ || !navigate_gallery_) return;
+  // Two int32 fields, mirrored by ChromeGalleryNavigationArgs in the island.
+  std::int32_t args[] = {direction, index};
+  (void)navigate_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noexcept {
+  if (!attached_ || !scale_gallery_) return;
+  // Same two-int32 payload as gallery navigation: direction and selection.
+  std::int32_t args[] = {direction, index};
+  (void)scale_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {

@@ -83,6 +83,9 @@ struct input_snapshot {
 
   bool window_visible = true;
   bool window_active = true;
+  // Gallery jump: drop the still on the canvas so the previous item does not
+  // flash under the closing grid. Sequential A/D still keep the last frame.
+  std::uint32_t discard_media_seq = 0;
 
   // Bumped by the UI thread when the swapchain must be rebuilt: a resize, a DPI
   // change, or the window moving to a monitor on a different adapter.

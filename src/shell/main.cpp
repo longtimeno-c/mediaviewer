@@ -16,6 +16,7 @@
 #include <dwmapi.h>
 #include <commdlg.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 
 #include "io/dir.h"
 
@@ -125,6 +126,10 @@ struct app_state {
   LONG_PTR windowed_style = 0;
   bool topmost = false;  // Ctrl+Shift+A
   bool popup_open = false;       // a `?` / palette / go-to / find flyout is up
+  bool settings_open = false;    // settings screen covering the canvas
+  bool file_drag_armed = false;
+  int file_drag_x = 0;
+  int file_drag_y = 0;
   std::wstring last_title;       // the status line last written to the title bar
   bool fullscreen_reveal = false;  // strips shown over a fullscreen canvas for a while
   ULONGLONG zoom_intent_tick = 0;  // GetTickCount64 of the last zoom-in style command
@@ -164,6 +169,13 @@ std::string utf8_from_wide(std::wstring_view wide) {
 void apply_view_state(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
+void focus_canvas(app_state* app) noexcept;
+void reveal_current_in_explorer(app_state* app) noexcept;
+void begin_file_drag(HWND hwnd, const std::string& utf8) noexcept;
+void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
+void persist_live_keys() noexcept;
+void publish_command_table(app_state* app) noexcept;
+void set_settings_open(app_state* app, bool on) noexcept;
 
 void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
   if (!app || !app->session || wide_dir.empty()) return;
@@ -320,6 +332,72 @@ std::string current_item_path(app_state* app) {
   if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return {};
   if (mv_folder_selected(app->session, &selected) != MV_OK || selected >= count) return {};
   return item_path_at(app, selected);
+}
+
+// plan/16 Ctrl+E: open the containing folder with this file selected, so a
+// culling pass can jump to Explorer without copying the path.
+void reveal_current_in_explorer(app_state* app) noexcept {
+  if (!app) return;
+  const std::string utf8 = current_item_path(app);
+  if (utf8.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (n <= 1) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  std::wstring wide(static_cast<std::size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
+  PIDLIST_ABSOLUTE pidl = ::ILCreateFromPathW(wide.c_str());
+  if (!pidl) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  (void)::SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+  ::ILFree(pidl);
+}
+
+// Shell IDataObject for the file, so Explorer / other apps receive a real
+// CF_HDROP. Modal; the UI thread is inside OLE's drag loop until drop or Esc.
+void begin_file_drag(HWND hwnd, const std::string& utf8) noexcept {
+  if (!hwnd || utf8.empty()) return;
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (n <= 1) return;
+  std::wstring wide(static_cast<std::size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
+  IShellItem* item = nullptr;
+  if (FAILED(::SHCreateItemFromParsingName(wide.c_str(), nullptr, IID_PPV_ARGS(&item))) ||
+      !item) {
+    return;
+  }
+  IDataObject* data = nullptr;
+  const HRESULT hr =
+      item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data));
+  item->Release();
+  if (FAILED(hr) || !data) return;
+  DWORD effect = DROPEFFECT_COPY;
+  (void)::SHDoDragDrop(hwnd, data, nullptr, DROPEFFECT_COPY | DROPEFFECT_LINK, &effect);
+  data->Release();
+}
+
+// Paths from a XAML island drop (WM_COPYDATA), newline-separated UTF-16.
+void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept {
+  if (!app || blob.empty()) return;
+  std::vector<std::wstring> paths;
+  std::wstring cur;
+  for (wchar_t c : blob) {
+    if (c == L'\0') break;
+    if (c == L'\n' || c == L'\r') {
+      if (!cur.empty()) paths.push_back(std::move(cur));
+      cur.clear();
+      continue;
+    }
+    cur.push_back(c);
+  }
+  if (!cur.empty()) paths.push_back(std::move(cur));
+  if (!paths.empty()) open_paths(app, paths);
 }
 
 // The marked badge. Free when nothing is marked, so key-repeat navigation with
@@ -524,18 +602,48 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_close_gallery:
       set_gallery(app, false);
       return;
-    case mv::shell::chrome_cmd_gallery_activate:
-      folder_select(app, static_cast<std::uint32_t>(arg));
+    case mv::shell::chrome_cmd_gallery_activate: {
+      std::uint32_t cur = 0;
+      (void)mv_folder_selected(app->session, &cur);
+      const auto index = static_cast<std::uint32_t>(arg);
+      folder_select(app, index);
+      // Closing the grid would otherwise reveal the previous still until the
+      // new decode lands. Drop it when the click is a jump.
+      if (index != cur) {
+        ++app->input.discard_media_seq;
+        publish(app);
+      }
       set_gallery(app, false);
       return;
+    }
     case mv::shell::chrome_cmd_toggle_filmstrip:
       toggle_filmstrip_setting(app);
       return;
     case mv::shell::chrome_cmd_set_settings:
       app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
       mv::shell::save_view_settings(app->settings);
+      app->input.sticky_zoom = app->settings.sticky_zoom;
+      app->input.background = app->settings.background;
       app->chrome.apply_settings(app->settings.flags());
       apply_view_state(app);
+      return;
+    case mv::shell::chrome_cmd_rebind: {
+      const int packed = static_cast<int>(arg);
+      const int row = packed & 0xFF;
+      const auto k = static_cast<mv::shell::key>((packed >> 8) & 0xFFF);
+      const auto mods = static_cast<std::uint8_t>((packed >> 20) & 7);
+      if (mv::shell::rebind_live(row, k, mods)) {
+        persist_live_keys();
+        app->router.rebuild(mv::shell::live_bindings());
+        publish_command_table(app);
+      }
+      return;
+    }
+    case mv::shell::chrome_cmd_reset_keys:
+      mv::shell::reset_live_bindings();
+      persist_live_keys();
+      app->router.rebuild(mv::shell::live_bindings());
+      publish_command_table(app);
       return;
     case mv::shell::chrome_cmd_set_rate:
       apply_rate(app, rate_index_for(static_cast<double>(arg)));
@@ -567,7 +675,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
     }
     case mv::shell::chrome_cmd_popup:
       app->popup_open = arg != 0.0f;
-      // Fullscreen parks the bar again once nothing hangs off it.
+      // Fullscreen parks the bar again once nothing hangs off it. Do not
+      // SetFocus here: Closed of a replaced flyout can arrive after the
+      // palette's filter already took keyboard focus.
       if (!app->popup_open && app->fullscreen) layout_chrome(app);
       return;
     default:
@@ -672,6 +782,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.loupe_held = app->input.loupe;
   s.slideshow = app->show.active();
   s.popup_open = app->popup_open;
+  s.settings_open = app->settings_open;
   return s;
 }
 
@@ -720,7 +831,7 @@ void publish_slideshow(app_state* app) noexcept {
   publish(app);
 }
 
-// Enter (plan/16). Fullscreen unless it already is; leaving puts it back.
+// F5 (plan/16). Fullscreen unless it already is; leaving puts it back.
 void start_slideshow(app_state* app) noexcept {
   if (!app || !app->window || app->show.active()) return;
   const std::uint32_t count = folder_count(app);
@@ -806,22 +917,75 @@ void slideshow_tick(app_state* app) noexcept {
   folder_select(app, *next);
 }
 
+void persist_live_keys() noexcept {
+  std::vector<mv::shell::key_override> out;
+  const auto live = mv::shell::live_bindings();
+  const auto def = mv::shell::default_bindings();
+  const std::size_t n = live.size() < def.size() ? live.size() : def.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (live[i].k == def[i].k && live[i].mods == def[i].mods) continue;
+    out.push_back(mv::shell::key_override{static_cast<int>(i),
+                                          static_cast<std::uint16_t>(live[i].k), live[i].mods});
+  }
+  mv::shell::save_key_overrides(out);
+}
+
+void publish_command_table(app_state* app) noexcept {
+  if (!app || !app->chrome.attached()) return;
+  app->chrome.set_command_table(mv::shell::describe_commands());
+}
+
+void set_settings_open(app_state* app, bool on) noexcept {
+  if (!app || app->settings_open == on) {
+    if (on && app) app->chrome.show_popup(mv::shell::chrome_popup::settings, 0);
+    return;
+  }
+  app->settings_open = on;
+  if (on) {
+    mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+    const std::size_t n = app->router.cancel_holds(released);
+    for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+    app->gallery_visible = false;
+    app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
+    app->popup_open = false;
+    // Give XAML its final viewport before measuring and focusing Settings.
+    layout_chrome(app);
+    app->chrome.show_popup(mv::shell::chrome_popup::settings, 0);
+  } else {
+    app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
+    focus_canvas(app);
+  }
+  apply_view_state(app);
+  layout_chrome(app);
+}
+
+void focus_canvas(app_state* app) noexcept {
+  if (!app) return;
+  if (app->window) ::SetFocus(app->window);
+  // Forget the text bit: XAML may not raise GotFocus again when Tab
+  // returns to an element that "never lost" focus, and a stale text bit
+  // would swallow every key but Esc on a button.
+  app->island_focus = mv::shell::focus_kind::command_bar;
+}
+
 void walk_back(app_state* app, mv::shell::back_target target) noexcept {
   using mv::shell::back_target;
   switch (target) {
     case back_target::blur_text:
     case back_target::canvas_focus:
-      if (app->window) ::SetFocus(app->window);
-      // Forget the text bit: XAML may not raise GotFocus again when Tab
-      // returns to an element that "never lost" focus, and a stale text bit
-      // would swallow every key but Esc on a button.
-      app->island_focus = mv::shell::focus_kind::command_bar;
+      focus_canvas(app);
       return;
     case back_target::gallery:
       set_gallery(app, false);
       return;
     case back_target::popup:
       app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
+      // Closing `?` / the palette must not leave the island HWND focused, or
+      // the next letter waits for an Alt+Tab before it routes again.
+      focus_canvas(app);
+      return;
+    case back_target::settings:
+      set_settings_open(app, false);
       return;
     case back_target::slideshow:
       stop_slideshow(app);
@@ -1033,6 +1197,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case open_folder:
       if (app->window) open_folder_dialog(app, app->window);
       return true;
+    case reveal_in_explorer:
+      reveal_current_in_explorer(app);
+      return true;
+    case open_settings:
+      set_settings_open(app, !app->settings_open);
+      return true;
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
@@ -1043,6 +1213,34 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case skip_back: folder_jump(app, -10); return true;
     case skip_forward: folder_jump(app, 10); return true;
     case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
+    case gallery_open_selected:
+      if (!app->gallery_visible) return false;
+      // Enter returns to the normal viewer, including the configured filmstrip.
+      // It also leaves any slideshow that was running behind the gallery.
+      stop_slideshow(app);
+      set_gallery(app, false);
+      set_fullscreen(app, false);
+      if (app->window) ::SetFocus(app->window);
+      return true;
+    case gallery_up:
+    case gallery_down: {
+      if (!app->gallery_visible) return false;
+      std::uint32_t selected = 0;
+      if (mv_folder_selected(app->session, &selected) == MV_OK) {
+        app->chrome.navigate_gallery(command == gallery_up ? -1 : 1,
+                                     static_cast<std::int32_t>(selected));
+      }
+      return true;
+    }
+    case gallery_larger:
+    case gallery_smaller: {
+      if (!app->gallery_visible) return false;
+      std::uint32_t selected = 0;
+      (void)mv_folder_selected(app->session, &selected);
+      app->chrome.scale_gallery(command == gallery_larger ? 1 : -1,
+                                static_cast<std::int32_t>(selected));
+      return true;
+    }
     case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
     case fit:
       app->zoom_intent_tick = 0;
@@ -1089,22 +1287,27 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       }
       (void)mv_video_step(app->session, command == frame_forward ? 1 : -1);
       return true;
-    // Q/E tap: one rung of the speed ladder.
+    // Speed ladder: the command-bar dropdown is the owner. Q/E used to step
+    // it on tap; they skip instead (plan/12 2026-09-13).
     case rate_down:
     case rate_up:
       if (!video_mode(app)) return false;
       apply_rate(app, app->rate_index + (command == rate_up ? 1 : -1));
       return true;
-    // Q/E hold: shuttle on the non-exact seek (nearest keyframe) so a held key
-    // cannot queue a decode-forward per repeat (plan/16 speed rule 1). The
-    // first repeat of a burst re-reads the position.
+    // Q/E: tap is one exact ±2 s skip; hold shuttles on the non-exact seek
+    // (nearest keyframe) so a held key cannot queue a decode-forward per
+    // repeat (plan/16 speed rule 1). A new burst re-reads the position.
     case skim_back:
-    case skim_forward:
+    case skim_forward: {
       if (!video_mode(app)) return false;
-      if (!app->skim_shuttled) app->skim_tick_ms = 0;
+      const std::uint64_t now = ::GetTickCount64();
+      const bool new_burst = !app->skim_shuttled || app->skim_tick_ms == 0 ||
+                             now - app->skim_tick_ms > kSkimBurstMs;
+      if (new_burst) app->skim_tick_ms = 0;
       app->skim_shuttled = true;
-      (void)skim(app, (command == skim_forward ? 1 : -1) * kSkimStepNs, false);
+      (void)skim(app, (command == skim_forward ? 1 : -1) * kSkimStepNs, new_burst);
       return true;
+    }
     // Release settles on the exact frame, the way letting go of the scrubber
     // does — otherwise it stops on whatever keyframe the last cheap seek hit.
     case skim_settle:
@@ -1249,6 +1452,14 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case go_to:
     case typeahead: {
       if (!app->chrome.attached()) return false;
+      // `?` toggles. ShowPopup closes then reopens, which flickered as "it
+      // does not open".
+      if (command == help && app->popup_open) {
+        app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
+        app->popup_open = false;
+        if (app->fullscreen) layout_chrome(app);
+        return true;
+      }
       const mv::shell::chrome_popup kind = command == help      ? mv::shell::chrome_popup::help
                                            : command == palette ? mv::shell::chrome_popup::palette
                                            : command == go_to   ? mv::shell::chrome_popup::go_to
@@ -1263,6 +1474,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
+      // Do not SetFocus the canvas here: a WinUI Flyout light-dismisses, which
+      // is why `?` opened and immediately vanished. Letter keys still route
+      // while it is up (command-bar focus is not island mode).
       return true;
     }
     // plan/12 2026-09-13: the tree island lands in PR 8. Its command, key and
@@ -1314,8 +1528,10 @@ void layout_chrome(app_state* app) noexcept {
   const int bar = mv::shell::chrome_bar_height_px(dpi);
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
-  // Fullscreen parks the bar, except while a flyout hangs off it.
-  if (app->fullscreen && !app->popup_open) app->chrome.park_bar(height);
+  // Fullscreen parks the bar, except while a flyout hangs off it. Settings
+  // expands the bar island to cover the canvas.
+  if (app->settings_open) app->chrome.resize(width, height, dpi);
+  else if (app->fullscreen && !app->popup_open) app->chrome.park_bar(height);
   else app->chrome.resize(width, bar, dpi);
   if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
@@ -1345,7 +1561,7 @@ bool attach_chrome(app_state* app) {
                                    rc.right - rc.left, height, dpi);
   app->chrome.apply_settings(app->settings.flags());
   // `?` and the palette read the same static table as the router (plan/16).
-  app->chrome.set_command_table(mv::shell::describe_commands());
+  publish_command_table(app);
   app->chrome.refresh_island_windows();
   return true;
 }
@@ -1385,20 +1601,23 @@ void apply_view_state(app_state* app) noexcept {
 
   // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
+  const bool settings = app->settings_open;
   const bool want_filmstrip =
-      have_folder && !app->gallery_visible && !chrome_hidden &&
+      have_folder && !app->gallery_visible && !chrome_hidden && !settings &&
       (app->mode == open_mode::image ? app->settings.filmstrip_for_image
        : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
     app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
   }
-  if (app->gallery_visible != app->chrome.gallery_visible()) {
-    app->chrome.show_gallery(app->gallery_visible, width, height, dpi);
+  const bool want_gallery = app->gallery_visible && !settings;
+  if (want_gallery != app->chrome.gallery_visible()) {
+    app->chrome.show_gallery(want_gallery, width, height, dpi);
   }
   // Auto show/hide: a clip is open, and the grid is not covering everything.
   // Ordered after the filmstrip so the strip height it stacks on is current.
-  const bool want_transport = app->video_on && !app->gallery_visible && !chrome_hidden;
+  const bool want_transport =
+      app->video_on && !app->gallery_visible && !chrome_hidden && !settings;
   const int strip = app->chrome.filmstrip_visible()
                         ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (want_transport != app->chrome.transport_visible()) {
@@ -1495,6 +1714,21 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::TrackMouseEvent(&tme);
         app->tracking_mouse = true;
       }
+      // At fit, left-drag is not a pan. After the system drag threshold it
+      // is a file drag of the current item (same CF_HDROP as the gallery).
+      if (app->file_drag_armed && (wparam & MK_LBUTTON) && app->lab.view_fitted()) {
+        const int dx = GET_X_LPARAM(lparam) - app->file_drag_x;
+        const int dy = GET_Y_LPARAM(lparam) - app->file_drag_y;
+        const int slop = ::GetSystemMetrics(SM_CXDRAG);
+        if (dx * dx + dy * dy >= slop * slop) {
+          app->file_drag_armed = false;
+          app->input.mouse_down[0] = false;
+          ::ReleaseCapture();
+          publish(app);
+          begin_file_drag(hwnd, current_item_path(app));
+          return 0;
+        }
+      }
       publish(app);
       return 0;
     }
@@ -1516,10 +1750,23 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                                                          : 2;
       app->input.mouse_down[index] = down;
       ++app->input.activity_seq;
-      if (down) ::SetCapture(hwnd);
+      // Clicking the canvas (this HWND, not an island) must take keyboard
+      // focus back. Child XAML islands otherwise keep it, and A/D wait for
+      // the window to be deactivated and reactivated.
+      if (down) {
+        ::SetFocus(hwnd);
+        app->island_focus = mv::shell::focus_kind::command_bar;
+        ::SetCapture(hwnd);
+        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted()) {
+          app->file_drag_armed = true;
+          app->file_drag_x = GET_X_LPARAM(lparam);
+          app->file_drag_y = GET_Y_LPARAM(lparam);
+        }
+      }
       else if (!app->input.mouse_down[0] && !app->input.mouse_down[1] &&
                !app->input.mouse_down[2]) {
         ::ReleaseCapture();
+        app->file_drag_armed = false;
       }
       publish(app);
       return 0;
@@ -1540,6 +1787,17 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         (void)app->chrome.navigate_focus(reverse);
       }
       return 0;
+    }
+
+    case WM_COPYDATA: {
+      const auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lparam);
+      if (!cds || cds->dwData != 0x4D560001ul || !cds->lpData || cds->cbData < 2) return 0;
+      const auto* w = static_cast<const wchar_t*>(cds->lpData);
+      const std::size_t n = static_cast<std::size_t>(cds->cbData) / sizeof(wchar_t);
+      std::wstring_view blob(w, n);
+      if (!blob.empty() && blob.back() == L'\0') blob.remove_suffix(1);
+      open_dropped_wide_list(app, blob);
+      return 1;
     }
 
     case WM_DROPFILES: {
@@ -1735,7 +1993,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app_state app;
   app.chrome_enabled = chrome_enabled;
   app.settings = mv::shell::load_view_settings();
+  app.input.sticky_zoom = app.settings.sticky_zoom;
+  app.input.background = app.settings.background;
   app.destinations = mv::shell::load_destinations();
+  for (const auto& o : mv::shell::load_key_overrides()) {
+    (void)mv::shell::rebind_live(o.row, static_cast<mv::shell::key>(o.k), o.mods);
+  }
+  app.router.rebuild(mv::shell::live_bindings());
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
   mv_session_config config{};
   config.worker_count = 0;
@@ -1802,6 +2066,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    // The router yields every Settings key, including Escape, to XAML.
     if (handle_app_key(&app, msg)) continue;
     if (app.chrome.pre_translate(&msg)) continue;
     ::TranslateMessage(&msg);

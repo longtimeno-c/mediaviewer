@@ -156,6 +156,11 @@ class present_lab {
   // frame. Frame 0 arrived as the still and fitted the camera once.
   mv::abi::gpu_image_ptr anim_frame_;
   codec::frame_schedule anim_schedule_;
+  // Review note 44: animation cadence for the --json report, across the whole
+  // run (the schedule resets per item). Render thread only.
+  std::uint64_t anim_frames_shown_ = 0;   // taken on the schedule, not by stepping
+  std::uint64_t anim_delay_sum_ms_ = 0;   // of those frames' file delays
+  std::uint64_t anim_late_total_ = 0;     // frames that restarted the cadence
   std::uint32_t anim_generation_ = 0;
   std::uint32_t anim_index_ = 0;
   std::uint32_t seen_anim_toggle_seq_ = 0;
@@ -216,6 +221,7 @@ class present_lab {
   std::uint32_t seen_zoom_out_seq_ = 0;
   std::uint32_t seen_zoom_preset_seq_ = 0;
   std::uint32_t seen_fill_seq_ = 0;
+  std::uint32_t seen_discard_seq_ = 0;
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;  // < 0: no input yet, do not fake a 500 ms tail
   float last_mouse_x_ = 0.0f;

@@ -293,7 +293,12 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
       video_frame* slot = pipe.ring.valid() ? reserve_slot(pipe, local_generation) : nullptr;
       if (pipe.stopping.load() || pipe.generation.load() != local_generation) break;
       rc = avcodec_receive_frame(pipe.codec.get(), frame.get());
-      if (rc == AVERROR_EOF) { pipe.video_done.store(true); break; }
+      if (rc == AVERROR_EOF) {
+        // A seek bumps generation and flushes; do not stamp the new generation
+        // done with the previous play-out's drain.
+        if (pipe.generation.load() == local_generation) pipe.video_done.store(true);
+        break;
+      }
       if (rc == AVERROR(EAGAIN)) break;
       if (rc < 0) {
         pipe.decode_errors.fetch_add(1, std::memory_order_relaxed);

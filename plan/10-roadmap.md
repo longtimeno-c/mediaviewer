@@ -116,16 +116,19 @@ and the OS overlay work; resume returns to the right position.
 
 ### PR 6 — Viewer completeness
 Fullscreen, slideshow **as a mode** (no transition pass), fit/100 %/fill, animated GIF/APNG/WebP
-on the QPC frame clock, Recycle Bin delete with confirm, drag-and-drop in, argv handling.
+on the QPC frame clock, Recycle Bin delete with confirm, drag-and-drop in **and out**, argv
+handling.
 
 This is also the PR that makes the app **keyboard-complete for browse**. One key router, a
 default map, `?` overlay, `Ctrl+K` palette, marks, copy-to / move-to (`F7`/`F8`), status,
 typeahead, sticky zoom, companion hiding, loupe, hold-previous, display-referred clipping
 blinkies, pixel grid, canvas background/checkerboard, always-on-top, fullscreen chrome
 hide. Folder tree as a **third island, left, hidden by default** — slip to PR 8 if this
-slice overruns, but `chrome_left_px` and the command id still land here.
+slice overruns, but `chrome_left_px` and the command id still land here. (2026-09-13: the
+tree slipped to PR 8 and companion hiding to PR 7 — [12-decision-log.md](12-decision-log.md).)
 Space becomes next-image (play/pause on video/animation); the lab sweep does not ship.
-Full spec: [16-commands.md](16-commands.md). **Remap UI is v1.1**, not this PR.
+Full spec: [16-commands.md](16-commands.md). **Settings remaps the live table in this PR**
+(`Ctrl+,`); JSON import/export and named layouts stay v1.1.
 
 **Verify:** keyboard-only browse of a real folder — open, next/prev, zoom/fit/100 %, mark,
 copy-to a destination, delete to Recycle Bin, fullscreen, slideshow start/stop — without
@@ -342,7 +345,7 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating, colour labels, keywords |
-| Viewer | Keymap editor + alternate layouts, side-by-side compare, burst-stack grouping, print/contact sheet, card ingest with verify, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
+| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim), side-by-side compare, burst-stack grouping, print/contact sheet, card ingest with verify, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Store MSIX as a secondary channel, per-machine MSI for enterprise |
 | Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS is Milestone F, not v1.1.** |
@@ -356,8 +359,8 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 - **Formats (PR 7) before editors.** Coverage is what makes a viewer worth switching to; editing is
   what makes people stay.
 - **Resist the NLE, and resist the develop module.** Both are real products; neither is this one.
-  Resist the keymap editor and the compare workspace in v1 the same way: the default map and
-  hold-previous are the daily path; the editors wait ([16-commands.md](16-commands.md)).
+  Resist JSON keymap packs and the compare workspace in v1 the same way: the default map,
+  Settings remap, and hold-previous are the daily path ([16-commands.md](16-commands.md)).
 - **PR 1-7 is the app you would use daily**, and that is a believable target on a tight calendar for
   one person. Milestone C is what makes it worth other people switching to.
 - **Do not plan v1 as "3 months full-time."** That number was the original overconfidence surviving

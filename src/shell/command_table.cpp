@@ -4,6 +4,7 @@
 #include "shell/commands.h"
 
 #include <iterator>
+#include <vector>
 
 namespace mv::shell {
 namespace {
@@ -11,7 +12,8 @@ namespace {
 using enum command_id;
 using enum repeat_policy;
 
-constexpr mode_mask kViewing = kBrowse | kVideo | kIsland;  // not slideshow
+constexpr mode_mask kViewing = kBrowse | kVideo | kIsland | kGallery;  // not slideshow
+constexpr mode_mask kImageZoom = kBrowse | kVideo | kIsland;
 // mode::loupe layers over browse / video: the router falls back to them for any
 // key without a kLoupe row, so only the arrows and Z / \ are bound there.
 constexpr mode_mask kWalk = kBrowse | kVideo | kSlideshow;  // arrows: island traverses itself
@@ -42,10 +44,19 @@ constexpr binding kBindings[] = {
     row(key::page_up, mod_none, kWalk, repeat, skip_back),
     row(key::page_down, mod_none, kWalk, repeat, skip_forward),
     row(key::escape, mod_none, kAllModes, edge, back),
-    row(key::enter, mod_none, kBrowse | kVideo, edge, slideshow_start),
+    row(key::f5, mod_none, kBrowse | kVideo, edge, slideshow_start),
     row(C('F'), mod_none, kAllModes, edge, fullscreen),
+    row(key::f11, mod_none, kAllModes, edge, fullscreen),
+    row(key::enter, mod_none, kGallery, edge, gallery_open_selected),
+    row(C('W'), mod_none, kGallery, repeat, gallery_up),
+    row(C('S'), mod_none, kGallery, repeat, gallery_down),
+    row(key::up, mod_none, kGallery, repeat, gallery_up),
+    row(key::down, mod_none, kGallery, repeat, gallery_down),
+    row(key::left, mod_none, kGallery, repeat, prev),
+    row(key::right, mod_none, kGallery, repeat, next),
     row(C('O'), mod_ctrl, kAllModes, edge, open),
     row(C('O'), mod_ctrl | mod_shift, kAllModes, edge, open_folder),
+    row(C('E'), mod_ctrl, kAllModes, edge, reveal_in_explorer),
     row(C('W'), mod_ctrl, kAllModes, edge, close_window),
 
     // View. Number row is zoom; ratings never take these keys.
@@ -55,9 +66,9 @@ constexpr binding kBindings[] = {
     row(C('3'), mod_none, kViewing, edge, zoom_400),
     row(C('4'), mod_none, kViewing, edge, fill),
     row(C('0'), mod_ctrl, kViewing, edge, reset_view),
-    row(C('+'), mod_none, kViewing, repeat, zoom_in),
-    row(C('='), mod_none, kViewing, repeat, zoom_in),  // the unshifted +/= key
-    row(C('-'), mod_none, kViewing, repeat, zoom_out),
+    row(C('+'), mod_none, kImageZoom, repeat, zoom_in),
+    row(C('='), mod_none, kImageZoom, repeat, zoom_in),  // the unshifted +/= key
+    row(C('-'), mod_none, kImageZoom, repeat, zoom_out),
     // plan/16 Browse: when zoomed ↑ ↓ pan and ← → still navigate; Shift+arrows
     // pan in all four directions.
     row(key::up, mod_none, kBrowse | kVideo, repeat, pan_up),
@@ -71,7 +82,7 @@ constexpr binding kBindings[] = {
     row(C('G'), mod_none, kAllModes, edge, toggle_gallery),
     row(C('T'), mod_none, kAllModes, edge, toggle_filmstrip),
     row(C('B'), mod_none, kViewing, edge, cycle_background),
-    row(C('S'), mod_none, kViewing, edge, sticky_zoom),
+    row(C('S'), mod_none, kBrowse | kVideo | kIsland, edge, sticky_zoom),
     row(C('C'), mod_none, kViewing, edge, clipping),
     row(C('O'), mod_none, kViewing, edge, info_overlay),
     row(C('Z'), mod_none, kBrowse | kVideo | kLoupe, momentary, loupe, none, loupe_release),
@@ -85,14 +96,17 @@ constexpr binding kBindings[] = {
     row(key::down, mod_none, kLoupe, repeat, loupe_nudge_down),
     row(C('A'), mod_ctrl | mod_shift, kAllModes, edge, always_on_top),
 
-    // Video (PR 5c). Q/E: tap steps the speed, hold skims, release settles.
+    // Video (PR 5c). Q/E: tap skips ±2 s, hold skims, release settles.
+    // Speed stays on the command-bar dropdown (one owner; native pushes it).
     row(C('J'), mod_none, kVideo, edge, jump_back),
     row(C('K'), mod_none, kVideo, edge, pause),
     row(C('L'), mod_none, kVideo, edge, jump_forward),
     row(C(','), mod_none, kVideo, edge, frame_back),
     row(C('.'), mod_none, kVideo, edge, frame_forward),
-    row(C('Q'), mod_none, kVideo, tap_hold, rate_down, skim_back, skim_settle),
-    row(C('E'), mod_none, kVideo, tap_hold, rate_up, skim_forward, skim_settle),
+    row(C('Q'), mod_none, kVideo, tap_hold, skim_back, skim_back, skim_settle),
+    row(C('E'), mod_none, kVideo, tap_hold, skim_forward, skim_forward, skim_settle),
+    row(C('Q'), mod_shift, kVideo, edge, rate_down),
+    row(C('E'), mod_shift, kVideo, edge, rate_up),
 
     // Marks, copy, move.
     row(key::insert, mod_none, kBrowse | kVideo, edge, toggle_mark),
@@ -114,6 +128,7 @@ constexpr binding kBindings[] = {
 
     // Palette and help.
     row(C('?'), mod_none, kAllModes, edge, help),
+    row(C(','), mod_ctrl, kAllModes, edge, open_settings),
     row(C('K'), mod_ctrl, kAllModes, edge, palette),
     row(C('P'), mod_ctrl | mod_shift, kAllModes, edge, palette),
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
@@ -121,6 +136,10 @@ constexpr binding kBindings[] = {
     // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
     // with the filmstrip or gallery focused, plain typing jumps by name.
     row(C('/'), mod_none, kBrowse | kVideo, edge, typeahead),
+    // Append rows so existing Settings row indices keep their meaning.
+    row(C('+'), mod_none, kGallery, repeat, gallery_larger),
+    row(C('='), mod_none, kGallery, repeat, gallery_larger),
+    row(C('-'), mod_none, kGallery, repeat, gallery_smaller),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -155,14 +174,19 @@ constexpr command_info kCommands[] = {
     {frame_forward, "Next frame"},
     {rate_down, "Slower"},
     {rate_up, "Faster"},
-    {skim_back, "Skim back"},
-    {skim_forward, "Skim forward"},
+    {skim_back, "Skip back 2 s"},
+    {skim_forward, "Skip forward 2 s"},
     {skim_settle, "Settle skim"},
     {reset_stats, "Reset frame stats"},
     {close_window, "Close window"},
     {zoom_200, "Zoom 200 %"},
     {zoom_400, "Zoom 400 %"},
     {fullscreen, "Fullscreen"},
+    {gallery_up, "Gallery: previous row"},
+    {gallery_down, "Gallery: next row"},
+    {gallery_open_selected, "Gallery: open selected image"},
+    {gallery_larger, "Gallery: larger thumbnails"},
+    {gallery_smaller, "Gallery: smaller thumbnails"},
     {fill, "Fill"},
     {reset_view, "Reset view"},
     {cycle_background, "Canvas background"},
@@ -201,6 +225,8 @@ constexpr command_info kCommands[] = {
     {go_to, "Go to index…"},
     {folder_tree, "Folder tree"},
     {typeahead, "Find by name…"},
+    {reveal_in_explorer, "Show in Explorer"},
+    {open_settings, "Settings"},
 };
 
 const char* named_key(key k) noexcept {
@@ -239,6 +265,47 @@ const char* named_key(key k) noexcept {
 }  // namespace
 
 std::span<const binding> default_bindings() noexcept { return kBindings; }
+
+namespace {
+
+std::vector<binding>& live_store() {
+  static std::vector<binding> live{std::begin(kBindings), std::end(kBindings)};
+  return live;
+}
+
+}  // namespace
+
+std::span<const binding> live_bindings() noexcept { return live_store(); }
+
+void reset_live_bindings() noexcept {
+  live_store().assign(std::begin(kBindings), std::end(kBindings));
+}
+
+bool rebind_live(int index, key k, std::uint8_t mods) noexcept {
+  auto& live = live_store();
+  if (index < 0 || static_cast<std::size_t>(index) >= live.size()) return false;
+  if (static_cast<int>(k) <= 0 || static_cast<int>(k) >= kKeyCount) return false;
+  if (mods >= kModCombos) return false;
+  binding& target = live[static_cast<std::size_t>(index)];
+  if (target.k == k && target.mods == mods) return true;
+  for (std::size_t i = 0; i < live.size(); ++i) {
+    if (static_cast<int>(i) == index) continue;
+    binding& other = live[i];
+    if (other.k == k && other.mods == mods && (other.modes & target.modes) != 0) {
+      const key old_k = target.k;
+      const std::uint8_t old_mods = target.mods;
+      target.k = k;
+      target.mods = mods;
+      other.k = old_k;
+      other.mods = old_mods;
+      return true;
+    }
+  }
+  target.k = k;
+  target.mods = mods;
+  return true;
+}
+
 std::span<const command_info> command_infos() noexcept { return kCommands; }
 
 // Every bound command is handled by run_command as of PR 6 (6f emptied this;
@@ -261,9 +328,12 @@ std::string key_label(key k, std::uint8_t mods) {
 
 bool palette_runnable(command_id id) noexcept {
   if (id == none) return false;
-  for (const binding& b : kBindings) {
+  for (const binding& b : live_bindings()) {
     if (b.policy == momentary && (b.command == id || b.release == id)) return false;
-    if (b.policy == tap_hold && (b.hold == id || b.release == id)) return false;
+    // A tap/hold's hold is not runnable unless it is also the tap (Q/E skip
+    // on down and on repeat). The release always needs a key-up.
+    if (b.policy == tap_hold && b.release == id) return false;
+    if (b.policy == tap_hold && b.hold == id && b.command != id) return false;
   }
   return true;
 }
@@ -271,7 +341,7 @@ bool palette_runnable(command_id id) noexcept {
 std::string describe_commands() {
   std::string out;
   out.reserve(4096);
-  const auto line = [&out](command_id id, mode_mask modes, std::string keys) {
+  const auto line = [&out](command_id id, mode_mask modes, std::string keys, std::size_t row) {
     const command_info* info = find_command(id);
     if (!info || info->keyless || id == back) return;
     out += std::to_string(static_cast<int>(id));
@@ -283,17 +353,21 @@ std::string describe_commands() {
     out += keys;
     out += '\t';
     out += palette_runnable(id) ? '1' : '0';
+    out += '\t';
+    out += std::to_string(row);
     out += '\n';
   };
-  for (const binding& b : kBindings) {
+  const auto rows = live_bindings();
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const binding& b = rows[i];
     const std::string label = key_label(b.k, b.mods);
     if (b.policy == momentary) {
-      line(b.command, b.modes, "hold " + label);
+      line(b.command, b.modes, "hold " + label, i);
     } else if (b.policy == tap_hold) {
-      line(b.command, b.modes, label);
-      line(b.hold, b.modes, "hold " + label);
+      line(b.command, b.modes, label, i);
+      line(b.hold, b.modes, "hold " + label, i);
     } else {
-      line(b.command, b.modes, label);
+      line(b.command, b.modes, label, i);
     }
   }
   return out;

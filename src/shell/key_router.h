@@ -32,6 +32,7 @@ struct view_state {
   bool fullscreen = false;
   bool loupe_held = false;  // Z is down: arrows nudge the loupe
   bool popup_open = false;  // `?`, palette, go-to or find flyout is up
+  bool settings_open = false;  // the settings screen covers the canvas
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 9
 };
@@ -47,6 +48,7 @@ enum class back_target : std::uint8_t {
   crop,
   pane,
   gallery,
+  settings,
   slideshow,
   fullscreen,
   canvas_focus,
@@ -65,13 +67,17 @@ struct route {
   command_id command = command_id::none;
   back_target back = back_target::none;  // set when command == back
   // True when the router owns the key even if there is nothing to dispatch
-  // (the down edge of a tap/hold). False sends the key on to the island.
+  // (a tap/hold's key-up after a tap, a momentary key's typematic repeat).
+  // False sends the key on to the island.
   bool handled = false;
 };
 
 class key_router {
  public:
   key_router() noexcept;
+
+  // Rebuild the O(1) index from `rows` (the live table after a remap).
+  void rebuild(std::span<const binding> rows) noexcept;
 
   [[nodiscard]] route on_key(const key_event& e, const view_state& s) noexcept;
 
@@ -97,6 +103,8 @@ class key_router {
 
   static constexpr int kSlots = kKeyCount * kModCombos * kModeCount;
   std::array<std::uint8_t, kSlots> index_{};  // 0 = unbound, else row + 1
+  const binding* rows_ = nullptr;
+  std::size_t row_count_ = 0;
   // Holds are per key, so holding Z and then tapping Q cannot lose Z's release.
   std::array<held, kHeldSlots> held_{};
 };

@@ -158,4 +158,5 @@ Zoomed **out** is where naive viewers look bad. Use:
   (render the settled frame at high quality, cache it, keep the cheap path for motion).
 
 Zoomed **in** past 1:1: nearest-neighbour above 400 % (pixel-peeping should show pixels), Catmull-Rom
-between 100 % and 400 %.
+between 100 % and 400 %. Saturate the interpolant: unclamped overshoot encodes per-channel on
+the 8-bit sRGB RTV and reads as magenta/cyan fringes along edges.
