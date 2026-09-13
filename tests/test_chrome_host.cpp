@@ -41,6 +41,8 @@ TEST_CASE("chrome host loads hostfxr and the blittable size") {
   REQUIRE(loaded);
   REQUIRE(host.loaded());
   REQUIRE(host.probe() == 40);
+  // C# Command constants and chrome_command agree, value for value.
+  REQUIRE(host.probe_commands() == mv::shell::chrome_command_checksum());
   REQUIRE_FALSE(host.attached());
 }
 

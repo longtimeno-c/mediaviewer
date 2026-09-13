@@ -32,6 +32,7 @@
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "shell/chrome_host.h"
+#include "shell/key_router.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
 #include "shell/av_soak.h"
@@ -79,6 +80,10 @@ struct app_state {
   mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
+  mv::shell::key_router router;
+  // Which island last reported focus (chrome_cmd_focus_changed). Only read
+  // when GetFocus() is not the canvas window, so it cannot go stale there.
+  mv::shell::focus_kind island_focus = mv::shell::focus_kind::command_bar;
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -387,156 +392,226 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // how the native side learns that a listing landed.
       apply_view_state(app);
       return;
+    case mv::shell::chrome_cmd_focus_changed: {
+      const int kind = static_cast<int>(arg);
+      if (kind >= static_cast<int>(mv::shell::focus_kind::command_bar) &&
+          kind <= static_cast<int>(mv::shell::focus_kind::text)) {
+        app->island_focus = static_cast<mv::shell::focus_kind>(kind);
+      }
+      return;
+    }
     default: return;
   }
   ++app->input.activity_seq;
   publish(app);
 }
 
-// App-level keys, even when the XAML island has focus. F3 was landing in the
-// command bar and the overlay sat under it — both looked like "F does nothing".
-bool handle_app_key(app_state* app, const MSG& msg) noexcept {
-  if (!app) return false;
-  // Q/E on a clip are decided at key-up, because tap and hold are two different
-  // commands on one key: a tap steps the playback speed, a hold shuttles. The
-  // hold is recognised by typematic repeat having fired at least once.
-  if (msg.message == WM_KEYUP && (msg.wParam == 'Q' || msg.wParam == 'E')) {
-    if (!video_mode(app)) return false;
-    const int direction = msg.wParam == 'E' ? 1 : -1;
-    if (app->skim_shuttled) {
-      // Settle the shuttle on the exact frame, the way letting go of the
-      // scrubber does — otherwise it stops on whatever keyframe the last cheap
-      // seek happened to land on.
+// plan/16: one router. Symbol keys are resolved through the active layout so
+// `?`, `+`, `[` and `\` mean the character, not a US key position. Letters and
+// digits keep their virtual key (Windows already maps letters by layout).
+// AltGr-only symbols do not resolve; that is a v1.1 remap concern.
+mv::shell::key_event translate_key(const MSG& msg, bool is_up) noexcept {
+  using mv::shell::key;
+  mv::shell::key_event e;
+  e.up = is_up;
+  e.repeat = !is_up && (msg.lParam & (1 << 30)) != 0;
+  std::uint8_t mods = mv::shell::mod_none;
+  if (::GetKeyState(VK_CONTROL) & 0x8000) mods |= mv::shell::mod_ctrl;
+  if (::GetKeyState(VK_SHIFT) & 0x8000) mods |= mv::shell::mod_shift;
+  if (::GetKeyState(VK_MENU) & 0x8000) mods |= mv::shell::mod_alt;
+
+  const auto vk = static_cast<UINT>(msg.wParam);
+  key k = key::none;
+  switch (vk) {
+    case VK_SPACE: k = key::space; break;
+    case VK_BACK: k = key::backspace; break;
+    case VK_RETURN: k = key::enter; break;
+    case VK_ESCAPE: k = key::escape; break;
+    case VK_TAB: k = key::tab; break;
+    case VK_INSERT: k = key::insert; break;
+    case VK_DELETE: k = key::del; break;
+    case VK_HOME: k = key::home; break;
+    case VK_END: k = key::end; break;
+    case VK_PRIOR: k = key::page_up; break;
+    case VK_NEXT: k = key::page_down; break;
+    case VK_LEFT: k = key::left; break;
+    case VK_RIGHT: k = key::right; break;
+    case VK_UP: k = key::up; break;
+    case VK_DOWN: k = key::down; break;
+    case VK_ADD: k = mv::shell::char_key('+'); break;
+    case VK_SUBTRACT: k = mv::shell::char_key('-'); break;
+    default:
+      if (vk >= VK_F1 && vk <= VK_F12) {
+        k = static_cast<key>(static_cast<int>(key::f1) + static_cast<int>(vk - VK_F1));
+      } else if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        k = mv::shell::char_key(static_cast<char>(vk));
+      } else if (vk >= VK_NUMPAD0 && vk <= VK_DIVIDE) {
+        k = key::none;  // numpad digits are ratings (PR 11)
+      } else {
+        BYTE state[256]{};
+        if (!::GetKeyboardState(state)) break;
+        // The character without Ctrl/Alt, so Ctrl+? still resolves to '?'.
+        state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_RCONTROL] = 0;
+        state[VK_MENU] = state[VK_LMENU] = state[VK_RMENU] = 0;
+        wchar_t chars[4]{};
+        const UINT scan = static_cast<UINT>((msg.lParam >> 16) & 0xFF);
+        // 0x4: do not change keyboard state (dead keys stay pending for XAML).
+        const int n = ::ToUnicodeEx(vk, scan, state, chars, 4, 0x4, ::GetKeyboardLayout(0));
+        if (n == 1 && chars[0] > 0x20 && chars[0] < 0x7F) {
+          k = mv::shell::char_key(static_cast<char>(chars[0]));
+          mods &= static_cast<std::uint8_t>(~mv::shell::mod_shift);  // Shift made the symbol
+        }
+      }
+      break;
+  }
+  e.k = k;
+  e.mods = mods;
+  return e;
+}
+
+mv::shell::view_state view_state_of(app_state* app) noexcept {
+  mv::shell::view_state s;
+  const HWND focus = ::GetFocus();
+  s.focus = (focus == nullptr || focus == app->window) ? mv::shell::focus_kind::canvas
+                                                       : app->island_focus;
+  if (video_mode(app)) s.item = mv::shell::item_kind::clip;
+  else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
+  s.gallery_open = app->gallery_visible;
+  return s;
+}
+
+void walk_back(app_state* app, mv::shell::back_target target) noexcept {
+  using mv::shell::back_target;
+  switch (target) {
+    case back_target::blur_text:
+    case back_target::canvas_focus:
+      if (app->window) ::SetFocus(app->window);
+      return;
+    case back_target::gallery:
+      set_gallery(app, false);
+      return;
+    // Slideshow, fullscreen, pane and crop land with their slices (6b, 6d,
+    // PR 8, PR 9); resolve_back cannot name them until their state exists.
+    default:
+      return;
+  }
+}
+
+void folder_jump(app_state* app, long long delta) {
+  const std::uint32_t count = folder_count(app);
+  if (count == 0) return;
+  std::uint32_t selected = 0;
+  if (mv_folder_selected(app->session, &selected) != MV_OK) return;
+  long long next = static_cast<long long>(selected) + delta;
+  if (next < 0) next = 0;
+  if (next >= static_cast<long long>(count)) next = static_cast<long long>(count) - 1;
+  if (next == static_cast<long long>(selected)) return;
+  folder_select(app, static_cast<std::uint32_t>(next));
+}
+
+// Command effects. A switch over a dense enum is the jump table plan/16 asks
+// for. Returning false means "not applicable here" and sends the key on to the
+// island — Q/E on a still, or a command whose slice has not landed yet.
+bool run_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  const auto bump = [app](std::uint32_t& seq) {
+    ++seq;
+    ++app->input.activity_seq;
+    publish(app);
+    return true;
+  };
+  switch (command) {
+    case open:
+      if (app->window) open_file_dialog(app, app->window);
+      return true;
+    case open_folder:
+      if (app->window) open_folder_dialog(app, app->window);
+      return true;
+    case close_window:
+      if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+      return true;
+    case prev: folder_step(app, -1); return true;
+    case next: folder_step(app, 1); return true;
+    case first: folder_jump(app, -(1LL << 32)); return true;
+    case last: folder_jump(app, 1LL << 32); return true;
+    case skip_back: folder_jump(app, -10); return true;
+    case skip_forward: folder_jump(app, 10); return true;
+    case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
+    case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
+    case fit: return bump(app->input.fit_seq);
+    case one_to_one: return bump(app->input.one_to_one_seq);
+    case zoom_in: return bump(app->input.zoom_in_seq);
+    case zoom_out: return bump(app->input.zoom_out_seq);
+    case zoom_200:
+    case zoom_400:
+      app->input.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
+      return bump(app->input.zoom_preset_seq);
+    case overlay: return bump(app->input.toggle_overlay_seq);
+    case reset_stats: return bump(app->input.reset_stats_seq);
+
+    case play_pause: {
+      std::uint32_t state = MV_PLAY_STOPPED;
+      (void)mv_video_state(app->session, &state);
+      if (state == MV_PLAY_PLAYING) (void)mv_video_pause(app->session);
+      else if (state != MV_PLAY_STOPPED) (void)mv_video_play(app->session);
+      return true;
+    }
+    case pause: (void)mv_video_pause(app->session); return true;
+    // plan/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
+    case jump_back:
+    case jump_forward:
+      app->skim_tick_ms = 0;
+      (void)skim(app, (command == jump_forward ? 1 : -1) * kTransportStepNs, true);
+      return true;
+    case frame_back: (void)mv_video_step(app->session, -1); return true;
+    case frame_forward: (void)mv_video_step(app->session, 1); return true;
+    // Q/E tap: one rung of the speed ladder.
+    case rate_down:
+    case rate_up:
+      if (!video_mode(app)) return false;
+      apply_rate(app, app->rate_index + (command == rate_up ? 1 : -1));
+      return true;
+    // Q/E hold: shuttle on the non-exact seek (nearest keyframe) so a held key
+    // cannot queue a decode-forward per repeat (plan/16 speed rule 1). The
+    // first repeat of a burst re-reads the position.
+    case skim_back:
+    case skim_forward:
+      if (!video_mode(app)) return false;
+      if (!app->skim_shuttled) app->skim_tick_ms = 0;
+      app->skim_shuttled = true;
+      (void)skim(app, (command == skim_forward ? 1 : -1) * kSkimStepNs, false);
+      return true;
+    // Release settles on the exact frame, the way letting go of the scrubber
+    // does — otherwise it stops on whatever keyframe the last cheap seek hit.
+    case skim_settle:
+      if (!video_mode(app) || !app->skim_shuttled) return false;
       (void)mv_video_seek(app->session, app->skim_target_ns, 1);
       app->skim_shuttled = false;
       app->skim_tick_ms = 0;
-    } else {
-      apply_rate(app, app->rate_index + direction);
-    }
-    return true;
-  }
-  if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
-  const bool repeat = (msg.lParam & (1 << 30)) != 0;
-  const bool holdable = msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT ||
-                        msg.wParam == 'A' || msg.wParam == 'D' ||
-                        msg.wParam == 'Q' || msg.wParam == 'E';
-  // Ignore typematic repeats except the keys where holding means something:
-  // Left/Right and A/D walk the folder, Q/E skim the clip.
-  if (repeat && !holdable) return false;
+      return true;
 
-  switch (msg.wParam) {
-    // plan/16: A/D are browse prev/next, in every mode. They used to be
-    // reinterpreted as the clip's speed/skim pair, which meant the two most
-    // obvious "walk the folder" keys stopped walking the folder the moment a
-    // clip was open. Transport lives on Q/E instead.
-    case 'A':
-    case 'D':
-      folder_step(app, msg.wParam == 'D' ? 1 : -1);
-      return true;
-    // plan/16: Q/E are the clip's two-commands-on-one-key pair — tap steps the
-    // playback speed, hold shuttles. A held key shuttles on the non-exact seek
-    // (nearest keyframe) so it cannot queue a decode-forward per repeat; a
-    // single tap, and the end of a burst, settle exactly where asked. Same two
-    // modes as the scrubber drag and its release (plan/05).
-    case 'Q':
-    case 'E': {
-      // Nothing to scrub or speed up on a still, and swallowing the key there
-      // would take it from the island for no reason.
-      if (!video_mode(app)) return false;
-      const int direction = msg.wParam == 'E' ? 1 : -1;
-      // The down edge of a tap does nothing: it is not yet known to be a tap.
-      // The first typematic repeat is what makes it a hold, and from there
-      // every repeat shuttles on the cheap seek (nearest keyframe) so a held
-      // key cannot queue a decode-forward per repeat (plan/16 speed rule 1).
-      if (!repeat) {
-        app->skim_shuttled = false;
-        app->skim_tick_ms = 0;
-        return true;
-      }
-      app->skim_shuttled = true;
-      (void)skim(app, direction * kSkimStepNs, false);
-      return true;
-    }
-    case VK_F3:
-    case 'F':
-      ++app->input.toggle_overlay_seq;
-      break;
-    // plan/16: J / K / L are -10 s / pause / +10 s. The code had J at -5 s and
-    // L as bare play, which is not the same command as "+10 s" — holding L
-    // never moved the position at all.
-    case 'J':
-    case 'L': {
-      const int64_t direction = msg.wParam == 'L' ? 1 : -1;
-      app->skim_tick_ms = 0;  // a jump is not part of a skim burst
-      (void)skim(app, direction * kTransportStepNs, true);
-      break;
-    }
-    case 'K': (void)mv_video_pause(app->session); break;
-    case VK_OEM_COMMA: (void)mv_video_step(app->session, -1); break;
-    case VK_OEM_PERIOD: (void)mv_video_step(app->session, 1); break;
-    case VK_SPACE:
-      {
-        uint32_t state = MV_PLAY_STOPPED;
-        (void)mv_video_state(app->session, &state);
-        if (state == MV_PLAY_PLAYING) (void)mv_video_pause(app->session);
-        else if (state != MV_PLAY_STOPPED) (void)mv_video_play(app->session);
-        else ++app->input.toggle_animation_seq;
-      }
-      break;
-    case 'R':
-      ++app->input.reset_stats_seq;
-      break;
-    case 'G':
-      set_gallery(app, !app->gallery_visible);
-      return true;
-    case 'T':
-      toggle_filmstrip_setting(app);
-      return true;
-    case '0':
-      ++app->input.fit_seq;
-      break;
-    case '1':
-      ++app->input.one_to_one_seq;
-      break;
-    case VK_OEM_PLUS:
-    case VK_ADD:
-      ++app->input.zoom_in_seq;
-      break;
-    case VK_OEM_MINUS:
-    case VK_SUBTRACT:
-      ++app->input.zoom_out_seq;
-      break;
-    case 'O':
-      if (::GetKeyState(VK_CONTROL) & 0x8000) {
-        if (app->window) {
-          if (::GetKeyState(VK_SHIFT) & 0x8000) open_folder_dialog(app, app->window);
-          else open_file_dialog(app, app->window);
-        }
-        return true;
-      }
-      return false;
-    case VK_LEFT:
-      folder_step(app, -1);
-      return true;
-    case VK_RIGHT:
-      folder_step(app, 1);
-      return true;
-    case VK_ESCAPE:
-      // Esc leaves the gallery before it leaves the app. Closing the window
-      // out from under someone who was only backing out of the grid is the
-      // kind of thing you do exactly once.
-      if (app->gallery_visible) {
-        set_gallery(app, false);
-        return true;
-      }
-      if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
-      return true;
     default:
       return false;
   }
-  ++app->input.activity_seq;
-  publish(app);
-  return true;
+}
+
+// Runs before the island's pre-translate, so F3 and friends work with the
+// command bar focused. The router decides what a focused island keeps.
+bool handle_app_key(app_state* app, const MSG& msg) noexcept {
+  if (!app) return false;
+  const bool is_down = msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN;
+  const bool is_up = msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP;
+  if (!is_down && !is_up) return false;
+  const auto event = translate_key(msg, is_up);
+  if (event.k == mv::shell::key::none) return false;
+  const auto routed = app->router.on_key(event, view_state_of(app));
+  if (!routed.handled) return false;
+  if (routed.command == mv::shell::command_id::back) {
+    walk_back(app, routed.back);
+    return true;
+  }
+  if (routed.command == mv::shell::command_id::none) return true;
+  return run_command(app, routed.command);
 }
 
 void layout_chrome(app_state* app) noexcept {
@@ -687,6 +762,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case WM_ACTIVATE: {
       app->input.window_active = LOWORD(wparam) != WA_INACTIVE;
+      // A key held across Alt+Tab never sends its key-up here.
+      if (!app->input.window_active) app->router.cancel_hold();
       publish(app);
       return 0;
     }

@@ -84,8 +84,10 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 
 | Key | |
 |---|---|
-| `F` / `F3` | frame-time overlay (off at launch with chrome) |
-| `Space` | on a clip: play/pause. Otherwise the lab sweep on/off — overlay **animating**, not "a photo is open". Sweep off and settled → stop presenting (~0 % CPU) |
+| `F3` | frame-time overlay (off at launch with chrome). `F` is fullscreen from PR 6b |
+| `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
+| `Home` / `End` | first / last in the folder |
+| `PageUp` / `PageDown` | back / forward ten |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([plan/16](plan/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
@@ -93,14 +95,20 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
-| `+` / `-` | zoom in / out |
+| `2` / `3` | 200 % / 400 % |
+| `+` / `-` | zoom in / out (`=` and the numpad keys too) |
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
 | `G` | gallery: thumbnail grid of the folder. Click or `Enter` opens an item, `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
-| `Esc` | leave the gallery, else quit |
+| `Esc` | walks out one level: gallery, then island focus back to the canvas. It never quits |
+| `Ctrl+W` / `Alt+F4` | close the window |
+
+Keys go through one router and one table (`src/shell/commands.h`,
+[plan/16](plan/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
+keyboard layout, not a US key position.
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then

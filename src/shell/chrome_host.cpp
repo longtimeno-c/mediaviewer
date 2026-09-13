@@ -238,6 +238,13 @@ int chrome_host::probe() const noexcept {
   return probe_(nullptr, 0);
 }
 
+std::int32_t chrome_host::probe_commands() const noexcept {
+  if (!probe_) return 0;
+  std::int32_t checksum = 0;
+  if (probe_(&checksum, sizeof(checksum)) <= 0) return 0;
+  return checksum;
+}
+
 expected chrome_host::attach(HWND parent, void* context, chrome_command_fn on_command,
                              int width, int height, std::uint32_t dpi) noexcept {
   if (!loaded()) return err(status::internal);

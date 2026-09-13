@@ -54,6 +54,35 @@ public static partial class IslandHost
         public const int ToggleFilmstrip = 17;
         public const int VideoActive = 18;
         public const int SetRate = 19;
+        public const int FocusChanged = 20;
+
+        // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
+        // same order, same arithmetic. Probe hands it to native for the test.
+        internal static int Checksum()
+        {
+            int[] ids =
+            {
+                Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
+                OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
+                ToggleFilmstrip, VideoActive, SetRate, FocusChanged,
+            };
+            unchecked
+            {
+                int h = 17;
+                foreach (int id in ids) h = h * 31 + id;
+                return h;
+            }
+        }
+    }
+
+    // Mirrors mv::shell::focus_kind (key_router.h).
+    internal static class FocusKind
+    {
+        public const int CommandBar = 1;
+        public const int Filmstrip = 2;
+        public const int Gallery = 3;
+        public const int Transport = 4;
+        public const int Text = 5;
     }
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
@@ -78,8 +107,9 @@ public static partial class IslandHost
 
     public static int Probe(IntPtr arg, int sizeBytes)
     {
-        _ = arg;
-        _ = sizeBytes;
+        // With a 4-byte buffer, also report the command-id checksum so the
+        // native test can prove both sides number the wire the same way.
+        if (arg != IntPtr.Zero && sizeBytes >= 4) Marshal.WriteInt32(arg, Command.Checksum());
         if (Marshal.SizeOf<ChromeAttachArgs>() != AttachArgsSize) return -2;
         if (Marshal.SizeOf<ChromeResizeArgs>() != ResizeArgsSize) return -3;
         if (Marshal.SizeOf<ChromeFilmstripArgs>() != FilmstripArgsSize) return -4;
@@ -118,6 +148,11 @@ public static partial class IslandHost
             _source.TakeFocusRequested += OnTakeFocusRequested;
             _source.Content = BuildChrome();
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
+            if (!_focusHooked)
+            {
+                Microsoft.UI.Xaml.Input.FocusManager.GotFocus += OnXamlGotFocus;
+                _focusHooked = true;
+            }
             return 0;
         }
         catch (Exception ex)
@@ -127,6 +162,35 @@ public static partial class IslandHost
             return unchecked((int)0x80004005);
         }
     }
+
+    private static bool _focusHooked;
+
+    /// <summary>
+    /// Tells the native key router which island holds focus, and whether it is
+    /// a text control (plan/16: then every key but Esc belongs to the island).
+    /// Native checks GetFocus() itself for the canvas, so a stale island value
+    /// after focus returns to the swapchain is harmless.
+    /// </summary>
+    private static void OnXamlGotFocus(object? sender,
+                                       Microsoft.UI.Xaml.Input.FocusManagerGotFocusEventArgs e)
+    {
+        _ = sender;
+        int kind = FocusKind.CommandBar;
+        if (e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
+        {
+            kind = FocusKind.Text;
+        }
+        else if (e.NewFocusedElement is UIElement element && element.XamlRoot is XamlRoot root)
+        {
+            if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
+            else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
+            else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
+        }
+        Send(Command.FocusChanged, kind);
+    }
+
+    private static bool OwnsRoot(DesktopWindowXamlSource? source, XamlRoot root) =>
+        source?.Content is UIElement content && content.XamlRoot == root;
 
     public static int Resize(IntPtr arg, int sizeBytes)
     {
@@ -170,6 +234,11 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
+            if (_focusHooked)
+            {
+                Microsoft.UI.Xaml.Input.FocusManager.GotFocus -= OnXamlGotFocus;
+                _focusHooked = false;
+            }
             if (_source is not null)
             {
                 _source.TakeFocusRequested -= OnTakeFocusRequested;

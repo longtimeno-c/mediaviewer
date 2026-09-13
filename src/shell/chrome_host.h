@@ -12,6 +12,7 @@
 #include <cstdint>
 
 #include "core/result.h"
+#include "shell/commands.h"
 
 namespace mv::shell {
 
@@ -36,7 +37,47 @@ enum chrome_command : int {
   chrome_cmd_toggle_filmstrip = 17,
   chrome_cmd_video_active = 18,      // arg != 0 while a clip is open: show the transport
   chrome_cmd_set_rate = 19,          // arg is the playback rate the dropdown picked
+  chrome_cmd_focus_changed = 20,     // arg is a focus_kind (key_router.h): which island, or text
 };
+
+// Commands and island notifications share one id space (plan/16). These pin
+// the values the island already sends; commands.h reserves the notifications.
+static_assert(chrome_cmd_open == static_cast<int>(command_id::open));
+static_assert(chrome_cmd_fit == static_cast<int>(command_id::fit));
+static_assert(chrome_cmd_one_to_one == static_cast<int>(command_id::one_to_one));
+static_assert(chrome_cmd_zoom_in == static_cast<int>(command_id::zoom_in));
+static_assert(chrome_cmd_zoom_out == static_cast<int>(command_id::zoom_out));
+static_assert(chrome_cmd_zoom_preset == static_cast<int>(command_id::zoom_preset));
+static_assert(chrome_cmd_overlay == static_cast<int>(command_id::overlay));
+static_assert(chrome_cmd_select_item == static_cast<int>(command_id::select_item));
+static_assert(chrome_cmd_prev == static_cast<int>(command_id::prev));
+static_assert(chrome_cmd_next == static_cast<int>(command_id::next));
+static_assert(chrome_cmd_open_folder == static_cast<int>(command_id::open_folder));
+static_assert(chrome_cmd_toggle_gallery == static_cast<int>(command_id::toggle_gallery));
+static_assert(chrome_cmd_close_gallery == static_cast<int>(command_id::close_gallery));
+static_assert(chrome_cmd_gallery_activate == static_cast<int>(command_id::gallery_activate));
+static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle_filmstrip));
+static_assert(is_reserved_notification(chrome_cmd_set_settings));
+static_assert(is_reserved_notification(chrome_cmd_folder_ready));
+static_assert(is_reserved_notification(chrome_cmd_video_active));
+static_assert(is_reserved_notification(chrome_cmd_set_rate));
+static_assert(is_reserved_notification(chrome_cmd_focus_changed));
+
+// The island's Command constants, hashed in declaration order. IslandHost.Probe
+// computes the same over its own constants; a drift on either side fails
+// tests/test_chrome_host.cpp instead of a menu item that runs the wrong thing.
+[[nodiscard]] constexpr std::int32_t chrome_command_checksum() noexcept {
+  constexpr int ids[] = {
+      chrome_cmd_open, chrome_cmd_fit, chrome_cmd_one_to_one, chrome_cmd_zoom_in,
+      chrome_cmd_zoom_out, chrome_cmd_zoom_preset, chrome_cmd_overlay, chrome_cmd_select_item,
+      chrome_cmd_prev, chrome_cmd_next, chrome_cmd_open_folder, chrome_cmd_toggle_gallery,
+      chrome_cmd_close_gallery, chrome_cmd_gallery_activate, chrome_cmd_set_settings,
+      chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
+      chrome_cmd_set_rate, chrome_cmd_focus_changed};
+  std::uint32_t h = 17;
+  for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
+  return static_cast<std::int32_t>(h);
+}
 
 using chrome_command_fn = void (*)(void* context, int command, float arg);
 
@@ -157,6 +198,9 @@ class chrome_host {
   // Returns the C# sizeof(ChromeAttachArgs) so a layout drift fails a test
   // rather than a window that never appears.
   [[nodiscard]] int probe() const noexcept;
+
+  // The island's command-id checksum (chrome_command_checksum), or 0.
+  [[nodiscard]] std::int32_t probe_commands() const noexcept;
 
   // `parent` is the top-level canvas HWND. The island is MoveAndResize'd into
   // the 48 DIP strip so flyouts are siblings of the swapchain, not clipped by
