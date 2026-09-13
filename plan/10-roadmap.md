@@ -345,7 +345,7 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating, colour labels, keywords |
-| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim), side-by-side compare, burst-stack grouping, print/contact sheet, card ingest with verify, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
+| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim); **theme**: colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, card ingest with verify, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Store MSIX as a secondary channel, per-machine MSI for enterprise |
 | Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS is Milestone F, not v1.1.** |

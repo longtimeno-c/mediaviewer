@@ -17,7 +17,7 @@ per key-repeat is a bug, not a feature. The present-loop gate from PR 1 still ho
 
 | v1 (PR 6, then additive) | v1.1 |
 |---|---|
-| One complete default map covering browse, view, video, edit, metadata, trim. Settings remaps that table; `?` stays in sync | Import/export JSON, alternate layouts (FastStone / IrfanView / vim) |
+| One complete default map covering browse, view, video, edit, metadata, trim. Settings remaps that table; `?` stays in sync | Import/export JSON, alternate layouts (FastStone / IrfanView / vim); colour scheme + user font ([10-roadmap.md](10-roadmap.md) v1.1) |
 | Every command has a key, including ones that currently look like buttons | Per-profile maps, user chords beyond a couple of prefixes |
 | `?` overlay listing the **current mode's** bindings | |
 | Command palette (`Ctrl+K`) so nothing has to be memorised | |
@@ -108,7 +108,7 @@ Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal t
 | `Ctrl+O` | Open media (file picker) |
 | `Ctrl+Shift+O` | Open folder |
 | `Ctrl+E` | Show the current file in Explorer, selected |
-| `Ctrl+,` | Settings (view defaults and remappable keys) |
+| `Ctrl+,` | Settings (view defaults and remappable keys). Colour scheme, chrome/canvas/overlay palette, and a user-supplied font are **v1.1** ([10-roadmap.md](10-roadmap.md)) |
 | `Ctrl+W` / `Alt+F4` | Close window |
 | `Ctrl+Tab` | Next tab (PR 14) |
 

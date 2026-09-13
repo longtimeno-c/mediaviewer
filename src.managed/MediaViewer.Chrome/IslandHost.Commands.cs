@@ -210,7 +210,19 @@ public static partial class IslandHost
     {
         var list = new StackPanel { Spacing = 2, Margin = new Thickness(12, 8, 12, 10) };
         list.Children.Add(Label("Keyboard shortcuts", UiFontSize + 2));
-        list.Children.Add(Label("Esc closes. Ctrl+K finds any command by name.", UiFontSize, mute: true));
+        list.Children.Add(Label("Esc closes. Type to filter, or Ctrl+K for the palette.", UiFontSize, mute: true));
+        var search = new TextBox
+        {
+            PlaceholderText = "Search commands or keys",
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            Margin = new Thickness(0, 6, 0, 8),
+        };
+        list.Children.Add(search);
+        var rows = new StackPanel { Spacing = 2 };
+        var empty = Label("No matching shortcuts", UiFontSize, mute: true);
+        empty.Visibility = Visibility.Collapsed;
         foreach (CommandEntry entry in Entries(modeMask))
         {
             var row = new Grid { ColumnSpacing = 16 };
@@ -222,8 +234,31 @@ public static partial class IslandHost
             Grid.SetColumn(name, 1);
             row.Children.Add(keys);
             row.Children.Add(name);
-            list.Children.Add(row);
+            row.Tag = entry.Keys + " " + entry.Name;
+            rows.Children.Add(row);
         }
+        list.Children.Add(rows);
+        list.Children.Add(empty);
+        search.KeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Escape || string.IsNullOrEmpty(search.Text)) return;
+            search.Text = "";
+            e.Handled = true;
+        };
+        search.TextChanged += (_, _) =>
+        {
+            string q = search.Text.Trim();
+            int shown = 0;
+            foreach (UIElement child in rows.Children)
+            {
+                if (child is not Grid row) continue;
+                string hay = row.Tag as string ?? "";
+                bool match = q.Length == 0 || hay.Contains(q, StringComparison.OrdinalIgnoreCase);
+                row.Visibility = match ? Visibility.Visible : Visibility.Collapsed;
+                if (match) shown++;
+            }
+            empty.Visibility = shown == 0 ? Visibility.Visible : Visibility.Collapsed;
+        };
         return new ScrollViewer
         {
             Content = list,

@@ -17,6 +17,8 @@ public static partial class IslandHost
     private static Grid? _chromeRoot;
     private static Grid? _settingsHost;
     private static StackPanel? _keyList;
+    private static TextBox? _keySearch;
+    private static TextBlock? _keyEmpty;
     private static ToggleSwitch? _stripFolder;
     private static ToggleSwitch? _stripImage;
     private static ToggleSwitch? _wrap;
@@ -89,19 +91,49 @@ public static partial class IslandHost
         Grid.SetColumn(reset, 1);
         keysHeader.Children.Add(reset);
 
+        _keySearch = new TextBox
+        {
+            PlaceholderText = "Search commands or keys",
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            Margin = new Thickness(12, 0, 20, 8),
+        };
+        _keySearch.TextChanged += (_, _) => FilterSettingsKeys();
+        _keySearch.KeyDown += (_, e) =>
+        {
+            if (e.Key != VirtualKey.Escape || string.IsNullOrEmpty(_keySearch.Text)) return;
+            _keySearch.Text = "";
+            e.Handled = true;
+        };
         _keyList = new StackPanel { Spacing = 2 };
+        _keyEmpty = new TextBlock
+        {
+            Text = "No matching shortcuts",
+            Foreground = Brush(Body),
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Margin = new Thickness(12, 8, 20, 8),
+            Visibility = Visibility.Collapsed,
+        };
+        var keyStack = new StackPanel();
+        keyStack.Children.Add(_keyList);
+        keyStack.Children.Add(_keyEmpty);
         var keyScroll = new ScrollViewer
         {
-            Content = _keyList,
+            Content = keyStack,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
         var keysCol = new Grid();
         keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         keysCol.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(keysHeader, 0);
         keysCol.Children.Add(keysHeader);
-        Grid.SetRow(keyScroll, 1);
+        Grid.SetRow(_keySearch, 1);
+        keysCol.Children.Add(_keySearch);
+        Grid.SetRow(keyScroll, 2);
         keysCol.Children.Add(keyScroll);
 
         var split = new Grid();
@@ -195,6 +227,7 @@ public static partial class IslandHost
         if (_chromeRoot is null || _settingsHost is null) return;
         _settingsVisible = true;
         _consumedCaptureKey = null;
+        if (_keySearch is not null) _keySearch.Text = "";
         RefreshSettingsScreen();
         _settingsHost.Visibility = Visibility.Visible;
         _chromeRoot.UpdateLayout();
@@ -311,6 +344,28 @@ public static partial class IslandHost
             line.Children.Add(bind);
             _keyList.Children.Add(line);
         }
+        FilterSettingsKeys();
+    }
+
+    private static void FilterSettingsKeys()
+    {
+        if (_keyList is null) return;
+        string q = (_keySearch?.Text ?? "").Trim();
+        int shown = 0;
+        foreach (UIElement child in _keyList.Children)
+        {
+            if (child is not Grid line) continue;
+            string hay = "";
+            if (line.Children.Count > 0 && line.Children[0] is TextBlock name) hay += name.Text;
+            if (line.Children.Count > 1 && line.Children[1] is Button bind &&
+                bind.Content is TextBlock keys) hay += " " + keys.Text;
+            bool match = q.Length == 0 ||
+                         hay.Contains(q, StringComparison.OrdinalIgnoreCase);
+            line.Visibility = match ? Visibility.Visible : Visibility.Collapsed;
+            if (match) shown++;
+        }
+        if (_keyEmpty is not null)
+            _keyEmpty.Visibility = shown == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static void OnSettingsKeyDown(object sender, KeyRoutedEventArgs e)

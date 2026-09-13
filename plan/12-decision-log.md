@@ -616,6 +616,22 @@ table, so they cannot drift. Reset writes the factory `kBindings` back.
 
 JSON import/export and named layouts stay v1.1.
 
+## 2026-09-13 — Theme, colour scheme, and a user font wait for v1.1
+
+Settings in PR 6 holds view defaults and the live keymap. A request to restyle the app —
+colour scheme, chrome + canvas + F3 overlay palette, and uploading a font file — is
+customisation of the *shell*, not of photos. It does not belong in the PR 6 verify line.
+
+**v1.1.** One palette drives WinUI chrome, the swapchain clear / empty-canvas copy, and
+the ImGui overlay, so a light theme cannot leave a dark F3 panel. Bundled CozetteVector
+stays the default. A user TTF/OTF is copied into `%LocalAppData%\MediaViewer\fonts` and
+loaded from there; if it fails to load, fall back. Nothing about that file leaves the
+machine (rule 6). PR 1's present-loop still has to hold after a font-atlas rebuild.
+
+**How it gets reversed.** Only if a high-contrast / accessibility requirement is a ship
+blocker for v1; then a system-theme follow (dark/light) without a font picker can land
+as a tiny Settings row, not a full custom palette.
+
 **How it gets reversed.** Only if the remap UI is unused and the extra island-resize
 path fights the present-loop gate; then drop the screen and keep the live table for a
 later PR.
