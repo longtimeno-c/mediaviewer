@@ -443,6 +443,46 @@ public static partial class IslandHost
         _xaml = WindowsXamlManager.InitializeForCurrentThread();
     }
 
+    /// <summary>
+    /// Process-exit only: the host calls this from WM_CLOSE after every island
+    /// has detached. Not part of Detach, because re-creating XAML on a thread
+    /// whose dispatcher queue has shut down is not something to rely on, and
+    /// the tests (and a later island toggle) attach again in one process.
+    /// </summary>
+    public static int ShutdownForExit(IntPtr arg, int sizeBytes)
+    {
+        _ = arg;
+        _ = sizeBytes;
+        try
+        {
+            ShutdownXaml();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    // The XAML runtime for this thread goes last, after every island source
+    // is disposed: WindowsXamlManager first, then the dispatcher queue. Left to
+    // process exit it was torn down under live sources.
+    private static void ShutdownXaml()
+    {
+        if (_source is not null || _filmstrip is not null || _gallery is not null ||
+            _transport is not null)
+        {
+            return;
+        }
+        _busyDelay?.Stop();
+        _busyDelay = null;
+        _xaml?.Dispose();
+        _xaml = null;
+        _dispatcher?.ShutdownQueue();
+        _dispatcher = null;
+    }
+
     private static void Send(int command, float arg = 0)
     {
         _onCommand?.Invoke(_context, command, arg);

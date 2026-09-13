@@ -274,6 +274,11 @@ class chrome_host {
 
   void detach() noexcept;
 
+  // Process exit only, after detach(): disposes the XAML runtime for this
+  // thread (WindowsXamlManager, then the dispatcher queue). The chrome cannot
+  // attach again in this process afterwards.
+  void shutdown_for_exit() noexcept;
+
  private:
   [[nodiscard]] bool resolve_paths() noexcept;
   [[nodiscard]] bool load_hostfxr() noexcept;
@@ -312,6 +317,7 @@ class chrome_host {
   bool gallery_visible_ = false;
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
+  chrome_entry_fn shutdown_for_exit_ = nullptr;
   // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
   HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);

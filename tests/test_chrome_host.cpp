@@ -79,6 +79,18 @@ TEST_CASE("chrome host attaches and detaches an island on an hwnd") {
   host.detach();
   REQUIRE_FALSE(host.attached());
 
+  // Attach again on the same HWND in the same process: detach must leave the
+  // XAML runtime usable (only the exit path shuts it down).
+  auto again = host.attach(hwnd, nullptr, nullptr, 640, 48, 96);
+  REQUIRE(again);
+  REQUIRE(host.attached());
+  while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    ::TranslateMessage(&msg);
+    ::DispatchMessageW(&msg);
+  }
+  host.detach();
+  REQUIRE_FALSE(host.attached());
+
   ::DestroyWindow(hwnd);
   ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
 }

@@ -522,6 +522,31 @@ real host work in F — is tabulated in [15-platforms.md](15-platforms.md#window
 PR 6 agents keep the Windows tree. PR 16 adds Darwin files, a CMake Apple path,
 and portable present-policy tests that also run on Windows.
 
+## 2026-09-13 — Tear the chrome down before DestroyWindow (PR 6, fixing a PR 3-era exit crash)
+
+**What was measured.** Chrome-on lab exits fail-fast about one time in six:
+`0xC0000602` (`STATUS_FAIL_FAST_EXCEPTION`), faulting module `CoreUIComponents.dll`, the same
+offset every time. On `main` `38cb56b`, 5 of 30 `--soak 3` exits crashed; `--no-chrome` exits did
+not. It surfaced during PR 6 because the PR 1 gate counts a non-zero lab exit as a failed
+measurement, so "PR 1's present-loop still holds" cannot pass while it happens.
+
+**Cause, as far as it is known.** Every exit path (close button, `Ctrl+W`, and the soak's own
+`PostMessage(WM_CLOSE)`) went `WM_CLOSE` → `DestroyWindow` → `WM_DESTROY` → dispose every
+`DesktopWindowXamlSource`. The islands were being disposed while their parent was already
+mid-destroy, with the XAML runtime left to process exit. There is no symbolised stack yet (no
+debugger on the development box); the fix is judged by the exit-crash rate, not by a stack.
+
+**Decision.** In `WM_CLOSE`, while the parent is whole: detach every island, pump pending messages
+once (bounded) so the dispatcher runs the dispose it queued, then `DestroyWindow`. The bar's
+`Detach` disposes `WindowsXamlManager` and shuts the `DispatcherQueueController` down after every
+source is gone. PR 6a's defensive changes stay (unhook the static focus handler first, never let an
+exception out of a XAML event, null a source before disposing it), but they were not the fix: 6a
+did not change the crash rate.
+
+**How it gets reversed.** If 30 chrome-on exits still show a fail-fast, this was not the cause.
+Next suspects are the render thread presenting into the DComp visual during detach, and the order
+of `WindowsXamlManager` against the `DispatcherQueueController`.
+
 ## Still open
 
 | Question | Blocks | Notes |

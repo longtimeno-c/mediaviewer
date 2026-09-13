@@ -62,6 +62,8 @@ struct app_state {
   bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
   open_mode mode = open_mode::none;
   bool gallery_visible = false;
+  // WM_CLOSE has started the orderly teardown; a second close is a no-op.
+  bool closing = false;
   // Set by the island's playback poll (chrome_cmd_video_active). The transport
   // strip follows it, so it appears with a clip and leaves with it.
   bool video_on = false;
@@ -329,7 +331,9 @@ void toggle_filmstrip_setting(app_state* app) {
 
 void chrome_on_command(void* ctx, int command, float arg) {
   auto* app = static_cast<app_state*>(ctx);
-  if (!app) return;
+  // WM_CLOSE pumps messages after detaching; nothing the island queued before
+  // it went away may act on the app now.
+  if (!app || app->closing) return;
   switch (command) {
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
@@ -615,7 +619,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
 // Runs before the island's pre-translate, so F3 and friends work with the
 // command bar focused. The router decides what a focused island keeps.
 bool handle_app_key(app_state* app, const MSG& msg) noexcept {
-  if (!app) return false;
+  // Mid-teardown a key must not open a dialog or touch a detached island.
+  if (!app || app->closing) return false;
   const bool is_down = msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN;
   const bool is_up = msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP;
   if (!is_down && !is_up) return false;
@@ -862,9 +867,33 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_ERASEBKGND:
       return 1;  // the swapchain owns every pixel; never let GDI flash over it
 
-    case WM_CLOSE:
+    case WM_CLOSE: {
+      // PR 3-era exit fail-fast (0xC0000602 in CoreUIComponents.dll, about 1
+      // exit in 6 on main): the islands were disposed from WM_DESTROY, while
+      // DestroyWindow was already tearing their bridge windows down under a
+      // live DesktopWindowXamlSource. Every exit path — the window's close
+      // button, Ctrl+W, and the soak's own PostMessage(WM_CLOSE) — comes
+      // through here, so detach while the parent is still whole, let the
+      // dispatcher run the dispose it queued, and only then destroy.
+      if (app->closing) return 0;
+      app->closing = true;
+      app->chrome.detach();
+      app->chrome_on_screen = false;
+      MSG pending{};
+      for (int i = 0; i < 64 && ::PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE); ++i) {
+        if (pending.message == WM_QUIT) {
+          ::PostQuitMessage(static_cast<int>(pending.wParam));
+          break;
+        }
+        ::TranslateMessage(&pending);
+        ::DispatchMessageW(&pending);
+      }
+      // Every source is gone and its queued dispose has run; now the XAML
+      // runtime itself, still before the parent window goes.
+      app->chrome.shutdown_for_exit();
       ::DestroyWindow(hwnd);
       return 0;
+    }
 
     case WM_DESTROY:
       app->chrome.detach();

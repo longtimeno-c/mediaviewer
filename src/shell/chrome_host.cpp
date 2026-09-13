@@ -222,6 +222,7 @@ expected chrome_host::load() noexcept {
   apply_settings_ = get_entry(L"ApplySettings");
   apply_rate_ = get_entry(L"ApplyRate");
   begin_detach_ = get_entry(L"BeginDetach");
+  shutdown_for_exit_ = get_entry(L"ShutdownForExit");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -558,6 +559,11 @@ void chrome_host::detach() noexcept {
     attached_ = false;
   }
   pre_translate_ = nullptr;
+}
+
+void chrome_host::shutdown_for_exit() noexcept {
+  if (attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) detach();
+  if (shutdown_for_exit_) (void)shutdown_for_exit_(nullptr, 0);
 }
 
 }  // namespace mv::shell
