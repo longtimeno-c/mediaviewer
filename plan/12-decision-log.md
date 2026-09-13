@@ -469,6 +469,59 @@ p99 frame time regresses more than 10 %, or any frame exceeds 2× the refresh in
 to the render thread with `extra_hw_frames` raised to cover the queue instead. Frame times with and
 without playback are reported as a comparison, not a pass/fail.
 
+## 2026-09-13 — First install is a short wizard; updates stay silent
+
+Not a D1–D9 reversal. The channel is still a signed per-user install with our own updater
+([13](13-updates-and-telemetry.md)). Store MSIX remains off (GPL). What was unspecified
+was the **first-run setup UX**: `plan/09` said Inno or WiX, PR 15 said Velopack, and
+neither named an icon or a GitHub link.
+
+**Call:**
+
+| | |
+|---|---|
+| **First install** | Inno Setup wizard, once. Welcome, GPL accept, LocalAppData location, Start Menu on / desktop off, progress, finish. |
+| **Updates** | Velopack, silent. Versioned folders, signed manifest, rollback. Never re-open the wizard. |
+| **Not in the wizard** | Default-app (PR 14, after first successful still), telemetry (in-app first-run, default off). |
+| **Icon** | One `.ico` (16–256) for wizard, Start, window, taskbar, and still `ProgId` `DefaultIcon`. Lands with PR 14 because Explorer needs it; PR 15 reuses it. |
+| **GitHub** | Finish-page link and About. `https://github.com/longtimeno-c/mediaviewer`. Do not auto-open. |
+| **About** | Version, GPL, GitHub, `THIRD-PARTY.md`, per-build LGPL source offer — PR 15. |
+
+Why a wizard rather than Velopack's one-shot setup.exe: first install is the only time a
+stranger meets the app, and a licence page + branded icon + Launch / GitHub / Licence
+finish is the clean experience. Why not WiX or a custom WinUI installer: WiX is MSI and
+fights per-user silent updates; a second GUI installer is another present path. Why not
+default-app or telemetry in the wizard: both are in-app, once, after the user has a
+reason to answer — and Windows will not let us write `UserChoice` anyway.
+
+## 2026-09-13 — Start PR 16 in parallel with Windows v1
+
+The owner asked to begin the macOS app (named as PR 16) while other agents continue
+PR 6 on Windows, on the grounds that the two will not clash.
+
+This is a **sequencing exception**, not a reversal of **D9**.
+
+| | Stands | Relaxed |
+|---|---|---|
+| **D9 product call** | v1 is Windows. Mac is a later host of the same core, not a UI port, not Qt/Flutter/Catalyst, not `AVPlayer`. Apple Silicon + macOS 14 only. | |
+| **"Do not start F until PR 15"** | | Relaxed for **PR 16 only**, because multiple agents can take the Metal present lab without pausing Windows PRs. That was the original objection to "Mac in v1" ([12](#2026-09-07--d9-macos-is-milestone-f-not-a-ui-port-and-not-dual-track-v1)). |
+| **PR 16 scope** | AppKit + `CAMetalLayer` + `CAMetalDisplayLink` + F3 + `frametime` on Darwin. **No SwiftUI.** | |
+| **PRs 17–20** | Still after the Windows features they host have landed in the core, and still not a dual-track of PRs 4–15. | |
+
+What this is not:
+
+- Not permission to implement VideoToolbox, Core Audio, SwiftUI chrome, Finder
+  UTIs, or Sparkle "while we're here." Those are PR 17–20.
+- Not permission to treat a Windows DXGI soak as the Mac gate.
+- Not a UI-only port. Chrome is written twice; present / hwdecode / audio / I/O
+  are backends.
+
+The Windows v1 surface that must exist on Mac — not as empty `*_mac.cpp` now, as
+real host work in F — is tabulated in [15-platforms.md](15-platforms.md#windows-v1-surface-on-mac).
+
+PR 6 agents keep the Windows tree. PR 16 adds Darwin files, a CMake Apple path,
+and portable present-policy tests that also run on Windows.
+
 ## Still open
 
 | Question | Blocks | Notes |

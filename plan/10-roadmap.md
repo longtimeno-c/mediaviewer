@@ -229,30 +229,48 @@ settings. Keyboard twins of drag-out land here if not already wired in PR 6: `Ct
 (`CF_HDROP`), `Ctrl+Shift+C` (path), `Ctrl+Alt+C` (flattened view), `Ctrl+Shift+S` (Share)
 ([16-commands.md](16-commands.md)).
 
+**Identity lands here**, because this is when Explorer and the taskbar first show the app as
+an app: one `.ico` (16 / 20 / 24 / 32 / 40 / 48 / 64 / 256) as the window icon, the
+taskbar icon, and each still `ProgId`'s `DefaultIcon`. The same file is what PR 15 puts on
+the wizard, Start Menu, and shortcuts. Do not ship associations with the generic exe icon.
+
 **The shell handlers run out-of-process (`DllSurrogate`), with timeouts and no state shared with the
 app.** In-process, one malformed HEIC in a folder someone browses takes down Explorer
 ([09-build-and-test.md](09-build-and-test.md)). Treat this as the risky part of the PR, not the
 boilerplate.
 
-**Verify:** double-clicking a HEIC in Explorer opens the app and Explorer shows your thumbnail; a
-**deliberately corrupted** HEIC in a browsed folder leaves Explorer running; uninstall removes every
-association. First successful still open shows the default-app prompt; declining leaves existing
-defaults unchanged and does not show it again; accepting opens Default Apps rather than writing
-`UserChoice`; an install-and-quit with no image open never prompts.
+**Verify:** double-clicking a HEIC in Explorer opens the app and Explorer shows your thumbnail
+and the MediaViewer file-type icon; a **deliberately corrupted** HEIC in a browsed folder
+leaves Explorer running; uninstall removes every association. The running window and
+taskbar button use the app icon, not the default exe. First successful still open shows
+the default-app prompt; declining leaves existing defaults unchanged and does not show it
+again; accepting opens Default Apps rather than writing `UserChoice`; an install-and-quit
+with no image open never prompts.
 
 ### PR 15 — Package & ship
-Signed per-user installer with Velopack auto-update (staged rollout, signed manifest, rollback),
-code signing via Azure Trusted Signing, opt-in telemetry, `THIRD-PARTY.md` + About dialog +
-per-release LGPL source offer. Store MSIX as a secondary channel if the licence permits.
-Full design: [13-updates-and-telemetry.md](13-updates-and-telemetry.md).
+A **short first-install wizard** (Inno Setup) that lays down a **per-user** Velopack tree
+under `%LocalAppData%\MediaViewer`, then **Velopack** for every later update (staged
+rollout, signed manifest, rollback). Azure Trusted Signing on the wizard, the binaries,
+and the update manifest. About dialog + `THIRD-PARTY.md` + per-release LGPL source offer.
+Store MSIX is **not** a channel — the app is GPL-2.0-or-later ([11](11-licensing.md)).
+Full design, including the wizard pages: [13-updates-and-telemetry.md](13-updates-and-telemetry.md).
+
+The wizard is the one-time download-and-setup. Updates never re-open it. It does **not**
+ask to become the default photo viewer (that is PR 14's in-app prompt) and it does **not**
+ask for telemetry (that is the first-run screen in the app). Finish page: Launch,
+[GitHub](https://github.com/longtimeno-c/mediaviewer), Licence.
 
 **Two pieces move earlier** — see that doc's sequencing note: the **updater ships before the first
 external build** (testers without an update path are stranded on whatever they installed), and
 **crash reporting lands in PR 7** with the format long tail, which is exactly when other people's
 RAW and HEIC files first hit decoders you've never tested against them.
 
-**Verify:** clean VM → install → open a real camera dump → browse, crop, trim, export, with no
-SmartScreen block and **no missing-codec dialog anywhere**.
+**Verify:** clean VM → run the wizard (no UAC) → Start Menu shortcut shows the app icon →
+Launch from the finish page → open a real camera dump → browse, crop, trim, export, with
+no SmartScreen block and **no missing-codec dialog anywhere**. The finish page's GitHub
+link opens the repo. An update downloads and stages without showing the wizard. Uninstall
+from Apps & features removes the shortcut, the install directory, and every PR 14
+association.
 
 ## Milestone F — It opens on a Mac (PR 16–20)
 
@@ -263,6 +281,11 @@ Full split and the hostable-core rule: [15-platforms.md](15-platforms.md).
 
 Do not start F until PR 15's verify holds **and** PR 1's present-loop verify still holds on
 Windows. F has its own present-loop gate.
+
+**Sequencing exception (2026-09-13):** the owner started **PR 16** in parallel with
+Windows v1 because multiple agents can take the Metal present lab without blocking
+Windows PRs. D9's product call is unchanged — Mac is a host, not a UI port — and
+this exception is **PR 16 only**, not PRs 17–20. See [12](12-decision-log.md).
 
 ### PR 16 — Metal present lab
 AppKit window, `CAMetalLayer`, display-link pacing, idle → stop presenting, F3 overlay,

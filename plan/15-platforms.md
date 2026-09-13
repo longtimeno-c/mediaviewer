@@ -114,6 +114,9 @@ Do not start F until PR 15's verify holds **and** PR 1's present-loop verify sti
 holds on Windows. F has its own present-loop gate; a DXGI JSON report is not
 evidence on Metal.
 
+**Sequencing exception (2026-09-13):** PR 16 may proceed in parallel with Windows
+v1. PRs 17–20 do not. [12](12-decision-log.md).
+
 ### PR 16 — Metal present lab
 
 AppKit window, `CAMetalLayer`, display-link pacing (`CAMetalDisplayLink` on macOS 14,
@@ -173,6 +176,39 @@ scrubs the same (no paths, filenames, pixels, EXIF).
 corrupted HEIC in a browsed folder leaves Finder running; a clean Mac → install
 from the notarized image → open a real camera dump, with no Gatekeeper block and
 no codec dialog.
+
+## Windows v1 surface on Mac
+
+Milestone F is five PRs, not a dual-track of 4–15. Feature parity is still the
+goal: every Windows v1 behaviour has a Mac home. Decode / colour / EditStack /
+metadata / canvas springs / the C ABI **transfer**. Chrome, present, hwdecode,
+audio, I/O, and ship **do not**. This table is the checklist so a feature is not
+forgotten because it was "not a Mac PR."
+
+| Windows v1 | Transfers? | Mac home |
+|---|---|---|
+| PR 1 present lab, F3, idle-stop, 60 s gate | No | **PR 16** — AppKit + `CAMetalLayer` + `CAMetalDisplayLink`, `frametime` on Darwin |
+| PR 2 JPEG/PNG/BMP, LCMS, pan/zoom springs | Decoders, colour, `canvas/` | **PR 17** — immutable Metal upload, first MSL blit twin |
+| PR 3 command-bar chrome | ABI only | **PR 18** — SwiftUI hosted in the AppKit window; canvas stays Metal |
+| PR 4 folder, filmstrip, gallery, JPEG-512 thumbs, dir watch | folder ABI, SQLite thumbs | SwiftUI filmstrip + gallery after PR 18; `io/dir_mac.cpp` (`kqueue` / `FSEvents`). Same listing, same cache spec `jpg512.1` |
+| PR 5a/b/c video, WASAPI clock, transport | `IVideoSource`, clock *policy* | **PR 19** — FFmpeg + VideoToolbox on *your* `MTLDevice`, Core Audio master clock. **No `AVPlayer`.** Bindings from [16](16-commands.md) with a Mac default map |
+| PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
+| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | Same decoders. Mac minidump scrub is the same privacy line ([13](13-updates-and-telemetry.md)) |
+| PR 8 metadata read, info overlay, AF points, eyedropper | `meta/` | SwiftUI metadata pane; `I` focuses it |
+| PR 9 geometry + lossless JPEG rotate | `edit/` | SwiftUI crop mode; `[` `]` from the viewer. MSL twins of the geometry kernels |
+| PR 10 exposure/contrast/sat/temp | `edit/` | SwiftUI adjust pane; sliders still wait for full RAW decode |
+| PR 11 rating / orientation / comment, XMP sidecar | writers | Same sidecar rule. Atomic replace is `io/replace_mac.cpp` (`rename` + `FSEVENTS`), never rewrite a RAW original |
+| PR 12 two-path trim | remux/encode policy | Same two paths, labelled. Hardware encode is VideoToolbox, not NVENC/QSV/AMF |
+| PR 13 extract & remux | same | Same operations, SwiftUI job panel |
+| PR 14 Explorer associations, OOP thumbnails, identity | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process** |
+| PR 15 Inno + Velopack | No | **PR 20** — notarized Sparkle, per-user `~/Applications` or dragged `.app` |
+
+Keyboard: the Mac host writes its own default map. It does not import a XAML
+keymap and it does not put `VK_*` or Carbon key codes into `image/`, `player/`,
+`edit/`, or `meta/` ([16](16-commands.md)).
+
+Do not ship a Mac build that is "SwiftUI on the Windows present path," and do
+not ship one that is "Metal present lab plus `AVPlayer` for video."
 
 ## What v1 (PR 4–15) must not do
 

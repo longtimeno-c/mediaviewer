@@ -27,14 +27,23 @@ by completely different mechanisms. Pick a **primary** rather than building both
 | Reaches non-Store users | No | Awkward | Yes |
 
 **Call: the signed installer with your own updater is the primary channel.** Two reasons — the
-Exiv2 licence question may force GPL-2.0, which is a poor fit for Store terms, and a media app
-needs to ship codec fixes the day they land, not after a review queue. Add the Store MSIX later as
-a *secondary* channel if you want the discoverability; the core must never depend on the Store's
-update mechanism existing.
+app **is** GPL-2.0-or-later, which is a poor fit for Store terms, and a media app needs to
+ship codec fixes the day they land, not after a review queue. Store MSIX is not a secondary
+channel ([11-licensing.md](11-licensing.md)).
 
-**Use Velopack.** It's the current successor to Squirrel/Clowd.Squirrel, supports .NET (which suits
+**Split first install from update.** They are different UX:
+
+| | First install | Every later update |
+|---|---|---|
+| Tool | **Inno Setup** wizard | **Velopack** |
+| What the user sees | A short, branded wizard, once | Nothing until "Update ready — restart" |
+| What it writes | Velopack layout under `%LocalAppData%\MediaViewer` | A new `app-*` folder + stub pointer |
+
+Velopack is the current successor to Squirrel/Clowd.Squirrel, supports .NET (which suits
 the C# shell from **D1**) alongside native payloads, and does delta packaging, staging, and
 rollback out of the box. Writing your own updater is three weeks and a security surface.
+Inno is the wizard: per-user, no MSI elevation games, licence page, finish links. Do not
+wrap a second custom WinUI installer around either, and do not re-show Inno on update.
 
 ## Per-user install — the decision that makes auto-update tolerable
 
@@ -45,7 +54,60 @@ which means users decline it, which means your update mechanism doesn't work and
 tells you 40 % of installs are three versions behind. Per-user install updates silently.
 
 Ship a **separate per-machine MSI with auto-update disabled** for the IT/enterprise case, where
-admins want to control versions anyway.
+admins want to control versions anyway. That MSI is not the consumer wizard.
+
+## First install — a short wizard
+
+The download is one-time; the setup should feel like a real app, not a zip that dumped files.
+The wizard is **Inno Setup**, signed, per-user, **no UAC**. Default directory is
+`%LocalAppData%\MediaViewer`. Do not offer `Program Files` in the consumer wizard — that
+path is the enterprise MSI, because a per-machine install cannot auto-update quietly.
+
+Pages, in order. Do not add more.
+
+1. **Welcome.** App icon, name, one line: a viewer for a camera dump — photos and video in
+   one folder.
+2. **Licence.** GPL-2.0-or-later, scroll + accept. Required, not a skippable link.
+3. **Location.** The LocalAppData default, editable. No "install for all users" checkbox.
+4. **Options.** Start Menu shortcut **on**. Desktop shortcut **off**. That is the whole
+   page.
+5. **Progress.**
+6. **Finish.** Primary button: **Launch MediaViewer**. Secondary links: **GitHub**
+   (`https://github.com/longtimeno-c/mediaviewer`) and **Licence**. Do not auto-open the
+   repo, and do not pre-tick "Star us" / "Open GitHub".
+
+**Not in the wizard** — these are in-app, once, later:
+
+- Default photo viewer (PR 14: after the first successful still open).
+- Telemetry (first-run screen in the app, default off, no pre-ticked box).
+
+A "set as default" checkbox on page 4 would silently fight `UserChoice` and would ask
+before the user has seen a single photo. A telemetry checkbox in setup is the same dark
+pattern the first-run screen exists to avoid. Do not stack either with the licence page.
+
+Uninstall is Inno's uninstaller, registered under Apps & features. It removes the Start
+shortcut, the install directory (including leftover `app-*` folders), and every PR 14
+`ProgId` / handler registration. An update that leaves a zombie association is a failed
+uninstall.
+
+### Icon
+
+One mark, one `.ico`, used everywhere the OS shows the app:
+
+- Wizard header and installer exe
+- Start Menu and optional desktop shortcut
+- Window title bar and taskbar (PR 14)
+- Each still `ProgId`'s `DefaultIcon` (PR 14)
+
+Sizes in the `.ico`: 16, 20, 24, 32, 40, 48, 64, 256. A PNG of the same mark goes in
+About. Do not invent a second "installer-only" logo.
+
+### About
+
+The in-app About (command bar, already a flyout in PR 3) grows up in this PR. It shows
+the running version, the GPL, a link to the GitHub repo, `THIRD-PARTY.md`, and the
+**LGPL source offer for this build** — not a frozen snapshot from v1.0
+([11-licensing.md](11-licensing.md)).
 
 ## Mechanics
 
@@ -69,9 +131,11 @@ half-fail.
 
 ### Delta patches earn their keep here
 
-Installed size is ~120 MB, and most of it is codec and FFmpeg DLLs that change rarely. A typical
-app-only update is a few MB against a 120 MB full payload. Without deltas, every bug fix is a
-120 MB download and users disable updates.
+Installed size is capped at **< 250 MB** ([09](09-build-and-test.md)); most of it is codec
+and FFmpeg DLLs that change rarely. A typical app-only update is a few MB against that
+payload. Without deltas, every bug fix is a full download and users disable updates.
+Do not ship Windows App SDK AI / ONNX / DirectML / WebView2: they are not a dependency,
+and they are currently the largest files in a framework-dependent publish.
 
 ### Staging and restart
 

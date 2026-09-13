@@ -145,5 +145,6 @@ trivially compliant at once, and matches what comparable tools do.
 
 Store MSIX is **off the table**. PR 15's "Store as a secondary channel if the licence
 permits" is now answered: it does not. The primary and only channel is a signed
-per-user installer with Velopack auto-update
-([13-updates-and-telemetry.md](13-updates-and-telemetry.md)).
+per-user **Inno Setup wizard** (first install) with **Velopack** auto-update
+([13-updates-and-telemetry.md](13-updates-and-telemetry.md)). About links to GitHub,
+`THIRD-PARTY.md`, and the per-release LGPL source offer.

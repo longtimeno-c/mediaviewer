@@ -340,8 +340,9 @@ What this costs, stated honestly:
   and idle soaks. A Windows DXGI pass is not a Mac pass.
 - **Hand-written HLSL and MSL twins** from the first kernel the Mac path needs. No SPIR-V, no
   shader compiler, no third language.
-- **Two shipping pipelines:** Velopack + Authenticode, and notarized Sparkle. Neither Store
-  (GPL).
+- **Two shipping pipelines:** Inno Setup wizard + Velopack + Authenticode on Windows, and
+  notarized Sparkle on Mac. Neither Store (GPL). The wizard is first install only;
+  updates are silent ([13](13-updates-and-telemetry.md)).
 - A **narrow** gfx/io/audio/hwdecode/encode port — a header plus a real `*_win.cpp` and
   `*_mac.cpp`. Not a general RHI, not empty stubs, not Vulkan. The Mac files arrive with
   Milestone F, as implementations, not as v1 placeholders.

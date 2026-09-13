@@ -30,7 +30,7 @@ Read in order:
 | [10-roadmap.md](10-roadmap.md) | 15 Windows PR-sized slices, then Milestone F (Mac, PR 16–20), each with a verify line |
 | [11-licensing.md](11-licensing.md) | FFmpeg LGPL, codec patents, the Exiv2 GPL trap — settle in PR 1 |
 | [12-decision-log.md](12-decision-log.md) | What changed, when, and why |
-| [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | Auto-update channel, crash reporting, the privacy line |
+| [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | First-install wizard, Velopack updates, crash reporting, the privacy line |
 | [14-abi.md](14-abi.md) | The C ABI between the C# shell and the C++ core — specified, not just named |
 | [15-platforms.md](15-platforms.md) | Windows v1, hostable core from PR 4, macOS as Milestone F — **D9**. Not a UI-only port. |
 | [16-commands.md](16-commands.md) | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. |
