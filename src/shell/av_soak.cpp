@@ -18,7 +18,7 @@ int run_av_soak(const av_soak_options& options) {
   std::unique_ptr<player::media_source, decltype(&player::close_media)> source(opened.value(), player::close_media);
   std::ofstream csv(std::filesystem::path(reinterpret_cast<const char8_t*>(options.csv_out_utf8)));
   if (!csv) return 2;
-  csv << "elapsed_s,position_ns,audio_master,error_p50_ms,error_p99_ms,slope_ms_min,presented,dropped,cadence,starved,rebuilds,discontinuities,host_gaps\n";
+  csv << "elapsed_s,position_ns,audio_master,error_p50_ms,error_p99_ms,slope_ms_min,presented,dropped,cadence,starved,rebuilds,discontinuities,host_gaps,surface_waits\n";
   source->play();
   const auto start = std::chrono::steady_clock::now();
   auto deadline = start;
@@ -37,7 +37,8 @@ int run_av_soak(const av_soak_options& options) {
           << stats.err_ms_p50 << ',' << stats.err_ms_p99 << ',' << stats.drift_slope_ms_per_min << ','
           << frames << ',' << stats.counters.dropped_late << ',' << stats.counters.held_cadence << ','
           << stats.counters.held_starved << ',' << stats.counters.device_rebuilds << ','
-          << stats.position_discontinuities << ',' << stats.host_clock_gaps << '\n';
+          << stats.position_discontinuities << ',' << stats.host_clock_gaps << ','
+          << stats.surface_waits << '\n';
       csv.flush();
     }
     if (source->state() == player::play_state::ended) return 3; // A short clip cannot prove a long soak.
@@ -46,6 +47,9 @@ int run_av_soak(const av_soak_options& options) {
   }
   if (frames == 0 || stats.position_discontinuities || stats.host_clock_gaps) return 1;
   if (source->info().has_audio && !stats.audio_master) return 1;
+  // 5a: "the decoder never stalls waiting for a surface over a 10-minute play."
+  // A 30-minute audio-master run that waited on a DPB surface fails that too.
+  if (stats.surface_waits != 0) return 1;
   // Diagnostic runs are useful, but never label them a 30-minute verification.
   if (options.seconds < 1800) return 4;
   return std::abs(stats.drift_slope_ms_per_min) <= 1.0 ? 0 : 1;
