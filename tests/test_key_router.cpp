@@ -219,8 +219,49 @@ TEST_CASE("island focus keeps in-pane traversal and still takes global keys", "[
   REQUIRE_FALSE(r.on_key(down(key::enter), s).handled);
   REQUIRE_FALSE(r.on_key(down(key::home), s).handled);
   REQUIRE(r.on_key(down(key::f3), s).command == command_id::overlay);
-  REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
-  REQUIRE(r.on_key(down(char_key('0')), s).command == command_id::fit);
+  // Review note 38: characters are the strip's typeahead, not commands (this
+  // used to assert D → next and 0 → fit from the strip).
+  REQUIRE(r.on_key(down(char_key('K'), mod_ctrl), s).command == command_id::palette);
+}
+
+TEST_CASE("typing in the strip or gallery reaches typeahead, not the router", "[shell][router]") {
+  key_router r;
+  for (const auto focus : {focus_kind::filmstrip, focus_kind::gallery}) {
+    view_state s = still();
+    s.focus = focus;
+    for (const char c : {'D', 'S', 'C', '0', '?', 'G', 'T', 'F', 'A', '1'}) {
+      REQUIRE_FALSE(r.on_key(down(char_key(c)), s).handled);
+      REQUIRE_FALSE(r.on_key(down(char_key(c), mod_shift), s).handled);
+    }
+    REQUIRE(r.on_key(down(key::f3), s).command == command_id::overlay);
+    REQUIRE(r.on_key(down(char_key('K'), mod_ctrl), s).command == command_id::palette);
+    REQUIRE(r.on_key(down(char_key('O'), mod_ctrl), s).command == command_id::open);
+  }
+  // On the canvas the same letters are still commands.
+  REQUIRE(r.on_key(down(char_key('D')), still()).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('0')), still()).command == command_id::fit);
+}
+
+TEST_CASE("the palette never offers a command that needs a key-up", "[shell][commands]") {
+  // Review note 39: a palette entry has no release, so a hold would stick.
+  for (const binding& b : default_bindings()) {
+    if (b.policy == repeat_policy::momentary) {
+      REQUIRE_FALSE(palette_runnable(b.command));
+      REQUIRE_FALSE(palette_runnable(b.release));
+    } else if (b.policy == repeat_policy::tap_hold) {
+      REQUIRE(palette_runnable(b.command));  // the tap is an ordinary command
+      REQUIRE_FALSE(palette_runnable(b.hold));
+      REQUIRE_FALSE(palette_runnable(b.release));
+    }
+  }
+  REQUIRE_FALSE(palette_runnable(command_id::loupe));
+  REQUIRE_FALSE(palette_runnable(command_id::hold_previous));
+  REQUIRE_FALSE(palette_runnable(command_id::skim_forward));
+  REQUIRE(palette_runnable(command_id::rate_up));
+  REQUIRE(palette_runnable(command_id::fit));
+  const std::string table = describe_commands();
+  REQUIRE(table.find("\tLoupe\thold Z\t0\n") != std::string::npos);
+  REQUIRE(table.find("\tFit\t0\t1\n") != std::string::npos);
 }
 
 TEST_CASE("edge keys ignore typematic repeat; walk keys repeat", "[shell][router]") {
@@ -382,7 +423,7 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
           "[shell][commands]") {
   const std::string table = describe_commands();
   const auto has = [&table](const char* name, const char* keys) {
-    const std::string needle = std::string("\t") + name + "\t" + keys + "\n";
+    const std::string needle = std::string("\t") + name + "\t" + keys + "\t";
     return table.find(needle) != std::string::npos;
   };
   // plan/10 PR 6 verify: open, next/prev, zoom/fit/100 %, mark, copy-to,
@@ -410,13 +451,13 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
   REQUIRE(table.find("\tSelect item\t") == std::string::npos);
   REQUIRE(table.find("\tLoupe off\t") == std::string::npos);
   REQUIRE(table.find("\tBack\t") == std::string::npos);
-  // Every line is well formed: four tab-separated fields.
+  // Every line is well formed: five tab-separated fields.
   std::size_t lines = 0;
   for (std::size_t pos = 0; pos < table.size();) {
     const std::size_t end = table.find('\n', pos);
     REQUIRE(end != std::string::npos);
     const std::string row = table.substr(pos, end - pos);
-    REQUIRE(std::count(row.begin(), row.end(), '\t') == 3);
+    REQUIRE(std::count(row.begin(), row.end(), '\t') == 4);
     pos = end + 1;
     ++lines;
   }

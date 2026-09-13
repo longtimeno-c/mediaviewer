@@ -117,6 +117,14 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   }
 
   const mode m = resolve_mode(s);
+  // Review note 38: with the strip or the gallery focused, a character typed
+  // without Ctrl or Alt is typeahead, not a command — so letter bindings added
+  // later cannot eat it either. Named keys (F3, arrows) and chords (Ctrl+K)
+  // still route.
+  if (const auto raw = static_cast<std::uint16_t>(e.k);
+      m == mode::island && (e.mods & (mod_ctrl | mod_alt)) == 0 && raw >= 0x21 && raw <= 0x7E) {
+    return {};
+  }
   const binding* b = lookup(e.k, e.mods, m);
   if (!b && m == mode::loupe) {
     // The loupe layers over the mode underneath: only the arrows (and Z / \)

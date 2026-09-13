@@ -35,6 +35,7 @@ public static partial class IslandHost
         public int Modes;
         public string Name = "";
         public string Keys = "";
+        public bool Runnable;  // false: needs a key-up (hold Z, hold Q), so `?` only
     }
 
     private sealed class CommandEntry
@@ -66,9 +67,12 @@ public static partial class IslandHost
             foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
                 string[] f = line.Split('\t');
-                if (f.Length != 4) continue;
+                if (f.Length != 5) continue;
                 if (!int.TryParse(f[0], out int id) || !int.TryParse(f[1], out int modes)) continue;
-                CommandRows.Add(new CommandRow { Id = id, Modes = modes, Name = f[2], Keys = f[3] });
+                CommandRows.Add(new CommandRow
+                {
+                    Id = id, Modes = modes, Name = f[2], Keys = f[3], Runnable = f[4] == "1",
+                });
             }
             return 0;
         }
@@ -151,13 +155,15 @@ public static partial class IslandHost
     }
 
     // Bindings grouped by command, in table order; `modeMask` 0 means all modes.
-    private static List<CommandEntry> Entries(int modeMask)
+    // The palette asks for runnable ones only (review note 39).
+    private static List<CommandEntry> Entries(int modeMask, bool runnableOnly = false)
     {
         var entries = new List<CommandEntry>();
         var byId = new Dictionary<int, CommandEntry>();
         foreach (CommandRow row in CommandRows)
         {
             if (modeMask != 0 && (row.Modes & modeMask) == 0) continue;
+            if (runnableOnly && !row.Runnable) continue;
             if (!byId.TryGetValue(row.Id, out CommandEntry? entry))
             {
                 entry = new CommandEntry { Id = row.Id, Name = row.Name, Keys = row.Keys };
@@ -222,7 +228,7 @@ public static partial class IslandHost
     // the one chosen with the arrows). Same dispatch as the key.
     private static UIElement BuildPalette(out Control focusTarget)
     {
-        List<CommandEntry> all = Entries(0);
+        List<CommandEntry> all = Entries(0, runnableOnly: true);
         TextBox filter = Input("Type a command", 420);
         var list = new ListView
         {

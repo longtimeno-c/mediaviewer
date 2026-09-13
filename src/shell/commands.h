@@ -223,4 +223,10 @@ struct command_info {
 // C ABI; this goes to the shell's own island.
 [[nodiscard]] std::string describe_commands();
 
+// Whether the palette may run `id` on its own. A palette entry has no key-up,
+// so a momentary key's command, a tap/hold's hold, and any release are shown
+// in `?` but not offered to run (review note 39). The fifth column of
+// describe_commands() is this, as 1 or 0.
+[[nodiscard]] bool palette_runnable(command_id id) noexcept;
+
 }  // namespace mv::shell

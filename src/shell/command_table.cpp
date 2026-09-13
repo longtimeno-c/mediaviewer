@@ -259,6 +259,15 @@ std::string key_label(key k, std::uint8_t mods) {
   return out;
 }
 
+bool palette_runnable(command_id id) noexcept {
+  if (id == none) return false;
+  for (const binding& b : kBindings) {
+    if (b.policy == momentary && (b.command == id || b.release == id)) return false;
+    if (b.policy == tap_hold && (b.hold == id || b.release == id)) return false;
+  }
+  return true;
+}
+
 std::string describe_commands() {
   std::string out;
   out.reserve(4096);
@@ -272,6 +281,8 @@ std::string describe_commands() {
     out += info->name;
     out += '\t';
     out += keys;
+    out += '\t';
+    out += palette_runnable(id) ? '1' : '0';
     out += '\n';
   };
   for (const binding& b : kBindings) {
