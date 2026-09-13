@@ -172,7 +172,8 @@ public static partial class IslandHost
                 ? null
                 : Marshal.GetDelegateForFunctionPointer<NativeCommand>(checked((IntPtr)args.OnCommand));
 
-            _source?.Dispose();
+            if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
+            DisposeSource(ref _source);
             _source = new DesktopWindowXamlSource();
             _source.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Constrain the island to the bar before assigning content so a
@@ -181,6 +182,7 @@ public static partial class IslandHost
             _source.TakeFocusRequested += OnTakeFocusRequested;
             _source.Content = BuildChrome();
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
+            _detaching = false;
             if (!_focusHooked)
             {
                 Microsoft.UI.Xaml.Input.FocusManager.GotFocus += OnXamlGotFocus;
@@ -198,6 +200,47 @@ public static partial class IslandHost
 
     private static bool _focusHooked;
 
+    // Set before any island is torn down. FocusManager.GotFocus is static and
+    // fires while a DesktopWindowXamlSource disposes; an exception escaping a
+    // XAML event there is a fail-fast in CoreUIComponents (0xC0000602), seen
+    // on PR 6a soak exits. Native calls BeginDetach first; every Detach* also
+    // unhooks in case it is called alone.
+    private static bool _detaching;
+
+    public static int BeginDetach(IntPtr arg, int sizeBytes)
+    {
+        _ = arg;
+        _ = sizeBytes;
+        UnhookFocus();
+        return 0;
+    }
+
+    private static void UnhookFocus()
+    {
+        _detaching = true;
+        if (!_focusHooked) return;
+        try
+        {
+            Microsoft.UI.Xaml.Input.FocusManager.GotFocus -= OnXamlGotFocus;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        _focusHooked = false;
+    }
+
+    // Null the static field before Dispose, so anything Dispose raises cannot
+    // reach a half-disposed source through it.
+    private static void DisposeSource(ref DesktopWindowXamlSource? source)
+    {
+        DesktopWindowXamlSource? old = source;
+        source = null;
+        if (old is null) return;
+        old.Content = null;
+        old.Dispose();
+    }
+
     /// <summary>
     /// Tells the native key router which island holds focus, and whether it is
     /// a text control (plan/16: then every key but Esc belongs to the island).
@@ -208,18 +251,27 @@ public static partial class IslandHost
                                        Microsoft.UI.Xaml.Input.FocusManagerGotFocusEventArgs e)
     {
         _ = sender;
-        int kind = FocusKind.CommandBar;
-        if (e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
+        if (_detaching || _onCommand is null) return;
+        try
         {
-            kind = FocusKind.Text;
+            int kind = FocusKind.CommandBar;
+            if (e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
+            {
+                kind = FocusKind.Text;
+            }
+            else if (e.NewFocusedElement is UIElement element && element.XamlRoot is XamlRoot root)
+            {
+                if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
+                else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
+                else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
+            }
+            Send(Command.FocusChanged, kind);
         }
-        else if (e.NewFocusedElement is UIElement element && element.XamlRoot is XamlRoot root)
+        catch (Exception ex)
         {
-            if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
-            else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
-            else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
+            // Never let an exception out of a XAML event: that is a fail-fast.
+            System.Diagnostics.Debug.WriteLine(ex);
         }
-        Send(Command.FocusChanged, kind);
     }
 
     private static bool OwnsRoot(DesktopWindowXamlSource? source, XamlRoot root) =>
@@ -267,18 +319,9 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
-            if (_focusHooked)
-            {
-                Microsoft.UI.Xaml.Input.FocusManager.GotFocus -= OnXamlGotFocus;
-                _focusHooked = false;
-            }
-            if (_source is not null)
-            {
-                _source.TakeFocusRequested -= OnTakeFocusRequested;
-                _source.Content = null;
-                _source.Dispose();
-                _source = null;
-            }
+            UnhookFocus();
+            if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
+            DisposeSource(ref _source);
             _onCommand = null;
             _context = IntPtr.Zero;
             UnregisterUiFont();

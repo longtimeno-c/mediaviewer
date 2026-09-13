@@ -61,7 +61,7 @@ public static partial class IslandHost
                 StartDrain();
             }
 
-            _gallery?.Dispose();
+            DisposeSource(ref _gallery);
             _gallery = new DesktopWindowXamlSource();
             _gallery.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Park it before content exists: a default full-client island would
@@ -135,12 +135,8 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
-            if (_gallery is not null)
-            {
-                _gallery.Content = null;
-                _gallery.Dispose();
-                _gallery = null;
-            }
+            UnhookFocus();
+            DisposeSource(ref _gallery);
             _galleryRepeater = null;
             _galleryScroll = null;
             _galleryRoot = null;

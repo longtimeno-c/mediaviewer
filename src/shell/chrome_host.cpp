@@ -221,6 +221,7 @@ expected chrome_host::load() noexcept {
   detach_transport_ = get_entry(L"DetachTransport");
   apply_settings_ = get_entry(L"ApplySettings");
   apply_rate_ = get_entry(L"ApplyRate");
+  begin_detach_ = get_entry(L"BeginDetach");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -531,6 +532,12 @@ bool chrome_host::navigate_focus(bool reverse) noexcept {
 }
 
 void chrome_host::detach() noexcept {
+  // Before any island goes: a static FocusManager.GotFocus handler firing
+  // into a half-disposed island is a XAML fail-fast at exit.
+  if ((attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) &&
+      begin_detach_) {
+    (void)begin_detach_(nullptr, 0);
+  }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);
     transport_attached_ = false;

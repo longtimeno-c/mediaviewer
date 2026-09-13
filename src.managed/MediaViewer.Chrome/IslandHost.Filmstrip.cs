@@ -54,7 +54,7 @@ public static partial class IslandHost
                 StartVideoControls(parent);
             }
 
-            _filmstrip?.Dispose();
+            DisposeSource(ref _filmstrip);
             _filmstrip = new DesktopWindowXamlSource();
             _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             int strip = Math.Max((int)(FilmstripDip * (args.Dpi <= 0 ? 96 : args.Dpi) / 96.0), 1);
@@ -93,17 +93,13 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
+            UnhookFocus();
             _completionWait?.Unregister(null);
             _completionWait = null;
             StopVideoControls();
             _folderSession?.Dispose();
             _folderSession = null;
-            if (_filmstrip is not null)
-            {
-                _filmstrip.Content = null;
-                _filmstrip.Dispose();
-                _filmstrip = null;
-            }
+            DisposeSource(ref _filmstrip);
             _filmstripRoot = null;
             Items.Clear();
             _selectedIndex = -1;

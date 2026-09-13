@@ -311,6 +311,7 @@ class chrome_host {
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
   chrome_entry_fn island_window_ = nullptr;
+  chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
   HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
