@@ -319,6 +319,16 @@ void chrome_host::resize(int width, int height, std::uint32_t dpi) noexcept {
   (void)resize_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
+void chrome_host::park_bar(int client_height) noexcept {
+  if (!attached_ || !resize_) return;
+  chrome_resize_args args{};
+  args.width = 1;
+  args.height = 1;
+  args.dpi = 96;
+  args.y = client_height;
+  (void)resize_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
 expected chrome_host::attach_filmstrip(HWND parent, void* context, chrome_command_fn on_command,
                                        void* session, int width, int height,
                                        std::uint32_t dpi) noexcept {
@@ -563,7 +573,12 @@ void chrome_host::detach() noexcept {
 
 void chrome_host::shutdown_for_exit() noexcept {
   if (attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) detach();
-  if (shutdown_for_exit_) (void)shutdown_for_exit_(nullptr, 0);
+  if (!shutdown_for_exit_) return;
+  const int rc = shutdown_for_exit_(nullptr, 0);
+  // Not silent: a live source here means an island skipped detach, which is
+  // exactly the shape of the exit fail-fast this path exists to prevent.
+  if (rc == 1) MV_LOG_WARN("chrome: XAML left running at exit; an island was not detached");
+  else if (rc != 0) MV_LOG_WARN("chrome: ShutdownForExit failed (%d)", rc);
 }
 
 }  // namespace mv::shell

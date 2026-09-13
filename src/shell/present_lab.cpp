@@ -326,6 +326,10 @@ void present_lab::render_thread_main() noexcept {
         camera_.fit(static_cast<float>(media_width()),
                     static_cast<float>(media_height()),
                     view.w, view.h, true);
+      } else if ((current_image_ || current_video_.texture) && camera_.fill_mode()) {
+        // Fill is a mode too: `4` then `F` must still cover the new canvas.
+        const auto view = usable_canvas(snapshot);
+        camera_.fill(media_width(), media_height(), view.w, view.h, true);
       }
     }
 
@@ -408,6 +412,34 @@ void present_lab::render_thread_main() noexcept {
                          static_cast<float>(media_height()), view.w, view.h);
       }
       redraw = true;
+    }
+
+    if (snapshot.fill_seq != seen_fill_seq_) {
+      seen_fill_seq_ = snapshot.fill_seq;
+      if (current_image_ || current_video_.texture) {
+        const auto view = usable_canvas(snapshot);
+        camera_.fill(media_width(), media_height(), view.w, view.h, false);
+      }
+      redraw = true;
+    }
+    {
+      // One keyboard pan step is a tenth of the canvas, whatever the zoom:
+      // what moves is what you see, not a fixed number of image pixels.
+      constexpr float kPanStepFraction = 0.1f;
+      std::int64_t steps_x = 0;
+      std::int64_t steps_y = 0;
+      if (input_cursor_.consume_pan(snapshot, steps_x, steps_y) &&
+          (current_image_ || current_video_.texture)) {
+        const auto view = usable_canvas(snapshot);
+        camera_.pan_by_screen(static_cast<float>(steps_x) * view.w * kPanStepFraction,
+                              static_cast<float>(steps_y) * view.h * kPanStepFraction,
+                              media_width(), media_height(), view.w, view.h);
+        redraw = true;
+      }
+      // The UI thread reads this to let ↑ ↓ fall through at fit (plan/16:
+      // they pan only when zoomed). Lock-free; the UI never waits on it.
+      view_fitted_.store(!(current_image_ || current_video_.texture) || camera_.fit_mode(),
+                         std::memory_order_relaxed);
     }
 
     const float wheel = input_cursor_.consume_wheel(snapshot);

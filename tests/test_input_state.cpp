@@ -21,6 +21,24 @@ TEST_CASE("coalesced wheel input is conserved and never replayed", "[shell][inpu
   REQUIRE(cursor.consume_wheel(slot.acquire()) == -0.5f);
 }
 
+TEST_CASE("coalesced keyboard pan steps are conserved and never replayed", "[shell][input]") {
+  mv::publish_slot<mv::shell::input_snapshot> slot;
+  mv::shell::input_snapshot s;
+  mv::shell::input_cursor cursor;
+  std::int64_t dx = 0;
+  std::int64_t dy = 0;
+  REQUIRE_FALSE(cursor.consume_pan(slot.acquire(), dx, dy));
+  s.pan_steps_y -= 1;
+  slot.publish(s);
+  s.pan_steps_y -= 1;  // key-repeat before the render thread ran
+  s.pan_steps_x += 1;
+  slot.publish(s);
+  REQUIRE(cursor.consume_pan(slot.acquire(), dx, dy));
+  REQUIRE(dx == 1);
+  REQUIRE(dy == -2);
+  REQUIRE_FALSE(cursor.consume_pan(slot.acquire(), dx, dy));
+}
+
 TEST_CASE("a parked cursor is not repeated activity", "[shell][input]") {
   mv::shell::input_snapshot s;
   mv::shell::input_cursor cursor;

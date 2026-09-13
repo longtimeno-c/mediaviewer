@@ -86,6 +86,11 @@ struct app_state {
   // Which island last reported focus (chrome_cmd_focus_changed). Only read
   // when GetFocus() is not the canvas window, so it cannot go stale there.
   mv::shell::focus_kind island_focus = mv::shell::focus_kind::command_bar;
+  // plan/16 `F`: borderless on the window's monitor, chrome hidden. The
+  // windowed placement and style come back exactly on the way out.
+  bool fullscreen = false;
+  WINDOWPLACEMENT windowed_placement{sizeof(WINDOWPLACEMENT)};
+  LONG_PTR windowed_style = 0;
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -109,6 +114,7 @@ std::string utf8_from_wide(std::wstring_view wide) {
 }
 
 void apply_view_state(app_state* app) noexcept;
+void layout_chrome(app_state* app) noexcept;
 
 void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
   if (!app || !app->session || wide_dir.empty()) return;
@@ -494,7 +500,43 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   if (video_mode(app)) s.item = mv::shell::item_kind::clip;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
+  s.fullscreen = app->fullscreen;
   return s;
+}
+
+// Host-side and cheap: a style change and a SetWindowPos. The swapchain follows
+// through the usual WM_SIZE resize, so there is no second present path.
+void set_fullscreen(app_state* app, bool on) noexcept {
+  if (!app || !app->window || app->fullscreen == on) return;
+  const HWND hwnd = app->window;
+  if (on) {
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    app->windowed_placement.length = sizeof(WINDOWPLACEMENT);
+    if (!::GetWindowPlacement(hwnd, &app->windowed_placement) ||
+        !::GetMonitorInfoW(::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+      return;
+    }
+    app->windowed_style = ::GetWindowLongPtrW(hwnd, GWL_STYLE);
+    // Set first: the WM_SIZE this causes lays the chrome out as hidden.
+    app->fullscreen = true;
+    app->gallery_visible = false;
+    // A hidden island must not keep keyboard focus.
+    ::SetFocus(hwnd);
+    ::SetWindowLongPtrW(hwnd, GWL_STYLE, app->windowed_style & ~WS_OVERLAPPEDWINDOW);
+    const RECT& r = monitor.rcMonitor;
+    ::SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                   SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  } else {
+    app->fullscreen = false;
+    ::SetWindowLongPtrW(hwnd, GWL_STYLE, app->windowed_style);
+    ::SetWindowPlacement(hwnd, &app->windowed_placement);
+    ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                       SWP_FRAMECHANGED);
+  }
+  layout_chrome(app);
+  apply_view_state(app);
 }
 
 void walk_back(app_state* app, mv::shell::back_target target) noexcept {
@@ -511,8 +553,11 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::gallery:
       set_gallery(app, false);
       return;
-    // Slideshow, fullscreen, pane and crop land with their slices (6b, 6d,
-    // PR 8, PR 9); resolve_back cannot name them until their state exists.
+    case back_target::fullscreen:
+      set_fullscreen(app, false);
+      return;
+    // Slideshow, pane and crop land with their slices (6d, PR 8, PR 9);
+    // resolve_back cannot name them until their state exists.
     default:
       return;
   }
@@ -611,6 +656,25 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->skim_tick_ms = 0;
       return true;
 
+    case fullscreen: set_fullscreen(app, !app->fullscreen); return true;
+    case fill: return bump(app->input.fill_seq);
+    // plan/16: Ctrl+0 resets pan/zoom, which is the opening view — fit.
+    case reset_view: return bump(app->input.fit_seq);
+    // plan/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through to whatever else wants it.
+    case pan_up:
+    case pan_down:
+    case pan_left:
+    case pan_right:
+      if (app->lab.view_fitted()) return false;
+      if (command == pan_up) --app->input.pan_steps_y;
+      if (command == pan_down) ++app->input.pan_steps_y;
+      if (command == pan_left) --app->input.pan_steps_x;
+      if (command == pan_right) ++app->input.pan_steps_x;
+      ++app->input.activity_seq;
+      publish(app);
+      return true;
+
     default:
       return false;
   }
@@ -644,7 +708,8 @@ void layout_chrome(app_state* app) noexcept {
   const int bar = mv::shell::chrome_bar_height_px(dpi);
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
-  app->chrome.resize(width, bar, dpi);
+  if (app->fullscreen) app->chrome.park_bar(height);
+  else app->chrome.resize(width, bar, dpi);
   if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (app->chrome.transport_attached()) app->chrome.resize_transport(width, height, strip, dpi);
@@ -684,7 +749,9 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   const auto dpi = ::GetDpiForWindow(hwnd);
   app->input.dpi_scale = static_cast<float>(dpi) / 96.0f;
   app->input.chrome_height_px =
-      app->chrome_on_screen ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi)) : 0;
+      (app->chrome_on_screen && !app->fullscreen)
+          ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi))
+          : 0;
   // Both bottom strips reserve canvas. The transport is only ever up while a
   // clip is playing or paused, and reserving is what keeps it off the video.
   int bottom = 0;
@@ -707,8 +774,9 @@ void apply_view_state(app_state* app) noexcept {
   const bool have_folder = folder_count(app) > 1;
   if (!have_folder) app->gallery_visible = false;
 
+  // Fullscreen hides chrome (plan/16). The ↓ / hot-edge reveal is a later cut.
   const bool want_filmstrip =
-      have_folder && !app->gallery_visible &&
+      have_folder && !app->gallery_visible && !app->fullscreen &&
       (app->mode == open_mode::image ? app->settings.filmstrip_for_image
        : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
                                         : false);
@@ -720,7 +788,7 @@ void apply_view_state(app_state* app) noexcept {
   }
   // Auto show/hide: a clip is open, and the grid is not covering everything.
   // Ordered after the filmstrip so the strip height it stacks on is current.
-  const bool want_transport = app->video_on && !app->gallery_visible;
+  const bool want_transport = app->video_on && !app->gallery_visible && !app->fullscreen;
   const int strip = app->chrome.filmstrip_visible()
                         ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (want_transport != app->chrome.transport_visible()) {
@@ -849,7 +917,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case WM_KEYDOWN: {
       if ((lparam & (1 << 30)) != 0) return 0;
-      if (wparam == VK_TAB && app->chrome.attached()) {
+      // Tab has nowhere visible to go while fullscreen hides the chrome.
+      if (wparam == VK_TAB && app->chrome.attached() && !app->fullscreen) {
         const bool reverse = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
         (void)app->chrome.navigate_focus(reverse);
       }

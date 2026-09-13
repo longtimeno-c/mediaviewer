@@ -19,6 +19,18 @@ class camera {
   // 100 %. Keeps the current centre.
   void one_to_one() noexcept;
 
+  // Fill: the image covers the window (crops the long side), centred. A mode
+  // like fit — the caller re-fills on resize — but not locked: fill crops, so
+  // drag and keyboard pan are allowed. Any zoom command leaves it.
+  void fill(float image_w, float image_h, float window_w, float window_h,
+            bool immediate) noexcept;
+
+  // Keyboard pan (plan/16). Moves the target by a screen-pixel delta, so the
+  // springs animate it, clamped so no background shows on an axis the image
+  // overflows. Ignored in fit mode — the opening view is locked, same as drag.
+  void pan_by_screen(float dx_screen, float dy_screen, float image_w, float image_h,
+                     float window_w, float window_h) noexcept;
+
   // Jump to an absolute zoom in [50 %, 6400 %]. 50 % is allowed even when
   // that is smaller than fit (letterboxed). Fit-to-window is a separate
   // command and may go below 50 % on a huge image.
@@ -45,6 +57,7 @@ class camera {
 
   [[nodiscard]] bool moving() const noexcept;
   [[nodiscard]] bool fit_mode() const noexcept { return fit_mode_; }
+  [[nodiscard]] bool fill_mode() const noexcept { return fill_mode_; }
   [[nodiscard]] bool dragging() const noexcept { return dragging_; }
 
   [[nodiscard]] float pan_x() const noexcept { return pan_x_; }
@@ -57,6 +70,13 @@ class camera {
 
   [[nodiscard]] static float fit_zoom(float image_w, float image_h, float window_w,
                                       float window_h) noexcept;
+  [[nodiscard]] static float fill_zoom(float image_w, float image_h, float window_w,
+                                       float window_h) noexcept;
+
+  // The image-pixel centre nearest `centre` that keeps the window covered on
+  // this axis; the image midpoint when it is narrower than the window.
+  [[nodiscard]] static float clamp_centre(float centre, float image, float window,
+                                          float zoom) noexcept;
 
  private:
   void clear_rubber() noexcept;
@@ -74,6 +94,7 @@ class camera {
   float rubber_idle_ = 0.0f;
   bool rubber_held_ = false;
   bool fit_mode_ = true;
+  bool fill_mode_ = false;
   bool dragging_ = false;
 };
 

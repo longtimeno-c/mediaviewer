@@ -79,6 +79,12 @@ class present_lab {
   // Valid after finished(). 0 when the gate held or no gate was requested.
   [[nodiscard]] int exit_code() const noexcept { return exit_code_; }
 
+  // [any-thread][no-block] True while nothing is open or the camera is in fit
+  // mode, as of the render thread's last input pass.
+  [[nodiscard]] bool view_fitted() const noexcept {
+    return view_fitted_.load(std::memory_order_relaxed);
+  }
+
  private:
   void render_thread_main() noexcept;
   [[nodiscard]] expected rebuild_device() noexcept;
@@ -118,6 +124,7 @@ class present_lab {
   std::thread render_thread_;
   std::atomic<bool> running_{false};
   std::atomic<bool> finished_{false};
+  std::atomic<bool> view_fitted_{true};
   HANDLE wake_event_ = nullptr;
   HANDLE ready_event_ = nullptr;
   std::atomic<int> start_error_{0};
@@ -149,6 +156,7 @@ class present_lab {
   std::uint32_t seen_zoom_in_seq_ = 0;
   std::uint32_t seen_zoom_out_seq_ = 0;
   std::uint32_t seen_zoom_preset_seq_ = 0;
+  std::uint32_t seen_fill_seq_ = 0;
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;  // < 0: no input yet, do not fake a 500 ms tail
   float last_mouse_x_ = 0.0f;

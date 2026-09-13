@@ -219,6 +219,10 @@ class chrome_host {
 
   void resize(int width, int height, std::uint32_t dpi) noexcept;
 
+  // Fullscreen hides the command bar: move its bridge below the client area,
+  // the same "offscreen" the other strips park in. resize() brings it back.
+  void park_bar(int client_height) noexcept;
+
   [[nodiscard]] expected attach_filmstrip(HWND parent, void* context, chrome_command_fn on_command,
                                           void* session, int width, int height,
                                           std::uint32_t dpi) noexcept;

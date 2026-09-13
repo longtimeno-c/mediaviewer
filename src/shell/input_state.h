@@ -47,6 +47,11 @@ struct input_snapshot {
   std::uint32_t zoom_out_seq = 0;         // -
   std::uint32_t zoom_preset_seq = 0;
   float zoom_preset = 1.0f;               // applied when zoom_preset_seq bumps
+  std::uint32_t fill_seq = 0;             // 4
+  // Keyboard pan, in steps. Cumulative like the wheel, so coalesced key-repeat
+  // publications lose none (plan/16: ↑ ↓ when zoomed, Shift+arrows).
+  std::int64_t pan_steps_x = 0;
+  std::int64_t pan_steps_y = 0;
 
   bool window_visible = true;
   bool window_active = true;
@@ -66,6 +71,18 @@ struct input_cursor {
     const auto delta = s.wheel_total - wheel_total;
     wheel_total = s.wheel_total;
     return static_cast<float>(delta) / 120.0f;
+  }
+  std::int64_t pan_steps_x = 0;
+  std::int64_t pan_steps_y = 0;
+
+  // True when there are pan steps to apply; `dx` / `dy` are the steps since
+  // the last call.
+  bool consume_pan(const input_snapshot& s, std::int64_t& dx, std::int64_t& dy) noexcept {
+    dx = s.pan_steps_x - pan_steps_x;
+    dy = s.pan_steps_y - pan_steps_y;
+    pan_steps_x = s.pan_steps_x;
+    pan_steps_y = s.pan_steps_y;
+    return dx != 0 || dy != 0;
   }
   bool consume_activity(const input_snapshot& s) noexcept {
     const bool changed = s.activity_seq != activity_seq;

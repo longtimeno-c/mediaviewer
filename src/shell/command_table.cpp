@@ -192,9 +192,8 @@ constexpr command_info kCommands[] = {
 // this list is empty before PR 6 is proposed (6g).
 constexpr command_id kPending[] = {
     // 6b
-    fullscreen, fill, reset_view, cycle_background, sticky_zoom, clipping, loupe,
-    loupe_release, hold_previous, hold_previous_release, always_on_top, info_overlay,
-    pan_up, pan_down, pan_left, pan_right,
+    cycle_background, sticky_zoom, clipping, loupe, loupe_release, hold_previous,
+    hold_previous_release, always_on_top, info_overlay,
     // 6c
     toggle_mark, mark_all, unmark_all, copy_to, copy_to_pick, move_to, move_to_pick,
     delete_to_recycle_bin,

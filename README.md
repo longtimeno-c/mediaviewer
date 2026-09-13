@@ -112,7 +112,8 @@ quits. Idle (`--static`) must park the cursor off the window.
 
 | Key | |
 |---|---|
-| `F3` | frame-time overlay (off at launch with chrome). `F` is fullscreen from PR 6b |
+| `F` | fullscreen on the window's monitor; hides the command bar, filmstrip and transport. `Esc` leaves |
+| `F3` | frame-time overlay (off at launch with chrome) |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
@@ -124,6 +125,9 @@ quits. Idle (`--static`) must park the cursor off the window.
 | `0` | fit to window |
 | `1` | 100 % |
 | `2` / `3` | 200 % / 400 % |
+| `4` | fill: the image covers the canvas |
+| `Ctrl+0` | reset pan and zoom (fit) |
+| `Up` / `Down`, `Shift+arrows` | pan when zoomed in (`Left` / `Right` alone still walk the folder) |
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
@@ -131,7 +135,7 @@ quits. Idle (`--static`) must park the cursor off the window.
 | `G` | gallery: thumbnail grid of the folder. Click or `Enter` opens an item, `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
-| `Esc` | walks out one level: gallery, then island focus back to the canvas. It never quits |
+| `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
 
 Keys go through one router and one table (`src/shell/commands.h`,

@@ -455,8 +455,8 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
-            ShutdownXaml();
-            return 0;
+            // 1: an island was never detached, so the runtime was left up.
+            return ShutdownXaml() ? 0 : 1;
         }
         catch (Exception ex)
         {
@@ -468,12 +468,12 @@ public static partial class IslandHost
     // The XAML runtime for this thread goes last, after every island source
     // is disposed: WindowsXamlManager first, then the dispatcher queue. Left to
     // process exit it was torn down under live sources.
-    private static void ShutdownXaml()
+    private static bool ShutdownXaml()
     {
         if (_source is not null || _filmstrip is not null || _gallery is not null ||
             _transport is not null)
         {
-            return;
+            return false;
         }
         _busyDelay?.Stop();
         _busyDelay = null;
@@ -481,6 +481,7 @@ public static partial class IslandHost
         _xaml = null;
         _dispatcher?.ShutdownQueue();
         _dispatcher = null;
+        return true;
     }
 
     private static void Send(int command, float arg = 0)

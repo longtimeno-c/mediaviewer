@@ -63,6 +63,14 @@ float wheel_rest(float fit) noexcept {
 
 }  // namespace
 
+float camera::clamp_centre(float centre, float image, float window, float zoom) noexcept {
+  if (image <= 0.0f || window <= 0.0f || zoom <= 0.0f) return centre;
+  const float half = window * 0.5f / zoom;
+  // Narrower than the window on this axis: nothing to pan, keep it centred.
+  if (image <= 2.0f * half) return image * 0.5f;
+  return std::clamp(centre, half, image - half);
+}
+
 void camera::clear_rubber() noexcept {
   rubber_held_ = false;
   rubber_idle_ = 0.0f;
@@ -76,6 +84,11 @@ float camera::fit_zoom(float image_w, float image_h, float window_w, float windo
   return std::min(window_w / image_w, window_h / image_h);
 }
 
+float camera::fill_zoom(float image_w, float image_h, float window_w, float window_h) noexcept {
+  if (image_w <= 0.0f || image_h <= 0.0f || window_w <= 0.0f || window_h <= 0.0f) return 1.0f;
+  return std::min(kMaxZoom, std::max(window_w / image_w, window_h / image_h));
+}
+
 void camera::fit(float image_w, float image_h, float window_w, float window_h,
                  bool immediate) noexcept {
   clear_rubber();
@@ -83,6 +96,26 @@ void camera::fit(float image_w, float image_h, float window_w, float window_h,
   target_pan_x_ = image_w * 0.5f;
   target_pan_y_ = image_h * 0.5f;
   fit_mode_ = true;
+  fill_mode_ = false;
+  if (immediate) {
+    pan_x_ = target_pan_x_;
+    pan_y_ = target_pan_y_;
+    zoom_ = target_zoom_;
+    pan_vx_ = pan_vy_ = zoom_v_ = 0.0f;
+  }
+}
+
+void camera::fill(float image_w, float image_h, float window_w, float window_h,
+                  bool immediate) noexcept {
+  if (image_w <= 0.0f || image_h <= 0.0f || window_w <= 0.0f || window_h <= 0.0f) return;
+  clear_rubber();
+  target_zoom_ = fill_zoom(image_w, image_h, window_w, window_h);
+  target_pan_x_ = image_w * 0.5f;
+  target_pan_y_ = image_h * 0.5f;
+  // Fill crops, so unlike fit it is not locked: drag and keyboard pan move
+  // along the long axis. It persists like fit — a resize re-fills.
+  fit_mode_ = false;
+  fill_mode_ = true;
   if (immediate) {
     pan_x_ = target_pan_x_;
     pan_y_ = target_pan_y_;
@@ -95,6 +128,7 @@ void camera::one_to_one() noexcept {
   clear_rubber();
   target_zoom_ = 1.0f;
   fit_mode_ = false;
+  fill_mode_ = false;
 }
 
 void camera::set_zoom(float zoom, float image_w, float image_h, float window_w,
@@ -105,6 +139,19 @@ void camera::set_zoom(float zoom, float image_w, float image_h, float window_w,
   if (zoom > kMaxZoom) zoom = kMaxZoom;
   target_zoom_ = zoom;
   fit_mode_ = false;
+  fill_mode_ = false;
+}
+
+void camera::pan_by_screen(float dx_screen, float dy_screen, float image_w, float image_h,
+                           float window_w, float window_h) noexcept {
+  if (fit_mode_ || dragging_ || target_zoom_ <= 0.0f) return;
+  if (image_w <= 0.0f || image_h <= 0.0f) return;
+  // Clamp the target, not the accumulated input: a held key cannot bank
+  // travel past the edge that it then has to unwind before moving back.
+  target_pan_x_ = clamp_centre(target_pan_x_ + dx_screen / target_zoom_, image_w, window_w,
+                               target_zoom_);
+  target_pan_y_ = clamp_centre(target_pan_y_ + dy_screen / target_zoom_, image_h, window_h,
+                               target_zoom_);
 }
 
 void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
@@ -113,6 +160,7 @@ void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float win
   const float fit = fit_zoom(image_w, image_h, window_w, window_h);
   if (fit <= 0.0f) return;
   const float rest = wheel_rest(fit);
+  fill_mode_ = false;
 
   // While rubber-banding the displayed zoom is below the rest pose; zoom-in
   // should lift off from what the user sees, not jump to rest first.
