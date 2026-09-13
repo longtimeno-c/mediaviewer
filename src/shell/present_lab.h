@@ -85,6 +85,11 @@ class present_lab {
     return view_fitted_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] True while a still (not a clip) is on the canvas.
+  [[nodiscard]] bool showing_still() const noexcept {
+    return showing_still_.load(std::memory_order_relaxed);
+  }
+
  private:
   void render_thread_main() noexcept;
   [[nodiscard]] expected rebuild_device() noexcept;
@@ -134,6 +139,7 @@ class present_lab {
   std::atomic<bool> running_{false};
   std::atomic<bool> finished_{false};
   std::atomic<bool> view_fitted_{true};
+  std::atomic<bool> showing_still_{false};
   HANDLE wake_event_ = nullptr;
   HANDLE ready_event_ = nullptr;
   std::atomic<int> start_error_{0};

@@ -266,6 +266,19 @@ void chrome_host::refresh_island_windows() noexcept {
   }
 }
 
+bool chrome_host::cursor_over_island() const noexcept {
+  POINT pt{};
+  if (!::GetCursorPos(&pt)) return false;
+  for (int island = static_cast<int>(focus_kind::command_bar);
+       island <= static_cast<int>(focus_kind::transport); ++island) {
+    const HWND root = island_hwnds_[island];
+    if (!root || !::IsWindowVisible(root)) continue;
+    RECT r{};
+    if (::GetWindowRect(root, &r) && ::PtInRect(&r, pt)) return true;
+  }
+  return false;
+}
+
 focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
   if (focus && focus == canvas) return focus_kind::canvas;
   for (int island = static_cast<int>(focus_kind::command_bar);

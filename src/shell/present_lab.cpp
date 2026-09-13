@@ -496,6 +496,7 @@ void present_lab::render_thread_main() noexcept {
       // they pan only when zoomed). Lock-free; the UI never waits on it.
       view_fitted_.store(!(current_image_ || current_video_.texture) || camera_.fit_mode(),
                          std::memory_order_relaxed);
+      showing_still_.store(current_image_ != nullptr, std::memory_order_relaxed);
     }
 
     const float wheel = input_cursor_.consume_wheel(snapshot);

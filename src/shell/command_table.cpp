@@ -11,7 +11,9 @@ namespace {
 using enum command_id;
 using enum repeat_policy;
 
-constexpr mode_mask kViewing = kBrowse | kVideo | kIsland | kLoupe;  // not slideshow
+constexpr mode_mask kViewing = kBrowse | kVideo | kIsland;  // not slideshow
+// mode::loupe layers over browse / video: the router falls back to them for any
+// key without a kLoupe row, so only the arrows and Z / \ are bound there.
 constexpr mode_mask kWalk = kBrowse | kVideo | kSlideshow;  // arrows: island traverses itself
 
 constexpr binding row(key k, std::uint8_t mods, mode_mask modes, repeat_policy policy,

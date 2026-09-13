@@ -770,6 +770,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     case loupe:
     case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && !app->lab.showing_still()) return false;
       app->input.loupe = command == loupe;
       if (command == loupe) {
         // Each hold starts at the cursor, or the canvas centre with none.
@@ -1066,6 +1069,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case WM_TIMER:
       if (wparam == kRevealTimerId) {
+        // Being used is not settled: the cursor over a strip, or a strip with
+        // keyboard focus, keeps it up. The canvas gets no mouse-move while the
+        // cursor is over an island, so this is the only place to ask.
+        const HWND focus = ::GetFocus();
+        if (app->chrome.cursor_over_island() || (focus && focus != hwnd)) {
+          ::SetTimer(hwnd, kRevealTimerId, kRevealMs, nullptr);
+          return 0;
+        }
         set_fullscreen_reveal(app, false);
         return 0;
       }

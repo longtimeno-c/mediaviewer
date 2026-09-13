@@ -548,6 +548,22 @@ did not change the crash rate.
 Next suspects are the render thread presenting into the DComp visual during detach, and the order
 of `WindowsXamlManager` against the `DispatcherQueueController`.
 
+## 2026-09-13 — On-canvas labels share the F3 overlay's ImGui draw list (PR 6)
+
+**The contradiction.** D1 ([01](01-decisions.md)) says ImGui is the present lab and the F3 overlay,
+never shipped chrome. [16](16-commands.md) allows the `O` info line to be "ImGui-style overlay or a
+tiny island". PR 6 draws `O` (file name, position, size, zoom), the loupe frame and the hold-`\`
+"previous" label with ImGui's foreground draw list, in the same present as the image.
+
+**Decision.** Those are canvas overlays, not chrome: a line of text and a rectangle drawn over the
+swapchain, with no focus, no input and no layout. D1's "never shipped chrome" is about the command
+bar, filmstrip, panes, palette and `?` — anything a user operates — and that stays WinUI. The `?`
+cheat sheet and `Ctrl+K` palette (PR 6) are XAML flyouts as [16](16-commands.md) specifies.
+
+**How it gets reversed.** If an on-canvas label needs interaction, localisation beyond the bundled
+font, or accessibility (screen reader) support, it moves to a tiny island. The EXIF exposure
+triangle in PR 8 is the likely trigger.
+
 ## Still open
 
 | Question | Blocks | Notes |

@@ -344,8 +344,20 @@ TEST_CASE("holding Z turns the arrows into loupe nudges", "[shell][router]") {
   REQUIRE(r.on_key(down(key::down), s).command == command_id::loupe_nudge_down);
   // A / D still walk; zoom keys still work; F3 is global.
   REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('A')), s).command == command_id::prev);
   REQUIRE(r.on_key(down(char_key('1')), s).command == command_id::one_to_one);
   REQUIRE(r.on_key(down(key::f3), s).command == command_id::overlay);
+  // The loupe layers over the mode underneath: the cull keys keep working.
+  REQUIRE(r.on_key(down(key::space), s).command == command_id::next);
+  REQUIRE(r.on_key(down(key::insert), s).command == command_id::toggle_mark);
+  REQUIRE(r.on_key(down(key::space, mod_shift), s).command == command_id::toggle_mark);
+  REQUIRE(r.on_key(down(key::del), s).command == command_id::delete_to_recycle_bin);
+  REQUIRE(r.on_key(down(key::home), s).command == command_id::first);
+  view_state on_clip = clip();
+  on_clip.loupe_held = true;
+  REQUIRE(r.on_key(down(key::space), on_clip).command == command_id::play_pause);
+  REQUIRE(r.on_key(down(char_key('K')), on_clip).command == command_id::pause);
+  REQUIRE(r.on_key(down(key::left), on_clip).command == command_id::loupe_nudge_left);
   // Z's own repeat is swallowed and its key-up releases.
   REQUIRE(r.on_key(rep(char_key('Z')), s).handled);
   REQUIRE(r.on_key(up(char_key('Z')), s).command == command_id::loupe_release);

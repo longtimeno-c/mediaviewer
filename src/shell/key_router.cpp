@@ -114,7 +114,16 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     return {command_id::back, target, true};
   }
 
-  const binding* b = lookup(e.k, e.mods, resolve_mode(s));
+  const mode m = resolve_mode(s);
+  const binding* b = lookup(e.k, e.mods, m);
+  if (!b && m == mode::loupe) {
+    // The loupe layers over the mode underneath: only the arrows (and Z / \)
+    // mean something else while Z is held. Space, marks, Delete and transport
+    // keep working mid-cull.
+    view_state under = s;
+    under.loupe_held = false;
+    b = lookup(e.k, e.mods, resolve_mode(under));
+  }
   if (!b) return {};
 
   switch (b->policy) {

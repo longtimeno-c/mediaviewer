@@ -211,6 +211,10 @@ class chrome_host {
   // window itself: a flyout's popup, a null or a foreign HWND is an island.
   [[nodiscard]] focus_kind classify_focus(HWND focus, HWND canvas) const noexcept;
 
+  // True when the cursor is over a visible island's bridge window. Cheap
+  // (GetCursorPos + GetWindowRect); asked by a timer, never per mouse-move.
+  [[nodiscard]] bool cursor_over_island() const noexcept;
+
   // `parent` is the top-level canvas HWND. The island is MoveAndResize'd into
   // the 48 DIP strip so flyouts are siblings of the swapchain, not clipped by
   // a short child window.
