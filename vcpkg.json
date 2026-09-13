@@ -23,18 +23,37 @@
   "dependencies": [
     {
       "name": "imgui",
-      "features": ["dx11-binding"]
+      "features": ["dx11-binding"],
+      "platform": "windows"
+    },
+    {
+      "name": "imgui",
+      "features": ["metal-binding"],
+      "platform": "osx"
     },
     {
       "name": "ffmpeg",
       "default-features": false,
-      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"]
+      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"],
+      "platform": "windows"
     },
     "catch2",
-    "libjpeg-turbo",
-    "libspng",
-    "lcms",
-    "sqlite3"
+    {
+      "name": "libjpeg-turbo",
+      "platform": "windows"
+    },
+    {
+      "name": "libspng",
+      "platform": "windows"
+    },
+    {
+      "name": "lcms",
+      "platform": "windows"
+    },
+    {
+      "name": "sqlite3",
+      "platform": "windows"
+    }
   ],
 
   "$comment-v1-pending": {

@@ -6,15 +6,21 @@ edits, and trims video without re-encoding. **v1 is Windows.** From PR 4 the nat
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 5 of 15 (in progress).** The present lab still owns the Win32 window
-and D3D11 swapchain. WinUI 3 chrome is XAML islands on that window: command
-bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP **or video**;
-the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk cache, arrow
-keys move the selection. PR 5 puts video on that same swapchain — FFmpeg demux
-and decode, D3D11VA on the lab's own device, NV12/P010 sampled and tone-mapped
-in one shader, a WASAPI audio master clock, and a transport (seek, frame step,
-speed, A-B loop, resume, media keys). Photos and clips are one folder and one
-present path.
+**Status: PR 5 of 15 on Windows (in progress); PR 16 Metal present lab is in
+the tree and unverified on Apple Silicon.** The Windows present lab still owns
+the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
+window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP
+**or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
+cache, arrow keys move the selection. PR 5 puts video on that same swapchain —
+FFmpeg demux and decode, D3D11VA on the lab's own device, NV12/P010 sampled and
+tone-mapped in one shader, a WASAPI audio master clock, and a transport (seek,
+frame step, speed, A-B loop, resume, media keys). Photos and clips are one
+folder and one present path.
+
+macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
+host of the same core — not a UI-only port. PR 16 is the Metal present lab
+(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). It does **not** yet decode,
+host SwiftUI, or play video. A Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
 not yet demonstrated on a quiet GPU runner, and PR 5's own verify lines are only
@@ -37,6 +43,7 @@ present lab.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP decode, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
+| **`mediaviewer_lab` (Darwin)** | PR 16 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. No SwiftUI, no decode, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -73,6 +80,27 @@ Other configurations:
 cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
 cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opinion
 ```
+
+### macOS (PR 16 present lab)
+
+Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, Xcode command-line tools. Intel
+Macs are out of scope (D9). This path does not build FFmpeg, WinUI, or the
+Windows lab.
+
+```sh
+cmake -S . -B build
+cmake --build build --config Release
+./build/bin/mediaviewer_lab
+./build/bin/frametime --seconds 60 --lab ./build/bin/mediaviewer_lab
+ctest --test-dir build --output-on-failure
+```
+
+`frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
+Windows DXGI JSON report over is a failed gate, not a pass. The 60 s soak has
+not been run in this checkout — this machine is Windows.
+
+`F3` toggles the overlay, `Space` the sweep, `R` resets the measurement, `Esc`
+quits. Idle (`--static`) must park the cursor off the window.
 
 ## Run
 

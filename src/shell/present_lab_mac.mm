@@ -1,0 +1,475 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "shell/present_lab_mac.h"
+
+#import <AppKit/AppKit.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalDisplayLink.h>
+#import <QuartzCore/CAMetalLayer.h>
+
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <pthread/qos.h>
+#include <sys/resource.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cfloat>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <thread>
+
+#include <imgui.h>
+#include <imgui_impl_metal.h>
+
+#include "core/trace.h"
+#include "gfx/pace_json.h"
+
+using mv::gfx::k_input_tail_seconds;
+using mv::gfx::k_occlusion_poll_ms;
+using mv::gfx::k_warmup_seconds;
+
+namespace {
+
+double monotonic_seconds() noexcept {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1e-9;
+}
+
+double process_cpu_seconds() noexcept {
+  rusage ru{};
+  getrusage(RUSAGE_SELF, &ru);
+  return static_cast<double>(ru.ru_utime.tv_sec) + static_cast<double>(ru.ru_utime.tv_usec) * 1e-6 +
+         static_cast<double>(ru.ru_stime.tv_sec) + static_cast<double>(ru.ru_stime.tv_usec) * 1e-6;
+}
+
+void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(static_cast<float>(s.width), static_cast<float>(s.height));
+  io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+  io.DeltaTime = delta_seconds > 0.0f ? delta_seconds : 1.0f / 60.0f;
+  if (s.mouse_in_client) {
+    io.AddMousePosEvent(s.mouse_x, s.mouse_y);
+  } else {
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+  }
+  for (int i = 0; i < 3; ++i) io.AddMouseButtonEvent(i, s.mouse_down[i]);
+  if (wheel != 0.0f) io.AddMouseWheelEvent(0.0f, wheel);
+}
+
+void try_load_font() noexcept {
+  char exe[PATH_MAX]{};
+  std::uint32_t size = sizeof(exe);
+  if (_NSGetExecutablePath(exe, &size) != 0) return;
+  char resolved[PATH_MAX]{};
+  if (!realpath(exe, resolved)) return;
+  char* slash = std::strrchr(resolved, '/');
+  if (!slash) return;
+  *slash = '\0';
+  char font_path[PATH_MAX]{};
+  if (std::snprintf(font_path, sizeof(font_path), "%s/CozetteVector.ttf", resolved) <= 0) return;
+  if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16.0f)) {
+    ImGui::GetIO().FontDefault = font;
+  }
+}
+
+}  // namespace
+
+@interface MvMetalLinkTarget : NSObject <CAMetalDisplayLinkDelegate> {
+  std::atomic<void*>* _slot;
+  std::condition_variable* _cv;
+}
+- (instancetype)initWithSlot:(std::atomic<void*>*)slot cv:(std::condition_variable*)cv;
+@end
+
+// The display-link callback is the waitable object: it fires when a drawable
+// is ready, and only then does the lab encode. Sleep is not used.
+@implementation MvMetalLinkTarget
+- (instancetype)initWithSlot:(std::atomic<void*>*)slot cv:(std::condition_variable*)cv {
+  self = [super init];
+  if (self) {
+    _slot = slot;
+    _cv = cv;
+  }
+  return self;
+}
+- (void)metalDisplayLink:(CAMetalDisplayLink*)link
+             needsUpdate:(CAMetalDisplayLinkUpdate*)update {
+  (void)link;
+  void* previous = _slot->exchange((__bridge_retained void*)update);
+  if (previous) (void)(__bridge_transfer CAMetalDisplayLinkUpdate*)previous;
+  _cv->notify_one();
+}
+@end
+
+namespace mv::shell {
+
+namespace {
+std::mutex g_wait_mutex;
+std::condition_variable g_wait_cv;
+std::atomic<void*> g_pending_update{nullptr};
+
+CAMetalDisplayLinkUpdate* take_link_update() noexcept {
+  void* p = g_pending_update.exchange(nullptr);
+  return p ? (__bridge_transfer CAMetalDisplayLinkUpdate*)p : nil;
+}
+}  // namespace
+
+present_lab_mac::~present_lab_mac() { stop(); }
+
+expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
+  if (!nsview) return err(status::invalid_arg);
+  view_ = nsview;
+  options_ = options;
+  overlay_visible_ = options.overlay_visible;
+  animating_ = options.start_animating;
+
+  running_.store(true, std::memory_order_release);
+  render_thread_ = std::thread([this] { render_thread_main(); });
+  while (running_.load(std::memory_order_acquire) &&
+         start_error_.load(std::memory_order_acquire) == 0 &&
+         !ready_.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  if (start_error_.load(std::memory_order_acquire) != 0) return err(status::internal);
+  return {};
+}
+
+void present_lab_mac::stop() noexcept {
+  running_.store(false, std::memory_order_release);
+  wake();
+  if (render_thread_.joinable()) render_thread_.join();
+}
+
+void present_lab_mac::wake() noexcept {
+  wake_flag_.store(true, std::memory_order_release);
+  g_wait_cv.notify_all();
+}
+
+void present_lab_mac::render_thread_main() noexcept {
+  pthread_setname_np("mv.render");
+  pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+
+  @autoreleasepool {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::StyleColorsDark();
+    try_load_font();
+
+    if (auto built = device_.create(); !built) {
+      MV_LOG_ERROR("present_lab_mac: device creation failed (%s)", status_name(built.error()));
+      exit_code_ = 2;
+      start_error_.store(1, std::memory_order_release);
+      ImGui::DestroyContext();
+      finished_.store(true, std::memory_order_release);
+      running_.store(false, std::memory_order_release);
+      return;
+    }
+
+    NSView* view = (__bridge NSView*)view_;
+    const NSSize backing = [view convertSizeToBacking:view.bounds.size];
+    const double scale = view.window.backingScaleFactor > 0.0 ? view.window.backingScaleFactor : 1.0;
+    const auto bw = static_cast<std::uint32_t>(std::max(1.0, backing.width));
+    const auto bh = static_cast<std::uint32_t>(std::max(1.0, backing.height));
+    if (auto attached = layer_.attach(view_, device_, bw, bh, scale); !attached) {
+      MV_LOG_ERROR("present_lab_mac: layer attach failed (%s)", status_name(attached.error()));
+      exit_code_ = 2;
+      start_error_.store(1, std::memory_order_release);
+      device_.destroy();
+      ImGui::DestroyContext();
+      finished_.store(true, std::memory_order_release);
+      running_.store(false, std::memory_order_release);
+      return;
+    }
+
+    id<MTLDevice> mtl = (__bridge id<MTLDevice>)device_.native_device();
+    ImGui_ImplMetal_Init(mtl);
+    imgui_ready_ = true;
+
+    ready_.store(true, std::memory_order_release);
+
+    MvMetalLinkTarget* target =
+        [[MvMetalLinkTarget alloc] initWithSlot:&g_pending_update cv:&g_wait_cv];
+    CAMetalDisplayLink* link =
+        [[CAMetalDisplayLink alloc] initWithMetalLayer:(__bridge CAMetalLayer*)layer_.native_layer()];
+    const double refresh = layer_.refresh_interval_seconds();
+    if (refresh > 0.0) {
+      const float fps = static_cast<float>(1.0 / refresh);
+      link.preferredFrameRateRange = CAFrameRateRangeMake(fps, fps, fps);
+    }
+    link.delegate = target;
+    [link addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+    display_link_ = (__bridge_retained void*)link;
+    link_target_ = (__bridge_retained void*)target;
+
+    pacer_.begin_session(refresh);
+
+    const double start = monotonic_seconds();
+    double last_frame = start;
+
+    while (running_.load(std::memory_order_acquire)) {
+      @autoreleasepool {
+        const input_snapshot snapshot = input_.acquire();
+        const double elapsed = monotonic_seconds() - start;
+        if (!warmed_up_ && elapsed >= k_warmup_seconds) {
+          warmed_up_ = true;
+          if (total_presents_ == 0 || !snapshot.window_visible) measurement_valid_ = false;
+          pacer_.reset_window();
+          measurement_start_seconds_ = monotonic_seconds();
+          idle_start_cpu_seconds_ = process_cpu_seconds();
+        }
+        if (warmed_up_ && options_.soak_seconds > 0.0 &&
+            monotonic_seconds() - measurement_start_seconds_ >= options_.soak_seconds) {
+          soak_complete_ = true;
+          break;
+        }
+        if (warmed_up_ && !snapshot.window_visible) measurement_valid_ = false;
+
+        const bool input_activity = input_cursor_.consume_activity(snapshot);
+        if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
+        bool redraw = input_activity;
+
+        if (snapshot.toggle_overlay_seq != seen_overlay_seq_) {
+          if ((snapshot.toggle_overlay_seq - seen_overlay_seq_) & 1u)
+            overlay_visible_ = !overlay_visible_;
+          seen_overlay_seq_ = snapshot.toggle_overlay_seq;
+          redraw = true;
+        }
+        if (snapshot.toggle_animation_seq != seen_animation_seq_) {
+          if ((snapshot.toggle_animation_seq - seen_animation_seq_) & 1u)
+            animating_ = !animating_;
+          seen_animation_seq_ = snapshot.toggle_animation_seq;
+          redraw = true;
+          if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
+          if (options_.soak_seconds == 0.0) pacer_.reset_window();
+        }
+        if (snapshot.reset_stats_seq != seen_reset_seq_) {
+          seen_reset_seq_ = snapshot.reset_stats_seq;
+          redraw = true;
+          if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
+          if (options_.soak_seconds == 0.0) pacer_.reset_window();
+        }
+        if (snapshot.display_change_seq != seen_display_seq_) {
+          seen_display_seq_ = snapshot.display_change_seq;
+          const double previous = layer_.refresh_interval_seconds();
+          layer_.refresh_output_info();
+          if (warmed_up_ && previous != layer_.refresh_interval_seconds())
+            measurement_valid_ = false;
+          pacer_.set_refresh(layer_.refresh_interval_seconds());
+          redraw = true;
+        }
+        if (snapshot.resize_seq != seen_resize_seq_) {
+          seen_resize_seq_ = snapshot.resize_seq;
+          const double sc =
+              snapshot.dpi_scale > 0.0f ? static_cast<double>(snapshot.dpi_scale) : 1.0;
+          if (auto r = layer_.resize(snapshot.width, snapshot.height, sc); !r) {
+            MV_LOG_WARN("present_lab_mac: resize failed (%s)", status_name(r.error()));
+            measurement_valid_ = false;
+          }
+          pacer_.set_refresh(layer_.refresh_interval_seconds());
+          redraw = true;
+        }
+
+        const float wheel = input_cursor_.consume_wheel(snapshot);
+        if (wheel != 0.0f) redraw = true;
+        if (redraw) last_input_time_ = elapsed;
+
+        gfx::present_request req;
+        req.window_visible = snapshot.window_visible;
+        req.window_active = snapshot.window_active;
+        req.occluded = occluded_;
+        req.soak = options_.soak_seconds > 0.0;
+        req.animating = animating_;
+        req.redraw = redraw;
+        req.painted_static = painted_static_;
+        req.elapsed_seconds = elapsed;
+        req.last_input_time = last_input_time_;
+        const auto decision = gfx::decide_present(req);
+
+        CAMetalDisplayLink* live_link = (__bridge CAMetalDisplayLink*)display_link_;
+        if (!decision.wants_frame) {
+          if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
+          was_presenting_ = false;
+          live_link.paused = YES;
+          double timeout = occluded_ ? k_occlusion_poll_ms / 1000.0 : 3600.0;
+          if (options_.soak_seconds > 0.0) {
+            const double remaining = warmed_up_
+                                         ? options_.soak_seconds -
+                                               (monotonic_seconds() - measurement_start_seconds_)
+                                         : k_warmup_seconds - elapsed;
+            timeout = std::min(timeout, std::max(0.0, remaining));
+          }
+          std::unique_lock lock(g_wait_mutex);
+          g_wait_cv.wait_for(lock, std::chrono::duration<double>(timeout), [&] {
+            return !running_.load(std::memory_order_acquire) ||
+                   wake_flag_.load(std::memory_order_acquire);
+          });
+          wake_flag_.store(false, std::memory_order_release);
+          occluded_ = view.window.occlusionState & NSWindowOcclusionStateVisible ? false : true;
+          continue;
+        }
+
+        if (!was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
+        was_presenting_ = true;
+        live_link.paused = NO;
+
+        // Wait BEFORE encode. The display-link callback is the waitable object.
+        // Pump this thread's run loop so the link, which is attached here, can
+        // fire; the callback stores the update and wakes the condvar.
+        CAMetalDisplayLinkUpdate* update = take_link_update();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+        while (!update && running_.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+          [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                   beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
+          update = take_link_update();
+        }
+        if (!update) continue;
+
+        pacer_.frame_begin();
+        const double now = monotonic_seconds();
+        const float delta = static_cast<float>(now - last_frame);
+        last_frame = now;
+
+        id<CAMetalDrawable> drawable = update.drawable;
+        if (!drawable) continue;
+
+        gfx::display_link_tick tick;
+        tick.valid = true;
+        tick.target_seconds = update.targetTimestamp;
+
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = drawable.texture;
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0.016, 0.018, 0.024, 1.0);
+
+        ImGui_ImplMetal_NewFrame(pass);
+        feed_imgui(snapshot, delta, wheel);
+        ImGui::NewFrame();
+
+        if (animating_) {
+          const auto w = static_cast<float>(snapshot.width);
+          const auto h = static_cast<float>(snapshot.height);
+          animation_phase_ = std::fmod(elapsed * 0.35, 1.0);
+          const float bar_width = 6.0f * (snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f);
+          const float x = static_cast<float>(animation_phase_) * (w - bar_width);
+          ImDrawList* bg = ImGui::GetBackgroundDrawList();
+          bg->AddRectFilled(ImVec2(x, 0.0f), ImVec2(x + bar_width, h),
+                            IM_COL32(230, 230, 235, 255));
+        } else if (overlay_visible_) {
+          ImDrawList* bg = ImGui::GetBackgroundDrawList();
+          const float w = static_cast<float>(snapshot.width);
+          const float h = static_cast<float>(snapshot.height);
+          bg->AddText(ImVec2(w * 0.5f - 80.0f, h * 0.5f), IM_COL32(220, 222, 228, 255),
+                      "MediaViewer present lab");
+        }
+
+        if (overlay_visible_) {
+          const auto stats = pacer_.stats();
+          ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
+          ImGui::SetNextWindowBgAlpha(0.72f);
+          ImGui::Begin("##f3", nullptr,
+                       ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                           ImGuiWindowFlags_NoMove);
+          ImGui::Text("Metal present lab   F3 overlay   space sweep   R reset");
+          ImGui::Text("refresh   %.3f ms", stats.refresh_interval_ms);
+          ImGui::Text("p50/p99   %.3f / %.3f ms", stats.p50_ms, stats.p99_ms);
+          ImGui::Text("dropped   %llu  missed %llu",
+                      static_cast<unsigned long long>(stats.dropped_frames),
+                      static_cast<unsigned long long>(stats.missed_refreshes));
+          ImGui::Text("source    %s", gfx::metal_drop_source_label(stats.source));
+          ImGui::Text("%s", animating_ ? "animating (lab sweep)" : "idle-capable");
+          ImGui::End();
+        }
+
+        ImGui::Render();
+
+        id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device_.native_queue();
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+        ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
+        [enc endEncoding];
+        [cb presentDrawable:drawable];
+        [cb commit];
+
+        if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
+        ++total_presents_;
+        pacer_.frame_end(tick);
+        if (!decision.live) painted_static_ = true;
+      }
+    }
+
+    if (warmed_up_) {
+      idle_stats_.elapsed_seconds = monotonic_seconds() - measurement_start_seconds_;
+      const double end_cpu = process_cpu_seconds();
+      if (idle_start_cpu_seconds_ >= 0.0 && end_cpu >= idle_start_cpu_seconds_ &&
+          idle_stats_.elapsed_seconds > 0.0) {
+        idle_stats_.cpu_percent =
+            (end_cpu - idle_start_cpu_seconds_) / idle_stats_.elapsed_seconds * 100.0;
+      }
+    }
+
+    const auto final_stats = pacer_.stats();
+    if (options_.soak_seconds > 0.0) {
+      MV_LOG_INFO("soak: %llu frames over %.1f s, %llu dropped, source: %s",
+                  static_cast<unsigned long long>(final_stats.frames), final_stats.elapsed_seconds,
+                  static_cast<unsigned long long>(final_stats.dropped_frames),
+                  gfx::metal_drop_source_label(final_stats.source));
+      if (!write_json_report()) exit_code_ = 2;
+      const bool passed = options_.start_animating ? final_stats.meets_pr16_gate()
+                                                   : idle_stats_.meets_pr16_gate();
+      if (options_.gate_exit_code && !(passed && soak_complete_ && measurement_valid_))
+        exit_code_ = 1;
+    }
+
+    if (display_link_) {
+      CAMetalDisplayLink* link = (__bridge_transfer CAMetalDisplayLink*)display_link_;
+      link.paused = YES;
+      [link removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+      display_link_ = nullptr;
+    }
+    if (link_target_) {
+      (void)(__bridge_transfer MvMetalLinkTarget*)link_target_;
+      link_target_ = nullptr;
+    }
+    if (imgui_ready_) {
+      ImGui_ImplMetal_Shutdown();
+      imgui_ready_ = false;
+    }
+    layer_.destroy();
+    device_.destroy();
+    ImGui::DestroyContext();
+  }
+
+  finished_.store(true, std::memory_order_release);
+  running_.store(false, std::memory_order_release);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [NSApp terminate:nil];
+  });
+}
+
+bool present_lab_mac::write_json_report() const noexcept {
+  if (options_.json_report_path.empty()) return true;
+  FILE* f = std::fopen(options_.json_report_path.c_str(), "wb");
+  if (!f) {
+    MV_LOG_ERROR("present_lab_mac: cannot write report");
+    return false;
+  }
+  gfx::pace_json r;
+  r.pace = pacer_.stats();
+  r.idle = idle_stats_;
+  r.static_run = !options_.start_animating;
+  r.measurement_complete = soak_complete_ && measurement_valid_ && exit_code_ == 0;
+  r.meets_gate = r.measurement_complete &&
+                 (options_.start_animating ? r.pace.meets_pr16_gate() : r.idle.meets_pr16_gate());
+  const bool ok = gfx::write_pace_json(f, r);
+  return std::fclose(f) == 0 && ok;
+}
+
+}  // namespace mv::shell

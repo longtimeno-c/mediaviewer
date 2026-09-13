@@ -41,12 +41,8 @@ endif()
 
 project(mediaviewer
   VERSION 0.1.0
-  DESCRIPTION "Windows viewer for a real camera dump"
+  DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
-
-if(NOT WIN32)
-  message(FATAL_ERROR "MediaViewer is a Windows application. plan/01-decisions.md.")
-endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,6 +53,17 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (plan/09 CI configuration)" OFF)
+
+# PR 16: Apple Silicon present lab. Windows targets are not defined on Darwin.
+if(APPLE)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")
+  return()
+endif()
+if(NOT WIN32)
+  message(FATAL_ERROR
+    "MediaViewer v1 is a Windows application; macOS is Milestone F "
+    "(plan/15-platforms.md).")
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings and language settings — CLAUDE.md, "Native core (C++20)"
@@ -149,6 +156,10 @@ add_library(mv_gfx STATIC
   src/gfx/video_blit.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
+  src/gfx/metal_pacer.cpp
+  src/gfx/metal_pacer.h
+  src/gfx/present_policy.h
+  src/gfx/pace_json.h
 )
 target_link_libraries(mv_gfx
   PUBLIC mv_core
@@ -436,6 +447,9 @@ if(MV_BUILD_TESTS)
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_present_policy.cpp
+    tests/test_metal_pacer.cpp
+    tests/test_frametime_report.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp
@@ -457,7 +471,17 @@ if(MV_BUILD_TESTS)
     ole32
     uuid
     mv_io)
-  target_include_directories(mv_tests PRIVATE src src/abi/include)
+  target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+
+  # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
+  # build while another session holds that file.
+  add_executable(mv_pr16_tests
+    tests/test_present_policy.cpp
+    tests/test_metal_pacer.cpp
+    tests/test_frametime_report.cpp
+  )
+  target_link_libraries(mv_pr16_tests PRIVATE mv_gfx Catch2::Catch2WithMain)
+  target_include_directories(mv_pr16_tests PRIVATE src tools)
 
   include(Catch)
   # A Catch2 SKIP exits 0, so ctest counted every corpus-gated video test as
@@ -468,6 +492,8 @@ if(MV_BUILD_TESTS)
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
   catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()
