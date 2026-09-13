@@ -65,6 +65,7 @@ enum class mode : std::uint8_t {
   video = 1,      // current item is a clip or an animation
   slideshow = 2,
   island = 3,     // filmstrip, gallery, command bar or transport has focus
+  loupe = 4,      // Z held on the canvas: arrows nudge the loupe point
   count
 };
 
@@ -75,7 +76,8 @@ inline constexpr mode_mask kBrowse = 1 << 0;
 inline constexpr mode_mask kVideo = 1 << 1;
 inline constexpr mode_mask kSlideshow = 1 << 2;
 inline constexpr mode_mask kIsland = 1 << 3;
-inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland;
+inline constexpr mode_mask kLoupe = 1 << 4;
+inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland | kLoupe;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -150,6 +152,10 @@ enum class command_id : std::uint16_t {
   pan_down,   // ↓ when zoomed, Shift+↓
   pan_left,   // Shift+←
   pan_right,  // Shift+→
+  loupe_nudge_left,   // arrows while Z is held (plan/16 "keyboard-nudgeable")
+  loupe_nudge_right,
+  loupe_nudge_up,
+  loupe_nudge_down,
   // 6c
   toggle_mark,
   mark_all,

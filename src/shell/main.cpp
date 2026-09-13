@@ -53,6 +53,15 @@ constexpr wchar_t kWindowTitle[] = L"MediaViewer — present lab";
 // slice of the canvas the user did not ask to give up.
 enum class open_mode { none, folder, image };
 
+// plan/16 §Focus: in fullscreen, ↓ at fit (or the bottom hot-edge) shows the
+// strips until navigation settles — this long after the last navigation.
+constexpr UINT_PTR kRevealTimerId = 0x6B01;
+constexpr UINT kRevealMs = 3000;
+// view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
+// would read the old fit. Zoom commands open this window so the first ↓ after
+// them pans instead of falling through.
+constexpr ULONGLONG kZoomIntentMs = 250;
+
 struct app_state {
   present_lab lab;
   input_snapshot input;
@@ -91,6 +100,9 @@ struct app_state {
   bool fullscreen = false;
   WINDOWPLACEMENT windowed_placement{sizeof(WINDOWPLACEMENT)};
   LONG_PTR windowed_style = 0;
+  bool topmost = false;  // Ctrl+Shift+A
+  bool fullscreen_reveal = false;  // strips shown over a fullscreen canvas for a while
+  ULONGLONG zoom_intent_tick = 0;  // GetTickCount64 of the last zoom-in style command
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -212,10 +224,37 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   open_folder(app, folder, {});
 }
 
+// The `O` line's name and position. UI thread, only while the overlay is on, so
+// key-repeat navigation with it off costs nothing extra. The render thread
+// reads the copy in the snapshot and never calls the folder model.
+void refresh_item_info(app_state* app) noexcept {
+  if (!app || !app->session || !app->input.info_overlay) return;
+  app->input.item_name[0] = '\0';
+  app->input.item_count = 0;
+  app->input.item_index = 0;
+  std::uint32_t count = 0;
+  std::uint32_t selected = 0;
+  if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return;
+  if (mv_folder_selected(app->session, &selected) != MV_OK || selected >= count) return;
+  app->input.item_count = count;
+  app->input.item_index = selected;
+  const auto cap = static_cast<std::uint32_t>(sizeof(app->input.item_name));
+  std::uint32_t bytes = 0;
+  if (mv_folder_item_name(app->session, selected, app->input.item_name, cap, &bytes) != MV_OK) {
+    app->input.item_name[0] = '\0';
+  }
+  app->input.item_name[cap - 1] = '\0';
+}
+
 void folder_select(app_state* app, std::uint32_t index) {
   if (!app || !app->session) return;
   uint64_t job = 0;
   if (mv_folder_select(app->session, index, &job) == MV_OK) {
+    refresh_item_info(app);
+    // Navigation keeps a fullscreen reveal up; it hides once this settles.
+    if (app->fullscreen_reveal && app->window) {
+      ::SetTimer(app->window, kRevealTimerId, kRevealMs, nullptr);
+    }
     ++app->input.activity_seq;
     publish(app);
   }
@@ -400,6 +439,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_folder_ready:
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
+      refresh_item_info(app);
       apply_view_state(app);
       return;
     case mv::shell::chrome_cmd_focus_changed: {
@@ -501,6 +541,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
   s.fullscreen = app->fullscreen;
+  s.loupe_held = app->input.loupe;
   return s;
 }
 
@@ -515,6 +556,8 @@ void set_fullscreen(app_state* app, bool on) noexcept {
     app->windowed_placement.length = sizeof(WINDOWPLACEMENT);
     if (!::GetWindowPlacement(hwnd, &app->windowed_placement) ||
         !::GetMonitorInfoW(::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+      MV_LOG_WARN("fullscreen: window placement or monitor info unavailable (%lu)",
+                  static_cast<unsigned long>(::GetLastError()));
       return;
     }
     app->windowed_style = ::GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -529,6 +572,8 @@ void set_fullscreen(app_state* app, bool on) noexcept {
                    SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
   } else {
     app->fullscreen = false;
+    app->fullscreen_reveal = false;
+    ::KillTimer(hwnd, kRevealTimerId);
     ::SetWindowLongPtrW(hwnd, GWL_STYLE, app->windowed_style);
     ::SetWindowPlacement(hwnd, &app->windowed_placement);
     ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
@@ -575,6 +620,22 @@ void folder_jump(app_state* app, long long delta) {
   folder_select(app, static_cast<std::uint32_t>(next));
 }
 
+// A level in the snapshot changed; the render thread redraws once.
+bool set_level(app_state* app) noexcept {
+  ++app->input.activity_seq;
+  publish(app);
+  return true;
+}
+
+void set_fullscreen_reveal(app_state* app, bool on) noexcept {
+  if (!app || !app->window) return;
+  if (on) ::SetTimer(app->window, kRevealTimerId, kRevealMs, nullptr);
+  else ::KillTimer(app->window, kRevealTimerId);
+  if (app->fullscreen_reveal == on) return;
+  app->fullscreen_reveal = on;
+  apply_view_state(app);
+}
+
 // Command effects. A switch over a dense enum is the jump table plan/16 asks
 // for. Returning false means "not applicable here" and sends the key on to the
 // island — Q/E on a still, or a command whose slice has not landed yet.
@@ -604,13 +665,20 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case skip_forward: folder_jump(app, 10); return true;
     case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
     case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
-    case fit: return bump(app->input.fit_seq);
-    case one_to_one: return bump(app->input.one_to_one_seq);
-    case zoom_in: return bump(app->input.zoom_in_seq);
+    case fit:
+      app->zoom_intent_tick = 0;
+      return bump(app->input.fit_seq);
+    case one_to_one:
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump(app->input.one_to_one_seq);
+    case zoom_in:
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump(app->input.zoom_in_seq);
     case zoom_out: return bump(app->input.zoom_out_seq);
     case zoom_200:
     case zoom_400:
       app->input.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
+      app->zoom_intent_tick = ::GetTickCount64();
       return bump(app->input.zoom_preset_seq);
     case overlay: return bump(app->input.toggle_overlay_seq);
     case reset_stats: return bump(app->input.reset_stats_seq);
@@ -657,22 +725,77 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
 
     case fullscreen: set_fullscreen(app, !app->fullscreen); return true;
-    case fill: return bump(app->input.fill_seq);
+    case fill:
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump(app->input.fill_seq);
     // plan/16: Ctrl+0 resets pan/zoom, which is the opening view — fit.
-    case reset_view: return bump(app->input.fit_seq);
+    case reset_view:
+      app->zoom_intent_tick = 0;
+      return bump(app->input.fit_seq);
     // plan/16: pan only when zoomed. At fit the view is locked, so the key is
     // not ours and falls through to whatever else wants it.
     case pan_up:
     case pan_down:
     case pan_left:
-    case pan_right:
-      if (app->lab.view_fitted()) return false;
+    case pan_right: {
+      const bool zooming = app->zoom_intent_tick != 0 &&
+                           ::GetTickCount64() - app->zoom_intent_tick < kZoomIntentMs;
+      if (app->lab.view_fitted() && !zooming) {
+        // plan/16 §Focus: fullscreen hides the strips, and ↓ at fit is how a
+        // keyboard user gets them (and a clip's transport) back.
+        if (command == pan_down && app->fullscreen) {
+          set_fullscreen_reveal(app, true);
+          return true;
+        }
+        return false;
+      }
+    }
       if (command == pan_up) --app->input.pan_steps_y;
       if (command == pan_down) ++app->input.pan_steps_y;
       if (command == pan_left) --app->input.pan_steps_x;
       if (command == pan_right) ++app->input.pan_steps_x;
       ++app->input.activity_seq;
       publish(app);
+      return true;
+
+    // View state the render thread draws from (levels, not edges).
+    case cycle_background:
+      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 4);
+      return set_level(app);
+    case sticky_zoom:
+      app->input.sticky_zoom = !app->input.sticky_zoom;
+      return set_level(app);
+    case clipping:
+      app->input.clipping = !app->input.clipping;
+      return set_level(app);
+    case loupe:
+    case loupe_release:
+      app->input.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        app->input.loupe_steps_x = 0;
+        app->input.loupe_steps_y = 0;
+      }
+      return set_level(app);
+    case loupe_nudge_left: --app->input.loupe_steps_x; return set_level(app);
+    case loupe_nudge_right: ++app->input.loupe_steps_x; return set_level(app);
+    case loupe_nudge_up: --app->input.loupe_steps_y; return set_level(app);
+    case loupe_nudge_down: ++app->input.loupe_steps_y; return set_level(app);
+    case hold_previous:
+    case hold_previous_release:
+      app->input.hold_previous = command == hold_previous;
+      return set_level(app);
+    case info_overlay:
+      app->input.info_overlay = !app->input.info_overlay;
+      refresh_item_info(app);
+      return set_level(app);
+    // Host-side and cheap (plan/16): photographers park the viewer on a
+    // second monitor.
+    case always_on_top:
+      if (!app->window) return false;
+      app->topmost = !app->topmost;
+      ::SetWindowPos(app->window, app->topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
       return true;
 
     default:
@@ -774,9 +897,10 @@ void apply_view_state(app_state* app) noexcept {
   const bool have_folder = folder_count(app) > 1;
   if (!have_folder) app->gallery_visible = false;
 
-  // Fullscreen hides chrome (plan/16). The ↓ / hot-edge reveal is a later cut.
+  // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
+  const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool want_filmstrip =
-      have_folder && !app->gallery_visible && !app->fullscreen &&
+      have_folder && !app->gallery_visible && !chrome_hidden &&
       (app->mode == open_mode::image ? app->settings.filmstrip_for_image
        : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
                                         : false);
@@ -788,7 +912,7 @@ void apply_view_state(app_state* app) noexcept {
   }
   // Auto show/hide: a clip is open, and the grid is not covering everything.
   // Ordered after the filmstrip so the strip height it stacks on is current.
-  const bool want_transport = app->video_on && !app->gallery_visible && !app->fullscreen;
+  const bool want_transport = app->video_on && !app->gallery_visible && !chrome_hidden;
   const int strip = app->chrome.filmstrip_visible()
                         ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (want_transport != app->chrome.transport_visible()) {
@@ -865,6 +989,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSEMOVE: {
+      // Fullscreen hot-edge: the bottom few pixels reveal the strips.
+      if (app->fullscreen) {
+        RECT rc{};
+        ::GetClientRect(hwnd, &rc);
+        const int edge = ::MulDiv(4, static_cast<int>(::GetDpiForWindow(hwnd)), 96);
+        if (GET_Y_LPARAM(lparam) >= rc.bottom - edge) set_fullscreen_reveal(app, true);
+      }
       if (!app->input.mouse_in_client ||
           app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
           app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam))) {
@@ -932,6 +1063,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ::DragFinish(drop);
       return 0;
     }
+
+    case WM_TIMER:
+      if (wparam == kRevealTimerId) {
+        set_fullscreen_reveal(app, false);
+        return 0;
+      }
+      break;
 
     case WM_ERASEBKGND:
       return 1;  // the swapchain owns every pixel; never let GDI flash over it

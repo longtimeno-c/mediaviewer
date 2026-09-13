@@ -90,6 +90,8 @@ class present_lab {
   [[nodiscard]] expected rebuild_device() noexcept;
   void draw_frame(const input_snapshot& snapshot, double elapsed_seconds) noexcept;
   void draw_overlay(const input_snapshot& snapshot) noexcept;
+  // Loupe frame, hold-previous label, info line. ImGui, same present.
+  void draw_view_overlays(const input_snapshot& snapshot) noexcept;
   bool write_json_report() const noexcept;
 
   HWND window_ = nullptr;
@@ -119,6 +121,13 @@ class present_lab {
   }
   canvas::camera camera_;
   mv::abi::gpu_image_ptr current_image_;
+  // The last different still that was on screen, for hold `\` (plan/16). Kept
+  // here, so showing it is a draw of a texture already in VRAM — never a
+  // second session or an mv_image_open.
+  mv::abi::gpu_image_ptr previous_image_;
+  std::uint8_t seen_view_flags_ = 0;
+  std::int32_t seen_loupe_steps_x_ = 0;
+  std::int32_t seen_loupe_steps_y_ = 0;
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;

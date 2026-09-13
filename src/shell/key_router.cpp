@@ -13,6 +13,7 @@ constexpr int slot(key k, std::uint8_t mods, mode m) noexcept {
 
 mode resolve_mode(const view_state& s) noexcept {
   if (s.focus != focus_kind::canvas) return mode::island;
+  if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
   if (s.item == item_kind::clip || s.item == item_kind::animation) return mode::video;
   return mode::browse;

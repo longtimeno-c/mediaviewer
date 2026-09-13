@@ -332,6 +332,31 @@ TEST_CASE("pending commands are bound and not yet claimed as landed", "[shell][c
   // because whether a command landed is only visible in main.cpp.
 }
 
+TEST_CASE("holding Z turns the arrows into loupe nudges", "[shell][router]") {
+  key_router r;
+  view_state s = still();
+  REQUIRE(r.on_key(down(char_key('Z')), s).command == command_id::loupe);
+  s.loupe_held = true;  // the app publishes the level; the router reads it
+  REQUIRE(resolve_mode(s) == mode::loupe);
+  REQUIRE(r.on_key(down(key::left), s).command == command_id::loupe_nudge_left);
+  REQUIRE(r.on_key(rep(key::right), s).command == command_id::loupe_nudge_right);
+  REQUIRE(r.on_key(rep(key::up), s).command == command_id::loupe_nudge_up);
+  REQUIRE(r.on_key(down(key::down), s).command == command_id::loupe_nudge_down);
+  // A / D still walk; zoom keys still work; F3 is global.
+  REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('1')), s).command == command_id::one_to_one);
+  REQUIRE(r.on_key(down(key::f3), s).command == command_id::overlay);
+  // Z's own repeat is swallowed and its key-up releases.
+  REQUIRE(r.on_key(rep(char_key('Z')), s).handled);
+  REQUIRE(r.on_key(up(char_key('Z')), s).command == command_id::loupe_release);
+  s.loupe_held = false;
+  REQUIRE(r.on_key(down(key::left), s).command == command_id::prev);
+  // Island focus wins over a held loupe: the strip keeps its arrows.
+  s.loupe_held = true;
+  s.focus = focus_kind::filmstrip;
+  REQUIRE_FALSE(r.on_key(down(key::left), s).handled);
+}
+
 TEST_CASE("momentary keys fire on down and release on up", "[shell][router]") {
   key_router r;
   const auto s = still();

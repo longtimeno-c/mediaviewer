@@ -128,6 +128,15 @@ quits. Idle (`--static`) must park the cursor off the window.
 | `4` | fill: the image covers the canvas |
 | `Ctrl+0` | reset pan and zoom (fit) |
 | `Up` / `Down`, `Shift+arrows` | pan when zoomed in (`Left` / `Right` alone still walk the folder) |
+| `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
+| hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
+| hold `\` | show the previous image, for picking between burst frames |
+| `B` | canvas background: dark / gray / white / checkerboard |
+| `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
+| `O` | info line: file name, position in the folder, size, zoom |
+| `Ctrl+Shift+A` | always on top |
+
+A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |

@@ -44,6 +44,10 @@ Symbol keys bind to the **character** the active layout produces (`?`, `+`, `\`)
 key position. Symbols that need AltGr do not resolve in v1: on German and French layouts that
 is `\` (hold-previous) and, from PR 9, `[` `]`. Those wait for the v1.1 remap.
 
+Keyboard pan moves a tenth of the canvas per step, whatever the zoom, through the springs.
+At fit it is not a pan: `↑` `↓` fall through, except that `↓` in fullscreen reveals the strips
+(and a clip's transport) for 3 s after the last navigation; the bottom hot-edge does the same.
+
 **Tap and hold may be two commands on one key**, and `A` / `D` on a clip are the case that
 earns it: a tap is a discrete adjustment (speed), a hold is a continuous one (skim). The
 distinction is typematic repeat — the down edge of a tap does nothing, the first repeat makes

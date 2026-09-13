@@ -30,6 +30,7 @@ struct view_state {
   bool gallery_open = false;
   bool slideshow = false;
   bool fullscreen = false;
+  bool loupe_held = false;  // Z is down: arrows nudge the loupe
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 9
 };

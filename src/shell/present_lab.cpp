@@ -78,6 +78,31 @@ canvas_view usable_canvas(const input_snapshot& s) noexcept {
   return v;
 }
 
+// Hold-Z loupe: a square at the cursor (or the canvas centre with no cursor),
+// kept inside the canvas. The blit and the frame drawn around it both use this.
+struct loupe_box {
+  float x = 0.0f;
+  float y = 0.0f;
+  float size = 0.0f;
+  float point_x = 0.0f;
+  float point_y = 0.0f;
+};
+
+loupe_box loupe_rect(const input_snapshot& s, const canvas_view& v) noexcept {
+  const float scale = s.dpi_scale > 0.0f ? s.dpi_scale : 1.0f;
+  loupe_box b;
+  b.size = std::min({240.0f * scale, v.w, v.h});
+  // Keyboard nudges (arrows while Z is held) offset the cursor or centre.
+  const float step = 0.05f * std::min(v.w, v.h);
+  const float base_x = s.mouse_in_client ? s.mouse_x : v.x + v.w * 0.5f;
+  const float base_y = s.mouse_in_client ? s.mouse_y : v.y + v.h * 0.5f;
+  b.point_x = std::clamp(base_x + static_cast<float>(s.loupe_steps_x) * step, v.x, v.x + v.w);
+  b.point_y = std::clamp(base_y + static_cast<float>(s.loupe_steps_y) * step, v.y, v.y + v.h);
+  b.x = std::clamp(b.point_x - b.size * 0.5f, v.x, v.x + v.w - b.size);
+  b.y = std::clamp(b.point_y - b.size * 0.5f, v.y, v.y + v.h - b.size);
+  return b;
+}
+
 const char* drop_source_label(gfx::drop_source s) noexcept {
   switch (s) {
     case gfx::drop_source::frame_statistics:   return "DXGI frame statistics";
@@ -158,6 +183,7 @@ expected present_lab::rebuild_device() noexcept {
   video_blitter_.destroy();
   current_video_ = {};
   current_image_.reset();
+  previous_image_.reset();  // hold-previous's texture belongs to the same device
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
   device_.destroy();
@@ -340,13 +366,30 @@ void present_lab::render_thread_main() noexcept {
         if (!ready->device || !mine || ready->device.Get() != mine.Get()) {
           mv::abi::release_gpu_image(ready);
         } else {
+          const float old_w = media_width();
+          const float old_h = media_height();
+          const bool had_media = old_w > 0.0f && old_h > 0.0f;
           current_video_ = {};
+          // Hold-previous keeps the last *different* still; a re-publish of
+          // the same texture is not an advance.
+          if (current_image_ && current_image_->texture.Get() != ready->texture.Get()) {
+            previous_image_ = std::move(current_image_);
+          }
           current_image_.reset(ready);
           {
             const auto view = usable_canvas(snapshot);
-            camera_.fit(static_cast<float>(media_width()),
-                        static_cast<float>(media_height()),
-                        view.w, view.h, true);
+            // plan/16 sticky zoom: off (default) fits every item; on keeps the
+            // mode, or the zoom and pan fraction. Camera state only, so
+            // prefetch is untouched.
+            if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
+              camera_.fill(media_width(), media_height(), view.w, view.h, true);
+            } else if (snapshot.sticky_zoom && had_media && !camera_.fit_mode()) {
+              camera_.carry(old_w, old_h, media_width(), media_height(), view.w, view.h);
+            } else {
+              camera_.fit(static_cast<float>(media_width()),
+                          static_cast<float>(media_height()),
+                          view.w, view.h, true);
+            }
           }
           last_input_time_ = elapsed;
           redraw = true;
@@ -414,6 +457,19 @@ void present_lab::render_thread_main() noexcept {
       redraw = true;
     }
 
+    {
+      const auto flags = static_cast<std::uint8_t>(
+          (snapshot.background & 0x3) | (snapshot.sticky_zoom ? 0x4 : 0) |
+          (snapshot.clipping ? 0x8 : 0) | (snapshot.loupe ? 0x10 : 0) |
+          (snapshot.hold_previous ? 0x20 : 0) | (snapshot.info_overlay ? 0x40 : 0));
+      if (flags != seen_view_flags_ || snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
+          snapshot.loupe_steps_y != seen_loupe_steps_y_) {
+        seen_view_flags_ = flags;
+        seen_loupe_steps_x_ = snapshot.loupe_steps_x;
+        seen_loupe_steps_y_ = snapshot.loupe_steps_y;
+        redraw = true;  // one frame for a toggle or a nudge; idle again after
+      }
+    }
     if (snapshot.fill_seq != seen_fill_seq_) {
       seen_fill_seq_ = snapshot.fill_seq;
       if (current_image_ || current_video_.texture) {
@@ -478,7 +534,11 @@ void present_lab::render_thread_main() noexcept {
     // "Clip open, no frame yet" is live: it ends the instant the first frame
     // arrives, so this is a bounded wait for the decoder, not a spin.
     const bool video_loading = video_open_ && !current_video_.texture;
-    const bool live = video_active_ || video_loading || animating_ || camera_.moving() || pan_tail;
+    // plan/03 rule 4's one labelled exception: blinkies animate, so a still with
+    // them on presents until C turns them off. Everything else here idles.
+    const bool blinkies = snapshot.clipping && current_image_ != nullptr;
+    const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
+                      pan_tail || blinkies;
     live_presenting_ = live;
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || snapshot.window_active);
@@ -537,7 +597,8 @@ void present_lab::render_thread_main() noexcept {
       player::video_frame frame;
       const bool first_video = !current_video_.texture;
       if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
-        current_image_.reset(); current_video_ = std::move(frame);
+        // A clip is not a burst: do not keep a 4K still pinned behind it.
+        current_image_.reset(); previous_image_.reset(); current_video_ = std::move(frame);
         if (first_video) {
           const auto view = usable_canvas(snapshot);
           camera_.fit(media_width(), media_height(), view.w, view.h, true);
@@ -557,6 +618,7 @@ void present_lab::render_thread_main() noexcept {
     ImGui::NewFrame();
 
     draw_frame(snapshot, elapsed);
+    draw_view_overlays(snapshot);
     if (overlay_visible_) draw_overlay(snapshot);
 
     ImGui::Render();
@@ -567,10 +629,16 @@ void present_lab::render_thread_main() noexcept {
     // Clear to a colour, per the PR 1 brief. The values are LINEAR: the render
     // target view is _SRGB, so the hardware encodes on write. Writing 0.05 here
     // and reading back 0.05 in a screenshot would mean the sRGB view was lost.
-    const float clear[4] = {0.016f, 0.018f, 0.024f, 1.0f};
+    const float clear_level = gfx::background_clear(snapshot.background);
+    const float clear[4] = {snapshot.background == 0 ? 0.016f : clear_level, clear_level,
+                            snapshot.background == 0 ? 0.024f : clear_level, 1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
-    if (current_image_ && current_image_->srv) {
+    const bool show_previous =
+        snapshot.hold_previous && previous_image_ && previous_image_->srv && current_image_;
+    const image::gpu_image* shown =
+        show_previous ? previous_image_.get() : current_image_.get();
+    if (shown && shown->srv) {
       const auto view = usable_canvas(snapshot);
       D3D11_VIEWPORT vp{};
       vp.TopLeftX = view.x;
@@ -580,16 +648,46 @@ void present_lab::render_thread_main() noexcept {
       vp.MaxDepth = 1.0f;
       device_.context()->RSSetViewports(1, &vp);
       gfx::blit_params bp{};
-      bp.pan_x = camera_.pan_x();
-      bp.pan_y = camera_.pan_y();
-      bp.zoom = camera_.zoom();
+      const auto shown_w = static_cast<float>(shown->width);
+      const auto shown_h = static_cast<float>(shown->height);
+      if (show_previous && (shown_w != media_width() || shown_h != media_height())) {
+        // A same-size burst keeps the camera so the pick is like for like; a
+        // different frame is shown whole rather than at the wrong crop.
+        bp.zoom = canvas::camera::fit_zoom(shown_w, shown_h, view.w, view.h);
+        bp.pan_x = shown_w * 0.5f;
+        bp.pan_y = shown_h * 0.5f;
+      } else {
+        bp.pan_x = camera_.pan_x();
+        bp.pan_y = camera_.pan_y();
+        bp.zoom = camera_.zoom();
+      }
       bp.window_w = view.w;
       bp.window_h = view.h;
       bp.origin_x = view.x;
       bp.origin_y = view.y;
-      bp.image_w = static_cast<float>(media_width());
-      bp.image_h = static_cast<float>(media_height());
-      blitter_.draw(device_.context(), current_image_->srv.Get(), bp);
+      bp.image_w = shown_w;
+      bp.image_h = shown_h;
+      bp.background = snapshot.background;
+      bp.clipping = snapshot.clipping;
+      bp.time_seconds = static_cast<float>(elapsed);
+      blitter_.draw(device_.context(), shown->srv.Get(), bp);
+
+      // Hold Z: the same texture again, through a second viewport — a camera
+      // change, not a decode. 100 %, or twice the zoom when already past it.
+      if (snapshot.loupe && !show_previous) {
+        const loupe_box box = loupe_rect(snapshot, view);
+        gfx::blit_params lp = bp;
+        lp.pan_x = bp.pan_x + (box.point_x - (view.x + view.w * 0.5f)) / bp.zoom;
+        lp.pan_y = bp.pan_y + (box.point_y - (view.y + view.h * 0.5f)) / bp.zoom;
+        lp.zoom = bp.zoom < 1.0f ? 1.0f : std::min(64.0f, bp.zoom * 2.0f);
+        lp.window_w = box.size;
+        lp.window_h = box.size;
+        lp.origin_x = box.x;
+        lp.origin_y = box.y;
+        const D3D11_VIEWPORT lv{box.x, box.y, box.size, box.size, 0.0f, 1.0f};
+        device_.context()->RSSetViewports(1, &lv);
+        blitter_.draw(device_.context(), shown->srv.Get(), lp);
+      }
     }
 
     if (current_video_.texture) {
@@ -667,6 +765,7 @@ void present_lab::render_thread_main() noexcept {
   video_blitter_.destroy();
   current_video_ = {};
   current_image_.reset();
+  previous_image_.reset();  // hold-previous's texture belongs to the same device
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
   device_.destroy();
@@ -676,6 +775,44 @@ void present_lab::render_thread_main() noexcept {
   finished_.store(true, std::memory_order_release);
   running_.store(false, std::memory_order_release);
   ::PostMessageW(window_, WM_CLOSE, 0, 0);
+}
+
+void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
+  if (!current_image_ && !current_video_.texture) return;
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  ImFont* font = ImGui::GetFont();
+  const auto view = usable_canvas(snapshot);
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+  const float fs = 16.0f * scale;
+  const float pad = 12.0f * scale;
+  const ImU32 text = IM_COL32(230, 230, 235, 255);
+  const ImU32 shadow = IM_COL32(0, 0, 0, 200);
+  const auto label = [&](float x, float y, const char* s) {
+    fg->AddText(font, fs, ImVec2(x + scale, y + scale), shadow, s);
+    fg->AddText(font, fs, ImVec2(x, y), text, s);
+  };
+
+  const bool show_previous = snapshot.hold_previous && previous_image_ && current_image_;
+  if (snapshot.loupe && current_image_ && !show_previous) {
+    const loupe_box box = loupe_rect(snapshot, view);
+    fg->AddRect(ImVec2(box.x, box.y), ImVec2(box.x + box.size, box.y + box.size), text, 0.0f,
+                0, 1.5f * scale);
+  }
+  if (show_previous) label(view.x + pad, view.y + pad, "\\  previous");
+
+  if (snapshot.info_overlay) {
+    char line[400];
+    const int zoom_pct = static_cast<int>(std::lround(camera_.zoom() * 100.0f));
+    const auto w = static_cast<unsigned>(media_width());
+    const auto h = static_cast<unsigned>(media_height());
+    if (snapshot.item_count > 0) {
+      std::snprintf(line, sizeof(line), "%s  -  %u / %u  -  %ux%u  -  %d %%", snapshot.item_name,
+                    snapshot.item_index + 1, snapshot.item_count, w, h, zoom_pct);
+    } else {
+      std::snprintf(line, sizeof(line), "%ux%u  -  %d %%", w, h, zoom_pct);
+    }
+    label(view.x + pad, view.y + view.h - fs - pad, line);
+  }
 }
 
 void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seconds) noexcept {
@@ -818,6 +955,10 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
     ImGui::Text("view     zoom %.2f  pan %.1f, %.1f  %s", camera_.zoom(), camera_.pan_x(),
                 camera_.pan_y(), camera_.fit_mode() ? "fit" : (camera_.zoom() == 1.0f ? "100%" : ""));
     ImGui::Text("decode is off the render thread — pan must not start one");
+    if (snapshot.clipping && current_image_) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+                         "blinkies on: presenting until C (plan/03 rule 4 exception)");
+    }
   }
 
   ImGui::Separator();

@@ -53,6 +53,23 @@ struct input_snapshot {
   std::int64_t pan_steps_x = 0;
   std::int64_t pan_steps_y = 0;
 
+  // plan/16 view state. Levels, not edges: the render thread draws what these
+  // say, and redraws once when any of them changes.
+  std::uint8_t background = 0;  // B: 0 canvas, 1 gray, 2 white, 3 checkerboard
+  bool sticky_zoom = false;     // S
+  bool clipping = false;        // C
+  bool loupe = false;           // held Z
+  // Arrow nudges since Z went down, in steps of a twentieth of the canvas.
+  std::int32_t loupe_steps_x = 0;
+  std::int32_t loupe_steps_y = 0;
+  bool hold_previous = false;   // held backslash
+  bool info_overlay = false;    // O
+  // For the info overlay, filled by the UI thread when the selection changes.
+  // The render thread never calls into the folder model.
+  std::uint32_t item_index = 0;
+  std::uint32_t item_count = 0;
+  char item_name[260] = {};     // UTF-8, NUL-terminated
+
   bool window_visible = true;
   bool window_active = true;
 

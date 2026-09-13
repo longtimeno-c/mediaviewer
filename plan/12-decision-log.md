@@ -524,10 +524,11 @@ and portable present-policy tests that also run on Windows.
 
 ## 2026-09-13 — Tear the chrome down before DestroyWindow (PR 6, fixing a PR 3-era exit crash)
 
-**What was measured.** Chrome-on lab exits fail-fast about one time in six:
+**What was measured.** Chrome-on lab exits fail-fast about one time in five:
 `0xC0000602` (`STATUS_FAIL_FAST_EXCEPTION`), faulting module `CoreUIComponents.dll`, the same
-offset every time. On `main` `38cb56b`, 5 of 30 `--soak 3` exits crashed; `--no-chrome` exits did
-not. It surfaced during PR 6 because the PR 1 gate counts a non-zero lab exit as a failed
+offset every time. `main` `38cb56b`: 13 of 60 chrome-on `--soak 3` exits (5/30 + 8/30). The fix,
+`66303ec`: 0 of 30, same session, clean builds outside `%TEMP%` (MSB8029). `--no-chrome` exits did
+not crash. It surfaced during PR 6 because the PR 1 gate counts a non-zero lab exit as a failed
 measurement, so "PR 1's present-loop still holds" cannot pass while it happens.
 
 **Cause, as far as it is known.** Every exit path (close button, `Ctrl+W`, and the soak's own

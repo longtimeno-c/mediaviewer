@@ -11,7 +11,7 @@ namespace {
 using enum command_id;
 using enum repeat_policy;
 
-constexpr mode_mask kViewing = kBrowse | kVideo | kIsland;  // not slideshow
+constexpr mode_mask kViewing = kBrowse | kVideo | kIsland | kLoupe;  // not slideshow
 constexpr mode_mask kWalk = kBrowse | kVideo | kSlideshow;  // arrows: island traverses itself
 
 constexpr binding row(key k, std::uint8_t mods, mode_mask modes, repeat_policy policy,
@@ -72,9 +72,15 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_none, kViewing, edge, sticky_zoom),
     row(C('C'), mod_none, kViewing, edge, clipping),
     row(C('O'), mod_none, kViewing, edge, info_overlay),
-    row(C('Z'), mod_none, kBrowse | kVideo, momentary, loupe, none, loupe_release),
-    row(C('\\'), mod_none, kBrowse | kVideo, momentary, hold_previous, none,
+    row(C('Z'), mod_none, kBrowse | kVideo | kLoupe, momentary, loupe, none, loupe_release),
+    row(C('\\'), mod_none, kBrowse | kVideo | kLoupe, momentary, hold_previous, none,
         hold_previous_release),
+    // While Z is held the arrows move the loupe point, so it works with no
+    // cursor at all. A / D still walk the folder.
+    row(key::left, mod_none, kLoupe, repeat, loupe_nudge_left),
+    row(key::right, mod_none, kLoupe, repeat, loupe_nudge_right),
+    row(key::up, mod_none, kLoupe, repeat, loupe_nudge_up),
+    row(key::down, mod_none, kLoupe, repeat, loupe_nudge_down),
     row(C('A'), mod_ctrl | mod_shift, kAllModes, edge, always_on_top),
 
     // Video (PR 5c). Q/E: tap steps the speed, hold skims, release settles.
@@ -167,6 +173,10 @@ constexpr command_info kCommands[] = {
     {pan_down, "Pan down"},
     {pan_left, "Pan left"},
     {pan_right, "Pan right"},
+    {loupe_nudge_left, "Loupe left"},
+    {loupe_nudge_right, "Loupe right"},
+    {loupe_nudge_up, "Loupe up"},
+    {loupe_nudge_down, "Loupe down"},
     {toggle_mark, "Toggle mark"},
     {mark_all, "Mark all"},
     {unmark_all, "Unmark all"},
@@ -191,9 +201,6 @@ constexpr command_info kCommands[] = {
 // through to the island. Each slice deletes its rows here as it lands, and
 // this list is empty before PR 6 is proposed (6g).
 constexpr command_id kPending[] = {
-    // 6b
-    cycle_background, sticky_zoom, clipping, loupe, loupe_release, hold_previous,
-    hold_previous_release, always_on_top, info_overlay,
     // 6c
     toggle_mark, mark_all, unmark_all, copy_to, copy_to_pick, move_to, move_to_pick,
     delete_to_recycle_bin,

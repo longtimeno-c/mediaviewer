@@ -25,6 +25,13 @@ class camera {
   void fill(float image_w, float image_h, float window_w, float window_h,
             bool immediate) noexcept;
 
+  // Sticky zoom on advance (plan/16 `S`): keep the zoom and the pan centre as
+  // a fraction of the image, clamped to the new image. Snaps, like fit on
+  // load does. Does not change fit/fill mode; the caller re-fits or re-fills
+  // for those instead.
+  void carry(float old_w, float old_h, float new_w, float new_h, float window_w,
+             float window_h) noexcept;
+
   // Keyboard pan (plan/16). Moves the target by a screen-pixel delta, so the
   // springs animate it, clamped so no background shows on an axis the image
   // overflows. Ignored in fit mode — the opening view is locked, same as drag.

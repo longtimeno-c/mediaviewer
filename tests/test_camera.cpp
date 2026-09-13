@@ -42,6 +42,35 @@ TEST_CASE("fill covers the window, centres, and is its own mode", "[canvas]") {
   REQUIRE_FALSE(cam.fill_mode());
 }
 
+TEST_CASE("sticky zoom carries zoom and pan fraction to the next image", "[canvas]") {
+  camera cam;
+  cam.fit(6000.0f, 4000.0f, 1000.0f, 800.0f, true);
+  cam.one_to_one();
+  cam.pan_by_screen(-2000.0f, -1500.0f, 6000.0f, 4000.0f, 1000.0f, 800.0f);
+  cam.step(1.0f);
+  const float fx = cam.target_pan_x() / 6000.0f;
+  const float fy = cam.target_pan_y() / 4000.0f;
+
+  // Same-size burst: the interesting corner stays exactly where it was.
+  cam.carry(6000.0f, 4000.0f, 6000.0f, 4000.0f, 1000.0f, 800.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(1.0f, 1e-5f));
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(fx * 6000.0f, 1e-2f));
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(fy * 4000.0f, 1e-2f));
+  REQUIRE_FALSE(cam.moving());
+
+  // Different aspect: the fraction is kept and clamped, never a jump to 0,0.
+  cam.carry(6000.0f, 4000.0f, 4000.0f, 6000.0f, 1000.0f, 800.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(1.0f, 1e-5f));
+  REQUIRE(cam.pan_x() >= 500.0f);
+  REQUIRE(cam.pan_y() >= 400.0f);
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(fy * 6000.0f, 1e-2f));
+
+  // Degenerate sizes change nothing.
+  const float before = cam.pan_x();
+  cam.carry(0.0f, 4000.0f, 6000.0f, 4000.0f, 1000.0f, 800.0f);
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(before, 1e-4f));
+}
+
 TEST_CASE("fit and fill are never both on", "[canvas]") {
   camera cam;
   const auto check = [&cam] { REQUIRE_FALSE((cam.fit_mode() && cam.fill_mode())); };

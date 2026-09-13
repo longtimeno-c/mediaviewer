@@ -142,6 +142,20 @@ void camera::set_zoom(float zoom, float image_w, float image_h, float window_w,
   fill_mode_ = false;
 }
 
+void camera::carry(float old_w, float old_h, float new_w, float new_h, float window_w,
+                   float window_h) noexcept {
+  if (old_w <= 0.0f || old_h <= 0.0f || new_w <= 0.0f || new_h <= 0.0f) return;
+  clear_rubber();
+  const float fx = target_pan_x_ / old_w;
+  const float fy = target_pan_y_ / old_h;
+  target_pan_x_ = clamp_centre(fx * new_w, new_w, window_w, target_zoom_);
+  target_pan_y_ = clamp_centre(fy * new_h, new_h, window_h, target_zoom_);
+  pan_x_ = target_pan_x_;
+  pan_y_ = target_pan_y_;
+  zoom_ = target_zoom_;
+  pan_vx_ = pan_vy_ = zoom_v_ = 0.0f;
+}
+
 void camera::pan_by_screen(float dx_screen, float dy_screen, float image_w, float image_h,
                            float window_w, float window_h) noexcept {
   if (fit_mode_ || dragging_ || target_zoom_ <= 0.0f) return;

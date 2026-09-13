@@ -17,6 +17,10 @@ cbuffer Camera : register(b0) {
   float2 image_size;
   float2 origin;
   float2 _pad1;
+  float background;
+  float clipping;
+  float time;
+  float grid;
 };
 
 Texture2D img : register(t0);
@@ -62,20 +66,51 @@ float4 sample_catmull(Texture2D tex, float2 uv, float2 tex_size) {
   return catmull_rom_1d(rows[0], rows[1], rows[2], rows[3], f.y);
 }
 
+// Linear values: the render target view is _SRGB and encodes on write.
+float3 background_at(float2 screen) {
+  if (background < 0.5) return float3(0.016, 0.018, 0.024);
+  if (background < 1.5) return float3(0.214, 0.214, 0.214);
+  if (background < 2.5) return float3(1.0, 1.0, 1.0);
+  // Checkerboard: fixed 12 px cells in screen space, so it reads as "this is
+  // transparency" at every zoom instead of scaling with the image.
+  float2 cell = floor((screen - origin) / 12.0);
+  float odd = fmod(abs(cell.x + cell.y), 2.0);
+  return odd < 0.5 ? float3(0.527, 0.527, 0.527) : float3(0.815, 0.815, 0.815);
+}
+
+float4 sample_image(float2 uv) {
+  if (zoom >= 4.0) return img.Sample(samp_point, uv);
+  if (zoom >= 1.0) return sample_catmull(img, uv, image_size);
+  return img.Sample(samp_aniso, uv);
+}
+
 float4 ps_main(VSOut vin) : SV_Target {
   float2 image_px = pan + (vin.pos.xy - (origin + window_size * 0.5)) / zoom;
   float2 uv = image_px / image_size;
+  float3 bg = background_at(vin.pos.xy);
   if (any(uv < 0.0) || any(uv > 1.0)) {
-    return float4(0.016, 0.018, 0.024, 1.0);
+    return float4(bg, 1.0);
   }
 
-  if (zoom >= 4.0) {
-    return img.Sample(samp_point, uv);
+  float4 c = sample_image(uv);
+  float3 rgb = lerp(bg, c.rgb, saturate(c.a));
+
+  // Display-referred blinkies (plan/16 `C`): a channel at sRGB 254+ is a
+  // clipped highlight, every channel at sRGB 1 or below is a crushed shadow.
+  // The accurate RAW version is PR 10's.
+  if (clipping > 0.5 && frac(time * 2.0) < 0.5) {
+    float hi = max(c.r, max(c.g, c.b));
+    if (hi >= 0.9911) rgb = float3(1.0, 0.0, 0.0);
+    else if (hi <= 0.0003) rgb = float3(0.0, 0.25, 1.0);
   }
-  if (zoom >= 1.0) {
-    return sample_catmull(img, uv, image_size);
+
+  // Pixel grid at >= 400 %: darken the first screen pixel of each image pixel.
+  if (grid > 0.5 && zoom >= 4.0) {
+    float2 f = frac(image_px);
+    float edge = 1.0 / zoom;
+    if (f.x < edge || f.y < edge) rgb *= 0.6;
   }
-  return img.Sample(samp_aniso, uv);
+  return float4(rgb, 1.0);
 }
 )";
 
@@ -87,7 +122,10 @@ struct alignas(16) blit_cb {
   float image_w, image_h;
   float origin_x, origin_y;
   float pad1, pad2;
+  float background, clipping, time, grid;
 };
+
+static_assert(sizeof(blit_cb) == 64, "keep in sync with cbuffer Camera");
 
 expected compile(const char* entry, const char* target, com_ptr<ID3DBlob>& blob) {
   com_ptr<ID3DBlob> errors;
@@ -179,6 +217,10 @@ void blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* image,
   cb.image_h = p.image_h;
   cb.origin_x = p.origin_x;
   cb.origin_y = p.origin_y;
+  cb.background = static_cast<float>(p.background);
+  cb.clipping = p.clipping ? 1.0f : 0.0f;
+  cb.time = p.time_seconds;
+  cb.grid = p.pixel_grid ? 1.0f : 0.0f;
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (SUCCEEDED(ctx->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
