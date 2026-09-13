@@ -377,11 +377,10 @@ void present_lab::render_thread_main() noexcept {
             previous_image_ = std::move(current_image_);
             ++previous_image_changes_;
           }
-          // A new still is a new view (or a re-publish of this one): the
-          // animation frame on screen belongs to what was there before.
-          anim_frame_.reset();
-          anim_schedule_.reset();
-          anim_finished_ = false;
+          // A playing animation is not reset here: a re-publish of the same
+          // item (a refinement, an LRU revisit) must not jump back to frame 0.
+          // A new item is a new generation, which retires it in the
+          // animation block (review note 35).
           current_image_.reset(ready);
           {
             const auto view = usable_canvas(snapshot);
@@ -1079,9 +1078,12 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
       const auto anim_stats = mv::abi::animation_stats_now(session_);
       // Review note B: worker uploads count against the pacing budget, so the
       // cost and the late frames are on the instrument, not guessed at.
-      ImGui::Text("animation frame %u  ring %u/%u  upload %.2f ms  late %u  %s", anim_index_,
-                  anim_stats.queued, anim_stats.depth,
+      // "make" is colour conversion plus CreateTexture2D; "icc" is the first
+      // part of it (review note 36).
+      ImGui::Text("animation frame %u  ring %u/%u  make %.2f ms (icc %.2f)  late %u  %s",
+                  anim_index_, anim_stats.queued, anim_stats.depth,
                   static_cast<double>(anim_stats.last_upload_us) / 1000.0,
+                  static_cast<double>(anim_stats.last_icc_us) / 1000.0,
                   anim_schedule_.late(),
                   anim_schedule_.paused() ? "paused" : (anim_finished_ ? "finished" : "playing"));
       ImGui::Text("hold-previous texture changes %u (steady while an animation plays)",

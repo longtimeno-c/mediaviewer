@@ -163,6 +163,15 @@ struct mv_session {
   std::vector<lru_slot> lru;
   std::vector<inflight_decode> decode_inflight;
 
+  // The animation's colour transform, built once per published source (review
+  // note 34) instead of per frame. Touched only by the animation decode thread
+  // (the texture maker below), so it needs no lock; keyed by the source's ICC
+  // buffer and the generation so a new animation never reuses an old one.
+  std::unique_ptr<mv::image::display_transform> anim_transform;
+  const std::uint8_t* anim_icc_key = nullptr;
+  std::uint32_t anim_icc_gen = 0;
+  std::atomic<std::uint32_t> anim_icc_us{0};  // F3: last frame's colour conversion
+
   // PR 6 animation feed. Declared after everything its decode thread uses, so
   // it is destroyed (and its thread joined) first. Each frame is colour
   // managed like a still and uploaded top level only: an animation is not
@@ -178,9 +187,26 @@ struct mv_session {
         raster.format = info.format;
         raster.intent = mv::codec::transfer_intent::display_referred;
         raster.rgba = frame.rgba;
-        raster.icc = info.icc;
         raster.tagged_srgb = info.tagged_srgb;
-        auto display = mv::image::to_display(std::move(raster));
+        const auto t0 = std::chrono::steady_clock::now();
+        mv::result<mv::image::display_image> display = mv::err(mv::status::internal);
+        if (info.icc.empty()) {
+          display = mv::image::to_display(std::move(raster));  // copy-through
+        } else {
+          if (!anim_transform || anim_icc_key != info.icc.data() || anim_icc_gen != generation) {
+            auto made = mv::image::display_transform::create(info.icc);
+            if (!made) return nullptr;  // D6: a broken profile is not untagged sRGB
+            anim_transform = std::move(made).value();
+            anim_icc_key = info.icc.data();
+            anim_icc_gen = generation;
+          }
+          display = anim_transform->apply(std::move(raster));
+        }
+        anim_icc_us.store(static_cast<std::uint32_t>(
+                              std::chrono::duration_cast<std::chrono::microseconds>(
+                                  std::chrono::steady_clock::now() - t0)
+                                  .count()),
+                          std::memory_order_relaxed);
         if (!display) return nullptr;
         auto uploaded = mv::image::upload(dev.Get(), display.value(), generation, nullptr, 1);
         if (!uploaded) return nullptr;
@@ -1350,12 +1376,26 @@ status attach_device(mv_session_t session, ID3D11Device* device) {
         if (!uploaded) return uploaded.error();
         if (ctx.cancelled()) return status::cancelled;
         auto gpu = std::make_unique<image::gpu_image>(std::move(uploaded).value());
-        std::lock_guard lock(session->image_mutex);
-        if (ctx.gen() != session->jobs.current_generation()) return status::cancelled;
-        if (session->cpu != cpu) return status::cancelled;
-        image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
-        delete old;
-        if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+        {
+          std::lock_guard lock(session->image_mutex);
+          if (ctx.gen() != session->jobs.current_generation()) return status::cancelled;
+          if (session->cpu != cpu) return status::cancelled;
+          image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
+          delete old;
+          if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+        }
+        // Review note 37: the device rebuild bumped the generation, which
+        // retired the animation. The still is back; bring the animation back
+        // with it (a probe job, animated families only). Not under
+        // image_mutex: the folder lock is taken on its own.
+        std::string selected;
+        {
+          std::lock_guard folder_lock(session->folder_mutex);
+          if (session->folder_selected < session->folder_items.size()) {
+            selected = session->folder_items[session->folder_selected].path;
+          }
+        }
+        if (!selected.empty()) submit_animation_open(session, std::move(selected), ctx.gen());
         return status::ok;
       });
   (void)id;
@@ -1422,6 +1462,7 @@ animation_stats animation_stats_now(mv_session_t session) noexcept {
   stats.depth = session->animation.depth();
   stats.queued = session->animation.queued();
   stats.last_upload_us = session->animation.last_upload_us();
+  stats.last_icc_us = session->anim_icc_us.load(std::memory_order_relaxed);
   stats.frames_made = session->animation.frames_made();
   return stats;
 }

@@ -3,6 +3,9 @@
 // (D6, plan/03-rendering.md). Untagged JPEG/PNG/BMP is assumed sRGB.
 #pragma once
 
+#include <memory>
+#include <span>
+
 #include "codec/raster.h"
 #include "core/job_system.h"
 #include "core/result.h"
@@ -25,5 +28,29 @@ struct display_image {
 // Rec.709, then the sRGB OETF. A broken profile is `corrupt`, not untagged.
 [[nodiscard]] result<display_image> to_display(codec::raster&& src,
                                                const job_context* ctx = nullptr);
+
+// An ICC → linear Rec.709 → sRGB transform built once and applied to many
+// rasters with the same profile: every frame of a tagged animation (review
+// note 34 — building a LittleCMS transform costs milliseconds). It owns its own
+// cmsContext, so one instance must stay on one thread at a time. to_display
+// builds a fresh one per call.
+class display_transform {
+ public:
+  [[nodiscard]] static result<std::unique_ptr<display_transform>> create(
+      std::span<const std::uint8_t> icc);
+  ~display_transform();
+
+  display_transform(const display_transform&) = delete;
+  display_transform& operator=(const display_transform&) = delete;
+
+  // Same output as to_display for a raster carrying this profile.
+  [[nodiscard]] result<display_image> apply(codec::raster&& src,
+                                            const job_context* ctx = nullptr) const;
+
+ private:
+  display_transform() = default;
+  void* context_ = nullptr;    // cmsContext
+  void* transform_ = nullptr;  // cmsHTRANSFORM
+};
 
 }  // namespace mv::image

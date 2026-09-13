@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <gif_lib.h>
+#include <lcms2.h>
 #include <webp/encode.h>
 #include <webp/mux.h>
 
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "codec/decode.h"
+#include "image/colour.h"
 
 using namespace mv::codec;
 
@@ -302,6 +304,116 @@ TEST_CASE("write a large animated GIF for the pacing check", "[.make-large-anim]
   std::ofstream(path, std::ios::binary)
       .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
   REQUIRE(std::filesystem::file_size(path) == bytes.size());
+}
+
+namespace {
+
+std::vector<std::uint8_t> srgb_icc() {
+  cmsHPROFILE profile = cmsCreate_sRGBProfile();
+  REQUIRE(profile != nullptr);
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile, nullptr, &size));
+  std::vector<std::uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile, bytes.data(), &size));
+  cmsCloseProfile(profile);
+  return bytes;
+}
+
+}  // namespace
+
+TEST_CASE("a reused display transform matches the one-shot conversion", "[image][colour]") {
+  const auto icc = srgb_icc();
+  mv::codec::raster raster;
+  raster.width = 16;
+  raster.height = 16;
+  raster.format = format_family::webp;
+  raster.icc = icc;
+  raster.rgba.resize(16 * 16 * 4);
+  for (std::size_t i = 0; i < raster.rgba.size(); ++i) {
+    raster.rgba[i] = static_cast<std::uint8_t>((i * 37) & 0xFF);
+  }
+
+  auto reference = mv::image::to_display(mv::codec::raster(raster));
+  REQUIRE(reference);
+  auto transform = mv::image::display_transform::create(icc);
+  REQUIRE(transform);
+  // Same transform, many frames (review note 34): identical to a fresh build each time.
+  for (int frame = 0; frame < 3; ++frame) {
+    auto applied = transform.value()->apply(mv::codec::raster(raster));
+    REQUIRE(applied);
+    REQUIRE(applied->icc_tagged);
+    REQUIRE(applied->rgba == reference->rgba);
+  }
+  const std::vector<std::uint8_t> broken = {1, 2, 3, 4};
+  REQUIRE_FALSE(mv::image::display_transform::create(broken));
+  REQUIRE_FALSE(mv::image::display_transform::create({}));
+}
+
+// Hidden tool for review note 34's measurement: an ICC-tagged (sRGB ICCP),
+// 2048 x 2048, 20-frame, 25 fps looping animated WebP at
+// %TEMP%\mv_large_anim_icc.webp. Run by name: mv_tests "[.make-icc-anim]"
+TEST_CASE("write a large ICC-tagged animated WebP for the pacing check", "[.make-icc-anim]") {
+  constexpr int size = 2048;
+  WebPAnimEncoderOptions options;
+  REQUIRE(WebPAnimEncoderOptionsInit(&options));
+  options.anim_params.loop_count = 0;
+  WebPAnimEncoder* encoder = WebPAnimEncoderNew(size, size, &options);
+  REQUIRE(encoder != nullptr);
+  WebPConfig config;
+  REQUIRE(WebPConfigInit(&config));
+  config.quality = 50.0f;
+  config.method = 0;  // fastest: this is a fixture, not an export
+  WebPPicture picture;
+  REQUIRE(WebPPictureInit(&picture));
+  picture.width = size;
+  picture.height = size;
+  picture.use_argb = 1;
+  REQUIRE(WebPPictureAlloc(&picture));
+  int timestamp = 0;
+  for (int f = 0; f < 20; ++f) {
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        const auto r = static_cast<std::uint32_t>((x + f * 40) & 0xFF);
+        const auto g = static_cast<std::uint32_t>((y + f * 20) & 0xFF);
+        picture.argb[y * size + x] = 0xFF000000u | (r << 16) | (g << 8) | 0x80u;
+      }
+    }
+    REQUIRE(WebPAnimEncoderAdd(encoder, &picture, timestamp, &config));
+    timestamp += 40;
+  }
+  REQUIRE(WebPAnimEncoderAdd(encoder, nullptr, timestamp, nullptr));
+  WebPData assembled;
+  WebPDataInit(&assembled);
+  REQUIRE(WebPAnimEncoderAssemble(encoder, &assembled));
+  WebPAnimEncoderDelete(encoder);
+  WebPPictureFree(&picture);
+
+  // Add the ICCP chunk.
+  WebPMux* mux = WebPMuxCreate(&assembled, 1);
+  REQUIRE(mux != nullptr);
+  const auto icc = srgb_icc();
+  const WebPData profile{icc.data(), icc.size()};
+  REQUIRE(WebPMuxSetChunk(mux, "ICCP", &profile, 1) == WEBP_MUX_OK);
+  WebPData tagged;
+  WebPDataInit(&tagged);
+  REQUIRE(WebPMuxAssemble(mux, &tagged) == WEBP_MUX_OK);
+  WebPMuxDelete(mux);
+  WebPDataClear(&assembled);
+
+  const auto path = std::filesystem::temp_directory_path() / "mv_large_anim_icc.webp";
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(tagged.bytes), static_cast<std::streamsize>(tagged.size));
+  REQUIRE(std::filesystem::file_size(path) == tagged.size);
+  WebPDataClear(&tagged);
+
+  // It really is tagged: the decoder reports the profile.
+  const std::vector<std::uint8_t> bytes = [&] {
+    std::ifstream in(path, std::ios::binary);
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }();
+  auto opened = open_animation(std::make_shared<const std::vector<std::uint8_t>>(bytes));
+  REQUIRE(opened);
+  REQUIRE_FALSE(opened.value()->info().icc.empty());
 }
 
 TEST_CASE("a still WebP decodes, and is not an animation", "[codec][webp]") {

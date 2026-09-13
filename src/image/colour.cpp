@@ -34,25 +34,27 @@ std::uint8_t srgb_encode(float linear) noexcept {
   return static_cast<std::uint8_t>(std::lround(std::clamp(s, 0.0f, 1.0f) * 255.0f));
 }
 
-result<display_image> transform_icc(codec::raster& src, const job_context* ctx) {
+}  // namespace
+
+result<std::unique_ptr<display_transform>> display_transform::create(
+    std::span<const std::uint8_t> icc) {
+  if (icc.empty()) return err(status::invalid_arg);
   cmsContext lcms = cmsCreateContext(nullptr, nullptr);
   if (!lcms) return err(status::internal);
   cmsSetLogErrorHandlerTHR(lcms, lcms_silence);
 
   cmsHPROFILE in =
-      cmsOpenProfileFromMemTHR(lcms, src.icc.data(), static_cast<cmsUInt32Number>(src.icc.size()));
+      cmsOpenProfileFromMemTHR(lcms, icc.data(), static_cast<cmsUInt32Number>(icc.size()));
   if (!in) {
     cmsDeleteContext(lcms);
     return err(status::corrupt);
   }
-
   cmsHPROFILE out = linear_rec709(lcms);
   if (!out) {
     cmsCloseProfile(in);
     cmsDeleteContext(lcms);
     return err(status::internal);
   }
-
   cmsHTRANSFORM xform =
       cmsCreateTransformTHR(lcms, in, TYPE_RGB_8, out, TYPE_RGB_FLT, INTENT_RELATIVE_COLORIMETRIC,
                             cmsFLAGS_NOOPTIMIZE);
@@ -62,6 +64,29 @@ result<display_image> transform_icc(codec::raster& src, const job_context* ctx) 
     cmsDeleteContext(lcms);
     return err(status::corrupt);
   }
+  try {
+    auto made = std::unique_ptr<display_transform>(new display_transform());
+    made->context_ = lcms;
+    made->transform_ = xform;
+    return made;
+  } catch (...) {
+    cmsDeleteTransform(xform);
+    cmsDeleteContext(lcms);
+    return err(status::out_of_memory);
+  }
+}
+
+display_transform::~display_transform() {
+  if (transform_) cmsDeleteTransform(static_cast<cmsHTRANSFORM>(transform_));
+  if (context_) cmsDeleteContext(static_cast<cmsContext>(context_));
+}
+
+result<display_image> display_transform::apply(codec::raster&& src, const job_context* ctx) const {
+  if (!transform_ || src.width == 0 || src.height == 0 ||
+      src.rgba.size() != static_cast<std::size_t>(src.width) * src.height * 4) {
+    return err(status::corrupt);
+  }
+  const auto xform = static_cast<cmsHTRANSFORM>(transform_);
 
   display_image dst;
   dst.width = src.width;
@@ -76,11 +101,7 @@ result<display_image> transform_icc(codec::raster& src, const job_context* ctx) 
   std::vector<float> linear(kTile * 3);
 
   for (std::size_t i = 0; i < pixels; i += kTile) {
-    if (ctx && ctx->cancelled()) {
-      cmsDeleteTransform(xform);
-      cmsDeleteContext(lcms);
-      return err(status::cancelled);
-    }
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
     const std::size_t n = std::min(kTile, pixels - i);
     for (std::size_t p = 0; p < n; ++p) {
       const std::uint8_t* s = dst.rgba.data() + (i + p) * 4;
@@ -96,13 +117,8 @@ result<display_image> transform_icc(codec::raster& src, const job_context* ctx) 
       d[2] = srgb_encode(linear[p * 3 + 2]);
     }
   }
-
-  cmsDeleteTransform(xform);
-  cmsDeleteContext(lcms);
   return dst;
 }
-
-}  // namespace
 
 result<display_image> to_display(codec::raster&& src, const job_context* ctx) {
   if (src.width == 0 || src.height == 0 ||
@@ -126,8 +142,11 @@ result<display_image> to_display(codec::raster&& src, const job_context* ctx) {
   }
 
   // D6: a broken profile is still a tagged file. Fail-open as sRGB would
-  // display tagged bytes as sRGB (plan/04, plan/12).
-  return transform_icc(src, ctx);
+  // display tagged bytes as sRGB (plan/04, plan/12). One transform per call,
+  // with its own cmsContext: the default context is not thread-safe.
+  auto transform = display_transform::create(src.icc);
+  if (!transform) return err(transform.error());
+  return transform.value()->apply(std::move(src), ctx);
 }
 
 }  // namespace mv::image

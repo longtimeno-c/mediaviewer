@@ -54,7 +54,8 @@ MV_API void animation_seek(mv_session_t session, std::uint32_t index) noexcept;
 struct animation_stats {
   std::uint32_t depth = 0;
   std::uint32_t queued = 0;
-  std::uint32_t last_upload_us = 0;
+  std::uint32_t last_upload_us = 0;  // whole make: colour conversion + CreateTexture2D
+  std::uint32_t last_icc_us = 0;     // of which, colour conversion
   std::uint64_t frames_made = 0;
 };
 [[nodiscard]] MV_API animation_stats animation_stats_now(mv_session_t session) noexcept;
