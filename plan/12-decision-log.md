@@ -719,6 +719,23 @@ a router rule that, while the palette is open, sends printable keys to the
 filter the way Settings already does. Do not re-add `Ctrl+K` as a silent
 second `?`.
 
+## 2026-09-13 — libheif `hevc` feature is x265 encode, not HEVC decode
+
+**From.** [09](09-build-and-test.md) / [vcpkg.json](../vcpkg.json) sketched PR 7 as
+`libheif[hevc,av1]`.
+
+**To.** `libheif` with **default-features OFF**. The vcpkg port's `hevc` feature is
+`WITH_X265` — a software HEVC *encoder*, which plan/11 forbids. HEVC *decode* is
+libde265, a hard dependency of the port, not a feature. AVIF decode is
+`libavif[dav1d]`, not libheif's `aom` feature.
+
+**Why.** Enabling the documented feature set would have linked x265 and failed
+the licence gate (and the patent line) the moment PR 7 configured. The plan's
+shorthand was written against an older port layout.
+
+**How it gets reversed.** Only if the port grows a decode-only HEVC feature that
+does not pull x265. Do not turn default-features back on.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

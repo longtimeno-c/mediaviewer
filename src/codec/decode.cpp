@@ -6,13 +6,33 @@
 namespace mv::codec {
 
 result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+  // D3: OS codec first when it can handle the bytes; bundled decoder is the
+  // silent fallback (clean VM, no Store pack). A corrupt OS result is not a
+  // fallback — that file is actually bad.
+  if (auto os = try_os_decode(bytes, ctx)) {
+    return os;
+  } else if (os.error() == status::cancelled || os.error() == status::corrupt ||
+             os.error() == status::out_of_memory) {
+    return err(os.error());
+  }
+
   switch (probe(bytes)) {
     case format_family::jpeg: return decode_jpeg(bytes, ctx);
     case format_family::png:  return decode_png(bytes, ctx);
     case format_family::bmp:  return decode_bmp(bytes, ctx);
     case format_family::gif:  return decode_gif(bytes, ctx);
     case format_family::webp: return decode_webp(bytes, ctx);
+    case format_family::tiff:
+      // CR2/NEF/ARW/DNG share the TIFF magic. LibRaw wins so a camera file is
+      // never walked as a generic TIFF (and never rewritten).
+      if (looks_like_raw(bytes)) return decode_raw(bytes, ctx);
+      return decode_tiff(bytes, ctx);
+    case format_family::ico:  return decode_ico(bytes, ctx);
+    case format_family::heic: return decode_heic(bytes, ctx);
+    case format_family::avif: return decode_avif(bytes, ctx);
+    case format_family::raw:  return decode_raw(bytes, ctx);
     case format_family::unknown:
+      if (looks_like_raw(bytes)) return decode_raw(bytes, ctx);
       return err(status::unsupported_format);
   }
   return err(status::unsupported_format);
@@ -25,8 +45,13 @@ result<std::unique_ptr<animation_source>> open_animation(
     case format_family::gif:  return open_gif_animation(std::move(bytes));
     case format_family::webp: return open_webp_animation(std::move(bytes));
     case format_family::png:  return open_apng_animation(std::move(bytes));
+    case format_family::heic: return open_heic_animation(std::move(bytes));
+    case format_family::avif: return open_avif_animation(std::move(bytes));
     case format_family::jpeg:
     case format_family::bmp:
+    case format_family::tiff:
+    case format_family::ico:
+    case format_family::raw:
     case format_family::unknown:
       return err(status::unsupported_format);
   }

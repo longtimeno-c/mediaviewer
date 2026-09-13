@@ -179,6 +179,7 @@ add_library(mv_io STATIC
   src/io/collision_name.h
   src/io/file_ops.h
   src/io/file_ops_win.cpp
+  src/io/pairing.h
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
@@ -192,6 +193,28 @@ find_package(JPEG REQUIRED)
 # giflib is MIT, libwebp BSD-3: both permissive, dynamic in the x64-windows triplet.
 find_package(GIF REQUIRED)
 find_package(WebP CONFIG REQUIRED)
+# PR 7: camera-dump formats. libheif default-features are OFF in vcpkg.json
+# because the port's `hevc` feature is x265 encode (plan/11). libde265 is a
+# hard dependency of the port, so HEIC decode does not pull a software HEVC
+# encoder. LibRaw uses the thread-safe raw_r target — decode is on the pool.
+find_package(TIFF REQUIRED)
+find_package(libheif CONFIG REQUIRED)
+if(TARGET libheif::heif)
+  set(MV_HEIF_TARGET libheif::heif)
+elseif(TARGET heif)
+  set(MV_HEIF_TARGET heif)
+else()
+  message(FATAL_ERROR "libheif imported target not found")
+endif()
+find_package(libavif CONFIG REQUIRED)
+if(TARGET avif)
+  set(MV_AVIF_TARGET avif)
+elseif(TARGET libavif::avif)
+  set(MV_AVIF_TARGET libavif::avif)
+else()
+  message(FATAL_ERROR "libavif imported target not found")
+endif()
+find_package(libraw CONFIG REQUIRED)
 find_package(spng CONFIG REQUIRED)
 if(TARGET spng::spng)
   set(MV_SPNG_TARGET spng::spng)
@@ -213,13 +236,22 @@ add_library(mv_codec STATIC
   src/codec/apng.h
   src/codec/gif.cpp
   src/codec/webp.cpp
+  src/codec/tiff.cpp
+  src/codec/ico.cpp
+  src/codec/heif.cpp
+  src/codec/avif.cpp
+  src/codec/raw.cpp
+  src/codec/os_decode_win.cpp
+  src/codec/os_decode.h
   src/codec/decode.h
   src/codec/format.h
   src/codec/raster.h
 )
 target_link_libraries(mv_codec
   PUBLIC mv_core
-  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux)
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
+          TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
+          windowscodecs)
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
@@ -481,6 +513,7 @@ if(MV_BUILD_TESTS)
     tests/test_slideshow.cpp
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
+    tests/test_pairing.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
     tests/test_present_policy.cpp

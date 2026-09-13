@@ -20,9 +20,11 @@ struct dir_entry {
   std::int64_t mtime_unix = 0;
 };
 
-// The decodable set: JPEG / PNG (incl. APNG) / BMP, GIF and WebP (PR 6), plus
-// the PR 5 video containers. The listing filters by extension; decode still
-// probes magic bytes. Sorted by name, case-insensitive.
+// The decodable set: JPEG / PNG (incl. APNG) / BMP, GIF and WebP (PR 6), the
+// PR 7 camera-dump stills (TIFF, ICO, HEIC/HEIF, AVIF, RAW), plus the PR 5
+// video containers. The listing filters by extension; decode still probes
+// magic bytes. Sorted by name, case-insensitive. Pairing (RAW+JPEG, Live
+// Photo) and companion hiding happen after the scan (plan/04).
 [[nodiscard]] result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir);
 
 [[nodiscard]] result<bool> is_directory(std::string_view utf8_path);
