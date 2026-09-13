@@ -20,8 +20,13 @@ mode resolve_mode(const view_state& s) noexcept {
 
 back_target resolve_back(const view_state& s) noexcept {
   if (s.focus == focus_kind::text) return back_target::blur_text;
+  // 6f: an open `?` / palette flyout must close before anything below. It
+  // needs its own view_state bit; today a flyout closes on focus loss, which
+  // is what canvas_focus causes.
   if (s.crop) return back_target::crop;
   if (s.pane_open) return back_target::pane;
+  // The gallery covers the canvas like an overlay, so it goes before the
+  // window-level states (plan/16 "Esc walks out").
   if (s.gallery_open) return back_target::gallery;
   if (s.slideshow) return back_target::slideshow;
   if (s.fullscreen) return back_target::fullscreen;
@@ -31,13 +36,14 @@ back_target resolve_back(const view_state& s) noexcept {
 
 key_router::key_router() noexcept {
   const auto rows = default_bindings();
-  for (std::size_t i = 0; i < rows.size() && i < 255; ++i) {
+  for (std::size_t i = 0; i < rows.size(); ++i) {
     const binding& b = rows[i];
     if (static_cast<int>(b.k) <= 0 || static_cast<int>(b.k) >= kKeyCount) continue;
     for (int m = 0; m < kModeCount; ++m) {
       if ((b.modes & (1 << m)) == 0) continue;
       auto& cell = index_[static_cast<std::size_t>(slot(b.k, b.mods, static_cast<mode>(m)))];
-      // First row wins; duplicates are a table bug the tests reject.
+      // First row wins; duplicates are a table bug the tests reject. The table
+      // size is static_asserted below 255 in command_table.cpp.
       if (cell == 0) cell = static_cast<std::uint8_t>(i + 1);
     }
   }
@@ -50,18 +56,41 @@ const binding* key_router::lookup(key k, std::uint8_t mods, mode m) const noexce
   return cell == 0 ? nullptr : &default_bindings()[cell - 1u];
 }
 
-void key_router::cancel_hold() noexcept {
-  held_row_ = nullptr;
-  held_key_ = key::none;
-  held_repeated_ = false;
+key_router::held* key_router::find_held(key k) noexcept {
+  for (auto& h : held_) {
+    if (h.row && h.k == k) return &h;
+  }
+  return nullptr;
+}
+
+key_router::held* key_router::claim_held(key k) noexcept {
+  if (auto* existing = find_held(k)) return existing;
+  for (auto& h : held_) {
+    if (!h.row) return &h;
+  }
+  return nullptr;
+}
+
+std::size_t key_router::cancel_holds(std::span<command_id> released) noexcept {
+  std::size_t n = 0;
+  for (auto& h : held_) {
+    if (!h.row) continue;
+    // A momentary key always owes its release. A tap/hold owes one only once
+    // it became a hold; an unfinished tap is dropped rather than fired.
+    const bool owed = h.row->policy == repeat_policy::momentary || h.repeated;
+    if (owed && n < released.size()) released[n++] = h.row->release;
+    h = held{};
+  }
+  return n;
 }
 
 route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   if (e.up) {
-    if (!held_row_ || e.k != held_key_) return {};
-    const binding* b = held_row_;
-    const bool repeated = held_repeated_;
-    cancel_hold();
+    held* h = find_held(e.k);
+    if (!h) return {};
+    const binding* b = h->row;
+    const bool repeated = h->repeated;
+    *h = held{};
     if (b->policy == repeat_policy::momentary) return {b->release, back_target::none, true};
     return {repeated ? b->release : b->command, back_target::none, true};
   }
@@ -93,25 +122,28 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       return {b->command, back_target::none, true};
     case repeat_policy::repeat:
       return {b->command, back_target::none, true};
-    case repeat_policy::momentary:
-      if (e.repeat) return {command_id::none, back_target::none, true};
-      held_row_ = b;
-      held_key_ = e.k;
-      held_repeated_ = false;
+    case repeat_policy::momentary: {
+      if (e.repeat && find_held(e.k)) return {command_id::none, back_target::none, true};
+      held* h = claim_held(e.k);
+      if (!h) return {};  // four keys already held; a fifth hold is not tracked
+      *h = held{b, e.k, false};
       return {b->command, back_target::none, true};
-    case repeat_policy::tap_hold:
-      if (!e.repeat || held_row_ != b) {
-        // The down edge of a tap does nothing: it is not yet known to be one.
-        // A repeat with no recorded down (focus arrived mid-hold) starts the
-        // hold from here.
-        held_row_ = b;
-        held_key_ = e.k;
-        held_repeated_ = e.repeat;
-        if (!e.repeat) return {command_id::none, back_target::none, true};
+    }
+    case repeat_policy::tap_hold: {
+      held* h = find_held(e.k);
+      if (h && h->row == b && e.repeat) {
+        h->repeated = true;
         return {b->hold, back_target::none, true};
       }
-      held_repeated_ = true;
+      h = claim_held(e.k);
+      if (!h) return {};
+      // The down edge of a tap does nothing: it is not yet known to be one.
+      // A repeat with no recorded down (focus arrived mid-hold) starts the
+      // hold from here.
+      *h = held{b, e.k, e.repeat};
+      if (!e.repeat) return {command_id::none, back_target::none, true};
       return {b->hold, back_target::none, true};
+    }
   }
   return {};
 }

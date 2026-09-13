@@ -75,16 +75,27 @@ class key_router {
   // Row for (key, mods, mode), or null. O(1): an index built once.
   [[nodiscard]] const binding* lookup(key k, std::uint8_t mods, mode m) const noexcept;
 
-  // Focus left the window mid-hold; forget the key rather than firing a
-  // release for a key-up that will never arrive here.
-  void cancel_hold() noexcept;
+  // The window lost activation, so no key-up is coming. Forgets every held
+  // key and writes the releases they owe (loupe off, skim settle) into
+  // `released`, for the caller to dispatch. Returns how many were written.
+  [[nodiscard]] std::size_t cancel_holds(std::span<command_id> released) noexcept;
+
+  static constexpr int kHeldSlots = 4;
 
  private:
+  struct held {
+    const binding* row = nullptr;
+    key k = key::none;
+    bool repeated = false;
+  };
+
+  [[nodiscard]] held* find_held(key k) noexcept;
+  [[nodiscard]] held* claim_held(key k) noexcept;
+
   static constexpr int kSlots = kKeyCount * kModCombos * kModeCount;
   std::array<std::uint8_t, kSlots> index_{};  // 0 = unbound, else row + 1
-  const binding* held_row_ = nullptr;
-  key held_key_ = key::none;
-  bool held_repeated_ = false;
+  // Holds are per key, so holding Z and then tapping Q cannot lose Z's release.
+  std::array<held, kHeldSlots> held_{};
 };
 
 }  // namespace mv::shell

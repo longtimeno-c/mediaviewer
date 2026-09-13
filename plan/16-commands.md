@@ -40,6 +40,10 @@ arrow key. **One router, on the UI thread, in the native window procedure.**
 Dispatch is an array index, not a string lookup. The palette filters the same static table
 in memory. No I/O on keydown.
 
+Symbol keys bind to the **character** the active layout produces (`?`, `+`, `\`), not to a US
+key position. Symbols that need AltGr do not resolve in v1: on German and French layouts that
+is `\` (hold-previous) and, from PR 9, `[` `]`. Those wait for the v1.1 remap.
+
 **Tap and hold may be two commands on one key**, and `A` / `D` on a clip are the case that
 earns it: a tap is a discrete adjustment (speed), a hold is a continuous one (skim). The
 distinction is typematic repeat — the down edge of a tap does nothing, the first repeat makes
@@ -57,7 +61,8 @@ and speed are the same gesture at two durations, not to double the key count.
 | **Slideshow** | After `Enter` | Next on a timer; `Esc` leaves |
 | **Crop** | Adjust geometry (PR 9) | Nudge crop; `Enter` commits, `Esc` cancels |
 
-`Esc` walks **out**: crop → pane → fullscreen / slideshow → canvas. It does not quit from a
+`Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas. The gallery
+covers the canvas like an overlay, so it closes before the window-level states. It does not quit from a
 nested mode. Lab `Esc` = quit is a harness thing and dies in PR 6 for the shipped chrome
 (`Alt+F4` / `Ctrl+W` still close).
 
@@ -326,11 +331,11 @@ Later slices **add rows to the table**. They do not grow a second router.
 | **6** | Router, default browse/view/slideshow map, `?`, palette, Space semantics, marks, F7/F8, status, typeahead, sticky zoom, companions-as-hidden, loupe, hold-previous, blinkies (display-referred), pixel grid, background, folder tree island (or slip), always-on-top, fullscreen chrome hide, animation play/pause |
 | 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop |
 | 8 | `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
-| 9 | `[` `]` lossless rotate from the viewer, crop mode keys |
+| 9 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops) |
 | 10 | `E` pane, accurate RAW clipping, histogram |
 | 11 | Rating keys, `F2` rename writes, user comment in the pane |
 | 12 | Trim mode takes `[` `]` |
-| 14 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab` |
+| 14 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
 
 **Verify (PR 6, additive with the existing line):** keyboard-only browse of a real folder —
 open, next/prev, zoom/fit/100 %, mark, copy-to a destination, delete to Recycle Bin,

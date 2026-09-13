@@ -119,6 +119,39 @@ public static partial class IslandHost
         return AttachArgsSize;
     }
 
+    /// <summary>
+    /// The island's top-level bridge window. In: int32 island (FocusKind),
+    /// int32 reserved. Out: int64 HWND at offset 8 (0 if not attached).
+    /// Native caches these at attach and classifies GetFocus() with IsChild,
+    /// so focus is never read from a notification that can go stale.
+    /// </summary>
+    public static int IslandWindow(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < 16) return unchecked((int)0x80070057);
+            int island = Marshal.ReadInt32(arg);
+            DesktopWindowXamlSource? source = island switch
+            {
+                FocusKind.CommandBar => _source,
+                FocusKind.Filmstrip => _filmstrip,
+                FocusKind.Gallery => _gallery,
+                FocusKind.Transport => _transport,
+                _ => null,
+            };
+            long hwnd = source?.SiteBridge is null
+                ? 0
+                : (long)Win32Interop.GetWindowFromWindowId(source.SiteBridge.WindowId);
+            Marshal.WriteInt64(arg, 8, hwnd);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
     public static int Attach(IntPtr arg, int sizeBytes)
     {
         try

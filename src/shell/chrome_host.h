@@ -13,6 +13,7 @@
 
 #include "core/result.h"
 #include "shell/commands.h"
+#include "shell/key_router.h"
 
 namespace mv::shell {
 
@@ -202,6 +203,14 @@ class chrome_host {
   // The island's command-id checksum (chrome_command_checksum), or 0.
   [[nodiscard]] std::int32_t probe_commands() const noexcept;
 
+  // Caches each island's bridge HWND. Call after the islands attach; it is one
+  // managed hop per island, never per key.
+  void refresh_island_windows() noexcept;
+
+  // Which island holds `focus`. The canvas only when `focus` is the canvas
+  // window itself: a flyout's popup, a null or a foreign HWND is an island.
+  [[nodiscard]] focus_kind classify_focus(HWND focus, HWND canvas) const noexcept;
+
   // `parent` is the top-level canvas HWND. The island is MoveAndResize'd into
   // the 48 DIP strip so flyouts are siblings of the swapchain, not clipped by
   // a short child window.
@@ -301,6 +310,9 @@ class chrome_host {
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
+  chrome_entry_fn island_window_ = nullptr;
+  // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
+  HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

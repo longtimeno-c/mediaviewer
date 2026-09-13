@@ -56,6 +56,14 @@ constexpr binding kBindings[] = {
     row(C('+'), mod_none, kViewing, repeat, zoom_in),
     row(C('='), mod_none, kViewing, repeat, zoom_in),  // the unshifted +/= key
     row(C('-'), mod_none, kViewing, repeat, zoom_out),
+    // plan/16 Browse: when zoomed ↑ ↓ pan and ← → still navigate; Shift+arrows
+    // pan in all four directions.
+    row(key::up, mod_none, kBrowse | kVideo, repeat, pan_up),
+    row(key::down, mod_none, kBrowse | kVideo, repeat, pan_down),
+    row(key::up, mod_shift, kBrowse | kVideo, repeat, pan_up),
+    row(key::down, mod_shift, kBrowse | kVideo, repeat, pan_down),
+    row(key::left, mod_shift, kBrowse | kVideo, repeat, pan_left),
+    row(key::right, mod_shift, kBrowse | kVideo, repeat, pan_right),
     row(key::f3, mod_none, kAllModes, edge, overlay),
     row(C('R'), mod_none, kViewing, edge, reset_stats),
     row(C('G'), mod_none, kAllModes, edge, toggle_gallery),
@@ -103,6 +111,9 @@ constexpr binding kBindings[] = {
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
     row(C('E'), mod_ctrl | mod_shift, kAllModes, edge, folder_tree),
 };
+
+// The router's index stores row + 1 in a byte.
+static_assert(std::size(kBindings) < 255, "key_router index is uint8_t");
 
 constexpr command_info kCommands[] = {
     {open, "Open media…"},
@@ -152,6 +163,10 @@ constexpr command_info kCommands[] = {
     {hold_previous_release, "Release previous"},
     {always_on_top, "Always on top"},
     {info_overlay, "Info overlay"},
+    {pan_up, "Pan up"},
+    {pan_down, "Pan down"},
+    {pan_left, "Pan left"},
+    {pan_right, "Pan right"},
     {toggle_mark, "Toggle mark"},
     {mark_all, "Mark all"},
     {unmark_all, "Unmark all"},
@@ -172,10 +187,28 @@ constexpr command_info kCommands[] = {
     {folder_tree, "Folder tree"},
 };
 
+// Bound, but main.cpp's run_command does not handle them yet: the key falls
+// through to the island. Each slice deletes its rows here as it lands, and
+// this list is empty before PR 6 is proposed (6g).
+constexpr command_id kPending[] = {
+    // 6b
+    fullscreen, fill, reset_view, cycle_background, sticky_zoom, clipping, loupe,
+    loupe_release, hold_previous, hold_previous_release, always_on_top, info_overlay,
+    pan_up, pan_down, pan_left, pan_right,
+    // 6c
+    toggle_mark, mark_all, unmark_all, copy_to, copy_to_pick, move_to, move_to_pick,
+    delete_to_recycle_bin,
+    // 6d
+    slideshow_start, slideshow_pause, slideshow_faster, slideshow_slower, blackout, shuffle,
+    // 6f
+    help, palette, go_to, folder_tree,
+};
+
 }  // namespace
 
 std::span<const binding> default_bindings() noexcept { return kBindings; }
 std::span<const command_info> command_infos() noexcept { return kCommands; }
+std::span<const command_id> pending_commands() noexcept { return kPending; }
 
 const command_info* find_command(command_id id) noexcept {
   for (const auto& info : kCommands) {

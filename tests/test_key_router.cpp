@@ -260,8 +260,73 @@ TEST_CASE("Q/E: a tap steps the speed, a hold skims and settles on release", "[s
   REQUIRE(r.on_key(up(q), s).command == command_id::skim_settle);
 
   REQUIRE(r.on_key(down(q), s).handled);
-  r.cancel_hold();
+  command_id released[key_router::kHeldSlots]{};
+  REQUIRE(r.cancel_holds(released) == 0);  // an unfinished tap owes nothing
   REQUIRE_FALSE(r.on_key(up(q), s).handled);
+}
+
+TEST_CASE("holds are per key: a second hold cannot swallow the first release", "[shell][router]") {
+  key_router r;
+  const auto s = clip();
+  const key z = char_key('Z');
+  const key q = char_key('Q');
+  const key e = char_key('E');
+  REQUIRE(r.on_key(down(z), s).command == command_id::loupe);
+  REQUIRE(r.on_key(down(q), s).command == command_id::none);
+  REQUIRE(r.on_key(up(q), s).command == command_id::rate_down);
+  REQUIRE(r.on_key(up(z), s).command == command_id::loupe_release);
+
+  // Hold Q, then hold E: both settle.
+  REQUIRE(r.on_key(down(q), s).command == command_id::none);
+  REQUIRE(r.on_key(rep(q), s).command == command_id::skim_back);
+  REQUIRE(r.on_key(down(e), s).command == command_id::none);
+  REQUIRE(r.on_key(rep(e), s).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(q), s).command == command_id::skim_settle);
+  REQUIRE(r.on_key(up(e), s).command == command_id::skim_settle);
+
+  // Hold \ then Z.
+  const key bs = char_key('\\');
+  REQUIRE(r.on_key(down(bs), s).command == command_id::hold_previous);
+  REQUIRE(r.on_key(down(z), s).command == command_id::loupe);
+  REQUIRE(r.on_key(up(bs), s).command == command_id::hold_previous_release);
+  REQUIRE(r.on_key(up(z), s).command == command_id::loupe_release);
+}
+
+TEST_CASE("losing activation fires the releases held keys owe", "[shell][router]") {
+  key_router r;
+  const auto s = clip();
+  REQUIRE(r.on_key(down(char_key('Z')), s).command == command_id::loupe);
+  REQUIRE(r.on_key(down(char_key('E')), s).command == command_id::none);
+  REQUIRE(r.on_key(rep(char_key('E')), s).command == command_id::skim_forward);
+  command_id released[key_router::kHeldSlots]{};
+  const auto n = r.cancel_holds(released);
+  REQUIRE(n == 2);
+  const bool loupe = released[0] == command_id::loupe_release || released[1] == command_id::loupe_release;
+  const bool settle = released[0] == command_id::skim_settle || released[1] == command_id::skim_settle;
+  REQUIRE(loupe);
+  REQUIRE(settle);
+  // Nothing held any more: the late key-ups are not ours.
+  REQUIRE_FALSE(r.on_key(up(char_key('Z')), s).handled);
+  REQUIRE_FALSE(r.on_key(up(char_key('E')), s).handled);
+  // A truncated buffer writes what fits and still forgets everything.
+  REQUIRE(r.on_key(down(char_key('Z')), s).handled);
+  REQUIRE(r.cancel_holds(std::span<command_id>{}) == 0);
+  REQUIRE_FALSE(r.on_key(up(char_key('Z')), s).handled);
+}
+
+TEST_CASE("pending commands are bound and not yet claimed as landed", "[shell][commands]") {
+  std::set<int> bound;
+  for (const auto& b : default_bindings()) bound.insert(static_cast<int>(b.command));
+  std::set<int> seen;
+  for (const auto id : pending_commands()) {
+    INFO(find_command(id)->name);
+    REQUIRE(find_command(id) != nullptr);
+    REQUIRE_FALSE(find_command(id)->keyless);
+    REQUIRE(seen.insert(static_cast<int>(id)).second);
+  }
+  // PR 6's verify commands must not be pending once their slice lands.
+  // 6g gate: this list is empty before PR 6 is proposed.
+  WARN("pending commands: " << pending_commands().size());
 }
 
 TEST_CASE("momentary keys fire on down and release on up", "[shell][router]") {

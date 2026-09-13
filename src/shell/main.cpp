@@ -471,9 +471,18 @@ mv::shell::key_event translate_key(const MSG& msg, bool is_up) noexcept {
 
 mv::shell::view_state view_state_of(app_state* app) noexcept {
   mv::shell::view_state s;
+  // Which island is decided natively from the focus HWND, so it cannot go
+  // stale. The wire only says whether the focused XAML element is text.
   const HWND focus = ::GetFocus();
-  s.focus = (focus == nullptr || focus == app->window) ? mv::shell::focus_kind::canvas
-                                                       : app->island_focus;
+  if (!app->chrome.attached()) {
+    s.focus = mv::shell::focus_kind::canvas;
+  } else {
+    s.focus = app->chrome.classify_focus(focus, app->window);
+    if (s.focus != mv::shell::focus_kind::canvas &&
+        app->island_focus == mv::shell::focus_kind::text) {
+      s.focus = mv::shell::focus_kind::text;
+    }
+  }
   if (video_mode(app)) s.item = mv::shell::item_kind::clip;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
@@ -650,6 +659,7 @@ bool attach_chrome(app_state* app) {
   (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
                                    rc.right - rc.left, height, dpi);
   app->chrome.apply_settings(app->settings.flags());
+  app->chrome.refresh_island_windows();
   return true;
 }
 
@@ -762,8 +772,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case WM_ACTIVATE: {
       app->input.window_active = LOWORD(wparam) != WA_INACTIVE;
-      // A key held across Alt+Tab never sends its key-up here.
-      if (!app->input.window_active) app->router.cancel_hold();
+      // A key held across Alt+Tab never sends its key-up here, so fire the
+      // releases it owes: a loupe must not stick on, a skim must settle exact.
+      if (!app->input.window_active) {
+        mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+        const std::size_t n = app->router.cancel_holds(released);
+        for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+      }
       publish(app);
       return 0;
     }

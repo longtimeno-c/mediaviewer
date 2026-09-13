@@ -245,6 +245,39 @@ std::int32_t chrome_host::probe_commands() const noexcept {
   return checksum;
 }
 
+void chrome_host::refresh_island_windows() noexcept {
+  for (auto& hwnd : island_hwnds_) hwnd = nullptr;
+  if (!loaded()) return;
+  if (!island_window_) island_window_ = get_entry(L"IslandWindow");
+  if (!island_window_) return;
+  struct island_window_args {
+    std::int32_t island;
+    std::int32_t reserved;
+    std::int64_t hwnd;
+  };
+  for (int island = static_cast<int>(focus_kind::command_bar);
+       island <= static_cast<int>(focus_kind::transport); ++island) {
+    island_window_args args{island, 0, 0};
+    if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
+      island_hwnds_[island] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
+    }
+  }
+}
+
+focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
+  if (focus && focus == canvas) return focus_kind::canvas;
+  for (int island = static_cast<int>(focus_kind::command_bar);
+       island <= static_cast<int>(focus_kind::transport); ++island) {
+    const HWND root = island_hwnds_[island];
+    if (root && focus && (focus == root || ::IsChild(root, focus))) {
+      return static_cast<focus_kind>(island);
+    }
+  }
+  // A flyout's own popup window, or anything unrecognised: never the canvas,
+  // so the router leaves traversal keys to XAML.
+  return focus_kind::command_bar;
+}
+
 expected chrome_host::attach(HWND parent, void* context, chrome_command_fn on_command,
                              int width, int height, std::uint32_t dpi) noexcept {
   if (!loaded()) return err(status::internal);

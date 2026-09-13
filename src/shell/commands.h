@@ -146,6 +146,10 @@ enum class command_id : std::uint16_t {
   hold_previous_release,
   always_on_top,
   info_overlay,
+  pan_up,     // ↑ when zoomed, Shift+↑
+  pan_down,   // ↓ when zoomed, Shift+↓
+  pan_left,   // Shift+←
+  pan_right,  // Shift+→
   // 6c
   toggle_mark,
   mark_all,
@@ -197,5 +201,7 @@ struct command_info {
 [[nodiscard]] std::span<const binding> default_bindings() noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
+// Bound commands whose effect has not landed yet. Empty before PR 6 ships.
+[[nodiscard]] std::span<const command_id> pending_commands() noexcept;
 
 }  // namespace mv::shell
