@@ -478,6 +478,10 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
     s.focus = mv::shell::focus_kind::canvas;
   } else {
     s.focus = app->chrome.classify_focus(focus, app->window);
+    // Focus on the canvas proves no text control holds it; drop a stale bit.
+    if (s.focus == mv::shell::focus_kind::canvas) {
+      app->island_focus = mv::shell::focus_kind::command_bar;
+    }
     if (s.focus != mv::shell::focus_kind::canvas &&
         app->island_focus == mv::shell::focus_kind::text) {
       s.focus = mv::shell::focus_kind::text;
@@ -495,6 +499,10 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::blur_text:
     case back_target::canvas_focus:
       if (app->window) ::SetFocus(app->window);
+      // Forget the text bit: XAML may not raise GotFocus again when Tab
+      // returns to an element that "never lost" focus, and a stale text bit
+      // would swallow every key but Esc on a button.
+      app->island_focus = mv::shell::focus_kind::command_bar;
       return;
     case back_target::gallery:
       set_gallery(app, false);

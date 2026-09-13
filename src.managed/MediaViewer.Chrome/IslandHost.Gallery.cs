@@ -63,6 +63,7 @@ public static partial class IslandHost
 
             DisposeSource(ref _gallery);
             _gallery = new DesktopWindowXamlSource();
+            EnsureFocusHook();
             _gallery.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Park it before content exists: a default full-client island would
             // flash over the canvas for a frame on startup.

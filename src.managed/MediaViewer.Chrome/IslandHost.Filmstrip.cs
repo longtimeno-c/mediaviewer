@@ -56,6 +56,7 @@ public static partial class IslandHost
 
             DisposeSource(ref _filmstrip);
             _filmstrip = new DesktopWindowXamlSource();
+            EnsureFocusHook();
             _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             int strip = Math.Max((int)(FilmstripDip * (args.Dpi <= 0 ? 96 : args.Dpi) / 96.0), 1);
             int y = Math.Max(args.ClientHeight - strip, 0);

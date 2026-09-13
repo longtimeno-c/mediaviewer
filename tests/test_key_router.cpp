@@ -327,6 +327,9 @@ TEST_CASE("pending commands are bound and not yet claimed as landed", "[shell][c
   // PR 6's verify commands must not be pending once their slice lands.
   // 6g gate: this list is empty before PR 6 is proposed.
   WARN("pending commands: " << pending_commands().size());
+  // TODO(6g): replace the WARN with REQUIRE(pending_commands().empty()). Until
+  // then each slice review greps run_command's cases against kPending by hand,
+  // because whether a command landed is only visible in main.cpp.
 }
 
 TEST_CASE("momentary keys fire on down and release on up", "[shell][router]") {

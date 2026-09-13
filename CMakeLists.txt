@@ -435,6 +435,7 @@ if(MV_BUILD_TESTS)
     tests/test_container_probe.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
+    tests/test_key_router_review.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp

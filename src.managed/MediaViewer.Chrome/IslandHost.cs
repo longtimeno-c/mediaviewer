@@ -182,12 +182,7 @@ public static partial class IslandHost
             _source.TakeFocusRequested += OnTakeFocusRequested;
             _source.Content = BuildChrome();
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
-            _detaching = false;
-            if (!_focusHooked)
-            {
-                Microsoft.UI.Xaml.Input.FocusManager.GotFocus += OnXamlGotFocus;
-                _focusHooked = true;
-            }
+            EnsureFocusHook();
             return 0;
         }
         catch (Exception ex)
@@ -211,13 +206,26 @@ public static partial class IslandHost
     {
         _ = arg;
         _ = sizeBytes;
+        _detaching = true;  // only a whole-chrome teardown sets this
         UnhookFocus();
         return 0;
     }
 
+    // Every Attach* calls this. A single island can be re-attached on its own
+    // (chrome_host re-attach, a DPI or adapter move, 6f's folder tree toggling),
+    // and its Detach* unhooks; without re-hooking here focus tracking would
+    // silently stop for the rest of the session.
+    private static void EnsureFocusHook()
+    {
+        _detaching = false;
+        if (_focusHooked) return;
+        Microsoft.UI.Xaml.Input.FocusManager.GotFocus += OnXamlGotFocus;
+        _focusHooked = true;
+    }
+
+    // Unhooks without claiming the whole chrome is going away.
     private static void UnhookFocus()
     {
-        _detaching = true;
         if (!_focusHooked) return;
         try
         {

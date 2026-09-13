@@ -70,6 +70,7 @@ public static partial class IslandHost
 
             DisposeSource(ref _transport);
             _transport = new DesktopWindowXamlSource();
+            EnsureFocusHook();
             _transport.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Parked, with no content: nothing is open, and a full-client
             // default island would flash over the canvas on startup.
