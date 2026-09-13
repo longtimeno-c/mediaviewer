@@ -55,6 +55,8 @@ public static partial class IslandHost
         public const int VideoActive = 18;
         public const int SetRate = 19;
         public const int FocusChanged = 20;
+        // Notifications added after the command table filled the low ids.
+        public const int Popup = 1000;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -64,7 +66,7 @@ public static partial class IslandHost
             {
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
-                ToggleFilmstrip, VideoActive, SetRate, FocusChanged,
+                ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup,
             };
             unchecked
             {
@@ -92,9 +94,10 @@ public static partial class IslandHost
     {
         public const int FilmstripForFolder = 1 << 0;
         public const int FilmstripForImage = 1 << 1;
+        public const int Wrap = 1 << 2;
     }
 
-    private static int _settingFlags = SettingFlag.FilmstripForFolder;
+    private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeCommand(IntPtr context, int command, float arg);
@@ -116,6 +119,8 @@ public static partial class IslandHost
         if (Marshal.SizeOf<ChromeShowArgs>() != ShowArgsSize) return -5;
         if (Marshal.SizeOf<ChromeFlagsArgs>() != FlagsArgsSize) return -6;
         if (Marshal.SizeOf<ChromeRateArgs>() != RateArgsSize) return -7;
+        if (Marshal.SizeOf<ChromePopupArgs>() != PopupArgsSize) return -8;
+        if (Marshal.SizeOf<ChromeTableArgs>() != TableArgsSize) return -9;
         return AttachArgsSize;
     }
 
@@ -917,6 +922,10 @@ public static partial class IslandHost
                  HasFlag(SettingFlag.FilmstripForImage) ? "on" : "off",
                  () => SetFlag(SettingFlag.FilmstripForImage,
                                !HasFlag(SettingFlag.FilmstripForImage))));
+        _settingsFlyout.Items.Add(
+            Item("Wrap at the end of the folder",
+                 HasFlag(SettingFlag.Wrap) ? "on" : "off",
+                 () => SetFlag(SettingFlag.Wrap, !HasFlag(SettingFlag.Wrap))));
     }
 
     private static UIElement BuildChrome()
@@ -958,7 +967,7 @@ public static partial class IslandHost
         };
         aboutFlyout.Content = new TextBlock
         {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nG opens the gallery, T shows or hides the filmstrip, F toggles the frame-time overlay. On a clip: space plays/pauses, Q and E skim, J and L jump 10 s. Wheel zooms toward the cursor; drag pans.",
+            Text = "MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing, or Ctrl+K to find any command by name.",
             Margin = new Thickness(12, 10, 12, 10),
             MaxWidth = 400,
             TextWrapping = TextWrapping.Wrap,

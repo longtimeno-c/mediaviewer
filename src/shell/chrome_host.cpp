@@ -223,6 +223,8 @@ expected chrome_host::load() noexcept {
   apply_rate_ = get_entry(L"ApplyRate");
   begin_detach_ = get_entry(L"BeginDetach");
   shutdown_for_exit_ = get_entry(L"ShutdownForExit");
+  set_command_table_ = get_entry(L"SetCommandTable");
+  show_popup_ = get_entry(L"ShowPopup");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -541,6 +543,22 @@ void chrome_host::apply_rate(float rate) noexcept {
   chrome_rate_args args{};
   args.rate = rate;
   (void)apply_rate_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_command_table(const std::string& utf8) noexcept {
+  if (!attached_ || !set_command_table_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8.data()));
+  args.length = static_cast<std::int32_t>(utf8.size());
+  (void)set_command_table_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {
+  if (!attached_ || !show_popup_) return;
+  chrome_popup_args args{};
+  args.kind = static_cast<std::int32_t>(kind);
+  args.mode_mask = mode_mask;
+  (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {

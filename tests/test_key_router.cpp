@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <set>
 #include <string>
@@ -326,10 +327,8 @@ TEST_CASE("pending commands are bound and not yet claimed as landed", "[shell][c
   }
   // PR 6's verify commands must not be pending once their slice lands.
   // 6g gate: this list is empty before PR 6 is proposed.
-  WARN("pending commands: " << pending_commands().size());
-  // TODO(6g): replace the WARN with REQUIRE(pending_commands().empty()). Until
-  // then each slice review greps run_command's cases against kPending by hand,
-  // because whether a command landed is only visible in main.cpp.
+  // PR 6 is complete: every bound command is handled.
+  REQUIRE(pending_commands().empty());
 }
 
 TEST_CASE("holding Z turns the arrows into loupe nudges", "[shell][router]") {
@@ -367,6 +366,76 @@ TEST_CASE("holding Z turns the arrows into loupe nudges", "[shell][router]") {
   s.loupe_held = true;
   s.focus = focus_kind::filmstrip;
   REQUIRE_FALSE(r.on_key(down(key::left), s).handled);
+}
+
+TEST_CASE("key labels read the way the ? sheet and palette show them", "[shell][commands]") {
+  REQUIRE(key_label(char_key('O'), mod_ctrl) == "Ctrl+O");
+  REQUIRE(key_label(char_key('O'), mod_ctrl | mod_shift) == "Ctrl+Shift+O");
+  REQUIRE(key_label(key::space, mod_shift) == "Shift+Space");
+  REQUIRE(key_label(key::f3, mod_none) == "F3");
+  REQUIRE(key_label(char_key('?'), mod_none) == "?");
+  REQUIRE(key_label(key::page_down, mod_none) == "PageDown");
+  REQUIRE(key_label(key::escape, mod_none) == "Esc");
+}
+
+TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
+          "[shell][commands]") {
+  const std::string table = describe_commands();
+  const auto has = [&table](const char* name, const char* keys) {
+    const std::string needle = std::string("\t") + name + "\t" + keys + "\n";
+    return table.find(needle) != std::string::npos;
+  };
+  // plan/10 PR 6 verify: open, next/prev, zoom/fit/100 %, mark, copy-to,
+  // delete to Recycle Bin, fullscreen, slideshow start/stop, and `?` itself.
+  REQUIRE(has("Open media…", "Ctrl+O"));
+  REQUIRE(has("Open folder…", "Ctrl+Shift+O"));
+  REQUIRE(has("Next", "Right"));
+  REQUIRE(has("Previous", "Left"));
+  REQUIRE(has("Next", "Space"));
+  REQUIRE(has("Zoom in", "+"));
+  REQUIRE(has("Fit", "0"));
+  REQUIRE(has("Zoom 100 %", "1"));
+  REQUIRE(has("Toggle mark", "Insert"));
+  REQUIRE(has("Copy to last folder", "F7"));
+  REQUIRE(has("Copy to…", "Shift+F7"));
+  REQUIRE(has("Delete to Recycle Bin", "Delete"));
+  REQUIRE(has("Fullscreen", "F"));
+  REQUIRE(has("Slideshow", "Enter"));
+  REQUIRE(has("Pause slideshow", "Space"));
+  REQUIRE(has("Keyboard shortcuts", "?"));
+  REQUIRE(has("Command palette", "Ctrl+K"));
+  REQUIRE(has("Loupe", "hold Z"));
+  REQUIRE(has("Skim forward", "hold E"));
+  // Island-only and release commands are not offered to run.
+  REQUIRE(table.find("\tSelect item\t") == std::string::npos);
+  REQUIRE(table.find("\tLoupe off\t") == std::string::npos);
+  REQUIRE(table.find("\tBack\t") == std::string::npos);
+  // Every line is well formed: four tab-separated fields.
+  std::size_t lines = 0;
+  for (std::size_t pos = 0; pos < table.size();) {
+    const std::size_t end = table.find('\n', pos);
+    REQUIRE(end != std::string::npos);
+    const std::string row = table.substr(pos, end - pos);
+    REQUIRE(std::count(row.begin(), row.end(), '\t') == 3);
+    pos = end + 1;
+    ++lines;
+  }
+  REQUIRE(lines >= default_bindings().size());
+}
+
+TEST_CASE("Esc closes an open popup before anything else", "[shell][router]") {
+  key_router r;
+  view_state s = still();
+  s.popup_open = true;
+  s.fullscreen = true;
+  s.gallery_open = true;
+  s.focus = focus_kind::command_bar;  // the flyout has focus
+  const auto esc = r.on_key(down(key::escape), s);
+  REQUIRE(esc.handled);
+  REQUIRE(esc.back == back_target::popup);
+  // A text box inside the popup (palette filter) blurs, which closes it too.
+  s.focus = focus_kind::text;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::blur_text);
 }
 
 TEST_CASE("momentary keys fire on down and release on up", "[shell][router]") {

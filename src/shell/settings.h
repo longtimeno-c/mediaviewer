@@ -19,6 +19,7 @@ namespace mv::shell {
 
 inline constexpr std::int32_t kSettingFilmstripFolder = 1 << 0;
 inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
+inline constexpr std::int32_t kSettingWrap = 1 << 2;  // plan/16: wrap at folder ends
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
 // its 112 DIP. Opening one image is a viewing intent: the folder is still
@@ -27,16 +28,21 @@ inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
 struct view_settings {
   bool filmstrip_for_folder = true;
   bool filmstrip_for_image = false;
+  // Arrow keys, Space and the slideshow go round from the last item to the
+  // first. On by default (plan/16).
+  bool wrap = true;
 
   [[nodiscard]] std::int32_t flags() const noexcept {
     return (filmstrip_for_folder ? kSettingFilmstripFolder : 0) |
-           (filmstrip_for_image ? kSettingFilmstripImage : 0);
+           (filmstrip_for_image ? kSettingFilmstripImage : 0) |
+           (wrap ? kSettingWrap : 0);
   }
 
   [[nodiscard]] static view_settings from_flags(std::int32_t flags) noexcept {
     view_settings s;
     s.filmstrip_for_folder = (flags & kSettingFilmstripFolder) != 0;
     s.filmstrip_for_image = (flags & kSettingFilmstripImage) != 0;
+    s.wrap = (flags & kSettingWrap) != 0;
     return s;
   }
 };

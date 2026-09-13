@@ -95,6 +95,17 @@ class present_lab {
     return showing_still_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] Media size and target zoom for the status line.
+  [[nodiscard]] std::uint32_t status_width() const noexcept {
+    return status_width_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint32_t status_height() const noexcept {
+    return status_height_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint32_t status_zoom_percent() const noexcept {
+    return status_zoom_pct_.load(std::memory_order_relaxed);
+  }
+
   // [any-thread][no-block] The animated item's state, as of the last frame.
   [[nodiscard]] animation_state animation() const noexcept {
     return static_cast<animation_state>(anim_state_.load(std::memory_order_relaxed));
@@ -170,6 +181,9 @@ class present_lab {
   std::atomic<bool> view_fitted_{true};
   std::atomic<bool> showing_still_{false};
   std::atomic<std::uint8_t> anim_state_{0};
+  std::atomic<std::uint32_t> status_width_{0};
+  std::atomic<std::uint32_t> status_height_{0};
+  std::atomic<std::uint32_t> status_zoom_pct_{0};
   HANDLE wake_event_ = nullptr;
   HANDLE ready_event_ = nullptr;
   std::atomic<int> start_error_{0};

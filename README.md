@@ -148,6 +148,15 @@ A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
+| `?` | the shortcuts for what you are doing right now |
+| `Ctrl+K` | command palette: type to find any command, `Enter` runs it |
+| `Ctrl+G` | go to an item by its number in the folder |
+| `/` | find an item by name. With the filmstrip or gallery focused, just type |
+| `Ctrl+Shift+E` | folder tree — arrives in PR 8; for now it beeps |
+
+The title bar shows the current file, its position in the folder, its size and
+the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
+first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
 | `G` | gallery: thumbnail grid of the folder. Click or `Enter` opens an item, `Esc` leaves |

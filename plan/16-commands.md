@@ -268,8 +268,10 @@ Chrome, in-memory, no decode.
   not parse every file. Remember the user's sort.
 - **Filter:** all / photos / videos / RAW. In-memory flag on the listing. RAW flag is
   meaningful from PR 7.
-- **Typeahead:** with canvas or filmstrip focused, typing filters the already-loaded
-  listing (Explorer-style, 300 ms idle to reset). `Ctrl+G` go-to index.
+- **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item
+  whose name starts with what was typed (Explorer-style, 300 ms idle to reset). With the
+  **canvas** focused every letter is already a command, so `/` opens a find box over the
+  already-loaded listing instead (plan/12 2026-09-13). `Ctrl+G` go-to index.
 - **Wrap** at end of folder: on by default, toggle in settings.
 - **Session:** window placement, last folder, zoom mode (fit / 100 % / sticky), wrap,
   background. Not a catalog.

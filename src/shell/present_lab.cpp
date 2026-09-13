@@ -65,6 +65,11 @@ canvas_view usable_canvas(const input_snapshot& s) noexcept {
   canvas_view v;
   v.w = static_cast<float>(s.width);
   v.h = static_cast<float>(s.height);
+  const float left = static_cast<float>(s.chrome_left_px);
+  if (left > 0.0f && left < v.w) {
+    v.x = left;
+    v.w -= left;
+  }
   const float scale = s.dpi_scale > 0.0f ? s.dpi_scale : 1.0f;
   const float gutter = kCanvasGutterDip * scale;
   const float top = static_cast<float>(s.chrome_height_px);
@@ -594,6 +599,11 @@ void present_lab::render_thread_main() noexcept {
       view_fitted_.store(!(current_image_ || current_video_.texture) || camera_.fit_mode(),
                          std::memory_order_relaxed);
       showing_still_.store(current_image_ != nullptr, std::memory_order_relaxed);
+      // The title-bar status line reads these (plan/16 "Status / title").
+      status_width_.store(static_cast<std::uint32_t>(media_width()), std::memory_order_relaxed);
+      status_height_.store(static_cast<std::uint32_t>(media_height()), std::memory_order_relaxed);
+      status_zoom_pct_.store(static_cast<std::uint32_t>(std::lround(camera_.target_zoom() * 100.0f)),
+                             std::memory_order_relaxed);
     }
 
     const float wheel = input_cursor_.consume_wheel(snapshot);

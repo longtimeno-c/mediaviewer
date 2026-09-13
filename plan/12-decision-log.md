@@ -583,6 +583,27 @@ browser, so the browser rule wins. Tested at 0 / 10 / 11 / 19 / 20 ms.
 **How it gets reversed.** Only if PR 7's fuzzing finds either library unsafe to keep; then the
 format waits for a replacement rather than for PR 7's schedule.
 
+## 2026-09-13 — PR 6 chrome: typeahead from `/`, and two slips (folder tree, companions)
+
+**Typeahead.** [16](16-commands.md) said "with canvas or filmstrip focused, typing filters the
+listing". With the canvas focused, nearly every letter is already a command (A D F G B S C O T Z Q
+E J K L R), so bare typing there cannot also be typeahead. Decision: with the filmstrip or gallery
+focused, typing jumps by name (300 ms reset); from the canvas, `/` opens a find box. The palette
+(`Ctrl+K`) still finds any command by name.
+
+**Folder tree slips to PR 8.** [16](16-commands.md) allows it: the tree is a third island with its
+own virtualised directory model, and PR 8 already brings panes. What lands in PR 6, so the island
+maths is not retrofitted: the `folder_tree` command and its key (`Ctrl+Shift+E`, which beeps and
+logs until then), and `chrome_left_px` in the input snapshot and `usable_canvas`. `PageUp` /
+`PageDown` stay "skip ten" until the tree exists.
+
+**Companions-as-hidden slips to PR 7.** The PR 6 row names it, but the companions it hides are
+RAW+JPEG and Live Photo pairs, which need RAW and HEIC — PR 7's formats. PR 7 already owns pairing;
+hiding the companion is the same scan-time step, so it moves with it.
+
+**Wrap.** "Wrap at end of folder: on by default, toggle in settings" lands in PR 6: a `wrap`
+setting (default on) used by arrow keys, Space, `A` / `D` and the slideshow alike.
+
 ## Still open
 
 | Question | Blocks | Notes |

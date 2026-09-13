@@ -36,6 +36,7 @@
 #include "shell/key_router.h"
 #include "shell/marks.h"
 #include "shell/open_request.h"
+#include "shell/navigation.h"
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
@@ -70,6 +71,10 @@ constexpr ULONGLONG kZoomIntentMs = 250;
 // zero presents.
 constexpr UINT_PTR kSlideshowTimerId = 0x6D01;
 constexpr UINT kSlideshowTickMs = 100;
+// plan/16 status line in the title bar. The tick only compares strings; the
+// window text is written when it changes.
+constexpr UINT_PTR kTitleTimerId = 0x6F01;
+constexpr UINT kTitleTickMs = 250;
 
 struct app_state {
   present_lab lab;
@@ -119,6 +124,8 @@ struct app_state {
   WINDOWPLACEMENT windowed_placement{sizeof(WINDOWPLACEMENT)};
   LONG_PTR windowed_style = 0;
   bool topmost = false;  // Ctrl+Shift+A
+  bool popup_open = false;       // a `?` / palette / go-to / find flyout is up
+  std::wstring last_title;       // the status line last written to the title bar
   bool fullscreen_reveal = false;  // strips shown over a fullscreen canvas for a while
   ULONGLONG zoom_intent_tick = 0;  // GetTickCount64 of the last zoom-in style command
   // plan/16 marks, copy, move. Marks are UI-thread state keyed by path; the
@@ -156,6 +163,7 @@ std::string utf8_from_wide(std::wstring_view wide) {
 
 void apply_view_state(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
+bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 
 void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
   if (!app || !app->session || wide_dir.empty()) return;
@@ -371,9 +379,10 @@ void folder_step(app_state* app, int delta) {
   uint32_t selected = 0;
   if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return;
   if (mv_folder_selected(app->session, &selected) != MV_OK) return;
-  const int next = static_cast<int>(selected) + delta;
-  if (next < 0 || next >= static_cast<int>(count)) return;
-  folder_select(app, static_cast<std::uint32_t>(next));
+  // plan/16: wrap at the ends when the setting is on (the default).
+  const auto next = mv::shell::step_index(selected, delta, count, app->settings.wrap);
+  if (!next) return;
+  folder_select(app, *next);
 }
 
 // Skim, not transport: J/L are the +/-10 s jumps, Q/E are the shuttle you hold
@@ -556,7 +565,19 @@ void chrome_on_command(void* ctx, int command, float arg) {
       }
       return;
     }
-    default: return;
+    case mv::shell::chrome_cmd_popup:
+      app->popup_open = arg != 0.0f;
+      // Fullscreen parks the bar again once nothing hangs off it.
+      if (!app->popup_open && app->fullscreen) layout_chrome(app);
+      return;
+    default:
+      // A palette entry: any command id, through the same switch as its key
+      // (plan/16: "Running an entry is the same dispatch as a key").
+      if (command > 0 && command < mv::shell::kCommandCount &&
+          !mv::shell::is_reserved_notification(command)) {
+        (void)run_command(app, static_cast<mv::shell::command_id>(command));
+      }
+      return;
   }
   ++app->input.activity_seq;
   publish(app);
@@ -650,6 +671,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.fullscreen = app->fullscreen;
   s.loupe_held = app->input.loupe;
   s.slideshow = app->show.active();
+  s.popup_open = app->popup_open;
   return s;
 }
 
@@ -775,7 +797,7 @@ void slideshow_tick(app_state* app) noexcept {
     return;
   }
   app->show.set_count(count, selected);
-  const auto next = app->show.next(selected, true);  // wrap: on by default (plan/16)
+  const auto next = app->show.next(selected, app->settings.wrap);  // plan/16 wrap setting
   app->show_last_advance = now;
   if (!next) {
     stop_slideshow(app);
@@ -797,6 +819,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::gallery:
       set_gallery(app, false);
+      return;
+    case back_target::popup:
+      app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
       return;
     case back_target::slideshow:
       stop_slideshow(app);
@@ -821,6 +846,43 @@ void folder_jump(app_state* app, long long delta) {
   if (next >= static_cast<long long>(count)) next = static_cast<long long>(count) - 1;
   if (next == static_cast<long long>(selected)) return;
   folder_select(app, static_cast<std::uint32_t>(next));
+}
+
+// plan/16 "Status / title": name — i/N — W×H — zoom %. From the folder model
+// and the render thread's published numbers; no decode, no I/O. Ratings (★)
+// arrive with PR 11.
+void update_title(app_state* app) noexcept {
+  if (!app || !app->window) return;
+  std::wstring title = kWindowTitle;
+  try {
+    std::uint32_t count = 0;
+    std::uint32_t selected = 0;
+    if (app->session && mv_folder_count(app->session, &count) == MV_OK && count > 0 &&
+        mv_folder_selected(app->session, &selected) == MV_OK && selected < count) {
+      char name[260]{};
+      std::uint32_t bytes = 0;
+      (void)mv_folder_item_name(app->session, selected, name, sizeof(name), &bytes);
+      name[sizeof(name) - 1] = '\0';
+      const int n = ::MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+      std::wstring wide(n > 1 ? static_cast<std::size_t>(n - 1) : 0, L'\0');
+      if (n > 1) ::MultiByteToWideChar(CP_UTF8, 0, name, -1, wide.data(), n);
+      wchar_t tail[128]{};
+      const std::uint32_t w = app->lab.status_width();
+      const std::uint32_t h = app->lab.status_height();
+      if (w > 0 && h > 0) {
+        (void)::swprintf_s(tail, L" — %u/%u — %u×%u — %u %%", selected + 1,
+                           count, w, h, app->lab.status_zoom_percent());
+      } else {
+        (void)::swprintf_s(tail, L" — %u/%u", selected + 1, count);
+      }
+      title = wide + tail;
+    }
+  } catch (...) {
+    return;
+  }
+  if (title == app->last_title) return;
+  app->last_title = title;
+  ::SetWindowTextW(app->window, title.c_str());
 }
 
 // A level in the snapshot changed; the render thread redraws once.
@@ -1179,6 +1241,37 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     }
 
+    // plan/16 `?` and Ctrl+K, plus Ctrl+G go-to and `/` find: XAML flyouts on
+    // the command bar, never composited on the swapchain. A palette entry
+    // comes back through chrome_on_command into this same switch.
+    case help:
+    case palette:
+    case go_to:
+    case typeahead: {
+      if (!app->chrome.attached()) return false;
+      const mv::shell::chrome_popup kind = command == help      ? mv::shell::chrome_popup::help
+                                           : command == palette ? mv::shell::chrome_popup::palette
+                                           : command == go_to   ? mv::shell::chrome_popup::go_to
+                                                                : mv::shell::chrome_popup::find;
+      // `?` lists the bindings of the mode underneath (as if the canvas had
+      // focus), not of the island it was opened from.
+      mv::shell::view_state underneath = view_state_of(app);
+      underneath.focus = mv::shell::focus_kind::canvas;
+      underneath.popup_open = false;
+      const auto modes =
+          static_cast<std::int32_t>(mv::shell::mask_of(mv::shell::resolve_mode(underneath)));
+      app->popup_open = true;
+      if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
+      app->chrome.show_popup(kind, modes);
+      return true;
+    }
+    // plan/12 2026-09-13: the tree island lands in PR 8. Its command, key and
+    // chrome_left_px layout are here so the island maths is not retrofitted.
+    case folder_tree:
+      MV_LOG_INFO("folder tree: lands in PR 8 (plan/12 2026-09-13)");
+      ::MessageBeep(MB_OK);
+      return true;
+
     // Host-side and cheap (plan/16): photographers park the viewer on a
     // second monitor.
     case always_on_top:
@@ -1221,7 +1314,8 @@ void layout_chrome(app_state* app) noexcept {
   const int bar = mv::shell::chrome_bar_height_px(dpi);
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
-  if (app->fullscreen) app->chrome.park_bar(height);
+  // Fullscreen parks the bar, except while a flyout hangs off it.
+  if (app->fullscreen && !app->popup_open) app->chrome.park_bar(height);
   else app->chrome.resize(width, bar, dpi);
   if (app->chrome.filmstrip_attached()) app->chrome.resize_filmstrip(width, height, dpi);
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
@@ -1250,6 +1344,8 @@ bool attach_chrome(app_state* app) {
   (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
                                    rc.right - rc.left, height, dpi);
   app->chrome.apply_settings(app->settings.flags());
+  // `?` and the palette read the same static table as the router (plan/16).
+  app->chrome.set_command_table(mv::shell::describe_commands());
   app->chrome.refresh_island_windows();
   return true;
 }
@@ -1469,6 +1565,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_TIMER:
+      if (wparam == kTitleTimerId) {
+        update_title(app);
+        return 0;
+      }
       if (wparam == kSlideshowTimerId) {
         slideshow_tick(app);
         return 0;
@@ -1669,6 +1769,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   enable_dark_titlebar(hwnd);
   ::DragAcceptFiles(hwnd, TRUE);
+  ::SetTimer(hwnd, kTitleTimerId, kTitleTickMs, nullptr);
   app.window = hwnd;
   app.chrome_on_screen = app.chrome_enabled;
   update_client_metrics(&app, hwnd);

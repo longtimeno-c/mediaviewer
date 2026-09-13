@@ -118,6 +118,9 @@ constexpr binding kBindings[] = {
     row(C('P'), mod_ctrl | mod_shift, kAllModes, edge, palette),
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
     row(C('E'), mod_ctrl | mod_shift, kAllModes, edge, folder_tree),
+    // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
+    // with the filmstrip or gallery focused, plain typing jumps by name.
+    row(C('/'), mod_none, kBrowse | kVideo, edge, typeahead),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -197,21 +200,93 @@ constexpr command_info kCommands[] = {
     {palette, "Command palette"},
     {go_to, "Go to index…"},
     {folder_tree, "Folder tree"},
+    {typeahead, "Find by name…"},
 };
 
-// Bound, but main.cpp's run_command does not handle them yet: the key falls
-// through to the island. Each slice deletes its rows here as it lands, and
-// this list is empty before PR 6 is proposed (6g).
-constexpr command_id kPending[] = {
-    // 6f
-    help, palette, go_to, folder_tree,
-};
+const char* named_key(key k) noexcept {
+  switch (k) {
+    case key::space: return "Space";
+    case key::backspace: return "Backspace";
+    case key::enter: return "Enter";
+    case key::escape: return "Esc";
+    case key::tab: return "Tab";
+    case key::insert: return "Insert";
+    case key::del: return "Delete";
+    case key::home: return "Home";
+    case key::end: return "End";
+    case key::page_up: return "PageUp";
+    case key::page_down: return "PageDown";
+    case key::left: return "Left";
+    case key::right: return "Right";
+    case key::up: return "Up";
+    case key::down: return "Down";
+    case key::f1: return "F1";
+    case key::f2: return "F2";
+    case key::f3: return "F3";
+    case key::f4: return "F4";
+    case key::f5: return "F5";
+    case key::f6: return "F6";
+    case key::f7: return "F7";
+    case key::f8: return "F8";
+    case key::f9: return "F9";
+    case key::f10: return "F10";
+    case key::f11: return "F11";
+    case key::f12: return "F12";
+    default: return nullptr;
+  }
+}
 
 }  // namespace
 
 std::span<const binding> default_bindings() noexcept { return kBindings; }
 std::span<const command_info> command_infos() noexcept { return kCommands; }
-std::span<const command_id> pending_commands() noexcept { return kPending; }
+
+// Every bound command is handled by run_command as of PR 6 (6f emptied this;
+// the folder tree's command is handled as a documented slip, plan/12).
+std::span<const command_id> pending_commands() noexcept { return {}; }
+
+std::string key_label(key k, std::uint8_t mods) {
+  std::string out;
+  if (mods & mod_ctrl) out += "Ctrl+";
+  if (mods & mod_shift) out += "Shift+";
+  if (mods & mod_alt) out += "Alt+";
+  if (const char* name = named_key(k)) {
+    out += name;
+  } else {
+    const auto v = static_cast<std::uint16_t>(k);
+    if (v >= 0x21 && v <= 0x7E) out.push_back(static_cast<char>(v));
+  }
+  return out;
+}
+
+std::string describe_commands() {
+  std::string out;
+  out.reserve(4096);
+  const auto line = [&out](command_id id, mode_mask modes, std::string keys) {
+    const command_info* info = find_command(id);
+    if (!info || info->keyless || id == back) return;
+    out += std::to_string(static_cast<int>(id));
+    out += '\t';
+    out += std::to_string(static_cast<int>(modes));
+    out += '\t';
+    out += info->name;
+    out += '\t';
+    out += keys;
+    out += '\n';
+  };
+  for (const binding& b : kBindings) {
+    const std::string label = key_label(b.k, b.mods);
+    if (b.policy == momentary) {
+      line(b.command, b.modes, "hold " + label);
+    } else if (b.policy == tap_hold) {
+      line(b.command, b.modes, label);
+      line(b.hold, b.modes, "hold " + label);
+    } else {
+      line(b.command, b.modes, label);
+    }
+  }
+  return out;
+}
 
 const command_info* find_command(command_id id) noexcept {
   for (const auto& info : kCommands) {

@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 
 namespace mv::shell {
 
@@ -177,6 +178,7 @@ enum class command_id : std::uint16_t {
   palette,
   go_to,
   folder_tree,
+  typeahead,  // `/` from the canvas: find an item by name
   count
 };
 
@@ -209,5 +211,16 @@ struct command_info {
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.
 [[nodiscard]] std::span<const command_id> pending_commands() noexcept;
+
+// "Ctrl+Shift+O", "Space", "F3", "?" — what `?` and the palette show.
+[[nodiscard]] std::string key_label(key k, std::uint8_t mods);
+
+// The table for the chrome (plan/16: the palette and `?` filter the same
+// static table). One UTF-8 line per binding: "id\tmodes\tname\tkeys\n", where
+// modes is the mode_mask the binding is live in and keys is its label
+// ("hold Z" for a momentary key, "hold Q" for a tap/hold's hold command).
+// Island-only and release commands are not listed. Bindings never cross the
+// C ABI; this goes to the shell's own island.
+[[nodiscard]] std::string describe_commands();
 
 }  // namespace mv::shell

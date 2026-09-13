@@ -264,6 +264,7 @@ public static partial class IslandHost
             HorizontalScrollMode = ScrollMode.Disabled,
             VerticalScrollMode = ScrollMode.Enabled,
         };
+        _galleryScroll.CharacterReceived += OnTypeahead;  // plan/16 typeahead
         _galleryScroll.KeyDown += (_, e) =>
         {
             switch (e.Key)

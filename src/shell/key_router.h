@@ -31,6 +31,7 @@ struct view_state {
   bool slideshow = false;
   bool fullscreen = false;
   bool loupe_held = false;  // Z is down: arrows nudge the loupe
+  bool popup_open = false;  // `?`, palette, go-to or find flyout is up
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 9
 };
@@ -42,6 +43,7 @@ struct view_state {
 enum class back_target : std::uint8_t {
   none,
   blur_text,
+  popup,
   crop,
   pane,
   gallery,

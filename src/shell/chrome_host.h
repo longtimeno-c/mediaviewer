@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <string>
 
 #include "core/result.h"
 #include "shell/commands.h"
@@ -39,7 +40,30 @@ enum chrome_command : int {
   chrome_cmd_video_active = 18,      // arg != 0 while a clip is open: show the transport
   chrome_cmd_set_rate = 19,          // arg is the playback rate the dropdown picked
   chrome_cmd_focus_changed = 20,     // arg is a focus_kind (key_router.h): which island, or text
+  // Island notifications added after the command table filled the low ids
+  // live above every command id, so the two ranges never meet.
+  chrome_cmd_popup = 1000,           // arg != 0 while a `?` / palette / go-to / find flyout is up
 };
+
+static_assert(chrome_cmd_popup >= kCommandCount);
+
+// Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
+enum class chrome_popup : std::int32_t { close = 0, help = 1, palette = 2, go_to = 3, find = 4 };
+
+struct chrome_popup_args {
+  std::int32_t kind;       // chrome_popup
+  std::int32_t mode_mask;  // `?` lists the bindings live in these modes
+};
+
+static_assert(sizeof(chrome_popup_args) == 8, "keep in sync with ChromePopupArgs");
+
+struct chrome_table_args {
+  std::uint64_t utf8;  // describe_commands() text, valid for the call only
+  std::int32_t length;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_table_args) == 16, "keep in sync with ChromeTableArgs");
 
 // Commands and island notifications share one id space (plan/16). These pin
 // the values the island already sends; commands.h reserves the notifications.
@@ -74,7 +98,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_prev, chrome_cmd_next, chrome_cmd_open_folder, chrome_cmd_toggle_gallery,
       chrome_cmd_close_gallery, chrome_cmd_gallery_activate, chrome_cmd_set_settings,
       chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
-      chrome_cmd_set_rate, chrome_cmd_focus_changed};
+      chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -274,6 +298,12 @@ class chrome_host {
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
 
+  // The command table for `?` and the palette (describe_commands). Once at attach.
+  void set_command_table(const std::string& utf8) noexcept;
+
+  // Opens a flyout on the command bar, or closes any (chrome_popup::close).
+  void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
+
   // True when the island consumed the message (do not Translate/Dispatch).
   [[nodiscard]] bool pre_translate(MSG* msg) noexcept;
 
@@ -317,6 +347,8 @@ class chrome_host {
   chrome_entry_fn detach_transport_ = nullptr;
   chrome_entry_fn apply_settings_ = nullptr;
   chrome_entry_fn apply_rate_ = nullptr;
+  chrome_entry_fn set_command_table_ = nullptr;
+  chrome_entry_fn show_popup_ = nullptr;
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool filmstrip_attached_ = false;

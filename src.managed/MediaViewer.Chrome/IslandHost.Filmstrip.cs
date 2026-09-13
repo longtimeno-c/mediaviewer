@@ -267,6 +267,7 @@ public static partial class IslandHost
             VerticalScrollMode = ScrollMode.Disabled,
         };
         var scroll = _filmstripScroll;
+        scroll.CharacterReceived += OnTypeahead;  // plan/16 typeahead
         scroll.KeyDown += (_, e) =>
         {
             if (e.Key == Windows.System.VirtualKey.Left) { Send(Command.Prev); e.Handled = true; }

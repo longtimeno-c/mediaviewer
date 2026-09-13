@@ -40,6 +40,8 @@ view_settings load_view_settings() noexcept {
   settings.filmstrip_for_image =
       ::GetPrivateProfileIntW(kSection, L"filmstrip_for_image",
                               settings.filmstrip_for_image ? 1 : 0, path.c_str()) != 0;
+  settings.wrap =
+      ::GetPrivateProfileIntW(kSection, L"wrap", settings.wrap ? 1 : 0, path.c_str()) != 0;
   return settings;
 }
 
@@ -146,6 +148,7 @@ void save_view_settings(const view_settings& settings) noexcept {
                                settings.filmstrip_for_folder ? L"1" : L"0", path.c_str());
   ::WritePrivateProfileStringW(kSection, L"filmstrip_for_image",
                                settings.filmstrip_for_image ? L"1" : L"0", path.c_str());
+  ::WritePrivateProfileStringW(kSection, L"wrap", settings.wrap ? L"1" : L"0", path.c_str());
 }
 
 }  // namespace mv::shell

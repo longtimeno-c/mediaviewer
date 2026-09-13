@@ -21,6 +21,8 @@ mode resolve_mode(const view_state& s) noexcept {
 
 back_target resolve_back(const view_state& s) noexcept {
   if (s.focus == focus_kind::text) return back_target::blur_text;
+  // A `?` / palette / go-to / find flyout closes before anything under it.
+  if (s.popup_open) return back_target::popup;
   // 6f: an open `?` / palette flyout must close before anything below. It
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.
