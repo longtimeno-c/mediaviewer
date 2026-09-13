@@ -69,6 +69,9 @@ struct input_snapshot {
   std::uint32_t item_index = 0;
   std::uint32_t item_count = 0;
   char item_name[260] = {};     // UTF-8, NUL-terminated
+  // Marks (plan/16): whether the current item is marked, and how many are.
+  bool item_marked = false;
+  std::uint32_t marked_count = 0;
 
   bool window_visible = true;
   bool window_active = true;

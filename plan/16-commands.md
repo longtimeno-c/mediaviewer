@@ -157,6 +157,16 @@ Copy/move never overwrite an original. Collision: `name (2).ext`. Destinations r
 (last five) in settings. This is FastStone's culling loop and it is why a viewer replaces a
 file manager for a card dump.
 
+`Delete` only ever uses the Recycle Bin. On a location without one (a network share, some
+removable drives, the bin turned off) the item is **refused, not deleted**, and the user is told
+how many; there is no silent permanent delete. Marks clear only for items that succeeded.
+
+**Opening (argv, drop, PR 6).** The first entry that exists wins: a folder opens that folder; a file
+opens its folder with that file selected. One folder dropped opens it; several files from one
+folder open it on the first; a mixed drop opens the first file's folder. If nothing exists, nothing
+opens and the app beeps. A watcher refresh keeps the current item selected; if it was removed the
+next one slides into its place (the previous one at the end).
+
 ### Rate (PR 11)
 
 | Key | Command |

@@ -32,7 +32,10 @@
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "shell/chrome_host.h"
+#include "shell/file_jobs.h"
 #include "shell/key_router.h"
+#include "shell/marks.h"
+#include "shell/open_request.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
 #include "shell/av_soak.h"
@@ -103,6 +106,12 @@ struct app_state {
   bool topmost = false;  // Ctrl+Shift+A
   bool fullscreen_reveal = false;  // strips shown over a fullscreen canvas for a while
   ULONGLONG zoom_intent_tick = 0;  // GetTickCount64 of the last zoom-in style command
+  // plan/16 marks, copy, move. Marks are UI-thread state keyed by path; the
+  // file work runs on files' own I/O worker and reports back by message.
+  mv::shell::mark_set marks;
+  mv::shell::file_jobs files;
+  std::vector<std::string> destinations;  // F7 / F8, most recent first
+  std::uint64_t folder_token = 0;         // bumped per folder open
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -136,6 +145,7 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   uint64_t job_id = 0;
   (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
                        &job_id);
+  ++app->folder_token;
   ++app->input.activity_seq;
   publish(app);
   apply_view_state(app);
@@ -167,6 +177,37 @@ void open_path(app_state* app, std::wstring_view wide_path) {
 }
 
 void open_media(app_state* app, std::wstring_view wide_path) { open_path(app, wide_path); }
+
+// argv and drag-and-drop (plan/16): the first entry that exists wins — a folder
+// opens, a file opens its folder with that file selected (open_request.h).
+// The attribute probe is the same one-stat-per-path open_path already makes.
+void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
+  if (!app) return;
+  std::vector<mv::shell::path_probe> probes;
+  probes.reserve(raw.size());
+  for (const auto& r : raw) {
+    mv::shell::path_probe probe;
+    probe.path = mv::shell::normalize_open_path(r);
+    if (probe.path.empty()) continue;
+    const DWORD attr = ::GetFileAttributesW(probe.path.c_str());
+    probe.exists = attr != INVALID_FILE_ATTRIBUTES;
+    probe.is_directory = probe.exists && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    probes.push_back(std::move(probe));
+  }
+  const auto request = mv::shell::resolve_open(probes);
+  switch (request.kind) {
+    case mv::shell::open_kind::folder:
+    case mv::shell::open_kind::file:
+      open_path(app, request.path);
+      return;
+    case mv::shell::open_kind::missing:
+      MV_LOG_WARN("open: none of the %zu requested paths exists", raw.size());
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    case mv::shell::open_kind::none:
+      return;
+  }
+}
 
 bool pick_folder(HWND hwnd, std::wstring& out) {
   IFileOpenDialog* dlg = nullptr;
@@ -224,6 +265,49 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   open_folder(app, folder, {});
 }
 
+// The folder item's full path, UTF-8, or empty. UI thread; a copy out of the
+// folder model, no I/O.
+std::string item_path_at(app_state* app, std::uint32_t index) {
+  if (!app || !app->session) return {};
+  char stack_buf[1024];
+  std::uint32_t bytes = 0;
+  if (mv_folder_item_path(app->session, index, stack_buf, sizeof(stack_buf), &bytes) != MV_OK) {
+    return {};
+  }
+  if (bytes < sizeof(stack_buf)) {
+    stack_buf[sizeof(stack_buf) - 1] = '\0';
+    return std::string(stack_buf);
+  }
+  // A long path: ask again with room for it.
+  std::string out(static_cast<std::size_t>(bytes) + 1, '\0');
+  if (mv_folder_item_path(app->session, index, out.data(), bytes + 1, &bytes) != MV_OK) return {};
+  out.resize(std::char_traits<char>::length(out.c_str()));
+  return out;
+}
+
+std::string current_item_path(app_state* app) {
+  if (!app || !app->session) return {};
+  std::uint32_t count = 0;
+  std::uint32_t selected = 0;
+  if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return {};
+  if (mv_folder_selected(app->session, &selected) != MV_OK || selected >= count) return {};
+  return item_path_at(app, selected);
+}
+
+// The marked badge. Free when nothing is marked, so key-repeat navigation with
+// no marks does not look anything up.
+void refresh_mark_state(app_state* app) {
+  if (!app) return;
+  if (app->marks.empty()) {
+    app->input.item_marked = false;
+    app->input.marked_count = 0;
+    return;
+  }
+  const std::string current = current_item_path(app);
+  app->input.item_marked = !current.empty() && app->marks.contains(current);
+  app->input.marked_count = static_cast<std::uint32_t>(app->marks.size());
+}
+
 // The `O` line's name and position. UI thread, only while the overlay is on, so
 // key-repeat navigation with it off costs nothing extra. The render thread
 // reads the copy in the snapshot and never calls the folder model.
@@ -251,6 +335,7 @@ void folder_select(app_state* app, std::uint32_t index) {
   uint64_t job = 0;
   if (mv_folder_select(app->session, index, &job) == MV_OK) {
     refresh_item_info(app);
+    refresh_mark_state(app);
     // Navigation keeps a fullscreen reveal up; it hides once this settles.
     if (app->fullscreen_reveal && app->window) {
       ::SetTimer(app->window, kRevealTimerId, kRevealMs, nullptr);
@@ -440,6 +525,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
       refresh_item_info(app);
+      refresh_mark_state(app);
       apply_view_state(app);
       return;
     case mv::shell::chrome_cmd_focus_changed: {
@@ -636,6 +722,87 @@ void set_fullscreen_reveal(app_state* app, bool on) noexcept {
   apply_view_state(app);
 }
 
+// F7 / F8: marks if any, else the current item, to the last destination — or
+// the picker when there is none yet or Shift asked for one. The picker is the
+// only UI-thread part; the bytes move on the file-job worker.
+bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
+  if (!app || !app->window) return false;
+  auto targets = app->marks.targets(current_item_path(app));
+  if (targets.empty()) return false;
+  std::string dest;
+  if (!pick && !app->destinations.empty()) dest = app->destinations.front();
+  if (dest.empty()) {
+    std::wstring folder;
+    if (!pick_folder(app->window, folder)) return true;  // cancelled: nothing to do
+    dest = utf8_from_wide(folder);
+    if (dest.empty()) return true;
+  }
+  app->destinations = mv::shell::push_destination(std::move(app->destinations), dest);
+  mv::shell::save_destinations(app->destinations);
+  if (!app->files.submit(app->window, kind, std::move(targets), dest, app->folder_token)) {
+    MV_LOG_WARN("files: could not queue the job");
+    ::MessageBeep(MB_ICONWARNING);
+  }
+  return true;
+}
+
+// Delete: always the Recycle Bin, always asked first (plan/16). A location
+// with no bin is refused on the worker, never deleted permanently.
+bool start_recycle(app_state* app) {
+  if (!app || !app->window) return false;
+  auto targets = app->marks.targets(current_item_path(app));
+  if (targets.empty()) return false;
+  wchar_t text[160]{};
+  if (targets.size() == 1) {
+    (void)::swprintf_s(text, L"Move this item to the Recycle Bin?");
+  } else {
+    (void)::swprintf_s(text, L"Move %zu marked items to the Recycle Bin?", targets.size());
+  }
+  if (::MessageBoxW(app->window, text, L"Delete", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+    return true;
+  }
+  if (!app->files.submit(app->window, mv::shell::file_job_kind::recycle, std::move(targets), {},
+                         app->folder_token)) {
+    MV_LOG_WARN("files: could not queue the job");
+    ::MessageBeep(MB_ICONWARNING);
+  }
+  return true;
+}
+
+// A copy / move / delete finished. Counts only in logs and dialogs (rule 6).
+void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result> result) {
+  if (!app || !result || app->closing) return;
+  // Marks clear only for what succeeded; a failure keeps its mark to retry.
+  for (const auto& item : result->items) {
+    if (item.status == mv::status::ok && !item.refused) app->marks.erase(item.path);
+  }
+  refresh_mark_state(app);
+  refresh_item_info(app);
+  ++app->input.activity_seq;
+  publish(app);
+
+  const std::size_t total = result->items.size();
+  const std::size_t refused = result->refused();
+  const std::size_t failed = result->failed();
+  MV_LOG_INFO("files: kind=%u items=%zu ok=%zu failed=%zu refused=%zu",
+              static_cast<unsigned>(result->kind), total, result->succeeded(), failed, refused);
+  if (refused == 0 && failed == 0) return;
+  const wchar_t* verb = result->kind == mv::shell::file_job_kind::copy   ? L"copied"
+                        : result->kind == mv::shell::file_job_kind::move ? L"moved"
+                                                                         : L"deleted";
+  wchar_t text[320]{};
+  if (refused > 0) {
+    (void)::swprintf_s(text,
+                       L"%zu of %zu items are on a drive without a Recycle Bin and were not "
+                       L"deleted.%s",
+                       refused, total, failed > 0 ? L" Others could not be deleted either." : L"");
+  } else {
+    (void)::swprintf_s(text, L"%zu of %zu items could not be %s. They are still marked.", failed,
+                       total, verb);
+  }
+  ::MessageBoxW(app->window, text, L"MediaViewer", MB_OK | MB_ICONWARNING);
+}
+
 // Command effects. A switch over a dense enum is the jump table plan/16 asks
 // for. Returning false means "not applicable here" and sends the key on to the
 // island — Q/E on a still, or a command whose slice has not landed yet.
@@ -792,6 +959,37 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->input.info_overlay = !app->input.info_overlay;
       refresh_item_info(app);
       return set_level(app);
+    // Marks (plan/16): a set separate from the selection, keyed by path.
+    case toggle_mark: {
+      const std::string current = current_item_path(app);
+      if (current.empty()) return false;
+      (void)app->marks.toggle(current);
+      refresh_mark_state(app);
+      return set_level(app);
+    }
+    case mark_all: {
+      const std::uint32_t count = folder_count(app);
+      if (count == 0) return false;
+      std::vector<std::string> paths;
+      paths.reserve(count);
+      for (std::uint32_t i = 0; i < count; ++i) paths.push_back(item_path_at(app, i));
+      app->marks.mark_all(paths);
+      refresh_mark_state(app);
+      return set_level(app);
+    }
+    case unmark_all:
+      app->marks.clear();
+      refresh_mark_state(app);
+      return set_level(app);
+    case copy_to:
+    case copy_to_pick:
+      return start_transfer(app, mv::shell::file_job_kind::copy, command == copy_to_pick);
+    case move_to:
+    case move_to_pick:
+      return start_transfer(app, mv::shell::file_job_kind::move, command == move_to_pick);
+    case delete_to_recycle_bin:
+      return start_recycle(app);
+
     // Host-side and cheap (plan/16): photographers park the viewer on a
     // second monitor.
     case always_on_top:
@@ -1060,12 +1258,26 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_DROPFILES: {
+      // Every dropped entry, at any path length; open_paths picks the first
+      // that exists (plan/16).
       auto drop = reinterpret_cast<HDROP>(wparam);
-      wchar_t path[MAX_PATH]{};
-      if (::DragQueryFileW(drop, 0, path, MAX_PATH) > 0) open_media(app, path);
+      const UINT count = ::DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      std::vector<std::wstring> paths;
+      for (UINT i = 0; i < count && i < 256; ++i) {
+        const UINT len = ::DragQueryFileW(drop, i, nullptr, 0);
+        if (len == 0) continue;
+        std::wstring path(len, L'\0');
+        if (::DragQueryFileW(drop, i, path.data(), len + 1) == len) paths.push_back(std::move(path));
+      }
       ::DragFinish(drop);
+      open_paths(app, paths);
       return 0;
     }
+
+    case mv::shell::kFileJobDoneMessage:
+      on_file_job_done(app, std::unique_ptr<mv::shell::file_job_result>(
+                                reinterpret_cast<mv::shell::file_job_result*>(lparam)));
+      return 0;
 
     case WM_TIMER:
       if (wparam == kRevealTimerId) {
@@ -1131,7 +1343,7 @@ void enable_dark_titlebar(HWND hwnd) noexcept {
   (void)::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
-bool parse_options(lab_options& options, std::wstring& open_path, bool& chrome_enabled,
+bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, bool& chrome_enabled,
                    std::wstring& error) {
   int argc = 0;
   LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
@@ -1175,11 +1387,15 @@ bool parse_options(lab_options& options, std::wstring& open_path, bool& chrome_e
     } else if (arg == L"--static") {
       static_requested = true;
     } else if (arg == L"--open") {
-      next(open_path);
+      std::wstring value;
+      next(value);
+      if (ok) open_paths.push_back(std::move(value));
     } else if (arg == L"--no-chrome") {
       chrome_enabled = false;
     } else if (!arg.empty() && arg[0] != L'-') {
-      open_path = std::wstring(arg);
+      // Every positional path: Explorer's "Open" with several files passes
+      // them all. open_paths decides (plan/16).
+      open_paths.emplace_back(arg);
     } else {
       error = L"unrecognised argument: " + std::wstring(arg);
       ok = false;
@@ -1204,15 +1420,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   lab_options options;
   std::wstring parse_error;
-  std::wstring open_path;
+  std::vector<std::wstring> requested_paths;
   bool chrome_enabled = true;
-  if (!parse_options(options, open_path, chrome_enabled, parse_error)) {
+  if (!parse_options(options, requested_paths, chrome_enabled, parse_error)) {
     ::MessageBoxW(nullptr, parse_error.c_str(), kWindowTitle, MB_ICONERROR | MB_OK);
     return 2;
   }
 
   if (options.av_soak_seconds) {
-    const auto clip = utf8_from_wide(open_path);
+    const auto clip = utf8_from_wide(requested_paths.empty() ? std::wstring_view{}
+                                                             : std::wstring_view{requested_paths.front()});
     const auto csv = utf8_from_wide(options.av_csv);
     return mv::shell::run_av_soak({clip.c_str(), options.av_soak_seconds, csv.c_str()});
   }
@@ -1225,6 +1442,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app_state app;
   app.chrome_enabled = chrome_enabled;
   app.settings = mv::shell::load_view_settings();
+  app.destinations = mv::shell::load_destinations();
+  if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
   mv_session_config config{};
   config.worker_count = 0;
   config.enable_etw = 1;
@@ -1285,7 +1504,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ++app.input.resize_seq;
     publish(&app);
   }
-  if (!open_path.empty()) open_media(&app, open_path);
+  if (!requested_paths.empty()) open_paths(&app, requested_paths);
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -1311,6 +1530,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     }
   }
 
+  // The window is gone: a job finishing now posts to nobody and frees its own
+  // result. Queued-but-unstarted jobs are dropped with the process.
+  app.files.stop();
   app.lab.stop();
   const int code = app.lab.exit_code();
 

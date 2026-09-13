@@ -461,10 +461,16 @@ void present_lab::render_thread_main() noexcept {
       const auto flags = static_cast<std::uint8_t>(
           (snapshot.background & 0x3) | (snapshot.sticky_zoom ? 0x4 : 0) |
           (snapshot.clipping ? 0x8 : 0) | (snapshot.loupe ? 0x10 : 0) |
-          (snapshot.hold_previous ? 0x20 : 0) | (snapshot.info_overlay ? 0x40 : 0));
+          (snapshot.hold_previous ? 0x20 : 0) | (snapshot.info_overlay ? 0x40 : 0) |
+          (snapshot.item_marked ? 0x80 : 0));
       if (flags != seen_view_flags_ || snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
-          snapshot.loupe_steps_y != seen_loupe_steps_y_) {
+          snapshot.loupe_steps_y != seen_loupe_steps_y_ ||
+          snapshot.marked_count != seen_marked_count_ ||
+          snapshot.item_index != seen_item_index_ || snapshot.item_count != seen_item_count_) {
         seen_view_flags_ = flags;
+        seen_marked_count_ = snapshot.marked_count;
+        seen_item_index_ = snapshot.item_index;
+        seen_item_count_ = snapshot.item_count;
         seen_loupe_steps_x_ = snapshot.loupe_steps_x;
         seen_loupe_steps_y_ = snapshot.loupe_steps_y;
         redraw = true;  // one frame for a toggle or a nudge; idle again after
@@ -800,6 +806,15 @@ void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
                 0, 1.5f * scale);
   }
   if (show_previous) label(view.x + pad, view.y + pad, "\\  previous");
+
+  // Marks are visible without the mouse and without O (PR 6 verify: "mark").
+  if (snapshot.marked_count > 0) {
+    char marks[64];
+    std::snprintf(marks, sizeof(marks), "%s%u marked", snapshot.item_marked ? "[marked]  " : "",
+                  snapshot.marked_count);
+    const ImVec2 size = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, marks);
+    label(view.x + view.w - size.x - pad, view.y + pad, marks);
+  }
 
   if (snapshot.info_overlay) {
     char line[400];

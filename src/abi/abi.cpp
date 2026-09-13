@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "abi/folder_reselect.h"
 #include "abi/guard.h"
 #include "abi/native.h"
 #include "abi/video_session.h"
@@ -596,9 +597,15 @@ void submit_prefetch(mv_session* session, uint32_t index, mv::generation gen) {
 void apply_folder_list(mv_session* session, std::vector<mv::io::dir_entry> listed,
                        bool changed) {
   std::string want;
+  std::string previous_path;
+  uint32_t previous_index = 0;
   {
     std::lock_guard lock(session->folder_mutex);
     want = session->folder_select_path;
+    previous_index = session->folder_selected;
+    if (changed && previous_index < session->folder_items.size()) {
+      previous_path = session->folder_items[previous_index].path;
+    }
     session->folder_items.clear();
     session->folder_items.reserve(listed.size());
     for (auto& e : listed) {
@@ -609,15 +616,12 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::dir_entry> liste
       it.mtime_unix = e.mtime_unix;
       session->folder_items.push_back(std::move(it));
     }
-    session->folder_selected = 0;
-    if (!want.empty()) {
-      for (uint32_t i = 0; i < session->folder_items.size(); ++i) {
-        if (session->folder_items[i].path == want) {
-          session->folder_selected = i;
-          break;
-        }
-      }
-    }
+    // A watcher refresh keeps the item the user is on (or lets the next one
+    // slide in if it was removed); only a fresh open goes to `want`.
+    session->folder_selected = mv::abi::reselect(
+        session->folder_items,
+        [](const mv_session::folder_item& it) -> const std::string& { return it.path; }, changed,
+        previous_path, previous_index, want);
   }
   mv_completion c{};
   c.kind = changed ? MV_COMPLETION_FOLDER_CHANGED : MV_COMPLETION_FOLDER_READY;
@@ -640,7 +644,11 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::dir_entry> liste
   }
   if (!selected_path.empty()) {
     const mv::generation gen = session->jobs.current_generation();
-    submit_decode_to_lru(session, selected_path, gen);
+    // A file appearing beside the current one is not a reason to decode it
+    // again: re-publishing would refit the camera under the user.
+    if (!(changed && selected_path == previous_path)) {
+      submit_decode_to_lru(session, selected_path, gen);
+    }
     submit_prefetch(session, selected, gen);
   }
   push_folder_selected(session, selected);

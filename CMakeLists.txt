@@ -176,8 +176,12 @@ add_library(mv_io STATIC
   src/io/dir.h
   src/io/paths_win.cpp
   src/io/paths.h
+  src/io/collision_name.h
+  src/io/file_ops.h
+  src/io/file_ops_win.cpp
 )
-target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32)
+# ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
+target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
 add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
@@ -339,6 +343,11 @@ add_executable(mediaviewer_lab WIN32
   src/shell/commands.h
   src/shell/key_router.cpp
   src/shell/key_router.h
+  src/shell/file_jobs.cpp
+  src/shell/file_jobs.h
+  src/shell/marks.h
+  src/shell/open_request.cpp
+  src/shell/open_request.h
   src/shell/settings.cpp
   src/shell/settings.h
   src/shell/input_state.h
@@ -447,12 +456,20 @@ if(MV_BUILD_TESTS)
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_collision_name.cpp
+    tests/test_file_ops.cpp
+    tests/test_file_jobs.cpp
+    tests/test_folder_reselect.cpp
+    tests/test_marks.cpp
+    tests/test_open_request.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp
+    src/shell/file_jobs.cpp
+    src/shell/open_request.cpp
     src/shell/settings.cpp
     src/shell/app.manifest
   )

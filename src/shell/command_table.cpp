@@ -203,9 +203,6 @@ constexpr command_info kCommands[] = {
 // through to the island. Each slice deletes its rows here as it lands, and
 // this list is empty before PR 6 is proposed (6g).
 constexpr command_id kPending[] = {
-    // 6c
-    toggle_mark, mark_all, unmark_all, copy_to, copy_to_pick, move_to, move_to_pick,
-    delete_to_recycle_bin,
     // 6d
     slideshow_start, slideshow_pause, slideshow_faster, slideshow_slower, blackout, shuffle,
     // 6f

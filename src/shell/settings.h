@@ -9,7 +9,11 @@
 // user's files is written here (rule 6) — only the toggles below.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace mv::shell {
 
@@ -40,5 +44,20 @@ struct view_settings {
 // Never fails loudly: a missing or unreadable file is the defaults above.
 [[nodiscard]] view_settings load_view_settings() noexcept;
 void save_view_settings(const view_settings& settings) noexcept;
+
+// F7 / F8 destinations, most recent first, at most five (plan/16). UTF-8
+// folder paths the user picked; they stay in the local settings file.
+inline constexpr std::size_t kMaxDestinations = 5;
+// Read once at startup; the app keeps the list and writes it back when it
+// changes, so a keypress never reads the settings file.
+[[nodiscard]] std::vector<std::string> load_destinations() noexcept;
+void save_destinations(const std::vector<std::string>& list) noexcept;
+
+// Pure: the list after `utf8_dir` was used. Moves it to the front, drops an
+// earlier spelling of the same folder (Windows paths ignore ASCII case and a
+// trailing separator), and keeps at most `max`.
+[[nodiscard]] std::vector<std::string> push_destination(std::vector<std::string> list,
+                                                        std::string_view utf8_dir,
+                                                        std::size_t max = kMaxDestinations);
 
 }  // namespace mv::shell
