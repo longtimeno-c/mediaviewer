@@ -74,6 +74,9 @@ struct input_snapshot {
   std::uint32_t marked_count = 0;
   // Slideshow `.`: the canvas goes black and idles; nothing is drawn over it.
   bool blackout = false;
+  // An animated item: Space toggles play / pause, `,` `.` step (cumulative).
+  std::uint32_t anim_toggle_seq = 0;
+  std::int64_t anim_steps = 0;
 
   bool window_visible = true;
   bool window_active = true;

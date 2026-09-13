@@ -20,6 +20,7 @@
 
 #include "abi/native.h"
 #include "canvas/camera.h"
+#include "codec/anim.h"
 #include "core/spsc_ring.h"
 #include "gfx/blit.h"
 #include "gfx/video_blit.h"
@@ -45,6 +46,10 @@ struct lab_options {
   bool start_animating = false;
   bool overlay_visible = true;
 };
+
+// What the render thread is doing with an animated item, for the UI (Space,
+// `,` `.`) and the slideshow. `none` means the item is not an animation.
+enum class animation_state : std::uint8_t { none, playing, playing_forever, paused, finished };
 
 class present_lab {
  public:
@@ -90,6 +95,11 @@ class present_lab {
     return showing_still_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] The animated item's state, as of the last frame.
+  [[nodiscard]] animation_state animation() const noexcept {
+    return static_cast<animation_state>(anim_state_.load(std::memory_order_relaxed));
+  }
+
  private:
   void render_thread_main() noexcept;
   [[nodiscard]] expected rebuild_device() noexcept;
@@ -130,6 +140,21 @@ class present_lab {
   // here, so showing it is a draw of a texture already in VRAM — never a
   // second session or an mv_image_open.
   mv::abi::gpu_image_ptr previous_image_;
+  // Animation (plan/04): the current frame in its own slot, like current_video_
+  // — never current_image_, so hold-previous and the camera are not touched per
+  // frame. Frame 0 arrived as the still and fitted the camera once.
+  mv::abi::gpu_image_ptr anim_frame_;
+  codec::frame_schedule anim_schedule_;
+  std::uint32_t anim_generation_ = 0;
+  std::uint32_t anim_index_ = 0;
+  std::uint32_t seen_anim_toggle_seq_ = 0;
+  std::int64_t seen_anim_steps_ = 0;
+  bool anim_finished_ = false;
+  bool anim_seeking_ = false;  // take the next frame even though paused
+  bool anim_live_ = false;
+  // Review must-have A, on the instrument: how many times hold-previous's
+  // texture changed. Playing an animation must leave this where it was.
+  std::uint32_t previous_image_changes_ = 0;
   std::uint8_t seen_view_flags_ = 0;
   std::int32_t seen_loupe_steps_x_ = 0;
   std::int32_t seen_loupe_steps_y_ = 0;
@@ -144,6 +169,7 @@ class present_lab {
   std::atomic<bool> finished_{false};
   std::atomic<bool> view_fitted_{true};
   std::atomic<bool> showing_still_{false};
+  std::atomic<std::uint8_t> anim_state_{0};
   HANDLE wake_event_ = nullptr;
   HANDLE ready_event_ = nullptr;
   std::atomic<int> start_error_{0};

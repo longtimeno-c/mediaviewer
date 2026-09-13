@@ -184,6 +184,7 @@ expected present_lab::rebuild_device() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  anim_frame_.reset();
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
   device_.destroy();
@@ -374,7 +375,13 @@ void present_lab::render_thread_main() noexcept {
           // the same texture is not an advance.
           if (current_image_ && current_image_->texture.Get() != ready->texture.Get()) {
             previous_image_ = std::move(current_image_);
+            ++previous_image_changes_;
           }
+          // A new still is a new view (or a re-publish of this one): the
+          // animation frame on screen belongs to what was there before.
+          anim_frame_.reset();
+          anim_schedule_.reset();
+          anim_finished_ = false;
           current_image_.reset(ready);
           {
             const auto view = usable_canvas(snapshot);
@@ -410,6 +417,90 @@ void present_lab::render_thread_main() noexcept {
       const bool was_video_open = video_open_;
       video_open_ = mv::abi::video_open(session_);
       if (video_open_ != was_video_open) redraw = true;
+    }
+
+    // Animation (plan/04, PR 6). Frames come from the session's decode ring
+    // into anim_frame_ — never through the ready-image branch — so hold-previous
+    // keeps the last *item* and the camera is not refitted per frame.
+    if (session_) {
+      std::uint32_t anim_gen = 0;
+      (void)mv_session_current_generation(session_, &anim_gen);
+      if (anim_gen != anim_generation_) {
+        mv::abi::animation_retire(session_, anim_gen);
+        anim_generation_ = anim_gen;
+        anim_frame_.reset();
+        anim_schedule_.reset();
+        anim_finished_ = false;
+        anim_seeking_ = false;
+      }
+      const bool anim_open = current_image_ && !current_video_.texture &&
+                             mv::abi::animation_open(session_, anim_gen);
+      const auto now_ms = static_cast<std::uint64_t>(qpc_seconds(qpc_now()) * 1000.0);
+      // A frame more than two refreshes late restarts the cadence (and counts).
+      const auto slack_ms =
+          static_cast<std::uint32_t>(swapchain_.refresh_interval_seconds() * 2000.0) + 1;
+
+      if (snapshot.anim_toggle_seq != seen_anim_toggle_seq_) {
+        seen_anim_toggle_seq_ = snapshot.anim_toggle_seq;
+        if (anim_open) {
+          if (anim_finished_) {
+            // Space on a played-out animation plays it again from the start.
+            mv::abi::animation_seek(session_, 0);
+            anim_schedule_.reset();
+            anim_finished_ = false;
+          } else if (anim_schedule_.paused()) {
+            anim_schedule_.resume(now_ms);
+          } else {
+            anim_schedule_.pause(now_ms);
+          }
+        }
+        redraw = true;
+      }
+      if (snapshot.anim_steps != seen_anim_steps_) {
+        const std::int64_t steps = snapshot.anim_steps - seen_anim_steps_;
+        seen_anim_steps_ = snapshot.anim_steps;
+        if (anim_open) {
+          anim_schedule_.pause(now_ms);
+          if (steps < 0) {
+            mv::abi::animation_seek(session_, anim_index_ > 0 ? anim_index_ - 1 : 0);
+          } else if (anim_finished_) {
+            mv::abi::animation_seek(session_, 0);
+          }
+          anim_finished_ = false;
+          anim_seeking_ = true;
+        }
+        redraw = true;
+      }
+
+      if (anim_open && (anim_seeking_ || anim_schedule_.due(now_ms))) {
+        image::gpu_image* texture = nullptr;
+        std::uint32_t delay_ms = 0;
+        std::uint32_t index = 0;
+        if (mv::abi::take_animation_frame(session_, anim_gen, texture, delay_ms, index)) {
+          anim_frame_.reset(texture);
+          anim_index_ = index;
+          if (anim_seeking_) {
+            anim_schedule_.stepped(delay_ms);
+            anim_seeking_ = false;
+          } else {
+            anim_schedule_.shown(delay_ms, now_ms, slack_ms);
+          }
+          redraw = true;
+        }
+      }
+      if (anim_open && !anim_seeking_) {
+        anim_finished_ = mv::abi::animation_finished(session_, anim_gen);
+      }
+      // Presents while it plays (or while a step is on its way); paused or
+      // played out, the canvas idles like any still.
+      anim_live_ = anim_open && (anim_seeking_ || (!anim_schedule_.paused() && !anim_finished_));
+      const animation_state state =
+          !anim_open                     ? animation_state::none
+          : anim_schedule_.paused()      ? animation_state::paused
+          : anim_finished_               ? animation_state::finished
+          : mv::abi::animation_loops_forever(session_) ? animation_state::playing_forever
+                                                       : animation_state::playing;
+      anim_state_.store(static_cast<std::uint8_t>(state), std::memory_order_relaxed);
     }
 
     if (snapshot.fit_seq != seen_fit_seq_) {
@@ -546,7 +637,7 @@ void present_lab::render_thread_main() noexcept {
     // them on presents until C turns them off. Everything else here idles.
     const bool blinkies = snapshot.clipping && current_image_ != nullptr;
     const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
-                      pan_tail || blinkies;
+                      pan_tail || blinkies || anim_live_;
     live_presenting_ = live;
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || snapshot.window_active);
@@ -606,7 +697,8 @@ void present_lab::render_thread_main() noexcept {
       const bool first_video = !current_video_.texture;
       if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
         // A clip is not a burst: do not keep a 4K still pinned behind it.
-        current_image_.reset(); previous_image_.reset(); current_video_ = std::move(frame);
+        current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+        current_video_ = std::move(frame);
         if (first_video) {
           const auto view = usable_canvas(snapshot);
           camera_.fit(media_width(), media_height(), view.w, view.h, true);
@@ -646,8 +738,11 @@ void present_lab::render_thread_main() noexcept {
 
     const bool show_previous =
         snapshot.hold_previous && previous_image_ && previous_image_->srv && current_image_;
+    // The animation's current frame stands in for the still (same size), so the
+    // loupe, blinkies, grid and background all draw it.
     const image::gpu_image* shown =
-        show_previous ? previous_image_.get() : current_image_.get();
+        show_previous ? previous_image_.get()
+                      : (anim_frame_ && anim_frame_->srv ? anim_frame_.get() : current_image_.get());
     if (shown && shown->srv && !snapshot.blackout) {
       const auto view = usable_canvas(snapshot);
       D3D11_VIEWPORT vp{};
@@ -776,6 +871,7 @@ void present_lab::render_thread_main() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  anim_frame_.reset();
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
   device_.destroy();
@@ -978,6 +1074,18 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
     if (snapshot.clipping && current_image_) {
       ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
                          "blinkies on: presenting until C (plan/03 rule 4 exception)");
+    }
+    if (session_ && mv::abi::animation_open(session_, anim_generation_)) {
+      const auto anim_stats = mv::abi::animation_stats_now(session_);
+      // Review note B: worker uploads count against the pacing budget, so the
+      // cost and the late frames are on the instrument, not guessed at.
+      ImGui::Text("animation frame %u  ring %u/%u  upload %.2f ms  late %u  %s", anim_index_,
+                  anim_stats.queued, anim_stats.depth,
+                  static_cast<double>(anim_stats.last_upload_us) / 1000.0,
+                  anim_schedule_.late(),
+                  anim_schedule_.paused() ? "paused" : (anim_finished_ ? "finished" : "playing"));
+      ImGui::Text("hold-previous texture changes %u (steady while an animation plays)",
+                  previous_image_changes_);
     }
   }
 

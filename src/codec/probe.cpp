@@ -16,6 +16,14 @@ format_family probe(std::span<const std::uint8_t> header) noexcept {
   if (header.size() >= 2 && header[0] == 'B' && header[1] == 'M') {
     return format_family::bmp;
   }
+  if (header.size() >= 6 && (std::memcmp(header.data(), "GIF87a", 6) == 0 ||
+                             std::memcmp(header.data(), "GIF89a", 6) == 0)) {
+    return format_family::gif;
+  }
+  if (header.size() >= 12 && std::memcmp(header.data(), "RIFF", 4) == 0 &&
+      std::memcmp(header.data() + 8, "WEBP", 4) == 0) {
+    return format_family::webp;
+  }
   return format_family::unknown;
 }
 

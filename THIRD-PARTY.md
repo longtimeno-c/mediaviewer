@@ -20,7 +20,9 @@ added by the PR that adds the dependency.
 | [Dear ImGui](https://github.com/ocornut/imgui) | 1.92.8 | MIT | Static | Present lab and the F3 debug overlay only. Never shipped chrome (D1). |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | Static, tests only | Not in a shipped binary. |
 | [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo) | 3.2.0 | IJG / BSD-3 | Dynamic (vcpkg x64-windows) | JPEG decode. |
-| [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. |
+| [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. APNG frames are walked by MediaViewer and decoded by libspng. |
+| [giflib](https://sourceforge.net/projects/giflib/) | 6.1.3 | MIT | Dynamic (vcpkg x64-windows) | GIF decode, still and animated (PR 6). |
+| [libwebp](https://chromium.googlesource.com/webm/libwebp) | 1.6.0 | BSD-3 | Dynamic (vcpkg x64-windows) | WebP decode, still and animated, via libwebpdemux (PR 6, brought forward from PR 7). libwebpmux is linked into the test binary only. |
 | [Little CMS (lcms2)](https://github.com/mm2/Little-CMS) | 2.19.1 | MIT | Dynamic (vcpkg x64-windows) | ICC → linear Rec.709 → sRGB. No tone-map on display-referred sources (D6). |
 | zlib | 1.3.2 | Zlib | Dynamic | Transitive, via libspng. |
 | .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 15. |
@@ -39,7 +41,6 @@ is settled before it arrives, rather than discovered afterwards.
 | DirectXTex | MIT | Static | PR 4 |
 | **FFmpeg** | **LGPL-2.1+** | **Dynamic (DLL)** | PR 5a |
 | libtiff | libtiff (BSD-like) | Static | PR 7 |
-| libwebp | BSD-3 | Static | PR 7 |
 | **libheif** | **LGPL-3** | **Dynamic (DLL)** | PR 7 |
 | **libde265** | **LGPL-3** | **Dynamic (DLL)** | PR 7 |
 | libavif / dav1d | BSD-2 | Static | PR 7 |

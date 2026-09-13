@@ -188,6 +188,10 @@ add_library(mv::io ALIAS mv_io)
 # mv_codec — JPEG / PNG / BMP, magic-byte probe (plan/04)
 # ---------------------------------------------------------------------------
 find_package(JPEG REQUIRED)
+# PR 6: animated GIF / WebP (plan/12 2026-09-13, resequenced from PR 7).
+# giflib is MIT, libwebp BSD-3: both permissive, dynamic in the x64-windows triplet.
+find_package(GIF REQUIRED)
+find_package(WebP CONFIG REQUIRED)
 find_package(spng CONFIG REQUIRED)
 if(TARGET spng::spng)
   set(MV_SPNG_TARGET spng::spng)
@@ -203,13 +207,19 @@ add_library(mv_codec STATIC
   src/codec/jpeg.cpp
   src/codec/png.cpp
   src/codec/bmp.cpp
+  src/codec/anim.cpp
+  src/codec/anim.h
+  src/codec/apng.cpp
+  src/codec/apng.h
+  src/codec/gif.cpp
+  src/codec/webp.cpp
   src/codec/decode.h
   src/codec/format.h
   src/codec/raster.h
 )
 target_link_libraries(mv_codec
   PUBLIC mv_core
-  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux)
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
@@ -464,6 +474,9 @@ if(MV_BUILD_TESTS)
     tests/test_marks.cpp
     tests/test_open_request.cpp
     tests/test_slideshow.cpp
+    tests/test_anim.cpp
+    tests/test_gif_webp.cpp
+    tests/test_animation_session.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
@@ -485,6 +498,10 @@ if(MV_BUILD_TESTS)
     mediaviewer_core
     JPEG::JPEG
     ${MV_SPNG_TARGET}
+    GIF::GIF
+    WebP::webp
+    WebP::webpdemux
+    WebP::libwebpmux  # tests only: WebPAnimEncoder builds animated fixtures
     lcms2::lcms2
     Catch2::Catch2WithMain
     ole32

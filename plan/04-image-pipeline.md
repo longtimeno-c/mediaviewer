@@ -166,7 +166,7 @@ only — does not disable prefetch or the generation counter ([16-commands.md](1
 ## Animation (GIF/APNG/WebP/animated AVIF/HEIC sequences)
 
 Treat as a mini video: decode frames ahead into a small ring, present on the render thread against
-QPC time with per-frame delays honored (clamp `delay < 20 ms` to 100 ms, matching browser behavior
+QPC time with per-frame delays honored (treat a delay of 10 ms or less as 100 ms, as Chromium and Firefox do — plan/12 2026-09-13, matching browser behavior
 for legacy GIFs). Loop counts respected. Scrubbable. When the current item is animated, **Space
 is play/pause** and `,` `.` step frames — same commands as video
 ([16-commands.md](16-commands.md)). TIFF pages, ICO sizes, and HEIC sequences are

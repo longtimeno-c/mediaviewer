@@ -57,6 +57,7 @@ bool still_extension(std::wstring_view name) noexcept {
   }
   return std::wcscmp(ext, L".jpg") == 0 || std::wcscmp(ext, L".jpeg") == 0 ||
          std::wcscmp(ext, L".png") == 0 || std::wcscmp(ext, L".bmp") == 0 ||
+         std::wcscmp(ext, L".gif") == 0 || std::wcscmp(ext, L".webp") == 0 ||
          std::wcscmp(ext, L".mp4") == 0 || std::wcscmp(ext, L".mov") == 0 ||
          std::wcscmp(ext, L".mkv") == 0 || std::wcscmp(ext, L".webm") == 0 ||
          std::wcscmp(ext, L".avi") == 0 || std::wcscmp(ext, L".ts") == 0 || std::wcscmp(ext, L".m4v") == 0;

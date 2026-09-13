@@ -265,7 +265,7 @@ void open_file_dialog(app_state* app, HWND hwnd) {
   ofn.hwndOwner = hwnd;
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts\0All files\0*.*\0";
+  ofn.lpstrFilter = L"Photos and video\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.ts\0All files\0*.*\0";
   ofn.nFilterIndex = 1;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
   if (::GetOpenFileNameW(&ofn)) open_path(app, file);
@@ -644,6 +644,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
     }
   }
   if (video_mode(app)) s.item = mv::shell::item_kind::clip;
+  else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
   s.fullscreen = app->fullscreen;
@@ -746,6 +747,18 @@ void slideshow_tick(app_state* app) noexcept {
       case MV_PLAY_PAUSED:  current = media::paused; break;
       case MV_PLAY_ENDED:   current = media::finished; break;
       default:              current = media::opening; break;  // async open, no frame yet
+    }
+  }
+  if (!clip_open) {
+    // Review note 33: a finite animation advances once it has played out; one
+    // that loops forever goes on the interval (media::none).
+    switch (app->lab.animation()) {
+      case mv::shell::animation_state::playing:  current = media::playing; break;
+      case mv::shell::animation_state::paused:   current = media::paused; break;
+      case mv::shell::animation_state::finished: current = media::finished; break;
+      case mv::shell::animation_state::playing_forever:
+      case mv::shell::animation_state::none:
+        break;
     }
   }
   const ULONGLONG elapsed = now - app->show_last_advance;
@@ -988,6 +1001,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case reset_stats: return bump(app->input.reset_stats_seq);
 
     case play_pause: {
+      // plan/16: on an animation Space plays and pauses it, like a clip.
+      if (app->lab.animation() != mv::shell::animation_state::none) {
+        ++app->input.anim_toggle_seq;
+        return set_level(app);
+      }
       std::uint32_t state = MV_PLAY_STOPPED;
       (void)mv_video_state(app->session, &state);
       if (state == MV_PLAY_PLAYING) (void)mv_video_pause(app->session);
@@ -1001,8 +1019,14 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->skim_tick_ms = 0;
       (void)skim(app, (command == jump_forward ? 1 : -1) * kTransportStepNs, true);
       return true;
-    case frame_back: (void)mv_video_step(app->session, -1); return true;
-    case frame_forward: (void)mv_video_step(app->session, 1); return true;
+    case frame_back:
+    case frame_forward:
+      if (app->lab.animation() != mv::shell::animation_state::none) {
+        app->input.anim_steps += command == frame_forward ? 1 : -1;
+        return set_level(app);
+      }
+      (void)mv_video_step(app->session, command == frame_forward ? 1 : -1);
+      return true;
     // Q/E tap: one rung of the speed ladder.
     case rate_down:
     case rate_up:

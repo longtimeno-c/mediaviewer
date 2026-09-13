@@ -564,6 +564,25 @@ cheat sheet and `Ctrl+K` palette (PR 6) are XAML flyouts as [16](16-commands.md)
 font, or accessibility (screen reader) support, it moves to a tiny island. The EXIF exposure
 triangle in PR 8 is the likely trigger.
 
+## 2026-09-13 — giflib and libwebp land in PR 6, not PR 7; browser delay clamp
+
+**Why.** PR 6's roadmap entry and verify line already require animated GIF / APNG / WebP "on the
+QPC frame clock" with "animation timing matches a browser", but no GIF decoder existed and
+libwebp was listed for PR 7. The user approved bringing both into PR 6 (2026-09-13).
+
+**What moves.** giflib (MIT) and libwebp (BSD-3, with libwebpdemux) are linked in PR 6, dynamic in
+the vcpkg x64-windows triplet like the other decoders. Still WebP arrives with them. PR 7 keeps the
+broken-file corpus and the per-decoder fuzz harnesses for both. APNG needs no library: the
+animation chunks are walked in-tree and each frame goes back through libspng.
+
+**Delay clamp.** [04](04-image-pipeline.md) said "clamp `delay < 20 ms` to 100 ms". Chromium and
+Firefox treat **10 ms or less** as 100 ms. For GIF's centisecond delays the rules agree; for
+APNG / WebP millisecond delays of 11–19 ms they do not, and the verify line compares against a
+browser, so the browser rule wins. Tested at 0 / 10 / 11 / 19 / 20 ms.
+
+**How it gets reversed.** Only if PR 7's fuzzing finds either library unsafe to keep; then the
+format waits for a replacement rather than for PR 7's schedule.
+
 ## Still open
 
 | Question | Blocks | Notes |

@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// GIF and WebP decode, still and animated. Fixtures are encoded in the test
+// with giflib's and libwebp's own encoders, so no binary corpus lives in git.
+#include <catch2/catch_test_macros.hpp>
+
+#include <gif_lib.h>
+#include <webp/encode.h>
+#include <webp/mux.h>
+
+#include <array>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <vector>
+
+#include "codec/decode.h"
+
+using namespace mv::codec;
+
+namespace {
+
+// --- GIF fixtures ---------------------------------------------------------
+
+struct gif_writer {
+  std::vector<std::uint8_t> bytes;
+};
+
+int write_gif(GifFileType* gif, const GifByteType* data, int len) {
+  auto* w = static_cast<gif_writer*>(gif->UserData);
+  w->bytes.insert(w->bytes.end(), data, data + len);
+  return len;
+}
+
+struct gif_frame_spec {
+  int left = 0;
+  int top = 0;
+  int width = 2;
+  int height = 2;
+  std::uint8_t index = 1;  // palette: 0 black, 1 red, 2 green, 3 blue
+  int delay_cs = 0;
+  int disposal = DISPOSAL_UNSPECIFIED;
+  int transparent = NO_TRANSPARENT_COLOR;
+};
+
+std::vector<std::uint8_t> make_gif(const std::vector<gif_frame_spec>& frames, int loops,
+                                   int screen = 2) {
+  gif_writer w;
+  int error = 0;
+  GifFileType* gif = EGifOpen(&w, write_gif, &error);
+  REQUIRE(gif != nullptr);
+  EGifSetGifVersion(gif, true);
+  const std::array<GifColorType, 4> colours = {
+      GifColorType{0, 0, 0}, GifColorType{255, 0, 0}, GifColorType{0, 255, 0},
+      GifColorType{0, 0, 255}};
+  ColorMapObject* map = GifMakeMapObject(4, colours.data());
+  REQUIRE(EGifPutScreenDesc(gif, screen, screen, 2, 0, map) == GIF_OK);
+  if (loops >= 0) {
+    REQUIRE(EGifPutExtensionLeader(gif, APPLICATION_EXT_FUNC_CODE) == GIF_OK);
+    REQUIRE(EGifPutExtensionBlock(gif, 11, "NETSCAPE2.0") == GIF_OK);
+    const std::array<std::uint8_t, 3> loop = {1, static_cast<std::uint8_t>(loops & 0xFF),
+                                              static_cast<std::uint8_t>(loops >> 8)};
+    REQUIRE(EGifPutExtensionBlock(gif, 3, loop.data()) == GIF_OK);
+    REQUIRE(EGifPutExtensionTrailer(gif) == GIF_OK);
+  }
+  for (const auto& f : frames) {
+    GraphicsControlBlock gcb{};
+    gcb.DisposalMode = f.disposal;
+    gcb.UserInputFlag = false;
+    gcb.DelayTime = f.delay_cs;
+    gcb.TransparentColor = f.transparent;
+    GifByteType ext[4];
+    const auto n = EGifGCBToExtension(&gcb, ext);
+    REQUIRE(EGifPutExtension(gif, GRAPHICS_EXT_FUNC_CODE, static_cast<int>(n), ext) == GIF_OK);
+    REQUIRE(EGifPutImageDesc(gif, f.left, f.top, f.width, f.height, false, nullptr) == GIF_OK);
+    std::vector<GifByteType> row(static_cast<std::size_t>(f.width), f.index);
+    for (int y = 0; y < f.height; ++y) REQUIRE(EGifPutLine(gif, row.data(), f.width) == GIF_OK);
+  }
+  REQUIRE(EGifCloseFile(gif, &error) == GIF_OK);
+  GifFreeMapObject(map);
+  return w.bytes;
+}
+
+std::array<std::uint8_t, 4> pixel(const std::vector<std::uint8_t>& rgba, std::uint32_t width,
+                                  std::uint32_t x, std::uint32_t y) {
+  const std::size_t i = (static_cast<std::size_t>(y) * width + x) * 4;
+  return {rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]};
+}
+
+// --- WebP fixtures --------------------------------------------------------
+
+std::vector<std::uint8_t> make_animated_webp(int loops) {
+  WebPAnimEncoderOptions options;
+  REQUIRE(WebPAnimEncoderOptionsInit(&options));
+  options.anim_params.loop_count = loops;
+  WebPAnimEncoder* encoder = WebPAnimEncoderNew(2, 2, &options);
+  REQUIRE(encoder != nullptr);
+  WebPConfig config;
+  REQUIRE(WebPConfigInit(&config));
+  config.lossless = 1;
+  WebPPicture picture;
+  REQUIRE(WebPPictureInit(&picture));
+  picture.width = 2;
+  picture.height = 2;
+  picture.use_argb = 1;
+  REQUIRE(WebPPictureAlloc(&picture));
+  for (int i = 0; i < 4; ++i) picture.argb[i] = 0xFFFF0000u;  // red
+  REQUIRE(WebPAnimEncoderAdd(encoder, &picture, 0, &config));
+  for (int i = 0; i < 4; ++i) picture.argb[i] = 0xFF0000FFu;  // blue
+  REQUIRE(WebPAnimEncoderAdd(encoder, &picture, 5, &config));    // red lasted 5 ms
+  REQUIRE(WebPAnimEncoderAdd(encoder, nullptr, 205, nullptr));    // blue lasts 200 ms
+  WebPData assembled;
+  WebPDataInit(&assembled);
+  REQUIRE(WebPAnimEncoderAssemble(encoder, &assembled));
+  std::vector<std::uint8_t> out(assembled.bytes, assembled.bytes + assembled.size);
+  WebPDataClear(&assembled);
+  WebPAnimEncoderDelete(encoder);
+  WebPPictureFree(&picture);
+  return out;
+}
+
+std::vector<std::uint8_t> make_still_webp() {
+  const std::array<std::uint8_t, 16> rgba = {0, 255, 0, 255, 0, 255, 0, 255,
+                                             0, 255, 0, 255, 0, 255, 0, 255};
+  std::uint8_t* encoded = nullptr;
+  const std::size_t size = WebPEncodeLosslessRGBA(rgba.data(), 2, 2, 8, &encoded);
+  REQUIRE(size > 0);
+  std::vector<std::uint8_t> out(encoded, encoded + size);
+  WebPFree(encoded);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("GIF and WebP are recognised by magic bytes", "[codec][gif][webp]") {
+  const auto gif = make_gif({gif_frame_spec{}}, -1);
+  REQUIRE(probe(gif) == format_family::gif);
+  REQUIRE(probe(make_still_webp()) == format_family::webp);
+  const std::array<std::uint8_t, 12> riff_wave = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E'};
+  REQUIRE(probe(riff_wave) == format_family::unknown);
+}
+
+TEST_CASE("an animated GIF composites frames with disposal, delays and loops",
+          "[codec][gif]") {
+  gif_frame_spec red;  // full canvas, restored to background afterwards
+  red.delay_cs = 0;
+  red.disposal = DISPOSE_BACKGROUND;
+  gif_frame_spec blue;
+  blue.left = 1;
+  blue.top = 1;
+  blue.width = 1;
+  blue.height = 1;
+  blue.index = 3;
+  blue.delay_cs = 2;
+  const auto bytes = make_gif({red, blue}, 3);
+
+  auto anim = decode_animation(bytes);
+  REQUIRE(anim);
+  REQUIRE(anim->format == format_family::gif);
+  REQUIRE(anim->width == 2);
+  REQUIRE(anim->loops == 3);
+  REQUIRE(anim->frames.size() == 2);
+  REQUIRE(anim->delays_ms == std::vector<std::uint32_t>{100, 20});  // 0 cs clamps like a browser
+  REQUIRE(pixel(anim->frames[0], 2, 0, 0) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
+  // Frame 0 was restored to background (transparent), then blue drawn at 1,1.
+  REQUIRE(pixel(anim->frames[1], 2, 0, 0) == std::array<std::uint8_t, 4>{0, 0, 0, 0});
+  REQUIRE(pixel(anim->frames[1], 2, 1, 1) == std::array<std::uint8_t, 4>{0, 0, 255, 255});
+
+  // As a still: frame 0.
+  auto still = decode(bytes);
+  REQUIRE(still);
+  REQUIRE(still->format == format_family::gif);
+  REQUIRE(pixel(still->rgba, 2, 1, 1) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
+
+  // Over budget: not animated here; the still path shows frame 0.
+  REQUIRE(decode_animation(bytes, nullptr, 16).error() == mv::status::unsupported_format);
+}
+
+TEST_CASE("GIF edge cases: play once, transparency, clipping, one frame, junk", "[codec][gif]") {
+  gif_frame_spec a;
+  gif_frame_spec b;
+  b.index = 2;
+  b.transparent = 2;  // every pixel of frame 1 is transparent: frame 0 shows through
+  auto once = decode_animation(make_gif({a, b}, -1));
+  REQUIRE(once);
+  REQUIRE(once->loops == 1);  // no NETSCAPE2.0: play once
+  REQUIRE(pixel(once->frames[1], 2, 0, 0) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
+
+  // A frame that runs past the logical screen is clipped, not written past it.
+  gif_frame_spec wide;
+  wide.left = 1;
+  wide.width = 4;
+  wide.index = 3;
+  auto clipped = decode_animation(make_gif({a, wide}, 0));
+  REQUIRE(clipped);
+  REQUIRE(clipped->loops == 0);
+  REQUIRE(pixel(clipped->frames[1], 2, 1, 0) == std::array<std::uint8_t, 4>{0, 0, 255, 255});
+  REQUIRE(pixel(clipped->frames[1], 2, 0, 0) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
+
+  // One frame is a still, not an animation.
+  const auto single = make_gif({a}, 0);
+  REQUIRE(decode_animation(single).error() == mv::status::unsupported_format);
+  REQUIRE(decode(single));
+
+  // Junk after the signature, and a truncated file, fail cleanly.
+  std::vector<std::uint8_t> junk = {'G', 'I', 'F', '8', '9', 'a', 1, 2, 3};
+  REQUIRE_FALSE(decode(junk));
+  auto cut = make_gif({a, b}, 0);
+  cut.resize(cut.size() / 2);
+  (void)decode(cut);           // must not crash; a partial frame 0 may still decode
+  (void)decode_animation(cut);
+}
+
+TEST_CASE("an animated WebP decodes with browser delays and its loop count", "[codec][webp]") {
+  const auto bytes = make_animated_webp(2);
+  auto anim = decode_animation(bytes);
+  REQUIRE(anim);
+  REQUIRE(anim->format == format_family::webp);
+  REQUIRE(anim->loops == 2);
+  REQUIRE(anim->frames.size() == 2);
+  REQUIRE(anim->delays_ms[0] == 100);  // 5 ms clamps like a browser
+  REQUIRE(anim->delays_ms[1] == 200);
+  REQUIRE(pixel(anim->frames[0], 2, 0, 0) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
+  REQUIRE(pixel(anim->frames[1], 2, 1, 1) == std::array<std::uint8_t, 4>{0, 0, 255, 255});
+
+  auto first = decode(bytes);
+  REQUIRE(first);
+  REQUIRE(pixel(first->rgba, 2, 0, 0) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
+  REQUIRE(decode_animation(bytes, nullptr, 16).error() == mv::status::unsupported_format);
+}
+
+TEST_CASE("an animation source yields one frame at a time and rewinds", "[codec][anim]") {
+  // 200 frames, alternating red / green: decoded on demand, never all at once.
+  std::vector<gif_frame_spec> frames(200);
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    frames[i].index = i % 2 == 0 ? 1 : 2;
+    frames[i].delay_cs = 3;
+  }
+  auto shared = std::make_shared<const std::vector<std::uint8_t>>(make_gif(frames, 0));
+  auto opened = open_animation(shared);
+  REQUIRE(opened);
+  animation_source& gif = *opened.value();
+  REQUIRE(gif.info().width == 2);
+  REQUIRE(gif.info().frame_count == 0);  // a GIF learns its length by reaching the end
+
+  canvas_frame frame;
+  auto first = gif.next(frame, nullptr);
+  REQUIRE(first);
+  REQUIRE(first.value());
+  REQUIRE(frame.index == 0);
+  REQUIRE(frame.delay_ms == 30);
+  const std::vector<std::uint8_t> frame0 = frame.rgba;
+  REQUIRE(frame.rgba.size() == 2u * 2u * 4u);  // one canvas, not the animation
+
+  REQUIRE(gif.next(frame, nullptr).value());
+  REQUIRE(frame.index == 1);
+  REQUIRE(frame.rgba != frame0);
+  std::size_t seen = 2;
+  while (gif.next(frame, nullptr).value()) ++seen;
+  REQUIRE(seen == 200);
+  REQUIRE(gif.info().frame_count == 200);
+  REQUIRE(gif.info().loops == 0);
+
+  // A loop wrap: back to frame 0, the same pixels.
+  REQUIRE(gif.rewind());
+  REQUIRE(gif.next(frame, nullptr).value());
+  REQUIRE(frame.index == 0);
+  REQUIRE(frame.rgba == frame0);
+
+  // WebP: the frame count is known up front; rewind replays from frame 0.
+  auto webp_bytes = std::make_shared<const std::vector<std::uint8_t>>(make_animated_webp(0));
+  auto webp_opened = open_animation(webp_bytes);
+  REQUIRE(webp_opened);
+  animation_source& webp = *webp_opened.value();
+  REQUIRE(webp.info().frame_count == 2);
+  REQUIRE(webp.next(frame, nullptr).value());
+  const std::vector<std::uint8_t> webp0 = frame.rgba;
+  REQUIRE(webp.next(frame, nullptr).value());
+  REQUIRE_FALSE(webp.next(frame, nullptr).value());
+  REQUIRE(webp.rewind());
+  REQUIRE(webp.next(frame, nullptr).value());
+  REQUIRE(frame.rgba == webp0);
+
+  // A still is not an animation source.
+  auto still = std::make_shared<const std::vector<std::uint8_t>>(make_still_webp());
+  REQUIRE(open_animation(still).error() == mv::status::unsupported_format);
+}
+
+// Hidden tool for review note B's manual check: writes a large animated GIF
+// (2048 x 2048, 60 frames, looping) to %TEMP%\mv_large_anim.gif so F3's upload
+// time and missed frames can be watched while it plays and pans. Run by name:
+//   mv_tests "[.make-large-anim]"
+TEST_CASE("write a large animated GIF for the pacing check", "[.make-large-anim]") {
+  std::vector<gif_frame_spec> frames(60);
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    frames[i].width = 2048;
+    frames[i].height = 2048;
+    frames[i].index = static_cast<std::uint8_t>(1 + i % 3);
+    frames[i].delay_cs = 4;  // 25 fps
+  }
+  const auto bytes = make_gif(frames, 0, 2048);
+  const auto path = std::filesystem::temp_directory_path() / "mv_large_anim.gif";
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  REQUIRE(std::filesystem::file_size(path) == bytes.size());
+}
+
+TEST_CASE("a still WebP decodes, and is not an animation", "[codec][webp]") {
+  const auto bytes = make_still_webp();
+  auto still = decode(bytes);
+  REQUIRE(still);
+  REQUIRE(still->width == 2);
+  REQUIRE(pixel(still->rgba, 2, 1, 1) == std::array<std::uint8_t, 4>{0, 255, 0, 255});
+  REQUIRE(decode_animation(bytes).error() == mv::status::unsupported_format);
+  std::vector<std::uint8_t> broken = bytes;
+  broken.resize(16);
+  REQUIRE_FALSE(decode(broken));
+}

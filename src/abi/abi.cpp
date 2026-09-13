@@ -13,7 +13,10 @@
 #include <string>
 #include <vector>
 
+#include "abi/animation_session.h"
 #include "abi/folder_reselect.h"
+#include "codec/decode.h"
+#include "image/colour.h"
 #include "abi/guard.h"
 #include "abi/native.h"
 #include "abi/video_session.h"
@@ -159,6 +162,30 @@ struct mv_session {
   std::mutex lru_mutex;
   std::vector<lru_slot> lru;
   std::vector<inflight_decode> decode_inflight;
+
+  // PR 6 animation feed. Declared after everything its decode thread uses, so
+  // it is destroyed (and its thread joined) first. Each frame is colour
+  // managed like a still and uploaded top level only: an animation is not
+  // mip-mapped, so far below 100 % it can alias.
+  mv::abi::animation_session animation{
+      [this](const mv::codec::canvas_frame& frame, const mv::codec::animation_info& info,
+             std::uint32_t generation) -> std::unique_ptr<mv::image::gpu_image> {
+        auto dev = copy_device();
+        if (!dev) return nullptr;
+        mv::codec::raster raster;
+        raster.width = info.width;
+        raster.height = info.height;
+        raster.format = info.format;
+        raster.intent = mv::codec::transfer_intent::display_referred;
+        raster.rgba = frame.rgba;
+        raster.icc = info.icc;
+        raster.tagged_srgb = info.tagged_srgb;
+        auto display = mv::image::to_display(std::move(raster));
+        if (!display) return nullptr;
+        auto uploaded = mv::image::upload(dev.Get(), display.value(), generation, nullptr, 1);
+        if (!uploaded) return nullptr;
+        return std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+      }};
 
   void push_completion(const mv_completion& c) noexcept {
     {
@@ -475,6 +502,46 @@ void release_decode(mv_session* session, const std::string& path, mv::generation
 // opted every one of them out of exactly that, so holding an arrow key queued
 // five uncancellable full decodes (each with a CPU Mitchell mip pyramid) per
 // step and the pool spent a second finishing dead work after the key came up.
+// PR 6 animation, only for the item on screen and only after its still is up
+// (rule 3: frame 0 is the first pixel). Prefetched neighbours never open one.
+// A still (one-frame WebP, PNG without acTL) is refused by open_animation; a
+// one-frame GIF is found out by the feed and ends there.
+void maybe_publish_animation(mv_session* session, const std::string& path,
+                             std::vector<std::uint8_t>&& bytes, const mv::job_context& ctx) {
+  if (ctx.cancelled() || !path_is_selected(session, path)) return;
+  const auto family = mv::codec::probe(bytes);
+  if (family != mv::codec::format_family::gif && family != mv::codec::format_family::webp &&
+      family != mv::codec::format_family::png) {
+    return;
+  }
+  auto shared = std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+  auto opened = mv::codec::open_animation(std::move(shared));
+  if (!opened) return;
+  if (ctx.cancelled() || !path_is_selected(session, path)) return;
+  session->animation.publish(std::move(opened).value(), ctx.gen());
+}
+
+// An item served from the LRU (a revisit) never reaches the decode path, so its
+// animation is opened here: a worker probes the magic bytes and only reads the
+// whole file for an animated family.
+void submit_animation_open(mv_session* session, std::string path, mv::generation gen) {
+  (void)session->jobs.submit_at(
+      gen, [session, path = std::move(path)](const mv::job_context& ctx) -> status {
+        if (ctx.cancelled() || !path_is_selected(session, path)) return status::ok;
+        auto head = mv::io::read_prefix(path, 16);
+        if (!head) return head.error();
+        const auto family = mv::codec::probe(head.value());
+        if (family != mv::codec::format_family::gif && family != mv::codec::format_family::webp &&
+            family != mv::codec::format_family::png) {
+          return status::ok;
+        }
+        auto bytes = mv::io::read_all(path);
+        if (!bytes) return bytes.error();
+        maybe_publish_animation(session, path, std::move(bytes).value(), ctx);
+        return status::ok;
+      });
+}
+
 void submit_decode_to_lru(mv_session* session, std::string path, mv::generation gen) {
   if (!claim_decode(session, path, gen)) return;
   const std::uint32_t folder_gen = session->folder_generation.load(std::memory_order_relaxed);
@@ -553,7 +620,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
           if (first != status::ok) return first;
           if (ctx.cancelled()) return status::cancelled;
         }
-        return upload_and_publish(0);
+        const status still = upload_and_publish(0);
+        if (still != status::ok) return still;
+        maybe_publish_animation(session, path, std::move(bytes).value(), ctx);
+        return status::ok;
       },
       [session, path, correlation](mv::job_id, mv::generation gen, status result) {
         release_decode(session, path, gen);
@@ -1080,6 +1150,7 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
       }
       session->push_completion(c);
       if (out_job_id) *out_job_id = 0;
+      submit_animation_open(session, path, gen);
       submit_prefetch(session, index, gen);
       return status::ok;
     }
@@ -1312,6 +1383,48 @@ void* image_ready_wait_handle(mv_session_t session) {
 }
 
 void release_gpu_image(image::gpu_image* image) { delete image; }
+
+bool take_animation_frame(mv_session_t session, std::uint32_t generation,
+                          image::gpu_image*& texture, std::uint32_t& delay_ms,
+                          std::uint32_t& index) noexcept {
+  if (!session) return false;
+  animation_frame frame;
+  if (!session->animation.take(generation, frame)) return false;
+  texture = frame.texture;
+  delay_ms = frame.delay_ms;
+  index = frame.index;
+  return true;
+}
+
+bool animation_open(mv_session_t session, std::uint32_t generation) noexcept {
+  return session && session->animation.open(generation);
+}
+
+bool animation_finished(mv_session_t session, std::uint32_t generation) noexcept {
+  return session && session->animation.finished(generation);
+}
+
+bool animation_loops_forever(mv_session_t session) noexcept {
+  return session && session->animation.loops_forever();
+}
+
+void animation_retire(mv_session_t session, std::uint32_t generation) noexcept {
+  if (session) session->animation.retire(generation);
+}
+
+void animation_seek(mv_session_t session, std::uint32_t index) noexcept {
+  if (session) session->animation.seek(index);
+}
+
+animation_stats animation_stats_now(mv_session_t session) noexcept {
+  animation_stats stats{};
+  if (!session) return stats;
+  stats.depth = session->animation.depth();
+  stats.queued = session->animation.queued();
+  stats.last_upload_us = session->animation.last_upload_us();
+  stats.frames_made = session->animation.frames_made();
+  return stats;
+}
 bool poll_video(mv_session_t session, player::time_ns vblank, player::video_frame& frame, bool& active) {
   if (!session) { active = false; return false; }
   const bool changed =
