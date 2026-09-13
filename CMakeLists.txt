@@ -348,6 +348,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/marks.h
   src/shell/open_request.cpp
   src/shell/open_request.h
+  src/shell/slideshow.h
   src/shell/settings.cpp
   src/shell/settings.h
   src/shell/input_state.h
@@ -462,6 +463,7 @@ if(MV_BUILD_TESTS)
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
+    tests/test_slideshow.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp

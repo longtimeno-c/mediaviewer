@@ -134,6 +134,7 @@ class present_lab {
   std::int32_t seen_loupe_steps_x_ = 0;
   std::int32_t seen_loupe_steps_y_ = 0;
   std::uint32_t seen_marked_count_ = 0;
+  bool seen_blackout_ = false;
   std::uint32_t seen_item_index_ = 0;
   std::uint32_t seen_item_count_ = 0;
 

@@ -36,6 +36,7 @@
 #include "shell/key_router.h"
 #include "shell/marks.h"
 #include "shell/open_request.h"
+#include "shell/slideshow.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
 #include "shell/av_soak.h"
@@ -64,6 +65,11 @@ constexpr UINT kRevealMs = 3000;
 // would read the old fit. Zoom commands open this window so the first ↓ after
 // them pans instead of falling through.
 constexpr ULONGLONG kZoomIntentMs = 250;
+// plan/16 slideshow: a UI-thread tick that only decides whether to advance. It
+// wakes the UI thread, never the render thread, so a still between advances is
+// zero presents.
+constexpr UINT_PTR kSlideshowTimerId = 0x6D01;
+constexpr UINT kSlideshowTickMs = 100;
 
 struct app_state {
   present_lab lab;
@@ -121,6 +127,11 @@ struct app_state {
   mv::shell::file_jobs files;
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   std::uint64_t folder_token = 0;         // bumped per folder open
+  // plan/16 slideshow, a mode: order and interval in `show`, advancing through
+  // the same folder_select as browse.
+  mv::shell::slideshow show;
+  ULONGLONG show_last_advance = 0;
+  bool show_entered_fullscreen = false;  // leave fullscreen again on stop
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -637,6 +648,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.gallery_open = app->gallery_visible;
   s.fullscreen = app->fullscreen;
   s.loupe_held = app->input.loupe;
+  s.slideshow = app->show.active();
   return s;
 }
 
@@ -679,6 +691,63 @@ void set_fullscreen(app_state* app, bool on) noexcept {
   apply_view_state(app);
 }
 
+void publish_slideshow(app_state* app) noexcept {
+  app->input.blackout = app->show.active() && app->show.blackout();
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// Enter (plan/16). Fullscreen unless it already is; leaving puts it back.
+void start_slideshow(app_state* app) noexcept {
+  if (!app || !app->window || app->show.active()) return;
+  const std::uint32_t count = folder_count(app);
+  if (count == 0) return;
+  std::uint32_t selected = 0;
+  if (mv_folder_selected(app->session, &selected) != MV_OK) selected = 0;
+  app->show.start(count, selected, ::GetTickCount64());
+  app->show_last_advance = ::GetTickCount64();
+  app->show_entered_fullscreen = !app->fullscreen;
+  if (app->show_entered_fullscreen) set_fullscreen(app, true);
+  ::SetTimer(app->window, kSlideshowTimerId, kSlideshowTickMs, nullptr);
+  publish_slideshow(app);
+}
+
+void stop_slideshow(app_state* app) noexcept {
+  if (!app || !app->show.active()) return;
+  app->show.stop();
+  if (app->window) ::KillTimer(app->window, kSlideshowTimerId);
+  if (app->show_entered_fullscreen) set_fullscreen(app, false);
+  app->show_entered_fullscreen = false;
+  publish_slideshow(app);
+}
+
+// One tick: advance when the interval is up and a playing clip has ended —
+// whichever is later (plan/16). A still, or a paused clip, goes on the
+// interval. The advance is the ordinary folder_select, so prefetch and the
+// generation counter behave exactly as they do for an arrow key.
+void slideshow_tick(app_state* app) noexcept {
+  if (!app || !app->show.active()) return;
+  const ULONGLONG now = ::GetTickCount64();
+  std::uint32_t state = MV_PLAY_STOPPED;
+  if (app->session) (void)mv_video_state(app->session, &state);
+  const bool media_finished = state != MV_PLAY_PLAYING;
+  if (!app->show.should_advance(now - app->show_last_advance, media_finished)) return;
+  const std::uint32_t count = folder_count(app);
+  std::uint32_t selected = 0;
+  if (count == 0 || mv_folder_selected(app->session, &selected) != MV_OK) {
+    stop_slideshow(app);
+    return;
+  }
+  app->show.set_count(count, selected);
+  const auto next = app->show.next(selected, true);  // wrap: on by default (plan/16)
+  app->show_last_advance = now;
+  if (!next) {
+    stop_slideshow(app);
+    return;
+  }
+  folder_select(app, *next);
+}
+
 void walk_back(app_state* app, mv::shell::back_target target) noexcept {
   using mv::shell::back_target;
   switch (target) {
@@ -692,6 +761,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::gallery:
       set_gallery(app, false);
+      return;
+    case back_target::slideshow:
+      stop_slideshow(app);
       return;
     case back_target::fullscreen:
       set_fullscreen(app, false);
@@ -1032,6 +1104,34 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case delete_to_recycle_bin:
       return start_recycle(app);
 
+    // Slideshow (plan/16): a mode, no transition pass.
+    case slideshow_start:
+      start_slideshow(app);
+      return app->show.active();
+    case slideshow_pause:
+      app->show.toggle_pause();
+      app->show_last_advance = ::GetTickCount64();  // resuming waits a full interval
+      publish_slideshow(app);
+      return true;
+    case slideshow_faster:
+      app->show.faster();
+      publish_slideshow(app);
+      return true;
+    case slideshow_slower:
+      app->show.slower();
+      publish_slideshow(app);
+      return true;
+    case blackout:
+      app->show.toggle_blackout();
+      publish_slideshow(app);
+      return true;
+    case shuffle: {
+      std::uint32_t selected = 0;
+      (void)mv_folder_selected(app->session, &selected);
+      app->show.toggle_shuffle(selected, ::GetTickCount64());
+      return true;
+    }
+
     // Host-side and cheap (plan/16): photographers park the viewer on a
     // second monitor.
     case always_on_top:
@@ -1322,6 +1422,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_TIMER:
+      if (wparam == kSlideshowTimerId) {
+        slideshow_tick(app);
+        return 0;
+      }
       if (wparam == kRevealTimerId) {
         // Being used is not settled: the cursor over a strip, or a strip with
         // keyboard focus, keeps it up. The canvas gets no mouse-move while the

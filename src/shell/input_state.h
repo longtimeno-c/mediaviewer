@@ -72,6 +72,8 @@ struct input_snapshot {
   // Marks (plan/16): whether the current item is marked, and how many are.
   bool item_marked = false;
   std::uint32_t marked_count = 0;
+  // Slideshow `.`: the canvas goes black and idles; nothing is drawn over it.
+  bool blackout = false;
 
   bool window_visible = true;
   bool window_active = true;

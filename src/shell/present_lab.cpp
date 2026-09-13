@@ -465,10 +465,11 @@ void present_lab::render_thread_main() noexcept {
           (snapshot.item_marked ? 0x80 : 0));
       if (flags != seen_view_flags_ || snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
           snapshot.loupe_steps_y != seen_loupe_steps_y_ ||
-          snapshot.marked_count != seen_marked_count_ ||
+          snapshot.marked_count != seen_marked_count_ || snapshot.blackout != seen_blackout_ ||
           snapshot.item_index != seen_item_index_ || snapshot.item_count != seen_item_count_) {
         seen_view_flags_ = flags;
         seen_marked_count_ = snapshot.marked_count;
+        seen_blackout_ = snapshot.blackout;
         seen_item_index_ = snapshot.item_index;
         seen_item_count_ = snapshot.item_count;
         seen_loupe_steps_x_ = snapshot.loupe_steps_x;
@@ -637,15 +638,17 @@ void present_lab::render_thread_main() noexcept {
     // target view is _SRGB, so the hardware encodes on write. Writing 0.05 here
     // and reading back 0.05 in a screenshot would mean the sRGB view was lost.
     const float clear_level = gfx::background_clear(snapshot.background);
-    const float clear[4] = {snapshot.background == 0 ? 0.016f : clear_level, clear_level,
-                            snapshot.background == 0 ? 0.024f : clear_level, 1.0f};
+    const float clear[4] = {snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.016f : clear_level),
+                            snapshot.blackout ? 0.0f : clear_level,
+                            snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.024f : clear_level),
+                            1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
     const bool show_previous =
         snapshot.hold_previous && previous_image_ && previous_image_->srv && current_image_;
     const image::gpu_image* shown =
         show_previous ? previous_image_.get() : current_image_.get();
-    if (shown && shown->srv) {
+    if (shown && shown->srv && !snapshot.blackout) {
       const auto view = usable_canvas(snapshot);
       D3D11_VIEWPORT vp{};
       vp.TopLeftX = view.x;
@@ -697,7 +700,7 @@ void present_lab::render_thread_main() noexcept {
       }
     }
 
-    if (current_video_.texture) {
+    if (current_video_.texture && !snapshot.blackout) {
       const auto view = usable_canvas(snapshot);
       D3D11_VIEWPORT vp{view.x, view.y, view.w, view.h, 0.0f, 1.0f};
       device_.context()->RSSetViewports(1, &vp);
@@ -786,6 +789,7 @@ void present_lab::render_thread_main() noexcept {
 
 void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
   if (!current_image_ && !current_video_.texture) return;
+  if (snapshot.blackout) return;
   ImDrawList* fg = ImGui::GetForegroundDrawList();
   ImFont* font = ImGui::GetFont();
   const auto view = usable_canvas(snapshot);

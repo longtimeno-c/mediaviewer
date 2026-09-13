@@ -204,6 +204,14 @@ No transition pass. Next is the same navigation command as browse, on a timer, s
 and the generation counter stay in play. A crossfade is two textures in the present loop
 for a feature nobody opens a camera dump for.
 
+PR 6 specifics. `Enter` starts from the canvas in browse (fullscreen if the window is not; leaving
+puts it back). A clip advances at **whichever is later**: the interval, or the end of the clip
+while it plays; a paused clip goes on the interval. A finite animation is the same; one that loops
+forever goes on the interval. Intervals step 1 / 2 / 3 / 4 / 5 / 7 / 10 / 15 / 20 / 30 / 60 s,
+default 4 s. Shuffle visits every item once per round, starting from the current one. Wrap is on.
+`.` blacks the canvas out and the canvas idles. The advance tick is a UI-thread timer: between
+advances a still is zero presents.
+
 ### Command palette and `?`
 
 - `Ctrl+K` (also `Ctrl+Shift+P`) opens a searchable list of every registered command with
