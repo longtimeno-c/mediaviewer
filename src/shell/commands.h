@@ -178,7 +178,7 @@ enum class command_id : std::uint16_t {
   shuffle,
   // 6f
   help,
-  palette,
+  palette,  // unused: Ctrl+K palette dropped; keep the id so later commands do not shift
   go_to,
   folder_tree,
   typeahead,  // `/` from the canvas: find an item by name

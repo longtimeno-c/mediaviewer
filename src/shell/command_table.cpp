@@ -126,11 +126,10 @@ constexpr binding kBindings[] = {
     row(C('.'), mod_none, kSlideshow, edge, blackout),
     row(C('R'), mod_none, kSlideshow, edge, shuffle),
 
-    // Palette and help.
+    // Help and find. The Ctrl+K palette was dropped (plan/12 2026-09-13): a
+    // TextBox in the island flyout fail-fasts, and bound keys never reach it.
     row(C('?'), mod_none, kAllModes, edge, help),
     row(C(','), mod_ctrl, kAllModes, edge, open_settings),
-    row(C('K'), mod_ctrl, kAllModes, edge, palette),
-    row(C('P'), mod_ctrl | mod_shift, kAllModes, edge, palette),
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
     row(C('E'), mod_ctrl | mod_shift, kAllModes, edge, folder_tree),
     // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
@@ -221,7 +220,6 @@ constexpr command_info kCommands[] = {
     {blackout, "Blackout"},
     {shuffle, "Shuffle"},
     {help, "Keyboard shortcuts"},
-    {palette, "Command palette"},
     {go_to, "Go to index…"},
     {folder_tree, "Folder tree"},
     {typeahead, "Find by name…"},

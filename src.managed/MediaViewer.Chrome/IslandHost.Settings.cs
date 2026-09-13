@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -17,8 +19,9 @@ public static partial class IslandHost
     private static Grid? _chromeRoot;
     private static Grid? _settingsHost;
     private static StackPanel? _keyList;
-    private static TextBox? _keySearch;
+    private static FakeInput? _keyFilterInput;
     private static TextBlock? _keyEmpty;
+    private static string _keyFilter = "";
     private static ToggleSwitch? _stripFolder;
     private static ToggleSwitch? _stripImage;
     private static ToggleSwitch? _wrap;
@@ -33,6 +36,7 @@ public static partial class IslandHost
     private static VirtualKey? _consumedCaptureKey;
     private static readonly Dictionary<int, Button> KeyButtons = new();
     private const string CaptureInstructions = "Choose a shortcut, then press its replacement. Esc cancels. Conflicts swap shortcuts.";
+    private const string FilterPrompt = "Search commands or keys";
 
     private static Button SettingsButton(string text, Action action)
     {
@@ -91,21 +95,14 @@ public static partial class IslandHost
         Grid.SetColumn(reset, 1);
         keysHeader.Children.Add(reset);
 
-        _keySearch = new TextBox
+        // No TextBox: that control fail-fasts in this island (0xC000027B).
+        FakeInput filter = new FakeInput(FilterPrompt)
         {
-            PlaceholderText = "Search commands or keys",
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
             Margin = new Thickness(12, 0, 20, 8),
         };
-        _keySearch.TextChanged += (_, _) => FilterSettingsKeys();
-        _keySearch.KeyDown += (_, e) =>
-        {
-            if (e.Key != VirtualKey.Escape || string.IsNullOrEmpty(_keySearch.Text)) return;
-            _keySearch.Text = "";
-            e.Handled = true;
-        };
+        filter.Changed += () => SetKeyFilter(filter.Text);
+        filter.MoveDown += FocusFirstVisibleKey;
+        _keyFilterInput = filter;
         _keyList = new StackPanel { Spacing = 2 };
         _keyEmpty = new TextBlock
         {
@@ -131,12 +128,16 @@ public static partial class IslandHost
         keysCol.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(keysHeader, 0);
         keysCol.Children.Add(keysHeader);
-        Grid.SetRow(_keySearch, 1);
-        keysCol.Children.Add(_keySearch);
+        Grid.SetRow(_keyFilterInput, 1);
+        keysCol.Children.Add(_keyFilterInput);
         Grid.SetRow(keyScroll, 2);
         keysCol.Children.Add(keyScroll);
 
-        var split = new Grid();
+        var split = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -173,7 +174,12 @@ public static partial class IslandHost
         Grid.SetColumn(_cancelCapture, 2);
         footer.Children.Add(_cancelCapture);
 
-        var root = new Grid { Background = Brush(Canvas) };
+        var root = new Grid
+        {
+            Background = Brush(Canvas),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Grid.SetRow(split, 0);
@@ -224,18 +230,44 @@ public static partial class IslandHost
 
     private static void ShowSettingsScreen()
     {
-        if (_chromeRoot is null || _settingsHost is null) return;
         _settingsVisible = true;
         _consumedCaptureKey = null;
-        if (_keySearch is not null) _keySearch.Text = "";
-        RefreshSettingsScreen();
-        _settingsHost.Visibility = Visibility.Visible;
-        _chromeRoot.UpdateLayout();
-        FocusSettings();
-        _dispatcher?.DispatcherQueue.TryEnqueue(() =>
+        SetKeyFilter("");
+        // Native resizes the island to the full client, then calls us. Wait one
+        // tick so that MoveAndResize has been applied; building into the 48 DIP
+        // bar left this screen blank (star row height 0).
+        if (_dispatcher is not null)
+            _dispatcher.DispatcherQueue.TryEnqueue(PresentSettings);
+        else
+            PresentSettings();
+    }
+
+    private static void PresentSettings()
+    {
+        if (!_settingsVisible || _chromeRoot is null) return;
+        try
         {
-            if (_settingsVisible) FocusSettings();
-        });
+            if (_settingsHost is null)
+            {
+                _settingsHost = BuildSettingsScreen();
+                _settingsHost.HorizontalAlignment = HorizontalAlignment.Stretch;
+                _settingsHost.VerticalAlignment = VerticalAlignment.Stretch;
+                Grid.SetRow(_settingsHost, 0);
+                Grid.SetRowSpan(_settingsHost, 3);
+                _chromeRoot.Children.Add(_settingsHost);
+            }
+            RefreshSettingsScreen();
+            _settingsHost.Visibility = Visibility.Visible;
+            _chromeRoot.UpdateLayout();
+            FocusSettings();
+            // Island focus can miss on the first try after MoveAndResize.
+            if (_dispatcher is not null)
+                _dispatcher.DispatcherQueue.TryEnqueue(() => { if (_settingsVisible) FocusSettings(); });
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
     }
 
     private static void HideSettingsScreen()
@@ -243,6 +275,7 @@ public static partial class IslandHost
         _settingsVisible = false;
         CancelKeyCapture(restoreFocus: false);
         _consumedCaptureKey = null;
+        SetKeyFilter("");
         if (_chromeRoot is null || _settingsHost is null) return;
         _settingsHost.Visibility = Visibility.Collapsed;
     }
@@ -250,7 +283,15 @@ public static partial class IslandHost
     private static void FocusSettings()
     {
         if (!_settingsVisible) return;
+        // Ctrl+, opens this from the canvas HWND. Steal focus into the island
+        // so ContentPreTranslateMessage delivers keys to the filter field.
+        if (_source?.SiteBridge is not null)
+        {
+            IntPtr hwnd = Win32Interop.GetWindowFromWindowId(_source.SiteBridge.WindowId);
+            if (hwnd != IntPtr.Zero) SetFocus(hwnd);
+        }
         if (_capturingRow >= 0) _captureButton?.Focus(FocusState.Keyboard);
+        else if (_keyFilterInput is not null) _keyFilterInput.Focus(FocusState.Keyboard);
         else _stripFolder?.Focus(FocusState.Programmatic);
     }
 
@@ -267,9 +308,22 @@ public static partial class IslandHost
     {
         _ = sender;
         if (!_settingsVisible || e.Handled) return;
-        if (e.Key == VirtualKey.Escape && _capturingRow < 0)
+        if (_capturingRow >= 0) return;
+        if (e.Key == VirtualKey.Escape)
         {
+            if (_keyFilter.Length > 0)
+            {
+                SetKeyFilter("");
+                e.Handled = true;
+                return;
+            }
             Send(Command.OpenSettings);
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == VirtualKey.Down && ReferenceEquals(e.OriginalSource, _keyFilterInput))
+        {
+            FocusFirstVisibleKey();
             e.Handled = true;
         }
     }
@@ -342,25 +396,43 @@ public static partial class IslandHost
             KeyButtons.Add(captured, bind);
             Grid.SetColumn(bind, 1);
             line.Children.Add(bind);
+            line.Tag = row.Name + " " + KeysForRow(captured);
             _keyList.Children.Add(line);
         }
         FilterSettingsKeys();
     }
 
+    private static void SetKeyFilter(string value)
+    {
+        _keyFilter = value ?? "";
+        _keyFilterInput?.SetText(_keyFilter);
+        FilterSettingsKeys();
+    }
+
+    private static void FocusFirstVisibleKey()
+    {
+        if (_keyList is null) return;
+        foreach (UIElement child in _keyList.Children)
+        {
+            if (child is not Grid line || line.Visibility != Visibility.Visible) continue;
+            if (line.Children.Count > 1 && line.Children[1] is Button bind)
+            {
+                bind.Focus(FocusState.Keyboard);
+                return;
+            }
+        }
+    }
+
     private static void FilterSettingsKeys()
     {
         if (_keyList is null) return;
-        string q = (_keySearch?.Text ?? "").Trim();
+        string q = _keyFilter.Trim();
         int shown = 0;
         foreach (UIElement child in _keyList.Children)
         {
             if (child is not Grid line) continue;
-            string hay = "";
-            if (line.Children.Count > 0 && line.Children[0] is TextBlock name) hay += name.Text;
-            if (line.Children.Count > 1 && line.Children[1] is Button bind &&
-                bind.Content is TextBlock keys) hay += " " + keys.Text;
-            bool match = q.Length == 0 ||
-                         hay.Contains(q, StringComparison.OrdinalIgnoreCase);
+            string hay = line.Tag as string ?? "";
+            bool match = q.Length == 0 || hay.Contains(q, StringComparison.OrdinalIgnoreCase);
             line.Visibility = match ? Visibility.Visible : Visibility.Collapsed;
             if (match) shown++;
         }

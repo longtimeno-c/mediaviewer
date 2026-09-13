@@ -59,7 +59,7 @@ public static partial class IslandHost
         public const int Popup = 1000;
         public const int Rebind = 1001;
         public const int ResetKeys = 1002;
-        // Command-table ids sent the same way as a palette entry (commands.h).
+        // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
         public const int Help = 75;
@@ -255,14 +255,36 @@ public static partial class IslandHost
     }
 
     // Null the static field before Dispose, so anything Dispose raises cannot
-    // reach a half-disposed source through it.
+    // reach a half-disposed source through it. Content = null first: Dispose
+    // of a live tree without it AVs in IDisposableMethods.Dispose (soak exit
+    // after a folder open). A bare test HWND AVs on that assignment instead;
+    // that path is not the lab.
     private static void DisposeSource(ref DesktopWindowXamlSource? source)
     {
         DesktopWindowXamlSource? old = source;
         source = null;
         if (old is null) return;
-        old.Content = null;
+        try { old.Content = null; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         old.Dispose();
+    }
+
+    // Filmstrip and gallery share `Items`. Two ItemsRepeaters bound to that
+    // collection at once is a native AV in set_ItemsSource (folder-open crash:
+    // attach built a strip, park dropped Content without unbinding, show built
+    // a second repeater on the same ObservableCollection).
+    private static void ReleaseRepeater(ref ItemsRepeater? repeater)
+    {
+        if (repeater is null) return;
+        try { repeater.ItemsSource = null; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        repeater = null;
+    }
+
+    private static void UnbindSharedItems()
+    {
+        ReleaseRepeater(ref _repeater);
+        ReleaseRepeater(ref _galleryRepeater);
     }
 
     /// <summary>
@@ -279,7 +301,8 @@ public static partial class IslandHost
         try
         {
             int kind = FocusKind.CommandBar;
-            if (e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
+            if (_popupTakesText ||
+                e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
             {
                 kind = FocusKind.Text;
             }
@@ -714,6 +737,7 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(4)));
         style.Setters.Add(new Setter(FlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(FlyoutPresenter.FontSizeProperty, UiFontSize));
+        style.Setters.Add(new Setter(Control.AllowFocusOnInteractionProperty, true));
         return style;
     }
 
@@ -807,6 +831,9 @@ public static partial class IslandHost
         {
             item.KeyboardAcceleratorTextOverride = shortcut;
         }
+        // Same as TextButton: a focused menu item parks keys on the island
+        // until the window is deactivated and reactivated.
+        item.AllowFocusOnInteraction = false;
         item.Click += (_, _) => action();
         return item;
     }
@@ -933,8 +960,8 @@ public static partial class IslandHost
     private static void RefreshOpenMenu(MenuFlyout flyout)
     {
         flyout.Items.Clear();
-        flyout.Items.Add(Item("Media…", "Ctrl+O", () => Send(Command.Open)));
-        flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => Send(Command.OpenFolder)));
+        flyout.Items.Add(Item("Media…", "Ctrl+O", () => { Send(Command.Open); RestoreCanvasFocus(); }));
+        flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => { Send(Command.OpenFolder); RestoreCanvasFocus(); }));
         flyout.Items.Add(Sep());
         string? name = _selectedIndex >= 0 && _selectedIndex < Items.Count
             ? Items[_selectedIndex].Name
@@ -947,7 +974,11 @@ public static partial class IslandHost
         }
         else
         {
-            MenuFlyoutItem reveal = Item("Open: " + name, "Ctrl+E", () => Send(Command.RevealInExplorer));
+            MenuFlyoutItem reveal = Item("Open: " + name, "Ctrl+E", () =>
+            {
+                Send(Command.RevealInExplorer);
+                RestoreCanvasFocus();
+            });
             string path = Items[_selectedIndex].Path;
             if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
             flyout.Items.Add(reveal);
@@ -1015,7 +1046,7 @@ public static partial class IslandHost
         };
         aboutFlyout.Content = new TextBlock
         {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing, or Ctrl+K to find any command by name.",
+            Text = "MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing.",
             Margin = new Thickness(12, 10, 12, 10),
             MaxWidth = 400,
             TextWrapping = TextWrapping.Wrap,
@@ -1040,13 +1071,13 @@ public static partial class IslandHost
         {
             if (openBtn is not null) FlyoutBase.ShowAttachedFlyout(openBtn);
         });
-        FlyoutBase.SetAttachedFlyout(openBtn, openFlyout);
+        AttachBarFlyout(openBtn, openFlyout);
         Button? viewBtn = null;
         viewBtn = TextButton("View", () =>
         {
             if (viewBtn is not null) FlyoutBase.ShowAttachedFlyout(viewBtn);
         });
-        FlyoutBase.SetAttachedFlyout(viewBtn, viewFlyout);
+        AttachBarFlyout(viewBtn, viewFlyout);
         Button? settingsBtn = null;
         settingsBtn = TextButton("Settings", () => Send(Command.OpenSettings));
         Button? aboutBtn = null;
@@ -1054,7 +1085,7 @@ public static partial class IslandHost
         {
             if (aboutBtn is not null) FlyoutBase.ShowAttachedFlyout(aboutBtn);
         });
-        FlyoutBase.SetAttachedFlyout(aboutBtn, aboutFlyout);
+        AttachBarFlyout(aboutBtn, aboutFlyout);
 
         var row = new StackPanel
         {
@@ -1103,10 +1134,8 @@ public static partial class IslandHost
         root.Children.Add(busy);
         _chromeRoot = root;
         WireFileDrop(root);
-        _settingsHost = BuildSettingsScreen();
-        _settingsHost.Visibility = Visibility.Collapsed;
-        Grid.SetRow(_settingsHost, 1);
-        root.Children.Add(_settingsHost);
+        // Settings is built on first open. Building it into the 48 DIP bar at
+        // attach left the command row blank (star-row height 0).
         var rule = new Border { Background = Brush(Hairline) };
         Grid.SetRow(rule, 2);
         root.Children.Add(rule);
@@ -1124,8 +1153,17 @@ public static partial class IslandHost
     [DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
     // The native canvas HWND. Clicking chrome, closing a flyout, or finishing
     // a scrub must put keys back here so the router sees them.
+    private static void AttachBarFlyout(FrameworkElement target, FlyoutBase flyout)
+    {
+        FlyoutBase.SetAttachedFlyout(target, flyout);
+        flyout.Closed += (_, _) => RestoreCanvasFocus();
+    }
+
     private static void RestoreCanvasFocus()
     {
         if (_settingsVisible)
@@ -1137,7 +1175,11 @@ public static partial class IslandHost
         if (source?.SiteBridge is null) return;
         IntPtr hwnd = Win32Interop.GetWindowFromWindowId(source.SiteBridge.WindowId);
         IntPtr root = GetAncestor(hwnd, GaRoot);
-        if (root != IntPtr.Zero) SetFocus(root);
+        if (root == IntPtr.Zero) return;
+        // Do not yank focus from Explorer after Ctrl+E / Open: filename.
+        IntPtr fg = GetForegroundWindow();
+        if (fg != IntPtr.Zero && fg != root && GetAncestor(fg, GaRoot) != root) return;
+        SetFocus(root);
     }
 }
 

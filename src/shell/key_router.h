@@ -31,7 +31,7 @@ struct view_state {
   bool slideshow = false;
   bool fullscreen = false;
   bool loupe_held = false;  // Z is down: arrows nudge the loupe
-  bool popup_open = false;  // `?`, palette, go-to or find flyout is up
+  bool popup_open = false;  // `?`, go-to or find flyout is up
   bool settings_open = false;  // the settings screen covers the canvas
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 9

@@ -698,6 +698,27 @@ keep focus and scroll position while their labels update in place. Capture has
 an explicit prompt, Escape/Cancel, and consumes the captured key's repeats and
 release so Enter/Space cannot reactivate the button. Tab remains in Settings.
 
+## 2026-09-13 — Drop the Ctrl+K command palette
+
+**From.** PR 6 shipped a searchable command palette (`Ctrl+K` / `Ctrl+Shift+P`) as a
+XAML flyout over the command-bar island, filtering the live table so nothing had
+to be memorised.
+
+**To.** No palette. `?` lists the current mode's bindings; Settings type-to-filter
+finds a command to remap. The `palette` command id and `chrome_popup::palette`
+value stay as unused holes so later command ids and popup kinds do not shift.
+
+**Why.** A WinUI `TextBox` in that flyout fail-fasts (`Microsoft.UI.Xaml.dll`
+`0xC000027B`). A stand-in field still never sees keys that are already bindings,
+because the one native router handles them before the island — the filter
+ignored `O`, `F`, arrows, and every other mapped key. The owner dropped the
+feature rather than punch a second input path through the router.
+
+**How it gets reversed.** Only with a field that is not a WinUI `TextBox` *and*
+a router rule that, while the palette is open, sends printable keys to the
+filter the way Settings already does. Do not re-add `Ctrl+K` as a silent
+second `?`.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

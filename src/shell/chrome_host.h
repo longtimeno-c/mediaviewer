@@ -42,7 +42,7 @@ enum chrome_command : int {
   chrome_cmd_focus_changed = 20,     // arg is a focus_kind (key_router.h): which island, or text
   // Island notifications added after the command table filled the low ids
   // live above every command id, so the two ranges never meet.
-  chrome_cmd_popup = 1000,           // arg != 0 while a `?` / palette / go-to / find flyout is up
+  chrome_cmd_popup = 1000,           // arg != 0 while a `?` / go-to / find flyout is up
   chrome_cmd_rebind = 1001,          // packed: row | (key << 8) | (mods << 20)
   chrome_cmd_reset_keys = 1002,      // restore the default map
 };
@@ -53,7 +53,7 @@ static_assert(chrome_cmd_popup >= kCommandCount);
 enum class chrome_popup : std::int32_t {
   close = 0,
   help = 1,
-  palette = 2,
+  palette = 2,  // unused; keep the value so go_to / find / settings stay put
   go_to = 3,
   find = 4,
   settings = 5,
@@ -308,7 +308,7 @@ class chrome_host {
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
 
-  // The command table for `?` and the palette (describe_commands). Once at attach.
+  // The command table for `?` (describe_commands). Once at attach.
   void set_command_table(const std::string& utf8) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).

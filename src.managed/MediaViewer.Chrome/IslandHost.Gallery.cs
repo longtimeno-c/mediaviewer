@@ -183,8 +183,8 @@ public static partial class IslandHost
         onHidden: () =>
         {
             _galleryVisible = false;
+            ReleaseRepeater(ref _galleryRepeater);
             _galleryRoot = null;
-            _galleryRepeater = null;
             _galleryScroll = null;
             _galleryCount = null;
         });
@@ -194,8 +194,8 @@ public static partial class IslandHost
         onShown: () => _dispatcher?.DispatcherQueue.TryEnqueue(RealiseFilmstrip),
         onHidden: () =>
         {
+            ReleaseRepeater(ref _repeater);
             _filmstripRoot = null;
-            _repeater = null;
             _filmstripScroll = null;
         });
 
@@ -206,8 +206,8 @@ public static partial class IslandHost
         try
         {
             UnhookFocus();
+            ReleaseRepeater(ref _galleryRepeater);
             DisposeSource(ref _gallery);
-            _galleryRepeater = null;
             _galleryScroll = null;
             _galleryRoot = null;
             _galleryCount = null;
@@ -237,8 +237,8 @@ public static partial class IslandHost
             ChromeShowArgs args = Marshal.PtrToStructure<ChromeShowArgs>(arg);
             if (args.Visible == 0)
             {
-                source.Content = null;
                 onHidden();
+                source.Content = null;
                 Move(source, args.Width, args.Height, args.Y);
                 return 0;
             }
@@ -254,20 +254,29 @@ public static partial class IslandHost
         }
     }
 
-    // ItemsRepeater realises from the viewport change raised during a layout
-    // pass, and the pass a fresh island content triggers does not always carry
-    // one. Force it, and if nothing realised, reset the source, which always
-    // does. One arrange of a screenful of tiles, only when a strip appears.
+    // Bind after the repeater is in a XamlRoot. BuildFilmstrip used to assign
+    // ItemsSource in the constructor; that AV'd on every folder open once the
+    // listing was populated. A fresh island content pass also does not always
+    // realise tiles — force a layout, then bind, then layout again.
     private static void Realise(ItemsRepeater? repeater, FrameworkElement? root)
     {
+        if (repeater is null) return;
         root?.UpdateLayout();
-        if (repeater is null || Items.Count == 0) return;
-        if (repeater.TryGetElement(0) is null)
+        try
         {
-            repeater.ItemsSource = null;
-            repeater.ItemsSource = Items;
-            root?.UpdateLayout();
+            if (!ReferenceEquals(repeater.ItemsSource, Items))
+                repeater.ItemsSource = Items;
+            else if (Items.Count > 0 && repeater.TryGetElement(0) is null)
+            {
+                repeater.ItemsSource = null;
+                repeater.ItemsSource = Items;
+            }
         }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        root?.UpdateLayout();
     }
 
     private static void RealiseFilmstrip()
@@ -311,9 +320,9 @@ public static partial class IslandHost
 
     private static UIElement BuildGallery()
     {
+        ReleaseRepeater(ref _galleryRepeater);
         _galleryRepeater = new ItemsRepeater
         {
-            ItemsSource = Items,
             Layout = new UniformGridLayout
             {
                 MinItemWidth = GalleryTile + 16,
