@@ -728,10 +728,33 @@ void stop_slideshow(app_state* app) noexcept {
 void slideshow_tick(app_state* app) noexcept {
   if (!app || !app->show.active()) return;
   const ULONGLONG now = ::GetTickCount64();
+  // Minimised: nobody is watching, so do not advance (or decode). Restoring
+  // waits a full interval. Merely inactive keeps going — a slideshow on a
+  // second monitor while you work elsewhere is the point.
+  if (app->window && ::IsIconic(app->window)) {
+    app->show_last_advance = now;
+    return;
+  }
+  using media = mv::shell::slideshow::media;
   std::uint32_t state = MV_PLAY_STOPPED;
   if (app->session) (void)mv_video_state(app->session, &state);
-  const bool media_finished = state != MV_PLAY_PLAYING;
-  if (!app->show.should_advance(now - app->show_last_advance, media_finished)) return;
+  const bool clip_open = app->session && mv::abi::video_open(app->session);
+  media current = media::none;
+  if (clip_open) {
+    switch (state) {
+      case MV_PLAY_PLAYING: current = media::playing; break;
+      case MV_PLAY_PAUSED:  current = media::paused; break;
+      case MV_PLAY_ENDED:   current = media::finished; break;
+      default:              current = media::opening; break;  // async open, no frame yet
+    }
+  }
+  const ULONGLONG elapsed = now - app->show_last_advance;
+  // A clip that never finishes opening must not stall the slideshow forever.
+  constexpr ULONGLONG kOpenGiveUpMs = 30000;
+  if (current == media::opening && elapsed > app->show.interval_ms() + kOpenGiveUpMs) {
+    current = media::finished;
+  }
+  if (!app->show.should_advance(elapsed, mv::shell::slideshow::media_finished(current))) return;
   const std::uint32_t count = folder_count(app);
   std::uint32_t selected = 0;
   if (count == 0 || mv_folder_selected(app->session, &selected) != MV_OK) {

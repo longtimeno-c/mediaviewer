@@ -42,7 +42,7 @@ constexpr binding kBindings[] = {
     row(key::page_up, mod_none, kWalk, repeat, skip_back),
     row(key::page_down, mod_none, kWalk, repeat, skip_forward),
     row(key::escape, mod_none, kAllModes, edge, back),
-    row(key::enter, mod_none, kBrowse, edge, slideshow_start),
+    row(key::enter, mod_none, kBrowse | kVideo, edge, slideshow_start),
     row(C('F'), mod_none, kAllModes, edge, fullscreen),
     row(C('O'), mod_ctrl, kAllModes, edge, open),
     row(C('O'), mod_ctrl | mod_shift, kAllModes, edge, open_folder),

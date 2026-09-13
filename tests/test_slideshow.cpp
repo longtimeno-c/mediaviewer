@@ -82,6 +82,20 @@ TEST_CASE("a listing change under a running shuffle rebuilds the order", "[shell
   }
 }
 
+TEST_CASE("an opening clip is not finished; paused and ended are", "[shell][slideshow]") {
+  using m = slideshow::media;
+  REQUIRE(slideshow::media_finished(m::none));
+  REQUIRE_FALSE(slideshow::media_finished(m::opening));
+  REQUIRE_FALSE(slideshow::media_finished(m::playing));
+  REQUIRE(slideshow::media_finished(m::paused));
+  REQUIRE(slideshow::media_finished(m::finished));
+  slideshow s;
+  s.start(3, 0, 1);
+  for (int i = 0; i < 20; ++i) s.faster();  // 1 s: shorter than a 4K open
+  REQUIRE_FALSE(s.should_advance(5000, slideshow::media_finished(m::opening)));
+  REQUIRE(s.should_advance(5000, slideshow::media_finished(m::finished)));
+}
+
 TEST_CASE("advance waits for the later of the interval and the clip", "[shell][slideshow]") {
   slideshow s;
   REQUIRE_FALSE(s.should_advance(10000, true));  // not running

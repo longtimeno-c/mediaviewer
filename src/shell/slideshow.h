@@ -89,6 +89,21 @@ class slideshow {
     return order_[0];
   }
 
+  // Where the current item's media is, as far as the slideshow cares.
+  enum class media : std::uint8_t {
+    none,      // a still, or an animation that loops forever: interval only
+    opening,   // a clip is open but has not started (async open, first frame)
+    playing,   // a clip, or a finite animation, still going
+    paused,    // plan/16: a paused clip goes on the interval
+    finished,  // ended, or a finite animation reached its loop count
+  };
+
+  // Opening counts as not finished: a 4K clip can take longer to open than the
+  // shortest interval, and must not be skipped before it has played.
+  [[nodiscard]] static constexpr bool media_finished(media m) noexcept {
+    return m != media::opening && m != media::playing;
+  }
+
   // plan/16: a clip (or a finite animation) advances at whichever is later —
   // the interval, or the end of the media. A still, or an animation that
   // loops forever, advances on the interval alone. Paused never advances.
