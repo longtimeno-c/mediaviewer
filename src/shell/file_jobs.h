@@ -67,7 +67,11 @@ class file_jobs {
   file_jobs& operator=(const file_jobs&) = delete;
 
   [[nodiscard]] bool start() noexcept;
-  // Joins the worker. Jobs not yet started are dropped (process exit).
+  // Joins the worker. Jobs not yet started are dropped (process exit). A job
+  // already running is finished, not abandoned: a large cross-volume move keeps
+  // the process alive after the window closes until the file is whole. That is
+  // deliberate — do not "fix" it into cancelling mid-copy and leaving half a
+  // move behind.
   void stop() noexcept;
 
   // [ui-thread] Queues one job over `paths`, in order. `dest_dir` is used by

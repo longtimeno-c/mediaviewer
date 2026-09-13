@@ -76,6 +76,15 @@ struct app_state {
   bool gallery_visible = false;
   // WM_CLOSE has started the orderly teardown; a second close is a no-op.
   bool closing = false;
+  // File-job problems waiting to be reported. One dialog at a time: a job that
+  // finishes while it is up is folded in and reported after it closes.
+  struct file_report {
+    std::size_t total = 0;
+    std::size_t refused = 0;
+    std::size_t failed = 0;
+    mv::shell::file_job_kind kind = mv::shell::file_job_kind::copy;
+    bool showing = false;
+  } report;
   // Set by the island's playback poll (chrome_cmd_video_active). The transport
   // strip follows it, so it appears with a clip and leaves with it.
   bool video_on = false;
@@ -737,8 +746,12 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
     dest = utf8_from_wide(folder);
     if (dest.empty()) return true;
   }
-  app->destinations = mv::shell::push_destination(std::move(app->destinations), dest);
-  mv::shell::save_destinations(app->destinations);
+  // Written only when it changes: it is an INI write on the UI thread (plan/12
+  // "Settings writes on the UI thread").
+  if (app->destinations.empty() || app->destinations.front() != dest) {
+    app->destinations = mv::shell::push_destination(std::move(app->destinations), dest);
+    mv::shell::save_destinations(app->destinations);
+  }
   if (!app->files.submit(app->window, kind, std::move(targets), dest, app->folder_token)) {
     MV_LOG_WARN("files: could not queue the job");
     ::MessageBeep(MB_ICONWARNING);
@@ -752,13 +765,24 @@ bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
   auto targets = app->marks.targets(current_item_path(app));
   if (targets.empty()) return false;
-  wchar_t text[160]{};
+  // One item: show its name (never the folder). This is the user's own screen;
+  // confirming a delete without seeing what goes is the trap. Several: a count.
+  std::wstring text;
   if (targets.size() == 1) {
-    (void)::swprintf_s(text, L"Move this item to the Recycle Bin?");
+    const std::string& path = targets.front();
+    const auto slash = path.find_last_of("\\/");
+    const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    std::wstring wide(name.size(), L'\0');
+    const int n = ::MultiByteToWideChar(CP_UTF8, 0, name.data(), static_cast<int>(name.size()),
+                                        wide.data(), static_cast<int>(wide.size()));
+    wide.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
+    text = L"Move “" + wide + L"” to the Recycle Bin?";
   } else {
-    (void)::swprintf_s(text, L"Move %zu marked items to the Recycle Bin?", targets.size());
+    wchar_t count[96]{};
+    (void)::swprintf_s(count, L"Move %zu marked items to the Recycle Bin?", targets.size());
+    text = count;
   }
-  if (::MessageBoxW(app->window, text, L"Delete", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+  if (::MessageBoxW(app->window, text.c_str(), L"Delete", MB_YESNO | MB_ICONQUESTION) != IDYES) {
     return true;
   }
   if (!app->files.submit(app->window, mv::shell::file_job_kind::recycle, std::move(targets), {},
@@ -787,20 +811,38 @@ void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result
   MV_LOG_INFO("files: kind=%u items=%zu ok=%zu failed=%zu refused=%zu",
               static_cast<unsigned>(result->kind), total, result->succeeded(), failed, refused);
   if (refused == 0 && failed == 0) return;
-  const wchar_t* verb = result->kind == mv::shell::file_job_kind::copy   ? L"copied"
-                        : result->kind == mv::shell::file_job_kind::move ? L"moved"
-                                                                         : L"deleted";
-  wchar_t text[320]{};
-  if (refused > 0) {
-    (void)::swprintf_s(text,
-                       L"%zu of %zu items are on a drive without a Recycle Bin and were not "
-                       L"deleted.%s",
-                       refused, total, failed > 0 ? L" Others could not be deleted either." : L"");
-  } else {
-    (void)::swprintf_s(text, L"%zu of %zu items could not be %s. They are still marked.", failed,
-                       total, verb);
+
+  app->report.total += total;
+  app->report.refused += refused;
+  app->report.failed += failed;
+  app->report.kind = result->kind;
+  // A dialog is already up (this completion arrived in its modal loop): it is
+  // reported when that one closes, not stacked on top of it.
+  if (app->report.showing) return;
+  app->report.showing = true;
+  while (app->report.refused > 0 || app->report.failed > 0) {
+    const auto pending = app->report;
+    app->report.total = 0;
+    app->report.refused = 0;
+    app->report.failed = 0;
+    const wchar_t* verb = pending.kind == mv::shell::file_job_kind::copy   ? L"copied"
+                          : pending.kind == mv::shell::file_job_kind::move ? L"moved"
+                                                                           : L"deleted";
+    wchar_t text[320]{};
+    if (pending.refused > 0) {
+      (void)::swprintf_s(text,
+                         L"%zu of %zu items are on a drive without a Recycle Bin and were not "
+                         L"deleted.%s",
+                         pending.refused, pending.total,
+                         pending.failed > 0 ? L" Others could not be deleted either." : L"");
+    } else {
+      (void)::swprintf_s(text, L"%zu of %zu items could not be %s. They are still marked.",
+                         pending.failed, pending.total, verb);
+    }
+    ::MessageBoxW(app->window, text, L"MediaViewer", MB_OK | MB_ICONWARNING);
+    if (app->closing) break;
   }
-  ::MessageBoxW(app->window, text, L"MediaViewer", MB_OK | MB_ICONWARNING);
+  app->report.showing = false;
 }
 
 // Command effects. A switch over a dense enum is the jump table plan/16 asks

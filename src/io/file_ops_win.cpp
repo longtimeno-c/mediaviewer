@@ -55,6 +55,30 @@ bool file_size(const std::wstring& path, ULONGLONG& out) noexcept {
   return true;
 }
 
+// Whether `file` already lives in `dir` (full paths, ASCII case and trailing
+// separators ignored). Moving a file into its own folder is then a no-op.
+std::wstring full_path(const std::wstring& p) {
+  const DWORD need = ::GetFullPathNameW(p.c_str(), 0, nullptr, nullptr);
+  std::wstring out;
+  if (need > 0) {
+    out.resize(need);
+    const DWORD n = ::GetFullPathNameW(p.c_str(), need, out.data(), nullptr);
+    out.resize(n > 0 && n < need ? n : 0);
+  }
+  if (out.empty()) out = p;
+  while (out.size() > 3 && (out.back() == L'\\' || out.back() == L'/')) out.pop_back();
+  return out;
+}
+
+bool same_directory(const std::wstring& file, const std::wstring& dir) {
+  const auto slash = file.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return false;
+  const std::wstring a = full_path(file.substr(0, slash));
+  const std::wstring b = full_path(dir);
+  return ::CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
+                                static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
 bool exists_error(DWORD e) noexcept { return e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS; }
 
 // One attempt at one destination name. `exists` means "try the next name".
@@ -99,7 +123,8 @@ attempt move_to(const std::wstring& src, const std::wstring& dest) noexcept {
   return attempt::done;
 }
 
-// Refuses any delete the shell would not send to the Recycle Bin.
+// Refuses any delete the shell would not send to the Recycle Bin. Lives on the
+// caller's stack for exactly one PerformOperations call.
 class recycle_only_sink final : public IFileOperationProgressSink {
  public:
   bool refused = false;
@@ -108,13 +133,11 @@ class recycle_only_sink final : public IFileOperationProgressSink {
     if (!out) return E_POINTER;
     if (riid == IID_IUnknown || riid == IID_IFileOperationProgressSink) {
       *out = static_cast<IFileOperationProgressSink*>(this);
-      AddRef();
       return S_OK;
     }
     *out = nullptr;
     return E_NOINTERFACE;
   }
-  // Lives on the caller's stack for exactly one PerformOperations call.
   IFACEMETHODIMP_(ULONG) AddRef() override { return 2; }
   IFACEMETHODIMP_(ULONG) Release() override { return 1; }
 
@@ -162,6 +185,13 @@ bool pre_delete_allowed(std::uint32_t transfer_flags) noexcept {
   return (transfer_flags & TSF_DELETE_RECYCLE_IF_POSSIBLE) != 0;
 }
 
+std::int32_t probe_recycle_sink(std::uint32_t transfer_flags, bool& refused) noexcept {
+  recycle_only_sink sink;
+  const HRESULT hr = sink.PreDeleteItem(transfer_flags, nullptr);
+  refused = sink.refused;
+  return static_cast<std::int32_t>(hr);
+}
+
 }  // namespace detail
 
 result<std::string> transfer_file(std::string_view src_utf8, std::string_view dest_dir_utf8,
@@ -179,6 +209,10 @@ result<std::string> transfer_file(std::string_view src_utf8, std::string_view de
       return err(status::invalid_arg);
     }
     if (dir.back() != L'\\' && dir.back() != L'/') dir.push_back(L'\\');
+
+    // F8 into the folder the file is already in: nothing to move. (F7 there
+    // is different: a copy lands beside it as `name (2).ext`, as Explorer does.)
+    if (kind == transfer_kind::move && same_directory(src, dir)) return utf8_from_wide(src);
 
     const std::string name = utf8_from_wide(file_name_of(src));
     if (name.empty()) return err(status::invalid_arg);
@@ -208,14 +242,19 @@ result<recycle_outcome> recycle_file(std::string_view utf8_path) noexcept {
     if (path.empty()) return err(status::invalid_arg);
     if (!path_taken(path)) return err(status::io);
 
-    // The I/O pool thread has no apartment of its own; take an MTA for the
-    // duration and give it back.
-    const HRESULT init = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const bool uninit = SUCCEEDED(init);
-    if (FAILED(init) && init != RPC_E_CHANGED_MODE) return err(status::internal);
+    // IFileOperation is single-threaded-apartment only; MTA callers are meant
+    // to use SHFileOperation. The file-job worker runs nothing else, so it
+    // takes an STA for this call and gives it back. A thread already in the
+    // MTA is a caller bug, not something to carry on with.
+    const HRESULT init = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(init)) return err(status::internal);
+    struct com_scope {
+      ~com_scope() { ::CoUninitialize(); }
+    } const scope;
 
-    status st = status::io;
     recycle_only_sink sink;
+    bool performed_ok = false;
+    BOOL aborted = FALSE;
     IFileOperation* op = nullptr;
     if (SUCCEEDED(::CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL,
                                      IID_PPV_ARGS(&op)))) {
@@ -226,21 +265,17 @@ result<recycle_outcome> recycle_file(std::string_view utf8_path) noexcept {
         IShellItem* item = nullptr;
         if (SUCCEEDED(::SHCreateItemFromParsingName(path.c_str(), nullptr,
                                                     IID_PPV_ARGS(&item)))) {
-          BOOL aborted = FALSE;
           if (SUCCEEDED(op->DeleteItem(item, &sink))) {
-            const HRESULT performed = op->PerformOperations();
+            performed_ok = SUCCEEDED(op->PerformOperations());
             (void)op->GetAnyOperationsAborted(&aborted);
-            if (sink.refused) st = status::ok;  // reported below as a refusal
-            else if (SUCCEEDED(performed) && !aborted && !path_taken(path)) st = status::ok;
           }
           item->Release();
         }
       }
       op->Release();
     }
-    if (uninit) ::CoUninitialize();
-    if (st != status::ok) return err(st);
-    return sink.refused ? recycle_outcome::refused_no_recycle_bin : recycle_outcome::recycled;
+    return detail::recycle_outcome_from(sink.refused, performed_ok, aborted != FALSE,
+                                        path_taken(path));
   } catch (...) {
     return err(status::out_of_memory);
   }

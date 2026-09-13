@@ -21,7 +21,8 @@ enum class transfer_kind : std::uint8_t {
   copy,
   // Same volume: a rename. Across volumes: copy, verify the size, then delete
   // the source. A copy that fails or comes up short is removed and the source
-  // is left where it was.
+  // is left where it was. Moving a file into the folder it is already in is a
+  // no-op that succeeds (unlike a copy, which lands beside it as `name (2)`).
   move,
 };
 
@@ -48,6 +49,21 @@ namespace detail {
 // The rule recycle_file enforces, on the shell's per-item transfer flags (the
 // Windows TSF_* word): a delete may go ahead only if it will go to the bin.
 [[nodiscard]] bool pre_delete_allowed(std::uint32_t transfer_flags) noexcept;
+
+// Test seam: runs the real progress sink's PreDeleteItem with `transfer_flags`
+// and returns its HRESULT (0 = go ahead, E_ABORT = refused); `refused` is the
+// sink's own record of it. No shell operation is performed.
+[[nodiscard]] std::int32_t probe_recycle_sink(std::uint32_t transfer_flags, bool& refused) noexcept;
+
+// What recycle_file reports once the operation has run. A refusal wins over
+// everything: nothing was deleted, and the user is told why.
+[[nodiscard]] inline result<recycle_outcome> recycle_outcome_from(bool sink_refused,
+                                                                  bool performed_ok, bool aborted,
+                                                                  bool still_exists) noexcept {
+  if (sink_refused) return recycle_outcome::refused_no_recycle_bin;
+  if (performed_ok && !aborted && !still_exists) return recycle_outcome::recycled;
+  return err(status::io);
+}
 }  // namespace detail
 
 }  // namespace mv::io

@@ -58,6 +58,39 @@ TEST_CASE("a delete may go ahead only when it goes to the Recycle Bin", "[io][fi
   REQUIRE_FALSE(mv::io::detail::pre_delete_allowed(TSF_COPY_LOCALIZED_NAME | TSF_FAIL_EXIST));
 }
 
+TEST_CASE("the recycle plumbing refuses rather than deletes permanently", "[io][files]") {
+  // The real sink, driven directly: no shell operation runs.
+  bool refused = true;
+  REQUIRE(mv::io::detail::probe_recycle_sink(TSF_DELETE_RECYCLE_IF_POSSIBLE, refused) == S_OK);
+  REQUIRE_FALSE(refused);
+  REQUIRE(mv::io::detail::probe_recycle_sink(TSF_NORMAL, refused) == E_ABORT);
+  REQUIRE(refused);
+
+  using mv::io::recycle_outcome;
+  using mv::io::detail::recycle_outcome_from;
+  // A refusal is reported as such whatever else the operation said.
+  REQUIRE(recycle_outcome_from(true, false, true, true).value() ==
+          recycle_outcome::refused_no_recycle_bin);
+  REQUIRE(recycle_outcome_from(false, true, false, false).value() == recycle_outcome::recycled);
+  REQUIRE_FALSE(recycle_outcome_from(false, true, false, true));   // still there
+  REQUIRE_FALSE(recycle_outcome_from(false, false, false, false)); // shell failed
+  REQUIRE_FALSE(recycle_outcome_from(false, true, true, false));   // aborted
+}
+
+// Hidden: puts a real (scratch) file in this user's Recycle Bin. Run by name:
+//   mv_tests "[.recycle]"
+TEST_CASE("a real file goes to the Recycle Bin", "[.recycle]") {
+  const fs::path p = fs::temp_directory_path() /
+                     ("mv_recycle_" + std::to_string(::GetCurrentProcessId()) + "_" +
+                      std::to_string(::GetTickCount64()) + ".txt");
+  { std::ofstream(p, std::ios::binary) << "MediaViewer [.recycle] test file"; }
+  REQUIRE(fs::exists(p));
+  const auto r = mv::io::recycle_file(utf8(p));
+  REQUIRE(r);
+  REQUIRE(r.value() == mv::io::recycle_outcome::recycled);
+  REQUIRE_FALSE(fs::exists(p));
+}
+
 TEST_CASE("copy never overwrites and never touches the original", "[io][files]") {
   scratch s;
   const fs::path src = s.write("IMG_0001.JPG", "original");
@@ -94,6 +127,17 @@ TEST_CASE("move renames, avoids collisions, and reports bad input", "[io][files]
   REQUIRE(collided);
   REQUIRE(fs::path(collided.value()).filename() == "b (2).png");
   REQUIRE(read(s.root / "dest" / "b.png") == "existing");
+
+  // F8 into the folder it is already in: a no-op, not a rename to `(2)` —
+  // whatever the spelling of that folder.
+  const fs::path d = s.write("d.png", "D");
+  std::string same_dir = utf8(s.root / "src") + "\\";
+  for (auto& ch : same_dir) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  const auto stayed = transfer_file(utf8(d), same_dir, transfer_kind::move);
+  REQUIRE(stayed);
+  REQUIRE(fs::exists(d));
+  REQUIRE_FALSE(fs::exists(s.root / "src" / "d (2).png"));
+  REQUIRE(read(d) == "D");
 
   REQUIRE_FALSE(transfer_file(utf8(s.root / "src" / "missing.png"), utf8(s.root / "dest"),
                               transfer_kind::copy));
