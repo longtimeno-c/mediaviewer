@@ -216,4 +216,32 @@ void save_key_overrides(std::span<const key_override> list) noexcept {
   }
 }
 
+namespace {
+
+constexpr wchar_t kCrash[] = L"crash";
+
+}  // namespace
+
+crash_settings load_crash_settings() noexcept {
+  try {
+    crash_settings out;
+    const std::wstring path = settings_path();
+    if (path.empty()) return out;
+    const int c = ::GetPrivateProfileIntW(kCrash, L"consent", -1, path.c_str());
+    out.consent = c < 0 ? -1 : (c > 0 ? 1 : 0);
+    wchar_t url[512]{};
+    ::GetPrivateProfileStringW(kCrash, L"upload_url", L"", url, 512, path.c_str());
+    out.upload_url = utf8_from_wide(url);
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+
+void save_crash_consent(bool accepted) noexcept {
+  const std::wstring path = settings_path();
+  if (path.empty()) return;
+  ::WritePrivateProfileStringW(kCrash, L"consent", accepted ? L"1" : L"0", path.c_str());
+}
+
 }  // namespace mv::shell

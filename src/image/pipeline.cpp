@@ -13,7 +13,17 @@ result<display_image> decode_bytes(std::span<const std::uint8_t> bytes, const jo
 }
 
 result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const job_context* ctx) {
-  auto raster = codec::decode_jpeg(bytes, ctx, 4);
+  const auto family = codec::probe(bytes);
+  result<codec::raster> raster = err(status::unsupported_format);
+  if (family == codec::format_family::jpeg) {
+    raster = codec::decode_jpeg(bytes, ctx, 4);
+  } else if (family == codec::format_family::raw || family == codec::format_family::tiff ||
+             codec::looks_like_raw(bytes)) {
+    // Embedded JPEG inside a RAW — first pixel in preview time (plan/04, PR 7).
+    raster = codec::decode_raw_preview(bytes, ctx);
+  } else {
+    return err(status::unsupported_format);
+  }
   if (!raster) return err(raster.error());
   if (raster->width < 16 || raster->height < 16) return err(status::unsupported_format);
   if (ctx && ctx->cancelled()) return err(status::cancelled);

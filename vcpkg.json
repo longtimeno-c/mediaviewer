@@ -61,6 +61,29 @@
     {
       "name": "libwebp",
       "platform": "windows"
+    },
+    {
+      "name": "tiff",
+      "platform": "windows"
+    },
+    {
+      "name": "libheif",
+      "default-features": false,
+      "platform": "windows"
+    },
+    {
+      "name": "libavif",
+      "default-features": false,
+      "features": ["dav1d"],
+      "platform": "windows"
+    },
+    {
+      "name": "libraw",
+      "platform": "windows"
+    },
+    {
+      "name": "crashpad",
+      "platform": "windows"
     }
   ],
 
@@ -70,7 +93,7 @@
     "PR 4-deferred": ["directxtex"],
     "PR 5a": "landed: ffmpeg. NOTE the feature names here are the port's, not the plan's shorthand: `core` and `avutil` are NOT features of ffmpeg (avutil is always built), and passing them fails vcpkg outright. avfilter is required for PR 5c's atempo chain; dav1d is the AV1 software fallback (BSD-2, LGPL-compatible) for GPUs without an AV1 profile.",
     "PR 6": "landed: giflib (MIT) and libwebp (BSD-3, default features: libwebpmux is used by tests only) for animated GIF / WebP, brought forward from PR 7 (plan/12 2026-09-13).",
-    "PR 7": ["tiff", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],
+    "PR 7": "landed: tiff, libheif (default-features OFF — the port's `hevc` feature is x265 encode, forbidden), libavif[dav1d], libraw, crashpad. libde265 is a hard dependency of libheif, not a feature, so HEIC decode does not pull x265. See plan/12 2026-09-13.",
     "PR 8": ["exiv2"],
     "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them, and it now reads the configure string embedded in the built avutil/avcodec DLLs rather than a log vcpkg deletes. Verified on the pinned baseline: the port configures --enable-d3d11va --enable-dxva2 --enable-shared with --disable-libx264 --disable-libx265 --disable-libfdk-aac and no --enable-gpl.",
     "note-exiv2": "GPL-2.0, and kept. The app is GPL-2.0-or-later (plan/11, settled in PR 1), so this is compliant rather than a trap.",

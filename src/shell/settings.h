@@ -85,4 +85,22 @@ void save_destinations(const std::vector<std::string>& list) noexcept;
                                                         std::string_view utf8_dir,
                                                         std::size_t max = kMaxDestinations);
 
+// Crash reporting (plan/13 Part 2), section [crash]. consent: -1 never asked,
+// 0 declined, 1 accepted. upload_url: empty in PR 7 -- no endpoint exists, and
+// nothing uploads without both a URL and consent. No path of a user file is
+// ever stored here.
+struct crash_settings {
+  int consent = -1;
+  std::string upload_url;
+};
+[[nodiscard]] crash_settings load_crash_settings() noexcept;
+void save_crash_consent(bool accepted) noexcept;
+
+// Pure. "Ask before the first send, plainly, once": only when there is
+// something to send, somewhere to send it, and the user has never answered.
+[[nodiscard]] inline bool should_ask_crash_consent(const crash_settings& s,
+                                                   std::size_t pending_reports) noexcept {
+  return s.consent < 0 && !s.upload_url.empty() && pending_reports > 0;
+}
+
 }  // namespace mv::shell

@@ -33,6 +33,7 @@ struct view_state {
   bool loupe_held = false;  // Z is down: arrows nudge the loupe
   bool popup_open = false;  // `?`, go-to or find flyout is up
   bool settings_open = false;  // the settings screen covers the canvas
+  bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 9
 };
@@ -45,6 +46,7 @@ enum class back_target : std::uint8_t {
   none,
   blur_text,
   popup,
+  motion,  // stop a Live Photo's motion and return to the still
   crop,
   pane,
   gallery,

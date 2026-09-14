@@ -22,8 +22,27 @@ TEST_CASE("probe is by magic bytes, never by length of a guess", "[codec][probe]
   const std::uint8_t bmp[] = {'B', 'M', 0, 0, 0, 0};
   REQUIRE(probe(bmp) == format_family::bmp);
 
-  const std::uint8_t tiff_le[] = {'I', 'I', 42, 0};  // PR 7, not yet
-  REQUIRE(probe(tiff_le) == format_family::unknown);
+  const std::uint8_t tiff_le[] = {'I', 'I', 42, 0};
+  REQUIRE(probe(tiff_le) == format_family::tiff);
+  const std::uint8_t tiff_be[] = {'M', 'M', 0, 42};
+  REQUIRE(probe(tiff_be) == format_family::tiff);
+
+  const std::uint8_t ico[] = {0, 0, 1, 0, 1, 0};
+  REQUIRE(probe(ico) == format_family::ico);
+  const std::uint8_t ico_empty[] = {0, 0, 1, 0, 0, 0};
+  REQUIRE(probe(ico_empty) == format_family::unknown);
+
+  // ftyp heic at offset 4.
+  std::uint8_t heic[12] = {0, 0, 0, 20, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c'};
+  REQUIRE(probe(heic) == format_family::heic);
+  std::uint8_t avif[12] = {0, 0, 0, 20, 'f', 't', 'y', 'p', 'a', 'v', 'i', 'f'};
+  REQUIRE(probe(avif) == format_family::avif);
+  std::uint8_t cr3[12] = {0, 0, 0, 20, 'f', 't', 'y', 'p', 'c', 'r', 'x', ' '};
+  REQUIRE(probe(cr3) == format_family::raw);
+
+  const std::uint8_t raf[] = {'F', 'U', 'J', 'I', 'F', 'I', 'L', 'M', 'C', 'C', 'D', '-',
+                              'R', 'A', 'W', 0};
+  REQUIRE(probe(raf) == format_family::raw);
 
   // PR 6 brought WebP and GIF forward from PR 7 (plan/12 2026-09-13).
   const std::uint8_t webp[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'};

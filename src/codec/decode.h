@@ -43,6 +43,31 @@ struct jpeg_size {
                                         const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_webp(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
+[[nodiscard]] result<raster> decode_tiff(std::span<const std::uint8_t> bytes,
+                                         const job_context* ctx = nullptr);
+[[nodiscard]] result<raster> decode_ico(std::span<const std::uint8_t> bytes,
+                                        const job_context* ctx = nullptr);
+[[nodiscard]] result<raster> decode_heic(std::span<const std::uint8_t> bytes,
+                                         const job_context* ctx = nullptr);
+[[nodiscard]] result<raster> decode_avif(std::span<const std::uint8_t> bytes,
+                                         const job_context* ctx = nullptr);
+[[nodiscard]] result<raster> decode_raw(std::span<const std::uint8_t> bytes,
+                                        const job_context* ctx = nullptr);
+
+// Embedded JPEG/preview inside a RAW, if any. `unsupported_format` when the
+// file is not RAW or has no usable preview. First pixel for CR2/NEF/ARW
+// (plan/04). Does not write the original bytes.
+[[nodiscard]] result<raster> decode_raw_preview(std::span<const std::uint8_t> bytes,
+                                                const job_context* ctx = nullptr);
+
+// True when LibRaw (or a non-TIFF RAW magic) says this buffer is a camera RAW.
+// TIFF-container RAWs probe as `tiff`; decode() uses this to reclassify.
+[[nodiscard]] bool looks_like_raw(std::span<const std::uint8_t> bytes) noexcept;
+
+// OS codec (WIC on Windows) tried first (D3). `unsupported_format` means fall
+// through to the bundled decoder. Implementation is codec/os_decode_win.cpp.
+[[nodiscard]] result<raster> try_os_decode(std::span<const std::uint8_t> bytes,
+                                           const job_context* ctx = nullptr);
 
 // Frame-at-a-time animation (plan/04). The bytes are shared, not copied, and
 // kept alive by the source. `unsupported_format` when the file is known to be
@@ -55,6 +80,10 @@ struct jpeg_size {
 [[nodiscard]] result<std::unique_ptr<animation_source>> open_webp_animation(
     std::shared_ptr<const std::vector<std::uint8_t>> bytes);
 [[nodiscard]] result<std::unique_ptr<animation_source>> open_apng_animation(
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes);
+[[nodiscard]] result<std::unique_ptr<animation_source>> open_heic_animation(
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes);
+[[nodiscard]] result<std::unique_ptr<animation_source>> open_avif_animation(
     std::shared_ptr<const std::vector<std::uint8_t>> bytes);
 
 // Tests and tools only: every frame of one play, within `max_bytes` of RGBA.

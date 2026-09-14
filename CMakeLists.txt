@@ -130,6 +130,8 @@ endif()
 add_library(mv_core STATIC
   src/core/job_system_win.cpp
   src/core/trace_win.cpp
+  src/core/crash_context.cpp
+  src/core/crash_context.h
   src/core/job_system.h
   src/core/result.h
   src/core/spsc_ring.h
@@ -148,6 +150,8 @@ add_library(mv_gfx STATIC
   src/gfx/pacer.cpp
   src/gfx/swapchain.cpp
   src/gfx/blit.cpp
+  src/gfx/texture.cpp
+  src/gfx/texture.h
   src/gfx/device.h
   src/gfx/pacer.h
   src/gfx/swapchain.h
@@ -179,6 +183,7 @@ add_library(mv_io STATIC
   src/io/collision_name.h
   src/io/file_ops.h
   src/io/file_ops_win.cpp
+  src/io/pairing.h
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
@@ -192,6 +197,28 @@ find_package(JPEG REQUIRED)
 # giflib is MIT, libwebp BSD-3: both permissive, dynamic in the x64-windows triplet.
 find_package(GIF REQUIRED)
 find_package(WebP CONFIG REQUIRED)
+# PR 7: camera-dump formats. libheif default-features are OFF in vcpkg.json
+# because the port's `hevc` feature is x265 encode (plan/11). libde265 is a
+# hard dependency of the port, so HEIC decode does not pull a software HEVC
+# encoder. LibRaw uses the thread-safe raw_r target — decode is on the pool.
+find_package(TIFF REQUIRED)
+find_package(libheif CONFIG REQUIRED)
+if(TARGET libheif::heif)
+  set(MV_HEIF_TARGET libheif::heif)
+elseif(TARGET heif)
+  set(MV_HEIF_TARGET heif)
+else()
+  message(FATAL_ERROR "libheif imported target not found")
+endif()
+find_package(libavif CONFIG REQUIRED)
+if(TARGET avif)
+  set(MV_AVIF_TARGET avif)
+elseif(TARGET libavif::avif)
+  set(MV_AVIF_TARGET libavif::avif)
+else()
+  message(FATAL_ERROR "libavif imported target not found")
+endif()
+find_package(libraw CONFIG REQUIRED)
 find_package(spng CONFIG REQUIRED)
 if(TARGET spng::spng)
   set(MV_SPNG_TARGET spng::spng)
@@ -213,13 +240,25 @@ add_library(mv_codec STATIC
   src/codec/apng.h
   src/codec/gif.cpp
   src/codec/webp.cpp
+  src/codec/tiff.cpp
+  src/codec/ico.cpp
+  src/codec/heif.cpp
+  src/codec/avif.cpp
+  src/codec/raw.cpp
+  src/codec/raw_internal.h
+  src/codec/os_decode_win.cpp
+  src/codec/crash_test_hook.cpp
+  src/codec/crash_test_hook.h
+  src/codec/os_decode.h
   src/codec/decode.h
   src/codec/format.h
   src/codec/raster.h
 )
 target_link_libraries(mv_codec
   PUBLIC mv_core
-  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux)
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
+          TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
+          windowscodecs ole32)
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
@@ -233,11 +272,13 @@ add_library(mv_image STATIC
   src/image/colour.cpp
   src/image/pipeline.cpp
   src/image/upload.cpp
+  src/image/tiles.cpp
   src/image/thumb.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/upload.h
   src/image/gpu_image.h
+  src/image/tiles.h
   src/image/thumb.h
 )
 target_link_libraries(mv_image
@@ -309,6 +350,7 @@ add_library(mv_canvas STATIC
   src/canvas/camera.cpp
   src/canvas/camera.h
   src/canvas/spring.h
+  src/canvas/refinement.h
 )
 target_link_libraries(mv_canvas PUBLIC mv_core)
 add_library(mv::canvas ALIAS mv_canvas)
@@ -321,6 +363,8 @@ add_library(mv::canvas ALIAS mv_canvas)
 # ---------------------------------------------------------------------------
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
+  src/abi/crash_export.cpp
+  src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
   src/abi/include/mediaviewer/mediaviewer.h
@@ -341,6 +385,9 @@ add_library(mv::abi ALIAS mediaviewer_core)
 # inside them rather than re-implementing presentation.
 # ---------------------------------------------------------------------------
 find_package(imgui CONFIG REQUIRED)
+# PR 7: Crashpad (Apache-2.0) client, static; crashpad_handler.exe runs
+# out-of-process beside the lab (plan/13 Part 2).
+find_package(crashpad CONFIG REQUIRED)
 
 add_executable(mediaviewer_lab WIN32
   src/shell/main.cpp
@@ -362,6 +409,10 @@ add_executable(mediaviewer_lab WIN32
   src/shell/navigation.h
   src/shell/settings.cpp
   src/shell/settings.h
+  src/shell/crash_reporter_win.cpp
+  src/shell/crash_reporter_win.h
+  src/shell/minidump_scrub.cpp
+  src/shell/minidump_scrub.h
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
@@ -379,7 +430,33 @@ target_link_libraries(mediaviewer_lab PRIVATE
   ole32     # CoInitializeEx for the WinUI island STA
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
+  crashpad::crashpad
 )
+target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+# The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
+set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
+if(EXISTS "${MV_CRASHPAD_TOOLS}/crashpad_handler.exe")
+  add_custom_command(TARGET mediaviewer_lab POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MV_CRASHPAD_TOOLS}/crashpad_handler.exe"
+            "$<TARGET_FILE_DIR:mediaviewer_lab>/crashpad_handler.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MV_CRASHPAD_TOOLS}/z.dll"
+            "$<TARGET_FILE_DIR:mediaviewer_lab>/z.dll"
+    COMMENT "Copy crashpad_handler.exe beside mediaviewer_lab")
+else()
+  message(WARNING "crashpad_handler.exe not found under ${MV_CRASHPAD_TOOLS}; "
+                  "the lab will run without crash reporting")
+endif()
+
+# tools/minidump-scrub -- the app's privacy scrub, standalone (PR 7 verify).
+add_executable(mv_minidump_scrub
+  tools/minidump-scrub/main.cpp
+  src/shell/minidump_scrub.cpp
+  src/shell/minidump_scrub.h
+)
+target_link_libraries(mv_minidump_scrub PRIVATE mv_project_options)
+target_include_directories(mv_minidump_scrub PRIVATE src)
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -401,6 +478,7 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
 )
 if(DOTNET_EXE)
   # Publish beside the lab on every lab link so `cmake --build --target
@@ -457,6 +535,8 @@ if(MV_BUILD_TESTS)
     tests/test_camera.cpp
     tests/test_abi_image.cpp
     tests/test_upload.cpp
+    tests/test_tiles.cpp
+    tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
     tests/test_folder.cpp
@@ -481,11 +561,17 @@ if(MV_BUILD_TESTS)
     tests/test_slideshow.cpp
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
+    tests/test_pairing.cpp
+    tests/test_raw.cpp
+    tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
+    tests/test_minidump_scrub.cpp
+    src/shell/minidump_scrub.cpp
+    tests/test_tiff_ico.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp
@@ -508,6 +594,7 @@ if(MV_BUILD_TESTS)
     WebP::webp
     WebP::webpdemux
     WebP::libwebpmux  # tests only: WebPAnimEncoder builds animated fixtures
+    TIFF::TIFF        # tests only: in-memory TIFF fixtures (tests/fixtures_tiff_ico.h)
     lcms2::lcms2
     Catch2::Catch2WithMain
     ole32
@@ -535,10 +622,10 @@ if(MV_BUILD_TESTS)
   # a missing clip into a failure in CI.
   if(MV_ASAN)
     # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
-    # Windows driver when the executable is ASan-instrumented. Keep the ASan
-    # job on the deterministic CPU/core suite; the normal MSVC and clang-cl
-    # jobs still run every [video][ring] hardware test.
-    catch_discover_tests(mv_tests TEST_SPEC "~[video][ring]"
+    # Windows driver when the executable is ASan-instrumented. Exclude every
+    # video-tagged test here, not only cases carrying both [video] and [ring].
+    # Normal MSVC and clang-cl jobs still run the complete video suite.
+    catch_discover_tests(mv_tests TEST_SPEC "~[video]"
       PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   else()
     catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
@@ -563,6 +650,33 @@ if(MV_BUILD_TESTS)
   add_custom_command(TARGET mv_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:mediaviewer_core> $<TARGET_FILE_DIR:mv_tests>)
+endif()
+
+# ---------------------------------------------------------------------------
+# PR 7 — broken-file corpus (plan/09, plan/10 PR 7 verify: "nothing in the
+# broken corpus crashes or hangs"). Its own executable so the Job Object
+# memory cap and crash attribution in tests/test_broken_corpus.cpp apply to
+# nothing else. Seeds live in tests/data (committed, synthetic, licence-clean).
+# ---------------------------------------------------------------------------
+if(MV_BUILD_TESTS AND NOT MV_FUZZ)
+  add_executable(mv_broken_tests tests/test_broken_corpus.cpp)
+  target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
+  target_include_directories(mv_broken_tests PRIVATE src)
+  target_compile_definitions(mv_broken_tests PRIVATE
+    MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+  catch_discover_tests(mv_broken_tests TEST_PREFIX "broken_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 1800 LABELS broken)
+endif()
+
+# ---------------------------------------------------------------------------
+# PR 7 — libFuzzer harnesses, one per decoder entry point (tools/fuzz). Needs
+# clang-cl: cmake -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF, then build the
+# `mv_fuzzers` target only (the rest of the tree is instrumented too, but not
+# linked against the sanitizer runtime). tools/fuzz/run.ps1 runs them.
+# ---------------------------------------------------------------------------
+option(MV_FUZZ "Build libFuzzer harnesses (clang-cl only)" OFF)
+if(MV_FUZZ)
+  add_subdirectory(tools/fuzz)
 endif()
 
 message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-2.0-or-later (plan/11)")

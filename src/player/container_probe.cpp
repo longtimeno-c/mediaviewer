@@ -24,9 +24,13 @@ namespace {
   // and FFmpeg opens them all through the same demuxer, so the distinction is
   // for reporting rather than routing.
   if (has(b, 8, "qt  ", 4)) return container::quicktime;
-  // ISO-BMFF also stores still images; do not route HEIF/AVIF to video.
+  // ISO-BMFF also stores still images; do not route HEIF/AVIF or a Canon CR3
+  // ('crx ', a RAW the still pipeline owns) to video.
   if (has(b, 8, "avif", 4) || has(b, 8, "avis", 4) || has(b, 8, "heic", 4) ||
-      has(b, 8, "heix", 4) || has(b, 8, "mif1", 4) || has(b, 8, "msf1", 4)) return container::unknown;
+      has(b, 8, "heix", 4) || has(b, 8, "mif1", 4) || has(b, 8, "msf1", 4) ||
+      has(b, 8, "crx ", 4)) {
+    return container::unknown;
+  }
   return container::mp4;
 }
 

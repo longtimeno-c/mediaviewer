@@ -20,6 +20,7 @@
 #include <exception>
 #include <utility>
 
+#include "core/crash_context.h"
 #include "core/status.h"
 #include "core/trace.h"
 
@@ -48,6 +49,7 @@ template <typename Fn>
 status guard(const char* function_literal, Fn&& fn) noexcept {
   const std::uint64_t correlation = next_correlation_id();
   begin_call(correlation);
+  crash_context::note_call(correlation);  // plan/13: last in-flight call id
   trace::abi_call(function_literal, correlation);
 
   status result = status::internal;

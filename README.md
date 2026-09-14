@@ -7,12 +7,13 @@ Windows integration follow in future updates. **v1 is Windows.** From PR 4 the n
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 7 is being completed by agents; PR 8 packages the Windows viewer for its
-first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
+**Status: PR 7's slices are all merged and pass locally; its clean-VM HEIC, real
+Live Photo and on-screen no-pop checks are still open. PR 8 packages the Windows viewer
+for its first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
 the tree and unverified on Apple Silicon.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
-window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP
-**or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
+window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
+TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
 cache, arrow keys move the selection. PR 5 puts video on that same swapchain —
 FFmpeg demux and decode, D3D11VA on the lab's own device, NV12/P010 sampled and
 tone-mapped in one shader, a WASAPI audio master clock, and a transport (seek,
@@ -21,7 +22,18 @@ folder and one present path. PR 6 makes browse keyboard-complete: one key
 router over a live command table, `?` shortcuts built from that table, a
 Settings screen that remaps it, marks, copy/move-to, Recycle
 Bin delete, fullscreen, slideshow as a mode, fit/fill/100 %, gallery drag-and-drop,
-and animated GIF/APNG/WebP on the frame clock.
+and animated GIF/APNG/WebP on the frame clock. PR 7 (in progress) adds the camera-dump
+formats — TIFF and ICO (libtiff), HEIC/HEIF (libheif + libde265; the Windows HEIF codec
+is used for plain HEIC stills only when the Store HEVC pack is present), AVIF still and
+animated (libavif + dav1d), and camera RAW (LibRaw: the embedded preview is first pixel,
+then the full decode) — plus RAW+JPEG and Live Photo pairing, and out-of-process
+Crashpad crash reporting whose dumps are scrubbed of paths, filenames and the
+username before anything could be sent (no upload endpoint exists yet), a
+preview→full refinement that keeps the view and cross-fades instead of refitting,
+and a tiled pyramid for images above 64 MP or wider than 16384 px. A broken-file
+corpus (`mv_broken_tests`) runs in every CI build leg, and per-decoder libFuzzer
+harnesses (`-DMV_FUZZ=ON` under clang-cl, `tools/fuzz/run.ps1`) run briefly on
+pull requests and for longer nightly.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab
@@ -46,7 +58,7 @@ that apply to what you are doing.
 | | |
 |---|---|
 | **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Open a folder, drop a JPEG/PNG/BMP/GIF/WebP or a clip, or pass a path on the command line. Animated GIF, APNG and WebP play on the render thread's frame clock, frame 0 first. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom, Left/Right browse. Video plays on the same swapchain as photos — never a `MediaPlayerElement`. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay, which grows codec, decoder, A/V drift and present-counter lines while a clip is up. WinUI command bar (top) and filmstrip (bottom) are `DesktopWindowXamlSource` islands; the canvas is not a `SwapChainPanel`. |
-| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp) with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
+| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`mediaviewer_lab` (Darwin)** | PR 16 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. No SwiftUI, no decode, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
@@ -154,7 +166,7 @@ Files added to or removed from the open folder show up without a restart.
 
 A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
-| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP, MP4/MOV/MKV/WebM/AVI/TS) |
+| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
@@ -186,7 +198,20 @@ springs back to centre. Drop a file on the window.
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
-[Test](#test)), or a positional file or folder. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
+[Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
+the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
+positional file or folder.
+
+A still's first pixel is a preview (JPEG DCT 1/4, or a RAW's embedded JPEG); the full
+decode then *refines* the same item rather than replacing it: the view you have — fit,
+or a zoom and pan made while it loaded — is kept as a fraction of the image, and the
+full texture cross-fades in over 80 ms (up to 250 ms when the preview and the full
+render differ a lot in brightness, as a RAW's embedded JPEG and LibRaw's render do).
+Images above ~64 MP, or wider or taller than 16384 px, are shown as a tiled pyramid: a
+≤ 2048 px overview is always loaded, and 256 px tiles for the part on screen are
+created a few per refresh and drawn over it, so a fast zoom or pan is blurry for a
+moment, never blank. `F` / `F3` shows the tile LOD, resident tiles and VRAM, create
+times, and refinement counters. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
 fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
@@ -239,6 +264,21 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 .\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
 .\tools\licence-check.ps1          # no GPL FFmpeg, no software HEVC/AAC encoder
 
+# PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
+# bit-flipped and given absurd dimensions, plus tests/data/broken, through every
+# decode entry point. Fails on a crash, an escaped exception, a call over 5 s,
+# or runaway memory. Part of plain ctest; this runs just that suite.
+ctest --test-dir build -C Release -L broken --output-on-failure
+$env:MV_BROKEN_FULL = "1"          # exhaustive sweep (nightly CI)
+$env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
+# seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
+python tools\testmedia\make-seeds.py
+
+# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan)
+cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
+cmake --build build-fuzz --config Release --target mv_fuzzers
+.\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+
 # the frame-time gate — 60 seconds, needs a quiet machine
 .\build\bin\Release\frametime.exe --seconds 60
 
@@ -247,6 +287,38 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 # Under 1800 s it exits 4 and is DIAGNOSTIC ONLY — it is not the verify.
 .\build\bin\Release\mediaviewer_lab.exe --av-soak 1860 --csv drift.csv `
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
+```
+
+### Crash reports (PR 7)
+
+Native crashes are captured out-of-process by Crashpad into
+`%LocalAppData%\MediaViewer\Crashes`. Nothing is uploaded. On the next launch the app
+scrubs each dump: memory outside thread stacks is zeroed, and paths, media filenames and
+your username are masked. Managed exceptions go to `Crashes\managed\`.
+[plan/13](plan/13-updates-and-telemetry.md) has the details.
+
+The PR 7 verify is "a deliberately-corrupted RAW produces a minidump containing no path,
+filename, or pixel data". The crash hook only fires when **both** the environment variable
+and the marker in the file are present.
+
+```powershell
+# 1. a marked COPY of a real RAW, in PRIVATE_FOLDER_canary\SECRET_FILENAME_canary_7Q3.dng
+.\tools\make-crash-raw.ps1 -Source tools\testmedia\raw\pentax_k50.dng
+
+# 2. crash on it
+$env:MV_CRASH_TEST = 'decode'
+.\build\bin\Release\mediaviewer_lab.exe --open "$env:LOCALAPPDATA\Temp\mv-crash-canary\PRIVATE_FOLDER_canary\SECRET_FILENAME_canary_7Q3.dng"
+Remove-Item Env:MV_CRASH_TEST
+
+# 3. scrub: relaunch the app (it scrubs on start), or run the standalone tool
+.\build\bin\Release\mv_minidump_scrub.exe <in.dmp> <out.dmp>
+
+# 4. scan; exit 0 = PASS
+.\tools\minidump-scan.ps1 -Dump <out.dmp> -Forbidden '<canary path>','SECRET_FILENAME_canary_7Q3','PRIVATE_FOLDER_canary',$env:USERNAME
+
+# pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
+# prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
+# crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
@@ -406,6 +478,27 @@ Slipped from PR 6, recorded in [plan/12-decision-log.md](plan/12-decision-log.md
 the folder-tree island to PR 9 (its key beeps; its command and canvas inset are
 in), and hiding companion files to PR 7.
 
+PR 7 (in progress) pairs files at scan time: a camera's `DSC_0001.JPG` +
+`DSC_0001.NEF` (or HEIC + RAW) and an iPhone Live Photo (`IMG_0001.HEIC` or
+`.JPG` + `IMG_0001.MOV`) are **one** filmstrip entry and one arrow-key stop,
+badged RAW or LIVE. `;` plays a Live Photo's motion once and returns to the
+still. Copy, move and delete act on both files of a pair. "Open RAW of pair" /
+"Open JPEG of pair" have no default key; assign one in Settings (`Ctrl+,`).
+`.xmp`, `.thm`, `.aae`, `.wav`, hidden and system files are never listed.
+
+PR 7's decoders are in. Measured on five CC0 raw.pixls.us samples (CR2, NEF,
+ARW, CR3, DNG): the embedded preview is on screen in 11–69 ms, about a JPEG's
+first pixel, and the full LibRaw decode takes 0.8–1.7 s — slower than plan/09's
+500 ms target, recorded as open in [plan/12](plan/12-decision-log.md)
+(2026-09-14). The original file's hash and mtime are unchanged after both. Test
+media is not in git: `tools/testmedia/fetch-raw.ps1` and `fetch-heif.ps1`
+download pinned, hash-checked samples, and the tests that need them skip
+visibly without them (`MV_REQUIRE_CORPUS=1` makes that a failure). Generated
+HEIC/AVIF fixtures live in `tests/data/`; `MV_OS_CODEC=0` forces the bundled HEIC
+decoder, as on a clean VM. Not yet demonstrated: an iPhone HEIC on a clean VM
+with no Store packs, a real iPhone Live Photo, and the no-pop preview→full swap
+on screen.
+
 PR 5's verify lines are:
 
 > **5a —** 4K 10-bit HEVC and AV1 play at full rate with GPU video decode > 0 in
@@ -481,8 +574,9 @@ per-job context on the pool.
 src/core        job system, result<T>, lock-free rings, ETW
 src/io          whole-file reads, directory listing + watcher, copy/move that never
                 overwrites, Recycle Bin (Windows impl)
-src/codec       JPEG / PNG / BMP / GIF / WebP, APNG walker, frame-at-a-time
-                animation sources, magic-byte probe
+src/codec       JPEG / PNG / BMP / GIF / WebP / TIFF / ICO / HEIC / AVIF / RAW,
+                APNG walker, frame-at-a-time animation sources, magic-byte probe,
+                HEIC-only OS-codec probe (WIC, os_decode_win.cpp)
 src/image       LCMS colour (8-bit display LUT; sRGB copy-through), CPU mips,
                 immutable GPU upload, JPEG-512 thumbs
 src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom

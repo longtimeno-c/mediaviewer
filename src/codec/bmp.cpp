@@ -27,7 +27,7 @@ result<raster> decode_bmp(std::span<const std::uint8_t> bytes, const job_context
   const std::uint8_t* p = bytes.data();
   const std::uint32_t pixel_off = u32(p + 10);
   const std::uint32_t dib = u32(p + 14);
-  if (dib < 16 || 14 + dib > bytes.size()) return err(status::corrupt);
+  if (dib < 16 || 14ull + dib > bytes.size()) return err(status::corrupt);
 
   const std::uint32_t width = u32(p + 18);
   const std::int32_t height_s = i32(p + 22);

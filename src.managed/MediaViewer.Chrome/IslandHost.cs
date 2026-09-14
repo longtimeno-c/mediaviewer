@@ -478,6 +478,7 @@ public static partial class IslandHost
     private static void EnsureApp()
     {
         if (_dispatcher is not null) return;
+        CrashCapture.Install();  // plan/13: managed exceptions -> local report
         _dispatcher = DispatcherQueueController.CreateOnCurrentThread();
         // Island init path. Application after this throws; styles are set on
         // the bar itself (custom templates, not generic.xaml).

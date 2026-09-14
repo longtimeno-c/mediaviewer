@@ -157,6 +157,18 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
                 "$lgpl appears as a static library with no DLL. plan/11: LGPL requires the user be able to replace it."
         }
     }
+
+    # Transitive: libheif's default `hevc` feature is x265 encode. We disable
+    # default-features; this is the belt if a future port change sneaks it in.
+    foreach ($encoderDll in @('x265*.dll', 'libx265*.dll', 'x264*.dll', 'libx264*.dll',
+                              'fdk-aac*.dll', 'libfdk-aac*.dll')) {
+        $hits = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter $encoderDll `
+            -ErrorAction SilentlyContinue
+        foreach ($hit in $hits) {
+            Add-Violation 'forbidden encoder DLL installed' `
+                "$($hit.FullName) is in the vcpkg install tree. plan/11: never bundle a software HEVC or AAC encoder."
+        }
+    }
 }
 
 # --- 4. Our own licence is declared and present ----------------------------

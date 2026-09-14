@@ -197,6 +197,38 @@ generates every thumb; it just is not visible-first.
 The five-slot GPU LRU is native-only (`native.h`), same as `take_ready_image`. C# never
 sees a texture.
 
+## PR 7 — pairs are one stop (ABI 0.5)
+
+A folder item is a **navigation stop**, not a file. RAW+JPEG (or RAW+HEIC) and Live Photos
+(HEIC+MOV, and JPG+MOV from an iPhone set to "Most Compatible") are paired at scan time
+([04](04-image-pipeline.md)); ambiguous groups stay separate. Minor bump, **no layout change**:
+`mv_folder_item` stays 32 bytes.
+
+```c
+typedef enum mv_pair_kind { MV_PAIR_NONE = 0, MV_PAIR_RAW_JPEG = 1, MV_PAIR_LIVE_PHOTO = 2 } mv_pair_kind;
+
+typedef struct mv_folder_item {
+  uint32_t index;
+  uint32_t flags;          /* bit 0 = selected; bit 1 = primary is a RAW (badge only) */
+  uint64_t size_bytes;     /* primary */
+  int64_t  mtime_unix;     /* primary */
+  uint32_t pair_kind;      /* mv_pair_kind; was reserved0 (always 0 before 0.5) */
+  uint32_t reserved1;
+} mv_folder_item;
+
+/* [any-thread][no-block] The secondary (RAW, or the Live Photo's MOV). Empty when unpaired. */
+mv_status mv_folder_item_pair_path(mv_session_t, uint32_t index, char* utf8, uint32_t cap, uint32_t* out_bytes);
+```
+
+- Name, path, size, mtime, thumbs, decode, prefetch and video detection all use the
+  **primary**. A Live Photo stop is a still; its motion is opened only by `;`
+  (`mv_video_open` on the pair path, from the host).
+- `mv_folder_open`'s `utf8_select_path` may name either half: opening the `.NEF` selects the
+  JPEG+NEF stop, and the canvas shows the primary. A watcher refresh keeps the stop by either
+  half. `FOLDER_READY` / `FOLDER_CHANGED` payloads count stops.
+- Copy, move, drag-out and Recycle Bin act on **both halves** of a paired stop; that
+  expansion is host-side, the ABI only reports the pair.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

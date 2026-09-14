@@ -719,6 +719,23 @@ a router rule that, while the palette is open, sends printable keys to the
 filter the way Settings already does. Do not re-add `Ctrl+K` as a silent
 second `?`.
 
+## 2026-09-13 — libheif `hevc` feature is x265 encode, not HEVC decode
+
+**From.** [09](09-build-and-test.md) / [vcpkg.json](../vcpkg.json) sketched PR 7 as
+`libheif[hevc,av1]`.
+
+**To.** `libheif` with **default-features OFF**. The vcpkg port's `hevc` feature is
+`WITH_X265` — a software HEVC *encoder*, which plan/11 forbids. HEVC *decode* is
+libde265, a hard dependency of the port, not a feature. AVIF decode is
+`libavif[dav1d]`, not libheif's `aom` feature.
+
+**Why.** Enabling the documented feature set would have linked x265 and failed
+the licence gate (and the patent line) the moment PR 7 configured. The plan's
+shorthand was written against an older port layout.
+
+**How it gets reversed.** Only if the port grows a decode-only HEVC feature that
+does not pull x265. Do not turn default-features back on.
+
 ## 2026-09-14 — Ship the PR 7 viewer in PR 8; defer additional features
 
 **Why.** The owner wants to run and ship the features available once the agents finish
@@ -758,6 +775,63 @@ wait for PR 15; PR 8 uninstall checks cover what PR 8 actually installs.
 check bundled formats, playback and inherited pacing, then verify updates, rollback,
 and uninstall. Crop, trim, and export are no longer first-release acceptance steps.
 Future feature PRs retain their own verify lines; no update version is promised for them.
+
+## 2026-09-14 — PR 7 format and pairing calls made while landing the slices
+
+Recorded as they were merged (TIFF/ICO, pairing, LibRaw, HEIC/AVIF). Rows marked
+**open** need the owner's sign-off before PR 7 closes; the rest are the conservative
+reading of the plan and stand unless reopened.
+
+| # | Call | Why | Status |
+|---|---|---|---|
+| 1 | **D3 OS probe is HEIC stills only.** WIC is tried only for an 8-bit, no-alpha, non-HDR, non-sequence HEVC HEIC whose colour is an ICC or sRGB-in-effect, when WIC has a HEIF decoder *and* Media Foundation has an HEVC decoder. WIC must return the ICC and the same displayed size libheif would; any failure except cancel falls through to libheif silently. `MV_OS_CODEC=0` forces the bundled path. JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/AVIF/RAW never go through WIC. | Routing every format through WIC would drop the LCMS path the D6 tests pin; HEIC is the one format where the OS path can be hardware-backed. On a machine with the Store packs, WIC and libheif agree on size and ICC (pixel mean diff 1.9). | stands |
+| 2 | **HDR (PQ/HLG) HEIC/AVIF stills are tone-mapped to SDR in the decoder** with the `gfx/video_blit.cpp` curves and handed on as display-referred sRGB. | `image/colour.cpp` refuses `scene_referred`; HDR output is v1.1. | **open** — confirm tone-mapping in `codec/` rather than a scene-referred colour stage |
+| 3 | CICP SDR camera transfers (BT.709/601/2020) display with the sRGB curve; gamma 2.2/2.8/linear get a synthesised ICC. Display P3 nclx gets a synthesised ICC v4 profile. | Browser behaviour; P3-as-sRGB is the D6 bug. | stands |
+| 4 | **No display-path orientation exists yet.** TIFF returns stored order; HEIC gets libheif's irot/imir; AVIF applies irot/imir/clap itself; RAW preview *and* full decode are rotated in pixels by LibRaw's flip. A later EXIF-orientation pass must skip RAW or it rotates twice. | plan/04 wants orientation on the display path; building it is not a PR 7 line item. | **open** — schedule the orientation pass (JPEG EXIF is also unhandled) |
+| 5 | TIFF: 16/32-bit round to 8; float clamps 0–1 (untagged → linear then sRGB encode); CMYK converts naïvely (1−C)(1−K); **grey and CMYK ICC profiles are dropped** because `to_display` builds an RGBA transform. | RGBA8 raster; a grey profile would make a valid file `corrupt`. Grey JPEG/PNG with a grey profile likely share the gap. | **open** — colour stage should learn grey profiles |
+| 6 | RAW full decode: PPG demosaic, camera WB, sRGB 8-bit, highlight clip, **auto-bright on**. Measured 0.8–1.7 s on 16–42 MP samples — **misses plan/09's < 500 ms** (vcpkg LibRaw has no OpenMP; GPU demosaic is out of v1, D4). First pixel is the embedded preview (11–69 ms, JPEG-comparable). Full decode is still 7–41 luma levels brighter than the preview; cancel granularity is one LibRaw stage (≤ ~550 ms). | AHD was 2.5–4.7 s; auto-bright off left a ~36-level gap vs the embedded JPEG. | **open** — accept the target miss for v1 or pursue an OpenMP LibRaw build |
+| 7 | **JPG+MOV pairs as a Live Photo** (iPhone "Most Compatible"), as well as HEIC+MOV. Pairing is by basename only; the ContentIdentifier check in plan/04 is not done (needs metadata, PR 9). RAW+HEIC counts as RAW+JPEG. Groups of three or more stay separate. | Exact, cheap, never hides a file. | **open** — confirm JPG+MOV |
+| 8 | **File operations on a paired stop act on both halves** (copy/move-to, Recycle Bin, drag-out); the prompt names both files. Collision renaming is per file, so a pair can land as `x (2).JPG` beside `x.NEF`. | Deleting only the JPEG would make the RAW reappear as its own stop. | **open** |
+| 9 | Opening a RAW from Explorer selects its pair's stop and shows the JPEG (the primary). | plan/04: the still is first pixel and primary. | stands |
+| 10 | **Open RAW / Open JPEG** are command-table rows with no default key ("Unbound" in Settings, hidden from `?`). plan/04 still says they live in the palette, which 2026-09-13 dropped. | No key named in plan/16; a Settings binding makes them routable. | **open** — pick keys or amend plan/04/16 |
+| 11 | ICO: largest entry (then deepest) is the still; an unreadable largest entry silently falls back to the next. AVIF with unknown/infinite repetition loops forever. | Chromium behaviour; never an error for a viewable file. | stands |
+| 12 | Command id 76 (`palette`) stays in the table as a keyless retired row (13a72bc); the test asserts a retired id is only ever listed keyless, which `describe_commands()` hides from Settings and `?`. | Two fixes met on the branch; keep the wire enum named. | stands |
+
+## 2026-09-14 — PR 7 crash reporting: a post-crash scrub instead of an arena-tagged heap filter
+
+**Why.** plan/13 asked for a minidump filter that excludes heap regions tagged at the arena
+level. Crashpad's Windows handler has no filter hook, the stock `crashpad_handler.exe`
+cannot be extended without forking it, and tagging would have required every PR 7 decoder
+to allocate `raster::rgba` through a custom allocator. Measured on a real crash, the
+unscrubbed dump did **not** contain heap pixels (indirect memory gathering is off), but it
+did contain the canary file's full path (PEB command line, UTF-16) and the username
+(module list and PDB paths), 135 hits.
+
+**Call.**
+- Indirect memory gathering off, WER forwarding off, no extra ranges.
+- The app rewrites every finished dump in place on its next launch, before any send is
+  possible (`src/shell/minidump_scrub`):
+  - Zero every captured byte outside a thread stack: PEB, process parameters, TEBs, and
+    the 512 bytes Crashpad takes around each register.
+  - Mask drive/UNC paths (modules keep their layout, minus the profile name), bare media
+    filenames, and the username/computer name, in UTF-8 and UTF-16LE.
+- Heap pixels are excluded structurally, not by tag.
+- The handler **never** receives an upload URL, because it would upload before the scrub.
+  PR 8 (formerly 15) must upload from the app after scrubbing.
+
+**Residual risk.** A folder name with no drive root and no media extension, a filename stem
+without its extension, or pixel rows in a decoder's stack-local array can still survive
+on a live stack frame. `tools/minidump-scan.ps1` is the check.
+
+**Licence.** The Crashpad client is Apache-2.0 and statically linked. Apache-2.0 is
+GPL-3-compatible, not GPL-2-only, so distributed binaries are conveyed under GPL-3.0 terms
+(the "or later" permits it; LGPL-3 libheif/libde265 already implied the same).
+**Open for the owner:** confirm, or move the client out of the lab binary.
+
+**Deferred.** The consent dialog: `[crash] consent` / `upload_url` and the
+ask-only-with-an-endpoint check exist, but no endpoint exists yet, so there is nothing
+to ask. It lands with the upload path in PR 8 and must not stack with other first-run
+prompts. Crashes inside the OS-codec probe (before the bundled dispatch) are not annotated.
 
 ## How to use this file
 

@@ -15,6 +15,11 @@ enum class format_family : std::uint32_t {
   bmp = 3,
   gif = 4,   // GIF87a / GIF89a (PR 6, animated)
   webp = 5,  // RIFF....WEBP (PR 6 pulled forward from PR 7: still + animated)
+  tiff = 6,  // II*\0 / MM\0* — TIFF-container RAWs reclassify in decode()
+  ico = 7,   // ICONDIR type=1
+  heic = 8,  // ISO BMFF ftyp heic/heix/mif1/msf1 (libheif + libde265)
+  avif = 9,  // ISO BMFF ftyp avif/avis (libavif + dav1d)
+  raw = 10,  // CR3/RAF/ORF/RW2 magics; CR2/NEF/ARW/DNG via LibRaw on TIFF
 };
 
 // First bytes only. A short or empty span is unknown, not corrupt.
@@ -27,6 +32,11 @@ enum class format_family : std::uint32_t {
     case format_family::bmp:  return "BMP";
     case format_family::gif:  return "GIF";
     case format_family::webp: return "WebP";
+    case format_family::tiff: return "TIFF";
+    case format_family::ico:  return "ICO";
+    case format_family::heic: return "HEIC";
+    case format_family::avif: return "AVIF";
+    case format_family::raw:  return "RAW";
     case format_family::unknown: return "unknown";
   }
   return "unknown";
