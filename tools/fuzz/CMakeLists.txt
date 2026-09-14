@@ -38,6 +38,22 @@ if(NOT MV_CLANG_RT_DIR)
 endif()
 message(STATUS "MV_FUZZ: clang runtime ${MV_CLANG_RT_DIR}")
 
+# Current GitHub Windows images ship libFuzzer but may omit clang's static ASan
+# archives. Detect them as a pair: fuzzing remains useful without them, while
+# the separate MSVC-ASan CI leg still provides sanitizer coverage.
+find_file(MV_CLANG_ASAN_RUNTIME clang_rt.asan-x86_64.lib
+  PATHS "${MV_CLANG_RT_DIR}" NO_DEFAULT_PATH)
+find_file(MV_CLANG_ASAN_CXX_RUNTIME clang_rt.asan_cxx-x86_64.lib
+  PATHS "${MV_CLANG_RT_DIR}" NO_DEFAULT_PATH)
+if(MV_CLANG_ASAN_RUNTIME AND MV_CLANG_ASAN_CXX_RUNTIME)
+  set(MV_FUZZ_ASAN ON)
+  message(STATUS "MV_FUZZ: static clang ASan enabled")
+else()
+  set(MV_FUZZ_ASAN OFF)
+  message(WARNING "MV_FUZZ: static clang ASan runtimes unavailable; "
+                  "building libFuzzer coverage without ASan")
+endif()
+
 # Instrument everything that links mv_project_options.
 #
 # CRT: the libFuzzer library Visual Studio ships (clang_rt.fuzzer-x86_64.lib)
@@ -52,15 +68,17 @@ set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_compile_options(mv_project_options INTERFACE
   -fsanitize=fuzzer-no-link
-  /fsanitize=address
   /Zi
   -Wno-unused-command-line-argument)
-target_compile_definitions(mv_project_options INTERFACE
-  MV_FUZZING=1
-  # Same ABI reason as MV_ASAN: prebuilt C++ deps lack the STL annotations.
-  _DISABLE_VECTOR_ANNOTATION
-  _DISABLE_STRING_ANNOTATION
-  _DISABLE_OPTIONAL_ANNOTATION)
+target_compile_definitions(mv_project_options INTERFACE MV_FUZZING=1)
+if(MV_FUZZ_ASAN)
+  target_compile_options(mv_project_options INTERFACE /fsanitize=address)
+  target_compile_definitions(mv_project_options INTERFACE
+    # Same ABI reason as MV_ASAN: prebuilt C++ deps lack STL annotations.
+    _DISABLE_VECTOR_ANNOTATION
+    _DISABLE_STRING_ANNOTATION
+    _DISABLE_OPTIONAL_ANNOTATION)
+endif()
 
 set(MV_FUZZ_HARNESSES
   jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation)
@@ -80,11 +98,12 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # static ASan runtime, whole-archived so its interceptors are all present.
   target_link_directories(${target} PRIVATE "${MV_CLANG_RT_DIR}")
   target_link_libraries(${target} PRIVATE clang_rt.fuzzer-x86_64.lib)
-  target_link_options(${target} PRIVATE
-    "/wholearchive:${MV_CLANG_RT_DIR}/clang_rt.asan-x86_64.lib"
-    "/wholearchive:${MV_CLANG_RT_DIR}/clang_rt.asan_cxx-x86_64.lib"
-    /INCREMENTAL:NO
-    /DEBUG)
+  target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
+  if(MV_FUZZ_ASAN)
+    target_link_options(${target} PRIVATE
+      "/wholearchive:${MV_CLANG_ASAN_RUNTIME}"
+      "/wholearchive:${MV_CLANG_ASAN_CXX_RUNTIME}")
+  endif()
   set_target_properties(${target} PROPERTIES
     FOLDER fuzz
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

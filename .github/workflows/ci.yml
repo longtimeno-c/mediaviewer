@@ -282,11 +282,37 @@ jobs:
           path: build-fuzz/vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-clang-cl
 
+      # Visual Studio's bundled clang and the standalone distribution can
+      # carry different compiler-rt subsets. Select the stable standalone LLVM,
+      # require libFuzzer, and let CMake enable static ASan when those optional
+      # archives are present. The matrix's MSVC-ASan leg always covers ASan.
+      - name: Select LLVM with libFuzzer
+        run: |
+          $llvmRoot = 'C:\Program Files\LLVM\'
+          $clang = Join-Path $llvmRoot 'bin\clang-cl.exe'
+          if (-not (Test-Path $clang)) {
+            throw "Standalone clang-cl not found at $clang"
+          }
+          $fuzzer = Get-ChildItem (Join-Path $llvmRoot 'lib\clang') -Recurse -Filter 'clang_rt.fuzzer-x86_64.lib' |
+            Select-Object -First 1
+          if (-not $fuzzer) {
+            throw "clang_rt.fuzzer-x86_64.lib not found under $llvmRoot"
+          }
+          Write-Host $fuzzer.FullName
+          $asan = Get-ChildItem (Join-Path $llvmRoot 'lib\clang') -Recurse -Filter 'clang_rt.asan-x86_64.lib' |
+            Select-Object -First 1
+          if ($asan) {
+            Write-Host "Static clang ASan available: $($asan.FullName)"
+          } else {
+            Write-Warning 'Static clang ASan unavailable; libFuzzer-only mode will be used.'
+          }
+          "LLVMInstallDir=$llvmRoot" >> $env:GITHUB_ENV
+          (Join-Path $llvmRoot 'bin') >> $env:GITHUB_PATH
+          & $clang --version
+
       - name: Diagnose clang runtime
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -property installationPath
-          Get-ChildItem "$vs\VC\Tools\Llvm\x64\lib\clang" -Recurse -Filter 'clang_rt.fuzzer*' |
+          Get-ChildItem "$env:LLVMInstallDir\lib\clang" -Recurse -Filter 'clang_rt.*-x86_64.lib' |
             ForEach-Object FullName
 
       - name: Configure

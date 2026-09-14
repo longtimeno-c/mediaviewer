@@ -102,8 +102,13 @@ class animation_session {
   [[nodiscard]] bool take(std::uint32_t generation, animation_frame& out) noexcept {
     animation_frame f;
     const std::uint32_t epoch = epoch_.load(std::memory_order_acquire);
+    const std::uint32_t wanted = wanted_gen_.load(std::memory_order_acquire);
     while (ring_.try_pop(f)) {
-      if (f.generation != generation || f.epoch != epoch) {
+      // A producer may finish a frame after retire() drained the ring. Never
+      // return that late old-generation frame merely because the caller asked
+      // with the stale generation; retirement is authoritative.
+      if ((wanted != 0 && generation != wanted) || f.generation != generation ||
+          f.epoch != epoch) {
         delete f.texture;
         continue;
       }
