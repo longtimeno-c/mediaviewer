@@ -666,7 +666,9 @@ endif()
 # memory cap and crash attribution in tests/test_broken_corpus.cpp apply to
 # nothing else. Seeds live in tests/data (committed, synthetic, licence-clean).
 # ---------------------------------------------------------------------------
-if(MV_BUILD_TESTS AND NOT MV_FUZZ)
+# Catch2 executables hang before main under MSVC ASan on hosted Windows;
+# the normal MSVC/clang-cl matrix legs retain the exhaustive corpus coverage.
+if(MV_BUILD_TESTS AND NOT MV_FUZZ AND NOT MV_ASAN)
   add_executable(mv_broken_tests tests/test_broken_corpus.cpp)
   target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
   target_include_directories(mv_broken_tests PRIVATE src)
