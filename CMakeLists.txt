@@ -241,6 +241,7 @@ add_library(mv_codec STATIC
   src/codec/heif.cpp
   src/codec/avif.cpp
   src/codec/raw.cpp
+  src/codec/raw_internal.h
   src/codec/os_decode_win.cpp
   src/codec/os_decode.h
   src/codec/decode.h
@@ -514,6 +515,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_raw.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
     tests/test_present_policy.cpp
