@@ -282,11 +282,35 @@ jobs:
           path: build-fuzz/vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-clang-cl
 
+      # windows-latest also carries a standalone LLVM distribution. Prefer it
+      # over Visual Studio's bundled clang: VS 2026 currently ships libFuzzer
+      # but omits the static ASan runtimes, so that toolchain compiles and then
+      # fails every harness at link time.
+      - name: Select complete LLVM runtime
+        run: |
+          $llvmRoot = 'C:\Program Files\LLVM\'
+          $clang = Join-Path $llvmRoot 'bin\clang-cl.exe'
+          if (-not (Test-Path $clang)) {
+            throw "Standalone clang-cl not found at $clang"
+          }
+          foreach ($runtime in @(
+            'clang_rt.fuzzer-x86_64.lib',
+            'clang_rt.asan-x86_64.lib',
+            'clang_rt.asan_cxx-x86_64.lib')) {
+            $found = Get-ChildItem (Join-Path $llvmRoot 'lib\clang') -Recurse -Filter $runtime |
+              Select-Object -First 1
+            if (-not $found) {
+              throw "$runtime not found under $llvmRoot"
+            }
+            Write-Host $found.FullName
+          }
+          "LLVMInstallDir=$llvmRoot" >> $env:GITHUB_ENV
+          (Join-Path $llvmRoot 'bin') >> $env:GITHUB_PATH
+          & $clang --version
+
       - name: Diagnose clang runtime
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -property installationPath
-          Get-ChildItem "$vs\VC\Tools\Llvm\x64\lib\clang" -Recurse -Filter 'clang_rt.fuzzer*' |
+          Get-ChildItem "$env:LLVMInstallDir\lib\clang" -Recurse -Filter 'clang_rt.*-x86_64.lib' |
             ForEach-Object FullName
 
       - name: Configure
