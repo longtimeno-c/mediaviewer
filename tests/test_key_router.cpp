@@ -36,9 +36,13 @@ view_state clip() {
 TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]") {
   std::set<std::tuple<int, int, int>> seen;
   for (const auto& b : default_bindings()) {
-    REQUIRE(b.k != key::none);
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
+    // PR 7: Open RAW / Open JPEG ship listed but unbound (plan/04, plan/16).
+    if (b.k == key::none) {
+      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
+      continue;
+    }
     for (int m = 0; m < kModeCount; ++m) {
       if ((b.modes & (1 << m)) == 0) continue;
       INFO("key " << static_cast<int>(b.k) << " mods " << int(b.mods) << " mode " << m);
@@ -73,6 +77,7 @@ TEST_CASE("command ids are dense, named and unique", "[shell][commands]") {
     REQUIRE(id > 0);
     REQUIRE(id < kCommandCount);
     REQUIRE_FALSE(is_reserved_notification(id));
+    REQUIRE_FALSE(is_retired_command(id));
     REQUIRE(std::strlen(info.name) > 0);
     REQUIRE(names.insert(info.name).second);
     REQUIRE(ids.insert(id).second);
@@ -81,7 +86,10 @@ TEST_CASE("command ids are dense, named and unique", "[shell][commands]") {
   // Every id below count is either a command or a reserved wire notification.
   for (int id = 1; id < kCommandCount; ++id) {
     INFO("id " << id);
-    REQUIRE((ids.count(id) == 1 || is_reserved_notification(id)));
+    // `palette` (76) is a retired hole since the Ctrl+K palette was dropped
+    // (plan/12 2026-09-13), so later ids do not shift.
+    REQUIRE((ids.count(id) == 1 || is_reserved_notification(id) || is_retired_command(id)));
+    if (is_retired_command(id)) REQUIRE(ids.count(id) == 0);
   }
   for (const auto& b : default_bindings()) REQUIRE(find_command(b.command) != nullptr);
 }
@@ -682,6 +690,56 @@ TEST_CASE("symbol keys are characters, independent of the Shift that made them",
   REQUIRE(r.on_key(down(char_key('=')), s).command == command_id::zoom_in);
   REQUIRE(char_key('d') == char_key('D'));
   REQUIRE(char_key(' ') == key::none);
+}
+
+TEST_CASE("`;` plays a Live Photo once: edge only, on a still or over its motion",
+          "[shell][router][pairing]") {
+  key_router r;
+  const key semi = char_key(';');
+  REQUIRE(r.on_key(down(semi), still()).command == command_id::play_motion);
+  // The motion playing is a clip on screen; `;` again stops it.
+  REQUIRE(r.on_key(down(semi), clip()).command == command_id::play_motion);
+  // Hold-to-play on a repeating key is forbidden (plan/04).
+  REQUIRE_FALSE(r.on_key(rep(semi), still()).handled);
+  // Filmstrip focus: `;` is typeahead, not a command.
+  view_state strip = still();
+  strip.focus = focus_kind::filmstrip;
+  REQUIRE_FALSE(r.on_key(down(semi), strip).handled);
+  REQUIRE(describe_commands().find("\tPlay Live Photo motion\t;\t") != std::string::npos);
+}
+
+TEST_CASE("Esc ends a Live Photo's motion before anything under it", "[shell][router][pairing]") {
+  key_router r;
+  view_state s = clip();
+  s.motion_playing = true;
+  s.fullscreen = true;
+  s.slideshow = false;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::motion);
+  s.popup_open = true;  // a `?` flyout over it still closes first
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::popup);
+}
+
+TEST_CASE("Open RAW / Open JPEG are listed for Settings but not routed or in `?`",
+          "[shell][commands][pairing]") {
+  struct reset {
+    reset() { reset_live_bindings(); }
+    ~reset() { reset_live_bindings(); }
+  } guard;
+  int raw_row = -1;
+  const auto def = default_bindings();
+  for (int i = 0; i < static_cast<int>(def.size()); ++i) {
+    if (def[static_cast<std::size_t>(i)].command == command_id::open_raw) raw_row = i;
+  }
+  REQUIRE(raw_row >= 0);
+  REQUIRE(def[static_cast<std::size_t>(raw_row)].k == key::none);
+  const std::string table = describe_commands();
+  REQUIRE(table.find("\tOpen RAW of pair\t\t") != std::string::npos);
+  REQUIRE(table.find("\tOpen JPEG of pair\t\t") != std::string::npos);
+  // Settings gives it a free key; the router then routes it.
+  REQUIRE(rebind_live(raw_row, char_key('R'), mod_ctrl));
+  key_router r;
+  r.rebuild(live_bindings());
+  REQUIRE(r.on_key(down(char_key('R'), mod_ctrl), still()).command == command_id::open_raw);
 }
 
 TEST_CASE("remapping a key updates the live table the router and ? share", "[shell][commands]") {

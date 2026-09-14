@@ -124,6 +124,12 @@ internal static partial class NativeMethods
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_item_pair_path(MvSessionHandle session, uint index,
+                                                              IntPtr utf8, uint cap,
+                                                              out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_select(MvSessionHandle session, uint index,
                                                       out ulong jobId);
 

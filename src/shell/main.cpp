@@ -22,6 +22,7 @@
 
 #include <cmath>
 #include <iterator>
+#include <map>
 #include <cwchar>
 #include <cstdio>
 #include <cstdlib>
@@ -76,6 +77,12 @@ constexpr UINT kSlideshowTickMs = 100;
 // window text is written when it changes.
 constexpr UINT_PTR kTitleTimerId = 0x6F01;
 constexpr UINT kTitleTickMs = 250;
+// PR 7 `;`: while a Live Photo's motion plays, a UI-thread tick watches for the
+// end of the clip. Only armed while it plays, so a still is still zero work.
+constexpr UINT_PTR kMotionTimerId = 0x7101;
+constexpr UINT kMotionTickMs = 100;
+// A motion clip that never opens (unreadable MOV) gives the still back.
+constexpr ULONGLONG kMotionOpenGiveUpMs = 10000;
 
 struct app_state {
   present_lab lab;
@@ -144,6 +151,11 @@ struct app_state {
   mv::shell::slideshow show;
   ULONGLONG show_last_advance = 0;
   bool show_entered_fullscreen = false;  // leave fullscreen again on stop
+  // PR 7 `;`: a Live Photo's motion is playing over its still. Any navigation
+  // (a new generation) retires the clip and clears this; the end of the clip,
+  // Esc or `;` again re-selects the stop so the still comes back from the LRU.
+  bool motion_playing = false;
+  ULONGLONG motion_started = 0;
 };
 
 app_state* state_from(HWND hwnd) noexcept {
@@ -176,6 +188,7 @@ void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
 void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
+void stop_motion(app_state* app) noexcept;
 
 void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
   if (!app || !app->session || wide_dir.empty()) return;
@@ -310,13 +323,16 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   focus_canvas(app);
 }
 
-// The folder item's full path, UTF-8, or empty. UI thread; a copy out of the
-// folder model, no I/O.
-std::string item_path_at(app_state* app, std::uint32_t index) {
+using folder_string_fn = mv_status (MV_CALL*)(mv_session_t, std::uint32_t, char*, std::uint32_t,
+                                              std::uint32_t*);
+
+// A folder item string (UTF-8), or empty. UI thread; a copy out of the folder
+// model, no I/O.
+std::string folder_string_at(app_state* app, std::uint32_t index, folder_string_fn fn) {
   if (!app || !app->session) return {};
   char stack_buf[1024];
   std::uint32_t bytes = 0;
-  if (mv_folder_item_path(app->session, index, stack_buf, sizeof(stack_buf), &bytes) != MV_OK) {
+  if (fn(app->session, index, stack_buf, sizeof(stack_buf), &bytes) != MV_OK) {
     return {};
   }
   if (bytes < sizeof(stack_buf)) {
@@ -325,18 +341,71 @@ std::string item_path_at(app_state* app, std::uint32_t index) {
   }
   // A long path: ask again with room for it.
   std::string out(static_cast<std::size_t>(bytes) + 1, '\0');
-  if (mv_folder_item_path(app->session, index, out.data(), bytes + 1, &bytes) != MV_OK) return {};
+  if (fn(app->session, index, out.data(), bytes + 1, &bytes) != MV_OK) return {};
   out.resize(std::char_traits<char>::length(out.c_str()));
   return out;
 }
 
-std::string current_item_path(app_state* app) {
-  if (!app || !app->session) return {};
+// The stop's primary file (the JPEG of a RAW+JPEG, the still of a Live Photo).
+std::string item_path_at(app_state* app, std::uint32_t index) {
+  return folder_string_at(app, index, &mv_folder_item_path);
+}
+
+// The other half of a paired stop, or empty (PR 7).
+std::string item_pair_path_at(app_state* app, std::uint32_t index) {
+  return folder_string_at(app, index, &mv_folder_item_pair_path);
+}
+
+// The selected stop's index, if there is one.
+bool selected_index(app_state* app, std::uint32_t& out) noexcept {
+  if (!app || !app->session) return false;
   std::uint32_t count = 0;
+  if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return false;
+  if (mv_folder_selected(app->session, &out) != MV_OK || out >= count) return false;
+  return true;
+}
+
+std::string current_item_path(app_state* app) {
   std::uint32_t selected = 0;
-  if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return {};
-  if (mv_folder_selected(app->session, &selected) != MV_OK || selected >= count) return {};
+  if (!selected_index(app, selected)) return {};
   return item_path_at(app, selected);
+}
+
+// MV_PAIR_* of the selected stop; MV_PAIR_NONE with nothing selected.
+std::uint32_t current_pair_kind(app_state* app) noexcept {
+  std::uint32_t selected = 0;
+  if (!selected_index(app, selected)) return MV_PAIR_NONE;
+  mv_folder_item rec{};
+  if (mv_folder_item_at(app->session, selected, &rec) != MV_OK) return MV_PAIR_NONE;
+  return rec.pair_kind;
+}
+
+// PR 7: a paired stop is two files on disk. Copy, move and delete act on both
+// halves — deleting only the JPEG would bring its RAW back as a stop of its own
+// on the next relist. Each primary is followed by its secondary. UI thread; a
+// walk of the in-memory listing on a key press, no I/O.
+std::vector<std::string> expand_pair_targets(app_state* app, std::vector<std::string> targets) {
+  std::map<std::string, std::string, std::less<>> pairs;
+  std::uint32_t count = 0;
+  if (app && app->session && mv_folder_count(app->session, &count) == MV_OK) {
+    for (std::uint32_t i = 0; i < count; ++i) {
+      mv_folder_item rec{};
+      if (mv_folder_item_at(app->session, i, &rec) != MV_OK || rec.pair_kind == MV_PAIR_NONE) {
+        continue;
+      }
+      std::string secondary = item_pair_path_at(app, i);
+      if (!secondary.empty()) pairs.emplace(item_path_at(app, i), std::move(secondary));
+    }
+  }
+  if (pairs.empty()) return targets;
+  std::vector<std::string> out;
+  out.reserve(targets.size() * 2);
+  for (auto& t : targets) {
+    const auto it = pairs.find(t);
+    out.push_back(std::move(t));
+    if (it != pairs.end()) out.push_back(it->second);
+  }
+  return out;
 }
 
 // plan/16 Ctrl+E: open the containing folder with this file selected, so a
@@ -446,6 +515,11 @@ void refresh_item_info(app_state* app) noexcept {
 
 void folder_select(app_state* app, std::uint32_t index) {
   if (!app || !app->session) return;
+  // Any navigation bumps the generation, which retires a Live Photo's motion.
+  if (app->motion_playing) {
+    app->motion_playing = false;
+    if (app->window) ::KillTimer(app->window, kMotionTimerId);
+  }
   uint64_t job = 0;
   if (mv_folder_select(app->session, index, &job) == MV_OK) {
     refresh_item_info(app);
@@ -692,7 +766,8 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // Island chrome can post a command id (help, open, …) through the same
       // switch as its key.
       if (command > 0 && command < mv::shell::kCommandCount &&
-          !mv::shell::is_reserved_notification(command)) {
+          !mv::shell::is_reserved_notification(command) &&
+          !mv::shell::is_retired_command(command)) {
         (void)run_command(app, static_cast<mv::shell::command_id>(command));
       }
       return;
@@ -791,6 +866,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.slideshow = app->show.active();
   s.popup_open = app->popup_open;
   s.settings_open = app->settings_open;
+  s.motion_playing = app->motion_playing;
   return s;
 }
 
@@ -995,6 +1071,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::settings:
       set_settings_open(app, false);
       return;
+    case back_target::motion:
+      stop_motion(app);
+      return;
     case back_target::slideshow:
       stop_slideshow(app);
       return;
@@ -1078,7 +1157,7 @@ void set_fullscreen_reveal(app_state* app, bool on) noexcept {
 // only UI-thread part; the bytes move on the file-job worker.
 bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
   if (!app || !app->window) return false;
-  auto targets = app->marks.targets(current_item_path(app));
+  auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
   if (targets.empty()) return false;
   std::string dest;
   if (!pick && !app->destinations.empty()) dest = app->destinations.front();
@@ -1105,23 +1184,35 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
 // with no bin is refused on the worker, never deleted permanently.
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
-  auto targets = app->marks.targets(current_item_path(app));
-  if (targets.empty()) return false;
-  // One item: show its name (never the folder). This is the user's own screen;
-  // confirming a delete without seeing what goes is the trap. Several: a count.
-  std::wstring text;
-  if (targets.size() == 1) {
-    const std::string& path = targets.front();
+  const auto stops = app->marks.targets(current_item_path(app));
+  if (stops.empty()) return false;
+  // A paired stop goes with both halves, and the question says so (PR 7).
+  auto targets = expand_pair_targets(app, stops);
+  const auto wide_name = [](const std::string& path) {
     const auto slash = path.find_last_of("\\/");
     const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
     std::wstring wide(name.size(), L'\0');
     const int n = ::MultiByteToWideChar(CP_UTF8, 0, name.data(), static_cast<int>(name.size()),
                                         wide.data(), static_cast<int>(wide.size()));
     wide.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
-    text = L"Move “" + wide + L"” to the Recycle Bin?";
+    return wide;
+  };
+  // One item: show its name (never the folder). This is the user's own screen;
+  // confirming a delete without seeing what goes is the trap. Several: a count.
+  std::wstring text;
+  if (stops.size() == 1 && targets.size() == 1) {
+    text = L"Move “" + wide_name(targets.front()) + L"” to the Recycle Bin?";
+  } else if (stops.size() == 1 && targets.size() == 2) {
+    text = L"Move “" + wide_name(targets[0]) + L"” and “" + wide_name(targets[1]) +
+           L"” (2 files) to the Recycle Bin?";
   } else {
-    wchar_t count[96]{};
-    (void)::swprintf_s(count, L"Move %zu marked items to the Recycle Bin?", targets.size());
+    wchar_t count[128]{};
+    if (targets.size() == stops.size()) {
+      (void)::swprintf_s(count, L"Move %zu marked items to the Recycle Bin?", stops.size());
+    } else {
+      (void)::swprintf_s(count, L"Move %zu marked items (%zu files) to the Recycle Bin?",
+                         stops.size(), targets.size());
+    }
     text = count;
   }
   if (::MessageBoxW(app->window, text.c_str(), L"Delete", MB_YESNO | MB_ICONQUESTION) != IDYES) {
@@ -1185,6 +1276,68 @@ void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result
     if (app->closing) break;
   }
   app->report.showing = false;
+}
+
+// PR 7 `;` (plan/16 View, plan/04 Live Photos): play the selected Live Photo's
+// motion once on the same swapchain, through the PR 5 clip path. The still
+// stays on screen until the first video frame; the end of the clip, Esc, `;`
+// again or any navigation gives the still back. `false` on a stop that is not
+// a Live Photo, so the key does nothing there.
+bool start_motion(app_state* app) noexcept {
+  if (!app || !app->session || !app->window) return false;
+  if (app->motion_playing) {
+    stop_motion(app);
+    return true;
+  }
+  std::uint32_t selected = 0;
+  if (!selected_index(app, selected)) return false;
+  mv_folder_item rec{};
+  if (mv_folder_item_at(app->session, selected, &rec) != MV_OK ||
+      rec.pair_kind != MV_PAIR_LIVE_PHOTO) {
+    return false;
+  }
+  const std::string motion = item_pair_path_at(app, selected);
+  if (motion.empty()) return false;
+  // mv_video_open bumps the view generation: in-flight work for the still is
+  // done (it is in the LRU), and the clip publishes at the new one.
+  uint64_t job = 0;
+  if (mv_video_open(app->session, motion.c_str(), &job) != MV_OK) return false;
+  app->motion_playing = true;
+  app->motion_started = ::GetTickCount64();
+  ::SetTimer(app->window, kMotionTimerId, kMotionTickMs, nullptr);
+  ++app->input.activity_seq;
+  publish(app);
+  return true;
+}
+
+// Back to the still: re-select the stop. The bump retires the clip on the
+// render thread's next tick and the still republishes from the GPU LRU — no
+// decode unless it was evicted while the motion played.
+void stop_motion(app_state* app) noexcept {
+  if (!app || !app->motion_playing) return;
+  app->motion_playing = false;
+  if (app->window) ::KillTimer(app->window, kMotionTimerId);
+  std::uint32_t selected = 0;
+  if (selected_index(app, selected)) folder_select(app, selected);
+}
+
+void motion_tick(app_state* app) noexcept {
+  if (!app || !app->motion_playing) {
+    if (app && app->window) ::KillTimer(app->window, kMotionTimerId);
+    return;
+  }
+  std::uint32_t state = MV_PLAY_STOPPED;
+  (void)mv_video_state(app->session, &state);
+  if (state == MV_PLAY_ENDED) {
+    stop_motion(app);
+    return;
+  }
+  const bool opening = state == MV_PLAY_STOPPED;
+  if (opening && !mv::abi::video_open(app->session) &&
+      ::GetTickCount64() - app->motion_started > kMotionOpenGiveUpMs) {
+    MV_LOG_WARN("motion: the Live Photo clip did not open; back to the still");
+    stop_motion(app);
+  }
 }
 
 // Command effects. A switch over a dense enum is the jump table plan/16 asks
@@ -1499,6 +1652,34 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
       return true;
 
+    // PR 7 pairs.
+    case play_motion:
+      return start_motion(app);
+    // plan/04: the other half of a RAW+JPEG stop is never trapped. Open RAW
+    // shows the RAW file on the canvas (same stop, same marks); Open JPEG goes
+    // back to the primary, from the LRU. Not a RAW+JPEG stop: not ours.
+    case open_raw:
+    case open_jpeg: {
+      std::uint32_t selected = 0;
+      if (!selected_index(app, selected)) return false;
+      mv_folder_item rec{};
+      if (mv_folder_item_at(app->session, selected, &rec) != MV_OK ||
+          rec.pair_kind != MV_PAIR_RAW_JPEG) {
+        return false;
+      }
+      if (command == open_jpeg) {
+        folder_select(app, selected);
+        return true;
+      }
+      const std::string raw = item_pair_path_at(app, selected);
+      if (raw.empty()) return false;
+      uint64_t job = 0;
+      (void)mv_image_open(app->session, raw.c_str(), &job);  // bumps the generation
+      ++app->input.activity_seq;
+      publish(app);
+      return true;
+    }
+
     default:
       return false;
   }
@@ -1620,8 +1801,10 @@ void apply_view_state(app_state* app) noexcept {
   }
   // Auto show/hide: a clip is open, and the grid is not covering everything.
   // Ordered after the filmstrip so the strip height it stacks on is current.
-  const bool want_transport =
-      app->video_on && !app->gallery_visible && !chrome_hidden && !settings;
+  // A Live Photo stop is a still (PR 7): its motion is a moment, not a clip to
+  // scrub, and a transport strip appearing under it would refit the canvas.
+  const bool want_transport = app->video_on && !app->gallery_visible && !chrome_hidden &&
+                              !settings && current_pair_kind(app) != MV_PAIR_LIVE_PHOTO;
   const int strip = app->chrome.filmstrip_visible()
                         ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (want_transport != app->chrome.transport_visible()) {
@@ -1833,6 +2016,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       }
       if (wparam == kSlideshowTimerId) {
         slideshow_tick(app);
+        return 0;
+      }
+      if (wparam == kMotionTimerId) {
+        motion_tick(app);
         return 0;
       }
       if (wparam == kRevealTimerId) {
