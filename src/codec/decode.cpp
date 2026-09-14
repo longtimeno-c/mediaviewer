@@ -6,14 +6,15 @@
 namespace mv::codec {
 
 result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ctx) {
-  // D3: OS codec first when it can handle the bytes; bundled decoder is the
-  // silent fallback (clean VM, no Store pack). A corrupt OS result is not a
-  // fallback — that file is actually bad.
-  if (auto os = try_os_decode(bytes, ctx)) {
-    return os;
-  } else if (os.error() == status::cancelled || os.error() == status::corrupt ||
-             os.error() == status::out_of_memory) {
-    return err(os.error());
+  // D3 (policy in codec/os_decode.h): the OS codec is offered HEIC stills only —
+  // the one camera-dump format where the OS path can be hardware-backed and
+  // still match the bundled colour and orientation. Every other format goes
+  // straight to its bundled decoder. Any OS failure except cancellation falls
+  // through silently: on a clean VM WIC's HEIF decoder exists but has no HEVC
+  // codec, and a corrupt HEIC is then judged by libheif, not by WIC.
+  if (probe(bytes) == format_family::heic) {
+    if (auto os = try_os_decode(bytes, ctx)) return os;
+    else if (os.error() == status::cancelled) return err(status::cancelled);
   }
 
   switch (probe(bytes)) {

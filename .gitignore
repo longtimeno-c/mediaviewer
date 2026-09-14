@@ -51,6 +51,8 @@ tools/testmedia/*
 # source; tools/testmedia/raw/ is not.
 !tools/testmedia/fetch-raw.ps1
 !tools/testmedia/raw-manifest.json
+!tools/testmedia/fetch-heif.ps1
+!tools/testmedia/heif-manifest.json
 
 # Local harness output. `--av-soak --csv` and the frame-time gate both write
 # reports next to wherever you ran them, and both keep getting picked up by a
