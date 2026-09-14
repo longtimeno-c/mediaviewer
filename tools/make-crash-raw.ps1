@@ -110,8 +110,10 @@ $w.Flush()
 [IO.File]::WriteAllBytes($out, $ms.ToArray())
 
 $rgb = ($palette | ForEach-Object { '{0:X2}' -f $_ }) -join ''
-$rgba = (0..7 | ForEach-Object { ($palette[$_*3..($_*3+2)] | ForEach-Object { '{0:X2}' -f $_ }) -join '' } |
-    ForEach-Object { $_ + 'FF' }) -join ''
+$rgba = ''
+for ($i = 0; $i -lt 8; $i++) {
+    $rgba += '{0:X2}{1:X2}{2:X2}FF' -f $palette[3 * $i], $palette[3 * $i + 1], $palette[3 * $i + 2]
+}
 Write-Host "wrote $out ($Width x $Height synthetic DNG, marker in ImageDescription)"
 Write-Host "pixel pattern RGB : $rgb"
 Write-Host "pixel pattern RGBA: $rgba"

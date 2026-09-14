@@ -2,6 +2,7 @@
 // plan/13 Part 2 scrub, on a synthetic minidump shaped like Crashpad's.
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <string_view>

@@ -211,7 +211,7 @@ void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
 
     // 1. Rooted paths.
     if (c == '\\' || c == ':' || is_alpha(c)) {
-      const std::size_t e = path_at(u, k);
+      std::size_t e = path_at(u, k);
       if (e > k) {
         std::size_t last = k;
         for (std::size_t i = k; i < e; ++i) {
