@@ -196,8 +196,20 @@ TEST_CASE("a partial drain leaves the event signalled", "[abi][completion]") {
     REQUIRE(mv_session_echo(session.handle, "x", &job_id) == MV_OK);
   }
 
+  // The event means "at least one completion", not "all submitted jobs".
+  // Wait for the worker count before testing a deliberately partial drain;
+  // otherwise a fast consumer can drain the first completion before the other
+  // seven have reached the queue and correctly observe a reset event.
+  mv_job_stats stats{};
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  do {
+    REQUIRE(mv_session_job_stats(session.handle, &stats) == MV_OK);
+    if (stats.completed < 8) std::this_thread::sleep_for(1ms);
+  } while (stats.completed < 8 && std::chrono::steady_clock::now() < deadline);
+  REQUIRE(stats.completed == 8);
+
   HANDLE wait_handle = static_cast<HANDLE>(mv_completion_wait_handle(session.handle));
-  REQUIRE(::WaitForSingleObject(wait_handle, 5000) == WAIT_OBJECT_0);
+  REQUIRE(::WaitForSingleObject(wait_handle, 0) == WAIT_OBJECT_0);
 
   mv_completion one{};
   REQUIRE(mv_completion_drain(session.handle, &one, 1) == 1);
