@@ -32,6 +32,8 @@
 #include "gfx/device.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
+#include "image/tiles.h"
+#include "canvas/refinement.h"
 #include "image/upload.h"
 #include "io/dir.h"
 #include "io/file.h"
@@ -129,8 +131,17 @@ struct mv_session {
   std::mutex image_mutex;
   std::atomic<mv::image::gpu_image*> ready{nullptr};
   std::shared_ptr<mv::image::display_image> cpu;
+  // The CPU pyramid of `cpu` when it is a tiled image, so a device rebuild
+  // re-creates the overview without rebuilding the pyramid.
+  std::shared_ptr<const mv::image::tile_source> cpu_tiles;
+  std::uint64_t cpu_key = 0;  // item identity of `cpu` (canvas/refinement.h)
   mv_image_info info{};
   HANDLE image_ready_event = nullptr;
+
+  // Started with the first tiled image; creates tiles the render thread asks
+  // for. Reset before `jobs` is destroyed (it reads the generation).
+  std::mutex tile_service_mutex;
+  std::unique_ptr<mv::image::tile_service> tile_service;
 
   struct folder_item {
     std::string name;
@@ -263,32 +274,93 @@ mv_image_info info_from(const mv::image::display_image& cpu) noexcept {
   return info;
 }
 
-bool publish_view(mv_session* session, const mv::job_context& ctx, mv_image_info info,
-                  std::shared_ptr<mv::image::display_image> cpu,
+std::uint64_t key_for(const std::string& path) noexcept {
+  return mv::canvas::item_key_for(path.data(), path.size());
+}
+
+// [caller holds image_mutex] Stores the CPU copy and hands the texture to the
+// render thread, stamped with who it is (plan/04 step 4): the item key the
+// caller decoded for and the view generation at this moment. A second publish
+// with the same stamp is a refinement the render thread fades in without
+// moving the camera; anything else is navigation.
+//
+// `key` is the identity of the folder entry, not necessarily of the file that
+// was decoded: a pairing that shows a JPEG and then its RAW passes the same
+// key for both so the RAW refines the JPEG.
+void publish_locked(mv_session* session, std::uint64_t key, mv_image_info info,
+                    std::shared_ptr<mv::image::display_image> cpu,
+                    std::unique_ptr<mv::image::gpu_image> gpu) {
+  session->info = info;
+  if (cpu) {
+    session->cpu = std::move(cpu);
+    session->cpu_tiles.reset();
+    session->cpu_key = key;
+  }
+  if (gpu) {
+    gpu->item_key = key;
+    gpu->view_generation = session->jobs.current_generation();
+    if (gpu->tiles) session->cpu_tiles = gpu->tiles->source();
+    mv::image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
+    delete old;
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+  }
+}
+
+bool publish_view(mv_session* session, const mv::job_context& ctx, std::uint64_t key,
+                  mv_image_info info, std::shared_ptr<mv::image::display_image> cpu,
                   std::unique_ptr<mv::image::gpu_image> gpu) {
   std::lock_guard lock(session->image_mutex);
   if (ctx.gen() != session->jobs.current_generation()) return false;
-  session->info = info;
-  if (cpu) session->cpu = std::move(cpu);
-  if (gpu) {
-    mv::image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
-    delete old;
-    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
-  }
+  publish_locked(session, key, info, std::move(cpu), std::move(gpu));
   return true;
 }
 
-void publish_ready(mv_session* session, mv_image_info info,
+void publish_ready(mv_session* session, std::uint64_t key, mv_image_info info,
                    std::shared_ptr<mv::image::display_image> cpu,
                    std::unique_ptr<mv::image::gpu_image> gpu) {
   std::lock_guard lock(session->image_mutex);
-  session->info = info;
-  if (cpu) session->cpu = std::move(cpu);
-  if (gpu) {
-    mv::image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
-    delete old;
-    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+  publish_locked(session, key, info, std::move(cpu), std::move(gpu));
+}
+
+void tiles_landed(void* user) noexcept {
+  auto* session = static_cast<mv_session*>(user);
+  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+}
+
+mv::image::tile_service& tile_service_for(mv_session* session) {
+  std::lock_guard lock(session->tile_service_mutex);
+  if (!session->tile_service) {
+    session->tile_service =
+        std::make_unique<mv::image::tile_service>(&session->jobs, &tiles_landed, session);
   }
+  return *session->tile_service;
+}
+
+// [worker] The full-resolution GPU form of a decoded still: one texture, or -
+// above ~64 MP or past the 16384 texture limit - a tiled pyramid with its
+// overview (plan/04). `mip_limit` 1 is the top-level-only staging upload of
+// the single-texture path; a tiled image has no such stage.
+status upload_still(mv_session* session, ID3D11Device* device,
+                    const std::shared_ptr<mv::image::display_image>& cpu,
+                    const mv::job_context& ctx, std::uint32_t mip_limit,
+                    std::unique_ptr<mv::image::gpu_image>& out) {
+  if (mv::image::needs_tiles(cpu->width, cpu->height)) {
+    std::shared_ptr<const mv::image::tile_source> reuse;
+    {
+      std::lock_guard lock(session->image_mutex);
+      reuse = session->cpu_tiles;
+    }
+    auto uploaded = mv::image::upload_tiled(device, cpu, ctx.gen(), tile_service_for(session),
+                                            &ctx, std::move(reuse));
+    if (!uploaded) return uploaded.error();
+    out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+    return status::ok;
+  }
+  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit);
+  if (!uploaded) return uploaded.error();
+  out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+  out->quality = mip_limit == 1 ? mv::image::gpu_quality::full_top : mv::image::gpu_quality::full;
+  return status::ok;
 }
 
 // Worker-only probe; never read a whole multi-gigabyte clip to identify it.
@@ -349,6 +421,9 @@ std::size_t gpu_bytes(const mv::image::gpu_image& gpu) noexcept {
 
 void lru_put(mv_session* session, std::string path, const mv::image::gpu_image& gpu,
              mv_image_info info) {
+  // A tiled image is not cached across navigation: its tiles are view-tied
+  // and its CPU pyramid is hundreds of MB. A revisit decodes again.
+  if (gpu.tiles) return;
   std::lock_guard lock(session->lru_mutex);
   for (auto it = session->lru.begin(); it != session->lru.end(); ++it) {
     if (it->path == path) {
@@ -388,10 +463,14 @@ bool lru_publish(mv_session* session, const std::string& path) {
   }
   if (!gpu) return false;
   std::lock_guard image_lock(session->image_mutex);
-  session->info = info;
-  mv::image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
-  delete old;
-  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+  // The CPU copy belongs to the previous decode, not to this item: keeping it
+  // pinned a 400 MB still behind a cached phone JPEG, and a device rebuild
+  // would have re-uploaded the wrong picture.
+  session->cpu.reset();
+  session->cpu_tiles.reset();
+  session->cpu_key = 0;
+  gpu->quality = mv::image::gpu_quality::full;
+  publish_locked(session, key_for(path), info, nullptr, std::move(gpu));
   return true;
 }
 
@@ -611,8 +690,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
               auto uploaded = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx, 1);
               if (uploaded) {
                 auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+                gpu->quality = mv::image::gpu_quality::preview;
                 if (path_is_selected(session, path)) {
-                  publish_ready(session, info_from(preview.value()), nullptr, std::move(gpu));
+                  publish_ready(session, key_for(path), info_from(preview.value()), nullptr,
+                                std::move(gpu));
                   push_image_opened(session, correlation, ctx.gen(), status::ok);
                 }
               } else if (uploaded.error() == status::cancelled) {
@@ -632,29 +713,36 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         }
         auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
         const mv_image_info info = info_from(*cpu);
+        const bool tiled = mv::image::needs_tiles(cpu->width, cpu->height);
+        // A tiled neighbour is not prefetched: it would never enter the LRU
+        // (lru_put) and its pyramid is the expensive part. Dropped here.
+        if (tiled && !path_is_selected(session, path)) return status::ok;
 
         auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
           auto dev = session->copy_device();
           if (!dev) {
-            if (path_is_selected(session, path)) publish_ready(session, info, cpu, nullptr);
+            if (path_is_selected(session, path)) {
+              publish_ready(session, key_for(path), info, cpu, nullptr);
+            }
             return status::ok;
           }
-          auto uploaded = mv::image::upload(dev.Get(), *cpu, ctx.gen(), &ctx, mip_limit);
-          if (!uploaded) return uploaded.error();
+          std::unique_ptr<mv::image::gpu_image> gpu;
+          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu);
+          if (up != status::ok) return up;
           if (ctx.cancelled()) return status::cancelled;
-          auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
           lru_put(session, path, *gpu, info);
           if (path_is_selected(session, path)) {
-            publish_ready(session, info, cpu, std::move(gpu));
+            publish_ready(session, key_for(path), info, cpu, std::move(gpu));
             push_image_opened(session, correlation, ctx.gen(), status::ok);
           }
           return status::ok;
         };
 
         // The CPU mip pyramid of a large still costs more than the decode did.
-        // Get the top level on screen first, then pay for the pyramid — same
-        // staging mv_image_open already uses (plan/04).
-        const bool large =
+        // Get the top level on screen first, then pay for the pyramid - same
+        // staging mv_image_open already uses (plan/04). A tiled image has no
+        // such stage: its overview is small and its tiles come on demand.
+        const bool large = !tiled &&
             static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
         if (large && path_is_selected(session, path)) {
           const status first = upload_and_publish(1);
@@ -855,6 +943,7 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     session->jobs.shutdown();
     session->thumbs.close();
     delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
+    session->tile_service.reset();  // joins; reads jobs' generation until then
     if (session->completion_event) ::CloseHandle(session->completion_event);
     if (session->image_ready_event) ::CloseHandle(session->image_ready_event);
     delete session;
@@ -984,12 +1073,14 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
               auto uploaded = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx);
               if (uploaded) {
                 gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+                gpu->quality = mv::image::gpu_quality::preview;
               } else if (uploaded.error() == status::cancelled) {
                 return status::cancelled;
               }
             }
             if (gpu) {
-              (void)publish_view(session, ctx, info_from(preview.value()), nullptr, std::move(gpu));
+              (void)publish_view(session, ctx, key_for(path), info_from(preview.value()), nullptr,
+                                 std::move(gpu));
             }
           } else if (preview.error() == status::cancelled) {
             return status::cancelled;
@@ -1003,19 +1094,21 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
           const mv_image_info info = info_from(*cpu);
           // CPU cache first so a device rebuild can re-upload if CreateTexture2D
           // is still in flight against the old device (plan/12).
-          if (!publish_view(session, ctx, info, cpu, nullptr)) return status::cancelled;
+          if (!publish_view(session, ctx, key_for(path), info, cpu, nullptr)) {
+            return status::cancelled;
+          }
 
-          const bool large =
+          const bool large = !mv::image::needs_tiles(cpu->width, cpu->height) &&
               static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
           auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
             auto dev = session->copy_device();
             if (!dev) return status::ok;
-            auto uploaded = mv::image::upload(dev.Get(), *cpu, ctx.gen(), &ctx, mip_limit);
-            if (!uploaded) return uploaded.error();
+            std::unique_ptr<mv::image::gpu_image> gpu;
+            const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu);
+            if (up != status::ok) return up;
             if (ctx.cancelled()) return status::cancelled;
-            auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
-            if (gpu) lru_put(session, path, *gpu, info);
-            if (!publish_view(session, ctx, info, nullptr, std::move(gpu))) {
+            lru_put(session, path, *gpu, info);
+            if (!publish_view(session, ctx, key_for(path), info, nullptr, std::move(gpu))) {
               return status::cancelled;
             }
             return status::ok;
@@ -1382,22 +1475,22 @@ status attach_device(mv_session_t session, ID3D11Device* device) {
       [session, dev](const job_context& ctx) -> status {
         if (ctx.cancelled()) return status::cancelled;
         std::shared_ptr<image::display_image> cpu;
+        std::uint64_t key = 0;
         {
           std::lock_guard lock(session->image_mutex);
           cpu = session->cpu;
+          key = session->cpu_key;
         }
         if (!cpu || cpu->width == 0) return status::ok;
-        auto uploaded = image::upload(dev.Get(), *cpu, ctx.gen(), &ctx);
-        if (!uploaded) return uploaded.error();
+        std::unique_ptr<image::gpu_image> gpu;
+        const status up = upload_still(session, dev.Get(), cpu, ctx, 0, gpu);
+        if (up != status::ok) return up;
         if (ctx.cancelled()) return status::cancelled;
-        auto gpu = std::make_unique<image::gpu_image>(std::move(uploaded).value());
         {
           std::lock_guard lock(session->image_mutex);
           if (ctx.gen() != session->jobs.current_generation()) return status::cancelled;
           if (session->cpu != cpu) return status::cancelled;
-          image::gpu_image* old = session->ready.exchange(gpu.release(), std::memory_order_acq_rel);
-          delete old;
-          if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+          publish_locked(session, key, session->info, nullptr, std::move(gpu));
         }
         // Review note 37: the device rebuild bumped the generation, which
         // retired the animation. The still is back; bring the animation back
@@ -1437,7 +1530,13 @@ void* image_ready_wait_handle(mv_session_t session) {
   return session->image_ready_event;
 }
 
-void release_gpu_image(image::gpu_image* image) { delete image; }
+void release_gpu_image(image::gpu_image* image) {
+  // A tiled image's set is freed by its service thread, not here: poke it so
+  // a retired pyramid does not wait for the next tile request.
+  image::tile_service* service = image && image->tiles ? image->tiles->service() : nullptr;
+  delete image;
+  if (service) service->poke();
+}
 
 bool take_animation_frame(mv_session_t session, std::uint32_t generation,
                           image::gpu_image*& texture, std::uint32_t& delay_ms,

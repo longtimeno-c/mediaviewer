@@ -148,6 +148,8 @@ add_library(mv_gfx STATIC
   src/gfx/pacer.cpp
   src/gfx/swapchain.cpp
   src/gfx/blit.cpp
+  src/gfx/texture.cpp
+  src/gfx/texture.h
   src/gfx/device.h
   src/gfx/pacer.h
   src/gfx/swapchain.h
@@ -265,11 +267,13 @@ add_library(mv_image STATIC
   src/image/colour.cpp
   src/image/pipeline.cpp
   src/image/upload.cpp
+  src/image/tiles.cpp
   src/image/thumb.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/upload.h
   src/image/gpu_image.h
+  src/image/tiles.h
   src/image/thumb.h
 )
 target_link_libraries(mv_image
@@ -341,6 +345,7 @@ add_library(mv_canvas STATIC
   src/canvas/camera.cpp
   src/canvas/camera.h
   src/canvas/spring.h
+  src/canvas/refinement.h
 )
 target_link_libraries(mv_canvas PUBLIC mv_core)
 add_library(mv::canvas ALIAS mv_canvas)
@@ -489,6 +494,8 @@ if(MV_BUILD_TESTS)
     tests/test_camera.cpp
     tests/test_abi_image.cpp
     tests/test_upload.cpp
+    tests/test_tiles.cpp
+    tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
     tests/test_folder.cpp
