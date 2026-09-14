@@ -237,6 +237,21 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 .\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
 .\tools\licence-check.ps1          # no GPL FFmpeg, no software HEVC/AAC encoder
 
+# PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
+# bit-flipped and given absurd dimensions, plus tests/data/broken, through every
+# decode entry point. Fails on a crash, an escaped exception, a call over 5 s,
+# or runaway memory. Part of plain ctest; this runs just that suite.
+ctest --test-dir build -C Release -L broken --output-on-failure
+$env:MV_BROKEN_FULL = "1"          # exhaustive sweep (nightly CI)
+$env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
+# seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
+python tools\testmedia\make-seeds.py
+
+# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan)
+cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
+cmake --build build-fuzz --config Release --target mv_fuzzers
+.\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+
 # the frame-time gate — 60 seconds, needs a quiet machine
 .\build\bin\Release\frametime.exe --seconds 60
 
