@@ -743,7 +743,11 @@ TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw]
         std::chrono::duration<double, std::milli>(returned_at - cancelled_at).count();
     std::printf("[raw] %-20s cancel after %3d ms -> returned %.1f ms later\n", name, delay_ms,
                 latency);
-    CHECK(latency < 400.0);
+    // LibRaw polls the progress callback between stages, not inside one, so
+    // latency is one stage: a CR2 lossless-JPEG unpack is ~400 ms alone and
+    // ~550 ms with the rest of the suite running. The bound catches "never
+    // cancels" (a full decode is 1-1.7 s), not stage granularity.
+    CHECK(latency < 1000.0);
   }
 }
 
