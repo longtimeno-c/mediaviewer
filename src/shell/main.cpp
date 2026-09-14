@@ -766,7 +766,8 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // Island chrome can post a command id (help, open, …) through the same
       // switch as its key.
       if (command > 0 && command < mv::shell::kCommandCount &&
-          !mv::shell::is_reserved_notification(command)) {
+          !mv::shell::is_reserved_notification(command) &&
+          !mv::shell::is_retired_command(command)) {
         (void)run_command(app, static_cast<mv::shell::command_id>(command));
       }
       return;

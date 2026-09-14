@@ -404,6 +404,14 @@ Slipped from PR 6, recorded in [plan/12-decision-log.md](plan/12-decision-log.md
 the folder-tree island to PR 8 (its key beeps; its command and canvas inset are
 in), and hiding companion files to PR 7.
 
+PR 7 (in progress) pairs files at scan time: a camera's `DSC_0001.JPG` +
+`DSC_0001.NEF` (or HEIC + RAW) and an iPhone Live Photo (`IMG_0001.HEIC` or
+`.JPG` + `IMG_0001.MOV`) are **one** filmstrip entry and one arrow-key stop,
+badged RAW or LIVE. `;` plays a Live Photo's motion once and returns to the
+still. Copy, move and delete act on both files of a pair. "Open RAW of pair" /
+"Open JPEG of pair" have no default key; assign one in Settings (`Ctrl+,`).
+`.xmp`, `.thm`, `.aae`, `.wav`, hidden and system files are never listed.
+
 PR 5's verify lines are:
 
 > **5a —** 4K 10-bit HEVC and AV1 play at full rate with GPU video decode > 0 in

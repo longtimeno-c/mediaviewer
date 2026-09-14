@@ -126,6 +126,94 @@ TEST_CASE("mv_folder_open lists stills and serves item names", "[abi][folder]") 
   mv::io::set_thumb_cache_dir_override({});
 }
 
+namespace {
+
+std::string item_string(mv_session_t s, uint32_t index,
+                        mv_status (MV_CALL* fn)(mv_session_t, uint32_t, char*, uint32_t,
+                                                uint32_t*)) {
+  char buf[1024]{};
+  uint32_t bytes = 0;
+  REQUIRE(fn(s, index, buf, sizeof(buf), &bytes) == MV_OK);
+  return std::string(buf);
+}
+
+std::string base_name(const std::string& path) {
+  const auto slash = path.find_last_of("\\/");
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+}  // namespace
+
+TEST_CASE("a RAW+JPEG pair and a Live Photo are one stop each over the ABI",
+          "[abi][folder][pairing]") {
+  // Renamed BMPs: listing and pairing go by name; nothing here needs a RAW or
+  // HEIC decoder.
+  const auto dir = temp_dir();
+  write_bmp(dir, L"DSC_0001.JPG");
+  write_bmp(dir, L"DSC_0001.NEF");
+  write_bmp(dir, L"DSC_0002.ARW");
+  write_bmp(dir, L"IMG_0003.JPG");
+  write_bmp(dir, L"IMG_0003.MOV");
+  write_bmp(dir, L"other.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  // Explorer opened the RAW half: the pair's stop is selected.
+  const std::string nef = utf8(dir + L"\\DSC_0001.NEF");
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), nef.c_str(), &job) == MV_OK);
+  mv_completion c{};
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  REQUIRE(c.payload == 4ll);  // stops, not files
+
+  uint32_t count = 0;
+  REQUIRE(mv_folder_count(session.handle, &count) == MV_OK);
+  REQUIRE(count == 4);
+
+  mv_folder_item item{};
+  REQUIRE(mv_folder_item_at(session.handle, 0, &item) == MV_OK);
+  REQUIRE(item.pair_kind == MV_PAIR_RAW_JPEG);
+  REQUIRE((item.flags & 1u) == 1u);  // selected: the NEF asked for landed here
+  REQUIRE((item.flags & 2u) == 0u);  // the primary is the JPEG
+  REQUIRE(item_string(session.handle, 0, &mv_folder_item_name) == "DSC_0001.JPG");
+  REQUIRE(base_name(item_string(session.handle, 0, &mv_folder_item_path)) == "DSC_0001.JPG");
+  REQUIRE(base_name(item_string(session.handle, 0, &mv_folder_item_pair_path)) == "DSC_0001.NEF");
+  uint32_t selected = 99;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  REQUIRE(selected == 0);
+
+  REQUIRE(mv_folder_item_at(session.handle, 1, &item) == MV_OK);
+  REQUIRE(item.pair_kind == MV_PAIR_NONE);
+  REQUIRE((item.flags & 2u) == 2u);  // an unpaired RAW: the badge flag
+  REQUIRE(item_string(session.handle, 1, &mv_folder_item_pair_path).empty());
+
+  REQUIRE(mv_folder_item_at(session.handle, 2, &item) == MV_OK);
+  REQUIRE(item.pair_kind == MV_PAIR_LIVE_PHOTO);
+  REQUIRE(item_string(session.handle, 2, &mv_folder_item_name) == "IMG_0003.JPG");
+  REQUIRE(base_name(item_string(session.handle, 2, &mv_folder_item_pair_path)) == "IMG_0003.MOV");
+
+  // Arrow onto the Live Photo, then a file lands in front of it: the watcher
+  // refresh keeps the same stop, now one index later.
+  REQUIRE(mv_folder_select(session.handle, 2, &job) == MV_OK);
+  write_bmp(dir, L"A_new.bmp");
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  // A copy can raise more than one notification; wait for the listing to hold it.
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    REQUIRE(mv_folder_count(session.handle, &count) == MV_OK);
+    if (count == 5) break;
+    std::this_thread::sleep_for(20ms);
+  }
+  REQUIRE(count == 5);
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  REQUIRE(selected == 3);
+  REQUIRE(item_string(session.handle, selected, &mv_folder_item_name) == "IMG_0003.JPG");
+
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("scrubbing a folder abandons the decodes it passed", "[abi][folder][cancellation]") {
   // The regression: folder decodes were submitted at background_generation, so
   // ctx.cancelled() was always false and nothing a held arrow key queued could

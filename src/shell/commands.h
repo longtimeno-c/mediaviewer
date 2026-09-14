@@ -202,6 +202,13 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
   return id == 15 || id == 16 || id == 18 || id == 19 || id == 20;
 }
 
+// Ids that once were commands and are kept as holes so later ids keep their
+// wire values. 76 is the dropped Ctrl+K palette (plan/12 2026-09-13): no
+// command_info, no binding, never dispatched.
+[[nodiscard]] constexpr bool is_retired_command(int id) noexcept {
+  return id == static_cast<int>(command_id::palette);
+}
+
 // A row whose key is key::none is listed (Settings can give it one) but not
 // routed. Only commands plan/16 names without a key ship that way (PR 7: Open
 // RAW / Open JPEG, which plan/04 put in the dropped palette).
