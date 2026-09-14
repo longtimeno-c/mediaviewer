@@ -1172,8 +1172,8 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
     dest = utf8_from_wide(folder);
     if (dest.empty()) return true;
   }
-  // Written only when it changes: it is an INI write on the UI thread (plan/12
-  // "Settings writes on the UI thread").
+  // Saved only when it changes. The save is in memory; the settings store's
+  // worker writes the file (plan/12 "Settings writes on the UI thread", PR 8).
   if (app->destinations.empty() || app->destinations.front() != dest) {
     app->destinations = mv::shell::push_destination(std::move(app->destinations), dest);
     mv::shell::save_destinations(app->destinations);
@@ -2219,6 +2219,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // boundary stops being tested by the thing that matters most.
   app_state app;
   app.chrome_enabled = chrome_enabled;
+  // settings.ini was read once, at startup, by app_settings(). From here every
+  // settings save is in memory; the file is written on the store's worker, and
+  // a write on this (UI) thread is counted as a rule 1 violation.
+  mv::shell::register_settings_ui_thread();
+  (void)mv::shell::app_settings().start();
   app.settings = mv::shell::load_view_settings();
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.background = app.settings.background;
@@ -2327,6 +2332,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   // The window is gone: a job finishing now posts to nobody and frees its own
   // result. Queued-but-unstarted jobs are dropped with the process.
+  // Exit may wait briefly for the last settings snapshot to reach disk (WM_CLOSE
+  // has already torn the islands down in its own order); the render loop never
+  // waits on it.
+  if (!mv::shell::app_settings().flush(1000)) {
+    MV_LOG_WARN("settings: last change did not reach settings.ini before exit");
+  }
+  mv::shell::app_settings().stop();
   app.files.stop();
   app.lab.stop();
   const int code = app.lab.exit_code();

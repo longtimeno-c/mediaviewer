@@ -409,6 +409,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/navigation.h
   src/shell/settings.cpp
   src/shell/settings.h
+  src/shell/settings_store.cpp
+  src/shell/settings_store.h
   src/shell/crash_reporter_win.cpp
   src/shell/crash_reporter_win.h
   src/shell/minidump_scrub.cpp
@@ -572,6 +574,7 @@ if(MV_BUILD_TESTS)
     tests/test_collision_name.cpp
     tests/test_file_ops.cpp
     tests/test_file_jobs.cpp
+    tests/test_settings_store.cpp
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
@@ -595,6 +598,7 @@ if(MV_BUILD_TESTS)
     src/shell/file_jobs.cpp
     src/shell/open_request.cpp
     src/shell/settings.cpp
+    src/shell/settings_store.cpp
     src/shell/app.manifest
   )
   target_link_libraries(mv_tests PRIVATE
