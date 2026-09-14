@@ -577,7 +577,16 @@ if(MV_BUILD_TESTS)
   # them as Skipped instead, so the summary says how much was not proved.
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
-  catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  if(MV_ASAN)
+    # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
+    # Windows driver when the executable is ASan-instrumented. Keep the ASan
+    # job on the deterministic CPU/core suite; the normal MSVC and clang-cl
+    # jobs still run every [video][ring] hardware test.
+    catch_discover_tests(mv_tests TEST_SPEC "~[video][ring]"
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  else()
+    catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  endif()
   catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   if(TARGET mv_chrome)

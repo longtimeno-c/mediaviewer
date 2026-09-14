@@ -134,7 +134,7 @@ trivially compliant at once, and matches what comparable tools do.
 - [x] `THIRD-PARTY.md` generated — lists what is linked today and the required linkage for
       every planned dependency. The About dialog that shows it arrives with the chrome
       (PR 3).
-- [ ] Source-offer page for the LGPL components, referenced from About — *PR 15, with the
+- [ ] Source-offer page for the LGPL components, referenced from About — *PR 8, with the
       release pipeline that produces it.*
 - [x] No software HEVC or AAC encoder anywhere in the dependency graph — enforced by
       `tools/licence-check.ps1`.
@@ -143,8 +143,8 @@ trivially compliant at once, and matches what comparable tools do.
 
 ### Consequence to carry forward
 
-Store MSIX is **off the table**. PR 15's "Store as a secondary channel if the licence
-permits" is now answered: it does not. The primary and only channel is a signed
+Store MSIX is **off the table**. The earlier conditional Store channel is excluded
+by the licence decision; moving packaging to PR 8 does not reopen it. The primary and only channel is a signed
 per-user **Inno Setup wizard** (first install) with **Velopack** auto-update
 ([13-updates-and-telemetry.md](13-updates-and-telemetry.md)). About links to GitHub,
 `THIRD-PARTY.md`, and the per-release LGPL source offer.

@@ -229,6 +229,9 @@ constexpr command_info kCommands[] = {
     {blackout, "Blackout"},
     {shuffle, "Shuffle"},
     {help, "Keyboard shortcuts"},
+    // The island TextBox fail-fast retired Ctrl+K, but this id deliberately
+    // remains in the wire enum so every later command keeps its value.
+    {palette, "Command palette (retired)", true},
     {go_to, "Go to index…"},
     {folder_tree, "Folder tree"},
     {typeahead, "Find by name…"},

@@ -1074,7 +1074,10 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
     std::string owned(utf8_path);
     const auto correlation = mv::abi::current_correlation_id();
-    const mv::generation gen = session->jobs.bump_generation();
+    // Opening is submitted at the caller's current view generation. The host
+    // bumps first when this is a new view intent (plan/14); doing it again here
+    // made the managed OpenImage wrapper advance twice.
+    const mv::generation gen = session->jobs.current_generation();
 
     const mv::job_id id = session->jobs.submit_at(
         gen,
@@ -1201,10 +1204,14 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
     const mv::job_id id = session->jobs.submit_at(
         mv::background_generation,
         [session, dir](const mv::job_context&) -> status {
+          // Arm the watcher before listing: FOLDER_READY is pushed from inside
+          // apply_folder_list, and a file that landed between that completion
+          // and a later start() was never seen. A change during the scan now
+          // costs one extra refresh instead.
+          (void)session->watcher.start(dir, &on_folder_watch, session);
           auto listed = mv::io::list_still_files(dir);
           if (!listed) return listed.error();
           apply_folder_list(session, mv::io::pair_listing(std::move(listed).value()), false);
-          (void)session->watcher.start(dir, &on_folder_watch, session);
           return status::ok;
         },
         [session, correlation](mv::job_id id, mv::generation gen, status result) {
@@ -1361,6 +1368,11 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
 }
 
 mv_status MV_CALL mv_video_open(mv_session_t session, const char* path, uint64_t* job) {
+  // Unlike mv_image_open, the legacy video entry point owns the view-intent
+  // bump (its public contract promises that it does).
+  if (!valid(session) || !path || path[0] == '\0') return MV_ERR_INVALID_ARG;
+  const mv_status bumped = mv_session_bump_generation(session, nullptr);
+  if (bumped != MV_OK) return bumped;
   return mv_image_open(session, path, job);
 }
 mv_status MV_CALL mv_video_close(mv_session_t session) {

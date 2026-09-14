@@ -54,7 +54,7 @@ that.
 **Apply EXIF/container orientation on the display path**, never as a surprise 90° pixel
 rotate of the original. Untagged = identity. A toggle "ignore orientation" exists for the
 file that was saved already rotated *and* tagged; default is honour the tag. This is a
-viewer correctness requirement, not an edit op — `[` `]` in PR 9 *writes* orientation
+viewer correctness requirement, not an edit op — `[` `]` in PR 10 *writes* orientation
 (lossless JPEG transform or metadata).
 
 ## Tiled pyramid for large images
@@ -111,7 +111,7 @@ Photos, and it is **not** two navigation stops.
 | `DSC_0123.NEF` + `DSC_0123.JPG` (any RAW ext + JPEG/HEIC, same basename) | Basename match, ignoring case and the known RAW/JPEG extension sets |
 
 **v1 behaviour: one item, not two.** The JPEG (or HEIC) is first pixel and the filmstrip
-thumb; the RAW is the edit source once PR 7/10 can open it. A RAW-only badge if no JPEG
+thumb; the RAW is the edit source once PR 7/11 can open it. A RAW-only badge if no JPEG
 sits beside it. "Open RAW" / "Open JPEG" remains reachable from the command palette so a
 paired file is never trapped.
 
@@ -183,7 +183,7 @@ once per profile (`cmsFLAGS_HIGHRESPRECALC`). An RGB matrix/shaper that matches 
 within an 8-bit step is a copy-through — that file already is sRGB, not a tagged-as-sRGB
 bug. Wide-gamut and LUT profiles still convert. The colourimetric hop remains ICC →
 linear → sRGB encode; treating a tagged Display P3 / Adobe RGB file as sRGB is still a
-bug. The float Rec.709 working space is the edit path (PR 10), not the viewer blit.
+bug. The float Rec.709 working space is the edit path (PR 11), not the viewer blit.
 
 The **viewer LRU** is 8-bit sRGB (or RGB10A2), not FP16 — [02](02-architecture.md). FP16 is the
 edit working space, promoted when an edit stack is active.

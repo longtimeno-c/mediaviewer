@@ -62,9 +62,14 @@ TEST_CASE("mv_image_open returns a job id immediately and completes with size",
   const auto path8 = utf8(path);
 
   HANDLE wait_handle = static_cast<HANDLE>(mv_completion_wait_handle(session.handle));
+  uint32_t generation_before = 0;
+  REQUIRE(mv_session_current_generation(session.handle, &generation_before) == MV_OK);
   uint64_t job_id = 0;
   REQUIRE(mv_image_open(session.handle, path8.c_str(), &job_id) == MV_OK);
   REQUIRE(job_id != 0);
+  uint32_t generation_after = 0;
+  REQUIRE(mv_session_current_generation(session.handle, &generation_after) == MV_OK);
+  REQUIRE(generation_after == generation_before);
 
   REQUIRE(::WaitForSingleObject(wait_handle, 5000) == WAIT_OBJECT_0);
   mv_completion c{};

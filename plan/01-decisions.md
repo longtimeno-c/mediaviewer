@@ -225,22 +225,18 @@ where a bundled decoder must be disabled for licensing reasons
 VideoToolbox / ImageIO. The bundled fallback is what makes both honest (D3, D9) and is what
 keeps golden images matching across OS.
 
-## D4 — v1 scope: **viewer with light edits** ✅ decided
+## D4 — v1 scope: **ship the viewer through PR 7** ✅ amended 2026-09-14
 
-| | **Full editor** | **Viewer + light edits** ✅ |
-|---|---|---|
-| Photo edits | Curves, HSL, local adjustments, healing, full RAW develop | Rotate/flip/crop/resize + exposure/contrast/saturation/temperature |
-| Time to shippable | ~6 months full-time | **~3 months** |
-| Risk of never shipping | **Real** | Low |
-| Architecture impact | **None** — same edit stack either way | None |
+**Finish PR 7, then package and ship in PR 8.** The first release contains the browsing,
+playback, viewer controls, and camera-dump formats delivered by PRs 1–7. Metadata tools,
+photo editing/export, video trimming, and additional Windows integration follow in
+future updates (PRs 9–15); none is a v1 release gate.
 
-Rotate / crop / exposure / trim is a viewer people will *switch to*. Curves, HSL, local
-adjustments, healing, and GPU demosaic are a develop module on the same `EditStack`, later. Every
-op deferred is a shader you don't write, a slider you don't lay out, and a golden-image test you
-don't maintain — at zero architectural cost, because the stack was designed to take more ops.
-
-**Do not start them.** The v1/v1.1 op split is in
-[07-photo-editing.md](07-photo-editing.md#v1-scope-line).
+The light-edit design remains: rotate/flip/crop/straighten/resize, then
+exposure/contrast/saturation/temperature. Build it in PRs 10–11 using
+[07-photo-editing.md](07-photo-editing.md). Curves, HSL, local adjustments, healing, and
+GPU demosaic stay further out. No release date or version is promised for those additions.
+The reason and old-to-new PR mapping are recorded in [12](12-decision-log.md).
 
 ## D5 — Format coverage: **the camera-dump set** ✅ decided
 
@@ -288,15 +284,15 @@ photo.
 
 That is honest, achievable under WinUI, and still the thing that makes the app feel right.
 
-## D7 — Video trim: **two-path first, smart cut in v1.1** ✅ decided
+## D7 — Video trim: **post-v1, two-path first, smart cut later** ✅ amended 2026-09-14
 
 Smart cut (re-encode only the sub-second head and tail, stream-copy the middle) is a real
 differentiator and a **join-artifact minefield** — encoder settings must match the source's
 profile, level, GOP structure, and bitrate closely enough that the seam is invisible, and getting
 it wrong ships a visible quality step at both ends of every clip.
 
-**v1: two clearly-labelled paths.** Keyframe trim (stream copy, instant, snaps to the keyframe grid
-drawn on the scrub bar) and full re-encode (frame-accurate, labelled as slower). **v1.1: smart cut**,
+**First trim update (PR 13, after v1): two clearly-labelled paths.** Keyframe trim (stream copy, instant, snaps to the keyframe grid
+drawn on the scrub bar) and full re-encode (frame-accurate, labelled as slower). **Later trim update: smart cut**,
 once the two-path version is boring and the golden-file corpus exists to catch seams. Algorithm is
 preserved in [08-video-editing.md](08-video-editing.md).
 
@@ -327,9 +323,9 @@ I/O, and notarization are the other half. Recorded in [12](12-decision-log.md).
 | Mac later | A rewrite of decode *and* present | A host + backends, specified now | The remaining Windows PRs become dual-track |
 | Reversibility | Hard (wrong direction) | Easy if Mac never happens | Hard — a Metal lab in v1 is sunk cost |
 
-**Call: v1 is a Windows app. macOS is the next product, specified now, built after PR 15.**
+**Call: v1 is a Windows app. macOS is the next product, specified now, built after PR 8.**
 D1–D8 stand, with the per-OS reading below. PR 1–3 are not retrofitted. Do not implement
-Metal, Swift, or a `*_mac.cpp` during PRs 1–15.
+Metal, Swift, or a `*_mac.cpp` during Windows v1 (PRs 1–8), except the already-authorized PR 16 present lab.
 
 What this costs, stated honestly:
 

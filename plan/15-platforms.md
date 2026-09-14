@@ -5,7 +5,8 @@ second host of the same decode / colour / edit / metadata library, not a rewrite
 The Mac app is **Milestone F** ([10-roadmap.md](10-roadmap.md)), after Windows ships.
 
 This document is the rule set. Do not implement Metal, Swift, VideoToolbox, or a
-`*_mac.cpp` during PRs 1–15. Do not skip a D9 port in those PRs in order to call Win32
+`*_mac.cpp` during Windows v1 (PRs 1–8), except the already-authorized PR 16 present
+lab. The hostable-core rules continue through future updates (PRs 9–15); do not call Win32
 from `image/`, `player/`, `edit/`, or `meta/`.
 
 ## This is not a UI update
@@ -35,7 +36,7 @@ Qt / Flutter / MAUI / Catalyst throws D1 away a different way.
 | Mac later | A rewrite of decode *and* present | A host + backends, specified now | The remaining Windows PRs become dual-track |
 | Reversibility | Hard (wrong direction) | Easy if Mac never happens | Hard — a Metal lab in v1 is sunk cost |
 
-**v1 is Windows. macOS is the next product, specified now, built after PR 15.** PR 1–3
+**v1 is Windows. macOS is the next product, specified now, built after PR 8.** PR 1–3
 are not retrofitted. Putting both in v1 would pause the Windows viewer for a present
 path the Windows user does not need. Treating Mac as “just SwiftUI” would ship a Mac
 app with no present-loop gate.
@@ -80,10 +81,11 @@ host cannot replace.
   writes its own default map; it does not import a XAML keymap.
 - Completions stay a queue the host pumps. C++ does not call a WinUI dispatcher
   *or* `DispatchQueue.main`.
-- **No empty `*_mac.cpp` in PRs 1–15.** A stub that does not present is not a port
+- **No empty `*_mac.cpp` in PRs 1–8.** A stub that does not present is not a port
   and will bit-rot. The Windows file is `*_win.cpp` (or lives in `shell/`) when a
   port is required; the Mac file arrives with Milestone F, as a real implementation.
-- **No Swift project, no Metal, no Cocoa, no Catalyst in v1.**
+- **No Swift project, no Metal, no Cocoa, no Catalyst in Windows v1**, except the
+  already-authorized PR 16 Metal present lab.
 
 `tools/check-module-graph.ps1` already forbids native modules depending on `shell/`.
 `tools/check-hostable-core.ps1` (PR 4) fails a direct `#include` of `d3d11.h`,
@@ -103,14 +105,14 @@ replace), hwdecode, audio, encode. Not a general RHI.
 ## Shaders
 
 Hand-written **HLSL and MSL twins** from the first kernel the Mac path needs. The
-Windows kernels in v1 are HLSL only; when a new kernel lands in PRs 4–15, write it
+Windows kernels are HLSL; throughout PRs 4–15, write each new kernel
 so a line-for-line MSL twin is possible (no HLSL-only syntax in the *algorithm*,
 register binding documented in a comment). Do not introduce FXC/DXC → SPIR-V → MSL.
 Do not share bytecode.
 
 ## Milestone F — the Mac host (PR 16–20)
 
-Do not start F until PR 15's verify holds **and** PR 1's present-loop verify still
+Do not start F until PR 8's verify holds **and** PR 1's present-loop verify still
 holds on Windows. F has its own present-loop gate; a DXGI JSON report is not
 evidence on Metal.
 
@@ -194,14 +196,14 @@ forgotten because it was "not a Mac PR."
 | PR 5a/b/c video, WASAPI clock, transport | `IVideoSource`, clock *policy* | **PR 19** — FFmpeg + VideoToolbox on *your* `MTLDevice`, Core Audio master clock. **No `AVPlayer`.** Bindings from [16](16-commands.md) with a Mac default map |
 | PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
 | PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | Same decoders. Mac minidump scrub is the same privacy line ([13](13-updates-and-telemetry.md)) |
-| PR 8 metadata read, info overlay, AF points, eyedropper | `meta/` | SwiftUI metadata pane; `I` focuses it |
-| PR 9 geometry + lossless JPEG rotate | `edit/` | SwiftUI crop mode; `[` `]` from the viewer. MSL twins of the geometry kernels |
-| PR 10 exposure/contrast/sat/temp | `edit/` | SwiftUI adjust pane; sliders still wait for full RAW decode |
-| PR 11 rating / orientation / comment, XMP sidecar | writers | Same sidecar rule. Atomic replace is `io/replace_mac.cpp` (`rename` + `FSEVENTS`), never rewrite a RAW original |
-| PR 12 two-path trim | remux/encode policy | Same two paths, labelled. Hardware encode is VideoToolbox, not NVENC/QSV/AMF |
-| PR 13 extract & remux | same | Same operations, SwiftUI job panel |
-| PR 14 Explorer associations, OOP thumbnails, identity | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process** |
-| PR 15 Inno + Velopack | No | **PR 20** — notarized Sparkle, per-user `~/Applications` or dragged `.app` |
+| PR 9 metadata read, info overlay, AF points, eyedropper | `meta/` | SwiftUI metadata pane; `I` focuses it |
+| PR 10 geometry + lossless JPEG rotate | `edit/` | SwiftUI crop mode; `[` `]` from the viewer. MSL twins of the geometry kernels |
+| PR 11 exposure/contrast/sat/temp | `edit/` | SwiftUI adjust pane; sliders still wait for full RAW decode |
+| PR 12 rating / orientation / comment, XMP sidecar | writers | Same sidecar rule. Atomic replace is `io/replace_mac.cpp` (`rename` + `FSEVENTS`), never rewrite a RAW original |
+| PR 13 two-path trim | remux/encode policy | Same two paths, labelled. Hardware encode is VideoToolbox, not NVENC/QSV/AMF |
+| PR 14 extract & remux | same | Same operations, SwiftUI job panel |
+| PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process** |
+| PR 8 Inno + Velopack, app identity | No | **PR 20** — notarized Sparkle, per-user `~/Applications` or dragged `.app` |
 
 Keyboard: the Mac host writes its own default map. It does not import a XAML
 keymap and it does not put `VK_*` or Carbon key codes into `image/`, `player/`,
@@ -210,7 +212,7 @@ keymap and it does not put `VK_*` or Carbon key codes into `image/`, `player/`,
 Do not ship a Mac build that is "SwiftUI on the Windows present path," and do
 not ship one that is "Metal present lab plus `AVPlayer` for video."
 
-## What v1 (PR 4–15) must not do
+## What Windows work (PRs 4–15) must not do
 
 These are the leaks that turn Milestone F into a rewrite:
 
@@ -226,7 +228,7 @@ These are the leaks that turn Milestone F into a rewrite:
 
 Neither Store (GPL — [11-licensing.md](11-licensing.md)).
 
-| | Windows (PR 15) | macOS (PR 20) |
+| | Windows (PR 8) | macOS (PR 20) |
 |---|---|---|
 | Install | Per-user `%LocalAppData%\MediaViewer` | Per-user `~/Applications` or a dragged `.app` |
 | Update | Velopack, signed manifest | Sparkle, notarized, stapled |
