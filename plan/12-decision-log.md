@@ -776,6 +776,27 @@ check bundled formats, playback and inherited pacing, then verify updates, rollb
 and uninstall. Crop, trim, and export are no longer first-release acceptance steps.
 Future feature PRs retain their own verify lines; no update version is promised for them.
 
+## 2026-09-14 — PR 7 format and pairing calls made while landing the slices
+
+Recorded as they were merged (TIFF/ICO, pairing, LibRaw, HEIC/AVIF). Rows marked
+**open** need the owner's sign-off before PR 7 closes; the rest are the conservative
+reading of the plan and stand unless reopened.
+
+| # | Call | Why | Status |
+|---|---|---|---|
+| 1 | **D3 OS probe is HEIC stills only.** WIC is tried only for an 8-bit, no-alpha, non-HDR, non-sequence HEVC HEIC whose colour is an ICC or sRGB-in-effect, when WIC has a HEIF decoder *and* Media Foundation has an HEVC decoder. WIC must return the ICC and the same displayed size libheif would; any failure except cancel falls through to libheif silently. `MV_OS_CODEC=0` forces the bundled path. JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/AVIF/RAW never go through WIC. | Routing every format through WIC would drop the LCMS path the D6 tests pin; HEIC is the one format where the OS path can be hardware-backed. On a machine with the Store packs, WIC and libheif agree on size and ICC (pixel mean diff 1.9). | stands |
+| 2 | **HDR (PQ/HLG) HEIC/AVIF stills are tone-mapped to SDR in the decoder** with the `gfx/video_blit.cpp` curves and handed on as display-referred sRGB. | `image/colour.cpp` refuses `scene_referred`; HDR output is v1.1. | **open** — confirm tone-mapping in `codec/` rather than a scene-referred colour stage |
+| 3 | CICP SDR camera transfers (BT.709/601/2020) display with the sRGB curve; gamma 2.2/2.8/linear get a synthesised ICC. Display P3 nclx gets a synthesised ICC v4 profile. | Browser behaviour; P3-as-sRGB is the D6 bug. | stands |
+| 4 | **No display-path orientation exists yet.** TIFF returns stored order; HEIC gets libheif's irot/imir; AVIF applies irot/imir/clap itself; RAW preview *and* full decode are rotated in pixels by LibRaw's flip. A later EXIF-orientation pass must skip RAW or it rotates twice. | plan/04 wants orientation on the display path; building it is not a PR 7 line item. | **open** — schedule the orientation pass (JPEG EXIF is also unhandled) |
+| 5 | TIFF: 16/32-bit round to 8; float clamps 0–1 (untagged → linear then sRGB encode); CMYK converts naïvely (1−C)(1−K); **grey and CMYK ICC profiles are dropped** because `to_display` builds an RGBA transform. | RGBA8 raster; a grey profile would make a valid file `corrupt`. Grey JPEG/PNG with a grey profile likely share the gap. | **open** — colour stage should learn grey profiles |
+| 6 | RAW full decode: PPG demosaic, camera WB, sRGB 8-bit, highlight clip, **auto-bright on**. Measured 0.8–1.7 s on 16–42 MP samples — **misses plan/09's < 500 ms** (vcpkg LibRaw has no OpenMP; GPU demosaic is out of v1, D4). First pixel is the embedded preview (11–69 ms, JPEG-comparable). Full decode is still 7–41 luma levels brighter than the preview; cancel granularity is one LibRaw stage (≤ ~550 ms). | AHD was 2.5–4.7 s; auto-bright off left a ~36-level gap vs the embedded JPEG. | **open** — accept the target miss for v1 or pursue an OpenMP LibRaw build |
+| 7 | **JPG+MOV pairs as a Live Photo** (iPhone "Most Compatible"), as well as HEIC+MOV. Pairing is by basename only; the ContentIdentifier check in plan/04 is not done (needs metadata, PR 9). RAW+HEIC counts as RAW+JPEG. Groups of three or more stay separate. | Exact, cheap, never hides a file. | **open** — confirm JPG+MOV |
+| 8 | **File operations on a paired stop act on both halves** (copy/move-to, Recycle Bin, drag-out); the prompt names both files. Collision renaming is per file, so a pair can land as `x (2).JPG` beside `x.NEF`. | Deleting only the JPEG would make the RAW reappear as its own stop. | **open** |
+| 9 | Opening a RAW from Explorer selects its pair's stop and shows the JPEG (the primary). | plan/04: the still is first pixel and primary. | stands |
+| 10 | **Open RAW / Open JPEG** are command-table rows with no default key ("Unbound" in Settings, hidden from `?`). plan/04 still says they live in the palette, which 2026-09-13 dropped. | No key named in plan/16; a Settings binding makes them routable. | **open** — pick keys or amend plan/04/16 |
+| 11 | ICO: largest entry (then deepest) is the still; an unreadable largest entry silently falls back to the next. AVIF with unknown/infinite repetition loops forever. | Chromium behaviour; never an error for a viewable file. | stands |
+| 12 | Command id 76 (`palette`) stays in the table as a keyless retired row (13a72bc); the test asserts a retired id is only ever listed keyless, which `describe_commands()` hides from Settings and `?`. | Two fixes met on the branch; keep the wire enum named. | stands |
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
