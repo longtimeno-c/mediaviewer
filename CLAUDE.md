@@ -1,11 +1,13 @@
 # MediaViewer
 
 Windows viewer for a real camera dump — photos and video in one folder. Opens everything
-instantly, pans without a dropped frame, shows and edits metadata, does everyday photo
-edits, trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is
+instantly and pans without a dropped frame. The first release ships the viewer through
+PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
+Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
 kept hostable; macOS is Milestone F (`plan/15-platforms.md`, D9), not a UI-only port.
 
-**v1 is a viewer with light edits, on the camera-dump format set.** Not a develop module.
+**v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
+Light editing and trim follow in future updates. Not a develop module.
 Not an NLE. Not a movie player.
 
 **Stack:** C# WinUI 3 shell · C++20 core behind a flat C ABI · Direct3D 11 canvas ·
@@ -27,7 +29,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/04-image-pipeline.md` | Decoders, tiling, prefetch, thumbs |
 | `plan/05-video-pipeline.md` | FFmpeg + D3D11VA, A/V clock, seek |
 | `plan/06-metadata.md` | Read model, atomic writes, RAW sidecars |
-| `plan/07-photo-editing.md` | EditStack; v1 vs v1.1 op split |
+| `plan/07-photo-editing.md` | EditStack; first editing update vs later op split |
 | `plan/08-video-editing.md` | Two-path trim; smart cut is v1.1 |
 | `plan/09-build-and-test.md` | Toolchain, harnesses, Windows integration |
 | `plan/10-roadmap.md` | Current PR, verify line, sequencing |
@@ -65,12 +67,12 @@ If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the
 | **D1** | C# WinUI 3 chrome + C++ core. ImGui is the PR 1 present lab and the F3 overlay, never shipped chrome. |
 | **D2** | FFmpeg + D3D11VA on *your* `ID3D11Device`, presented on the same swapchain as photos. Not libmpv. Not MF as the primary path. `IMFMediaEngine` is an escape hatch behind `IVideoSource` if the A/V clock overruns PR 5. |
 | **D3** | Bundle decoders. Never require a Store pack. |
-| **D4** | v1 = rotate/flip/crop/resize + exposure/contrast/saturation/temperature. No curves, HSL, local, healing, GPU demosaic. |
+| **D4** | v1 ships the PR 1–7 viewer in PR 8. Photo editing/export waits for PR 10–11; metadata tools and further Windows integration are future updates. |
 | **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2. JPEG XL / EXR / PSD / SVG / DDS wait. |
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
-| **D7** | v1 trim = keyframe stream-copy **or** full re-encode, both labelled. Smart cut is v1.1. |
+| **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
-| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is Milestone F (PR 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. No Metal, no Swift project, no empty `*_mac.cpp`, no Vulkan in v1. |
+| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is Milestone F (PR 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. Only the already-authorized PR 16 Metal lab may run alongside Windows v1; PRs 17–20 wait for PR 8. No Vulkan. |
 
 Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path **on one OS**.
 
@@ -99,16 +101,16 @@ holds **and** PR 1's present-loop verify still holds.
 
 - The verify line is the success criterion. Quote it before you start; do not invent a
   different one.
-- Do not implement v1.1 ops, formats, smart cut, HDR swapchain, AppContainer, or Milestone F
-  (the macOS host) “while you're here.” The stack is designed to take them later; adding them
+- Do not pull PRs 9–15 features into PR 8. Do not implement v1.1 ops, formats, smart cut, HDR swapchain, AppContainer, or Milestone F
+  (the macOS host, except the already-authorized PR 16 lab) “while you're here.” The stack is designed to take them later; adding them
   now is scope. From PR 4, do not skip a D9 port in order to call Win32 from `image/`,
   `player/`, `edit/`, or `meta/`. Mac is PR 16–20, not a UI-only follow-up.
 - Do not add a format that is not in the D5 v1 set.
-- Do not build a batch metadata engine before the read pane has been used (PR 11 writes
+- Do not build a batch metadata engine before the read pane has been used (PR 12 writes
   rating, orientation, and user comment only).
-- Crash reporting should land with the format long tail (PR 7), not wait for PR 15.
+- Crash reporting should land with the format long tail (PR 7), not wait for PR 8.
   The updater must exist before the first build that leaves this machine.
-  Telemetry waits for PR 15 and is **default off**.
+  Telemetry waits for PR 8 and is **default off**.
 
 ## Root README
 

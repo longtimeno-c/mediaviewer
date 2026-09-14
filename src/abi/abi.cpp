@@ -1108,10 +1108,14 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
     const mv::job_id id = session->jobs.submit_at(
         mv::background_generation,
         [session, dir](const mv::job_context&) -> status {
+          // Arm the watcher before listing: FOLDER_READY is pushed from inside
+          // apply_folder_list, and a file that landed between that completion
+          // and a later start() was never seen. A change during the scan now
+          // costs one extra refresh instead.
+          (void)session->watcher.start(dir, &on_folder_watch, session);
           auto listed = mv::io::list_still_files(dir);
           if (!listed) return listed.error();
           apply_folder_list(session, mv::io::pair_listing(std::move(listed).value()), false);
-          (void)session->watcher.start(dir, &on_folder_watch, session);
           return status::ok;
         },
         [session, correlation](mv::job_id id, mv::generation gen, status result) {

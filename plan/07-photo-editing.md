@@ -1,5 +1,8 @@
 # 07 — Photo Editing
 
+**Release scope (2026-09-14):** Photo editing/export ships after v1 in PRs 10–11. The first Windows release is
+the PR 1–7 viewer packaged in PR 8.
+
 ## Model: non-destructive op stack, evaluated on the GPU
 
 The original file is never modified. An edit is an ordered list of parameterized ops:
@@ -52,10 +55,10 @@ Implementation notes:
   dragging a late slider like vignette doesn't re-run demosaic.
 - Histogram + clipping warnings from a compute reduction each frame — cheap, and users expect it.
 
-## RAW in v1 — pick one, and say so
+## RAW in the first editing update — pick one, and say so
 
 The interactive-edit promise ("slider drag → updated preview within one refresh interval on a
-45 MP RAW") is only true **once a full linear decode exists in VRAM**. GPU demosaic is v1.1, so v1
+45 MP RAW") is only true **once a full linear decode exists in VRAM**. GPU demosaic is deferred, so the first editing update
 has to choose:
 
 | | **Edit the embedded preview** | **Wait for LibRaw's CPU decode** ✅ |
@@ -73,7 +76,7 @@ unchanged and is what makes browsing feel fast. But the sliders stay disabled, w
 Editing pixels that aren't the ones you export is the kind of wrong that erodes trust in every
 other number the app shows. Half a second, once, on entering the adjust pane, is a fair price.
 
-This is on PR 10's verify line.
+This is on PR 11's verify line.
 
 ## RAW specifics
 
@@ -104,11 +107,11 @@ recovery from the per-channel saturation points.
 
 ---
 
-## v1 scope line (per D4 in [01-decisions.md](01-decisions.md))
+## Editing scope line (per D4 in [01-decisions.md](01-decisions.md))
 
 The architecture above is what you build. The **op set** ships in two waves:
 
-| **v1 (PR 9–10)** | **v1.1 — same stack, more kernels** |
+| **First editing updates (PR 10–11, post-v1)** | **Later updates — same stack, more kernels** |
 |---|---|
 | Rotate, flip, crop, straighten, resize | Perspective/keystone, lens correction |
 | Exposure, contrast, saturation, temperature/tint | Highlights/shadows/whites/blacks, vibrance |
@@ -121,8 +124,8 @@ The architecture above is what you build. The **op set** ships in two waves:
 display-referred luminance; **accurate RAW clip waits for the full LibRaw decode**, same
 rule as the adjust pane. Focus peaking, zebras, and channel isolation are v1.1.
 
-Nothing in the v1.1 column requires a design change — each is one more compute shader appended to
-the fixed pipeline order and one more parameter block in the stack. **What must be right in v1 is
+Nothing in the later-updates column requires a design change — each is one more compute shader appended to
+the fixed pipeline order and one more parameter block in the stack. **What must be right before the first editing update ships is
 the foundation**: a linear FP16 *working space* (the swapchain stays 8-bit sRGB until HDR lands —
 see D6), ICC handling, viewport-resolution preview with full-res only on export, and the cache of
 pipeline state after the expensive early stages.

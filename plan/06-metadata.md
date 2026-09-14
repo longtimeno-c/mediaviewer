@@ -1,5 +1,8 @@
 # 06 — Metadata
 
+**Release scope (2026-09-14):** Metadata read and the folder tree are PR 9; narrow metadata writes are PR 12.
+Neither blocks the PR 8 viewer release.
+
 ## Libraries
 
 - **Exiv2** — EXIF, IPTC, XMP; read *and write*; maker notes for Canon/Nikon/Sony/Fuji/Olympus/
@@ -63,7 +66,7 @@ Editing metadata is where you can lose someone's photos. Rules:
 
 ## Overlays that fall out of the read model (v1)
 
-These are why PR 8 is not only a pane. They read properties **already parsed** — no extra
+These are why PR 9 is not only a pane. They read properties **already parsed** — no extra
 file I/O on toggle ([16-commands.md](16-commands.md)):
 
 - **On-canvas info (`O`)** — filename, index, dimensions, then exposure triangle / lens
