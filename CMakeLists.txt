@@ -528,6 +528,7 @@ if(MV_BUILD_TESTS)
       tests/test_camera.cpp
       tests/test_collision_name.cpp
       tests/test_open_request.cpp
+      src/shell/open_request.cpp
     )
     target_link_libraries(mv_asan_tests PRIVATE
       mv_core
