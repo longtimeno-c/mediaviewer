@@ -11,8 +11,8 @@ port — see [plan/15-platforms.md](plan/15-platforms.md).
 first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
 the tree and unverified on Apple Silicon.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
-window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP
-**or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
+window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
+TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
 cache, arrow keys move the selection. PR 5 puts video on that same swapchain —
 FFmpeg demux and decode, D3D11VA on the lab's own device, NV12/P010 sampled and
 tone-mapped in one shader, a WASAPI audio master clock, and a transport (seek,
@@ -21,7 +21,13 @@ folder and one present path. PR 6 makes browse keyboard-complete: one key
 router over a live command table, `?` shortcuts built from that table, a
 Settings screen that remaps it, marks, copy/move-to, Recycle
 Bin delete, fullscreen, slideshow as a mode, fit/fill/100 %, gallery drag-and-drop,
-and animated GIF/APNG/WebP on the frame clock.
+and animated GIF/APNG/WebP on the frame clock. PR 7 (in progress) adds the camera-dump
+formats — TIFF and ICO (libtiff), HEIC/HEIF (libheif + libde265; the Windows HEIF codec
+is used for plain HEIC stills only when the Store HEVC pack is present), AVIF still and
+animated (libavif + dav1d), and camera RAW (LibRaw: the embedded preview is first pixel,
+then the full decode) — plus RAW+JPEG and Live Photo pairing. The preview→full
+cross-fade, the tiled pyramid for > 64 MP images, the fuzz/broken-file CI and crash
+reporting are still landing.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab
@@ -46,7 +52,7 @@ that apply to what you are doing.
 | | |
 |---|---|
 | **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Open a folder, drop a JPEG/PNG/BMP/GIF/WebP or a clip, or pass a path on the command line. Animated GIF, APNG and WebP play on the render thread's frame clock, frame 0 first. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom, Left/Right browse. Video plays on the same swapchain as photos — never a `MediaPlayerElement`. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay, which grows codec, decoder, A/V drift and present-counter lines while a clip is up. WinUI command bar (top) and filmstrip (bottom) are `DesktopWindowXamlSource` islands; the canvas is not a `SwapChainPanel`. |
-| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp) with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
+| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`mediaviewer_lab` (Darwin)** | PR 16 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. No SwiftUI, no decode, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
@@ -154,7 +160,7 @@ Files added to or removed from the open folder show up without a restart.
 
 A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
-| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP, MP4/MOV/MKV/WebM/AVI/TS) |
+| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
@@ -414,6 +420,19 @@ still. Copy, move and delete act on both files of a pair. "Open RAW of pair" /
 "Open JPEG of pair" have no default key; assign one in Settings (`Ctrl+,`).
 `.xmp`, `.thm`, `.aae`, `.wav`, hidden and system files are never listed.
 
+PR 7's decoders are in. Measured on five CC0 raw.pixls.us samples (CR2, NEF,
+ARW, CR3, DNG): the embedded preview is on screen in 11–69 ms, about a JPEG's
+first pixel, and the full LibRaw decode takes 0.8–1.7 s — slower than plan/09's
+500 ms target, recorded as open in [plan/12](plan/12-decision-log.md)
+(2026-09-14). The original file's hash and mtime are unchanged after both. Test
+media is not in git: `tools/testmedia/fetch-raw.ps1` and `fetch-heif.ps1`
+download pinned, hash-checked samples, and the tests that need them skip
+visibly without them (`MV_REQUIRE_CORPUS=1` makes that a failure). Generated
+HEIC/AVIF fixtures live in `tests/data/`; `MV_OS_CODEC=0` forces the bundled HEIC
+decoder, as on a clean VM. Not yet demonstrated: an iPhone HEIC on a clean VM
+with no Store packs, a real iPhone Live Photo, and the no-pop preview→full swap
+on screen.
+
 PR 5's verify lines are:
 
 > **5a —** 4K 10-bit HEVC and AV1 play at full rate with GPU video decode > 0 in
@@ -489,8 +508,9 @@ per-job context on the pool.
 src/core        job system, result<T>, lock-free rings, ETW
 src/io          whole-file reads, directory listing + watcher, copy/move that never
                 overwrites, Recycle Bin (Windows impl)
-src/codec       JPEG / PNG / BMP / GIF / WebP, APNG walker, frame-at-a-time
-                animation sources, magic-byte probe
+src/codec       JPEG / PNG / BMP / GIF / WebP / TIFF / ICO / HEIC / AVIF / RAW,
+                APNG walker, frame-at-a-time animation sources, magic-byte probe,
+                HEIC-only OS-codec probe (WIC, os_decode_win.cpp)
 src/image       LCMS colour (8-bit display LUT; sRGB copy-through), CPU mips,
                 immutable GPU upload, JPEG-512 thumbs
 src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom
