@@ -416,7 +416,13 @@ add_executable(mediaviewer_lab WIN32
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
+  src/shell/app_icon.h
+  src/shell/mediaviewer.rc
 )
+# PR 8 identity: icon resource + VERSIONINFO, numbers from project(VERSION).
+set_source_files_properties(src/shell/mediaviewer.rc PROPERTIES
+  COMPILE_DEFINITIONS "MV_VER_MAJOR=${PROJECT_VERSION_MAJOR};MV_VER_MINOR=${PROJECT_VERSION_MINOR};MV_VER_PATCH=${PROJECT_VERSION_PATCH};MV_APP_VERSION_STR=\"${PROJECT_VERSION}\";MV_ICON_FILE=\"${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico\""
+  OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico")
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
   mv_gfx
@@ -430,6 +436,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   ole32     # CoInitializeEx for the WinUI island STA
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
+  comctl32  # LoadIconWithScaleDown (PR 8 window icon)
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
@@ -463,6 +470,15 @@ add_custom_command(TARGET mediaviewer_lab POST_BUILD
           "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
           "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
   COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+# PR 8 About: the mark, the licence and the third-party notices ship beside the
+# exe so the flyout opens local files, never a network fetch.
+add_custom_command(TARGET mediaviewer_lab POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer-256.png"
+          "${CMAKE_SOURCE_DIR}/LICENSE"
+          "${CMAKE_SOURCE_DIR}/THIRD-PARTY.md"
+          "$<TARGET_FILE_DIR:mediaviewer_lab>"
+  COMMENT "Copy About assets (icon PNG, LICENSE, THIRD-PARTY.md) beside mediaviewer_lab")
 
 # PR 3: publish the C# WinUI chrome beside the lab so hostfxr can load it.
 # The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
@@ -477,6 +493,7 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Gallery.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.About.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
 )

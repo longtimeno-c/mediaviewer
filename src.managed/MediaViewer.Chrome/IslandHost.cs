@@ -1045,16 +1045,7 @@ public static partial class IslandHost
             ShouldConstrainToRootBounds = false,
             FlyoutPresenterStyle = FlyoutPresenterStyle(),
         };
-        aboutFlyout.Content = new TextBlock
-        {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing.",
-            Margin = new Thickness(12, 10, 12, 10),
-            MaxWidth = 400,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-        };
+        aboutFlyout.Content = BuildAboutContent();  // IslandHost.About.cs (PR 8)
 
         var openFlyout = new MenuFlyout
         {
