@@ -7,8 +7,9 @@ Windows integration follow in future updates. **v1 is Windows.** From PR 4 the n
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 7 is being completed by agents; PR 8 packages the Windows viewer for its
-first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
+**Status: PR 7's slices are all merged and pass locally; its clean-VM HEIC, real
+Live Photo and on-screen no-pop checks are still open. PR 8 packages the Windows viewer
+for its first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
 the tree and unverified on Apple Silicon.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
