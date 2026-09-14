@@ -652,4 +652,31 @@ if(MV_BUILD_TESTS)
             $<TARGET_FILE:mediaviewer_core> $<TARGET_FILE_DIR:mv_tests>)
 endif()
 
+# ---------------------------------------------------------------------------
+# PR 7 — broken-file corpus (plan/09, plan/10 PR 7 verify: "nothing in the
+# broken corpus crashes or hangs"). Its own executable so the Job Object
+# memory cap and crash attribution in tests/test_broken_corpus.cpp apply to
+# nothing else. Seeds live in tests/data (committed, synthetic, licence-clean).
+# ---------------------------------------------------------------------------
+if(MV_BUILD_TESTS AND NOT MV_FUZZ)
+  add_executable(mv_broken_tests tests/test_broken_corpus.cpp)
+  target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
+  target_include_directories(mv_broken_tests PRIVATE src)
+  target_compile_definitions(mv_broken_tests PRIVATE
+    MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+  catch_discover_tests(mv_broken_tests TEST_PREFIX "broken_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 1800 LABELS broken)
+endif()
+
+# ---------------------------------------------------------------------------
+# PR 7 — libFuzzer harnesses, one per decoder entry point (tools/fuzz). Needs
+# clang-cl: cmake -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF, then build the
+# `mv_fuzzers` target only (the rest of the tree is instrumented too, but not
+# linked against the sanitizer runtime). tools/fuzz/run.ps1 runs them.
+# ---------------------------------------------------------------------------
+option(MV_FUZZ "Build libFuzzer harnesses (clang-cl only)" OFF)
+if(MV_FUZZ)
+  add_subdirectory(tools/fuzz)
+endif()
+
 message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-2.0-or-later (plan/11)")

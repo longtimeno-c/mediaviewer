@@ -53,6 +53,20 @@ tools/testmedia/*
 !tools/testmedia/raw-manifest.json
 !tools/testmedia/fetch-heif.ps1
 !tools/testmedia/heif-manifest.json
+# PR 7: the seed generator. Its output (tests/data/seeds, tests/data/broken)
+# is tiny, synthetic and licence-clean, so unlike the clips it IS committed.
+!tools/testmedia/make-seeds.py
+
+# libFuzzer output (PR 7). tools/fuzz/run.ps1 writes working corpora and
+# artefacts under fuzz-out/ in the build tree; a harness run by hand drops
+# crash-/leak-/timeout-/oom- files in the current directory. Reproducers worth
+# keeping are copied into tests/data/broken/ on purpose.
+fuzz-out/
+crash-*
+leak-*
+timeout-*
+oom-*
+slow-unit-*
 
 # Local harness output. `--av-soak --csv` and the frame-time gate both write
 # reports next to wherever you ran them, and both keep getting picked up by a

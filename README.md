@@ -29,8 +29,10 @@ then the full decode) — plus RAW+JPEG and Live Photo pairing, and out-of-proce
 Crashpad crash reporting whose dumps are scrubbed of paths, filenames and the
 username before anything could be sent (no upload endpoint exists yet), a
 preview→full refinement that keeps the view and cross-fades instead of refitting,
-and a tiled pyramid for images above 64 MP or wider than 16384 px. The
-fuzz/broken-file CI is still landing.
+and a tiled pyramid for images above 64 MP or wider than 16384 px. A broken-file
+corpus (`mv_broken_tests`) runs in every CI build leg, and per-decoder libFuzzer
+harnesses (`-DMV_FUZZ=ON` under clang-cl, `tools/fuzz/run.ps1`) run briefly on
+pull requests and for longer nightly.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab
@@ -260,6 +262,21 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 .\tools\check-module-graph.ps1     # dependencies point downward only
 .\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
 .\tools\licence-check.ps1          # no GPL FFmpeg, no software HEVC/AAC encoder
+
+# PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
+# bit-flipped and given absurd dimensions, plus tests/data/broken, through every
+# decode entry point. Fails on a crash, an escaped exception, a call over 5 s,
+# or runaway memory. Part of plain ctest; this runs just that suite.
+ctest --test-dir build -C Release -L broken --output-on-failure
+$env:MV_BROKEN_FULL = "1"          # exhaustive sweep (nightly CI)
+$env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
+# seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
+python tools\testmedia\make-seeds.py
+
+# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan)
+cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
+cmake --build build-fuzz --config Release --target mv_fuzzers
+.\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
 
 # the frame-time gate — 60 seconds, needs a quiet machine
 .\build\bin\Release\frametime.exe --seconds 60

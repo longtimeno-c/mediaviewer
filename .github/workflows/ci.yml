@@ -9,6 +9,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # PR 7: nightly long fuzz run (plan/09 "run in CI nightly"). Only the `fuzz`
+  # job does work on this event; build / abi-smoke / frametime skip it.
+  schedule:
+    - cron: '17 3 * * *'
 
 defaults:
   run:
@@ -46,6 +50,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.toolchain }}, ${{ matrix.config }})
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -126,15 +131,29 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.config }}
 
+      # Includes mv_broken_tests (PR 7 verify: "nothing in the broken corpus
+      # crashes or hangs") in every matrix leg, ASan included. A failing input
+      # is written to broken-dump/ and uploaded below.
       - name: Unit tests
         timeout-minutes: 15
+        env:
+          MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+      - name: Upload broken-corpus reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-corpus-${{ matrix.toolchain }}-${{ matrix.config }}
+          path: broken-dump/
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # The C# side of the ABI: SafeHandle, struct layout, completion drain.
   # ---------------------------------------------------------------------------
   abi-smoke:
     name: ABI smoke test (C#)
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,7 +195,7 @@ jobs:
     # that does not exist. A skip is not a pass. Fork code must not execute on
     # the persistent runner. If the variable is set but the runner is missing,
     # GitHub still queues — set MV_GPU_RUNNER_ENABLED only after provisioning.
-    if: ${{ vars.MV_GPU_RUNNER_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ vars.MV_GPU_RUNNER_ENABLED == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 15
     concurrency:
@@ -229,3 +248,116 @@ jobs:
         with:
           path: build/bin/Release/frametime-baseline.json
           key: frametime-v2-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # ---------------------------------------------------------------------------
+  # PR 7: libFuzzer, one harness per decoder entry point (tools/fuzz). clang-cl
+  # + ASan + -fsanitize=fuzzer. Pull requests get a 60 s smoke per harness;
+  # the nightly schedule runs 20 min per harness plus the exhaustive
+  # broken-corpus sweep, and uploads any crash / timeout / OOM input.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: Fuzz (${{ github.event_name == 'schedule' && 'nightly' || 'smoke' }})
+    runs-on: windows-latest
+    timeout-minutes: ${{ github.event_name == 'schedule' && 355 || 60 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      # Same key as the clang-cl build leg: identical ports, identical triplet.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build-fuzz/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-clang-cl
+
+      - name: Diagnose clang runtime
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          Get-ChildItem "$vs\VC\Tools\Llvm\x64\lib\clang" -Recurse -Filter 'clang_rt.fuzzer*' |
+            ForEach-Object FullName
+
+      - name: Configure
+        run: cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
+
+      - name: Build harnesses
+        run: cmake --build build-fuzz --config Release --target mv_fuzzers
+
+      - name: Fuzz
+        run: |
+          $seconds = if ('${{ github.event_name }}' -eq 'schedule') { 1200 } else { 60 }
+          ./tools/fuzz/run.ps1 -BuildDir build-fuzz -Seconds $seconds
+
+      - name: Upload fuzz artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ github.run_id }}
+          path: |
+            build-fuzz/fuzz-out/artifacts/
+            build-fuzz/fuzz-out/*.log
+          if-no-files-found: ignore
+
+  # The exhaustive broken-corpus sweep (every truncation up to 64 KiB, every
+  # header offset up to 512) is too slow for every PR; nightly only.
+  broken-corpus-full:
+    name: Broken corpus (full sweep, nightly)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release --target mv_broken_tests
+
+      - name: Full sweep
+        env:
+          MV_BROKEN_FULL: '1'
+          MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
+        run: ctest --test-dir build -C Release -L broken --output-on-failure
+
+      - name: Upload reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-corpus-full-${{ github.run_id }}
+          path: broken-dump/
+          if-no-files-found: ignore
