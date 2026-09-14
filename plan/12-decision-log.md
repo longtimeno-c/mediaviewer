@@ -657,6 +657,30 @@ cheat-sheet flyout keep the mode underneath; Esc still closes the flyout first v
 pair back; do not silently steal skip. Do not put command-bar focus back in island mode to
 "make Tab easier" — that is how the keys die.
 
+## 2026-09-14 — PR 8: settings writes leave the UI thread
+
+Closes the "Settings writes on the UI thread" open row (recorded 2026-09-13; the roadmap
+moved it to PR 8 release hardening).
+
+`settings.ini` is read once at startup into an in-memory document (`shell/settings_store`).
+Saves mutate it through read-copy-update and hand the newest immutable snapshot to a
+one-thread persist worker (`mv::job_system`, separate from `file_jobs`, so a long card-dump
+move neither delays nor drops a settings write, and `file_jobs.stop()` cannot discard it).
+Bursts coalesce; an unchanged document writes nothing. The worker writes temp →
+`FlushFileBuffers` → `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)`, so a crash mid-write
+leaves the old file. The exit path flushes with a bounded 1 s wait after the WM_CLOSE
+island teardown (order unchanged); the render loop never waits. A detector counts any
+settings write on the registered UI thread outside the exit scope, and tests assert it.
+
+The file is now UTF-16LE with a BOM (readable by the profile API); PR 4–7 ANSI files still
+load and unknown keys survive. New keys go through `app_settings().get/set/update`. Direct
+`*PrivateProfile*` calls on `settings.ini` are not allowed — the store rewrites the whole
+file and would lose them.
+
+**How it gets reversed.** It does not go back to the UI thread. If the worker proves
+unnecessary, the snapshot write can move to the existing I/O pool only once `file_jobs`
+stops dropping queued work at exit.
+
 ## Still open
 
 | Question | Blocks | Notes |
@@ -664,7 +688,7 @@ pair back; do not silently steal skip. Do not put command-bar focus back in isla
 | ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
 | **A quiet machine for the D6 gate** | PR 1 verify (inherited) | Re-run 2026-09-07: one animated pass, one animated fail, idle contaminated by mouse. Still needs the self-hosted GPU runner [09](09-build-and-test.md). |
 | **PR 4's verify was never run** | PR 5 (inherited) | Three sessions held PR 4; the first hallucinated, the second committed `5eaa530` without reporting, the third confirmed it never owned the PR. Recorded state as of 2026-09-07: the 2000-JPEG scroll, the warm second-visit thumbnail check and the < 40 ms warm arrow-key number are **not run**; `tests/test_frametime.ps1` is **not run**; the plan edits in that commit to [10](10-roadmap.md) and [16](16-commands.md) are **unreviewed**. PR 5 is being built on top of this knowingly. |
-| **Settings writes on the UI thread** | PR 15 (settings) | `settings.ini` writes (filmstrip toggles since PR 4, F7 / F8 destinations since PR 6) run on the UI thread, against rule 1. They are small, and a destination is only written when it changes, but they belong on the I/O worker. Recorded 2026-09-13 so the rule does not erode quietly. |
+| ~~**Settings writes on the UI thread**~~ | ~~PR 8 (release hardening)~~ | **Closed 2026-09-14:** writes moved to a persist worker; see the PR 8 entry above. Original note: `settings.ini` writes (filmstrip toggles since PR 4, F7 / F8 destinations since PR 6) run on the UI thread, against rule 1. They are small, and a destination is only written when it changes, but they belong on the I/O worker. Recorded 2026-09-13 so the rule does not erode quietly. |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 verify (inherited) | Command-bar island is in the tree. Filmstrip is a second island (PR 4). Present-loop + tab + flyout-over-canvas still unproven on a quiet GPU runner. Fallback unchanged: WinUI app with `SwapChainPanel` and an accepted composed frame. |
 
 ## Gallery keyboard controls (2026-09-13)
