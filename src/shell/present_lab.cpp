@@ -714,8 +714,10 @@ void present_lab::render_thread_main() noexcept {
       const float h = media_height();
       if (scripted_pan_start_ < 0.0) {
         scripted_pan_start_ = elapsed;
+        // Snap to 100 % first: the springs do not step while dragging, so a
+        // sprung zoom would stay at fit for the whole soak.
         camera_.set_zoom(1.0f, w, h, view.w, view.h);
-        camera_.one_to_one();
+        camera_.carry(w, h, w, h, view.w, view.h);
         camera_.drag_begin();
       }
       if (camera_.dragging()) {

@@ -186,7 +186,20 @@ springs back to centre. Drop a file on the window.
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
-[Test](#test)), or a positional file or folder. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
+[Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
+the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
+positional file or folder.
+
+A still's first pixel is a preview (JPEG DCT 1/4, or a RAW's embedded JPEG); the full
+decode then *refines* the same item rather than replacing it: the view you have — fit,
+or a zoom and pan made while it loaded — is kept as a fraction of the image, and the
+full texture cross-fades in over 80 ms (up to 250 ms when the preview and the full
+render differ a lot in brightness, as a RAW's embedded JPEG and LibRaw's render do).
+Images above ~64 MP, or wider or taller than 16384 px, are shown as a tiled pyramid: a
+≤ 2048 px overview is always loaded, and 256 px tiles for the part on screen are
+created a few per refresh and drawn over it, so a fast zoom or pan is blurry for a
+moment, never blank. `F` / `F3` shows the tile LOD, resident tiles and VRAM, create
+times, and refinement counters. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
 fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
