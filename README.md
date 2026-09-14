@@ -27,9 +27,10 @@ is used for plain HEIC stills only when the Store HEVC pack is present), AVIF st
 animated (libavif + dav1d), and camera RAW (LibRaw: the embedded preview is first pixel,
 then the full decode) — plus RAW+JPEG and Live Photo pairing, and out-of-process
 Crashpad crash reporting whose dumps are scrubbed of paths, filenames and the
-username before anything could be sent (no upload endpoint exists yet). The
-preview→full cross-fade, the tiled pyramid for > 64 MP images and the
-fuzz/broken-file CI are still landing.
+username before anything could be sent (no upload endpoint exists yet), a
+preview→full refinement that keeps the view and cross-fades instead of refitting,
+and a tiled pyramid for images above 64 MP or wider than 16384 px. The
+fuzz/broken-file CI is still landing.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab

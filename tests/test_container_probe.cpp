@@ -104,6 +104,16 @@ TEST_CASE("a JPEG renamed to .mp4 is not video", "[probe]") {
   REQUIRE_FALSE(is_video(probe(jpeg)));
 }
 
+TEST_CASE("ISO-BMFF stills — HEIC, AVIF, Canon CR3 — are not video", "[probe]") {
+  // A CR3 is 'ftyp crx '. Probing it as MP4 sent a camera RAW to FFmpeg and the
+  // still pipeline never saw it (PR 7).
+  for (const char* brand : {"crx ", "heic", "mif1", "avif", "avis"}) {
+    INFO(brand);
+    REQUIRE_FALSE(is_video(probe(iso(brand))));
+  }
+  REQUIRE(probe(iso("crx ")) == container::unknown);
+}
+
 TEST_CASE("a PNG is not video", "[probe]") {
   auto png = bytes({0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D});
   REQUIRE_FALSE(is_video(probe(png)));
