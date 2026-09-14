@@ -1,12 +1,14 @@
 # MediaViewer
 
 A Windows viewer for a real camera dump — photos and video in one folder. Opens everything
-instantly, pans without a dropped frame, shows and edits metadata, does the everyday photo
-edits, and trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is
+instantly and pans without a dropped frame. The first release ships the viewer through
+PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
+Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 6 of 15 on Windows (in review); PR 16 Metal present lab is in
+**Status: PR 7 is being completed by agents; PR 8 packages the Windows viewer for its
+first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
 the tree and unverified on Apple Silicon.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP
@@ -160,7 +162,7 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
 | `Ctrl+G` | go to an item by its number in the folder |
 | `/` | find an item by name. With the filmstrip or gallery focused, just type |
-| `Ctrl+Shift+E` | folder tree — arrives in PR 8; for now it beeps |
+| `Ctrl+Shift+E` | folder tree — arrives in PR 9; for now it beeps |
 
 The title bar shows the current file, its position in the folder, its size and
 the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
@@ -337,7 +339,7 @@ PR 4's verify line is:
 > **2000 mixed JPEGs — filmstrip scrolls without a hitch, second folder visit has
 > near-instant thumbnails, arrow-key browse shows the next image in < 40 ms warm.**
 
-Folder listing + sort (name, mtime, size, type — EXIF date-taken waits for PR 8).
+Folder listing + sort (name, mtime, size, type — EXIF date-taken waits for PR 9).
 Portable `io/dir.h`, Windows impl in `io/dir_win.cpp`. The filmstrip is a second
 XAML island on the same HWND (bottom strip), not a full-client island and not
 thumbs blitted onto the photo swapchain. SQLite + on-disk JPEG-512 cache keyed
@@ -401,7 +403,7 @@ What is **not** demonstrated, and should not be claimed:
   opposed to the watcher and reselect unit tests.
 
 Slipped from PR 6, recorded in [plan/12-decision-log.md](plan/12-decision-log.md):
-the folder-tree island to PR 8 (its key beeps; its command and canvas inset are
+the folder-tree island to PR 9 (its key beeps; its command and canvas inset are
 in), and hiding companion files to PR 7.
 
 PR 5's verify lines are:
@@ -510,7 +512,7 @@ and nothing may depend on `shell`. That is what keeps the core testable with no 
 
 The parts worth knowing before touching anything:
 
-- **[plan/10-roadmap.md](plan/10-roadmap.md)** — 15 Windows PR-sized slices, then Milestone F
+- **[plan/10-roadmap.md](plan/10-roadmap.md)** — Windows release at PR 8, future updates in PRs 9–15, and Milestone F
   (Mac, PR 16–20), each with a verify line. Work is one slice; PR N+1 does not start until
   N's verify holds *and* PR 1's still does.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get

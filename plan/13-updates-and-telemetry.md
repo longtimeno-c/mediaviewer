@@ -78,26 +78,28 @@ Pages, in order. Do not add more.
 
 **Not in the wizard** — these are in-app, once, later:
 
-- Default photo viewer (PR 14: after the first successful still open).
+- Default photo viewer (PR 15: after the first successful still open).
 - Telemetry (first-run screen in the app, default off, no pre-ticked box).
 
 A "set as default" checkbox on page 4 would silently fight `UserChoice` and would ask
 before the user has seen a single photo. A telemetry checkbox in setup is the same dark
 pattern the first-run screen exists to avoid. Do not stack either with the licence page.
 
-Uninstall is Inno's uninstaller, registered under Apps & features. It removes the Start
-shortcut, the install directory (including leftover `app-*` folders), and every PR 14
-`ProgId` / handler registration. An update that leaves a zombie association is a failed
+Uninstall is Inno's uninstaller, registered under Apps & features. It removes the Start Menu and desktop
+shortcuts and the install directory (including leftover `app-*` folders). PR 8 ships
+without PR 15 associations or handlers. Once PR 15 adds them, uninstall must also remove
+every `ProgId` / handler registration. An update that leaves a zombie association is a failed
 uninstall.
 
 ### Icon
 
+**The icon lands in PR 8**, so packaging does not depend on PR 15 Windows integration.
 One mark, one `.ico`, used everywhere the OS shows the app:
 
 - Wizard header and installer exe
 - Start Menu and optional desktop shortcut
-- Window title bar and taskbar (PR 14)
-- Each still `ProgId`'s `DefaultIcon` (PR 14)
+- Window title bar and taskbar (PR 8)
+- Each still `ProgId`'s `DefaultIcon` (PR 15)
 
 Sizes in the `.ico`: 16, 20, 24, 32, 40, 48, 64, 256. A PNG of the same mark goes in
 About. Do not invent a second "installer-only" logo.
@@ -274,8 +276,8 @@ SID, or anything that survives a reinstall.
 
 # Sequencing
 
-The roadmap ([10-roadmap.md](10-roadmap.md)) puts all three in PR 15. That's too late for two of
-them:
+The roadmap ([10-roadmap.md](10-roadmap.md)) now ships the PR 1–7 viewer in **PR 8**
+(formerly PR 15). Metadata, editing, trimming, and Windows integration are later updates:
 
 - **The updater must exist in the first build that reaches anyone else's machine.** If your first
   external testers install a version with no update path, they are stranded there and every later
@@ -283,4 +285,5 @@ them:
 - **Crash reporting should land with the format long tail (PR 7)**, which is when you first feed
   real RAW and HEIC files from other people's cameras into decoders you've never tested against
   them. That's precisely the window where crash reports are worth the most.
-- **Telemetry can wait for PR 15.** It informs v1.1 priorities, not v1 correctness.
+- **Telemetry lands with PR 8 packaging**, default off with an in-app opt-in. It informs
+  future update priorities. Default-app prompting waits for PR 15 Windows integration.

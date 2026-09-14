@@ -719,6 +719,46 @@ a router rule that, while the palette is open, sends printable keys to the
 filter the way Settings already does. Do not re-add `Ctrl+K` as a silent
 second `?`.
 
+## 2026-09-14 — Ship the PR 7 viewer in PR 8; defer additional features
+
+**Why.** The owner wants to run and ship the features available once the agents finish
+PR 7, then add the remaining features in future updates. Editing, metadata panes,
+trimming, and Windows shell integration must no longer delay the first release.
+
+**Call.** v1 is the Windows viewer through PR 7, packaged and shipped in PR 8.
+D4's light-edit requirement and D7's trim requirement move to post-v1; their technical
+designs stand. PR 7 and the inherited verification gates, including PR 1's present loop,
+are still required. This changes scope and sequencing, not completion status.
+
+| Former PR | Current PR | Slice |
+|---|---|---|
+| 15 | **8** | Package & ship the PR 1–7 viewer |
+| 8 | 9 | Metadata read + deferred folder tree |
+| 9 | 10 | Geometry edits + export |
+| 10 | 11 | Colour adjusts |
+| 11 | 12 | Narrow metadata writes |
+| 12 | 13 | Two-path trim |
+| 13 | 14 | Extract & remux |
+| 14 | 15 | Windows integration |
+
+PRs 1–7 and 16–20 keep their numbers. Milestone C becomes shipping (PR 8), D/E are
+future Windows updates, and F remains macOS. The existing PR 16 parallel-work exception
+stands; the Windows ship gate for the remaining Mac work is now PR 8. Earlier entries
+in this log retain their historical numbering; use this mapping for current work.
+The open UI-thread settings-write follow-up previously assigned to PR 15 (2026-09-13)
+now belongs to PR 8 release hardening.
+
+**Packaging stands alone.** Move the shared app icon to PR 8 (window, taskbar, wizard,
+shortcuts, About); PR 15 reuses it for associations. Inno Setup, Velopack, signing,
+About/licence/source offers, and default-off telemetry remain release work. Crash
+reporting stays in PR 7. Associations, default-app prompting, and Explorer handlers
+wait for PR 15; PR 8 uninstall checks cover what PR 8 actually installs.
+
+**Verify changes.** Install on a clean VM, launch and exercise the PR 1–7 viewer,
+check bundled formats, playback and inherited pacing, then verify updates, rollback,
+and uninstall. Crop, trim, and export are no longer first-release acceptance steps.
+Future feature PRs retain their own verify lines; no update version is promised for them.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
