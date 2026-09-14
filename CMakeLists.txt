@@ -602,6 +602,28 @@ if(MV_BUILD_TESTS)
     mv_io)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
 
+  # MSVC's ASan runtime has repeatedly hung before main when starting the full
+  # viewer test binary with its WinUI, FFmpeg and D3D dependency graph. Give the
+  # sanitizer a focused executable that still exercises our allocation,
+  # concurrency, ring, input and camera code without loading those runtimes.
+  if(MV_ASAN)
+    add_executable(mv_asan_tests
+      tests/test_result.cpp
+      tests/test_spsc_ring.cpp
+      tests/test_job_system.cpp
+      tests/test_input_state.cpp
+      tests/test_camera.cpp
+      tests/test_collision_name.cpp
+      tests/test_open_request.cpp
+      src/shell/open_request.cpp
+    )
+    target_link_libraries(mv_asan_tests PRIVATE
+      mv_core
+      mv_canvas
+      Catch2::Catch2WithMain)
+    target_include_directories(mv_asan_tests PRIVATE src)
+  endif()
+
   # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
   # build while another session holds that file.
   add_executable(mv_pr16_tests
@@ -621,17 +643,13 @@ if(MV_BUILD_TESTS)
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
   if(MV_ASAN)
-    # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
-    # Windows driver when the executable is ASan-instrumented. Exclude every
-    # video-tagged test here, not only cases carrying both [video] and [ring].
-    # Normal MSVC and clang-cl jobs still run the complete video suite.
-    catch_discover_tests(mv_tests TEST_SPEC "~[video]"
+    catch_discover_tests(mv_asan_tests TEST_PREFIX "asan_"
       PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   else()
     catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   endif()
-  catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
-    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()
@@ -640,11 +658,13 @@ if(MV_BUILD_TESTS)
   add_executable(mv_swapchain_recovery tests/swapchain_recovery.cpp)
   target_link_libraries(mv_swapchain_recovery PRIVATE mv_gfx)
   target_link_libraries(mv_frametime_fixture PRIVATE mv_project_options)
-  add_test(NAME frametime_harness COMMAND powershell -NoProfile -ExecutionPolicy Bypass
-    -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frametime.ps1"
-    -Harness $<TARGET_FILE:mv_frametime> -Fixture $<TARGET_FILE:mv_frametime_fixture>
-    -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}/frametime-tests")
-  set_tests_properties(frametime_harness PROPERTIES TIMEOUT 60)
+  if(NOT MV_ASAN)
+    add_test(NAME frametime_harness COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frametime.ps1"
+      -Harness $<TARGET_FILE:mv_frametime> -Fixture $<TARGET_FILE:mv_frametime_fixture>
+      -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}/frametime-tests")
+    set_tests_properties(frametime_harness PROPERTIES TIMEOUT 60)
+  endif()
 
   # The DLL must sit beside the test exe for the P/Invoke-shaped ABI tests.
   add_custom_command(TARGET mv_tests POST_BUILD
