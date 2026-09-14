@@ -30,7 +30,10 @@
 #include <string_view>
 #include <vector>
 
+#include <commctrl.h>  // LoadIconWithScaleDown (comctl32 v6 via app.manifest)
+
 #include "abi/guard.h"
+#include "shell/app_icon.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "shell/chrome_host.h"
@@ -1820,6 +1823,30 @@ void apply_view_state(app_state* app) noexcept {
   publish(app);
 }
 
+// PR 8: title bar and taskbar icons at the window's own DPI, so a 150 % monitor
+// gets the 24/48 px frames rather than a stretched 16/32. WM_SETICON does not
+// take ownership, so the previous pair is destroyed after the swap.
+void apply_window_icons(HWND hwnd) noexcept {
+  static HICON icon_big = nullptr;
+  static HICON icon_small = nullptr;
+  const int dpi = static_cast<int>(::GetDpiForWindow(hwnd));
+  const HINSTANCE instance = ::GetModuleHandleW(nullptr);
+  HICON next_big = nullptr;
+  HICON next_small = nullptr;
+  (void)::LoadIconWithScaleDown(instance, MAKEINTRESOURCEW(MV_IDI_APP),
+                                ::GetSystemMetricsForDpi(SM_CXICON, dpi),
+                                ::GetSystemMetricsForDpi(SM_CYICON, dpi), &next_big);
+  (void)::LoadIconWithScaleDown(instance, MAKEINTRESOURCEW(MV_IDI_APP),
+                                ::GetSystemMetricsForDpi(SM_CXSMICON, dpi),
+                                ::GetSystemMetricsForDpi(SM_CYSMICON, dpi), &next_small);
+  if (next_big) ::SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(next_big));
+  if (next_small) ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(next_small));
+  if (next_big && icon_big) ::DestroyIcon(icon_big);
+  if (next_small && icon_small) ::DestroyIcon(icon_small);
+  if (next_big) icon_big = next_big;
+  if (next_small) icon_small = next_small;
+}
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_NCCREATE) {
     auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
@@ -1857,6 +1884,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       layout_chrome(app);
       ++app->input.resize_seq;
       publish(app);
+      apply_window_icons(hwnd);
       return 0;
     }
 
@@ -2214,6 +2242,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   wc.lpfnWndProc = window_proc;
   wc.hInstance = instance;
   wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+  // Class icons at system DPI; apply_window_icons() replaces them per monitor.
+  const int sys_dpi = static_cast<int>(::GetDpiForSystem());
+  (void)::LoadIconWithScaleDown(instance, MAKEINTRESOURCEW(MV_IDI_APP),
+                                ::GetSystemMetricsForDpi(SM_CXICON, sys_dpi),
+                                ::GetSystemMetricsForDpi(SM_CYICON, sys_dpi), &wc.hIcon);
+  (void)::LoadIconWithScaleDown(instance, MAKEINTRESOURCEW(MV_IDI_APP),
+                                ::GetSystemMetricsForDpi(SM_CXSMICON, sys_dpi),
+                                ::GetSystemMetricsForDpi(SM_CYSMICON, sys_dpi), &wc.hIconSm);
   wc.hbrBackground = nullptr;  // the swapchain paints; GDI must not
   wc.lpszClassName = kWindowClass;
   if (!::RegisterClassExW(&wc)) {
@@ -2231,6 +2267,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
 
   enable_dark_titlebar(hwnd);
+  apply_window_icons(hwnd);
   ::DragAcceptFiles(hwnd, TRUE);
   ::SetTimer(hwnd, kTitleTimerId, kTitleTickMs, nullptr);
   app.window = hwnd;
