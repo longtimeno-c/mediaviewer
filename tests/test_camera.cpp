@@ -9,6 +9,119 @@ using Catch::Matchers::WithinAbs;
 using mv::canvas::camera;
 using mv::canvas::spring_step;
 
+TEST_CASE("fill covers the window, centres, and is its own mode", "[canvas]") {
+  camera cam;
+  cam.fit(4000.0f, 2000.0f, 800.0f, 800.0f, true);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(0.2f, 1e-5f));
+  cam.fill(4000.0f, 2000.0f, 800.0f, 800.0f, false);
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.4f, 1e-6f));
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(2000.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(1000.0f, 1e-3f));
+  REQUIRE_FALSE(cam.fit_mode());
+  REQUIRE(cam.fill_mode());
+  // Degenerate geometry changes nothing.
+  cam.fill(0.0f, 2000.0f, 800.0f, 800.0f, false);
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(0.4f, 1e-6f));
+
+  // Resize (the caller re-fills, as fullscreen does): both axes still cover.
+  cam.fill(4000.0f, 2000.0f, 1920.0f, 1080.0f, true);
+  REQUIRE(cam.zoom() * 4000.0f >= 1920.0f - 1e-3f);
+  REQUIRE(cam.zoom() * 2000.0f >= 1080.0f - 1e-3f);
+  REQUIRE(cam.fill_mode());
+
+  // Panning keeps fill; any zoom command leaves it.
+  cam.pan_by_screen(-100.0f, 0.0f, 4000.0f, 2000.0f, 1920.0f, 1080.0f);
+  REQUIRE(cam.fill_mode());
+  cam.one_to_one();
+  REQUIRE_FALSE(cam.fill_mode());
+  cam.fill(4000.0f, 2000.0f, 800.0f, 800.0f, true);
+  cam.wheel_toward(400.0f, 400.0f, 1.0f, 800.0f, 800.0f, 4000.0f, 2000.0f);
+  REQUIRE_FALSE(cam.fill_mode());
+  cam.fill(4000.0f, 2000.0f, 800.0f, 800.0f, true);
+  cam.fit(4000.0f, 2000.0f, 800.0f, 800.0f, true);
+  REQUIRE_FALSE(cam.fill_mode());
+}
+
+TEST_CASE("sticky zoom carries zoom and pan fraction to the next image", "[canvas]") {
+  camera cam;
+  cam.fit(6000.0f, 4000.0f, 1000.0f, 800.0f, true);
+  cam.one_to_one();
+  cam.pan_by_screen(-2000.0f, -1500.0f, 6000.0f, 4000.0f, 1000.0f, 800.0f);
+  cam.step(1.0f);
+  const float fx = cam.target_pan_x() / 6000.0f;
+  const float fy = cam.target_pan_y() / 4000.0f;
+
+  // Same-size burst: the interesting corner stays exactly where it was.
+  cam.carry(6000.0f, 4000.0f, 6000.0f, 4000.0f, 1000.0f, 800.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(1.0f, 1e-5f));
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(fx * 6000.0f, 1e-2f));
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(fy * 4000.0f, 1e-2f));
+  REQUIRE_FALSE(cam.moving());
+
+  // Different aspect: the fraction is kept and clamped, never a jump to 0,0.
+  cam.carry(6000.0f, 4000.0f, 4000.0f, 6000.0f, 1000.0f, 800.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(1.0f, 1e-5f));
+  REQUIRE(cam.pan_x() >= 500.0f);
+  REQUIRE(cam.pan_y() >= 400.0f);
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(fy * 6000.0f, 1e-2f));
+
+  // Degenerate sizes change nothing.
+  const float before = cam.pan_x();
+  cam.carry(0.0f, 4000.0f, 6000.0f, 4000.0f, 1000.0f, 800.0f);
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(before, 1e-4f));
+}
+
+TEST_CASE("fit and fill are never both on", "[canvas]") {
+  camera cam;
+  const auto check = [&cam] { REQUIRE_FALSE((cam.fit_mode() && cam.fill_mode())); };
+  check();
+  cam.fill(4000.0f, 2000.0f, 800.0f, 800.0f, true);
+  check();
+  REQUIRE(cam.fill_mode());
+  cam.fit(4000.0f, 2000.0f, 800.0f, 800.0f, false);  // `0` and Ctrl+0 both fit
+  check();
+  REQUIRE_FALSE(cam.fill_mode());
+  cam.fill(4000.0f, 2000.0f, 800.0f, 800.0f, false);
+  REQUIRE_FALSE(cam.fit_mode());
+  cam.set_zoom(2.0f, 4000.0f, 2000.0f, 800.0f, 800.0f);
+  check();
+  REQUIRE_FALSE(cam.fill_mode());
+  cam.fill(4000.0f, 2000.0f, 800.0f, 800.0f, false);
+  // Wheel out to the floor can re-enter fit; it must leave fill.
+  for (int i = 0; i < 40; ++i) {
+    cam.wheel_toward(400.0f, 400.0f, -1.0f, 800.0f, 800.0f, 4000.0f, 2000.0f);
+    check();
+  }
+  cam.reset();
+  check();
+}
+
+TEST_CASE("keyboard pan is locked at fit and never shows background", "[canvas]") {
+  camera cam;
+  cam.fit(1000.0f, 1000.0f, 500.0f, 500.0f, true);
+  // Fit mode: locked, like drag.
+  cam.pan_by_screen(100.0f, 0.0f, 1000.0f, 1000.0f, 500.0f, 500.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(500.0f, 1e-3f));
+
+  cam.one_to_one();  // 1000 px image in a 500 px window: 250 px of travel each way
+  cam.pan_by_screen(100.0f, -50.0f, 1000.0f, 1000.0f, 500.0f, 500.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(600.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(450.0f, 1e-3f));
+
+  // A held key clamps at the edge (centre = image - half window) and does not
+  // bank travel: one step back moves immediately.
+  for (int i = 0; i < 20; ++i) cam.pan_by_screen(100.0f, 0.0f, 1000.0f, 1000.0f, 500.0f, 500.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(750.0f, 1e-3f));
+  cam.pan_by_screen(-50.0f, 0.0f, 1000.0f, 1000.0f, 500.0f, 500.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(700.0f, 1e-3f));
+  cam.pan_by_screen(-5000.0f, -5000.0f, 1000.0f, 1000.0f, 500.0f, 500.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(250.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(250.0f, 1e-3f));
+
+  // An axis narrower than the window stays centred.
+  REQUIRE_THAT(camera::clamp_centre(10.0f, 400.0f, 500.0f, 1.0f), WithinAbs(200.0f, 1e-3f));
+}
+
 TEST_CASE("a critically damped spring settles on its target", "[canvas][spring]") {
   float x = 0.0f;
   float v = 0.0f;

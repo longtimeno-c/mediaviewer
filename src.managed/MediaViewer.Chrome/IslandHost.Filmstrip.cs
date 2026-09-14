@@ -54,14 +54,15 @@ public static partial class IslandHost
                 StartVideoControls(parent);
             }
 
-            _filmstrip?.Dispose();
+            DisposeSource(ref _filmstrip);
             _filmstrip = new DesktopWindowXamlSource();
+            EnsureFocusHook();
             _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            int strip = Math.Max((int)(FilmstripDip * (args.Dpi <= 0 ? 96 : args.Dpi) / 96.0), 1);
-            int y = Math.Max(args.ClientHeight - strip, 0);
-            Move(_filmstrip, args.ClientWidth, strip, y);
-            _filmstrip.Content = BuildFilmstrip();
-            Move(_filmstrip, args.ClientWidth, strip, y);
+            // Park with no content, same as the gallery. Building the repeater
+            // here and then immediately hiding it left an ItemsRepeater bound
+            // to `Items`; the first folder-open show bound a second one and
+            // AccessViolation'd in set_ItemsSource.
+            Move(_filmstrip, 1, 1, args.ClientHeight);
             return 0;
         }
         catch (Exception ex)
@@ -93,17 +94,14 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
+            UnhookFocus();
             _completionWait?.Unregister(null);
             _completionWait = null;
             StopVideoControls();
             _folderSession?.Dispose();
             _folderSession = null;
-            if (_filmstrip is not null)
-            {
-                _filmstrip.Content = null;
-                _filmstrip.Dispose();
-                _filmstrip = null;
-            }
+            UnbindSharedItems();
+            DisposeSource(ref _filmstrip);
             _filmstripRoot = null;
             Items.Clear();
             _selectedIndex = -1;
@@ -197,6 +195,7 @@ public static partial class IslandHost
             {
                 Index = (int)i,
                 Name = _folderSession.FolderItemName(i),
+                Path = _folderSession.FolderItemPath(i),
                 ThumbPath = _folderSession.FolderItemThumbPath(i),
                 Selected = (rec.Flags & 1) != 0,
             });
@@ -209,11 +208,15 @@ public static partial class IslandHost
         _selectedIndex = selected;
         if (selected >= 0) ScrollTo(selected);
         UpdateGalleryCount();
-        // The native side does not drain completions while an island is
-        // attached, so this is how it learns a listing landed and how many
-        // items it has — which is what decides whether the strip and the
-        // gallery are worth putting on screen at all.
-        Send(Command.FolderReady, Items.Count);
+        // Native does not drain completions while an island is attached, so
+        // this is how it learns a listing landed. Do not Send synchronously:
+        // FolderReady -> apply_view_state -> ShowFilmstrip -> BuildFilmstrip
+        // re-entered from DrainFolder and AccessViolation'd in set_ItemsSource.
+        int listed = Items.Count;
+        if (_dispatcher is not null)
+            _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.FolderReady, listed));
+        else
+            Send(Command.FolderReady, listed);
     }
 
     private static void SetSelected(int index)
@@ -255,9 +258,12 @@ public static partial class IslandHost
 
     private static UIElement BuildFilmstrip()
     {
+        ReleaseRepeater(ref _repeater);
+        // Bind Items after the tree is parented (RealiseFilmstrip). Setting
+        // ItemsSource here, before the repeater has a XamlRoot, is a native
+        // AV in IItemsRepeaterMethods.set_ItemsSource on a populated listing.
         _repeater = new ItemsRepeater
         {
-            ItemsSource = Items,
             Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 6 },
             ItemTemplate = new FilmstripFactory(),
         };
@@ -270,6 +276,7 @@ public static partial class IslandHost
             VerticalScrollMode = ScrollMode.Disabled,
         };
         var scroll = _filmstripScroll;
+        scroll.CharacterReceived += OnTypeahead;  // plan/16 typeahead
         scroll.KeyDown += (_, e) =>
         {
             if (e.Key == Windows.System.VirtualKey.Left) { Send(Command.Prev); e.Handled = true; }
@@ -283,6 +290,7 @@ public static partial class IslandHost
             Children = { scroll },
         };
         _filmstripRoot = root;
+        WireFileDrop(root);
         return root;
     }
 
@@ -333,7 +341,8 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
             };
-            border.PointerPressed += (_, _) => Send(Command.SelectItem, vm.Index);
+            border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
+            WireFileDrag(border, vm);
             return border;
         }
 
@@ -350,6 +359,7 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     private bool _selected;
     public int Index { get; set; }
     public string Name { get; set; } = "";
+    public string Path { get; set; } = "";
     public bool Selected
     {
         get => _selected;

@@ -160,11 +160,11 @@ TEST_CASE("The decoder does not stall waiting for a presentation surface", "[vid
   const playback_result played = play_for(guard.source, 5);
   REQUIRE(played.frames > 0);
 
-  // 5a publishes surface_waits in this field until 5b owns clock_stats; it
-  // counts the times the decode thread had a frame in hand and no free ring
-  // slot to copy it into. This is a SHORT run on a fast machine, so it is a
-  // smoke test for the design, not the 10-minute soak in the verify line —
-  // that one is reported separately and was run by hand.
+  // surface_waits counts the times the decode thread held a decoded frame
+  // with no free ring slot. This is a SHORT run, so it is a smoke test for
+  // the copy-out design, not the 10-minute soak in the verify line. That
+  // soak is `--av-soak` on soak_31min_1080p_hevc_aac.mp4: the same gate
+  // fails the process if surface_waits is non-zero.
   const mv::player::clock_stats stats = guard.source->stats();
   CHECK(stats.position_discontinuities == 0);
   CHECK(stats.counters.held_starved < stats.counters.presented);

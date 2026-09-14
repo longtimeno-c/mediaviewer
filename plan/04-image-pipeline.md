@@ -54,7 +54,7 @@ that.
 **Apply EXIF/container orientation on the display path**, never as a surprise 90° pixel
 rotate of the original. Untagged = identity. A toggle "ignore orientation" exists for the
 file that was saved already rotated *and* tagged; default is honour the tag. This is a
-viewer correctness requirement, not an edit op — `[` `]` in PR 9 *writes* orientation
+viewer correctness requirement, not an edit op — `[` `]` in PR 10 *writes* orientation
 (lossless JPEG transform or metadata).
 
 ## Tiled pyramid for large images
@@ -111,7 +111,7 @@ Photos, and it is **not** two navigation stops.
 | `DSC_0123.NEF` + `DSC_0123.JPG` (any RAW ext + JPEG/HEIC, same basename) | Basename match, ignoring case and the known RAW/JPEG extension sets |
 
 **v1 behaviour: one item, not two.** The JPEG (or HEIC) is first pixel and the filmstrip
-thumb; the RAW is the edit source once PR 7/10 can open it. A RAW-only badge if no JPEG
+thumb; the RAW is the edit source once PR 7/11 can open it. A RAW-only badge if no JPEG
 sits beside it. "Open RAW" / "Open JPEG" remains reachable from the command palette so a
 paired file is never trapped.
 
@@ -166,7 +166,7 @@ only — does not disable prefetch or the generation counter ([16-commands.md](1
 ## Animation (GIF/APNG/WebP/animated AVIF/HEIC sequences)
 
 Treat as a mini video: decode frames ahead into a small ring, present on the render thread against
-QPC time with per-frame delays honored (clamp `delay < 20 ms` to 100 ms, matching browser behavior
+QPC time with per-frame delays honored (treat a delay of 10 ms or less as 100 ms, as Chromium and Firefox do — plan/12 2026-09-13, matching browser behavior
 for legacy GIFs). Loop counts respected. Scrubbable. When the current item is animated, **Space
 is play/pause** and `,` `.` step frames — same commands as video
 ([16-commands.md](16-commands.md)). TIFF pages, ICO sizes, and HEIC sequences are
@@ -174,13 +174,19 @@ is play/pause** and `,` `.` step frames — same commands as video
 
 ## Color
 
-Read the ICC profile (`APP2`/`iCCP`/`colr` box) and transform via **LittleCMS** to linear Rec.709
-at decode time. Untagged JPEG → assume sRGB. Untagged RAW → camera matrix from LibRaw.
-Display-referred sources then **sRGB-encode with no tone map** (D6, [03](03-rendering.md)).
+Read the ICC profile (`APP2`/`iCCP`/`colr` box) and transform via **LittleCMS** at decode
+time. Untagged JPEG → assume sRGB. Untagged RAW → camera matrix from LibRaw.
+Display-referred sources **sRGB-encode with no tone map** (D6, [03](03-rendering.md)).
+
+The v1 **display** path is 8-bit in, 8-bit sRGB out: LittleCMS builds its device-link LUT
+once per profile (`cmsFLAGS_HIGHRESPRECALC`). An RGB matrix/shaper that matches sRGB
+within an 8-bit step is a copy-through — that file already is sRGB, not a tagged-as-sRGB
+bug. Wide-gamut and LUT profiles still convert. The colourimetric hop remains ICC →
+linear → sRGB encode; treating a tagged Display P3 / Adobe RGB file as sRGB is still a
+bug. The float Rec.709 working space is the edit path (PR 11), not the viewer blit.
 
 The **viewer LRU** is 8-bit sRGB (or RGB10A2), not FP16 — [02](02-architecture.md). FP16 is the
-edit working space, promoted when an edit stack is active. The linear hop still happens at
-decode (ICC → linear → sRGB OETF); skipping it and treating a tagged file as sRGB is a bug.
+edit working space, promoted when an edit stack is active.
 
 - LittleCMS calls on the decode pool use a **per-job `cmsContext`**. The default/global context
   is not thread-safe; two tagged files at once is a data race.

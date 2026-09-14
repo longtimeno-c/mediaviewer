@@ -5,6 +5,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
@@ -33,8 +34,76 @@ public static partial class IslandHost
     private static TextBlock? _galleryCount;
     private static bool _galleryVisible;
 
-    private const double GalleryTile = 152;
-    private const double GalleryStride = 176;  // tile + padding + spacing
+    // Keep the chosen size when the gallery closes/reopens during this session.
+    private static double GalleryTile = 152;
+    private static double GalleryStride => GalleryTile + 24;  // column width + spacing
+    private static double GalleryRowStride => GalleryTile + 48;
+    private static int GalleryDecodeWidth => Math.Min(512, (int)Math.Ceiling(GalleryTile * 2));
+
+    public static int ScaleGallery(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < 8) return unchecked((int)0x80070057);
+            if (!_galleryVisible || _galleryRepeater?.Layout is not UniformGridLayout layout) return 1;
+            ChromeGalleryNavigationArgs args = Marshal.PtrToStructure<ChromeGalleryNavigationArgs>(arg);
+            double next = Math.Clamp(GalleryTile + Math.Sign(args.Direction) * 24, 80, 344);
+            if (next == GalleryTile) return 0;
+            GalleryTile = next;
+            layout.MinItemWidth = GalleryTile + 16;
+            layout.MinItemHeight = GalleryTile + 40;
+            // Only touch realised tiles; preserve the repeater, selection and
+            // thumbnail subscriptions instead of rebuilding the whole gallery.
+            int children = VisualTreeHelper.GetChildrenCount(_galleryRepeater);
+            for (int i = 0; i < children; ++i)
+            {
+                if (VisualTreeHelper.GetChild(_galleryRepeater, i) is not Border border ||
+                    border.Child is not StackPanel col) continue;
+                border.Width = GalleryTile + 12;
+                if (col.Children[0] is Image image)
+                {
+                    image.Width = image.Height = GalleryTile;
+                    if (image.Source is BitmapImage bitmap) bitmap.DecodePixelWidth = GalleryDecodeWidth;
+                }
+                if (col.Children[1] is TextBlock name) name.MaxWidth = GalleryTile;
+            }
+            _galleryRoot?.UpdateLayout();
+            GalleryScrollTo(args.Index);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    private static int GalleryColumns => Math.Max(1,
+        (int)((Math.Max(0, (_galleryRepeater?.ActualWidth ?? 0)) + 8) / GalleryStride));
+
+    public static int NavigateGallery(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < 8) return unchecked((int)0x80070057);
+            if (!_galleryVisible || Items.Count == 0) return 1;
+            ChromeGalleryNavigationArgs args = Marshal.PtrToStructure<ChromeGalleryNavigationArgs>(arg);
+            if (args.Index < 0 || args.Index >= Items.Count) return 1;
+            int columns = GalleryColumns;
+            // Stay in the current row at the top/bottom; clamp into a short last row.
+            if ((args.Direction < 0 && args.Index < columns) ||
+                (args.Direction > 0 && args.Index / columns == (Items.Count - 1) / columns)) return 0;
+            int next = Math.Clamp(args.Index + Math.Sign(args.Direction) * columns, 0, Items.Count - 1);
+            Send(Command.SelectItem, next);
+            GalleryScrollTo(next);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
 
     public static int AttachGallery(IntPtr arg, int sizeBytes)
     {
@@ -61,8 +130,9 @@ public static partial class IslandHost
                 StartDrain();
             }
 
-            _gallery?.Dispose();
+            DisposeSource(ref _gallery);
             _gallery = new DesktopWindowXamlSource();
+            EnsureFocusHook();
             _gallery.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Park it before content exists: a default full-client island would
             // flash over the canvas for a frame on startup.
@@ -113,8 +183,8 @@ public static partial class IslandHost
         onHidden: () =>
         {
             _galleryVisible = false;
+            ReleaseRepeater(ref _galleryRepeater);
             _galleryRoot = null;
-            _galleryRepeater = null;
             _galleryScroll = null;
             _galleryCount = null;
         });
@@ -124,8 +194,8 @@ public static partial class IslandHost
         onShown: () => _dispatcher?.DispatcherQueue.TryEnqueue(RealiseFilmstrip),
         onHidden: () =>
         {
+            ReleaseRepeater(ref _repeater);
             _filmstripRoot = null;
-            _repeater = null;
             _filmstripScroll = null;
         });
 
@@ -135,13 +205,9 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
-            if (_gallery is not null)
-            {
-                _gallery.Content = null;
-                _gallery.Dispose();
-                _gallery = null;
-            }
-            _galleryRepeater = null;
+            UnhookFocus();
+            ReleaseRepeater(ref _galleryRepeater);
+            DisposeSource(ref _gallery);
             _galleryScroll = null;
             _galleryRoot = null;
             _galleryCount = null;
@@ -171,8 +237,8 @@ public static partial class IslandHost
             ChromeShowArgs args = Marshal.PtrToStructure<ChromeShowArgs>(arg);
             if (args.Visible == 0)
             {
-                source.Content = null;
                 onHidden();
+                source.Content = null;
                 Move(source, args.Width, args.Height, args.Y);
                 return 0;
             }
@@ -188,20 +254,29 @@ public static partial class IslandHost
         }
     }
 
-    // ItemsRepeater realises from the viewport change raised during a layout
-    // pass, and the pass a fresh island content triggers does not always carry
-    // one. Force it, and if nothing realised, reset the source, which always
-    // does. One arrange of a screenful of tiles, only when a strip appears.
+    // Bind after the repeater is in a XamlRoot. BuildFilmstrip used to assign
+    // ItemsSource in the constructor; that AV'd on every folder open once the
+    // listing was populated. A fresh island content pass also does not always
+    // realise tiles — force a layout, then bind, then layout again.
     private static void Realise(ItemsRepeater? repeater, FrameworkElement? root)
     {
+        if (repeater is null) return;
         root?.UpdateLayout();
-        if (repeater is null || Items.Count == 0) return;
-        if (repeater.TryGetElement(0) is null)
+        try
         {
-            repeater.ItemsSource = null;
-            repeater.ItemsSource = Items;
-            root?.UpdateLayout();
+            if (!ReferenceEquals(repeater.ItemsSource, Items))
+                repeater.ItemsSource = Items;
+            else if (Items.Count > 0 && repeater.TryGetElement(0) is null)
+            {
+                repeater.ItemsSource = null;
+                repeater.ItemsSource = Items;
+            }
         }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        root?.UpdateLayout();
     }
 
     private static void RealiseFilmstrip()
@@ -238,16 +313,16 @@ public static partial class IslandHost
         if (_galleryScroll is null || _galleryScroll.ViewportWidth <= 0) return;
         // Not realised yet: estimate from the uniform grid stride. Off by at
         // most one row, and the next realised BringIntoView corrects it.
-        int columns = Math.Max(1, (int)(_galleryScroll.ViewportWidth / GalleryStride));
-        double y = index / columns * GalleryStride - _galleryScroll.ViewportHeight * 0.5;
+        int columns = GalleryColumns;
+        double y = index / columns * GalleryRowStride - _galleryScroll.ViewportHeight * 0.5;
         _galleryScroll.ChangeView(null, Math.Max(0, y), null, disableAnimation: true);
     }
 
     private static UIElement BuildGallery()
     {
+        ReleaseRepeater(ref _galleryRepeater);
         _galleryRepeater = new ItemsRepeater
         {
-            ItemsSource = Items,
             Layout = new UniformGridLayout
             {
                 MinItemWidth = GalleryTile + 16,
@@ -267,16 +342,13 @@ public static partial class IslandHost
             HorizontalScrollMode = ScrollMode.Disabled,
             VerticalScrollMode = ScrollMode.Enabled,
         };
+        _galleryScroll.CharacterReceived += OnTypeahead;  // plan/16 typeahead
         _galleryScroll.KeyDown += (_, e) =>
         {
             switch (e.Key)
             {
                 case Windows.System.VirtualKey.Escape:
                     Send(Command.CloseGallery);
-                    e.Handled = true;
-                    break;
-                case Windows.System.VirtualKey.Enter:
-                    if (_selectedIndex >= 0) Send(Command.GalleryActivate, _selectedIndex);
                     e.Handled = true;
                     break;
                 case Windows.System.VirtualKey.Left:
@@ -315,6 +387,7 @@ public static partial class IslandHost
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(header, 0);
         root.Children.Add(header);
+        WireFileDrop(root);
         Grid.SetRow(_galleryScroll, 1);
         root.Children.Add(_galleryScroll);
         _galleryRoot = root;
@@ -360,9 +433,8 @@ public static partial class IslandHost
                 if (string.IsNullOrEmpty(vm.ThumbPath)) { image.Source = null; return; }
                 try
                 {
-                    // The cache is JPEG-512; decoding it at 512 for a 152 DIP
-                    // tile is 8x the pixels for nothing on a 2000-file dump.
-                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = 320 };
+                    // Decode for the current tile size, bounded by the JPEG-512 cache.
+                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = GalleryDecodeWidth };
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
             }
@@ -379,7 +451,8 @@ public static partial class IslandHost
             // thumb completion then walks a growing list of dead elements.
             border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
 
-            border.PointerPressed += (_, _) => Send(Command.GalleryActivate, vm.Index);
+            border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
+            WireFileDrag(border, vm);
             return border;
         }
 
@@ -408,4 +481,11 @@ internal struct ChromeFlagsArgs
 {
     public int Flags;
     public int Reserved;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct ChromeGalleryNavigationArgs
+{
+    public int Direction;
+    public int Index;
 }

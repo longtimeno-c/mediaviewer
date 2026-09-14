@@ -1,28 +1,40 @@
 # MediaViewer
 
 A Windows viewer for a real camera dump — photos and video in one folder. Opens everything
-instantly, pans without a dropped frame, shows and edits metadata, does the everyday photo
-edits, and trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is
+instantly and pans without a dropped frame. The first release ships the viewer through
+PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
+Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 5 of 15 (in progress).** The present lab still owns the Win32 window
-and D3D11 swapchain. WinUI 3 chrome is XAML islands on that window: command
-bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP **or video**;
-the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk cache, arrow
-keys move the selection. PR 5 puts video on that same swapchain — FFmpeg demux
-and decode, D3D11VA on the lab's own device, NV12/P010 sampled and tone-mapped
-in one shader, a WASAPI audio master clock, and a transport (seek, frame step,
-speed, A-B loop, resume, media keys). Photos and clips are one folder and one
-present path.
+**Status: PR 7 is being completed by agents; PR 8 packages the Windows viewer for its
+first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
+the tree and unverified on Apple Silicon.** The Windows present lab still owns
+the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
+window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP
+**or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
+cache, arrow keys move the selection. PR 5 puts video on that same swapchain —
+FFmpeg demux and decode, D3D11VA on the lab's own device, NV12/P010 sampled and
+tone-mapped in one shader, a WASAPI audio master clock, and a transport (seek,
+frame step, speed, A-B loop, resume, media keys). Photos and clips are one
+folder and one present path. PR 6 makes browse keyboard-complete: one key
+router over a live command table, `?` shortcuts built from that table, a
+Settings screen that remaps it, marks, copy/move-to, Recycle
+Bin delete, fullscreen, slideshow as a mode, fit/fill/100 %, gallery drag-and-drop,
+and animated GIF/APNG/WebP on the frame clock.
+
+macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
+host of the same core — not a UI-only port. PR 16 is the Metal present lab
+(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). It does **not** yet decode,
+host SwiftUI, or play video. A Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
-not yet demonstrated on a quiet GPU runner, and PR 5's own verify lines are only
-partly demonstrated — read
+not yet demonstrated on a quiet GPU runner, and PR 5's and PR 6's own verify
+lines are only partly demonstrated — read
 [Where this actually is](#where-this-actually-is) before believing any of it.
-Keyboard-complete browse (no mouse, `?` overlay, command palette) is specified
-for PR 6 in [plan/16-commands.md](plan/16-commands.md); the keys below are the
-present lab.
+The keys below come from the command table specified in
+[plan/16-commands.md](plan/16-commands.md); press `?` in the app for the ones
+that apply to what you are doing.
 
 **Licence: GPL-2.0-or-later** ([LICENSE](LICENSE)). Settled in PR 1; the reasoning is in
 [plan/11-licensing.md](plan/11-licensing.md).
@@ -33,10 +45,11 @@ present lab.
 
 | | |
 |---|---|
-| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Open a folder, drop a JPEG/PNG/BMP or a clip, or pass a path on the command line. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom, Left/Right browse. Video plays on the same swapchain as photos — never a `MediaPlayerElement`. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay, which grows codec, decoder, A/V drift and present-counter lines while a clip is up. WinUI command bar (top) and filmstrip (bottom) are `DesktopWindowXamlSource` islands; the canvas is not a `SwapChainPanel`. |
-| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP decode, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
+| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Open a folder, drop a JPEG/PNG/BMP/GIF/WebP or a clip, or pass a path on the command line. Animated GIF, APNG and WebP play on the render thread's frame clock, frame 0 first. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom, Left/Right browse. Video plays on the same swapchain as photos — never a `MediaPlayerElement`. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay, which grows codec, decoder, A/V drift and present-counter lines while a clip is up. WinUI command bar (top) and filmstrip (bottom) are `DesktopWindowXamlSource` islands; the canvas is not a `SwapChainPanel`. |
+| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp) with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
+| **`mediaviewer_lab` (Darwin)** | PR 16 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. No SwiftUI, no decode, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -74,6 +87,27 @@ cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
 cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opinion
 ```
 
+### macOS (PR 16 present lab)
+
+Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, Xcode command-line tools. Intel
+Macs are out of scope (D9). This path does not build FFmpeg, WinUI, or the
+Windows lab.
+
+```sh
+cmake -S . -B build
+cmake --build build --config Release
+./build/bin/mediaviewer_lab
+./build/bin/frametime --seconds 60 --lab ./build/bin/mediaviewer_lab
+ctest --test-dir build --output-on-failure
+```
+
+`frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
+Windows DXGI JSON report over is a failed gate, not a pass. The 60 s soak has
+not been run in this checkout — this machine is Windows.
+
+`F3` toggles the overlay, `Space` the sweep, `R` resets the measurement, `Esc`
+quits. Idle (`--static`) must park the cursor off the window.
+
 ## Run
 
 ```powershell
@@ -84,23 +118,66 @@ cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opini
 
 | Key | |
 |---|---|
-| `F` / `F3` | frame-time overlay (off at launch with chrome) |
-| `Space` | on a clip: play/pause. Otherwise the lab sweep on/off — overlay **animating**, not "a photo is open". Sweep off and settled → stop presenting (~0 % CPU) |
+| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
+| `F3` | frame-time overlay (off at launch with chrome) |
+| `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
+| `Home` / `End` | first / last in the folder |
+| `PageUp` / `PageDown` | back / forward ten |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([plan/16](plan/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
-| `Q` / `E` | on a clip, two commands on one key: **tap** steps playback speed (0.25 / 0.5 / 1 / 1.5 / 2 / 4), **hold** skims ±2 s per key repeat and settles on an exact seek when released. Off a clip they do nothing |
+| `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
-| `+` / `-` | zoom in / out |
-| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP, MP4/MOV/MKV/WebM/AVI/TS) |
+| `2` / `3` | 200 % / 400 % |
+| `4` | fill: the image covers the canvas |
+| `Ctrl+0` | reset pan and zoom (fit) |
+| `Up` / `Down`, `Shift+arrows` | pan when zoomed in (`Left` / `Right` alone still walk the folder) |
+| `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
+| hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
+| hold `\` | show the previous image, for picking between burst frames |
+| `B` | canvas background: dark / gray / white / checkerboard |
+| `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
+| `O` | info line: file name, position in the folder, size, zoom |
+| `Ctrl+Shift+A` | always on top |
+| `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears |
+| `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
+| `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
+| `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
+
+Drop files or a folder on the window, the gallery, or the filmstrip. Drag a
+thumbnail or the current image (at fit) out to Explorer or another app. Pass
+paths on the command line: the first one that exists opens (a file opens its
+folder with that file selected).
+Files added to or removed from the open folder show up without a restart.
+
+A one-pixel grid appears at 400 % and above.
+| `+` / `-` | zoom in / out (`=` and the numpad keys too) |
+| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP, MP4/MOV/MKV/WebM/AVI/TS) |
+| `Ctrl+Shift+O` | open a folder |
+| `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
+| `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
+| `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
+| `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
+| `Ctrl+G` | go to an item by its number in the folder |
+| `/` | find an item by name. With the filmstrip or gallery focused, just type |
+| `Ctrl+Shift+E` | folder tree — arrives in PR 9; for now it beeps |
+
+The title bar shows the current file, its position in the folder, its size and
+the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
+first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. Click or `Enter` opens an item, `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. `W` / `S` or Up / Down move between rows; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges), keeping the selection visible. The size is remembered until the app closes. `Enter` opens the selected image in the normal viewer, showing the filmstrip if enabled. A click also opens the item; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
-| `Esc` | leave the gallery, else quit |
+| `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
+| `Ctrl+W` / `Alt+F4` | close the window |
+
+Keys go through one router and one table (`src/shell/commands.h`,
+[plan/16](plan/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
+keyboard layout, not a US key position.
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
@@ -111,13 +188,15 @@ line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), or a positional file or folder. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
-fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown at
-the right end, Settings, About. The filmstrip along
+fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
+a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
+The filmstrip along
 the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. Clips get a
 thumbnail too — a poster frame from about 10 % into the clip, in that same cache — so a
 camera dump does not show blanks where the video is. With no
 folder open the canvas is a drop target reading *Drop a photo or a clip here*, not the
-present-lab sweep.
+present-lab sweep. The gallery and filmstrip accept the same drop, and you can drag a
+thumbnail or the fitted image out to Explorer.
 
 The playback transport is a **third island**: a bottom-centre strip that appears with a
 clip and goes away with it. Its height is reserved out of the canvas rectangle the same
@@ -128,8 +207,9 @@ the keyboard cannot disagree.
 Opening a single image lists its folder too, so `Left` / `Right` and the gallery work on the
 files beside it. Whether the filmstrip comes with it is a preference: **Settings** has
 *Filmstrip when opening a folder* (on by default) and *Filmstrip when opening an image* (off),
-persisted to `%LocalAppData%\MediaViewer\settings.ini`. `T` toggles the one for the
-mode you are in. Both take effect immediately — no restart.
+persisted to `%LocalAppData%\MediaViewer\settings.ini` (also wrap, sticky zoom, canvas
+background, and key remaps). `T` toggles the one for the mode you are in. Both take
+effect immediately — no restart. The Settings screen is where those defaults live.
 
 ## Test
 
@@ -259,7 +339,7 @@ PR 4's verify line is:
 > **2000 mixed JPEGs — filmstrip scrolls without a hitch, second folder visit has
 > near-instant thumbnails, arrow-key browse shows the next image in < 40 ms warm.**
 
-Folder listing + sort (name, mtime, size, type — EXIF date-taken waits for PR 8).
+Folder listing + sort (name, mtime, size, type — EXIF date-taken waits for PR 9).
 Portable `io/dir.h`, Windows impl in `io/dir_win.cpp`. The filmstrip is a second
 XAML island on the same HWND (bottom strip), not a full-client island and not
 thumbs blitted onto the photo swapchain. SQLite + on-disk JPEG-512 cache keyed
@@ -284,6 +364,47 @@ sink, and two real-clip integration tests over seek, frame step, resume and the
 video ABI.
 `tools/check-hostable-core.ps1` is the D9 gate. PR 1's present-loop verify is
 inherited.
+
+PR 6's verify line is:
+
+> **Keyboard-only browse of a real folder — open, next/prev, zoom/fit/100 %, mark,
+> copy-to a destination, delete to Recycle Bin, fullscreen, slideshow start/stop —
+> without the mouse, with `?` listing those bindings; a file dropped into the folder
+> appears without restart; animation timing matches a browser; PR 1's present-loop
+> still holds.**
+
+What is demonstrated, on the same developer box:
+
+- Every verify binding is in the one command table, and the table the `?` sheet
+  receives lists each of them (`test_key_router.cpp`); no command is
+  left pending.
+- Copy/move never overwrite (`name (n).ext`), a cross-volume move is copy,
+  verify, delete, and a drive with no Recycle Bin refuses rather than deleting
+  permanently — `test_file_ops.cpp`, `test_file_jobs.cpp`. The selection survives
+  a watcher refresh (`test_folder_reselect.cpp`).
+- Animation delays follow browsers (10 ms or less plays as 100 ms), and the frame
+  schedule, ring and seek are unit-tested. A 2048² 60-frame GIF and a 2048²
+  ICC-tagged animated WebP each soak 20 s at refresh with 0 dropped frames and a
+  p99 of 17.0 ms at 60 Hz.
+- The 60 s present-loop gate passes, and 30 consecutive launches exit cleanly
+  with the chrome attached.
+- Display colour (review 43): an 8-bit LittleCMS LUT matches the previous float
+  pipeline within one code per channel, sRGB-in-effect profiles copy through, and
+  a 2048² tagged frame converts in under 80 ms in Release (`test_gif_webp.cpp`).
+- The lab JSON report (schema 2) includes animation frames shown/made, late
+  frames, mean delay and last make/ICC times (review 44), so an animation soak
+  can fail on a stalled decode, not only on dropped presents.
+
+What is **not** demonstrated, and should not be claimed:
+
+- The mouse-free walk of the whole line by a person, and "animation timing
+  matches a browser" side by side. Both are human checks for the PR.
+- A file dropped into the folder by Explorer appearing without restart, as
+  opposed to the watcher and reselect unit tests.
+
+Slipped from PR 6, recorded in [plan/12-decision-log.md](plan/12-decision-log.md):
+the folder-tree island to PR 9 (its key beeps; its command and canvas inset are
+in), and hiding companion files to PR 7.
 
 PR 5's verify lines are:
 
@@ -358,15 +479,23 @@ per-job context on the pool.
 
 ```
 src/core        job system, result<T>, lock-free rings, ETW
-src/io          whole-file reads, directory listing + watcher (Windows impl)
-src/codec       JPEG / PNG / BMP, magic-byte probe
-src/image       LCMS colour, CPU mips, immutable GPU upload, JPEG-512 thumbs
-src/canvas      pan/zoom springs
+src/io          whole-file reads, directory listing + watcher, copy/move that never
+                overwrites, Recycle Bin (Windows impl)
+src/codec       JPEG / PNG / BMP / GIF / WebP, APNG walker, frame-at-a-time
+                animation sources, magic-byte probe
+src/image       LCMS colour (8-bit display LUT; sRGB copy-through), CPU mips,
+                immutable GPU upload, JPEG-512 thumbs
+src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom
 src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
-src/abi         the flat C ABI — the top of the native graph
-src/shell       Win32 window, render thread, present lab, hostfxr island host
-src.managed/    C# interop and WinUI chrome (hosted as an island, not the app)
-tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI, folder
+src/abi         the flat C ABI — the top of the native graph; animation session
+src/shell       Win32 window, render thread, present lab, hostfxr island host,
+                key router and live command table, marks, slideshow, file jobs,
+                Settings persistence
+src.managed/    C# interop and WinUI chrome (hosted as an island, not the app):
+                command bar, filmstrip, gallery, `?` sheet, Settings,
+                file drag/drop
+tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI, folder,
+                key router, file ops, slideshow, animation
 tools/          frametime harness, module-graph, hostable-core, and licence gates
 plan/           the spec
 ```
@@ -383,7 +512,7 @@ and nothing may depend on `shell`. That is what keeps the core testable with no 
 
 The parts worth knowing before touching anything:
 
-- **[plan/10-roadmap.md](plan/10-roadmap.md)** — 15 Windows PR-sized slices, then Milestone F
+- **[plan/10-roadmap.md](plan/10-roadmap.md)** — Windows release at PR 8, future updates in PRs 9–15, and Milestone F
   (Mac, PR 16–20), each with a verify line. Work is one slice; PR N+1 does not start until
   N's verify holds *and* PR 1's still does.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get

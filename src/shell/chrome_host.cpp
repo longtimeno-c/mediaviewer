@@ -221,6 +221,12 @@ expected chrome_host::load() noexcept {
   detach_transport_ = get_entry(L"DetachTransport");
   apply_settings_ = get_entry(L"ApplySettings");
   apply_rate_ = get_entry(L"ApplyRate");
+  begin_detach_ = get_entry(L"BeginDetach");
+  shutdown_for_exit_ = get_entry(L"ShutdownForExit");
+  set_command_table_ = get_entry(L"SetCommandTable");
+  show_popup_ = get_entry(L"ShowPopup");
+  navigate_gallery_ = get_entry(L"NavigateGallery");
+  scale_gallery_ = get_entry(L"ScaleGallery");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -236,6 +242,59 @@ expected chrome_host::load() noexcept {
 int chrome_host::probe() const noexcept {
   if (!probe_) return -1;
   return probe_(nullptr, 0);
+}
+
+std::int32_t chrome_host::probe_commands() const noexcept {
+  if (!probe_) return 0;
+  std::int32_t checksum = 0;
+  if (probe_(&checksum, sizeof(checksum)) <= 0) return 0;
+  return checksum;
+}
+
+void chrome_host::refresh_island_windows() noexcept {
+  for (auto& hwnd : island_hwnds_) hwnd = nullptr;
+  if (!loaded()) return;
+  if (!island_window_) island_window_ = get_entry(L"IslandWindow");
+  if (!island_window_) return;
+  struct island_window_args {
+    std::int32_t island;
+    std::int32_t reserved;
+    std::int64_t hwnd;
+  };
+  for (int island = static_cast<int>(focus_kind::command_bar);
+       island <= static_cast<int>(focus_kind::transport); ++island) {
+    island_window_args args{island, 0, 0};
+    if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
+      island_hwnds_[island] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
+    }
+  }
+}
+
+bool chrome_host::cursor_over_island() const noexcept {
+  POINT pt{};
+  if (!::GetCursorPos(&pt)) return false;
+  for (int island = static_cast<int>(focus_kind::command_bar);
+       island <= static_cast<int>(focus_kind::transport); ++island) {
+    const HWND root = island_hwnds_[island];
+    if (!root || !::IsWindowVisible(root)) continue;
+    RECT r{};
+    if (::GetWindowRect(root, &r) && ::PtInRect(&r, pt)) return true;
+  }
+  return false;
+}
+
+focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
+  if (focus && focus == canvas) return focus_kind::canvas;
+  for (int island = static_cast<int>(focus_kind::command_bar);
+       island <= static_cast<int>(focus_kind::transport); ++island) {
+    const HWND root = island_hwnds_[island];
+    if (root && focus && (focus == root || ::IsChild(root, focus))) {
+      return static_cast<focus_kind>(island);
+    }
+  }
+  // A flyout's own popup window, or anything unrecognised: never the canvas,
+  // so the router leaves traversal keys to XAML.
+  return focus_kind::command_bar;
 }
 
 expected chrome_host::attach(HWND parent, void* context, chrome_command_fn on_command,
@@ -277,6 +336,16 @@ void chrome_host::resize(int width, int height, std::uint32_t dpi) noexcept {
   (void)resize_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
+void chrome_host::park_bar(int client_height) noexcept {
+  if (!attached_ || !resize_) return;
+  chrome_resize_args args{};
+  args.width = 1;
+  args.height = 1;
+  args.dpi = 96;
+  args.y = client_height;
+  (void)resize_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
 expected chrome_host::attach_filmstrip(HWND parent, void* context, chrome_command_fn on_command,
                                        void* session, int width, int height,
                                        std::uint32_t dpi) noexcept {
@@ -302,7 +371,7 @@ expected chrome_host::attach_filmstrip(HWND parent, void* context, chrome_comman
     return err(status::internal);
   }
   filmstrip_attached_ = true;
-  filmstrip_visible_ = true;  // AttachFilmstrip builds it on screen
+  filmstrip_visible_ = false;  // parked, no content until the first show
   return {};
 }
 
@@ -478,6 +547,36 @@ void chrome_host::apply_rate(float rate) noexcept {
   (void)apply_rate_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
+void chrome_host::set_command_table(const std::string& utf8) noexcept {
+  if (!attached_ || !set_command_table_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8.data()));
+  args.length = static_cast<std::int32_t>(utf8.size());
+  (void)set_command_table_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {
+  if (!attached_ || !show_popup_) return;
+  chrome_popup_args args{};
+  args.kind = static_cast<std::int32_t>(kind);
+  args.mode_mask = mode_mask;
+  (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {
+  if (!attached_ || !navigate_gallery_) return;
+  // Two int32 fields, mirrored by ChromeGalleryNavigationArgs in the island.
+  std::int32_t args[] = {direction, index};
+  (void)navigate_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noexcept {
+  if (!attached_ || !scale_gallery_) return;
+  // Same two-int32 payload as gallery navigation: direction and selection.
+  std::int32_t args[] = {direction, index};
+  (void)scale_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
+}
+
 bool chrome_host::pre_translate(MSG* msg) noexcept {
   if (!attached_ || !pre_translate_ || !msg) return false;
   return pre_translate_(msg) != FALSE;
@@ -491,6 +590,12 @@ bool chrome_host::navigate_focus(bool reverse) noexcept {
 }
 
 void chrome_host::detach() noexcept {
+  // Before any island goes: a static FocusManager.GotFocus handler firing
+  // into a half-disposed island is a XAML fail-fast at exit.
+  if ((attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) &&
+      begin_detach_) {
+    (void)begin_detach_(nullptr, 0);
+  }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);
     transport_attached_ = false;
@@ -511,6 +616,16 @@ void chrome_host::detach() noexcept {
     attached_ = false;
   }
   pre_translate_ = nullptr;
+}
+
+void chrome_host::shutdown_for_exit() noexcept {
+  if (attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) detach();
+  if (!shutdown_for_exit_) return;
+  const int rc = shutdown_for_exit_(nullptr, 0);
+  // Not silent: a live source here means an island skipped detach, which is
+  // exactly the shape of the exit fail-fast this path exists to prevent.
+  if (rc == 1) MV_LOG_WARN("chrome: XAML left running at exit; an island was not detached");
+  else if (rc != 0) MV_LOG_WARN("chrome: ShutdownForExit failed (%d)", rc);
 }
 
 }  // namespace mv::shell

@@ -49,6 +49,7 @@ inline constexpr const char* required[] = {
     "fullrange_1080p_8bit.mp4",
     "av_transport.mp4",
     "soak_10min_1080p_hevc.mp4",
+    "soak_31min_1080p_hevc_aac.mp4",
 };
 
 // Walk up from the working directory: ctest runs from the build tree, and the

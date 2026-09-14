@@ -41,12 +41,8 @@ endif()
 
 project(mediaviewer
   VERSION 0.1.0
-  DESCRIPTION "Windows viewer for a real camera dump"
+  DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
-
-if(NOT WIN32)
-  message(FATAL_ERROR "MediaViewer is a Windows application. plan/01-decisions.md.")
-endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,6 +53,17 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (plan/09 CI configuration)" OFF)
+
+# PR 16: Apple Silicon present lab. Windows targets are not defined on Darwin.
+if(APPLE)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")
+  return()
+endif()
+if(NOT WIN32)
+  message(FATAL_ERROR
+    "MediaViewer v1 is a Windows application; macOS is Milestone F "
+    "(plan/15-platforms.md).")
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings and language settings — CLAUDE.md, "Native core (C++20)"
@@ -149,6 +156,10 @@ add_library(mv_gfx STATIC
   src/gfx/video_blit.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
+  src/gfx/metal_pacer.cpp
+  src/gfx/metal_pacer.h
+  src/gfx/present_policy.h
+  src/gfx/pace_json.h
 )
 target_link_libraries(mv_gfx
   PUBLIC mv_core
@@ -165,14 +176,22 @@ add_library(mv_io STATIC
   src/io/dir.h
   src/io/paths_win.cpp
   src/io/paths.h
+  src/io/collision_name.h
+  src/io/file_ops.h
+  src/io/file_ops_win.cpp
 )
-target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32)
+# ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
+target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
 add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
 # mv_codec — JPEG / PNG / BMP, magic-byte probe (plan/04)
 # ---------------------------------------------------------------------------
 find_package(JPEG REQUIRED)
+# PR 6: animated GIF / WebP (plan/12 2026-09-13, resequenced from PR 7).
+# giflib is MIT, libwebp BSD-3: both permissive, dynamic in the x64-windows triplet.
+find_package(GIF REQUIRED)
+find_package(WebP CONFIG REQUIRED)
 find_package(spng CONFIG REQUIRED)
 if(TARGET spng::spng)
   set(MV_SPNG_TARGET spng::spng)
@@ -188,13 +207,19 @@ add_library(mv_codec STATIC
   src/codec/jpeg.cpp
   src/codec/png.cpp
   src/codec/bmp.cpp
+  src/codec/anim.cpp
+  src/codec/anim.h
+  src/codec/apng.cpp
+  src/codec/apng.h
+  src/codec/gif.cpp
+  src/codec/webp.cpp
   src/codec/decode.h
   src/codec/format.h
   src/codec/raster.h
 )
 target_link_libraries(mv_codec
   PUBLIC mv_core
-  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux)
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
@@ -324,6 +349,17 @@ add_executable(mediaviewer_lab WIN32
   src/shell/av_soak.h
   src/shell/chrome_host.cpp
   src/shell/chrome_host.h
+  src/shell/command_table.cpp
+  src/shell/commands.h
+  src/shell/key_router.cpp
+  src/shell/key_router.h
+  src/shell/file_jobs.cpp
+  src/shell/file_jobs.h
+  src/shell/marks.h
+  src/shell/open_request.cpp
+  src/shell/open_request.h
+  src/shell/slideshow.h
+  src/shell/navigation.h
   src/shell/settings.cpp
   src/shell/settings.h
   src/shell/input_state.h
@@ -360,6 +396,10 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Filmstrip.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Video.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Commands.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Gallery.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
 )
 if(DOTNET_EXE)
@@ -430,7 +470,27 @@ if(MV_BUILD_TESTS)
     tests/test_transport.cpp
     tests/test_container_probe.cpp
     tests/test_corpus.cpp
+    tests/test_key_router.cpp
+    tests/test_key_router_review.cpp
+    tests/test_collision_name.cpp
+    tests/test_file_ops.cpp
+    tests/test_file_jobs.cpp
+    tests/test_folder_reselect.cpp
+    tests/test_marks.cpp
+    tests/test_open_request.cpp
+    tests/test_slideshow.cpp
+    tests/test_anim.cpp
+    tests/test_gif_webp.cpp
+    tests/test_animation_session.cpp
+    tests/test_navigation.cpp
+    tests/test_present_policy.cpp
+    tests/test_metal_pacer.cpp
+    tests/test_frametime_report.cpp
     src/shell/chrome_host.cpp
+    src/shell/command_table.cpp
+    src/shell/key_router.cpp
+    src/shell/file_jobs.cpp
+    src/shell/open_request.cpp
     src/shell/settings.cpp
     src/shell/app.manifest
   )
@@ -444,12 +504,26 @@ if(MV_BUILD_TESTS)
     mediaviewer_core
     JPEG::JPEG
     ${MV_SPNG_TARGET}
+    GIF::GIF
+    WebP::webp
+    WebP::webpdemux
+    WebP::libwebpmux  # tests only: WebPAnimEncoder builds animated fixtures
     lcms2::lcms2
     Catch2::Catch2WithMain
     ole32
     uuid
     mv_io)
-  target_include_directories(mv_tests PRIVATE src src/abi/include)
+  target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+
+  # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
+  # build while another session holds that file.
+  add_executable(mv_pr16_tests
+    tests/test_present_policy.cpp
+    tests/test_metal_pacer.cpp
+    tests/test_frametime_report.cpp
+  )
+  target_link_libraries(mv_pr16_tests PRIVATE mv_gfx Catch2::Catch2WithMain)
+  target_include_directories(mv_pr16_tests PRIVATE src tools)
 
   include(Catch)
   # A Catch2 SKIP exits 0, so ctest counted every corpus-gated video test as
@@ -459,7 +533,18 @@ if(MV_BUILD_TESTS)
   # them as Skipped instead, so the summary says how much was not proved.
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
-  catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  if(MV_ASAN)
+    # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
+    # Windows driver when the executable is ASan-instrumented. Keep the ASan
+    # job on the deterministic CPU/core suite; the normal MSVC and clang-cl
+    # jobs still run every [video][ring] hardware test.
+    catch_discover_tests(mv_tests TEST_SPEC "~[video][ring]"
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  else()
+    catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  endif()
+  catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()

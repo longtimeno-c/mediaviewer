@@ -1,5 +1,10 @@
 # 09 — Build, Test, Ship
 
+**Release scope (2026-09-14):** PR 8 packages the viewer delivered through PR 7. The Windows integration design
+below is future PR 15 work except features already delivered through PR 7 and the
+shared app icon, which moves to PR 8. Associations, default-app prompting, shell
+handlers, and tabs do not block the initial release.
+
 ## Toolchain
 
 - **CMake ≥ 3.28** + **vcpkg manifest mode** (`vcpkg.json` checked in with a pinned baseline —
@@ -116,13 +121,16 @@ and it does not belong in Git LFS at that size either.
   let an app write `UserChoice` itself — "set as default" means sending the user to
   Settings.
 
-  **Ask once, after the first successful still open**, not at install and not on an
-  empty first launch: "Make MediaViewer your default photo viewer?" Yes opens Default
-  Apps focused on this app. No / dismiss is remembered; never ask again. Settings
+  **Ask once, after the first successful still open**, not in the installer wizard and
+  not on an empty first launch: "Make MediaViewer your default photo viewer?" Yes opens
+  Default Apps focused on this app. No / dismiss is remembered; never ask again. Settings
   keeps the same action so a later change is one click. Skip the prompt if we are
   already the default. The prompt covers the **D5 still set** (JPEG, PNG, BMP, GIF,
   TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW) — not video. Video stays on "Open with" and
   a separate Settings row so we do not steal Movies & TV / VLC by surprise.
+
+  Each still `ProgId` has a `DefaultIcon` pointing at the app `.ico`. The same file is
+  the window, taskbar, Start Menu, and wizard icon ([13](13-updates-and-telemetry.md)).
 
   Do not stack this with the telemetry first-run screen ([13](13-updates-and-telemetry.md)).
   If both would fire, finish the telemetry choice first; the default-app ask waits
@@ -157,9 +165,17 @@ decoded pixels back over shared memory. This is what browsers do and it converts
 
 ## Distribution
 
-MSIX for the Store path and a plain signed installer (Inno Setup or WiX) for direct download.
-Code-sign both — SmartScreen will otherwise block every user's first run. Auto-update, crash
-reporting, and telemetry are designed in [13-updates-and-telemetry.md](13-updates-and-telemetry.md);
-the short version is a **per-user** install (so updates need no elevation), versioned folders (so
-locked codec DLLs are never overwritten in place), a signature-verified update manifest, and
-staged rollout gated on the crash-free rate.
+Direct download only. The app is GPL-2.0-or-later; Store MSIX is off the table
+([11-licensing.md](11-licensing.md)).
+
+**First install:** a signed **Inno Setup** wizard, per-user, no UAC, branded with the app
+icon. Licence page, Start Menu shortcut, finish page with Launch / GitHub / Licence.
+**Updates:** **Velopack**, silent, versioned folders, signed manifest. Do not re-open the
+wizard on update, and do not add WiX or a custom WinUI installer on top.
+
+Code-sign the wizard, the binaries, and the update manifest — SmartScreen will otherwise
+block every user's first run. Auto-update, crash reporting, telemetry, and the wizard
+pages are designed in [13-updates-and-telemetry.md](13-updates-and-telemetry.md); the
+short version is a **per-user** install (so updates need no elevation), versioned folders
+(so locked codec DLLs are never overwritten in place), a signature-verified update
+manifest, and staged rollout gated on the crash-free rate.

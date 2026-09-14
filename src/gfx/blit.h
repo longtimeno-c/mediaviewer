@@ -21,7 +21,26 @@ struct blit_params {
   // is above this; fit/pan are in this rect, not the full client.
   float origin_x = 0.0f;
   float origin_y = 0.0f;
+  // plan/16 view overlays, all in the same draw (no extra pass):
+  // 0 canvas, 1 gray, 2 white, 3 checkerboard (the alpha case).
+  int background = 0;
+  // Display-referred clipping blinkies; they animate on `time_seconds`.
+  bool clipping = false;
+  float time_seconds = 0.0f;
+  // One-pixel grid, drawn only at >= 400 % whatever this says.
+  bool pixel_grid = true;
 };
+
+// Linear colour the canvas clears to for `background`, so the gutters around
+// the image match what the shader draws beside it.
+[[nodiscard]] constexpr float background_clear(int background) noexcept {
+  switch (background) {
+    case 1: return 0.214f;  // sRGB 128
+    case 2: return 1.0f;
+    case 3: return 0.527f;  // checkerboard mid tone
+    default: return 0.018f;
+  }
+}
 
 class blitter {
  public:

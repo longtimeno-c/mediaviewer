@@ -1,8 +1,9 @@
 # MediaViewer — Plan Index
 
 A Windows viewer for a real camera dump — photos and video in one folder — that opens everything
-instantly, pans without a dropped frame, shows and edits metadata, does the everyday photo edits,
-and trims video without re-encoding. **v1 is Windows.** From PR 4 the native core is kept
+instantly and pans without a dropped frame. The first release ships the viewer through
+PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
+Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is kept
 hostable; macOS is Milestone F, a later host of the same core, not a UI-only port
 ([15-platforms.md](15-platforms.md), **D9**).
 
@@ -11,7 +12,8 @@ C++20 core behind a flat C ABI · FFmpeg +
 D3D11VA (video) · libjpeg-turbo / libspng / libwebp / libheif / LibRaw (images) · Exiv2 (metadata) ·
 SQLite (thumbnails) · CMake + vcpkg.
 
-**v1 is a viewer with light edits, on the camera-dump format set.** Not a develop module, not an
+**v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
+Light editing and trim follow in future updates. Not a develop module, not an
 NLE. See D4/D5 in [01-decisions.md](01-decisions.md).
 
 Read in order:
@@ -24,13 +26,13 @@ Read in order:
 | [04-image-pipeline.md](04-image-pipeline.md) | Decoders per format, tiling, caching, prefetch |
 | [05-video-pipeline.md](05-video-pipeline.md) | FFmpeg + D3D11VA, the A/V clock, seeking |
 | [06-metadata.md](06-metadata.md) | EXIF/IPTC/XMP/container read, and safe writing |
-| [07-photo-editing.md](07-photo-editing.md) | Non-destructive GPU edit stack, v1 vs v1.1 ops |
-| [08-video-editing.md](08-video-editing.md) | Two-path trim now, smart cut later |
+| [07-photo-editing.md](07-photo-editing.md) | Non-destructive GPU edit stack, first editing update vs later ops |
+| [08-video-editing.md](08-video-editing.md) | Post-v1 two-path trim, smart cut later |
 | [09-build-and-test.md](09-build-and-test.md) | CMake/vcpkg, perf regression harness, fuzzing |
-| [10-roadmap.md](10-roadmap.md) | 15 Windows PR-sized slices, then Milestone F (Mac, PR 16–20), each with a verify line |
+| [10-roadmap.md](10-roadmap.md) | Windows release at PR 8, future updates in PRs 9–15, and Milestone F (Mac, PR 16–20), each with a verify line |
 | [11-licensing.md](11-licensing.md) | FFmpeg LGPL, codec patents, the Exiv2 GPL trap — settle in PR 1 |
 | [12-decision-log.md](12-decision-log.md) | What changed, when, and why |
-| [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | Auto-update channel, crash reporting, the privacy line |
+| [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | First-install wizard, Velopack updates, crash reporting, the privacy line |
 | [14-abi.md](14-abi.md) | The C ABI between the C# shell and the C++ core — specified, not just named |
 | [15-platforms.md](15-platforms.md) | Windows v1, hostable core from PR 4, macOS as Milestone F — **D9**. Not a UI-only port. |
 | [16-commands.md](16-commands.md) | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. |

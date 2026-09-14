@@ -10,8 +10,11 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <string>
 
 #include "core/result.h"
+#include "shell/commands.h"
+#include "shell/key_router.h"
 
 namespace mv::shell {
 
@@ -36,7 +39,80 @@ enum chrome_command : int {
   chrome_cmd_toggle_filmstrip = 17,
   chrome_cmd_video_active = 18,      // arg != 0 while a clip is open: show the transport
   chrome_cmd_set_rate = 19,          // arg is the playback rate the dropdown picked
+  chrome_cmd_focus_changed = 20,     // arg is a focus_kind (key_router.h): which island, or text
+  // Island notifications added after the command table filled the low ids
+  // live above every command id, so the two ranges never meet.
+  chrome_cmd_popup = 1000,           // arg != 0 while a `?` / go-to / find flyout is up
+  chrome_cmd_rebind = 1001,          // packed: row | (key << 8) | (mods << 20)
+  chrome_cmd_reset_keys = 1002,      // restore the default map
 };
+
+static_assert(chrome_cmd_popup >= kCommandCount);
+
+// Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
+enum class chrome_popup : std::int32_t {
+  close = 0,
+  help = 1,
+  palette = 2,  // unused; keep the value so go_to / find / settings stay put
+  go_to = 3,
+  find = 4,
+  settings = 5,
+};
+
+struct chrome_popup_args {
+  std::int32_t kind;       // chrome_popup
+  std::int32_t mode_mask;  // `?` lists the bindings live in these modes
+};
+
+static_assert(sizeof(chrome_popup_args) == 8, "keep in sync with ChromePopupArgs");
+
+struct chrome_table_args {
+  std::uint64_t utf8;  // describe_commands() text, valid for the call only
+  std::int32_t length;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_table_args) == 16, "keep in sync with ChromeTableArgs");
+
+// Commands and island notifications share one id space (plan/16). These pin
+// the values the island already sends; commands.h reserves the notifications.
+static_assert(chrome_cmd_open == static_cast<int>(command_id::open));
+static_assert(chrome_cmd_fit == static_cast<int>(command_id::fit));
+static_assert(chrome_cmd_one_to_one == static_cast<int>(command_id::one_to_one));
+static_assert(chrome_cmd_zoom_in == static_cast<int>(command_id::zoom_in));
+static_assert(chrome_cmd_zoom_out == static_cast<int>(command_id::zoom_out));
+static_assert(chrome_cmd_zoom_preset == static_cast<int>(command_id::zoom_preset));
+static_assert(chrome_cmd_overlay == static_cast<int>(command_id::overlay));
+static_assert(chrome_cmd_select_item == static_cast<int>(command_id::select_item));
+static_assert(chrome_cmd_prev == static_cast<int>(command_id::prev));
+static_assert(chrome_cmd_next == static_cast<int>(command_id::next));
+static_assert(chrome_cmd_open_folder == static_cast<int>(command_id::open_folder));
+static_assert(chrome_cmd_toggle_gallery == static_cast<int>(command_id::toggle_gallery));
+static_assert(chrome_cmd_close_gallery == static_cast<int>(command_id::close_gallery));
+static_assert(chrome_cmd_gallery_activate == static_cast<int>(command_id::gallery_activate));
+static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle_filmstrip));
+static_assert(is_reserved_notification(chrome_cmd_set_settings));
+static_assert(is_reserved_notification(chrome_cmd_folder_ready));
+static_assert(is_reserved_notification(chrome_cmd_video_active));
+static_assert(is_reserved_notification(chrome_cmd_set_rate));
+static_assert(is_reserved_notification(chrome_cmd_focus_changed));
+
+// The island's Command constants, hashed in declaration order. IslandHost.Probe
+// computes the same over its own constants; a drift on either side fails
+// tests/test_chrome_host.cpp instead of a menu item that runs the wrong thing.
+[[nodiscard]] constexpr std::int32_t chrome_command_checksum() noexcept {
+  constexpr int ids[] = {
+      chrome_cmd_open, chrome_cmd_fit, chrome_cmd_one_to_one, chrome_cmd_zoom_in,
+      chrome_cmd_zoom_out, chrome_cmd_zoom_preset, chrome_cmd_overlay, chrome_cmd_select_item,
+      chrome_cmd_prev, chrome_cmd_next, chrome_cmd_open_folder, chrome_cmd_toggle_gallery,
+      chrome_cmd_close_gallery, chrome_cmd_gallery_activate, chrome_cmd_set_settings,
+      chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
+      chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
+      chrome_cmd_reset_keys};
+  std::uint32_t h = 17;
+  for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
+  return static_cast<std::int32_t>(h);
+}
 
 using chrome_command_fn = void (*)(void* context, int command, float arg);
 
@@ -158,6 +234,21 @@ class chrome_host {
   // rather than a window that never appears.
   [[nodiscard]] int probe() const noexcept;
 
+  // The island's command-id checksum (chrome_command_checksum), or 0.
+  [[nodiscard]] std::int32_t probe_commands() const noexcept;
+
+  // Caches each island's bridge HWND. Call after the islands attach; it is one
+  // managed hop per island, never per key.
+  void refresh_island_windows() noexcept;
+
+  // Which island holds `focus`. The canvas only when `focus` is the canvas
+  // window itself: a flyout's popup, a null or a foreign HWND is an island.
+  [[nodiscard]] focus_kind classify_focus(HWND focus, HWND canvas) const noexcept;
+
+  // True when the cursor is over a visible island's bridge window. Cheap
+  // (GetCursorPos + GetWindowRect); asked by a timer, never per mouse-move.
+  [[nodiscard]] bool cursor_over_island() const noexcept;
+
   // `parent` is the top-level canvas HWND. The island is MoveAndResize'd into
   // the 48 DIP strip so flyouts are siblings of the swapchain, not clipped by
   // a short child window.
@@ -165,6 +256,10 @@ class chrome_host {
                                 int width, int height, std::uint32_t dpi) noexcept;
 
   void resize(int width, int height, std::uint32_t dpi) noexcept;
+
+  // Fullscreen hides the command bar: move its bridge below the client area,
+  // the same "offscreen" the other strips park in. resize() brings it back.
+  void park_bar(int client_height) noexcept;
 
   [[nodiscard]] expected attach_filmstrip(HWND parent, void* context, chrome_command_fn on_command,
                                           void* session, int width, int height,
@@ -213,6 +308,14 @@ class chrome_host {
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
 
+  // The command table for `?` (describe_commands). Once at attach.
+  void set_command_table(const std::string& utf8) noexcept;
+
+  // Opens a flyout on the command bar, or closes any (chrome_popup::close).
+  void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
+  void navigate_gallery(std::int32_t direction, std::int32_t index) noexcept;
+  void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
+
   // True when the island consumed the message (do not Translate/Dispatch).
   [[nodiscard]] bool pre_translate(MSG* msg) noexcept;
 
@@ -220,6 +323,11 @@ class chrome_host {
   [[nodiscard]] bool navigate_focus(bool reverse) noexcept;
 
   void detach() noexcept;
+
+  // Process exit only, after detach(): disposes the XAML runtime for this
+  // thread (WindowsXamlManager, then the dispatcher queue). The chrome cannot
+  // attach again in this process afterwards.
+  void shutdown_for_exit() noexcept;
 
  private:
   [[nodiscard]] bool resolve_paths() noexcept;
@@ -251,12 +359,21 @@ class chrome_host {
   chrome_entry_fn detach_transport_ = nullptr;
   chrome_entry_fn apply_settings_ = nullptr;
   chrome_entry_fn apply_rate_ = nullptr;
+  chrome_entry_fn set_command_table_ = nullptr;
+  chrome_entry_fn show_popup_ = nullptr;
+  chrome_entry_fn navigate_gallery_ = nullptr;
+  chrome_entry_fn scale_gallery_ = nullptr;
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool filmstrip_attached_ = false;
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
+  chrome_entry_fn island_window_ = nullptr;
+  chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
+  chrome_entry_fn shutdown_for_exit_ = nullptr;
+  // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
+  HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

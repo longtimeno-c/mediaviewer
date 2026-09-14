@@ -13,17 +13,23 @@ This file is generated as part of the build and shown in the About dialog. It li
 **everything currently linked**, not everything the plan intends to link — entries are
 added by the PR that adds the dependency.
 
-## Currently linked (PR 3)
+## Currently linked (PR 6)
 
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
 | [Dear ImGui](https://github.com/ocornut/imgui) | 1.92.8 | MIT | Static | Present lab and the F3 debug overlay only. Never shipped chrome (D1). |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | Static, tests only | Not in a shipped binary. |
 | [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo) | 3.2.0 | IJG / BSD-3 | Dynamic (vcpkg x64-windows) | JPEG decode. |
-| [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. |
-| [Little CMS (lcms2)](https://github.com/mm2/Little-CMS) | 2.19.1 | MIT | Dynamic (vcpkg x64-windows) | ICC → linear Rec.709 → sRGB. No tone-map on display-referred sources (D6). |
+| [libspng](https://github.com/randy408/libspng) | 0.7.4 | BSD-2 | Dynamic (vcpkg x64-windows) | PNG decode. APNG frames are walked by MediaViewer and decoded by libspng. |
+| [giflib](https://sourceforge.net/projects/giflib/) | 6.1.3 | MIT | Dynamic (vcpkg x64-windows) | GIF decode, still and animated (PR 6). |
+| [libwebp](https://chromium.googlesource.com/webm/libwebp) | 1.6.0 | BSD-3 | Dynamic (vcpkg x64-windows) | WebP decode, still and animated, via libwebpdemux (PR 6, brought forward from PR 7). libwebpmux is linked into the test binary only. |
+| [Little CMS (lcms2)](https://github.com/mm2/Little-CMS) | 2.19.1 | MIT | Dynamic (vcpkg x64-windows) | ICC → sRGB for the v1 8-bit display path (precomputed LUT; sRGB-in-effect profiles copy through). No tone-map on display-referred sources (D6). |
+| libsharpyuv | 1.6.0 | BSD-3 | Dynamic (vcpkg x64-windows) | Transitive, via libwebp. |
 | zlib | 1.3.2 | Zlib | Dynamic | Transitive, via libspng. |
-| .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 15. |
+| [SQLite](https://sqlite.org) | 3.53.4 | Public domain | Dynamic (vcpkg x64-windows) | Thumbnail cache index (PR 4). Public domain, so linkage is not a licence question. |
+| **[FFmpeg](https://ffmpeg.org)** (avcodec, avformat, avfilter, avutil, swresample, swscale) | 9.0.1 | **LGPL-2.1+** | **Dynamic (DLL)** | Video demux and decode on D3D11VA (PR 5). Configured without `--enable-gpl` / `--enable-nonfree`; `tools/licence-check.ps1` reads the configure string from the built DLLs. |
+| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.4 | BSD-2 | Dynamic (vcpkg x64-windows) | Transitive, via FFmpeg: AV1 software fallback. |
+| .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 8. |
 | [Windows App SDK / WinUI 3](https://github.com/microsoft/WindowsAppSDK) | 2.4.0 | MIT | Framework package | Command bar chrome in a `DesktopWindowXamlSource` island. Not the canvas. Runtime must be installed on the machine (unpackaged). |
 | Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
 | [Cozette](https://github.com/the-moonwitch/Cozette) | 1.30.0 | MIT | Bundled TTF | Empty canvas and chrome labels. Bitmap terminal face (Proggy/Dina lineage); `CozetteVector.ttf` for WinUI. Licence: `assets/fonts/LICENSE-Cozette.txt`. |
@@ -35,16 +41,13 @@ is settled before it arrives, rather than discovered afterwards.
 
 | Component | Licence | Required linkage | Arrives in |
 |---|---|---|---|
-| SQLite | Public domain | Static | PR 4 |
-| DirectXTex | MIT | Static | PR 4 |
-| **FFmpeg** | **LGPL-2.1+** | **Dynamic (DLL)** | PR 5a |
+| DirectXTex | MIT | Static | Deferred from PR 4 until a thumbnail must be GPU-resident (plan/12 2026-09-07) |
 | libtiff | libtiff (BSD-like) | Static | PR 7 |
-| libwebp | BSD-3 | Static | PR 7 |
 | **libheif** | **LGPL-3** | **Dynamic (DLL)** | PR 7 |
 | **libde265** | **LGPL-3** | **Dynamic (DLL)** | PR 7 |
 | libavif / dav1d | BSD-2 | Static | PR 7 |
 | **LibRaw** | **LGPL-2.1** | **Dynamic (DLL)** | PR 7 |
-| **Exiv2** | **GPL-2.0** | Dynamic (DLL) | PR 8 |
+| **Exiv2** | **GPL-2.0** | Dynamic (DLL) | PR 9 |
 
 ### Rules the build enforces
 
@@ -65,4 +68,4 @@ is settled before it arrives, rather than discovered afterwards.
 For the LGPL components we ship as DLLs, and for the GPL components, the corresponding
 source is offered per release. The About dialog links to it. The exact FFmpeg version and
 configure line are published alongside each release — this is a release obligation, not a
-formality, and PR 15 is where the release pipeline that produces it lands.
+formality, and PR 8 is where the release pipeline that produces it lands.

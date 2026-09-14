@@ -3,8 +3,11 @@
 // (plan/04-image-pipeline.md).
 #pragma once
 
+#include <memory>
 #include <span>
+#include <vector>
 
+#include "codec/anim.h"
 #include "codec/raster.h"
 #include "core/job_system.h"
 #include "core/result.h"
@@ -34,6 +37,32 @@ struct jpeg_size {
                                         const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_bmp(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
+// GIF / WebP as a still: frame 0 only, composited on its canvas (PR 6). Later
+// frames are not decoded, so this is also the animation's first pixel (rule 3).
+[[nodiscard]] result<raster> decode_gif(std::span<const std::uint8_t> bytes,
+                                        const job_context* ctx = nullptr);
+[[nodiscard]] result<raster> decode_webp(std::span<const std::uint8_t> bytes,
+                                         const job_context* ctx = nullptr);
+
+// Frame-at-a-time animation (plan/04). The bytes are shared, not copied, and
+// kept alive by the source. `unsupported_format` when the file is known to be
+// a still (a one-frame WebP, a PNG without acTL); a one-frame GIF can only be
+// told apart by asking for a second frame.
+[[nodiscard]] result<std::unique_ptr<animation_source>> open_animation(
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes);
+[[nodiscard]] result<std::unique_ptr<animation_source>> open_gif_animation(
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes);
+[[nodiscard]] result<std::unique_ptr<animation_source>> open_webp_animation(
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes);
+[[nodiscard]] result<std::unique_ptr<animation_source>> open_apng_animation(
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes);
+
+// Tests and tools only: every frame of one play, within `max_bytes` of RGBA.
+// `unsupported_format` for a still or an animation over the budget. Playback
+// never calls this — it would be the full decode before the first frame.
+[[nodiscard]] result<animation_frames> decode_animation(
+    std::span<const std::uint8_t> bytes, const job_context* ctx = nullptr,
+    std::size_t max_bytes = kAnimationByteBudget);
 
 // RGBA8 in, JPEG bytes out. `quality` is 1–100. Used for the filmstrip cache
 // (plan/04 spec jpg512.1); not an export path.

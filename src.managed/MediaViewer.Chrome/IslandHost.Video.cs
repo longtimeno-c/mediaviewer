@@ -68,8 +68,9 @@ public static partial class IslandHost
                 StartDrain();
             }
 
-            _transport?.Dispose();
+            DisposeSource(ref _transport);
             _transport = new DesktopWindowXamlSource();
+            EnsureFocusHook();
             _transport.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Parked, with no content: nothing is open, and a full-client
             // default island would flash over the canvas on startup.
@@ -118,13 +119,9 @@ public static partial class IslandHost
         _ = sizeBytes;
         try
         {
+            UnhookFocus();
             StopVideoControls();
-            if (_transport is not null)
-            {
-                _transport.Content = null;
-                _transport.Dispose();
-                _transport = null;
-            }
+            DisposeSource(ref _transport);
             _seek = null;
             _play = null;
             _videoTime = null;
@@ -153,7 +150,7 @@ public static partial class IslandHost
         _seek.AddHandler(UIElement.PointerPressedEvent,
                          new PointerEventHandler((_, _) => { _draggingSeek = true; }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,
-                         new PointerEventHandler((_, _) => FinishSeek()), true);
+                         new PointerEventHandler((_, _) => { FinishSeek(); RestoreCanvasFocus(); }), true);
         _seek.PointerCaptureLost += (_, _) => FinishSeek();
         _seek.ValueChanged += (_, e) =>
         {

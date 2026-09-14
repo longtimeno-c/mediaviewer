@@ -25,6 +25,9 @@ struct input_snapshot {
   std::uint32_t height = 0;
   std::uint32_t chrome_height_px = 0;  // command-bar strip; overlay sits below it
   std::uint32_t chrome_bottom_px = 0;  // filmstrip strip; canvas sits above it
+  // Folder tree strip (plan/16: a left island, hidden by default). 0 until the
+  // tree lands (PR 8); the canvas maths already takes it.
+  std::uint32_t chrome_left_px = 0;
   float dpi_scale = 1.0f;
 
   float mouse_x = 0.0f;
@@ -47,9 +50,42 @@ struct input_snapshot {
   std::uint32_t zoom_out_seq = 0;         // -
   std::uint32_t zoom_preset_seq = 0;
   float zoom_preset = 1.0f;               // applied when zoom_preset_seq bumps
+  std::uint32_t fill_seq = 0;             // 4
+  // Keyboard pan, in steps. Cumulative like the wheel, so coalesced key-repeat
+  // publications lose none (plan/16: ↑ ↓ when zoomed, Shift+arrows).
+  std::int64_t pan_steps_x = 0;
+  std::int64_t pan_steps_y = 0;
+
+  // plan/16 view state. Levels, not edges: the render thread draws what these
+  // say, and redraws once when any of them changes.
+  std::uint8_t background = 0;  // B: 0 canvas, 1 gray, 2 white, 3 checkerboard
+  bool sticky_zoom = false;     // S
+  bool clipping = false;        // C
+  bool loupe = false;           // held Z
+  // Arrow nudges since Z went down, in steps of a twentieth of the canvas.
+  std::int32_t loupe_steps_x = 0;
+  std::int32_t loupe_steps_y = 0;
+  bool hold_previous = false;   // held backslash
+  bool info_overlay = false;    // O
+  // For the info overlay, filled by the UI thread when the selection changes.
+  // The render thread never calls into the folder model.
+  std::uint32_t item_index = 0;
+  std::uint32_t item_count = 0;
+  char item_name[260] = {};     // UTF-8, NUL-terminated
+  // Marks (plan/16): whether the current item is marked, and how many are.
+  bool item_marked = false;
+  std::uint32_t marked_count = 0;
+  // Slideshow `.`: the canvas goes black and idles; nothing is drawn over it.
+  bool blackout = false;
+  // An animated item: Space toggles play / pause, `,` `.` step (cumulative).
+  std::uint32_t anim_toggle_seq = 0;
+  std::int64_t anim_steps = 0;
 
   bool window_visible = true;
   bool window_active = true;
+  // Gallery jump: drop the still on the canvas so the previous item does not
+  // flash under the closing grid. Sequential A/D still keep the last frame.
+  std::uint32_t discard_media_seq = 0;
 
   // Bumped by the UI thread when the swapchain must be rebuilt: a resize, a DPI
   // change, or the window moving to a monitor on a different adapter.
@@ -66,6 +102,18 @@ struct input_cursor {
     const auto delta = s.wheel_total - wheel_total;
     wheel_total = s.wheel_total;
     return static_cast<float>(delta) / 120.0f;
+  }
+  std::int64_t pan_steps_x = 0;
+  std::int64_t pan_steps_y = 0;
+
+  // True when there are pan steps to apply; `dx` / `dy` are the steps since
+  // the last call.
+  bool consume_pan(const input_snapshot& s, std::int64_t& dx, std::int64_t& dy) noexcept {
+    dx = s.pan_steps_x - pan_steps_x;
+    dy = s.pan_steps_y - pan_steps_y;
+    pan_steps_x = s.pan_steps_x;
+    pan_steps_y = s.pan_steps_y;
+    return dx != 0 || dy != 0;
   }
   bool consume_activity(const input_snapshot& s) noexcept {
     const bool changed = s.activity_seq != activity_seq;

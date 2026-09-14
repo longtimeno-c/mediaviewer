@@ -13,6 +13,8 @@ enum class format_family : std::uint32_t {
   jpeg = 1,
   png = 2,
   bmp = 3,
+  gif = 4,   // GIF87a / GIF89a (PR 6, animated)
+  webp = 5,  // RIFF....WEBP (PR 6 pulled forward from PR 7: still + animated)
 };
 
 // First bytes only. A short or empty span is unknown, not corrupt.
@@ -23,6 +25,8 @@ enum class format_family : std::uint32_t {
     case format_family::jpeg: return "JPEG";
     case format_family::png:  return "PNG";
     case format_family::bmp:  return "BMP";
+    case format_family::gif:  return "GIF";
+    case format_family::webp: return "WebP";
     case format_family::unknown: return "unknown";
   }
   return "unknown";

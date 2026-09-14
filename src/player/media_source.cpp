@@ -48,7 +48,13 @@ class ffmpeg_media_source final : public media_source {
   void play() noexcept override {
     if (state_ == play_state::ended) seek(0, true);
     state_ = play_state::playing;
-    if (!preview_) pipe_->clock.set_paused(false);
+    // Seek parks the clock so a scrub cannot run away, and leaves preview_
+    // set so the first frame of the new generation shows immediately. Resume
+    // still has to start the clock: waiting for preview used to skip this
+    // unpause, and a stale video_done from the play-out that just ended then
+    // cancelled preview, so Space-at-end sought to 0 and sat there until
+    // pause+play (when preview_ was already clear).
+    pipe_->clock.set_paused(false);
   }
   void pause() noexcept override {
     pipe_->clock.set_paused(true); state_ = play_state::paused;
@@ -62,6 +68,11 @@ class ffmpeg_media_source final : public media_source {
     pipe_->audio_target_ns.store(target);
     pipe_->clock.seeked(target, generation);
     pipe_->seek_exact.store(exact);
+    // Drop the previous play-out's EOF before the demux thread sees the seek,
+    // or acquire_frame's preview path treats "nothing queued" as "nothing more
+    // coming" and leaves preview with the clock still paused.
+    pipe_->video_done.store(false);
+    pipe_->eof.store(false);
     pipe_->seek_request_ns.store(target);
     shown_pts_ = target; preview_ = true; step_before_ = -1;
   }
@@ -130,8 +141,12 @@ class ffmpeg_media_source final : public media_source {
           // Nothing queued and nothing more coming: a forward step off the last
           // frame. Leave preview rather than sitting in it, or needs_present()
           // stays true and the lab presents every vblank forever on a clip that
-          // has ended — the one thing PR 1's idle gate forbids.
-          if (pipe_->video_done.load()) preview_ = false;
+          // has ended — the one thing PR 1's idle gate forbids. A seek in
+          // flight still has its previous EOF; do not take that as this
+          // generation being done.
+          if (pipe_->video_done.load() && pipe_->seek_request_ns.load() < 0) {
+            preview_ = false;
+          }
           return nullptr;
         }
       }

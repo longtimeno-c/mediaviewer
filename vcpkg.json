@@ -23,18 +23,45 @@
   "dependencies": [
     {
       "name": "imgui",
-      "features": ["dx11-binding"]
+      "features": ["dx11-binding"],
+      "platform": "windows"
+    },
+    {
+      "name": "imgui",
+      "features": ["metal-binding"],
+      "platform": "osx"
     },
     {
       "name": "ffmpeg",
       "default-features": false,
-      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"]
+      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"],
+      "platform": "windows"
     },
     "catch2",
-    "libjpeg-turbo",
-    "libspng",
-    "lcms",
-    "sqlite3"
+    {
+      "name": "libjpeg-turbo",
+      "platform": "windows"
+    },
+    {
+      "name": "libspng",
+      "platform": "windows"
+    },
+    {
+      "name": "lcms",
+      "platform": "windows"
+    },
+    {
+      "name": "sqlite3",
+      "platform": "windows"
+    },
+    {
+      "name": "giflib",
+      "platform": "windows"
+    },
+    {
+      "name": "libwebp",
+      "platform": "windows"
+    }
   ],
 
   "$comment-v1-pending": {
@@ -42,7 +69,8 @@
     "PR 4": "landed: sqlite3. JPEG-512 thumbs in the island; DirectXTex/BC7 waits until a thumb must be GPU-resident (plan/12 2026-09-07).",
     "PR 4-deferred": ["directxtex"],
     "PR 5a": "landed: ffmpeg. NOTE the feature names here are the port's, not the plan's shorthand: `core` and `avutil` are NOT features of ffmpeg (avutil is always built), and passing them fails vcpkg outright. avfilter is required for PR 5c's atempo chain; dav1d is the AV1 software fallback (BSD-2, LGPL-compatible) for GPUs without an AV1 profile.",
-    "PR 7": ["tiff", "libwebp", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],
+    "PR 6": "landed: giflib (MIT) and libwebp (BSD-3, default features: libwebpmux is used by tests only) for animated GIF / WebP, brought forward from PR 7 (plan/12 2026-09-13).",
+    "PR 7": ["tiff", "libheif[hevc,av1]", "libavif[dav1d]", "libraw"],
     "PR 8": ["exiv2"],
     "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them, and it now reads the configure string embedded in the built avutil/avcodec DLLs rather than a log vcpkg deletes. Verified on the pinned baseline: the port configures --enable-d3d11va --enable-dxva2 --enable-shared with --disable-libx264 --disable-libx265 --disable-libfdk-aac and no --enable-gpl.",
     "note-exiv2": "GPL-2.0, and kept. The app is GPL-2.0-or-later (plan/11, settled in PR 1), so this is compliant rather than a trap.",

@@ -469,6 +469,194 @@ p99 frame time regresses more than 10 %, or any frame exceeds 2× the refresh in
 to the render thread with `extra_hw_frames` raised to cover the queue instead. Frame times with and
 without playback are reported as a comparison, not a pass/fail.
 
+## 2026-09-13 — First install is a short wizard; updates stay silent
+
+Not a D1–D9 reversal. The channel is still a signed per-user install with our own updater
+([13](13-updates-and-telemetry.md)). Store MSIX remains off (GPL). What was unspecified
+was the **first-run setup UX**: `plan/09` said Inno or WiX, PR 15 said Velopack, and
+neither named an icon or a GitHub link.
+
+**Call:**
+
+| | |
+|---|---|
+| **First install** | Inno Setup wizard, once. Welcome, GPL accept, LocalAppData location, Start Menu on / desktop off, progress, finish. |
+| **Updates** | Velopack, silent. Versioned folders, signed manifest, rollback. Never re-open the wizard. |
+| **Not in the wizard** | Default-app (PR 14, after first successful still), telemetry (in-app first-run, default off). |
+| **Icon** | One `.ico` (16–256) for wizard, Start, window, taskbar, and still `ProgId` `DefaultIcon`. Lands with PR 14 because Explorer needs it; PR 15 reuses it. |
+| **GitHub** | Finish-page link and About. `https://github.com/longtimeno-c/mediaviewer`. Do not auto-open. |
+| **About** | Version, GPL, GitHub, `THIRD-PARTY.md`, per-build LGPL source offer — PR 15. |
+
+Why a wizard rather than Velopack's one-shot setup.exe: first install is the only time a
+stranger meets the app, and a licence page + branded icon + Launch / GitHub / Licence
+finish is the clean experience. Why not WiX or a custom WinUI installer: WiX is MSI and
+fights per-user silent updates; a second GUI installer is another present path. Why not
+default-app or telemetry in the wizard: both are in-app, once, after the user has a
+reason to answer — and Windows will not let us write `UserChoice` anyway.
+
+## 2026-09-13 — Start PR 16 in parallel with Windows v1
+
+The owner asked to begin the macOS app (named as PR 16) while other agents continue
+PR 6 on Windows, on the grounds that the two will not clash.
+
+This is a **sequencing exception**, not a reversal of **D9**.
+
+| | Stands | Relaxed |
+|---|---|---|
+| **D9 product call** | v1 is Windows. Mac is a later host of the same core, not a UI port, not Qt/Flutter/Catalyst, not `AVPlayer`. Apple Silicon + macOS 14 only. | |
+| **"Do not start F until PR 15"** | | Relaxed for **PR 16 only**, because multiple agents can take the Metal present lab without pausing Windows PRs. That was the original objection to "Mac in v1" ([12](#2026-09-07--d9-macos-is-milestone-f-not-a-ui-port-and-not-dual-track-v1)). |
+| **PR 16 scope** | AppKit + `CAMetalLayer` + `CAMetalDisplayLink` + F3 + `frametime` on Darwin. **No SwiftUI.** | |
+| **PRs 17–20** | Still after the Windows features they host have landed in the core, and still not a dual-track of PRs 4–15. | |
+
+What this is not:
+
+- Not permission to implement VideoToolbox, Core Audio, SwiftUI chrome, Finder
+  UTIs, or Sparkle "while we're here." Those are PR 17–20.
+- Not permission to treat a Windows DXGI soak as the Mac gate.
+- Not a UI-only port. Chrome is written twice; present / hwdecode / audio / I/O
+  are backends.
+
+The Windows v1 surface that must exist on Mac — not as empty `*_mac.cpp` now, as
+real host work in F — is tabulated in [15-platforms.md](15-platforms.md#windows-v1-surface-on-mac).
+
+PR 6 agents keep the Windows tree. PR 16 adds Darwin files, a CMake Apple path,
+and portable present-policy tests that also run on Windows.
+
+## 2026-09-13 — Tear the chrome down before DestroyWindow (PR 6, fixing a PR 3-era exit crash)
+
+**What was measured.** Chrome-on lab exits fail-fast about one time in five:
+`0xC0000602` (`STATUS_FAIL_FAST_EXCEPTION`), faulting module `CoreUIComponents.dll`, the same
+offset every time. `main` `38cb56b`: 13 of 60 chrome-on `--soak 3` exits (5/30 + 8/30). The fix,
+`66303ec`: 0 of 30, same session, clean builds outside `%TEMP%` (MSB8029). `--no-chrome` exits did
+not crash. It surfaced during PR 6 because the PR 1 gate counts a non-zero lab exit as a failed
+measurement, so "PR 1's present-loop still holds" cannot pass while it happens.
+
+**Cause, as far as it is known.** Every exit path (close button, `Ctrl+W`, and the soak's own
+`PostMessage(WM_CLOSE)`) went `WM_CLOSE` → `DestroyWindow` → `WM_DESTROY` → dispose every
+`DesktopWindowXamlSource`. The islands were being disposed while their parent was already
+mid-destroy, with the XAML runtime left to process exit. There is no symbolised stack yet (no
+debugger on the development box); the fix is judged by the exit-crash rate, not by a stack.
+
+**Decision.** In `WM_CLOSE`, while the parent is whole: detach every island, pump pending messages
+once (bounded) so the dispatcher runs the dispose it queued, then `DestroyWindow`. The bar's
+`Detach` disposes `WindowsXamlManager` and shuts the `DispatcherQueueController` down after every
+source is gone. PR 6a's defensive changes stay (unhook the static focus handler first, never let an
+exception out of a XAML event, null a source before disposing it), but they were not the fix: 6a
+did not change the crash rate.
+
+**How it gets reversed.** If 30 chrome-on exits still show a fail-fast, this was not the cause.
+Next suspects are the render thread presenting into the DComp visual during detach, and the order
+of `WindowsXamlManager` against the `DispatcherQueueController`.
+
+## 2026-09-13 — On-canvas labels share the F3 overlay's ImGui draw list (PR 6)
+
+**The contradiction.** D1 ([01](01-decisions.md)) says ImGui is the present lab and the F3 overlay,
+never shipped chrome. [16](16-commands.md) allows the `O` info line to be "ImGui-style overlay or a
+tiny island". PR 6 draws `O` (file name, position, size, zoom), the loupe frame and the hold-`\`
+"previous" label with ImGui's foreground draw list, in the same present as the image.
+
+**Decision.** Those are canvas overlays, not chrome: a line of text and a rectangle drawn over the
+swapchain, with no focus, no input and no layout. D1's "never shipped chrome" is about the command
+bar, filmstrip, panes, palette and `?` — anything a user operates — and that stays WinUI. The `?`
+cheat sheet and `Ctrl+K` palette (PR 6) are XAML flyouts as [16](16-commands.md) specifies.
+
+**How it gets reversed.** If an on-canvas label needs interaction, localisation beyond the bundled
+font, or accessibility (screen reader) support, it moves to a tiny island. The EXIF exposure
+triangle in PR 8 is the likely trigger.
+
+## 2026-09-13 — giflib and libwebp land in PR 6, not PR 7; browser delay clamp
+
+**Why.** PR 6's roadmap entry and verify line already require animated GIF / APNG / WebP "on the
+QPC frame clock" with "animation timing matches a browser", but no GIF decoder existed and
+libwebp was listed for PR 7. The user approved bringing both into PR 6 (2026-09-13).
+
+**What moves.** giflib (MIT) and libwebp (BSD-3, with libwebpdemux) are linked in PR 6, dynamic in
+the vcpkg x64-windows triplet like the other decoders. Still WebP arrives with them. PR 7 keeps the
+broken-file corpus and the per-decoder fuzz harnesses for both. APNG needs no library: the
+animation chunks are walked in-tree and each frame goes back through libspng.
+
+**Delay clamp.** [04](04-image-pipeline.md) said "clamp `delay < 20 ms` to 100 ms". Chromium and
+Firefox treat **10 ms or less** as 100 ms. For GIF's centisecond delays the rules agree; for
+APNG / WebP millisecond delays of 11–19 ms they do not, and the verify line compares against a
+browser, so the browser rule wins. Tested at 0 / 10 / 11 / 19 / 20 ms.
+
+**How it gets reversed.** Only if PR 7's fuzzing finds either library unsafe to keep; then the
+format waits for a replacement rather than for PR 7's schedule.
+
+## 2026-09-13 — PR 6 chrome: typeahead from `/`, and two slips (folder tree, companions)
+
+**Typeahead.** [16](16-commands.md) said "with canvas or filmstrip focused, typing filters the
+listing". With the canvas focused, nearly every letter is already a command (A D F G B S C O T Z Q
+E J K L R), so bare typing there cannot also be typeahead. Decision: with the filmstrip or gallery
+focused, typing jumps by name (300 ms reset); from the canvas, `/` opens a find box. The palette
+(`Ctrl+K`) still finds any command by name.
+
+**Folder tree slips to PR 8.** [16](16-commands.md) allows it: the tree is a third island with its
+own virtualised directory model, and PR 8 already brings panes. What lands in PR 6, so the island
+maths is not retrofitted: the `folder_tree` command and its key (`Ctrl+Shift+E`, which beeps and
+logs until then), and `chrome_left_px` in the input snapshot and `usable_canvas`. `PageUp` /
+`PageDown` stay "skip ten" until the tree exists.
+
+**Companions-as-hidden slips to PR 7.** The PR 6 row names it, but the companions it hides are
+RAW+JPEG and Live Photo pairs, which need RAW and HEIC — PR 7's formats. PR 7 already owns pairing;
+hiding the companion is the same scan-time step, so it moves with it.
+
+**Wrap.** "Wrap at end of folder: on by default, toggle in settings" lands in PR 6: a `wrap`
+setting (default on) used by arrow keys, Space, `A` / `D` and the slideshow alike.
+
+## 2026-09-13 — PR 6: Settings screen remaps the live command table
+
+[16](16-commands.md) parked remap UI in v1.1 so the default map could be used in anger
+first. It has been: the Settings flyout was three toggles, and changing a key meant
+editing the table. Decision: Settings is its own screen (the command-bar island expands
+over the canvas). It holds view defaults (filmstrip, wrap, sticky zoom, background) and
+every binding. A clash swaps the two rows so nothing is left unbound. Persist diffs in
+`settings.ini` `[keys]`. `?` and the palette call `describe_commands()` on the live
+table, so they cannot drift. Reset writes the factory `kBindings` back.
+
+JSON import/export and named layouts stay v1.1.
+
+## 2026-09-13 — Theme, colour scheme, and a user font wait for v1.1
+
+Settings in PR 6 holds view defaults and the live keymap. A request to restyle the app —
+colour scheme, chrome + canvas + F3 overlay palette, and uploading a font file — is
+customisation of the *shell*, not of photos. It does not belong in the PR 6 verify line.
+
+**v1.1.** One palette drives WinUI chrome, the swapchain clear / empty-canvas copy, and
+the ImGui overlay, so a light theme cannot leave a dark F3 panel. Bundled CozetteVector
+stays the default. A user TTF/OTF is copied into `%LocalAppData%\MediaViewer\fonts` and
+loaded from there; if it fails to load, fall back. Nothing about that file leaves the
+machine (rule 6). PR 1's present-loop still has to hold after a font-atlas rebuild.
+
+**How it gets reversed.** Only if a high-contrast / accessibility requirement is a ship
+blocker for v1; then a system-theme follow (dark/light) without a font picker can land
+as a tiny Settings row, not a full custom palette.
+
+**How it gets reversed.** Only if the remap UI is unused and the extra island-resize
+path fights the present-loop gate; then drop the screen and keep the live table for a
+later PR.
+
+## 2026-09-13 — PR 6: tap `Q`/`E` skips; chrome focus is not a mode
+
+**Tap `Q`/`E` is skip, not speed.** [16](16-commands.md) had tap `Q`/`E` step the speed ladder
+and hold skim ±2 s. In use, those keys were the skip keys: a tap that waited for key-up to
+change speed felt like a dead key, and hold-to-skim was invisible if the tap never fired.
+Decision: tap `Q`/`E` skips ±2 s on the down edge (exact seek); hold still skims (non-exact,
+settle on release). Speed stays on the command-bar dropdown and on `Shift+Q` / `Shift+E`.
+`J`/`L` remain ±10 s.
+
+**Command-bar / transport / `?` flyout focus is not island mode.** The typeahead rule
+(filmstrip or gallery, plan/12 earlier today) was implemented as "any non-canvas focus
+swallows letter keys". Clicking Play, opening `?`, or a flyout popup HWND then made `A`/`D`
+(and `Q`/`E`) do nothing until the window was deactivated and the canvas HWND took focus
+again. Island mode is the filmstrip and the gallery. The command bar, the transport, and a
+cheat-sheet flyout keep the mode underneath; Esc still closes the flyout first via
+`popup_open`.
+
+**How it gets reversed.** Speed-on-tap only if a remap UI (v1.1) wants the FastStone-era
+pair back; do not silently steal skip. Do not put command-bar focus back in island mode to
+"make Tab easier" — that is how the keys die.
+
 ## Still open
 
 | Question | Blocks | Notes |
@@ -476,7 +664,100 @@ without playback are reported as a comparison, not a pass/fail.
 | ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
 | **A quiet machine for the D6 gate** | PR 1 verify (inherited) | Re-run 2026-09-07: one animated pass, one animated fail, idle contaminated by mouse. Still needs the self-hosted GPU runner [09](09-build-and-test.md). |
 | **PR 4's verify was never run** | PR 5 (inherited) | Three sessions held PR 4; the first hallucinated, the second committed `5eaa530` without reporting, the third confirmed it never owned the PR. Recorded state as of 2026-09-07: the 2000-JPEG scroll, the warm second-visit thumbnail check and the < 40 ms warm arrow-key number are **not run**; `tests/test_frametime.ps1` is **not run**; the plan edits in that commit to [10](10-roadmap.md) and [16](16-commands.md) are **unreviewed**. PR 5 is being built on top of this knowingly. |
+| **Settings writes on the UI thread** | PR 15 (settings) | `settings.ini` writes (filmstrip toggles since PR 4, F7 / F8 destinations since PR 6) run on the UI thread, against rule 1. They are small, and a destination is only written when it changes, but they belong on the I/O worker. Recorded 2026-09-13 so the rule does not erode quietly. |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 verify (inherited) | Command-bar island is in the tree. Filmstrip is a second island (PR 4). Present-loop + tab + flyout-over-canvas still unproven on a quiet GPU runner. Fallback unchanged: WinUI app with `SwapChainPanel` and an accepted composed frame. |
+
+## Gallery keyboard controls (2026-09-13)
+
+At the user's request, View now offers Full screen with F11 (F remains an alias).
+The visible gallery has its own navigation mode so W/S move by row and Enter opens
+the selected item in the normal viewer, even if focus remains on the canvas after G.
+The user's clarification removes Enter's fullscreen behavior: it leaves any active
+slideshow/fullscreen and restores the filmstrip according to the existing toggle.
+Slideshow moves from Enter to F5; Enter on the canvas has no fullscreen action.
+Gallery navigation letters take
+precedence over typeahead; text fields and filmstrip typeahead keep their bindings.
+
+The gallery also gains thumbnail resizing on +/− (= aliases +), as separate
+commands in the shared binding table for the concurrent Settings/remapping work.
+Existing command IDs and binding row positions are retained. The gallery's
+typeahead exception follows the resolved command so remapped resizing and
+navigation keys work. Thumbnail size is session-local, initially 152 DIP with
+24 DIP steps bounded to 80–344 DIP; resizing preserves selection and updates only
+realised tiles plus the uniform grid layout.
+
+## Settings focus and layout (2026-09-13)
+
+Settings owns keyboard input through XAML dispatch, including Escape. A false
+return from ContentPreTranslateMessage is not evidence that XAML declined a key;
+running viewer shortcuts at that point stole replacement keys before capture.
+Opening Settings releases viewer holds, sizes the island before measuring the
+screen, and focuses an actual control. The root follows the island viewport
+without toggling between a fixed 48 DIP height and full height. Shortcut buttons
+keep focus and scroll position while their labels update in place. Capture has
+an explicit prompt, Escape/Cancel, and consumes the captured key's repeats and
+release so Enter/Space cannot reactivate the button. Tab remains in Settings.
+
+## 2026-09-13 — Drop the Ctrl+K command palette
+
+**From.** PR 6 shipped a searchable command palette (`Ctrl+K` / `Ctrl+Shift+P`) as a
+XAML flyout over the command-bar island, filtering the live table so nothing had
+to be memorised.
+
+**To.** No palette. `?` lists the current mode's bindings; Settings type-to-filter
+finds a command to remap. The `palette` command id and `chrome_popup::palette`
+value stay as unused holes so later command ids and popup kinds do not shift.
+
+**Why.** A WinUI `TextBox` in that flyout fail-fasts (`Microsoft.UI.Xaml.dll`
+`0xC000027B`). A stand-in field still never sees keys that are already bindings,
+because the one native router handles them before the island — the filter
+ignored `O`, `F`, arrows, and every other mapped key. The owner dropped the
+feature rather than punch a second input path through the router.
+
+**How it gets reversed.** Only with a field that is not a WinUI `TextBox` *and*
+a router rule that, while the palette is open, sends printable keys to the
+filter the way Settings already does. Do not re-add `Ctrl+K` as a silent
+second `?`.
+
+## 2026-09-14 — Ship the PR 7 viewer in PR 8; defer additional features
+
+**Why.** The owner wants to run and ship the features available once the agents finish
+PR 7, then add the remaining features in future updates. Editing, metadata panes,
+trimming, and Windows shell integration must no longer delay the first release.
+
+**Call.** v1 is the Windows viewer through PR 7, packaged and shipped in PR 8.
+D4's light-edit requirement and D7's trim requirement move to post-v1; their technical
+designs stand. PR 7 and the inherited verification gates, including PR 1's present loop,
+are still required. This changes scope and sequencing, not completion status.
+
+| Former PR | Current PR | Slice |
+|---|---|---|
+| 15 | **8** | Package & ship the PR 1–7 viewer |
+| 8 | 9 | Metadata read + deferred folder tree |
+| 9 | 10 | Geometry edits + export |
+| 10 | 11 | Colour adjusts |
+| 11 | 12 | Narrow metadata writes |
+| 12 | 13 | Two-path trim |
+| 13 | 14 | Extract & remux |
+| 14 | 15 | Windows integration |
+
+PRs 1–7 and 16–20 keep their numbers. Milestone C becomes shipping (PR 8), D/E are
+future Windows updates, and F remains macOS. The existing PR 16 parallel-work exception
+stands; the Windows ship gate for the remaining Mac work is now PR 8. Earlier entries
+in this log retain their historical numbering; use this mapping for current work.
+The open UI-thread settings-write follow-up previously assigned to PR 15 (2026-09-13)
+now belongs to PR 8 release hardening.
+
+**Packaging stands alone.** Move the shared app icon to PR 8 (window, taskbar, wizard,
+shortcuts, About); PR 15 reuses it for associations. Inno Setup, Velopack, signing,
+About/licence/source offers, and default-off telemetry remain release work. Crash
+reporting stays in PR 7. Associations, default-app prompting, and Explorer handlers
+wait for PR 15; PR 8 uninstall checks cover what PR 8 actually installs.
+
+**Verify changes.** Install on a clean VM, launch and exercise the PR 1–7 viewer,
+check bundled formats, playback and inherited pacing, then verify updates, rollback,
+and uninstall. Crop, trim, and export are no longer first-release acceptance steps.
+Future feature PRs retain their own verify lines; no update version is promised for them.
 
 ## How to use this file
 
