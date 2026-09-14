@@ -243,6 +243,7 @@ add_library(mv_codec STATIC
   src/codec/heif.cpp
   src/codec/avif.cpp
   src/codec/raw.cpp
+  src/codec/raw_internal.h
   src/codec/os_decode_win.cpp
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
@@ -554,6 +555,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_raw.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
     tests/test_present_policy.cpp
@@ -561,6 +563,7 @@ if(MV_BUILD_TESTS)
     tests/test_frametime_report.cpp
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp
+    tests/test_tiff_ico.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp
@@ -583,6 +586,7 @@ if(MV_BUILD_TESTS)
     WebP::webp
     WebP::webpdemux
     WebP::libwebpmux  # tests only: WebPAnimEncoder builds animated fixtures
+    TIFF::TIFF        # tests only: in-memory TIFF fixtures (tests/fixtures_tiff_ico.h)
     lcms2::lcms2
     Catch2::Catch2WithMain
     ole32
@@ -608,7 +612,16 @@ if(MV_BUILD_TESTS)
   # them as Skipped instead, so the summary says how much was not proved.
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
-  catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  if(MV_ASAN)
+    # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
+    # Windows driver when the executable is ASan-instrumented. Keep the ASan
+    # job on the deterministic CPU/core suite; the normal MSVC and clang-cl
+    # jobs still run every [video][ring] hardware test.
+    catch_discover_tests(mv_tests TEST_SPEC "~[video][ring]"
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  else()
+    catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+  endif()
   catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   if(TARGET mv_chrome)

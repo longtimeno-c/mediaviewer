@@ -189,6 +189,10 @@ enum class command_id : std::uint16_t {
   open_settings,  // Ctrl+, and the Settings button: the settings screen
   gallery_larger,
   gallery_smaller,
+  // PR 7 pairs (plan/04, plan/16)
+  play_motion,  // `;`: play a Live Photo's motion once, back to the still
+  open_raw,     // show the RAW half of a RAW+JPEG stop (unbound by default)
+  open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
   count
 };
 
@@ -198,6 +202,16 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
   return id == 15 || id == 16 || id == 18 || id == 19 || id == 20;
 }
 
+// Ids that once were commands and are kept as holes so later ids keep their
+// wire values. 76 is the dropped Ctrl+K palette (plan/12 2026-09-13): no
+// command_info, no binding, never dispatched.
+[[nodiscard]] constexpr bool is_retired_command(int id) noexcept {
+  return id == static_cast<int>(command_id::palette);
+}
+
+// A row whose key is key::none is listed (Settings can give it one) but not
+// routed. Only commands plan/16 names without a key ship that way (PR 7: Open
+// RAW / Open JPEG, which plan/04 put in the dropped palette).
 struct binding {
   key k = key::none;
   std::uint8_t mods = mod_none;
@@ -212,7 +226,8 @@ struct command_info {
   command_id id = command_id::none;
   const char* name = "";  // palette label; unique
   // Island-only commands carry an argument (an index, a zoom factor) and have
-  // no key by design. Everything else must be bound.
+  // no key by design. A retired command may also keep a keyless entry so its
+  // wire id remains named without appearing in Settings or `?`.
   bool keyless = false;
 };
 

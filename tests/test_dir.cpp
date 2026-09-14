@@ -10,6 +10,7 @@
 
 #include "fixtures.h"
 #include "io/dir.h"
+#include "io/pairing.h"
 
 namespace {
 
@@ -77,4 +78,29 @@ TEST_CASE("list_still_files returns sorted jpeg/png/bmp names") {
 
   auto parent = mv::io::containing_dir(listed.value()[0].path_utf8);
   REQUIRE(parent);
+}
+
+TEST_CASE("companion files are never listed (plan/04)", "[io][dir][pairing]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"DSC_0001.JPG");
+  write_bmp(dir, L"DSC_0001.NEF");  // decode not needed to list or pair
+  for (const wchar_t* junk : {L"DSC_0001.xmp", L"DSC_0001.THM", L"IMG_0002.AAE", L"DSC_0001.WAV",
+                              L"Thumbs.db", L"desktop.ini", L".DS_Store", L"._DSC_0001.JPG"}) {
+    std::ofstream f(dir + L"\\" + junk, std::ios::binary);
+    f << "x";
+  }
+  write_bmp(dir, L"hidden.jpg");
+  REQUIRE(::SetFileAttributesW((dir + L"\\hidden.jpg").c_str(), FILE_ATTRIBUTE_HIDDEN));
+  write_bmp(dir, L"system.jpg");
+  REQUIRE(::SetFileAttributesW((dir + L"\\system.jpg").c_str(), FILE_ATTRIBUTE_SYSTEM));
+
+  auto listed = mv::io::list_still_files(utf8(dir));
+  REQUIRE(listed);
+  REQUIRE(listed->size() == 2);
+  REQUIRE(listed.value()[0].name_utf8 == "DSC_0001.JPG");
+  REQUIRE(listed.value()[1].name_utf8 == "DSC_0001.NEF");
+
+  const auto stops = mv::io::pair_listing(std::move(listed).value());
+  REQUIRE(stops.size() == 1);
+  REQUIRE(stops[0].kind == mv::io::pair_kind::raw_jpeg);
 }

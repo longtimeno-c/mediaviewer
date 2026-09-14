@@ -45,17 +45,20 @@ public static partial class IslandHost
             }
             var args = e;
             var deferral = args.GetDeferral();
-            _ = StartFileDragAsync(vm.Path, args, deferral);
+            _ = StartFileDragAsync(vm.Path, vm.PairPath, args, deferral);
         };
     }
 
+    // A paired stop drags both halves (PR 7), the same rule as copy / move.
     private static async System.Threading.Tasks.Task StartFileDragAsync(
-        string path, DragStartingEventArgs args, DragOperationDeferral deferral)
+        string path, string pairPath, DragStartingEventArgs args, DragOperationDeferral deferral)
     {
         try
         {
-            StorageFile file = await StorageFile.GetFileFromPathAsync(path);
-            args.Data.SetStorageItems(new[] { file });
+            var files = new List<IStorageItem> { await StorageFile.GetFileFromPathAsync(path) };
+            if (!string.IsNullOrEmpty(pairPath) && File.Exists(pairPath))
+                files.Add(await StorageFile.GetFileFromPathAsync(pairPath));
+            args.Data.SetStorageItems(files);
             args.Data.RequestedOperation = DataPackageOperation.Copy;
         }
         catch (Exception ex)

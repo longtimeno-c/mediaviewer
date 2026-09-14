@@ -1,5 +1,10 @@
 # 09 — Build, Test, Ship
 
+**Release scope (2026-09-14):** PR 8 packages the viewer delivered through PR 7. The Windows integration design
+below is future PR 15 work except features already delivered through PR 7 and the
+shared app icon, which moves to PR 8. Associations, default-app prompting, shell
+handlers, and tabs do not block the initial release.
+
 ## Toolchain
 
 - **CMake ≥ 3.28** + **vcpkg manifest mode** (`vcpkg.json` checked in with a pinned baseline —

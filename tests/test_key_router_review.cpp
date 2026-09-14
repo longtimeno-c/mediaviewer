@@ -28,6 +28,11 @@ TEST_CASE("table rows are well-formed", "[shell][commands][review]") {
   REQUIRE(rows.size() < 255);  // the router's index is uint8 row + 1
   for (const auto& b : rows) {
     INFO("key " << static_cast<int>(b.k) << " command " << static_cast<int>(b.command));
+    // PR 7: Open RAW / Open JPEG are the only rows that ship unbound.
+    if (b.k == key::none) {
+      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
+      continue;
+    }
     REQUIRE(static_cast<int>(b.k) > 0);
     REQUIRE(static_cast<int>(b.k) < kKeyCount);
     REQUIRE(b.mods < kModCombos);

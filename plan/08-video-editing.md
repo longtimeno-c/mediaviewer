@@ -1,5 +1,8 @@
 # 08 — Video Trimming & Light Editing
 
+**Release scope (2026-09-14):** Two-path trim is PR 13 and extract/remux is PR 14, both after the PR 8 viewer
+release. Smart cut follows those updates.
+
 Scope: trim/cut length, rotate, extract, convert. **Not** an NLE — no multi-track timeline, no
 transitions. Keep that boundary or the project never ships.
 
@@ -15,7 +18,7 @@ ffmpeg -ss <kf_in> -i in.mp4 -to <kf_out> -c copy -avoid_negative_ts make_zero o
 No re-encode, no quality loss, ~1 s for any file length. The UI must **show the keyframe grid on
 the timeline** so the snapping is visible and expected rather than surprising.
 
-### 2. Smart cut (frame-accurate, near-lossless) — **v1.1, not v1**
+### 2. Smart cut (frame-accurate, near-lossless) — **after the first trim update**
 
 A real differentiator and a join-artifact minefield: the head/tail encode must match the source's
 profile, level, GOP structure, and bitrate closely enough that the seam is invisible, and getting

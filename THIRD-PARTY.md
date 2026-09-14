@@ -30,7 +30,7 @@ added by the PR that adds the dependency.
 | **[FFmpeg](https://ffmpeg.org)** (avcodec, avformat, avfilter, avutil, swresample, swscale) | 9.0.1 | **LGPL-2.1+** | **Dynamic (DLL)** | Video demux and decode on D3D11VA (PR 5). Configured without `--enable-gpl` / `--enable-nonfree`; `tools/licence-check.ps1` reads the configure string from the built DLLs. |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.4 | BSD-2 | Dynamic (vcpkg x64-windows) | Transitive, via FFmpeg: AV1 software fallback. |
 | [Crashpad](https://chromium.googlesource.com/crashpad/crashpad) (client, util, mini_chromium base) | vcpkg 2026-07-02 | **Apache-2.0** (mini_chromium: BSD-3) | Client **static** in `mediaviewer_lab`; `crashpad_handler.exe` shipped as a **separate program** beside it | Out-of-process crash capture (PR 7, plan/13 Part 2). No upload URL; dumps are scrubbed locally before any send could be offered. **Licence note:** Apache-2.0 is compatible with GPL-3.0 but not GPL-2.0-only. MediaViewer is GPL-2.0-or-later, so a distributed binary that statically links the client is conveyed under GPL-3.0 terms — the same position libheif/libde265 (LGPL-3) already put us in. Recorded in plan/12 (2026-09-14). |
-| .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 15. |
+| .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 8. |
 | [Windows App SDK / WinUI 3](https://github.com/microsoft/WindowsAppSDK) | 2.4.0 | MIT | Framework package | Command bar chrome in a `DesktopWindowXamlSource` island. Not the canvas. Runtime must be installed on the machine (unpackaged). |
 | Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
 | [Cozette](https://github.com/the-moonwitch/Cozette) | 1.30.0 | MIT | Bundled TTF | Empty canvas and chrome labels. Bitmap terminal face (Proggy/Dina lineage); `CozetteVector.ttf` for WinUI. Licence: `assets/fonts/LICENSE-Cozette.txt`. |
@@ -48,7 +48,7 @@ is settled before it arrives, rather than discovered afterwards.
 | **libde265** | **LGPL-3** | **Dynamic (DLL)** | PR 7 |
 | libavif / dav1d | BSD-2 | Static | PR 7 |
 | **LibRaw** | **LGPL-2.1** | **Dynamic (DLL)** | PR 7 |
-| **Exiv2** | **GPL-2.0** | Dynamic (DLL) | PR 8 |
+| **Exiv2** | **GPL-2.0** | Dynamic (DLL) | PR 9 |
 
 ### Rules the build enforces
 
@@ -69,4 +69,4 @@ is settled before it arrives, rather than discovered afterwards.
 For the LGPL components we ship as DLLs, and for the GPL components, the corresponding
 source is offered per release. The About dialog links to it. The exact FFmpeg version and
 configure line are published alongside each release — this is a release obligation, not a
-formality, and PR 15 is where the release pipeline that produces it lands.
+formality, and PR 8 is where the release pipeline that produces it lands.

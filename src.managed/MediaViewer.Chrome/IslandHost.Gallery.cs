@@ -416,7 +416,7 @@ public static partial class IslandHost
                 Margin = new Thickness(0, 2, 0, 0),
             };
             var col = new StackPanel { Spacing = 2 };
-            col.Children.Add(image);
+            col.Children.Add(WithBadge(image, vm.Badge));
             col.Children.Add(name);
             var border = new Border
             {

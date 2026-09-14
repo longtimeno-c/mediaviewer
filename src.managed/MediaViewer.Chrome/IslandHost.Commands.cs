@@ -186,6 +186,9 @@ public static partial class IslandHost
         foreach (CommandRow row in CommandRows)
         {
             if (modeMask != 0 && (row.Modes & modeMask) == 0) continue;
+            // An unbound row (Open RAW / Open JPEG by default) is Settings-only:
+            // `?` lists what a key does.
+            if (row.Keys.Length == 0) continue;
             if (!byId.TryGetValue(row.Id, out CommandEntry? entry))
             {
                 entry = new CommandEntry { Id = row.Id, Name = row.Name, Keys = row.Keys };

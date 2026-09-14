@@ -47,6 +47,10 @@ project.lock.json
 # below to be reachable at all.
 tools/testmedia/*
 !tools/testmedia/generate.sh
+# PR 7 RAW samples: the fetcher and its (url, sha256, licence) manifest are
+# source; tools/testmedia/raw/ is not.
+!tools/testmedia/fetch-raw.ps1
+!tools/testmedia/raw-manifest.json
 
 # Local harness output. `--av-soak --csv` and the frame-time gate both write
 # reports next to wherever you ran them, and both keep getting picked up by a
@@ -59,3 +63,5 @@ soak.json
 # Scratch notes. Working files for a slice in progress, not the plan — the
 # plan is plan/.
 PR5UInotes.txt
+
+.claude/

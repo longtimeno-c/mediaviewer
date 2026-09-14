@@ -149,6 +149,9 @@ public sealed class MediaViewerSession : IDisposable
     public string FolderItemPath(uint index) => ReadFolderString(NativeMethods.mv_folder_item_path, index);
     public string FolderItemThumbPath(uint index) =>
         ReadFolderString(NativeMethods.mv_folder_item_thumb_path, index);
+    /// <summary>The other half of a paired stop (RAW, or a Live Photo's MOV); empty if unpaired.</summary>
+    public string FolderItemPairPath(uint index) =>
+        ReadFolderString(NativeMethods.mv_folder_item_pair_path, index);
 
     public ulong FolderSelect(uint index)
     {

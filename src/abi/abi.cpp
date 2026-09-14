@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -35,6 +36,7 @@
 #include "image/upload.h"
 #include "io/dir.h"
 #include "io/file.h"
+#include "io/pairing.h"
 #include "io/paths.h"
 
 // The enum values on both sides of the line must stay numerically identical.
@@ -56,6 +58,11 @@ static_assert(sizeof(mv_completion) == 40, "mv_completion layout is part of the 
 static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the ABI");
 static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the ABI");
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
+static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
+static_assert(static_cast<int>(mv::io::pair_kind::none) == MV_PAIR_NONE, "mv_pair_kind drift");
+static_assert(static_cast<int>(mv::io::pair_kind::raw_jpeg) == MV_PAIR_RAW_JPEG, "mv_pair_kind drift");
+static_assert(static_cast<int>(mv::io::pair_kind::live_photo) == MV_PAIR_LIVE_PHOTO,
+              "mv_pair_kind drift");
 
 namespace mv::abi {
 
@@ -132,12 +139,18 @@ struct mv_session {
   mv_image_info info{};
   HANDLE image_ready_event = nullptr;
 
+  // A navigation stop (PR 7). `path` is the primary — what thumbs, decode,
+  // prefetch and video detection use; `secondary_path` is the other half of a
+  // RAW+JPEG or Live Photo pair, empty when unpaired.
   struct folder_item {
     std::string name;
     std::string path;
     std::string thumb_path;
+    std::string secondary_path;
     std::uint64_t size = 0;
     std::int64_t mtime_unix = 0;
+    mv::io::pair_kind pair = mv::io::pair_kind::none;
+    bool primary_raw = false;
   };
   struct lru_slot {
     std::string path;
@@ -706,10 +719,13 @@ void submit_prefetch(mv_session* session, uint32_t index, mv::generation gen) {
   }
 }
 
-void apply_folder_list(mv_session* session, std::vector<mv::io::dir_entry> listed,
+// `listed` is already paired (plan/16 speed rule 4: pairing happens at scan,
+// never per next), so every folder_items entry is one arrow-key stop.
+void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> listed,
                        bool changed) {
   std::string want;
   std::string previous_path;
+  std::string previous_secondary;
   uint32_t previous_index = 0;
   {
     std::lock_guard lock(session->folder_mutex);
@@ -717,23 +733,29 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::dir_entry> liste
     previous_index = session->folder_selected;
     if (changed && previous_index < session->folder_items.size()) {
       previous_path = session->folder_items[previous_index].path;
+      previous_secondary = session->folder_items[previous_index].secondary_path;
     }
     session->folder_items.clear();
     session->folder_items.reserve(listed.size());
     for (auto& e : listed) {
       mv_session::folder_item it;
-      it.name = std::move(e.name_utf8);
-      it.path = std::move(e.path_utf8);
-      it.size = e.size;
-      it.mtime_unix = e.mtime_unix;
+      it.primary_raw = mv::io::is_raw_name(e.primary.name_utf8);
+      it.name = std::move(e.primary.name_utf8);
+      it.path = std::move(e.primary.path_utf8);
+      it.size = e.primary.size;
+      it.mtime_unix = e.primary.mtime_unix;
+      it.secondary_path = std::move(e.secondary.path_utf8);
+      it.pair = e.kind;
       session->folder_items.push_back(std::move(it));
     }
-    // A watcher refresh keeps the item the user is on (or lets the next one
-    // slide in if it was removed); only a fresh open goes to `want`.
-    session->folder_selected = mv::abi::reselect(
+    // A watcher refresh keeps the stop the user is on (or lets the next one
+    // slide in if it was removed); only a fresh open goes to `want`. Either
+    // half of a pair names its stop, so opening the .NEF selects JPEG+NEF.
+    session->folder_selected = mv::abi::reselect_pair(
         session->folder_items,
-        [](const mv_session::folder_item& it) -> const std::string& { return it.path; }, changed,
-        previous_path, previous_index, want);
+        [](const mv_session::folder_item& it) -> const std::string& { return it.path; },
+        [](const mv_session::folder_item& it) -> const std::string& { return it.secondary_path; },
+        changed, previous_path, previous_secondary, previous_index, want);
   }
   mv_completion c{};
   c.kind = changed ? MV_COMPLETION_FOLDER_CHANGED : MV_COMPLETION_FOLDER_READY;
@@ -778,7 +800,7 @@ void on_folder_watch(void* user) {
     session->folder_generation.fetch_add(1, std::memory_order_relaxed);
     auto listed = mv::io::list_still_files(dir);
     if (!listed) return listed.error();
-    apply_folder_list(session, std::move(listed).value(), true);
+    apply_folder_list(session, mv::io::pair_listing(std::move(listed).value()), true);
     return status::ok;
   });
 }
@@ -964,7 +986,10 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
     std::string owned(utf8_path);
     const auto correlation = mv::abi::current_correlation_id();
-    const mv::generation gen = session->jobs.bump_generation();
+    // Opening is submitted at the caller's current view generation. The host
+    // bumps first when this is a new view intent (plan/14); doing it again here
+    // made the managed OpenImage wrapper advance twice.
+    const mv::generation gen = session->jobs.current_generation();
 
     const mv::job_id id = session->jobs.submit_at(
         gen,
@@ -1087,10 +1112,14 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
     const mv::job_id id = session->jobs.submit_at(
         mv::background_generation,
         [session, dir](const mv::job_context&) -> status {
+          // Arm the watcher before listing: FOLDER_READY is pushed from inside
+          // apply_folder_list, and a file that landed between that completion
+          // and a later start() was never seen. A change during the scan now
+          // costs one extra refresh instead.
+          (void)session->watcher.start(dir, &on_folder_watch, session);
           auto listed = mv::io::list_still_files(dir);
           if (!listed) return listed.error();
-          apply_folder_list(session, std::move(listed).value(), false);
-          (void)session->watcher.start(dir, &on_folder_watch, session);
+          apply_folder_list(session, mv::io::pair_listing(std::move(listed).value()), false);
           return status::ok;
         },
         [session, correlation](mv::job_id id, mv::generation gen, status result) {
@@ -1128,9 +1157,10 @@ mv_status MV_CALL mv_folder_item_at(mv_session_t session, uint32_t index, mv_fol
     const auto& it = session->folder_items[index];
     mv_folder_item item{};
     item.index = index;
-    item.flags = index == session->folder_selected ? 1u : 0u;
+    item.flags = (index == session->folder_selected ? 1u : 0u) | (it.primary_raw ? 2u : 0u);
     item.size_bytes = it.size;
     item.mtime_unix = it.mtime_unix;
+    item.pair_kind = static_cast<uint32_t>(it.pair);
     *out_item = item;
     return status::ok;
   }));
@@ -1163,6 +1193,16 @@ mv_status MV_CALL mv_folder_item_thumb_path(mv_session_t session, uint32_t index
     std::lock_guard lock(session->folder_mutex);
     MV_REQUIRE(index < session->folder_items.size(), "index out of range");
     return copy_utf8(session->folder_items[index].thumb_path, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_item_pair_path(mv_session_t session, uint32_t index, char* utf8,
+                                           uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_item_pair_path", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_items.size(), "index out of range");
+    return copy_utf8(session->folder_items[index].secondary_path, utf8, cap, out_bytes);
   }));
 }
 
@@ -1236,6 +1276,11 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
 }
 
 mv_status MV_CALL mv_video_open(mv_session_t session, const char* path, uint64_t* job) {
+  // Unlike mv_image_open, the legacy video entry point owns the view-intent
+  // bump (its public contract promises that it does).
+  if (!valid(session) || !path || path[0] == '\0') return MV_ERR_INVALID_ARG;
+  const mv_status bumped = mv_session_bump_generation(session, nullptr);
+  if (bumped != MV_OK) return bumped;
   return mv_image_open(session, path, job);
 }
 mv_status MV_CALL mv_video_close(mv_session_t session) {
