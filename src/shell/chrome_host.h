@@ -45,6 +45,10 @@ enum chrome_command : int {
   chrome_cmd_popup = 1000,           // arg != 0 while a `?` / go-to / find flyout is up
   chrome_cmd_rebind = 1001,          // packed: row | (key << 8) | (mods << 20)
   chrome_cmd_reset_keys = 1002,      // restore the default map
+  // PR 8 updater. Chrome, not a command: no key, no row in `?` or Settings
+  // (plan/16 — an update affordance is chrome). arg 0: the user clicked
+  // "Update ready — restart"; arg 1: Update.exe is armed, close now.
+  chrome_cmd_update_restart = 1003,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -108,7 +112,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_close_gallery, chrome_cmd_gallery_activate, chrome_cmd_set_settings,
       chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
       chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
-      chrome_cmd_reset_keys};
+      chrome_cmd_reset_keys, chrome_cmd_update_restart};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -322,6 +326,15 @@ class chrome_host {
   // Tab / Shift+Tab into the island. True if the island took focus.
   [[nodiscard]] bool navigate_focus(bool reverse) noexcept;
 
+  // PR 8 updater. Hands the restart arguments (NUL-separated UTF-16) to the
+  // managed updater, which arms Update.exe off the UI thread and then posts
+  // chrome_cmd_update_restart(1). False if the entry is missing.
+  bool request_update_restart(const std::wstring& args_blob) noexcept;
+
+  // After the message loop (window gone): a staged update is applied once this
+  // process exits. No restart. No-op in a dev build.
+  void updater_exit() noexcept;
+
   void detach() noexcept;
 
   // Process exit only, after detach(): disposes the XAML runtime for this
@@ -363,6 +376,8 @@ class chrome_host {
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
+  chrome_entry_fn update_restart_ = nullptr;
+  chrome_entry_fn updater_exit_ = nullptr;
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool filmstrip_attached_ = false;

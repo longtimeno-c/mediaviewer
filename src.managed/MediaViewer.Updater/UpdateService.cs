@@ -192,7 +192,7 @@ public sealed class UpdateService
         }
 
         VelopackAsset target = info.TargetFullRelease;
-        if (_staged is not null && _staged.Version == target.Version)
+        if (_staged is not null && _staged.Version.ToString() == target.Version.ToString())
         {
             SetStatus(Status with { Phase = UpdatePhase.Ready });
             return;

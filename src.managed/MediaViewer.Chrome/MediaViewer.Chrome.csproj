@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MediaViewer.Interop\MediaViewer.Interop.csproj" />
+    <ProjectReference Include="..\MediaViewer.Updater\MediaViewer.Updater.csproj" />
   </ItemGroup>
 
   <ItemGroup>
