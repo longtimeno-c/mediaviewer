@@ -13,10 +13,14 @@
 # codec/crash_test_hook.cpp looks for in the first 64 KB. That is a corrupted
 # camera file in the ordinary sense.
 #
-# Without -Source: synthesises a small uncompressed DNG-flavoured TIFF
-# (DNGVersion tag, 8-bit RGB strips) whose pixels are a distinctive repeating
-# pattern, so the dump scan can also look for pixel data. The marker sits in
-# ImageDescription. The pixel patterns to scan for are printed.
+# Without -Source: the pixel-data check. Writes two uncompressed BMPs whose
+# pixels are a distinctive repeating pattern (probe is by magic bytes, so the
+# .dng name does not matter):
+#   SECRET_COMPANION_canary.bmp        no marker: opens, decodes to RGBA, stays live
+#   SECRET_FILENAME_canary_7Q3.dng     marker in its first row: crashes on decode
+# Open the companion; neighbour prefetch decodes the canary and crashes while
+# the companion's decoded pixels are in process memory. The byte patterns to
+# scan for (file BGR and decoded RGBA) are printed.
 #
 # The hook is inert unless MV_CRASH_TEST=decode is set in the app's
 # environment. Exit 0 on success.
@@ -53,67 +57,43 @@ if ($Source) {
     exit 0
 }
 
+
 # --- synthesise ---------------------------------------------------------------
-$ms = New-Object IO.MemoryStream
-$w = New-Object IO.BinaryWriter($ms)
-$desc = [Text.Encoding]::ASCII.GetBytes('MV-DELIBERATE-CRASH synthetic canary') + [byte]0
-$pixelBytes = $Width * $Height * 3
-
-$entries = @(
-    # tag, type, count, value-or-offset placeholder
-    @(254, 4, 1, 0),                 # NewSubfileType
-    @(256, 4, 1, $Width),
-    @(257, 4, 1, $Height),
-    @(258, 3, 3, 'BPS'),             # BitsPerSample 8,8,8
-    @(259, 3, 1, 1),                 # Compression none
-    @(262, 3, 1, 2),                 # RGB
-    @(270, 2, $desc.Length, 'DESC'), # ImageDescription (marker)
-    @(273, 4, 1, 'PIX'),             # StripOffsets
-    @(277, 3, 1, 3),                 # SamplesPerPixel
-    @(278, 4, 1, $Height),           # RowsPerStrip
-    @(279, 4, 1, $pixelBytes),       # StripByteCounts
-    @(50706, 1, 4, 0x00040101)       # DNGVersion 1.4.0.0 (bytes 1,4,0,0)
-)
-$ifdOffset = 8
-$ifdSize = 2 + 12 * $entries.Count + 4
-$bpsOffset = $ifdOffset + $ifdSize
-$descOffset = $bpsOffset + 6
-$pixOffset = $descOffset + $desc.Length
-if ($pixOffset % 2) { $pixOffset++ }
-
-$w.Write([byte[]](0x49, 0x49, 42, 0)); $w.Write([uint32]$ifdOffset)
-$w.Write([uint16]$entries.Count)
-foreach ($e in $entries) {
-    $w.Write([uint16]$e[0]); $w.Write([uint16]$e[1]); $w.Write([uint32]$e[2])
-    switch ($e[3]) {
-        'BPS'  { $w.Write([uint32]$bpsOffset) }
-        'DESC' { $w.Write([uint32]$descOffset) }
-        'PIX'  { $w.Write([uint32]$pixOffset) }
-        default {
-            if ($e[1] -eq 3 -and $e[2] -eq 1) { $w.Write([uint16]$e[3]); $w.Write([uint16]0) }
-            elseif ($e[0] -eq 50706) { $w.Write([byte[]](1, 4, 0, 0)) }
-            else { $w.Write([uint32]$e[3]) }
+function New-PatternBmp([int]$w, [int]$h, [bool]$withMarker) {
+    $stride = (($w * 3) + 3) -band -4
+    $pixOff = 54
+    $size = $pixOff + $stride * $h
+    $b = New-Object byte[] $size
+    $b[0] = 0x42; $b[1] = 0x4D
+    [BitConverter]::GetBytes([uint32]$size).CopyTo($b, 2)
+    [BitConverter]::GetBytes([uint32]$pixOff).CopyTo($b, 10)
+    [BitConverter]::GetBytes([uint32]40).CopyTo($b, 14)
+    [BitConverter]::GetBytes([int32]$w).CopyTo($b, 18)
+    [BitConverter]::GetBytes([int32]$h).CopyTo($b, 22)
+    [BitConverter]::GetBytes([uint16]1).CopyTo($b, 26)
+    [BitConverter]::GetBytes([uint16]24).CopyTo($b, 28)
+    for ($y = 0; $y -lt $h; $y++) {
+        $row = $pixOff + $y * $stride
+        for ($x = 0; $x -lt $w; $x++) {
+            $p = ($x % 8) * 3
+            $b[$row + $x * 3] = $palette[$p + 2]      # BMP stores B,G,R
+            $b[$row + $x * 3 + 1] = $palette[$p + 1]
+            $b[$row + $x * 3 + 2] = $palette[$p]
         }
     }
+    if ($withMarker) { [Array]::Copy($marker, 0, $b, $pixOff, $marker.Length) }
+    return , $b
 }
-$w.Write([uint32]0)
-$w.Write([uint16]8); $w.Write([uint16]8); $w.Write([uint16]8)
-$w.Write($desc)
-while ($ms.Position -lt $pixOffset) { $w.Write([byte]0) }
-$row = New-Object byte[] ($Width * 3)
-for ($x = 0; $x -lt $Width; $x++) {
-    $p = ($x % 8) * 3
-    $row[$x * 3] = $palette[$p]; $row[$x * 3 + 1] = $palette[$p + 1]; $row[$x * 3 + 2] = $palette[$p + 2]
-}
-for ($y = 0; $y -lt $Height; $y++) { $w.Write($row) }
-$w.Flush()
-[IO.File]::WriteAllBytes($out, $ms.ToArray())
 
-$rgb = ($palette | ForEach-Object { '{0:X2}' -f $_ }) -join ''
-$rgba = ''
+[IO.File]::WriteAllBytes((Join-Path $folder 'SECRET_COMPANION_canary.bmp'), (New-PatternBmp $Width $Height $false))
+[IO.File]::WriteAllBytes($out, (New-PatternBmp $Width $Height $true))
+
+$bgr = ''; $rgba = ''
 for ($i = 0; $i -lt 8; $i++) {
+    $bgr += '{2:X2}{1:X2}{0:X2}' -f $palette[3 * $i], $palette[3 * $i + 1], $palette[3 * $i + 2]
     $rgba += '{0:X2}{1:X2}{2:X2}FF' -f $palette[3 * $i], $palette[3 * $i + 1], $palette[3 * $i + 2]
 }
-Write-Host "wrote $out ($Width x $Height synthetic DNG, marker in ImageDescription)"
-Write-Host "pixel pattern RGB : $rgb"
-Write-Host "pixel pattern RGBA: $rgba"
+Write-Host "wrote $out and SECRET_COMPANION_canary.bmp ($Width x $Height, BMP bytes)"
+Write-Host "pixel pattern file BGR   : $bgr"
+Write-Host "pixel pattern decoded RGBA: $rgba"
+Write-Host "open the companion (MV_CRASH_TEST=decode); prefetch crashes on the canary"

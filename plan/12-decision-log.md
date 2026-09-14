@@ -776,6 +776,42 @@ check bundled formats, playback and inherited pacing, then verify updates, rollb
 and uninstall. Crop, trim, and export are no longer first-release acceptance steps.
 Future feature PRs retain their own verify lines; no update version is promised for them.
 
+## 2026-09-14 — PR 7 crash reporting: a post-crash scrub instead of an arena-tagged heap filter
+
+**Why.** plan/13 asked for a minidump filter that excludes heap regions tagged at the arena
+level. Crashpad's Windows handler has no filter hook, the stock `crashpad_handler.exe`
+cannot be extended without forking it, and tagging would have required every PR 7 decoder
+to allocate `raster::rgba` through a custom allocator. Measured on a real crash, the
+unscrubbed dump did **not** contain heap pixels (indirect memory gathering is off), but it
+did contain the canary file's full path (PEB command line, UTF-16) and the username
+(module list and PDB paths), 135 hits.
+
+**Call.**
+- Indirect memory gathering off, WER forwarding off, no extra ranges.
+- The app rewrites every finished dump in place on its next launch, before any send is
+  possible (`src/shell/minidump_scrub`):
+  - Zero every captured byte outside a thread stack: PEB, process parameters, TEBs, and
+    the 512 bytes Crashpad takes around each register.
+  - Mask drive/UNC paths (modules keep their layout, minus the profile name), bare media
+    filenames, and the username/computer name, in UTF-8 and UTF-16LE.
+- Heap pixels are excluded structurally, not by tag.
+- The handler **never** receives an upload URL, because it would upload before the scrub.
+  PR 8 (formerly 15) must upload from the app after scrubbing.
+
+**Residual risk.** A folder name with no drive root and no media extension, a filename stem
+without its extension, or pixel rows in a decoder's stack-local array can still survive
+on a live stack frame. `tools/minidump-scan.ps1` is the check.
+
+**Licence.** The Crashpad client is Apache-2.0 and statically linked. Apache-2.0 is
+GPL-3-compatible, not GPL-2-only, so distributed binaries are conveyed under GPL-3.0 terms
+(the "or later" permits it; LGPL-3 libheif/libde265 already implied the same).
+**Open for the owner:** confirm, or move the client out of the lab binary.
+
+**Deferred.** The consent dialog: `[crash] consent` / `upload_url` and the
+ask-only-with-an-endpoint check exist, but no endpoint exists yet, so there is nothing
+to ask. It lands with the upload path in PR 8 and must not stack with other first-run
+prompts. Crashes inside the OS-codec probe (before the bundled dispatch) are not annotated.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

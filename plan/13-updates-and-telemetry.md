@@ -228,6 +228,24 @@ block being parsed.
 - **Ask before the first send**, plainly, once. "MediaViewer crashed. Send a report? It contains
   technical details about the crash, not your photos." — with a link to exactly what's in it.
 
+### As built in PR 7
+
+See [12-decision-log.md](12-decision-log.md) 2026-09-14 for why this replaces the arena-tagged
+filter.
+
+- **Capture.** `crashpad_handler.exe` beside the exe, started asynchronously (about 3 ms on the
+  UI thread). Database: `%LocalAppData%\MediaViewer\Crashes`. No URL, indirect memory off,
+  WER forwarding off.
+- **Annotations.** Eight `mv_decode_N` slots (format, decoder/version, correlation id, optional
+  geometry) plus `mv_last_call_cid`. Built from literals and integers inside the core.
+- **Scrub.** On the next launch, before any send:
+  - every captured byte outside a thread stack is zeroed;
+  - paths, media filenames and the username/computer name are masked, same length.
+- **Managed.** Unhandled exceptions write a scrubbed text report to `Crashes\managed\`.
+- **Verify.** `tools/make-crash-raw.ps1`, then `MV_CRASH_TEST=decode`, then
+  `tools/minidump-scan.ps1` (procedure in README).
+- **Upload (PR 8).** Must read scrubbed dumps from the database. Never give the handler a URL.
+
 ---
 
 # Part 3 — Telemetry

@@ -249,6 +249,38 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
 ```
 
+### Crash reports (PR 7)
+
+Native crashes are captured out-of-process by Crashpad into
+`%LocalAppData%\MediaViewer\Crashes`. Nothing is uploaded. On the next launch the app
+scrubs each dump: memory outside thread stacks is zeroed, and paths, media filenames and
+your username are masked. Managed exceptions go to `Crashes\managed\`.
+[plan/13](plan/13-updates-and-telemetry.md) has the details.
+
+The PR 7 verify is "a deliberately-corrupted RAW produces a minidump containing no path,
+filename, or pixel data". The crash hook only fires when **both** the environment variable
+and the marker in the file are present.
+
+```powershell
+# 1. a marked COPY of a real RAW, in PRIVATE_FOLDER_canary\SECRET_FILENAME_canary_7Q3.dng
+.\tools\make-crash-raw.ps1 -Source tools\testmedia\raw\pentax_k50.dng
+
+# 2. crash on it
+$env:MV_CRASH_TEST = 'decode'
+.\build\bin\Release\mediaviewer_lab.exe --open "$env:LOCALAPPDATA\Temp\mv-crash-canary\PRIVATE_FOLDER_canary\SECRET_FILENAME_canary_7Q3.dng"
+Remove-Item Env:MV_CRASH_TEST
+
+# 3. scrub: relaunch the app (it scrubs on start), or run the standalone tool
+.\build\bin\Release\mv_minidump_scrub.exe <in.dmp> <out.dmp>
+
+# 4. scan; exit 0 = PASS
+.\tools\minidump-scan.ps1 -Dump <out.dmp> -Forbidden '<canary path>','SECRET_FILENAME_canary_7Q3','PRIVATE_FOLDER_canary',$env:USERNAME
+
+# pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
+# prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
+# crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
+```
+
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
 within 1 ms/min, with no position discontinuities and no host-clock gaps; 1 is a
 real failure, 3 means the clip ended early, 4 means the run was too short to
