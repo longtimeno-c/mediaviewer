@@ -6,9 +6,11 @@
 #pragma once
 
 #include <memory>
+#include <span>
 
 #include "core/status.h"
 #include "image/gpu_image.h"
+#include "image/tiles.h"
 #include "player/video_source.h"
 #include "mediaviewer/mediaviewer.h"
 
@@ -29,6 +31,14 @@ MV_API void detach_device(mv_session_t session);
 // Caller owns it until release_gpu_image. Wait-free: no mutex.
 [[nodiscard]] MV_API image::gpu_image* take_ready_image(mv_session_t session);
 MV_API void release_gpu_image(image::gpu_image* image);
+
+// PR 7 tiled pyramid (plan/04), for an image whose `tiles` is set. Render
+// thread only, never blocks: marks and requests what `view` needs, evicts over
+// budget, and returns the ready tiles to draw coarse to fine (valid until the
+// next call for this image). Empty for an untiled image.
+[[nodiscard]] MV_API std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,
+                                                                 const image::tile_view& view) noexcept;
+[[nodiscard]] MV_API image::tile_stats tiles_stats(const image::gpu_image& image) noexcept;
 
 // PR 6 animated GIF / APNG / WebP (plan/04). Native-only like poll_video: not
 // in the C ABI, not P/Invoked (plan/16: no new hot-path ABI). The render thread

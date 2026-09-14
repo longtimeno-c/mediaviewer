@@ -189,6 +189,10 @@ expected present_lab::rebuild_device() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  fade_from_.reset();
+  refine_base_.reset();
+  fade_.cancel();
+  tile_draws_ = {};
   anim_frame_.reset();
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
@@ -369,6 +373,9 @@ void present_lab::render_thread_main() noexcept {
       seen_discard_seq_ = snapshot.discard_media_seq;
       current_image_.reset();
       previous_image_.reset();
+      fade_from_.reset();
+      refine_base_.reset();
+      fade_.cancel();
       anim_frame_.reset();
       current_video_ = {};
       redraw = true;
@@ -383,36 +390,96 @@ void present_lab::render_thread_main() noexcept {
           const float old_w = media_width();
           const float old_h = media_height();
           const bool had_media = old_w > 0.0f && old_h > 0.0f;
-          current_video_ = {};
-          // Hold-previous keeps the last *different* still; a re-publish of
-          // the same texture is not an advance.
-          if (current_image_ && current_image_->texture.Get() != ready->texture.Get()) {
-            previous_image_ = std::move(current_image_);
-            ++previous_image_changes_;
-          }
-          // A playing animation is not reset here: a re-publish of the same
-          // item (a refinement, an LRU revisit) must not jump back to frame 0.
-          // A new item is a new generation, which retires it in the
-          // animation block (review note 35).
-          current_image_.reset(ready);
-          {
+          const auto identity = [](const image::gpu_image& g) {
+            return canvas::publish_identity{g.item_key, g.view_generation,
+                                            static_cast<canvas::image_quality>(g.quality)};
+          };
+          const bool has_still = current_image_ != nullptr && !current_video_.texture;
+          const canvas::publish_kind kind = canvas::classify_publish(
+              has_still, has_still ? identity(*current_image_) : canvas::publish_identity{},
+              identity(*ready));
+          if (kind == canvas::publish_kind::stale) {
+            // A preview that lost the race to its own full decode.
+            mv::abi::release_gpu_image(ready);
+            ++stale_drops_;
+          } else if (kind == canvas::publish_kind::refinement) {
+            // plan/04 step 4: the same item at a better quality. The view is
+            // kept as a fraction of the image — including a zoom or pan made
+            // while it loaded — and the new texture fades in over the old one.
+            // Hold-previous and a playing animation are not touched.
+            ++refinements_;
             const auto view = usable_canvas(snapshot);
-            // plan/16 sticky zoom: off (default) fits every item; on keeps the
-            // mode, or the zoom and pan fraction. Camera state only, so
-            // prefetch is untouched.
-            if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
-              camera_.fill(media_width(), media_height(), view.w, view.h, true);
-            } else if (snapshot.sticky_zoom && had_media && !camera_.fit_mode()) {
-              camera_.carry(old_w, old_h, media_width(), media_height(), view.w, view.h);
-            } else {
-              camera_.fit(static_cast<float>(media_width()),
-                          static_cast<float>(media_height()),
-                          view.w, view.h, true);
+            camera_.refine(old_w, old_h, static_cast<float>(ready->width),
+                           static_cast<float>(ready->height), view.w, view.h);
+            if (current_image_->texture.Get() != ready->texture.Get()) {
+              const bool keep_as_base = ready->tiles && !current_image_->tiles &&
+                                        current_image_->texture_width > ready->texture_width;
+              if (keep_as_base) {
+                // Sharper than the overview: stays under the tiles, which then
+                // sharpen what is already there. Nothing to fade.
+                refine_base_ = std::move(current_image_);
+                fade_from_.reset();
+                fade_.cancel();
+              } else {
+                fade_.begin(elapsed, canvas::refine_fade_seconds(current_image_->mean_luma,
+                                                                 ready->mean_luma));
+                fade_from_ = std::move(current_image_);
+              }
             }
+            current_image_.reset(ready);
+            if (ready->quality == image::gpu_quality::full && full_seconds_ < 0.0) {
+              full_seconds_ = elapsed;
+            }
+            redraw = true;
+          } else {
+            fade_from_.reset();
+            refine_base_.reset();
+            fade_.cancel();
+            seen_tile_seq_ = 0;
+            item_start_seconds_ = elapsed;
+            first_pixel_seconds_ = elapsed;
+            full_seconds_ = ready->quality == image::gpu_quality::full ? elapsed : -1.0;
+            tiles_complete_seconds_ = -1.0;
+            current_video_ = {};
+            // Hold-previous keeps the last *different* still; a re-publish of
+            // the same texture is not an advance.
+            if (current_image_ && current_image_->texture.Get() != ready->texture.Get()) {
+              previous_image_ = std::move(current_image_);
+              ++previous_image_changes_;
+            }
+            // A playing animation is not reset here: a re-publish of the same
+            // item (a refinement, an LRU revisit) must not jump back to frame 0.
+            // A new item is a new generation, which retires it in the
+            // animation block (review note 35).
+            current_image_.reset(ready);
+            {
+              const auto view = usable_canvas(snapshot);
+              // plan/16 sticky zoom: off (default) fits every item; on keeps the
+              // mode, or the zoom and pan fraction. Camera state only, so
+              // prefetch is untouched.
+              if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
+                camera_.fill(media_width(), media_height(), view.w, view.h, true);
+              } else if (snapshot.sticky_zoom && had_media && !camera_.fit_mode()) {
+                camera_.carry(old_w, old_h, media_width(), media_height(), view.w, view.h);
+              } else {
+                camera_.fit(static_cast<float>(media_width()),
+                            static_cast<float>(media_height()),
+                            view.w, view.h, true);
+              }
+            }
+            last_input_time_ = elapsed;
+            redraw = true;
           }
-          last_input_time_ = elapsed;
-          redraw = true;
         }
+      }
+    }
+    // A tile landing is one more frame, not an input tail.
+    bool paint_once = false;
+    if (current_image_ && current_image_->tiles) {
+      const std::uint64_t seq = current_image_->tiles->ready_sequence();
+      if (seq != seen_tile_seq_) {
+        seen_tile_seq_ = seq;
+        paint_once = true;
       }
     }
     if (session_) {
@@ -639,6 +706,29 @@ void present_lab::render_thread_main() noexcept {
       last_mouse_y_ = snapshot.mouse_y;
     }
 
+    // --pan-soak: 100 % and a Lissajous path across the whole still, driven by
+    // the same drag the mouse uses — never a decode, only the camera.
+    if (options_.scripted_pan && current_image_ && warmed_up_) {
+      const auto view = usable_canvas(snapshot);
+      const float w = media_width();
+      const float h = media_height();
+      if (scripted_pan_start_ < 0.0) {
+        scripted_pan_start_ = elapsed;
+        camera_.set_zoom(1.0f, w, h, view.w, view.h);
+        camera_.one_to_one();
+        camera_.drag_begin();
+      }
+      if (camera_.dragging()) {
+        const double t = elapsed - scripted_pan_start_;
+        const float ax = std::max(0.0f, (w - view.w) * 0.5f);
+        const float ay = std::max(0.0f, (h - view.h) * 0.5f);
+        const float want_x = w * 0.5f + ax * static_cast<float>(std::sin(t * 6.2831853 / 20.0));
+        const float want_y = h * 0.5f + ay * static_cast<float>(std::sin(t * 6.2831853 / 13.0));
+        const float z = camera_.zoom() > 0.0f ? camera_.zoom() : 1.0f;
+        camera_.drag_delta((camera_.pan_x() - want_x) * z, (camera_.pan_y() - want_y) * z);
+      }
+    }
+
     // --- Should we present at all? --------------------------------------
     // plan/03 rule 4: idle means stop presenting entirely (0 % GPU on a static
     // image), and keep presenting for ~500 ms after the last input so a flick
@@ -657,8 +747,9 @@ void present_lab::render_thread_main() noexcept {
     // plan/03 rule 4's one labelled exception: blinkies animate, so a still with
     // them on presents until C turns them off. Everything else here idles.
     const bool blinkies = snapshot.clipping && current_image_ != nullptr;
+    const bool fading = fade_from_ && fade_.active(elapsed);
     const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
-                      pan_tail || blinkies || anim_live_;
+                      pan_tail || blinkies || anim_live_ || fading;
     live_presenting_ = live;
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || snapshot.window_active);
@@ -668,7 +759,7 @@ void present_lab::render_thread_main() noexcept {
         wants_frame = true;
         painted_static_ = false;
       } else {
-        wants_frame = !painted_static_ || redraw;
+        wants_frame = !painted_static_ || redraw || paint_once;
       }
     }
 
@@ -719,6 +810,7 @@ void present_lab::render_thread_main() noexcept {
       if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
         // A clip is not a burst: do not keep a 4K still pinned behind it.
         current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+        fade_from_.reset(); refine_base_.reset(); fade_.cancel();
         current_video_ = std::move(frame);
         if (first_video) {
           const auto view = usable_canvas(snapshot);
@@ -793,10 +885,54 @@ void present_lab::render_thread_main() noexcept {
       bp.origin_y = view.y;
       bp.image_w = shown_w;
       bp.image_h = shown_h;
+      bp.texture_w = static_cast<float>(shown->texture_width);
+      bp.texture_h = static_cast<float>(shown->texture_height);
       bp.background = snapshot.background;
       bp.clipping = snapshot.clipping;
       bp.time_seconds = static_cast<float>(elapsed);
-      blitter_.draw(device_.context(), shown->srv.Get(), bp);
+
+      const bool is_current = !show_previous && shown == current_image_.get();
+      if (fade_from_ && !fade_.active(elapsed)) fade_from_.reset();
+      const bool fade_now = is_current && fade_from_ && fade_from_->srv;
+      const float fade_alpha = fade_now ? fade_.alpha(elapsed) : 1.0f;
+      const bool tiled = is_current && shown->tiles;
+      if (tiled) {
+        tile_draws_ = mv::abi::tiles_frame(*shown, {bp.pan_x, bp.pan_y, bp.zoom, view.w, view.h});
+        if (tiles_complete_seconds_ < 0.0 && !shown->tiles->pending() &&
+            mv::abi::tiles_stats(*shown).requested == 0 && seen_tile_seq_ > 0) {
+          tiles_complete_seconds_ = elapsed;
+        }
+      } else {
+        tile_draws_ = {};
+      }
+      // The still as it should look this frame, into the current viewport:
+      // the outgoing texture under a fade, the incoming one (an overview for
+      // a tiled image), a sharper preview kept under the tiles, then tiles
+      // coarse to fine. Every layer maps the same full-resolution rect.
+      const auto draw_still = [&](const gfx::blit_params& p, bool with_tiles) {
+        if (fade_now) {
+          gfx::blit_params fp = p;
+          fp.texture_w = static_cast<float>(fade_from_->texture_width);
+          fp.texture_h = static_cast<float>(fade_from_->texture_height);
+          fp.opacity = 1.0f;
+          blitter_.draw(device_.context(), fade_from_->srv.Get(), fp);
+        }
+        gfx::blit_params cp = p;
+        cp.opacity = fade_alpha;
+        blitter_.draw(device_.context(), shown->srv.Get(), cp);
+        if (is_current && refine_base_ && refine_base_->srv) {
+          gfx::blit_params rp = cp;
+          rp.texture_w = static_cast<float>(refine_base_->texture_width);
+          rp.texture_h = static_cast<float>(refine_base_->texture_height);
+          blitter_.draw(device_.context(), refine_base_->srv.Get(), rp);
+        }
+        // Tiles join once the fade is over (80-250 ms); before that the
+        // overview is what fades in.
+        if (with_tiles && tiled && !fade_now && !tile_draws_.empty()) {
+          blitter_.draw_tiles(device_.context(), tile_draws_, cp);
+        }
+      };
+      draw_still(bp, true);
 
       // Hold Z: the same texture again, through a second viewport — a camera
       // change, not a decode. 100 %, or twice the zoom when already past it.
@@ -812,7 +948,10 @@ void present_lab::render_thread_main() noexcept {
         lp.origin_y = box.y;
         const D3D11_VIEWPORT lv{box.x, box.y, box.size, box.size, 0.0f, 1.0f};
         device_.context()->RSSetViewports(1, &lv);
-        blitter_.draw(device_.context(), shown->srv.Get(), lp);
+        // The loupe's zoom differs from the view's, so its tiles would be a
+        // second LOD with its own requests; it draws the overview (and any
+        // kept preview) of a tiled image instead.
+        draw_still(lp, false);
       }
     }
 
@@ -892,6 +1031,10 @@ void present_lab::render_thread_main() noexcept {
   current_video_ = {};
   current_image_.reset();
   previous_image_.reset();  // hold-previous's texture belongs to the same device
+  fade_from_.reset();
+  refine_base_.reset();
+  fade_.cancel();
+  tile_draws_ = {};
   anim_frame_.reset();
   if (session_) mv::abi::detach_device(session_);
   swapchain_.destroy();
@@ -1085,6 +1228,23 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
                   current_image_->height, codec::format_name(current_image_->format),
                   current_image_->icc_tagged ? "ICC tagged" : "untagged (sRGB)",
                   current_image_->mip_levels);
+      if (current_image_->tiles) {
+        const auto t = mv::abi::tiles_stats(*current_image_);
+        ImGui::Text("tiles    lod %u (overview %u)  drawn %u  resident %u  %.0f MB (peak %.0f)",
+                    t.lod, t.overview_level, t.drawn, t.resident,
+                    static_cast<double>(t.vram_bytes) / 1048576.0,
+                    static_cast<double>(t.vram_peak_bytes) / 1048576.0);
+        ImGui::Text("         pending %u  created %llu  evicted %llu  create %.2f ms (max %.2f)"
+                    "  build %.2f ms  incomplete frames %llu",
+                    t.requested, static_cast<unsigned long long>(t.created),
+                    static_cast<unsigned long long>(t.evicted), t.last_create_us / 1000.0,
+                    t.max_create_us / 1000.0, t.last_build_us / 1000.0,
+                    static_cast<unsigned long long>(t.incomplete_frames));
+      }
+      ImGui::Text("refine   %llu refinements  %llu stale previews dropped%s",
+                  static_cast<unsigned long long>(refinements_),
+                  static_cast<unsigned long long>(stale_drops_),
+                  refine_base_ ? "  preview kept under tiles" : "");
     } else {
       ImGui::Text("clip     %ux%u  %s", current_video_.width, current_video_.height,
                   current_video_.ten_bit ? "P010" : "NV12");
@@ -1140,6 +1300,8 @@ bool present_lab::write_json_report() const noexcept {
   // Review note 44: pacing alone passes a starved animation (the cost sits on
   // the decode thread), so the report carries the animation's own cadence.
   const auto anim = mv::abi::animation_stats_now(session_);
+  const image::tile_stats tile_stats =
+      current_image_ ? mv::abi::tiles_stats(*current_image_) : image::tile_stats{};
   const double mean_delay_ms =
       anim_frames_shown_ > 0
           ? static_cast<double>(anim_delay_sum_ms_) / static_cast<double>(anim_frames_shown_)
@@ -1178,6 +1340,15 @@ bool present_lab::write_json_report() const noexcept {
                "  \"animation_nominal_fps\": %.3f,\n"
                "  \"animation_last_make_ms\": %.3f,\n"
                "  \"animation_last_icc_ms\": %.3f,\n"
+               "  \"still_first_pixel_s\": %.3f,\n"
+               "  \"still_full_s\": %.3f,\n"
+               "  \"still_tiles_complete_s\": %.3f,\n"
+               "  \"still_refinements\": %llu,\n"
+               "  \"tiles_created\": %llu,\n"
+               "  \"tiles_evicted\": %llu,\n"
+               "  \"tiles_vram_peak_mb\": %.1f,\n"
+               "  \"tiles_max_create_ms\": %.3f,\n"
+               "  \"tiles_incomplete_frames\": %llu,\n"
                "  \"meets_pr1_gate\": %s\n"
                "}\n",
                kWarmupSeconds,
@@ -1203,6 +1374,13 @@ bool present_lab::write_json_report() const noexcept {
                mean_delay_ms, nominal_fps,
                static_cast<double>(anim.last_upload_us) / 1000.0,
                static_cast<double>(anim.last_icc_us) / 1000.0,
+               first_pixel_seconds_, full_seconds_, tiles_complete_seconds_,
+               static_cast<unsigned long long>(refinements_),
+               static_cast<unsigned long long>(tile_stats.created),
+               static_cast<unsigned long long>(tile_stats.evicted),
+               static_cast<double>(tile_stats.vram_peak_bytes) / 1048576.0,
+               static_cast<double>(tile_stats.max_create_us) / 1000.0,
+               static_cast<unsigned long long>(tile_stats.incomplete_frames),
                soak_complete_ && measurement_valid_ && exit_code_ == 0 &&
                    (options_.start_animating ? s.meets_pr1_gate() : idle_stats_.meets_pr1_gate())
                    ? "true" : "false");

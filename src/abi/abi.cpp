@@ -1583,6 +1583,16 @@ void release_gpu_image(image::gpu_image* image) {
   if (service) service->poke();
 }
 
+std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,
+                                            const image::tile_view& view) noexcept {
+  if (!image.tiles) return {};
+  return image.tiles->frame(view);
+}
+
+image::tile_stats tiles_stats(const image::gpu_image& image) noexcept {
+  return image.tiles ? image.tiles->stats() : image::tile_stats{};
+}
+
 bool take_animation_frame(mv_session_t session, std::uint32_t generation,
                           image::gpu_image*& texture, std::uint32_t& delay_ms,
                           std::uint32_t& index) noexcept {

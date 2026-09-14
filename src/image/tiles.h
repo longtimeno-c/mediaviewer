@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -167,6 +168,9 @@ struct tile_stats {
   std::uint32_t last_create_us = 0;   // CreateTexture2D alone, last tile
   std::uint32_t max_create_us = 0;
   std::uint32_t last_build_us = 0;    // CPU extract + mip, last tile
+  // Frames where some on-screen tile at the drawn LOD was not ready, so a
+  // coarser level (or the overview) showed there: blurry, never blank.
+  std::uint64_t incomplete_frames = 0;
 };
 
 // What the render thread sees this frame, in canvas pixels.
@@ -199,6 +203,13 @@ class tile_set {
   // budget, and fills `draws` coarse to fine with the ready tiles to draw.
   // Never blocks. `draws` is reused frame to frame.
   void frame(const tile_view& view, std::vector<gfx::tile_quad>& draws) noexcept;
+
+  // [render thread] frame() into the set's own buffer, for a caller across the
+  // DLL line (abi/native.h tiles_frame). Valid until the next call.
+  [[nodiscard]] std::span<const gfx::tile_quad> frame(const tile_view& view) noexcept {
+    frame(view, draws_);
+    return {draws_.data(), draws_.size()};
+  }
 
   // [any thread] Bumped every time a tile lands; the render thread redraws
   // when it changes.
@@ -247,6 +258,7 @@ class tile_set {
   std::uint64_t order_seq_ = 0;
   std::vector<std::uint32_t> requested_;
   std::vector<std::uint32_t> evict_scratch_;
+  std::vector<gfx::tile_quad> draws_;
   bool new_requests_ = false;
 
   std::atomic<std::uint64_t> ready_seq_{0};
@@ -260,6 +272,7 @@ class tile_set {
   std::atomic<std::uint32_t> last_build_us_{0};
   std::atomic<std::uint32_t> lod_{0};
   std::atomic<std::uint32_t> drawn_{0};
+  std::atomic<std::uint64_t> incomplete_frames_{0};
 
   // Service thread only.
   std::vector<std::uint8_t> mip0_;

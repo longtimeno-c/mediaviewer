@@ -244,9 +244,16 @@ void tile_set::frame(const tile_view& view, std::vector<gfx::tile_quad>& draws) 
     // Coarse to fine: a finer ready tile overdraws its parent, a missing one
     // leaves the parent (or the overview beneath everything) showing.
     const std::uint32_t coarsest = std::min(ov - 1, lod + 2);
+    std::size_t before_finest = 0;
     for (std::uint32_t l = coarsest + 1; l-- > lod;) {
+      if (l == lod) before_finest = draws.size();
       push_draws(l, L.visible(l, view.pan_x, view.pan_y, view.zoom, view.view_w, view.view_h, 0),
                  draws);
+    }
+    const std::size_t inner_count =
+        static_cast<std::size_t>(inner.x1 - inner.x0) * (inner.y1 - inner.y0);
+    if (draws.size() - before_finest < inner_count) {
+      incomplete_frames_.fetch_add(1, std::memory_order_relaxed);
     }
   }
   drawn_.store(static_cast<std::uint32_t>(draws.size()), std::memory_order_relaxed);
@@ -386,6 +393,7 @@ tile_stats tile_set::stats() const noexcept {
   st.last_create_us = last_create_us_.load(std::memory_order_relaxed);
   st.max_create_us = max_create_us_.load(std::memory_order_relaxed);
   st.last_build_us = last_build_us_.load(std::memory_order_relaxed);
+  st.incomplete_frames = incomplete_frames_.load(std::memory_order_relaxed);
   return st;
 }
 
