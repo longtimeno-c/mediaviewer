@@ -5,6 +5,7 @@
 // returns ok with the wrong byte count is a heap overflow one stage later.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
