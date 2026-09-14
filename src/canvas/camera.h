@@ -32,6 +32,16 @@ class camera {
   void carry(float old_w, float old_h, float new_w, float new_h, float window_w,
              float window_h) noexcept;
 
+  // Refinement of the item already on screen (canvas/refinement.h): the same
+  // picture arrived at a new pixel size — preview → full, or an embedded RAW
+  // JPEG → LibRaw's slightly larger frame. The view is kept as a fraction of
+  // the image (centre-preserving), including a zoom or pan the user made while
+  // it loaded and any spring still in flight; nothing snaps and nothing
+  // refits. Fit and fill stay modes: their targets follow the new geometry,
+  // snapped only if the camera was already at rest.
+  void refine(float old_w, float old_h, float new_w, float new_h, float window_w,
+              float window_h) noexcept;
+
   // Keyboard pan (plan/16). Moves the target by a screen-pixel delta, so the
   // springs animate it, clamped so no background shows on an axis the image
   // overflows. Ignored in fit mode — the opening view is locked, same as drag.

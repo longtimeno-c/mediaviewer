@@ -2132,6 +2132,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       options.overlay_visible = false;
     } else if (arg == L"--static") {
       static_requested = true;
+    } else if (arg == L"--pan-soak") {
+      options.scripted_pan = true;
     } else if (arg == L"--open") {
       std::wstring value;
       next(value);

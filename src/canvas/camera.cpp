@@ -156,6 +156,42 @@ void camera::carry(float old_w, float old_h, float new_w, float new_h, float win
   pan_vx_ = pan_vy_ = zoom_v_ = 0.0f;
 }
 
+void camera::refine(float old_w, float old_h, float new_w, float new_h, float window_w,
+                    float window_h) noexcept {
+  if (old_w <= 0.0f || old_h <= 0.0f || new_w <= 0.0f || new_h <= 0.0f) return;
+  const bool settled = !moving();
+  const float sx = new_w / old_w;
+  const float sy = new_h / old_h;
+  // One zoom factor for both axes: a preview and its full frame share an
+  // aspect up to a few pixels of crop, and the mean keeps the on-screen size
+  // within that difference on both.
+  const float s = 0.5f * (sx + sy);
+
+  pan_x_ *= sx;
+  target_pan_x_ *= sx;
+  pan_vx_ *= sx;
+  pan_y_ *= sy;
+  target_pan_y_ *= sy;
+  pan_vy_ *= sy;
+  zoom_ /= s;
+  target_zoom_ /= s;
+  zoom_v_ /= s;
+  if (rubber_fit_zoom_ > 0.0f) rubber_fit_zoom_ /= s;
+
+  if (fit_mode_ || fill_mode_) {
+    target_zoom_ = fit_mode_ ? fit_zoom(new_w, new_h, window_w, window_h)
+                             : fill_zoom(new_w, new_h, window_w, window_h);
+    target_pan_x_ = new_w * 0.5f;
+    target_pan_y_ = new_h * 0.5f;
+    if (settled && !dragging_ && !rubber_held_) {
+      pan_x_ = target_pan_x_;
+      pan_y_ = target_pan_y_;
+      zoom_ = target_zoom_;
+      pan_vx_ = pan_vy_ = zoom_v_ = 0.0f;
+    }
+  }
+}
+
 void camera::pan_by_screen(float dx_screen, float dy_screen, float image_w, float image_h,
                            float window_w, float window_h) noexcept {
   if (fit_mode_ || dragging_ || target_zoom_ <= 0.0f) return;

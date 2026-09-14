@@ -17,9 +17,11 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "abi/native.h"
 #include "canvas/camera.h"
+#include "canvas/refinement.h"
 #include "codec/anim.h"
 #include "core/spsc_ring.h"
 #include "gfx/blit.h"
@@ -28,6 +30,7 @@
 #include "gfx/pacer.h"
 #include "gfx/swapchain.h"
 #include "image/gpu_image.h"
+#include "image/tiles.h"
 #include "mediaviewer/mediaviewer.h"
 #include "shell/input_state.h"
 
@@ -44,6 +47,9 @@ struct lab_options {
   // a human running the lab does not.
   bool gate_exit_code = false;
   bool start_animating = false;
+  // Soak only: once a still is up, pan it at 100 % across the whole image on
+  // a fixed path (tiled pyramid / cached-image pan measurement). `--pan-soak`.
+  bool scripted_pan = false;
   bool overlay_visible = true;
 };
 
@@ -147,6 +153,25 @@ class present_lab {
   }
   canvas::camera camera_;
   mv::abi::gpu_image_ptr current_image_;
+  // plan/04 step 4, preview → full: the texture a refinement replaced, drawn
+  // under the incoming one while `fade_` runs, then released.
+  mv::abi::gpu_image_ptr fade_from_;
+  canvas::crossfade fade_;
+  // A preview sharper than a tiled image's overview stays under its tiles until
+  // the item changes, so the swap to the tiled pyramid never blurs first.
+  mv::abi::gpu_image_ptr refine_base_;
+  std::span<const gfx::tile_quad> tile_draws_;  // tiles_frame, this frame only
+  std::uint64_t seen_tile_seq_ = 0;
+  std::uint64_t refinements_ = 0;
+  std::uint64_t stale_drops_ = 0;
+  // --json: seconds since the render thread started (so, for --open, since
+  // launch) at which the last item showed its first pixel, its
+  // full-quality publish, and (tiled) the first frame with every visible tile.
+  double item_start_seconds_ = -1.0;
+  double first_pixel_seconds_ = -1.0;
+  double full_seconds_ = -1.0;
+  double tiles_complete_seconds_ = -1.0;
+  double scripted_pan_start_ = -1.0;
   // The last different still that was on screen, for hold `\` (plan/16). Kept
   // here, so showing it is a draw of a texture already in VRAM — never a
   // second session or an mv_image_open.
