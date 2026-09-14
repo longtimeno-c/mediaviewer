@@ -233,8 +233,6 @@ void open_path(app_state* app, std::wstring_view wide_path) {
   open_folder(app, wide_path.substr(0, slash), wide_path);
 }
 
-void open_media(app_state* app, std::wstring_view wide_path) { open_path(app, wide_path); }
-
 // argv and drag-and-drop (plan/16): the first entry that exists wins — a folder
 // opens, a file opens its folder with that file selected (open_request.h).
 // The attribute probe is the same one-stat-per-path open_path already makes.

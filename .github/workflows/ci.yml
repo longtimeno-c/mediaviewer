@@ -127,6 +127,7 @@ jobs:
         run: cmake --build build --config ${{ matrix.config }}
 
       - name: Unit tests
+        timeout-minutes: 15
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
   # ---------------------------------------------------------------------------
