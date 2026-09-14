@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "codec/decode.h"
+#include "codec/crash_test_hook.h"
 
 #include <new>
 
@@ -17,6 +18,8 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
     else if (os.error() == status::cancelled) return err(status::cancelled);
   }
 
+  // PR 7 crash reporting: annotate the worker slot; MV_CRASH_TEST verify hook.
+  const decode_crash_scope crash_scope(bytes, ctx);
   switch (probe(bytes)) {
     case format_family::jpeg: return decode_jpeg(bytes, ctx);
     case format_family::png:  return decode_png(bytes, ctx);

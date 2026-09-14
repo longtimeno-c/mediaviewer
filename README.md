@@ -25,9 +25,11 @@ and animated GIF/APNG/WebP on the frame clock. PR 7 (in progress) adds the camer
 formats — TIFF and ICO (libtiff), HEIC/HEIF (libheif + libde265; the Windows HEIF codec
 is used for plain HEIC stills only when the Store HEVC pack is present), AVIF still and
 animated (libavif + dav1d), and camera RAW (LibRaw: the embedded preview is first pixel,
-then the full decode) — plus RAW+JPEG and Live Photo pairing. The preview→full
-cross-fade, the tiled pyramid for > 64 MP images, the fuzz/broken-file CI and crash
-reporting are still landing.
+then the full decode) — plus RAW+JPEG and Live Photo pairing, and out-of-process
+Crashpad crash reporting whose dumps are scrubbed of paths, filenames and the
+username before anything could be sent (no upload endpoint exists yet). The
+preview→full cross-fade, the tiled pyramid for > 64 MP images and the
+fuzz/broken-file CI are still landing.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab
@@ -253,6 +255,38 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 # Under 1800 s it exits 4 and is DIAGNOSTIC ONLY — it is not the verify.
 .\build\bin\Release\mediaviewer_lab.exe --av-soak 1860 --csv drift.csv `
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
+```
+
+### Crash reports (PR 7)
+
+Native crashes are captured out-of-process by Crashpad into
+`%LocalAppData%\MediaViewer\Crashes`. Nothing is uploaded. On the next launch the app
+scrubs each dump: memory outside thread stacks is zeroed, and paths, media filenames and
+your username are masked. Managed exceptions go to `Crashes\managed\`.
+[plan/13](plan/13-updates-and-telemetry.md) has the details.
+
+The PR 7 verify is "a deliberately-corrupted RAW produces a minidump containing no path,
+filename, or pixel data". The crash hook only fires when **both** the environment variable
+and the marker in the file are present.
+
+```powershell
+# 1. a marked COPY of a real RAW, in PRIVATE_FOLDER_canary\SECRET_FILENAME_canary_7Q3.dng
+.\tools\make-crash-raw.ps1 -Source tools\testmedia\raw\pentax_k50.dng
+
+# 2. crash on it
+$env:MV_CRASH_TEST = 'decode'
+.\build\bin\Release\mediaviewer_lab.exe --open "$env:LOCALAPPDATA\Temp\mv-crash-canary\PRIVATE_FOLDER_canary\SECRET_FILENAME_canary_7Q3.dng"
+Remove-Item Env:MV_CRASH_TEST
+
+# 3. scrub: relaunch the app (it scrubs on start), or run the standalone tool
+.\build\bin\Release\mv_minidump_scrub.exe <in.dmp> <out.dmp>
+
+# 4. scan; exit 0 = PASS
+.\tools\minidump-scan.ps1 -Dump <out.dmp> -Forbidden '<canary path>','SECRET_FILENAME_canary_7Q3','PRIVATE_FOLDER_canary',$env:USERNAME
+
+# pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
+# prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
+# crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
