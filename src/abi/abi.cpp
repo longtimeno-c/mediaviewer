@@ -590,6 +590,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
   (void)session->jobs.submit_at(
       gen,
       [session, path, folder_gen, correlation](const mv::job_context& ctx) -> status {
+        const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
         if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;

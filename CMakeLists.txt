@@ -130,6 +130,8 @@ endif()
 add_library(mv_core STATIC
   src/core/job_system_win.cpp
   src/core/trace_win.cpp
+  src/core/crash_context.cpp
+  src/core/crash_context.h
   src/core/job_system.h
   src/core/result.h
   src/core/spsc_ring.h
@@ -242,6 +244,8 @@ add_library(mv_codec STATIC
   src/codec/avif.cpp
   src/codec/raw.cpp
   src/codec/os_decode_win.cpp
+  src/codec/crash_test_hook.cpp
+  src/codec/crash_test_hook.h
   src/codec/os_decode.h
   src/codec/decode.h
   src/codec/format.h
@@ -353,6 +357,8 @@ add_library(mv::canvas ALIAS mv_canvas)
 # ---------------------------------------------------------------------------
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
+  src/abi/crash_export.cpp
+  src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
   src/abi/include/mediaviewer/mediaviewer.h
@@ -373,6 +379,9 @@ add_library(mv::abi ALIAS mediaviewer_core)
 # inside them rather than re-implementing presentation.
 # ---------------------------------------------------------------------------
 find_package(imgui CONFIG REQUIRED)
+# PR 7: Crashpad (Apache-2.0) client, static; crashpad_handler.exe runs
+# out-of-process beside the lab (plan/13 Part 2).
+find_package(crashpad CONFIG REQUIRED)
 
 add_executable(mediaviewer_lab WIN32
   src/shell/main.cpp
@@ -394,6 +403,10 @@ add_executable(mediaviewer_lab WIN32
   src/shell/navigation.h
   src/shell/settings.cpp
   src/shell/settings.h
+  src/shell/crash_reporter_win.cpp
+  src/shell/crash_reporter_win.h
+  src/shell/minidump_scrub.cpp
+  src/shell/minidump_scrub.h
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
@@ -411,7 +424,33 @@ target_link_libraries(mediaviewer_lab PRIVATE
   ole32     # CoInitializeEx for the WinUI island STA
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
+  crashpad::crashpad
 )
+target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+# The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
+set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
+if(EXISTS "${MV_CRASHPAD_TOOLS}/crashpad_handler.exe")
+  add_custom_command(TARGET mediaviewer_lab POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MV_CRASHPAD_TOOLS}/crashpad_handler.exe"
+            "$<TARGET_FILE_DIR:mediaviewer_lab>/crashpad_handler.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MV_CRASHPAD_TOOLS}/z.dll"
+            "$<TARGET_FILE_DIR:mediaviewer_lab>/z.dll"
+    COMMENT "Copy crashpad_handler.exe beside mediaviewer_lab")
+else()
+  message(WARNING "crashpad_handler.exe not found under ${MV_CRASHPAD_TOOLS}; "
+                  "the lab will run without crash reporting")
+endif()
+
+# tools/minidump-scrub -- the app's privacy scrub, standalone (PR 7 verify).
+add_executable(mv_minidump_scrub
+  tools/minidump-scrub/main.cpp
+  src/shell/minidump_scrub.cpp
+  src/shell/minidump_scrub.h
+)
+target_link_libraries(mv_minidump_scrub PRIVATE mv_project_options)
+target_include_directories(mv_minidump_scrub PRIVATE src)
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -433,6 +472,7 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
 )
 if(DOTNET_EXE)
   # Publish beside the lab on every lab link so `cmake --build --target
@@ -519,6 +559,8 @@ if(MV_BUILD_TESTS)
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
+    tests/test_minidump_scrub.cpp
+    src/shell/minidump_scrub.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp

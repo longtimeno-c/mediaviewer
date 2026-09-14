@@ -42,6 +42,7 @@
 #include "shell/present_lab.h"
 #include "shell/settings.h"
 #include "shell/av_soak.h"
+#include "shell/crash_reporter_win.h"
 
 namespace {
 
@@ -1989,6 +1990,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     return mv::shell::run_av_soak({clip.c_str(), options.av_soak_seconds, csv.c_str()});
   }
   mv::trace::provider_register();
+
+  // PR 7 crash reporting (plan/13 Part 2): Crashpad out-of-process, armed
+  // before the session and its decoders exist. Asynchronous; never blocks.
+  (void)mv::shell::crash::start();
 
   // The ABI round-trip, exercised from the native side as well as from C#: the
   // shell is a client of the core through exactly the same header the managed
