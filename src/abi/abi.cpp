@@ -993,7 +993,8 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
     const mv::job_id id = session->jobs.submit_at(
         gen,
-        [session, path = std::move(owned)](const mv::job_context& ctx) -> status {
+        [session, path = std::move(owned), correlation](const mv::job_context& ctx) -> status {
+          const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
           if (ctx.cancelled()) return status::cancelled;
 
           if (video_path(path)) return open_video_worker(session, path, ctx);
