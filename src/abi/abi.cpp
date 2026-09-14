@@ -1238,6 +1238,11 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
 }
 
 mv_status MV_CALL mv_video_open(mv_session_t session, const char* path, uint64_t* job) {
+  // Unlike mv_image_open, the legacy video entry point owns the view-intent
+  // bump (its public contract promises that it does).
+  if (!valid(session) || !path || path[0] == '\0') return MV_ERR_INVALID_ARG;
+  const mv_status bumped = mv_session_bump_generation(session, nullptr);
+  if (bumped != MV_OK) return bumped;
   return mv_image_open(session, path, job);
 }
 mv_status MV_CALL mv_video_close(mv_session_t session) {
