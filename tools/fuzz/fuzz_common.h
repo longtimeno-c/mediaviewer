@@ -40,6 +40,14 @@ inline void step_animation(result<std::unique_ptr<codec::animation_source>> open
   if (!opened) return;
   auto& source = *opened.value();
   codec::canvas_frame frame;
+  // Compositing cost is canvas area per frame. Cap the pixels stepped per
+  // input (64 MP) so one 4096x4096-screen GIF in the corpus does not drag the
+  // harness to ~50 exec/s; frame 0 and the rewind are always exercised.
+  constexpr std::uint64_t kPixelBudget = 64ull * 1000 * 1000;
+  const auto& first = source.info();
+  const std::uint64_t area = std::max<std::uint64_t>(1, std::uint64_t{first.width} * first.height);
+  max_frames = static_cast<std::uint32_t>(
+      std::clamp<std::uint64_t>(kPixelBudget / area, 1, max_frames));
   for (int pass = 0; pass < 2; ++pass) {
     const std::uint32_t limit = pass == 0 ? max_frames : 1;
     for (std::uint32_t i = 0; i < limit; ++i) {

@@ -100,6 +100,10 @@ foreach ($name in $Harness) {
     $log = Join-Path $OutDir "fuzz_$name.log"
     $proc = Start-Process -FilePath $exe -ArgumentList $fuzzArgs -NoNewWindow -PassThru `
         -RedirectStandardError $log -RedirectStandardOutput "$log.stdout"
+    # Touch the handle now: without it Windows PowerShell never caches the exit
+    # code of a -PassThru process and ExitCode reads back $null (every clean
+    # run looked like a failure).
+    $null = $proc.Handle
     if (-not $proc.WaitForExit(($Seconds + $GraceSec) * 1000)) {
         $proc.Kill()
         $exit = 'killed (wall-clock guard)'
