@@ -535,10 +535,10 @@ if(MV_BUILD_TESTS)
   # a missing clip into a failure in CI.
   if(MV_ASAN)
     # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
-    # Windows driver when the executable is ASan-instrumented. Keep the ASan
-    # job on the deterministic CPU/core suite; the normal MSVC and clang-cl
-    # jobs still run every [video][ring] hardware test.
-    catch_discover_tests(mv_tests TEST_SPEC "~[video][ring]"
+    # Windows driver when the executable is ASan-instrumented. Exclude every
+    # video-tagged test here, not only cases carrying both [video] and [ring].
+    # Normal MSVC and clang-cl jobs still run the complete video suite.
+    catch_discover_tests(mv_tests TEST_SPEC "~[video]"
       PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   else()
     catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
