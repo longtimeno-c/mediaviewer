@@ -1,0 +1,67 @@
+[
+  {
+    "file": "canon_eos7dmk2.cr2",
+    "url": "https://raw.pixls.us/getfile.php/1064/nice/Canon - EOS 7D Mark II - RAW (3:2).cr2",
+    "sha256": "b9f71c56adb6e2861e6653efb312fb5cc88ba4aa17fa809c6a18b8db044360c3",
+    "size_mb": 21.06,
+    "megapixels": 20.65,
+    "make": "Canon",
+    "model": "EOS 7D Mark II",
+    "mode": "RAW (3:2)",
+    "licence": "CC0-1.0",
+    "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "source": "https://raw.pixls.us/"
+  },
+  {
+    "file": "canon_eosr6.cr3",
+    "url": "https://raw.pixls.us/getfile.php/4660/nice/Canon - EOS R6 - 3:2.CR3",
+    "sha256": "4775df76433b1e5844bc7a42b95d93efc8438c0a4cd9681e120e23fe3e3007e8",
+    "size_mb": 10.69,
+    "megapixels": 19.96,
+    "make": "Canon",
+    "model": "EOS R6",
+    "mode": "3:2",
+    "licence": "CC0-1.0",
+    "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "source": "https://raw.pixls.us/"
+  },
+  {
+    "file": "nikon_d7500.nef",
+    "url": "https://raw.pixls.us/getfile.php/1532/nice/Nikon - D7500 - 12bit 12bit compressed (Lossless) (3:2).NEF",
+    "sha256": "1f4e58a961d3d317fa39a7e1c8948b825651e968c8cd06e49e4239f612faccad",
+    "size_mb": 20.81,
+    "megapixels": 20.88,
+    "make": "Nikon",
+    "model": "D7500",
+    "mode": "12bit 12bit compressed (Lossless) (3:2)",
+    "licence": "CC0-1.0",
+    "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "source": "https://raw.pixls.us/"
+  },
+  {
+    "file": "pentax_k50.dng",
+    "url": "https://raw.pixls.us/getfile.php/2235/nice/Pentax - K-50 - 12bit (3:2).DNG",
+    "sha256": "9ea1dc1f92df19699aa8b620670c64a84d4ead0172a49cbbd47dea9257d14e67",
+    "size_mb": 12.95,
+    "megapixels": 16.37,
+    "make": "Pentax",
+    "model": "K-50",
+    "mode": "12bit (3:2)",
+    "licence": "CC0-1.0",
+    "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "source": "https://raw.pixls.us/"
+  },
+  {
+    "file": "sony_ilce7rm3.arw",
+    "url": "https://raw.pixls.us/getfile.php/2045/nice/Sony - ILCE-7RM3 - 14bit 14bit compressed (3:2).ARW",
+    "sha256": "a7b0279a11b36055fca1fd598be9f708b2f9d89b0d30178fd81d1d594547fc7a",
+    "size_mb": 41.01,
+    "megapixels": 42.56,
+    "make": "Sony",
+    "model": "ILCE-7RM3",
+    "mode": "14bit 14bit compressed (3:2)",
+    "licence": "CC0-1.0",
+    "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "source": "https://raw.pixls.us/"
+  }
+]
