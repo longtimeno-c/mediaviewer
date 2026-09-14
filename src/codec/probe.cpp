@@ -64,7 +64,7 @@ format_family probe(std::span<const std::uint8_t> header) noexcept {
   if (ftyp_has_brand(header, "avif") || ftyp_has_brand(header, "avis")) {
     return format_family::avif;
   }
-  if (ftyp_has_brand(header, "crx")) {
+  if (ftyp_has_brand(header, "crx ")) {  // four-char brand: the space is part of it
     return format_family::raw;  // Canon CR3
   }
   if (ftyp_heif(header)) {

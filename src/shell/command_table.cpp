@@ -139,6 +139,15 @@ constexpr binding kBindings[] = {
     row(C('+'), mod_none, kGallery, repeat, gallery_larger),
     row(C('='), mod_none, kGallery, repeat, gallery_larger),
     row(C('-'), mod_none, kGallery, repeat, gallery_smaller),
+    // PR 7. `;` plays a Live Photo's motion once (plan/16 View). Edge only:
+    // hold-to-play on a repeating key is forbidden (plan/04). Video mode too,
+    // because the motion playing *is* a clip on screen and `;` again stops it.
+    row(C(';'), mod_none, kBrowse | kVideo, edge, play_motion),
+    // plan/04: "Open RAW" / "Open JPEG" stay reachable so a paired file is never
+    // trapped. The palette that was to hold them is gone (plan/12 2026-09-13)
+    // and plan/16 gives no key, so they are listed in Settings, unbound.
+    row(key::none, mod_none, kBrowse | kVideo, edge, open_raw),
+    row(key::none, mod_none, kBrowse | kVideo, edge, open_jpeg),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -220,11 +229,17 @@ constexpr command_info kCommands[] = {
     {blackout, "Blackout"},
     {shuffle, "Shuffle"},
     {help, "Keyboard shortcuts"},
+    // The island TextBox fail-fast retired Ctrl+K, but this id deliberately
+    // remains in the wire enum so every later command keeps its value.
+    {palette, "Command palette (retired)", true},
     {go_to, "Go to index…"},
     {folder_tree, "Folder tree"},
     {typeahead, "Find by name…"},
     {reveal_in_explorer, "Show in Explorer"},
     {open_settings, "Settings"},
+    {play_motion, "Play Live Photo motion"},
+    {open_raw, "Open RAW of pair"},
+    {open_jpeg, "Open JPEG of pair"},
 };
 
 const char* named_key(key k) noexcept {
@@ -286,6 +301,8 @@ bool rebind_live(int index, key k, std::uint8_t mods) noexcept {
   if (mods >= kModCombos) return false;
   binding& target = live[static_cast<std::size_t>(index)];
   if (target.k == k && target.mods == mods) return true;
+  // Giving an unbound row a key another row holds swaps as usual, so that
+  // other row becomes the unbound one — visible in Settings, never silent.
   for (std::size_t i = 0; i < live.size(); ++i) {
     if (static_cast<int>(i) == index) continue;
     binding& other = live[i];

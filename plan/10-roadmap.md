@@ -1,9 +1,16 @@
 # 10 — Roadmap
 
-Re-cut against the decisions in [01-decisions.md](01-decisions.md): **v1 is a viewer with light
-edits** (D4), on the **camera-dump format set** (D5), with a **C# WinUI 3 shell over a C++ core**
-(D1) and **FFmpeg video on one present path** (D2). **v1 is Windows** (PR 1–15). macOS is
-Milestone F (PR 16–20) — a later host of the same core, not a UI-only port (**D9**).
+**Release cut (2026-09-14): finish PR 7, then package and ship the viewer in PR 8.**
+v1 is the Windows viewer delivered by PRs 1–7, on the camera-dump format set (D5), with
+C# WinUI 3 chrome over a C++ core (D1) and FFmpeg video on one present path (D2).
+Metadata panes/writes, photo editing/export, video trimming, and additional Windows
+integration ship in future updates; they do not block v1 (D4/D7 amended in
+[01-decisions.md](01-decisions.md), rationale in [12](12-decision-log.md)).
+
+**Numbering:** former PR 15 becomes PR 8; former PRs 8–14 become PRs 9–15 respectively.
+PRs 1–7 (including 5a/5b/5c) and Mac PRs 16–20 keep their numbers. Historical decision-log
+entries retain their original numbers. Milestone C is now the Windows release;
+D/E are later feature updates and F remains the Mac host (**D9**).
 
 Work is sliced into **independently runnable PRs, each with a verify line**. Do not start PR N+1
 until N's verify holds **and PR 1's present-loop verify still holds** — that second clause is what
@@ -58,7 +65,7 @@ accepted composed frame *before* any panes are built on it.
 *PR 5 is split into 5a/5b/5c. Numbering after it is unchanged.*
 
 ### PR 4 — Folder, filmstrip, thumbnails
-Folder listing + sort (**name, mtime, size, type** — EXIF date-taken waits for PR 8),
+Folder listing + sort (**name, mtime, size, type** — EXIF date-taken waits for PR 9),
 `ReadDirectoryChangesW` watcher (portable `io/dir.h`, Windows
 impl in `io/dir_win.cpp`), second XAML island with an `ItemsRepeater` filmstrip,
 SQLite + on-disk **JPEG-512** thumbnail cache keyed by `(path, mtime, size, spec)`
@@ -123,9 +130,9 @@ This is also the PR that makes the app **keyboard-complete for browse**. One key
 default map, `?` overlay, marks, copy-to / move-to (`F7`/`F8`), status,
 typeahead, sticky zoom, companion hiding, loupe, hold-previous, display-referred clipping
 blinkies, pixel grid, canvas background/checkerboard, always-on-top, fullscreen chrome
-hide. Folder tree as a **third island, left, hidden by default** — slip to PR 8 if this
+hide. Folder tree as a **third island, left, hidden by default** — slip to PR 9 if this
 slice overruns, but `chrome_left_px` and the command id still land here. (2026-09-13: the
-tree slipped to PR 8 and companion hiding to PR 7 — [12-decision-log.md](12-decision-log.md).)
+tree slipped to the metadata slice, now PR 9, and companion hiding to PR 7 — [12-decision-log.md](12-decision-log.md).)
 Space becomes next-image (play/pause on video/animation); the lab sweep does not ship.
 Full spec: [16-commands.md](16-commands.md). **Settings remaps the live table in this PR**
 (`Ctrl+,`); JSON import/export and named layouts stay v1.1.
@@ -153,11 +160,59 @@ iPhone Live Photo is one entry and `;` plays the motion; nothing in the broken c
 crashes or hangs; a deliberately-corrupted RAW produces a minidump containing **no path,
 filename, or pixel data**.
 
-## Milestone C — It's useful (PR 8–11)
+## Milestone C — It ships (PR 8)
 
-### PR 8 — Metadata (read)
+### PR 8 — Package & ship
+Ship the feature set completed through PR 7. Metadata panes, edit/export, trim,
+the folder tree, and additional Explorer integration are future updates.
+PR 7 and all inherited viewer/present-loop verify gates must pass before release.
+
+**Identity moves here from the former Windows integration slice:** one `.ico`
+(16 / 20 / 24 / 32 / 40 / 48 / 64 / 256) for the window, taskbar, wizard, Start Menu,
+and shortcuts, plus its PNG in About. PR 15 later reuses it for file associations.
+The recorded UI-thread settings-write follow-up also belongs to PR 8 release hardening
+([12](12-decision-log.md), 2026-09-13/14).
+
+A **short first-install wizard** (Inno Setup) that lays down a **per-user** Velopack tree
+under `%LocalAppData%\MediaViewer`, then **Velopack** for every later update (staged
+rollout, signed manifest, rollback). Azure Trusted Signing on the wizard, the binaries,
+and the update manifest. About dialog + `THIRD-PARTY.md` + per-release LGPL source offer.
+Store MSIX is **not** a channel — the app is GPL-2.0-or-later ([11](11-licensing.md)).
+Full design, including the wizard pages: [13-updates-and-telemetry.md](13-updates-and-telemetry.md).
+
+The wizard is the one-time download-and-setup. Updates never re-open it. It does **not**
+ask to become the default photo viewer (that is PR 15's in-app prompt) and it does **not**
+ask for telemetry (that is the first-run screen in the app). Finish page: Launch,
+[GitHub](https://github.com/longtimeno-c/mediaviewer), Licence.
+
+**Release sequencing** — see that doc's sequencing note: the **updater ships in PR 8
+before the first external build** (testers without an update path are stranded on whatever they installed), and
+**crash reporting lands in PR 7** with the format long tail, which is exactly when other people's
+RAW and HEIC files first hit decoders you've never tested against them.
+
+**Verify:** clean VM → run the wizard (no UAC) → Start Menu shortcut shows the app icon →
+Launch from the finish page → open a real camera dump → browse photos, play video with
+audio and transport, pan/zoom, fullscreen, and slideshow using the PR 1–7 feature set,
+with no SmartScreen block and **no missing-codec dialog anywhere**. The running window
+and taskbar use the same app icon. PR 7 format/pairing checks and PR 1's present-loop
+verify still hold for the installed build. The finish page's GitHub
+link opens the repo. An update downloads and stages without showing the wizard. Uninstall
+from Apps & features removes the shortcuts and install directory. PR 8 creates no
+PR 15 associations or handlers; once those arrive, uninstall must remove them too.
+Exercise update signature rejection and rollback, and confirm telemetry stays off
+unless explicitly enabled.
+
+## Future Windows updates — not v1 release gates
+
+These slices retain their designs and verify lines. Schedule them after PR 8; no
+release version is promised for an individual slice.
+
+## Milestone D — Viewer and editing updates (PR 9–12, post-v1)
+
+### PR 9 — Metadata (read)
 Exiv2 + libavformat, unified property model, summary card + searchable full tree + per-stream video
-inspector. On-canvas info overlay fills the exposure triangle; AF-point quads from maker
+inspector. The folder-tree island deferred from PR 6 lands here too, using the existing
+command id and `chrome_left_px` inset. On-canvas info overlay fills the exposure triangle; AF-point quads from maker
 notes; one-pixel eyedropper; sort-by-date-taken. `I` focuses the pane
 ([16-commands.md](16-commands.md)).
 
@@ -165,7 +220,7 @@ notes; one-pixel eyedropper; sort-by-date-taken. `I` focuses the pane
 empty fields, never an error; toggling AF points and the info overlay does not re-read the
 file.
 
-### PR 9 — Geometry edits + export
+### PR 10 — Geometry edits + export
 `EditStack`, GPU op chain at viewport resolution, rotate/flip/crop/straighten/resize. Export with a
 metadata preservation policy. **Lossless JPEG** rotate and MCU-aligned crop where applicable.
 `[` `]` from the viewer invoke lossless rotate without opening the adjust pane. Crop is a
@@ -175,7 +230,7 @@ mode on the command table (`Enter` commit, `Esc` cancel).
 original pixels exactly; lossless rotate produces a file with no recompression; keyboard-only
 rotate of a JPEG in the viewer writes that file.
 
-### PR 10 — Colour adjusts (the v1 set)
+### PR 11 — Colour adjusts (first editing set)
 Exposure, contrast, saturation, temperature/tint as GPU shaders on the live preview. Histogram and
 clipping warnings. Export bakes the stack at full resolution. Viewer `C` blinkies become
 accurate on RAW once the full decode exists; until then they stay display-referred.
@@ -187,7 +242,7 @@ until LibRaw's full decode completes** — sliders never act on the embedded pre
 pixels you will not export is the kind of wrong that erodes trust in every other number the app
 shows ([07-photo-editing.md](07-photo-editing.md)).
 
-### PR 11 — Metadata (write) — narrow on purpose
+### PR 12 — Metadata (write) — narrow on purpose
 **Rating, orientation, and user comment only.** Atomic write via `ReplaceFileW`, snapshot before the
 first write in a session, preserve maker notes, **XMP sidecar for RAW — never rewrite the original**.
 Numpad `0`–`5` (or `Ctrl+Shift+0`–`5`) write rating; number-row `0`/`1` remain zoom
@@ -200,9 +255,9 @@ a batch engine before the pane has been read in anger.
 process killed mid-write leaves the original intact; rating a JPEG from the numpad round-trips
 without opening the pane.
 
-## Milestone D — It trims video (PR 12–13)
+## Milestone E — Video and Windows integration updates (PR 13–15, post-v1)
 
-### PR 12 — Two-path trim
+### PR 13 — Two-path trim
 In/out markers with the **keyframe grid drawn on the scrub bar**. Path 1: keyframe trim, stream
 copy, instant. Path 2: full re-encode, frame-accurate, **explicitly labelled slower**, using
 hardware encoders only ([11-licensing.md](11-licensing.md)). Cancellable job queue panel. A–B loop
@@ -213,15 +268,13 @@ preview of the proposed range. Trim mode takes `[` `]` for in/out
 re-encode path is frame-accurate; **the source file is never modified**; cancelling leaves no
 partial output.
 
-### PR 13 — Extract & remux
+### PR 14 — Extract & remux
 Lossless rotate (container matrix, no re-encode), split, remove-middle, MKV ↔ MP4 remux, frame →
 PNG/JPEG, audio extract, clip → GIF/WebP with a two-pass palette.
 
 **Verify:** each operation round-trips; lossless rotate does not re-encode.
 
-## Milestone E — It ships (PR 14–15)
-
-### PR 14 — Windows integration
+### PR 15 — Windows integration
 File associations via `ProgId`/`OpenWithProgids` + a Default Apps deep link (never a silent
 hijack). **One prompt after the first successful still open** — "Make MediaViewer your
 default photo viewer?" — Yes opens Default Apps; No is remembered and never asked again.
@@ -232,10 +285,8 @@ settings. Keyboard twins of drag-out land here if not already wired in PR 6: `Ct
 (`CF_HDROP`), `Ctrl+Shift+C` (path), `Ctrl+Alt+C` (flattened view), `Ctrl+Shift+S` (Share)
 ([16-commands.md](16-commands.md)).
 
-**Identity lands here**, because this is when Explorer and the taskbar first show the app as
-an app: one `.ico` (16 / 20 / 24 / 32 / 40 / 48 / 64 / 256) as the window icon, the
-taskbar icon, and each still `ProgId`'s `DefaultIcon`. The same file is what PR 15 puts on
-the wizard, Start Menu, and shortcuts. Do not ship associations with the generic exe icon.
+**Reuse the identity shipped in PR 8:** the same `.ico` becomes each still `ProgId`'s
+`DefaultIcon`. Do not ship associations with the generic exe icon.
 
 **The shell handlers run out-of-process (`DllSurrogate`), with timeouts and no state shared with the
 app.** In-process, one malformed HEIC in a folder someone browses takes down Explorer
@@ -250,39 +301,14 @@ the default-app prompt; declining leaves existing defaults unchanged and does no
 again; accepting opens Default Apps rather than writing `UserChoice`; an install-and-quit
 with no image open never prompts.
 
-### PR 15 — Package & ship
-A **short first-install wizard** (Inno Setup) that lays down a **per-user** Velopack tree
-under `%LocalAppData%\MediaViewer`, then **Velopack** for every later update (staged
-rollout, signed manifest, rollback). Azure Trusted Signing on the wizard, the binaries,
-and the update manifest. About dialog + `THIRD-PARTY.md` + per-release LGPL source offer.
-Store MSIX is **not** a channel — the app is GPL-2.0-or-later ([11](11-licensing.md)).
-Full design, including the wizard pages: [13-updates-and-telemetry.md](13-updates-and-telemetry.md).
-
-The wizard is the one-time download-and-setup. Updates never re-open it. It does **not**
-ask to become the default photo viewer (that is PR 14's in-app prompt) and it does **not**
-ask for telemetry (that is the first-run screen in the app). Finish page: Launch,
-[GitHub](https://github.com/longtimeno-c/mediaviewer), Licence.
-
-**Two pieces move earlier** — see that doc's sequencing note: the **updater ships before the first
-external build** (testers without an update path are stranded on whatever they installed), and
-**crash reporting lands in PR 7** with the format long tail, which is exactly when other people's
-RAW and HEIC files first hit decoders you've never tested against them.
-
-**Verify:** clean VM → run the wizard (no UAC) → Start Menu shortcut shows the app icon →
-Launch from the finish page → open a real camera dump → browse, crop, trim, export, with
-no SmartScreen block and **no missing-codec dialog anywhere**. The finish page's GitHub
-link opens the repo. An update downloads and stages without showing the wizard. Uninstall
-from Apps & features removes the shortcut, the install directory, and every PR 14
-association.
-
 ## Milestone F — It opens on a Mac (PR 16–20)
 
-Windows v1 is the product through PR 15. Mac is a **later host of the same core**, not a
-UI-only follow-up and not a dual-track of PRs 4–15. Decode, colour, EditStack, metadata, and
+Windows v1 ships at PR 8; PRs 9–15 are future Windows updates. Mac is a **later host of
+the same core**, not a UI-only follow-up or a dual-track requirement for those updates. Decode, colour, EditStack, metadata, and
 the C ABI transfer. Present, hardware decode, audio, I/O, chrome, and the installer do not.
 Full split and the hostable-core rule: [15-platforms.md](15-platforms.md).
 
-Do not start F until PR 15's verify holds **and** PR 1's present-loop verify still holds on
+Do not start F until PR 8's verify holds **and** PR 1's present-loop verify still holds on
 Windows. F has its own present-loop gate.
 
 **Sequencing exception (2026-09-13):** the owner started **PR 16** in parallel with
@@ -334,7 +360,10 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 
 ---
 
-## v1.1 and beyond — same architecture, more of it
+## Further backlog — after the first feature updates
+
+Older specs use **v1.1** for this backlog. It remains deferred beyond its prerequisite
+feature slices; that label does not promise everything in one release.
 
 | Area | Deferred work |
 |---|---|
@@ -347,7 +376,7 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating, colour labels, keywords |
 | Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim); **theme**: colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, card ingest with verify, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
-| Distribution | Store MSIX as a secondary channel, per-machine MSI for enterprise |
+| Distribution | Per-machine MSI for enterprise (Store MSIX remains excluded by the licence decision) |
 | Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS is Milestone F, not v1.1.** |
 
 ## Sequencing advice
@@ -361,13 +390,13 @@ in a browsed folder leaves Finder running; a clean Mac → install from the nota
 - **Resist the NLE, and resist the develop module.** Both are real products; neither is this one.
   Resist JSON keymap packs and the compare workspace in v1 the same way: the default map,
   Settings remap, and hold-previous are the daily path ([16-commands.md](16-commands.md)).
-- **PR 1-7 is the app you would use daily**, and that is a believable target on a tight calendar for
-  one person. Milestone C is what makes it worth other people switching to.
+- **PRs 1–7 define the first release feature set; PR 8 makes it installable and updatable.**
+  Milestones D/E add features in later updates without holding the viewer release.
 - **Do not plan v1 as "3 months full-time."** That number was the original overconfidence surviving
-  the scope cuts. PR 5b (the A/V clock), PR 7 (HEIC + RAW + tiles + fuzzing), and PR 14 (shell
-  integration, out-of-process handlers, packaging) are each multi-week for one person on their own.
+  the scope cuts. PR 5b (the A/V clock), PR 7 (HEIC + RAW + tiles + fuzzing), and PR 15 (shell
+  integration and out-of-process handlers) are each multi-week for one person on their own.
   Size the milestones, ship them in order, and let the calendar report itself rather than being
   promised up front.
-- **Do not start Milestone F during Windows v1, and do not call it a UI port.** From PR 4, keep
+- **Milestone F waits for Windows PR 8, except the already-authorized PR 16 lab.** From PR 4, keep
   Win32 / D3D11 out of `image/`, `player/`, `edit/`, and `meta/` so F is a host + backends.
-  Chrome is written twice (D1). The Metal present lab is PR 16, not a weekend on top of PR 15.
+  Chrome is written twice (D1). The Metal present lab is PR 16, not a weekend on top of PR 8.
