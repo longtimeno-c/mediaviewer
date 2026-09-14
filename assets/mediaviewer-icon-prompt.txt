@@ -1,0 +1,13 @@
+Generated using the built-in image_gen tool.
+Source: roadmap PR 8 in plan/10-roadmap.md and plan/13-updates-and-telemetry.md.
+Deliverables: mediaviewer-icon.png master and mediaviewer-icon.ico containing 16, 20, 24, 32, 40, 48, 64, 256 pixel sizes.
+Assets generated only; application and installer wiring is a separate packaging step.
+
+Use case: logo-brand
+Asset type: Windows desktop application icon for MediaViewer, square 1024x1024 PNG master with genuinely transparent background outside the mark.
+Primary request: Create one polished, distinctive, exceptionally simple app icon for a fast Windows viewer for camera dumps: photos and videos in one folder. This is the shared identity for window title bar, taskbar, Start Menu, installer and About. It must remain readable down to 16 pixels.
+Subject: A single bold softly rounded rectangular photo frame, with a simple solid mountain silhouette whose right-facing geometry incorporates a clearly legible play triangle. Unify photo and video into one compact symbol, with at most one small sun circle. The play motif must be immediately legible, and mountains must not add clutter.
+Style: Precise geometric icon, mostly flat with restrained subtle depth, crisp edges, professional understated desktop utility. Generous thick forms and negative space. Front view, no perspective.
+Color palette: Match the application's neutral dark canvas #21232A and light foreground #DCDEE4, with white highlights. A light outer frame surrounds a charcoal image field and pale geometric photo/play motif. Strong silhouette visible on both light and dark desktops.
+Composition: One centered icon occupying approximately 84 percent of the square. Real transparent pixels outside its rounded frame, no large external shadow, no opaque square backdrop.
+Constraints: One icon only. No text, letters, labels, file extension badges, watermark, collage, presentation sheet, surrounding UI, mockup, extra objects, intricate lens blades or fine strokes. Render the final icon asset directly.
