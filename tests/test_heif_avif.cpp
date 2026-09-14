@@ -354,12 +354,14 @@ TEST_CASE("animated AVIF: frame count, browser delays, loops, rewind", "[codec][
   canvas_frame again;
   REQUIRE(src.next(again, nullptr).value());
   CHECK(again.index == 0);
-  CHECK(again.rgba == a.rgba);
+  const bool rewound_same = again.rgba == a.rgba;
+  CHECK(rewound_same);
 
   // The still of an animated AVIF is its first frame.
   auto still = decode_avif(bytes);
   REQUIRE(still);
-  CHECK(still.value().rgba == f.frames[0]);
+  const bool still_is_frame0 = still.value().rgba == f.frames[0];
+  CHECK(still_is_frame0);
 }
 
 TEST_CASE("AVIF: truncated and hostile files fail without crashing", "[codec][avif]") {
@@ -460,7 +462,9 @@ TEST_CASE("MV_OS_CODEC=0 forces libheif and matches the OS path's pixels", "[cod
   }
   auto direct = decode_heic(bytes);
   REQUIRE(direct);
-  CHECK(direct.value().rgba == bundled.rgba);
+  // A bool, not the vectors: under -s Catch2 stringifies both 12 KB buffers.
+  const bool same_pixels = direct.value().rgba == bundled.rgba;
+  CHECK(same_pixels);
   REQUIRE(bundled.width == 48);  // irot applied: 64x48 stored
   REQUIRE(bundled.height == 64);
   REQUIRE_FALSE(bundled.icc.empty());
@@ -474,7 +478,8 @@ TEST_CASE("MV_OS_CODEC=0 forces libheif and matches the OS path's pixels", "[cod
   const raster& wic = os.value();
   REQUIRE(wic.width == bundled.width);
   REQUIRE(wic.height == bundled.height);
-  CHECK(wic.icc == bundled.icc);
+  const bool same_icc = wic.icc == bundled.icc;
+  CHECK(same_icc);
   // 4:2:0 lossy: the two chroma upsampling filters differ, which moves a few
   // samples on hard colour edges a long way. Judge the bulk, not the worst.
   std::vector<int> diffs(wic.rgba.size());
