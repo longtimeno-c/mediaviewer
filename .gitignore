@@ -63,3 +63,5 @@ soak.json
 # Scratch notes. Working files for a slice in progress, not the plan — the
 # plan is plan/.
 PR5UInotes.txt
+
+.claude/
