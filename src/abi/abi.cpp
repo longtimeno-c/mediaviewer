@@ -963,7 +963,10 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
     std::string owned(utf8_path);
     const auto correlation = mv::abi::current_correlation_id();
-    const mv::generation gen = session->jobs.bump_generation();
+    // Opening is submitted at the caller's current view generation. The host
+    // bumps first when this is a new view intent (plan/14); doing it again here
+    // made the managed OpenImage wrapper advance twice.
+    const mv::generation gen = session->jobs.current_generation();
 
     const mv::job_id id = session->jobs.submit_at(
         gen,

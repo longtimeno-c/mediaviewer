@@ -212,7 +212,8 @@ struct command_info {
   command_id id = command_id::none;
   const char* name = "";  // palette label; unique
   // Island-only commands carry an argument (an index, a zoom factor) and have
-  // no key by design. Everything else must be bound.
+  // no key by design. A retired command may also keep a keyless entry so its
+  // wire id remains named without appearing in Settings or `?`.
   bool keyless = false;
 };
 
