@@ -36,9 +36,13 @@ view_state clip() {
 TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]") {
   std::set<std::tuple<int, int, int>> seen;
   for (const auto& b : default_bindings()) {
-    REQUIRE(b.k != key::none);
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
+    // PR 7: Open RAW / Open JPEG ship listed but unbound (plan/04, plan/16).
+    if (b.k == key::none) {
+      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
+      continue;
+    }
     for (int m = 0; m < kModeCount; ++m) {
       if ((b.modes & (1 << m)) == 0) continue;
       INFO("key " << static_cast<int>(b.k) << " mods " << int(b.mods) << " mode " << m);

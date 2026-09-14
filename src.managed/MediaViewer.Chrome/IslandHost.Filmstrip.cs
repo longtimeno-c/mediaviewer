@@ -196,8 +196,10 @@ public static partial class IslandHost
                 Index = (int)i,
                 Name = _folderSession.FolderItemName(i),
                 Path = _folderSession.FolderItemPath(i),
+                PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
+                Badge = BadgeFor(rec),
                 ThumbPath = _folderSession.FolderItemThumbPath(i),
-                Selected = (rec.Flags & 1) != 0,
+                Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
         }
         int selected = -1;
@@ -217,6 +219,43 @@ public static partial class IslandHost
             _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.FolderReady, listed));
         else
             Send(Command.FolderReady, listed);
+    }
+
+    // PR 7 (plan/04): "LIVE" on a Live Photo stop, "RAW" on a RAW+JPEG stop and
+    // on a RAW with no JPEG beside it. Decided at scan time; nothing is read.
+    private static string BadgeFor(MvFolderItem rec) => rec.PairKind switch
+    {
+        MvPairKind.LivePhoto => "LIVE",
+        MvPairKind.RawJpeg => "RAW",
+        _ => (rec.Flags & MvFolderItem.FlagPrimaryRaw) != 0 ? "RAW" : "",
+    };
+
+    // The thumbnail with its badge laid over the top-left corner. Not hit-test
+    // visible and not focusable, so taps, drags and keyboard focus are the
+    // tile's exactly as before.
+    private static UIElement WithBadge(Image image, string badge)
+    {
+        if (string.IsNullOrEmpty(badge)) return image;
+        var grid = new Grid();
+        grid.Children.Add(image);
+        grid.Children.Add(new Border
+        {
+            Background = new SolidColorBrush(ColorHelper.FromArgb(0xC0, 0, 0, 0)),
+            CornerRadius = new CornerRadius(2),
+            Padding = new Thickness(3, 0, 3, 1),
+            Margin = new Thickness(3),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false,
+            Child = new TextBlock
+            {
+                Text = badge,
+                FontFamily = UiFont,
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Colors.White),
+            },
+        });
+        return grid;
     }
 
     private static void SetSelected(int index)
@@ -320,7 +359,7 @@ public static partial class IslandHost
                 MaxWidth = 88,
             };
             var col = new StackPanel { Spacing = 4 };
-            col.Children.Add(image);
+            col.Children.Add(WithBadge(image, vm.Badge));
             col.Children.Add(name);
             var border = new Border
             {
@@ -360,6 +399,10 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     public int Index { get; set; }
     public string Name { get; set; } = "";
     public string Path { get; set; } = "";
+    // PR 7: the other half of a paired stop (RAW or Live Photo MOV), else "".
+    public string PairPath { get; set; } = "";
+    // PR 7: "RAW", "LIVE" or "".
+    public string Badge { get; set; } = "";
     public bool Selected
     {
         get => _selected;

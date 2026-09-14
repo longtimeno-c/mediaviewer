@@ -189,6 +189,10 @@ enum class command_id : std::uint16_t {
   open_settings,  // Ctrl+, and the Settings button: the settings screen
   gallery_larger,
   gallery_smaller,
+  // PR 7 pairs (plan/04, plan/16)
+  play_motion,  // `;`: play a Live Photo's motion once, back to the still
+  open_raw,     // show the RAW half of a RAW+JPEG stop (unbound by default)
+  open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
   count
 };
 
@@ -198,6 +202,9 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
   return id == 15 || id == 16 || id == 18 || id == 19 || id == 20;
 }
 
+// A row whose key is key::none is listed (Settings can give it one) but not
+// routed. Only commands plan/16 names without a key ship that way (PR 7: Open
+// RAW / Open JPEG, which plan/04 put in the dropped palette).
 struct binding {
   key k = key::none;
   std::uint8_t mods = mod_none;
