@@ -11,6 +11,7 @@
 //    MV_REQUIRE_CORPUS=1 (tests/corpus.h).
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -333,7 +334,7 @@ std::vector<double> luma_grid(const std::vector<std::uint8_t>& rgba, std::uint32
     const auto gy = static_cast<std::size_t>(static_cast<std::uint64_t>(y) * n / h);
     for (std::uint32_t x = 0; x < w; x += step) {
       const auto gx = static_cast<std::size_t>(static_cast<std::uint64_t>(x) * n / w);
-      const const std::uint8_t* p = rgba.data() + (static_cast<std::size_t>(y) * w + x) * 4;
+      const std::uint8_t* p = rgba.data() + (static_cast<std::size_t>(y) * w + x) * 4;
       sum[gy * n + gx] += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
       cnt[gy * n + gx] += 1.0;
     }

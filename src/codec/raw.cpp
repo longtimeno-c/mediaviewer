@@ -14,10 +14,10 @@
 //   tagged sRGB, no ICC: the colour stage copies it through with no tone map
 //   (D6). "Untagged RAW -> camera matrix from LibRaw" (plan/04) happens here.
 // - Highlights clip (highlight=0), matching what the embedded JPEG shows.
-// - Auto-bright stays on (dcraw default, 1 % clip). A linear render with a
-//   fixed white point is visibly darker than the camera's own JPEG, which is
-//   the pop the verify line forbids; auto-bright lands much closer.
-// - Demosaic defaults to AHD — see default_options() for the numbers.
+// - Auto-bright stays on (dcraw default, 1 % clip). A fixed white point is
+//   visibly darker than the camera's own JPEG, which is the pop the verify
+//   line forbids; auto-bright lands much closer (still somewhat brighter).
+// - Demosaic defaults to PPG — see default_options() for the numbers.
 #include "codec/raw_internal.h"
 
 #include <algorithm>
@@ -159,6 +159,10 @@ bool tiff_container_is_raw(std::span<const std::uint8_t> bytes) noexcept {
 // LibRaw plumbing
 // ---------------------------------------------------------------------------
 
+// LibRaw's default prints "unexpected end of file" to stderr. The count is
+// still kept (LibRaw::error_count()); we read it instead of printing.
+void silent_data_error(void*, const char*, const INT64) {}
+
 int progress_cb(void* data, enum LibRaw_progress, int, int) {
   const auto* ctx = static_cast<const job_context*>(data);
   return (ctx != nullptr && ctx->cancelled()) ? 1 : 0;
@@ -221,7 +225,11 @@ result<std::unique_ptr<LibRaw>> open_raw(std::span<const std::uint8_t> bytes,
   auto lr = std::unique_ptr<LibRaw>(new (std::nothrow) LibRaw(LIBRAW_OPTIONS_NONE));
   if (!lr) return err(status::out_of_memory);
   lr->imgdata.rawparams.max_raw_memory_mb = kMaxRawMemoryMb;
-  if (ctx != nullptr) lr->set_progress_handler(&progress_cb, const_cast<void*>(ctx));
+  lr->set_dataerror_handler(&silent_data_error, nullptr);
+  if (ctx != nullptr) {
+    // LibRaw's callback data is void*; progress_cb only reads it back as const.
+    lr->set_progress_handler(&progress_cb, const_cast<void*>(static_cast<const void*>(ctx)));
+  }
   const int ec = lr->open_buffer(bytes.data(), bytes.size());
   if (ec != LIBRAW_SUCCESS) return err(map_libraw(ec));
 
@@ -469,9 +477,30 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   p.half_size = 0;
   p.user_flip = -1;  // honour the file's orientation
 
+  // A raw strip that the file declares but does not contain. Sony's ARW
+  // loaders read it in one go and never flag the short read (error_count()
+  // below stays 0), then demosaic uninitialised memory into a "success".
+  // data_size is 0 for formats that do not declare it; those rely on the
+  // error count instead.
+  if (const libraw_internal_data_t* internal = lr.get_internal_data_pointer()) {
+    const INT64 off = internal->unpacker_data.data_offset;
+    const INT64 size = internal->unpacker_data.data_size;
+    if (off < 0 || size < 0 ||
+        (size > 0 && static_cast<std::uint64_t>(off) + static_cast<std::uint64_t>(size) >
+                         bytes.size())) {
+      return err(status::corrupt);
+    }
+  }
+
   int ec = lr.unpack();
   if (ec != LIBRAW_SUCCESS) return err(map_libraw(ec));
   if (ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
+  // Several vendor decoders (Sony ARW among them) zero-fill past the end of a
+  // truncated buffer and return success, flagging it only through the data
+  // error count. A half-black "full" image replacing a good preview is worse
+  // than keeping the preview, so a short read is corrupt — and caught here,
+  // before the seconds-long dcraw_process.
+  if (lr.error_count() > 0) return err(status::corrupt);
   ec = lr.dcraw_process();
   if (ec != LIBRAW_SUCCESS) return err(map_libraw(ec));
   if (ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
@@ -531,17 +560,42 @@ bool looks_like_raw(std::span<const std::uint8_t> bytes) noexcept {
   switch (probe(bytes)) {
     case format_family::raw:  return true;
     case format_family::tiff: return tiff_container_is_raw(bytes);
+    case format_family::unknown:
+      // Canon CR3: ISO BMFF with major brand "crx " (trailing space). The
+      // scaffolding probe compares "crx" + NUL and misses it, so a real CR3
+      // probes as unknown; decode() and decode_preview() fall back to here.
+      return bytes.size() >= 12 && std::memcmp(bytes.data() + 4, "ftypcrx ", 8) == 0;
     default:                  return false;
   }
 }
 
 namespace raw_detail {
 
+// Measured with `mv_tests "[.raw-bench]"` (Release, single-threaded LibRaw
+// 0.22.2 — the vcpkg build has no OpenMP), 2026-09-14:
+//
+//   file (MP)          linear   VNG     PPG     AHD    | preview 1:1 -> scaled
+//   CR2 7D II  (20)     943    2947    1025    2565 ms |  75 -> 32 ms (2736 px)
+//   NEF D7500  (21)     904    2971     977    2464 ms | 100 -> 50 ms (2784 px)
+//   ARW A7R III(42)    1360    6996    1594    4741 ms |  10 ms (1616 px embedded)
+//   DNG K-50   (16)     739    2305     791    1983 ms |  68 -> 33 ms (2464 px)
+//
+// PPG: within ~10 % of linear, 2.5-3x faster than AHD, without linear's
+// zipper aliasing on edges. None of them meets plan/09's < 500 ms on 45 MP on
+// the CPU; the embedded preview is what keeps the viewer instant.
+//
+// Auto-bright vs the embedded JPEG (mean luma, 0-255, full / preview):
+//   on:  CR2 207/166  NEF 109/102  ARW 157/137  DNG 132/119
+//   off: CR2 120/166  NEF  70/102  ARW  92/137  DNG  99/119
+// On is consistently closer (mean gap ~20 vs ~36), so it stays on.
+//
+// Preview: DCT 1/2 while the long side stays >= 2048 px keeps first pixel
+// under plan/09's 60 ms; the full decode refines it (rule 3).
 raw_options default_options() noexcept {
   raw_options o;
-  o.quality = demosaic::ahd;
+  o.quality = demosaic::ppg;
   o.auto_bright = true;
-  o.preview_min_long_side = 0;
+  o.preview_min_long_side = 2048;
   return o;
 }
 
