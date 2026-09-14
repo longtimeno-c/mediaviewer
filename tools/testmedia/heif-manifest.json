@@ -1,0 +1,16 @@
+{
+  "note": "Real-world HEIC samples for tests/test_heif_avif.cpp. Downloaded by fetch-heif.ps1 into tools/testmedia/ (gitignored), never committed (plan/09). Only clearly-licensed files belong here.",
+  "files": [
+    {
+      "dest": "heif/libheif-example.heic",
+      "url": "https://raw.githubusercontent.com/strukturag/libheif/v1.23.2/examples/example.heic",
+      "sha256": "7f8b363e4936c0666a25f64f3a92fda10bd8e5453be4592530b65a55dd98f3f2",
+      "bytes": 718114,
+      "licence": "MIT (libheif examples/COPYING, tag v1.23.2)",
+      "what": "Real photographic HEIC (mif1/heic, HEVC) from the libheif project. Not confirmed to be an iPhone capture."
+    }
+  ],
+  "missing": [
+    "No clearly-licensed iPhone HEIC + Live Photo MOV pair was found. The Live Photo half of the PR 7 verify needs one captured locally; do not add a file here without a licence that allows redistribution or at least download for testing."
+  ]
+}

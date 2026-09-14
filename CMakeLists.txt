@@ -251,7 +251,7 @@ target_link_libraries(mv_codec
   PUBLIC mv_core
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
-          windowscodecs)
+          windowscodecs ole32)
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
@@ -514,6 +514,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
     tests/test_present_policy.cpp
