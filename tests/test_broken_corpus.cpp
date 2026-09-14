@@ -590,7 +590,15 @@ std::vector<field_site> dimension_sites(std::span<const std::uint8_t> b) {
 
 using variant_fn = std::function<void(const std::string&, std::span<const std::uint8_t>)>;
 
-void for_each_variant(const corpus_file& seed, bool derive_mutations, const variant_fn& fn) {
+// `max_truncations` > 0 caps the truncation sweep at that many evenly spaced
+// lengths (plus n-1) instead of the dense one. The hand-crafted bombs use it:
+// every truncation of a 7 KB GIF with a 4096x4096 screen still composites a
+// 67 MB canvas, and every truncation of the 16000x16000 PNG past IHDR still
+// allocates 1 GiB — within the decoders' 256 MP cap, so not a bug, but a dense
+// sweep of those two files was 180 s of the Release run. MV_BROKEN_FULL keeps
+// the dense sweep.
+void for_each_variant(const corpus_file& seed, bool derive_mutations, const variant_fn& fn,
+                      std::size_t max_truncations = 0) {
   const auto& src = seed.bytes;
   const std::size_t n = src.size();
   const bool full = full_sweep();
@@ -600,8 +608,18 @@ void for_each_variant(const corpus_file& seed, bool derive_mutations, const vari
   buf = src;
   emit("as-is");
 
-  // Truncation.
-  {
+  if (max_truncations > 0 && !full) {
+    const std::size_t count = std::min(max_truncations, n);
+    for (std::size_t s = 0; s < count; ++s) {
+      const std::size_t len = n * s / count;
+      buf.assign(src.begin(), src.begin() + static_cast<std::ptrdiff_t>(len));
+      emit("truncate@" + std::to_string(len));
+    }
+    if (n > count && n > 0) {
+      buf.assign(src.begin(), src.end() - 1);
+      emit("truncate@" + std::to_string(n - 1));
+    }
+  } else {  // Dense truncation.
     const std::size_t dense = full ? std::min<std::size_t>(n, 65536) : std::min<std::size_t>(n, 1024);
     for (std::size_t len = 0; len < dense; ++len) {
       buf.assign(src.begin(), src.begin() + static_cast<std::ptrdiff_t>(len));
@@ -972,11 +990,17 @@ TEST_CASE("broken corpus: hand-crafted files in tests/data/broken", "[codec][bro
   sweep_stats stats;
   for (const auto& file : nasties) {
     const format_family family = mv::codec::probe(file.bytes);
+    const auto started = std::chrono::steady_clock::now();
     // As-is steps every frame (the 20 000-frame GIF included); truncations a few.
-    for_each_variant(file, false, [&](const std::string& name, std::span<const std::uint8_t> b) {
-      const bool as_is = name.ends_with(":: as-is");
-      sweep_one(dog, name, b, family, sweep_options{as_is ? 200000u : 8u}, failures, stats);
-    });
+    for_each_variant(
+        file, false,
+        [&](const std::string& name, std::span<const std::uint8_t> b) {
+          const bool as_is = name.ends_with(":: as-is");
+          sweep_one(dog, name, b, family, sweep_options{as_is ? 200000u : 4u}, failures, stats);
+        },
+        48);
+    std::printf("[broken-corpus]   %-50s %8.2f s\n", file.name.c_str(),
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
   }
   std::printf("[broken-corpus] broken/: %zu files, %zu inputs, %zu calls\n", nasties.size(),
               stats.inputs, stats.calls);
