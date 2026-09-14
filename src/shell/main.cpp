@@ -129,7 +129,10 @@ struct app_state {
   // plan/16 `F`: borderless on the window's monitor, chrome hidden. The
   // windowed placement and style come back exactly on the way out.
   bool fullscreen = false;
-  WINDOWPLACEMENT windowed_placement{sizeof(WINDOWPLACEMENT)};
+  // `length` is refreshed immediately before GetWindowPlacement. Value-
+  // initialise the whole aggregate here so clang-cl's missing-field check is
+  // not tripped by the old one-member aggregate initialiser.
+  WINDOWPLACEMENT windowed_placement{};
   LONG_PTR windowed_style = 0;
   bool topmost = false;  // Ctrl+Shift+A
   bool popup_open = false;       // a `?` / go-to / find flyout is up
