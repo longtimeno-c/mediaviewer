@@ -44,3 +44,41 @@ TEST_CASE("the current file removed: the next slides in, or the last at the end"
   // Nothing was selected before a refresh: behave like an open.
   REQUIRE(pick(after, true, {}, 0, "c.jpg") == 1);
 }
+
+namespace {
+
+struct stop {
+  std::string primary;
+  std::string secondary;
+};
+
+std::uint32_t pick_pair(const std::vector<stop>& items, bool changed, std::string_view previous,
+                        std::string_view previous_secondary, std::uint32_t previous_index,
+                        std::string_view wanted = {}) {
+  return mv::abi::reselect_pair(
+      items, [](const stop& s) -> const std::string& { return s.primary; },
+      [](const stop& s) -> const std::string& { return s.secondary; }, changed, previous,
+      previous_secondary, previous_index, wanted);
+}
+
+}  // namespace
+
+TEST_CASE("either half of a pair selects its stop", "[abi][folder][pairing]") {
+  const std::vector<stop> items = {{"a.jpg", ""}, {"DSC_1.JPG", "DSC_1.NEF"}, {"z.jpg", ""}};
+  // Opening the RAW from Explorer lands on the JPEG+RAW stop.
+  REQUIRE(pick_pair(items, false, {}, {}, 0, "DSC_1.NEF") == 1);
+  REQUIRE(pick_pair(items, false, {}, {}, 0, "DSC_1.JPG") == 1);
+  // A refresh keeps the stop when a file is added in front of it.
+  const std::vector<stop> added = {{"a.jpg", ""}, {"b.jpg", ""}, {"DSC_1.JPG", "DSC_1.NEF"}};
+  REQUIRE(pick_pair(added, true, "DSC_1.JPG", "DSC_1.NEF", 1) == 2);
+}
+
+TEST_CASE("a refresh that loses one half stays on the half that is left",
+          "[abi][folder][pairing]") {
+  // The JPEG went to the Recycle Bin on its own: the RAW is now a stop.
+  const std::vector<stop> raw_left = {{"a.jpg", ""}, {"DSC_1.NEF", ""}, {"z.jpg", ""}};
+  REQUIRE(pick_pair(raw_left, true, "DSC_1.JPG", "DSC_1.NEF", 1) == 1);
+  // Two separate files became a pair: the user's file is now a secondary.
+  const std::vector<stop> paired = {{"a.jpg", ""}, {"DSC_1.JPG", "DSC_1.NEF"}};
+  REQUIRE(pick_pair(paired, true, "DSC_1.NEF", {}, 2) == 1);
+}

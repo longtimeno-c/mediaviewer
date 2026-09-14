@@ -3,12 +3,21 @@
 //
 // RAW+JPEG: same basename, one filmstrip stop, JPEG/HEIC is the primary.
 // Live Photo: HEIC+MOV same basename, still is primary, motion is the pair.
+// iPhones set to "Most Compatible" write JPG+MOV for the same Live Photo, so a
+// JPEG+MOV of one stem pairs the same way (plan/04 names HEIC; the JPG case is
+// a PR 7 call, flagged for the decision log). MP4 never pairs.
 // Ambiguous groups (three files, mixed stems) stay separate — never hide a
 // file. Portable; no windows.h (D9).
+//
+// Stems match case-insensitively for ASCII only. DCF camera names are upper-
+// case ASCII, so a real pair always matches; two non-ASCII stems that differ
+// only in case are left as two stops, which is the safe failure (nothing
+// hidden). Cost is O(n log n): the watcher re-runs this on every relist of a
+// 2000-file dump.
 #pragma once
 
 #include <algorithm>
-#include <cctype>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -91,77 +100,80 @@ inline std::string key_of(std::string_view name) {
 
 }  // namespace pairing_detail
 
+// A RAW by its extension. The listing already filters by extension; this only
+// drives the filmstrip badge, never a decode (decode probes magic bytes).
+[[nodiscard]] inline bool is_raw_name(std::string_view name) noexcept {
+  return pairing_detail::is_raw(pairing_detail::extension(name));
+}
+
 // Collapse a directory listing into navigation stops. Input is the extension-
-// filtered scan (hidden/system already dropped). Output keeps original relative
-// order of each group's primary.
+// filtered scan (hidden/system already dropped), in the user's sort order.
+// A pair sits where the first of its two files sat, so pairing never reorders
+// the listing; everything unpaired keeps its own position.
 inline std::vector<listed_item> pair_listing(std::vector<dir_entry> entries) {
   using namespace pairing_detail;
-  std::vector<listed_item> out;
-  std::vector<char> used(entries.size(), 0);
+  const std::size_t n = entries.size();
+  std::vector<std::string> keys;
+  keys.reserve(n);
+  for (const auto& e : entries) keys.push_back(key_of(e.name_utf8));
 
-  auto take = [&](std::size_t i, std::size_t j, pair_kind kind, bool jpeg_is_primary) {
-    listed_item item;
-    if (jpeg_is_primary) {
-      item.primary = std::move(entries[j]);
-      item.secondary = std::move(entries[i]);
-    } else {
-      item.primary = std::move(entries[i]);
-      item.secondary = std::move(entries[j]);
-    }
-    item.kind = kind;
-    used[i] = 1;
-    used[j] = 1;
-    out.push_back(std::move(item));
+  // Group equal stems by sorting indices on (stem, original position).
+  std::vector<std::size_t> order(n);
+  for (std::size_t i = 0; i < n; ++i) order[i] = i;
+  std::sort(order.begin(), order.end(), [&keys](std::size_t a, std::size_t b) {
+    const int c = keys[a].compare(keys[b]);
+    return c != 0 ? c < 0 : a < b;
+  });
+
+  // One slot per original position; a pair fills its first member's slot.
+  std::vector<listed_item> slots(n);
+  std::vector<char> filled(n, 0);
+  auto single = [&](std::size_t i) {
+    slots[i].primary = std::move(entries[i]);
+    filled[i] = 1;
   };
 
-  for (std::size_t i = 0; i < entries.size(); ++i) {
-    if (used[i]) continue;
-    const auto ext_i = extension(entries[i].name_utf8);
-    const auto key_i = key_of(entries[i].name_utf8);
+  for (std::size_t run = 0; run < n;) {
+    std::size_t end = run + 1;
+    while (end < n && keys[order[end]] == keys[order[run]]) ++end;
 
-    std::vector<std::size_t> group;
-    group.push_back(i);
-    for (std::size_t j = i + 1; j < entries.size(); ++j) {
-      if (used[j]) continue;
-      if (key_of(entries[j].name_utf8) == key_i) group.push_back(j);
-    }
-
-    // Ambiguous: more than two files sharing a stem → show them all.
-    if (group.size() > 2) {
-      for (std::size_t g : group) {
-        if (used[g]) continue;
-        listed_item item;
-        item.primary = std::move(entries[g]);
-        used[g] = 1;
-        out.push_back(std::move(item));
-      }
-      continue;
-    }
-
-    if (group.size() == 2) {
-      const std::size_t a = group[0];
-      const std::size_t b = group[1];
+    if (end - run == 2) {
+      const std::size_t a = order[run];      // earlier in the listing
+      const std::size_t b = order[run + 1];
       const auto ext_a = extension(entries[a].name_utf8);
       const auto ext_b = extension(entries[b].name_utf8);
-      const bool raw_jpeg = (is_raw(ext_a) && is_still_pair(ext_b)) ||
-                            (is_raw(ext_b) && is_still_pair(ext_a));
-      const bool live = (is_heic(ext_a) && is_mov(ext_b)) || (is_heic(ext_b) && is_mov(ext_a));
-      if (raw_jpeg) {
-        const bool jpeg_primary = is_still_pair(ext_b);
-        take(a, b, pair_kind::raw_jpeg, jpeg_primary);
-        continue;
+      pair_kind kind = pair_kind::none;
+      bool a_primary = true;
+      if (is_raw(ext_a) && is_still_pair(ext_b)) {
+        kind = pair_kind::raw_jpeg;
+        a_primary = false;
+      } else if (is_raw(ext_b) && is_still_pair(ext_a)) {
+        kind = pair_kind::raw_jpeg;
+      } else if (is_still_pair(ext_a) && is_mov(ext_b)) {
+        kind = pair_kind::live_photo;
+      } else if (is_still_pair(ext_b) && is_mov(ext_a)) {
+        kind = pair_kind::live_photo;
+        a_primary = false;
       }
-      if (live) {
-        const bool heic_primary = is_heic(ext_a);
-        take(a, b, pair_kind::live_photo, !heic_primary);
+      if (kind != pair_kind::none) {
+        listed_item& item = slots[a];
+        item.primary = std::move(entries[a_primary ? a : b]);
+        item.secondary = std::move(entries[a_primary ? b : a]);
+        item.kind = kind;
+        filled[a] = 1;
+        run = end;
         continue;
       }
     }
+    // One file, an unpairable two, or an ambiguous group: every file a stop.
+    for (std::size_t k = run; k < end; ++k) single(order[k]);
+    run = end;
+  }
 
-    listed_item item;
-    item.primary = std::move(entries[i]);
-    used[i] = 1;
-    out.push_back(std::move(item));
+  std::vector<listed_item> out;
+  out.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (filled[i]) out.push_back(std::move(slots[i]));
   }
   return out;
 }

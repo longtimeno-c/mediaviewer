@@ -85,14 +85,26 @@ public struct MvImageInfo
     public uint Reserved;
 }
 
+/// <summary>Mirrors <c>mv_pair_kind</c> (ABI 0.5).</summary>
+public enum MvPairKind : uint
+{
+    None = 0,
+    RawJpeg = 1,
+    LivePhoto = 2,
+}
+
+/// <summary>Mirrors <c>mv_folder_item</c>: one navigation stop.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct MvFolderItem
 {
+    public const uint FlagSelected = 1;
+    public const uint FlagPrimaryRaw = 2;
+
     public uint Index;
     public uint Flags;
     public ulong SizeBytes;
     public long MtimeUnix;
-    public uint Reserved0;
+    public MvPairKind PairKind;  // was Reserved0 before ABI 0.5
     public uint Reserved1;
 }
 

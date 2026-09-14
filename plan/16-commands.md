@@ -131,7 +131,8 @@ Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal t
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 8 can fill it) |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |
 | `\` hold | Previous item for burst pick. Uses the five-slot GPU LRU ([04-image-pipeline.md](04-image-pipeline.md)); must not `mv_image_open` a replacement |
-| `;` | Play Live Photo / motion once, return to the still. Required: hover-to-play fails the no-mouse bar |
+| `;` | Play Live Photo / motion once, return to the still. Required: hover-to-play fails the no-mouse bar. PR 7: edge only (no hold-to-play); `;` again, `Esc` or any navigation also returns to the still, which comes back from the LRU. Plays with audio. No transport strip on a Live Photo stop |
+| *(unbound)* | **Open RAW of pair** / **Open JPEG of pair** (PR 7). [04](04-image-pipeline.md) put these in the command palette, which was dropped; they are rows in the live table with no default key, listed in Settings (not in `?`) so a paired file is never trapped. Open RAW shows the RAW half on the canvas at the same stop; Open JPEG goes back to the primary |
 | `B` | Cycle canvas background (black / gray / white / checkerboard). Checkerboard is the alpha case |
 | `S` | Sticky zoom on advance (keep scale + pan fraction). Default off |
 | `C` | Clipping blinkies. Display-referred in PR 6; accurate RAW clip from PR 10 |
@@ -360,7 +361,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 4 | Arrow next/prev, sort (name/mtime/size/type), five-slot LRU that hold-previous will use. No command table yet |
 | 5c | Transport commands, SMTC, `,` `.`, media keys, `Q` `E` tap-speed / hold-skim, speed dropdown at the bar's right, bottom-centre transport strip |
 | **6** | Router, default browse/view/slideshow map, `?`, Space semantics, marks, F7/F8, status, typeahead, sticky zoom, companions-as-hidden, loupe, hold-previous, blinkies (display-referred), pixel grid, background, folder tree island (or slip), always-on-top, fullscreen chrome hide, animation play/pause |
-| 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop |
+| 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop. Landed: `;` play motion, unbound Open RAW / Open JPEG rows, `Esc` ends motion first, RAW / LIVE tile badges. Filter: RAW is **not** in this slice |
 | 8 | `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
 | 9 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops) |
 | 10 | `E` pane, accurate RAW clipping, histogram |

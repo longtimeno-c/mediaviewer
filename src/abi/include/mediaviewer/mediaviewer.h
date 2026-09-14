@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 4
+#define MV_ABI_VERSION_MINOR 5
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -250,17 +250,30 @@ MV_API mv_status MV_CALL mv_session_image_info(mv_session_t session, mv_image_in
  * the core retains). Thumbnails are on-disk JPEG paths, never pixels.
  * ------------------------------------------------------------------------- */
 
+/* PR 7 (ABI 0.5). A folder item is a navigation STOP, not a file: a camera's
+ * RAW+JPEG and an iPhone Live Photo are paired at scan time (plan/04) into one
+ * item. The primary (the JPEG / HEIC still) is what name, path, size, mtime,
+ * thumbs, decode and prefetch use; the secondary is reachable through
+ * mv_folder_item_pair_path. Unpaired and ambiguous files are single stops. */
+typedef enum mv_pair_kind {
+  MV_PAIR_NONE = 0,
+  MV_PAIR_RAW_JPEG = 1,   /* primary JPEG/HEIC, secondary RAW */
+  MV_PAIR_LIVE_PHOTO = 2  /* primary still (HEIC or JPG), secondary MOV */
+} mv_pair_kind;
+
 typedef struct mv_folder_item {
   uint32_t index;
-  uint32_t flags;       /* bit 0 = selected */
-  uint64_t size_bytes;
-  int64_t  mtime_unix;
-  uint32_t reserved0;
+  uint32_t flags;       /* bit 0 = selected; bit 1 = primary is a RAW (0.5) */
+  uint64_t size_bytes;  /* of the primary */
+  int64_t  mtime_unix;  /* of the primary */
+  uint32_t pair_kind;   /* mv_pair_kind (0.5; was reserved0, always 0 before) */
   uint32_t reserved1;
 } mv_folder_item;
 
 /* [any-thread][no-block] `utf8_dir` is copied. `utf8_select_path` may be NULL;
- * when set, that file is selected after the scan (otherwise index 0). */
+ * when set, the stop holding that file is selected after the scan (otherwise
+ * index 0). Either half of a pair selects the pair's stop. FOLDER_READY /
+ * FOLDER_CHANGED payloads count stops. */
 MV_API mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
                                         const char* utf8_select_path, uint64_t* out_job_id);
 
@@ -278,6 +291,11 @@ MV_API mv_status MV_CALL mv_folder_item_path(mv_session_t session, uint32_t inde
                                              uint32_t cap, uint32_t* out_bytes);
 MV_API mv_status MV_CALL mv_folder_item_thumb_path(mv_session_t session, uint32_t index,
                                                    char* utf8, uint32_t cap, uint32_t* out_bytes);
+/* 0.5. The secondary file of a paired stop (the RAW of a RAW+JPEG, the MOV of
+ * a Live Photo). Empty string (out_bytes 1) when pair_kind is MV_PAIR_NONE.
+ * Same buffer rules as the calls above. */
+MV_API mv_status MV_CALL mv_folder_item_pair_path(mv_session_t session, uint32_t index,
+                                                  char* utf8, uint32_t cap, uint32_t* out_bytes);
 
 /* [any-thread][no-block] Bump view generation, publish an LRU hit or open,
  * prefetch ±2. Pushes MV_COMPLETION_FOLDER_SELECTED. */

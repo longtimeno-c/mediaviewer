@@ -243,6 +243,7 @@ add_library(mv_codec STATIC
   src/codec/heif.cpp
   src/codec/avif.cpp
   src/codec/raw.cpp
+  src/codec/raw_internal.h
   src/codec/os_decode_win.cpp
   src/codec/os_decode.h
   src/codec/decode.h
@@ -521,11 +522,13 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_raw.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
+    tests/test_tiff_ico.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp
@@ -548,6 +551,7 @@ if(MV_BUILD_TESTS)
     WebP::webp
     WebP::webpdemux
     WebP::libwebpmux  # tests only: WebPAnimEncoder builds animated fixtures
+    TIFF::TIFF        # tests only: in-memory TIFF fixtures (tests/fixtures_tiff_ico.h)
     lcms2::lcms2
     Catch2::Catch2WithMain
     ole32

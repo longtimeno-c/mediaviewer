@@ -34,6 +34,9 @@ back_target resolve_back(const view_state& s) noexcept {
   // A `?` / go-to / find flyout closes before anything under it.
   if (s.popup_open) return back_target::popup;
   if (s.settings_open) return back_target::settings;
+  // A Live Photo's motion is a moment on top of the still, not a mode: Esc
+  // ends it before it touches gallery, slideshow or fullscreen.
+  if (s.motion_playing) return back_target::motion;
   // 6f: an open `?` / go-to / find flyout must close before anything below. It
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.

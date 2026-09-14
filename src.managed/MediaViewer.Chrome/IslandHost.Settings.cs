@@ -473,8 +473,13 @@ public static partial class IslandHost
         SetCaptureHint($"Shortcut updated to {KeysForRow(row)}.");
     }
 
-    private static string KeysForRow(int index) => string.Join("  /  ",
-        CommandRows.Where(row => row.Row == index).Select(row => row.Keys).Distinct());
+    private static string KeysForRow(int index)
+    {
+        string keys = string.Join("  /  ",
+            CommandRows.Where(row => row.Row == index && row.Keys.Length > 0)
+                       .Select(row => row.Keys).Distinct());
+        return keys.Length == 0 ? "Unbound" : keys;
+    }
 
     private static void SetButtonText(Button button, string text)
     {
