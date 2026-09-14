@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <new>
 #include <vector>
 
@@ -99,6 +100,15 @@ bool hevc_mft_present() noexcept {
   return found;
 }
 
+// Codec packs are not installed mid-session in practice; enumerate once per
+// process instead of loading mfplat for every HEIC.
+bool hevc_mft_present_cached() noexcept {
+  static std::once_flag once;
+  static bool present = false;
+  std::call_once(once, [] { present = hevc_mft_present(); });
+  return present;
+}
+
 // Anything that is not a clean success here means "let libheif decide".
 constexpr status kFallThrough = status::unsupported_format;
 
@@ -128,7 +138,7 @@ result<raster> try_os_decode(std::span<const std::uint8_t> bytes, const job_cont
   try {
     com_scope scope;
     if (!scope.usable()) return err(kFallThrough);
-    if (!hevc_mft_present()) return err(kFallThrough);
+    if (!hevc_mft_present_cached()) return err(kFallThrough);
 
     com<IWICImagingFactory> factory;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER,

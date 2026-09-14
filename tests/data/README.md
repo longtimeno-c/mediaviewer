@@ -1,6 +1,6 @@
 # tests/data — generated HEIC / AVIF fixtures
 
-Tiny (< 100 KB total) synthetic images for `tests/test_heif_avif.cpp`. Every
+Tiny (about 60 KB total) synthetic images for `tests/test_heif_avif.cpp`. Every
 file here was generated from flat colours and gradients by the scripts in this
 directory; no photograph or third-party media is included. They are
 licence-clean: the pixels are trivial test patterns (CC0 / public domain), and
@@ -23,6 +23,12 @@ heifvenv/Scripts/python -m pip install pillow-heif pillow numpy   # pillow-heif 
 heifvenv/Scripts/python gen_heif.py heif          # also writes heif/display_p3.icc (not committed)
 heifvenv/Scripts/python gen_avif_pillow.py avif heif/display_p3.icc
 sh gen_avif.sh avif                               # ffmpeg 8.1 with libaom-av1
+# The encoders drop some CICP codes (ffmpeg's avif muxer always writes nclx
+# 2/2; pillow-heif stores transfer 13 when asked for PQ 16). The bitstreams
+# carry no conflicting description, so the colr box is patched afterwards:
+python patch_nclx.py avif/srgb_8bit.avif 1 13 1 1
+python patch_nclx.py avif/p3_nclx.avif 12 13 5 1
+python patch_nclx.py heif/pq_10bit.heic 9 16 9 1
 ```
 
 (pillow-heif's wheel bundles x265 to *encode* the HEIC fixtures on the
