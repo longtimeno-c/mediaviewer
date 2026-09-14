@@ -77,7 +77,9 @@ TEST_CASE("command ids are dense, named and unique", "[shell][commands]") {
     REQUIRE(id > 0);
     REQUIRE(id < kCommandCount);
     REQUIRE_FALSE(is_reserved_notification(id));
-    REQUIRE_FALSE(is_retired_command(id));
+    // A retired id may keep a named row so the wire enum stays documented, but
+    // only a keyless one: it is never bound, listed in Settings, or shown by `?`.
+    if (is_retired_command(id)) REQUIRE(info.keyless);
     REQUIRE(std::strlen(info.name) > 0);
     REQUIRE(names.insert(info.name).second);
     REQUIRE(ids.insert(id).second);
@@ -86,10 +88,9 @@ TEST_CASE("command ids are dense, named and unique", "[shell][commands]") {
   // Every id below count is either a command or a reserved wire notification.
   for (int id = 1; id < kCommandCount; ++id) {
     INFO("id " << id);
-    // `palette` (76) is a retired hole since the Ctrl+K palette was dropped
-    // (plan/12 2026-09-13), so later ids do not shift.
+    // `palette` (76) is retired since the Ctrl+K palette was dropped
+    // (plan/12 2026-09-13); it keeps its value so later ids do not shift.
     REQUIRE((ids.count(id) == 1 || is_reserved_notification(id) || is_retired_command(id)));
-    if (is_retired_command(id)) REQUIRE(ids.count(id) == 0);
   }
   for (const auto& b : default_bindings()) REQUIRE(find_command(b.command) != nullptr);
 }
