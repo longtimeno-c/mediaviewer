@@ -132,9 +132,12 @@ foreach ($name in $Harness) {
     if ($launchFailed) {
         # Name it in the log as well as the table: an NTSTATUS in decimal is
         # not something anyone should have to convert by hand at 2 a.m.
-        Write-Host ("fuzz_{0}: never started. Exit 0x{1:X8}{2} — the process died before " +
-                    "libFuzzer ran a unit, so nothing was fuzzed." -f $name, $exit,
-                    $(if ($exit -eq -1073741502) { ' (STATUS_DLL_INIT_FAILED)' }))
+        # One string, no concatenation: -f binds tighter than +, so a format
+        # split across two quoted parts formats only the second and prints the
+        # first's placeholders verbatim. It did exactly that once already.
+        $known = if ($exit -eq -1073741502) { ' (STATUS_DLL_INIT_FAILED)' } else { '' }
+        $note = 'fuzz_{0}: never started. Exit 0x{1:X8}{2} - the process died before libFuzzer ran a unit, so nothing was fuzzed.'
+        Write-Host ($note -f $name, $exit, $known)
     }
     $ok = ($exit -eq 0) -and ($found.Count -eq 0)
     $results += [pscustomobject]@{
