@@ -162,5 +162,16 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               "${MV_FUZZ_ASAN_DLL}" "$<TARGET_FILE_DIR:${target}>")
   endif()
+  # Every DLL this harness actually imports, beside it. vcpkg's own applocal
+  # deployment covers the common case, and for eleven of these harnesses it
+  # evidently does; fuzz_decode and fuzz_animation — the two with the widest
+  # import closure — die at 0xC0000142 (STATUS_DLL_INIT_FAILED) before
+  # libFuzzer runs a unit, which is the shape of a dependency the loader could
+  # not bring up. This is CMake's own answer to that question and it no-ops
+  # for anything already deployed.
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
+    COMMAND_EXPAND_LISTS)
   add_dependencies(mv_fuzzers ${target})
 endforeach()
