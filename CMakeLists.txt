@@ -622,18 +622,25 @@ if(MV_BUILD_TESTS)
   # them as Skipped instead, so the summary says how much was not proved.
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
+  # A per-test timeout, so a test that wedges is named by ctest instead of
+  # taking the whole step down with it fifteen minutes later and the log
+  # ending mid-sentence. These cases run in well under a second; the corpus
+  # sweep sets its own below. This belongs to the suite, not to one CI file:
+  # a hang is a hang whoever runs it.
+  set(MV_TEST_TIMEOUT 300)
   if(MV_ASAN)
     # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
     # Windows driver when the executable is ASan-instrumented. Exclude every
     # video-tagged test here, not only cases carrying both [video] and [ring].
     # Normal MSVC and clang-cl jobs still run the complete video suite.
     catch_discover_tests(mv_tests TEST_SPEC "~[video]"
-      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   else()
-    catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    catch_discover_tests(mv_tests
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   endif()
   catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
-    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()
