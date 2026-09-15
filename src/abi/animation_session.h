@@ -98,9 +98,20 @@ class animation_session {
   }
 
   // [render][no-block] Takes the next frame for `generation`, if one is ready.
-  // Frames from an older generation or before a seek are released here.
+  // A caller asking with a retired generation gets nothing; for the current
+  // one, frames from an older generation or from before a seek are released
+  // here as they are popped.
   [[nodiscard]] bool take(std::uint32_t generation, animation_frame& out) noexcept {
     animation_frame f;
+    // Retirement is authoritative. A frame can still be pushed after retire()
+    // drained the ring — the decode thread may already be past its check, one
+    // texture in flight — and that frame carries the retired generation. It
+    // must not come back to a caller still asking with that generation.
+    // Only the render thread retires and takes, so this is never stale.
+    // Leave the ring alone: the frames in it belong to the generation that
+    // replaced this one, and its own take() releases anything older.
+    const std::uint32_t wanted = wanted_gen_.load(std::memory_order_acquire);
+    if (wanted != 0 && generation != wanted) return false;
     const std::uint32_t epoch = epoch_.load(std::memory_order_acquire);
     while (ring_.try_pop(f)) {
       if (f.generation != generation || f.epoch != epoch) {
