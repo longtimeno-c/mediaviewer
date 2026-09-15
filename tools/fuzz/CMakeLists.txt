@@ -36,20 +36,90 @@ if(NOT MV_CLANG_RT_DIR)
   message(FATAL_ERROR "clang_rt.fuzzer-x86_64.lib not found under ${_mv_llvm_bin}/../lib/clang. "
                       "Install the VS 'C++ Clang tools for Windows' component (LLVM 17+).")
 endif()
+
+# Which compiler-rt archives a toolchain ships changes between LLVM releases,
+# and the link below depends on it. Put the real list in the configure log so a
+# link failure here is one read, not one CI round, away from an answer.
+file(GLOB _mv_rt_archives RELATIVE "${MV_CLANG_RT_DIR}" "${MV_CLANG_RT_DIR}/clang_rt.*-x86_64.lib")
 message(STATUS "MV_FUZZ: clang runtime ${MV_CLANG_RT_DIR}")
+message(STATUS "MV_FUZZ: archives ${_mv_rt_archives}")
+
+# Pick the ASan runtime the installed toolchain actually has, rather than
+# hard-coding one.
+#
+# LLVM dropped the static Windows ASan runtime (clang_rt.asan-x86_64.lib) in
+# favour of the DLL that MSVC's /fsanitize=address also uses, so a current
+# Visual Studio clang has only clang_rt.asan_dynamic-x86_64.lib plus a thunk
+# per CRT flavour. Naming the static archives unconditionally is what made
+# every fuzz build fail at lld-link the day the runner image moved on.
+#
+# CRT: libFuzzer comes in a /MT build (clang_rt.fuzzer-x86_64.lib) and a /MD
+# one (clang_rt.fuzzer_MD-x86_64.lib), and lld-link refuses to mix a /MT
+# archive with /MD objects (/failifmismatch RuntimeLibrary). So the CRT is
+# chosen with the runtime, not before it. Either way the instrumented mv_*
+# libraries and the harnesses agree, while vcpkg's dependencies stay the /MD
+# DLLs they are. That is sound only because no mv_* code frees memory a
+# dependency allocated (or vice versa) — each library frees its own through
+# its own API. Keep it that way in decoder code.
+set(_mv_rt "${MV_CLANG_RT_DIR}")
+if(EXISTS "${_mv_rt}/clang_rt.asan-x86_64.lib" AND EXISTS "${_mv_rt}/clang_rt.asan_cxx-x86_64.lib")
+  set(MV_FUZZ_MODE "static ASan, /MT")
+  set(MV_FUZZ_CRT "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  set(MV_FUZZ_RT_LIBS "${_mv_rt}/clang_rt.fuzzer-x86_64.lib")
+  # Whole-archived so every interceptor is present, not only the ones a
+  # referenced object happens to pull in.
+  set(MV_FUZZ_RT_WHOLE "${_mv_rt}/clang_rt.asan-x86_64.lib"
+                       "${_mv_rt}/clang_rt.asan_cxx-x86_64.lib")
+elseif(EXISTS "${_mv_rt}/clang_rt.asan_dynamic-x86_64.lib"
+       AND EXISTS "${_mv_rt}/clang_rt.asan_static_runtime_thunk-x86_64.lib")
+  set(MV_FUZZ_MODE "dynamic ASan, /MT")
+  set(MV_FUZZ_CRT "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  set(MV_FUZZ_RT_LIBS "${_mv_rt}/clang_rt.fuzzer-x86_64.lib"
+                      "${_mv_rt}/clang_rt.asan_dynamic-x86_64.lib")
+  set(MV_FUZZ_RT_WHOLE "${_mv_rt}/clang_rt.asan_static_runtime_thunk-x86_64.lib")
+elseif(EXISTS "${_mv_rt}/clang_rt.asan_dynamic-x86_64.lib"
+       AND EXISTS "${_mv_rt}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib"
+       AND EXISTS "${_mv_rt}/clang_rt.fuzzer_MD-x86_64.lib")
+  set(MV_FUZZ_MODE "dynamic ASan, /MD")
+  set(MV_FUZZ_CRT "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
+  set(MV_FUZZ_RT_LIBS "${_mv_rt}/clang_rt.fuzzer_MD-x86_64.lib"
+                      "${_mv_rt}/clang_rt.asan_dynamic-x86_64.lib")
+  set(MV_FUZZ_RT_WHOLE "${_mv_rt}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+else()
+  message(FATAL_ERROR
+    "MV_FUZZ: no linkable ASan runtime in ${MV_CLANG_RT_DIR}. Found: ${_mv_rt_archives}. "
+    "Expected either clang_rt.asan-x86_64.lib + clang_rt.asan_cxx-x86_64.lib, or "
+    "clang_rt.asan_dynamic-x86_64.lib with clang_rt.asan_static_runtime_thunk-x86_64.lib "
+    "(/MT) or clang_rt.asan_dynamic_runtime_thunk-x86_64.lib + clang_rt.fuzzer_MD-x86_64.lib "
+    "(/MD). Fuzzing without ASan is not the fallback: the harnesses exist to catch memory "
+    "errors (plan/09).")
+endif()
+if(NOT MV_FUZZ_MODE MATCHES "^static"
+   AND EXISTS "${_mv_rt}/clang_rt.asan_static-x86_64.lib")
+  # The dynamic runtime has a static half: the interceptors clang inlines into
+  # the instrumented objects resolve against it.
+  list(APPEND MV_FUZZ_RT_LIBS "${_mv_rt}/clang_rt.asan_static-x86_64.lib")
+endif()
+message(STATUS "MV_FUZZ: ${MV_FUZZ_MODE}")
+
+# The dynamic runtime needs its DLL beside the harness — the runtime directory
+# is not on PATH on a CI runner.
+if(NOT MV_FUZZ_MODE MATCHES "^static")
+  find_file(MV_FUZZ_ASAN_DLL clang_rt.asan_dynamic-x86_64.dll
+    PATHS "${MV_CLANG_RT_DIR}" "${_mv_llvm_bin}" "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+    NO_DEFAULT_PATH)
+  if(MV_FUZZ_ASAN_DLL)
+    message(STATUS "MV_FUZZ: ASan runtime DLL ${MV_FUZZ_ASAN_DLL}")
+  else()
+    message(WARNING "MV_FUZZ: clang_rt.asan_dynamic-x86_64.dll not found next to the runtime "
+                    "archives. The harnesses will not start unless it is on PATH.")
+  endif()
+endif()
 
 # Instrument everything that links mv_project_options.
-#
-# CRT: the libFuzzer library Visual Studio ships (clang_rt.fuzzer-x86_64.lib)
-# is built /MT, and lld-link refuses to mix it with /MD objects
-# (/failifmismatch RuntimeLibrary). So the instrumented mv_* libraries and the
-# harnesses use the static CRT and the static ASan runtime, while vcpkg's
-# dependencies stay the /MD DLLs they are. That is sound only because no mv_*
-# code frees memory a dependency allocated (or vice versa) — each library
-# frees its own through its own API. Keep it that way in decoder code.
 set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
-  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
   -fsanitize=fuzzer-no-link
   /fsanitize=address
@@ -76,17 +146,21 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
     target_link_libraries(${target} PRIVATE mv_image)
   endif()
   # The linker is not the clang driver, so name the runtimes the driver would
-  # for -fsanitize=fuzzer,address with /MT: libFuzzer (with its main) and the
-  # static ASan runtime, whole-archived so its interceptors are all present.
+  # for -fsanitize=fuzzer,address: libFuzzer (with its main) and the ASan
+  # runtime selected above.
   target_link_directories(${target} PRIVATE "${MV_CLANG_RT_DIR}")
-  target_link_libraries(${target} PRIVATE clang_rt.fuzzer-x86_64.lib)
-  target_link_options(${target} PRIVATE
-    "/wholearchive:${MV_CLANG_RT_DIR}/clang_rt.asan-x86_64.lib"
-    "/wholearchive:${MV_CLANG_RT_DIR}/clang_rt.asan_cxx-x86_64.lib"
-    /INCREMENTAL:NO
-    /DEBUG)
+  target_link_libraries(${target} PRIVATE ${MV_FUZZ_RT_LIBS})
+  target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
+  foreach(archive IN LISTS MV_FUZZ_RT_WHOLE)
+    target_link_options(${target} PRIVATE "/wholearchive:${archive}")
+  endforeach()
   set_target_properties(${target} PROPERTIES
     FOLDER fuzz
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
+  if(MV_FUZZ_ASAN_DLL)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${MV_FUZZ_ASAN_DLL}" "$<TARGET_FILE_DIR:${target}>")
+  endif()
   add_dependencies(mv_fuzzers ${target})
 endforeach()

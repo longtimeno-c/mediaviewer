@@ -523,6 +523,7 @@ if(MV_BUILD_TESTS)
   find_package(Catch2 3 CONFIG REQUIRED)
 
   add_executable(mv_tests
+    tests/crt_no_dialogs.cpp
     tests/test_result.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
@@ -605,6 +606,7 @@ if(MV_BUILD_TESTS)
   # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
   # build while another session holds that file.
   add_executable(mv_pr16_tests
+    tests/crt_no_dialogs.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
@@ -659,7 +661,7 @@ endif()
 # nothing else. Seeds live in tests/data (committed, synthetic, licence-clean).
 # ---------------------------------------------------------------------------
 if(MV_BUILD_TESTS AND NOT MV_FUZZ)
-  add_executable(mv_broken_tests tests/test_broken_corpus.cpp)
+  add_executable(mv_broken_tests tests/test_broken_corpus.cpp tests/crt_no_dialogs.cpp)
   target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
   target_include_directories(mv_broken_tests PRIVATE src)
   target_compile_definitions(mv_broken_tests PRIVATE
