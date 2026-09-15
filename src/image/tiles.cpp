@@ -438,7 +438,6 @@ void tile_service::run() noexcept {
   std::uint32_t seen = 0;
   bool more = false;
   while (true) {
-    const generation current = jobs_->current_generation();
     {
       std::unique_lock lock(mutex_);
       if (!more) {
@@ -449,6 +448,12 @@ void tile_service::run() noexcept {
         });
       }
       if (stop_) break;
+      // Read the generation here, awake, and not before the wait. That wait
+      // is up to 100 ms long and navigation is exactly what ends it, so a
+      // value sampled before it is the view the user has just left: the poke
+      // that follows a bump would service it, creating a tick's worth of
+      // tiles for an image nobody is looking at.
+      const generation current = jobs_->current_generation();
       seen = pokes_.load(std::memory_order_relaxed);
       // A set nobody else holds and whose view has moved on is done. Its CPU
       // pyramid is freed here, on this thread, not in a render-thread release.
@@ -467,7 +472,9 @@ void tile_service::run() noexcept {
     const auto tick_start = clock::now();
     std::uint32_t made = 0;
     for (auto& set : work) {
-      if (set->gen() != current) continue;
+      // Fresh each set, not the value from the top of the tick: a bump part
+      // way through servicing stops the next set rather than the next tick.
+      if (set->gen() != jobs_->current_generation()) continue;
       made += set->service(k_tiles_per_tick - made);
       if (made >= k_tiles_per_tick) break;
     }

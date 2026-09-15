@@ -19,6 +19,43 @@ using mv::image::k_tile_size;
 using mv::image::needs_tiles;
 using mv::image::tile_layout;
 
+namespace {
+
+// The WARP test below bounds how long a frame call and a tile create may take.
+// Those numbers describe optimised code: an unoptimised build on a software
+// rasteriser measures the debug CRT and iterator checking, not the tile
+// service, and CI has only just started running this suite in Debug. Scale
+// them by configuration rather than delete them — the same call
+// tests/test_broken_corpus.cpp makes for its per-call timeout. The real
+// pacing gate is tools/frametime on a GPU runner (D6), not this test.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr bool kAsan = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr bool kAsan = true;
+#else
+constexpr bool kAsan = false;
+#endif
+#else
+constexpr bool kAsan = false;
+#endif
+
+#if defined(NDEBUG)
+constexpr bool kOptimised = !kAsan;
+#else
+constexpr bool kOptimised = false;
+#endif
+
+// One frame call: 2 ms optimised. It must never block on a tile either way.
+constexpr long long kFrameBudgetUs = kOptimised ? 2000 : 40000;
+// One tile create, against the service's per-tick cap.
+constexpr long long kCreateBudgetUs = kOptimised ? 20000 : 400000;
+// How long the visible tiles have to land at all. A bound on progress, not
+// on speed: the assertions after it are what the test is for.
+constexpr int kLandSeconds = kOptimised ? 20 : 90;
+
+}  // namespace
+
 TEST_CASE("tiling starts above ~64 MP or past the texture limit", "[tiles]") {
   REQUIRE_FALSE(needs_tiles(8000, 8000));    // 64 MP exactly
   REQUIRE(needs_tiles(8001, 8000));
@@ -189,10 +226,10 @@ TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", 
                             .count();
   REQUIRE(draws.empty());
   REQUIRE(set.pending());
-  CHECK(frame_us < 2000);
+  CHECK(frame_us < kFrameBudgetUs);
 
   // Keep "presenting" until the visible tiles landed.
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kLandSeconds);
   const auto visible = set.layout().visible(0, view.pan_x, view.pan_y, view.zoom, view.view_w,
                                             view.view_h, 0);
   const std::size_t want = static_cast<std::size_t>(visible.x1 - visible.x0) *
@@ -212,7 +249,7 @@ TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", 
   REQUIRE(stats.created >= want);
   REQUIRE(stats.vram_bytes <= mv::image::k_tile_vram_budget);
   // Per refresh interval the service creates at most k_tiles_per_tick tiles.
-  CHECK(stats.last_create_us < 20000);
+  CHECK(stats.last_create_us < kCreateBudgetUs);
 
   // A navigation bump stops the service creating for this set.
   jobs.bump_generation();
