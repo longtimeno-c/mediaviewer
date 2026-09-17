@@ -555,6 +555,16 @@ void present_lab_mac::render_thread_main() noexcept {
       }
     }
 
+    // The loop above exits two ways: running_ went false (an external
+    // stop() call — main_mac.mm's applicationShouldTerminate: already owns
+    // quitting the app once this call returns) or a soak's `break` above
+    // completed on its own with running_ still true (nothing else is going
+    // to ask the app to quit, so the tail below must). Capturing this now,
+    // before teardown, is what stops the self-terminate at the bottom of
+    // this function from re-entering applicationShouldTerminate: after an
+    // external stop() already started one termination sequence.
+    const bool self_initiated_exit = running_.load(std::memory_order_acquire);
+
     // submit_image_load()'s job holds a raw (non-retaining) id<MTLDevice>
     // pointer, so it must be finished before device_.destroy() below, on
     // every exit path (soak completing here, not just an external stop()).
@@ -609,9 +619,17 @@ void present_lab_mac::render_thread_main() noexcept {
 
   finished_.store(true, std::memory_order_release);
   running_.store(false, std::memory_order_release);
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [NSApp terminate:nil];
-  });
+  // Only self-terminate when nothing external asked us to stop: an
+  // external stop() (main_mac.mm's applicationShouldTerminate:, mid its own
+  // background-queue shutdown) already owns the one NSTerminateLater /
+  // replyToApplicationShouldTerminate: cycle for this quit. Calling
+  // [NSApp terminate:nil] again here would re-enter
+  // applicationShouldTerminate: for a termination already in flight.
+  if (self_initiated_exit) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [NSApp terminate:nil];
+    });
+  }
 }
 
 bool present_lab_mac::write_json_report() const noexcept {
