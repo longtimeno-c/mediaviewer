@@ -52,6 +52,14 @@ double process_cpu_seconds() noexcept {
          static_cast<double>(ru.ru_stime.tv_sec) + static_cast<double>(ru.ru_stime.tv_usec) * 1e-6;
 }
 
+// PR 18: the height of the canvas rect below the SwiftUI command bar. The
+// swapchain itself still spans the full backing size (main_mac.mm's
+// MvMetalView is never resized) — only fit/pan and the blit's origin_y see
+// this, same as Windows' chrome_height_px (gfx/blit.h).
+float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
+  return std::max(1.0f, static_cast<float>(s.height) - static_cast<float>(s.chrome_height_px));
+}
+
 void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(static_cast<float>(s.width), static_cast<float>(s.height));
@@ -331,7 +339,7 @@ void present_lab_mac::render_thread_main() noexcept {
           if (current_image_ && camera_.fit_mode()) {
             camera_.fit(static_cast<float>(current_image_->width),
                        static_cast<float>(current_image_->height),
-                       static_cast<float>(snapshot.width), static_cast<float>(snapshot.height),
+                       static_cast<float>(snapshot.width), usable_window_h(snapshot),
                        /*immediate=*/false);
           }
           redraw = true;
@@ -344,7 +352,7 @@ void present_lab_mac::render_thread_main() noexcept {
           camera_.reset();
           camera_.fit(static_cast<float>(current_image_->width),
                      static_cast<float>(current_image_->height),
-                     static_cast<float>(snapshot.width), static_cast<float>(snapshot.height),
+                     static_cast<float>(snapshot.width), usable_window_h(snapshot),
                      /*immediate=*/true);
           redraw = true;
         }
@@ -356,7 +364,11 @@ void present_lab_mac::render_thread_main() noexcept {
           const auto image_w = static_cast<float>(current_image_->width);
           const auto image_h = static_cast<float>(current_image_->height);
           const auto window_w = static_cast<float>(snapshot.width);
-          const auto window_h = static_cast<float>(snapshot.height);
+          // PR 18: the SwiftUI command bar covers the top chrome_height_px of
+          // the canvas, the same "swapchain spans the client area, chrome is
+          // composited over it" shape as blit.h's origin_x/origin_y on
+          // Windows (gfx/blit.h) -- fit/pan only see the rect below it.
+          const float window_h = usable_window_h(snapshot);
 
           if (snapshot.fit_seq != seen_fit_seq_) {
             seen_fit_seq_ = snapshot.fit_seq;
@@ -516,7 +528,8 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.pan_y = camera_.pan_y();
           bp.zoom = camera_.zoom();
           bp.window_w = static_cast<float>(snapshot.width);
-          bp.window_h = static_cast<float>(snapshot.height);
+          bp.window_h = usable_window_h(snapshot);
+          bp.origin_y = static_cast<float>(snapshot.chrome_height_px);
           bp.image_w = static_cast<float>(current_image_->width);
           bp.image_h = static_cast<float>(current_image_->height);
           bp.time_seconds = static_cast<float>(elapsed);
