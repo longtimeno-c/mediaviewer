@@ -170,6 +170,10 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
     ++self.snap->toggle_animation_seq;
   } else if (c == 'r' || c == 'R') {
     ++self.snap->reset_stats_seq;
+  } else if (c == '0') {
+    ++self.snap->fit_seq;
+  } else if (c == '1') {
+    ++self.snap->one_to_one_seq;
   } else if (c == 0x1b) {
     [self.window close];
     return;
@@ -191,6 +195,7 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   mv::shell::input_snapshot _snap;
   mv::job_system _jobs;
   mv::shell::mac_lab_options _options;
+  bool _terminating;
 }
 - (instancetype)initWithOptions:(const mv::shell::mac_lab_options&)options {
   self = [super init];
@@ -264,14 +269,33 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   // Command-bar buttons stop reaching the lab first: they only poke _snap
   // through the g_chrome_* globals, so clearing those before teardown means
   // a button click racing window close can never touch a torn-down lab.
+  // This is the only work windowWillClose does -- it runs on the main
+  // thread and must not block it (CLAUDE.md rule 1). The actual teardown
+  // (job_system::shutdown() joining workers, _lab.stop() joining the render
+  // thread) can take as long as an in-flight decode+upload job does, so it
+  // runs off the main thread in -applicationShouldTerminate: instead, which
+  // fires only after the window has already closed.
   g_chrome_snap = nullptr;
   g_chrome_lab = nullptr;
+}
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
+  (void)sender;
+  if (_terminating) return NSTerminateLater;
+  _terminating = true;
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
   // device_.destroy() on the render thread -- shutdown() drains queued jobs
-  // and joins running ones, so this ordering guarantees that.
-  _jobs.shutdown();
-  _lab.stop();
+  // and joins running ones, so this ordering guarantees that. Both block,
+  // so both run on a background queue; the window is already closed by the
+  // time this method runs, so nothing user-visible waits on it.
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    _jobs.shutdown();
+    _lab.stop();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [NSApp replyToApplicationShouldTerminate:YES];
+    });
+  });
+  return NSTerminateLater;
 }
 - (void)windowDidChangeOcclusionState:(NSNotification*)notification {
   (void)notification;
