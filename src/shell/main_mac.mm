@@ -46,11 +46,16 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 extern "C" void mv_chrome_fit(void) {
   if (!g_chrome_snap) return;
   ++g_chrome_snap->fit_seq;
+  // publish(), not just wake(): input_snapshot flows through a triple-buffer
+  // publish_slot (core/spsc_ring.h) — the render thread only sees this bump
+  // once publish() copies the snapshot in, same as every MvMetalView handler.
+  if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
   if (g_chrome_lab) g_chrome_lab->wake();
 }
 extern "C" void mv_chrome_one_to_one(void) {
   if (!g_chrome_snap) return;
   ++g_chrome_snap->one_to_one_seq;
+  if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
   if (g_chrome_lab) g_chrome_lab->wake();
 }
 
