@@ -1,0 +1,4 @@
+module MVChromeBridge {
+  header "mv_chrome_bridge.h"
+  export *
+}

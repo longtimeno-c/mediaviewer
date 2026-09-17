@@ -140,23 +140,69 @@ add_library(mv::canvas ALIAS mv_canvas)
 
 find_package(imgui CONFIG REQUIRED)
 
+# ---------------------------------------------------------------------------
+# MediaViewerChrome — PR 18's SwiftUI command bar, hosted in the AppKit
+# window (plan/10, plan/15: "the canvas is not ported to SwiftUI"; command
+# bar and window chrome only). Its own SwiftPM package
+# (src.swift/MediaViewerChrome), built via `swift build` rather than folded
+# into this file's C++ target graph — CMake only invokes it and links the
+# result. `-emit-objc-header-path` produces MediaViewerChrome-Swift.h, which
+# src/shell/main_mac.mm imports for `MVChromeHost`. The bridge runs the
+# other direction too: mv_chrome_fit()/mv_chrome_one_to_one() (the C
+# symbols CommandBarView.swift calls) are defined in main_mac.mm itself and
+# resolved at mediaviewer_lab's own final link — MediaViewerChrome does not
+# link against mediaviewer_lab, only the reverse.
+#
+# Unverified here (no cmake in this sandbox): the exact `swift build`
+# -Xswiftc flag forwarding below. A manual `swiftc -emit-objc-header
+# -emit-objc-header-path ...` against the same sources in this sandbox did
+# succeed and produced the expected `MVChromeHost`/`+makeCommandBarView`
+# declaration, so the underlying mechanism is sound; only this exact CLI
+# wrapper needs confirming on a real machine with a matched Xcode toolchain
+# (this sandbox's bundled SDK does not match its own swiftc, unrelated to
+# this build).
+set(MV_SWIFT_CHROME_DIR "${CMAKE_SOURCE_DIR}/src.swift/MediaViewerChrome")
+set(MV_SWIFT_CHROME_BUILD_DIR "${CMAKE_BINARY_DIR}/swift-chrome")
+set(MV_SWIFT_CHROME_HEADER "${MV_SWIFT_CHROME_BUILD_DIR}/MediaViewerChrome-Swift.h")
+set(MV_SWIFT_CHROME_LIB "${MV_SWIFT_CHROME_BUILD_DIR}/release/libMediaViewerChrome.a")
+
+add_custom_command(
+  OUTPUT "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}"
+  COMMAND swift build -c release
+          --package-path "${MV_SWIFT_CHROME_DIR}"
+          --build-path "${MV_SWIFT_CHROME_BUILD_DIR}"
+          -Xswiftc -emit-objc-header-path -Xswiftc "${MV_SWIFT_CHROME_HEADER}"
+  DEPENDS
+    "${MV_SWIFT_CHROME_DIR}/Package.swift"
+    "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/CommandBarView.swift"
+    "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/ChromeHost.swift"
+    "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include/mv_chrome_bridge.h"
+  COMMENT "swift build: MediaViewerChrome (PR 18 command bar)"
+  VERBATIM)
+add_custom_target(mv_swift_chrome_build
+  DEPENDS "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}")
+
 add_executable(mediaviewer_lab
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
   src/shell/input_state.h
 )
+add_dependencies(mediaviewer_lab mv_swift_chrome_build)
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_gfx
   mv_image
   mv_canvas
   imgui::imgui
+  "${MV_SWIFT_CHROME_LIB}"
   "-framework Foundation"
   "-framework AppKit"
   "-framework Metal"
   "-framework QuartzCore"
-  "-framework CoreServices")
-target_include_directories(mediaviewer_lab PRIVATE src)
+  "-framework CoreServices"
+  "-framework SwiftUI"
+  "-framework Combine")
+target_include_directories(mediaviewer_lab PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}")
 set_source_files_properties(
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
