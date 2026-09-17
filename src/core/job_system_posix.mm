@@ -36,11 +36,18 @@ struct job_record {
 
 void notify_done(const job_record& job, status result) noexcept {
   if (!job.on_done) return;
-  try {
-    job.on_done(job.id, job.gen, result);
-  } catch (...) {
-    MV_LOG_ERROR("job_system: completion callback threw for job %llu",
-                 static_cast<unsigned long long>(job.id));
+  // Same reasoning as the job-body pool below: on_done may be a callback
+  // that touches Metal/AppKit/Foundation APIs, and this runs on a worker
+  // thread with no pool of its own otherwise — every autoreleased temporary
+  // would silently leak rather than crash. One pool here covers all three
+  // call sites (post-run, pre-run cancellation, and shutdown drain).
+  @autoreleasepool {
+    try {
+      job.on_done(job.id, job.gen, result);
+    } catch (...) {
+      MV_LOG_ERROR("job_system: completion callback threw for job %llu",
+                   static_cast<unsigned long long>(job.id));
+    }
   }
 }
 }  // namespace
