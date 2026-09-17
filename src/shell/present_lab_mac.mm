@@ -355,6 +355,10 @@ void present_lab_mac::render_thread_main() noexcept {
                      static_cast<float>(snapshot.width), usable_window_h(snapshot),
                      /*immediate=*/true);
           redraw = true;
+          // A still popping in mid-measurement changes what's on screen just
+          // like a resize/toggle/reset does -- same invalidation those
+          // branches already apply.
+          if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
 
         const float wheel = input_cursor_.consume_wheel(snapshot);
@@ -381,7 +385,11 @@ void present_lab_mac::render_thread_main() noexcept {
             redraw = true;
           }
 
-          if (snapshot.mouse_down[0] && snapshot.mouse_in_client) {
+          // A drag that started inside the view keeps tracking on
+          // mouse_down[0] alone once under way, even past the view's edge
+          // (panning toward an edge is the common case this covers) --
+          // mouse_in_client only gates *starting* a new drag.
+          if (snapshot.mouse_down[0] && (was_dragging_ || snapshot.mouse_in_client)) {
             if (!was_dragging_) {
               camera_.drag_begin();
               was_dragging_ = true;
