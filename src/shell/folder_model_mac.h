@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -23,7 +24,7 @@ namespace mv::shell {
 
 class folder_model {
  public:
-  folder_model() = default;
+  folder_model();
   ~folder_model();
 
   folder_model(const folder_model&) = delete;
@@ -31,7 +32,9 @@ class folder_model {
 
   // Lists `dir_utf8`, opens its thumbnail cache, and starts watching it.
   // Safe to call again with a different directory — tears down the old one
-  // first. `jobs` must outlive this object; thumb and relist work runs on it.
+  // first. `jobs` must outlive this object; relist/thumb jobs run on it, but
+  // — see the shared_state note below — a job in flight when this object is
+  // destroyed does not touch a dangling `this`.
   [[nodiscard]] expected open(std::string_view dir_utf8, job_system& jobs) noexcept;
   void close() noexcept;
 
@@ -53,20 +56,32 @@ class folder_model {
   // `mtime_unix`/`size`. `on_ready` runs on the pool thread that produced the
   // result (job_system's contract, plan/02) — never the calling thread — with
   // an empty `thumb_path` on failure. The caller marshals to its own thread.
+  // Safe to call after this object is later destroyed while the job is still
+  // in flight: `on_ready` still fires (job_system's contract), operating on
+  // the shared cache state, which the job keeps alive.
   void request_thumb(std::string path_utf8, std::int64_t mtime_unix, std::uint64_t size,
                      thumb_ready_fn on_ready);
 
  private:
+  // job_system's queue can outlive this object (jobs already submitted when
+  // close()/~folder_model() runs are not retracted, only not-yet-started ones
+  // are — job_system.h). A job lambda captures shared_state by shared_ptr,
+  // not `this`, so it keeps the cache/listing alive for its own duration
+  // instead of touching a folder_model that may already be gone.
+  struct shared_state {
+    std::mutex mutex;
+    std::string dir;
+    std::vector<io::dir_entry> items;
+    image::thumb_store thumbs;
+    std::atomic<bool> changed{false};
+  };
+
   static void watch_callback(void* user) noexcept;
   void relist_async();
 
-  mutable std::mutex mutex_;
-  std::string dir_;
-  std::vector<io::dir_entry> items_;
-  image::thumb_store thumbs_;
+  std::shared_ptr<shared_state> state_;
   io::directory_watcher watcher_;
   job_system* jobs_ = nullptr;
-  std::atomic<bool> changed_{false};
 };
 
 }  // namespace mv::shell

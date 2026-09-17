@@ -7,6 +7,8 @@
 
 namespace mv::shell {
 
+folder_model::folder_model() : state_(std::make_shared<shared_state>()) {}
+
 folder_model::~folder_model() { close(); }
 
 expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcept {
@@ -14,13 +16,13 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
   jobs_ = &jobs;
 
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    dir_.assign(dir_utf8);
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->dir.assign(dir_utf8);
   }
 
-  if (auto opened = thumbs_.open(dir_utf8); !opened) return opened;
+  if (auto opened = state_->thumbs.open(dir_utf8); !opened) return opened;
   if (auto started = watcher_.start(dir_utf8, &folder_model::watch_callback, this); !started) {
-    thumbs_.close();
+    state_->thumbs.close();
     return started;
   }
 
@@ -29,25 +31,32 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
 }
 
 void folder_model::close() noexcept {
+  // Stops and joins the FSEvents watch thread first, so watch_callback (which
+  // captures `this`, not shared_state) cannot fire again after this point.
   watcher_.stop();
-  thumbs_.close();
-  std::lock_guard<std::mutex> lock(mutex_);
-  dir_.clear();
-  items_.clear();
+  state_->thumbs.close();
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->dir.clear();
+    state_->items.clear();
+  }
+  // Jobs already submitted to `jobs_` (relist/thumb) keep their own
+  // std::shared_ptr<shared_state> and finish safely against it; this object
+  // is free to be destroyed without waiting for them.
 }
 
 std::vector<io::dir_entry> folder_model::items() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return items_;
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->items;
 }
 
 std::size_t folder_model::item_count() const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return items_.size();
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->items.size();
 }
 
 bool folder_model::consume_changed() noexcept {
-  return changed_.exchange(false, std::memory_order_acq_rel);
+  return state_->changed.exchange(false, std::memory_order_acq_rel);
 }
 
 void folder_model::watch_callback(void* user) noexcept {
@@ -58,27 +67,28 @@ void folder_model::relist_async() {
   if (!jobs_) return;
   std::string dir_copy;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    dir_copy = dir_;
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    dir_copy = state_->dir;
   }
   if (dir_copy.empty()) return;
 
   // Background generation (core/job_system.h): a relist triggered by a
   // filesystem event is not tied to the current view intent and must not be
   // abandoned just because the user arrowed to the next photo mid-scan.
-  jobs_->submit_at(background_generation, [this, dir_copy](const job_context&) -> status {
-    auto listed = io::list_still_files(dir_copy);
-    if (!listed) return listed.error();
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      // The directory may have changed again (or closed) while this job was
-      // queued or running; only publish if we are still looking at it.
-      if (dir_ != dir_copy) return status::cancelled;
-      items_ = std::move(listed).value();
-    }
-    changed_.store(true, std::memory_order_release);
-    return status::ok;
-  });
+  jobs_->submit_at(background_generation,
+                   [state = state_, dir_copy](const job_context&) -> status {
+                     auto listed = io::list_still_files(dir_copy);
+                     if (!listed) return listed.error();
+                     {
+                       std::lock_guard<std::mutex> lock(state->mutex);
+                       // The directory may have changed again (or closed)
+                       // while this job was queued or running.
+                       if (state->dir != dir_copy) return status::cancelled;
+                       state->items = std::move(listed).value();
+                     }
+                     state->changed.store(true, std::memory_order_release);
+                     return status::ok;
+                   });
 }
 
 void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
@@ -88,11 +98,14 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
     return;
   }
 
+  // Captures `state_` (shared_ptr), never `this` — see the shared_state note
+  // in folder_model_mac.h. The job outlives this folder_model if close()/the
+  // destructor runs before it starts or finishes.
   jobs_->submit_at(background_generation,
-                   [this, path = std::move(path_utf8), mtime_unix, size,
+                   [state = state_, path = std::move(path_utf8), mtime_unix, size,
                     on_ready = std::move(on_ready)](const job_context& ctx) -> status {
                      const image::thumb_key key{path, mtime_unix, size};
-                     if (auto hit = thumbs_.lookup(key); hit && !hit.value().empty()) {
+                     if (auto hit = state->thumbs.lookup(key); hit && !hit.value().empty()) {
                        if (on_ready) on_ready(path, hit.value());
                        return status::ok;
                      }
@@ -107,7 +120,7 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                        if (on_ready) on_ready(path, {});
                        return jpeg.error();
                      }
-                     auto stored = thumbs_.store(key, jpeg.value());
+                     auto stored = state->thumbs.store(key, jpeg.value());
                      if (!stored) {
                        if (on_ready) on_ready(path, {});
                        return stored.error();
