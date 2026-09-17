@@ -866,6 +866,34 @@ code landed here could not be compiled, run, or soak-tested on-device. Treat it 
 verified, until it is built on a real Apple Silicon Mac with the full toolchain from
 `plan/09-build-and-test.md` / `plan/15-platforms.md`.
 
+## 2026-09-17 — PR 4/6/7 parity gap folded into PR 17/18, not new PR numbers
+
+**Why.** An audit found that `plan/15-platforms.md`'s Windows-to-Mac mapping table left three
+already-shipped Windows PRs with no PR 16–20 slot at all: PR 4 (folder, filmstrip, gallery,
+thumbnails, dir watch), PR 6 (keyboard-complete browse, slideshow, Trash, drag-drop, argv), and
+PR 7 (HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzzing, Crashpad) — the table said "after PR 18" or
+"same decoders" with no PR number. As scoped, PR 16–20 would have shipped a Mac app that could
+open one JPEG/PNG/BMP or one video file and pan/zoom/play it, with chrome — not Windows parity.
+
+**Call.** Given the choice between (a) inserting new numbered PR slices, mirroring how PR 5 was
+split into 5a/5b/5c when it outgrew one verify line, (b) folding the missing scope into the
+existing PR 17/18/20 slots, or (c) deliberately deferring PR 4/6/7 parity to a post-F Mac update
+stream, the owner chose **(b)**: fold in. PR 7's format/fuzzing/crashpad scope moved into PR 17
+(same reasoning Windows used — crash reporting lands with the format long tail, because that is
+when hostile real-world files first meet decoders). PR 4 and PR 6's folder/filmstrip/gallery/
+keyboard-complete-browse scope moved into PR 18 (they are chrome-hosted, so they need PR 18's
+SwiftUI shell to exist first, same as Windows needed PR 3's chrome before PR 4/6 could land).
+PR 19 and PR 20 were already at Windows parity for their slice (PR 5abc and PR 8/15
+respectively) and did not change.
+
+**Consequence, taken deliberately.** PR 17 and PR 18 are each now wider than their Windows
+twins (PR 2 alone, PR 3 alone) and carry a correspondingly longer verify line. This is the exact
+trade-off PR 5's split was designed to avoid on Windows; the owner chose it anyway for Mac,
+preferring fewer PR numbers over a clean one-slice-one-verify-line split. If either PR 17 or
+PR 18 turns out too large to land and verify as one slice in practice, splitting them the way PR
+5 was split remains available — this entry is not a bar against that, only a record that it
+wasn't the first choice.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

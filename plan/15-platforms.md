@@ -139,13 +139,22 @@ Windows soak copied over is not this verify.
 
 ### PR 17 — Still decode + pan/zoom, on Metal
 
-Same ABI, same decoders, same LCMS policy (D6). Immutable Metal texture upload from
-the worker pool, fit / wheel-zoom-toward-cursor / drag-pan, `0` / `1`. First blit
-shader gets its MSL twin here.
+Same ABI, same decoders, same LCMS policy (D6), starting from JPEG/PNG/BMP. Immutable
+Metal texture upload from the worker pool, fit / wheel-zoom-toward-cursor / drag-pan, `0` /
+`1`. First blit shader gets its MSL twin here.
+
+**Folded in (2026-09-17, [12](12-decision-log.md) — no PR 16–20 slot existed for Windows
+PR 7):** TIFF, WebP, ICO, HEIC/HEIF, AVIF, RAW via LibRaw with embedded-preview-as-first-pixel,
+tiled pyramid above ~64 MP, broken-file corpus + libFuzzer harnesses, and Crashpad + the Mac
+minidump scrub — landing here for the reason PR 7 paired them on Windows: this is where
+hostile real-world files first meet Mac decoders.
 
 **Verify:** a 12 MP JPEG pans at refresh with zero decode on mouse move; a tagged
 AdobeRGB JPEG renders correctly and an untagged one is treated as sRGB, with **no
-tone-map applied to either**.
+tone-map applied to either**. iPhone HEIC opens with no extra codec install; a CR2/NEF/ARW
+shows a preview in JPEG-comparable time with the full decode replacing it without a visible
+pop; original RAW bytes unchanged; nothing in the broken-file corpus crashes or hangs; a
+deliberately corrupted RAW produces a minidump with no path, filename, or pixel data.
 
 ### PR 18 — SwiftUI chrome, hosted in the AppKit window
 
@@ -153,10 +162,23 @@ tone-map applied to either**.
 stay exactly as built; SwiftUI chrome is hosted inside them. Command bar and window
 chrome only — panes come with the same features they have on Windows, not earlier.
 
+**Folded in (2026-09-17, [12](12-decision-log.md) — no PR 16–20 slot existed for Windows
+PR 4/6):** folder listing + sort, `kqueue`/`FSEvents` dir watch (`io/dir_mac.cpp`), a
+SwiftUI filmstrip + gallery over the same folder model and JPEG-512 thumbnail cache spec
+(`jpg512.1`) as Windows, and keyboard-complete browse — one key router with a Mac default
+map (`⌘` not `Ctrl`, same command ids as [16-commands.md](16-commands.md)), `?` overlay,
+marks, copy-to/move-to, Trash (not Recycle Bin) with confirm, drag-and-drop in and out,
+argv handling, fullscreen, slideshow as a mode, fit/100%/fill, animated GIF/APNG/WebP on
+the display-link frame clock. RAW+JPEG and Live Photo pairs surface as one filmstrip stop
+here, using the pairing detection PR 17 lands decode-side.
+
 **Verify:** zero dropped frames while panning a cached image at display refresh,
 unchanged from PR 17 now that chrome is on screen. Focus and keyboard traversal
 cross the SwiftUI / canvas boundary; a popover opens over the canvas without
-clipping.
+clipping. 2000 mixed JPEGs — filmstrip scrolls without a hitch, second folder visit has
+near-instant thumbnails; keyboard-only browse — open, next/prev, zoom, mark, copy-to,
+delete to Trash, fullscreen, slideshow — without the mouse, `?` listing those bindings; a
+RAW+JPEG pair and a Live Photo are each one filmstrip stop.
 
 ### PR 19 — VideoToolbox + Core Audio
 
@@ -177,8 +199,8 @@ UTIs for the D5 still set, one “Open with” registration, never a silent defa
 hijack. Quick Look / thumbnail generation in a **separate process** — loading
 libheif / LibRaw / FFmpeg into Finder is how you crash the desktop, same landmine
 as in-process Explorer handlers. Notarized, stapled, Sparkle updates, Apple
-Silicon only. Crash reporting already exists from PR 7; the Mac minidump path
-scrubs the same (no paths, filenames, pixels, EXIF).
+Silicon only. Crash reporting already exists from PR 17 (folded in 2026-09-17, mirroring
+Windows PR 7); the Mac minidump path scrubs the same (no paths, filenames, pixels, EXIF).
 
 **Verify:** double-clicking a HEIC in Finder opens the app; a deliberately
 corrupted HEIC in a browsed folder leaves Finder running; a clean Mac → install
@@ -193,15 +215,19 @@ metadata / canvas springs / the C ABI **transfer**. Chrome, present, hwdecode,
 audio, I/O, and ship **do not**. This table is the checklist so a feature is not
 forgotten because it was "not a Mac PR."
 
+**2026-09-17:** PR 4, PR 6, and PR 7 originally had no PR 16–20 slot at all (see the
+parity note in [10-roadmap.md](10-roadmap.md)). The owner folded them into PR 17/18
+rather than adding new PR numbers; the rows below now point at those, not "after PR 18."
+
 | Windows v1 | Transfers? | Mac home |
 |---|---|---|
 | PR 1 present lab, F3, idle-stop, 60 s gate | No | **PR 16** — AppKit + `CAMetalLayer` + `CAMetalDisplayLink`, `frametime` on Darwin |
 | PR 2 JPEG/PNG/BMP, LCMS, pan/zoom springs | Decoders, colour, `canvas/` | **PR 17** — immutable Metal upload, first MSL blit twin |
 | PR 3 command-bar chrome | ABI only | **PR 18** — SwiftUI hosted in the AppKit window; canvas stays Metal |
-| PR 4 folder, filmstrip, gallery, JPEG-512 thumbs, dir watch | folder ABI, SQLite thumbs | SwiftUI filmstrip + gallery after PR 18; `io/dir_mac.cpp` (`kqueue` / `FSEvents`). Same listing, same cache spec `jpg512.1` |
+| PR 4 folder, filmstrip, gallery, JPEG-512 thumbs, dir watch | folder ABI, SQLite thumbs | **PR 18** — SwiftUI filmstrip + gallery; `io/dir_mac.cpp` (`kqueue` / `FSEvents`). Same listing, same cache spec `jpg512.1` |
 | PR 5a/b/c video, WASAPI clock, transport | `IVideoSource`, clock *policy* | **PR 19** — FFmpeg + VideoToolbox on *your* `MTLDevice`, Core Audio master clock. **No `AVPlayer`.** Bindings from [16](16-commands.md) with a Mac default map |
-| PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
-| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | Same decoders. Mac minidump scrub is the same privacy line ([13](13-updates-and-telemetry.md)) |
+| PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | **PR 18** — Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
+| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | **PR 17** — same decoders, same fuzz corpus, Crashpad + Mac minidump scrub, same privacy line ([13](13-updates-and-telemetry.md)) |
 | PR 9 metadata read, info overlay, AF points, eyedropper | `meta/` | SwiftUI metadata pane; `I` focuses it |
 | PR 10 geometry + lossless JPEG rotate | `edit/` | SwiftUI crop mode; `[` `]` from the viewer. MSL twins of the geometry kernels |
 | PR 11 exposure/contrast/sat/temp | `edit/` | SwiftUI adjust pane; sliders still wait for full RAW decode |
