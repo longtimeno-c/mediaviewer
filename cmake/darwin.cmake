@@ -43,11 +43,13 @@ add_library(mv_gfx STATIC
   src/gfx/metal_pacer.cpp
   src/gfx/device_mac.mm
   src/gfx/metal_layer.mm
+  src/gfx/blit_metal.mm
   src/gfx/metal_pacer.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
   src/gfx/device_mac.h
   src/gfx/metal_layer.h
+  src/gfx/blit_metal.h
 )
 target_link_libraries(mv_gfx PUBLIC mv_core)
 target_link_libraries(mv_gfx PRIVATE
@@ -56,6 +58,66 @@ target_link_libraries(mv_gfx PRIVATE
   "-framework Metal"
   "-framework QuartzCore")
 add_library(mv::gfx ALIAS mv_gfx)
+
+# ---------------------------------------------------------------------------
+# mv_codec — PR 17's format set: JPEG/PNG/BMP only (PR 2 parity). Not
+# codec/decode.cpp or codec/os_decode_win.cpp: those pull in GIF/WebP/TIFF/
+# HEIC/AVIF/RAW decoders and the Windows OS-codec probe, none of which are
+# built on Darwin yet (plan/15 PR 17 scope).
+# ---------------------------------------------------------------------------
+find_package(JPEG REQUIRED)
+find_package(spng CONFIG REQUIRED)
+if(TARGET spng::spng)
+  set(MV_SPNG_TARGET spng::spng)
+elseif(TARGET spng::spng_static)
+  set(MV_SPNG_TARGET spng::spng_static)
+else()
+  message(FATAL_ERROR "libspng imported target not found")
+endif()
+
+add_library(mv_codec STATIC
+  src/codec/probe.cpp
+  src/codec/jpeg.cpp
+  src/codec/png.cpp
+  src/codec/bmp.cpp
+  src/codec/format.h
+  src/codec/raster.h
+  src/codec/decode.h
+)
+target_link_libraries(mv_codec PUBLIC mv_core PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+add_library(mv::codec ALIAS mv_codec)
+
+# ---------------------------------------------------------------------------
+# mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload.
+# image/pipeline.cpp/upload.cpp/gpu_image.h stay Windows-only (D3D11); PR 17
+# uses pipeline_mac.cpp/upload_mac.mm/gpu_image_mac.h instead (plan/12
+# 2026-09-17).
+# ---------------------------------------------------------------------------
+find_package(lcms2 CONFIG REQUIRED)
+
+add_library(mv_image STATIC
+  src/image/colour.cpp
+  src/image/pipeline_mac.cpp
+  src/image/upload_mac.mm
+  src/image/colour.h
+  src/image/pipeline_mac.h
+  src/image/upload_mac.h
+  src/image/gpu_image_mac.h
+)
+target_link_libraries(mv_image PUBLIC mv_codec mv_gfx PRIVATE lcms2::lcms2)
+add_library(mv::image ALIAS mv_image)
+
+# ---------------------------------------------------------------------------
+# mv_canvas — pan/zoom camera + springs (plan/03: omega=18, zeta=1). Zero
+# platform dependency; identical to the Windows target's source.
+# ---------------------------------------------------------------------------
+add_library(mv_canvas STATIC
+  src/canvas/camera.cpp
+  src/canvas/camera.h
+  src/canvas/spring.h
+)
+target_link_libraries(mv_canvas PUBLIC mv_core)
+add_library(mv::canvas ALIAS mv_canvas)
 
 find_package(imgui CONFIG REQUIRED)
 
@@ -67,6 +129,8 @@ add_executable(mediaviewer_lab
 )
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_gfx
+  mv_image
+  mv_canvas
   imgui::imgui
   "-framework Foundation"
   "-framework AppKit"
