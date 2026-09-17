@@ -555,16 +555,6 @@ void present_lab_mac::render_thread_main() noexcept {
       }
     }
 
-    // The loop above exits two ways: running_ went false (an external
-    // stop() call — main_mac.mm's applicationShouldTerminate: already owns
-    // quitting the app once this call returns) or a soak's `break` above
-    // completed on its own with running_ still true (nothing else is going
-    // to ask the app to quit, so the tail below must). Capturing this now,
-    // before teardown, is what stops the self-terminate at the bottom of
-    // this function from re-entering applicationShouldTerminate: after an
-    // external stop() already started one termination sequence.
-    const bool self_initiated_exit = running_.load(std::memory_order_acquire);
-
     // submit_image_load()'s job holds a raw (non-retaining) id<MTLDevice>
     // pointer, so it must be finished before device_.destroy() below, on
     // every exit path (soak completing here, not just an external stop()).
@@ -616,6 +606,16 @@ void present_lab_mac::render_thread_main() noexcept {
     device_.destroy();
     ImGui::DestroyContext();
   }
+
+  // The loop above exits two ways: running_ went false (an external stop()
+  // call — main_mac.mm's applicationShouldTerminate: already owns quitting
+  // the app once this call returns) or a soak's `break` above completed on
+  // its own with running_ still true (nothing else is going to ask the app
+  // to quit, so the tail below must). Nothing between here and the loop
+  // touches running_, so reading it now is equivalent to reading it right
+  // after the loop exited, before teardown — just without the scoping
+  // problem of declaring it inside the block above and using it after.
+  const bool self_initiated_exit = running_.load(std::memory_order_acquire);
 
   finished_.store(true, std::memory_order_release);
   running_.store(false, std::memory_order_release);
