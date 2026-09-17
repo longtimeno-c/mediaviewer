@@ -187,6 +187,8 @@ add_executable(mediaviewer_lab
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
   src/shell/input_state.h
+  src/shell/folder_model_mac.cpp
+  src/shell/folder_model_mac.h
 )
 add_dependencies(mediaviewer_lab mv_swift_chrome_build)
 target_link_libraries(mediaviewer_lab PRIVATE
