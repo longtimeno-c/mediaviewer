@@ -288,7 +288,7 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   // and joins running ones, so this ordering guarantees that. Both block,
   // so both run on a background queue; the window is already closed by the
   // time this method runs, so nothing user-visible waits on it.
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     _jobs.shutdown();
     _lab.stop();
     dispatch_async(dispatch_get_main_queue(), ^{
