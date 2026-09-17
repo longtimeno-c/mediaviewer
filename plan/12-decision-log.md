@@ -833,6 +833,39 @@ ask-only-with-an-endpoint check exist, but no endpoint exists yet, so there is n
 to ask. It lands with the upload path in PR 8 and must not stack with other first-run
 prompts. Crashes inside the OS-codec probe (before the bundled dispatch) are not annotated.
 
+## 2026-09-17 — Owner reopens the PR 16 sequencing exception: PRs 17–20 may proceed alongside Windows v1
+
+**Why.** The 2026-09-13 exception (see above, and `plan/10-roadmap.md`, `plan/15-platforms.md`)
+allowed only PR 16 (the Metal present lab, no SwiftUI) to run in parallel with Windows PRs 1–8,
+because Mac chrome and Windows chrome are "two present labs, two chromes, two ship pipelines" if
+built in lockstep, and D9's product call — Mac is a host, not a UI port — was not meant to be
+reopened by convenience. The owner is now working from a Mac day to day and asked, directly, for
+PR 17 (Metal decode + pan/zoom) and PR 18 (SwiftUI chrome) to proceed now rather than waiting on
+Windows PR 8 (package & ship), which has not shipped yet as of this entry. The two efforts touch
+disjoint files (`*_mac.*`, `src/shell` Mac targets, a new Swift target, vs. Windows' `src.managed`
+and Inno/Velopack packaging) and a separate agent's Windows PR 8 branch (`pr8-package-and-ship`)
+is unaffected by Mac-only additions.
+
+**Call.** PRs 17–20 are authorized to proceed in parallel with Windows v1, same as PR 16. This is
+a scope decision, not a technical one — D9 itself (Mac is a host of the shared core, not a
+SwiftUI skin on the Windows present path; native chrome per OS; one present path per OS) is
+**unchanged and still binding**. The internal PR sequence inside Milestone F is also unchanged:
+PR 17 before PR 18 before PR 19 before PR 20, each verify line holding before the next starts, the
+same discipline `10-roadmap.md` applies to PRs 1–8. Windows PRs 9–15 continue to wait for nothing
+Mac-side; the hostable-core rules (`plan/15-platforms.md`) keep applying to any further Windows
+native-code changes regardless of what Mac is doing.
+
+**Residual risk, taken deliberately.** Milestone F was sequenced after PR 8 so a present-loop
+regression on one OS would not hide behind schedule pressure on the other. Running both now means
+that discipline has to hold by attention, not by calendar — PR 1's Windows present-loop verify
+still gates every Windows PR, and PR 16's Mac present-loop verify gates every Mac PR, independently.
+
+**Build-verification note.** The environment this decision was implemented in has no Xcode (only
+Command Line Tools — no `metal` shader compiler), no `cmake`, and no `vcpkg` install, so PR 17/18
+code landed here could not be compiled, run, or soak-tested on-device. Treat it as reviewed, not
+verified, until it is built on a real Apple Silicon Mac with the full toolchain from
+`plan/09-build-and-test.md` / `plan/15-platforms.md`.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

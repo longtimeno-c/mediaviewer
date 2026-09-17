@@ -308,13 +308,17 @@ the same core**, not a UI-only follow-up or a dual-track requirement for those u
 the C ABI transfer. Present, hardware decode, audio, I/O, chrome, and the installer do not.
 Full split and the hostable-core rule: [15-platforms.md](15-platforms.md).
 
-Do not start F until PR 8's verify holds **and** PR 1's present-loop verify still holds on
-Windows. F has its own present-loop gate.
+F no longer waits for PR 8's verify (widened 2026-09-13 → 2026-09-17 below), but **PR 1's
+present-loop verify must still hold on Windows** and F has its own present-loop gate on Mac —
+both are checked independently, not waived by the other.
 
-**Sequencing exception (2026-09-13):** the owner started **PR 16** in parallel with
-Windows v1 because multiple agents can take the Metal present lab without blocking
-Windows PRs. D9's product call is unchanged — Mac is a host, not a UI port — and
-this exception is **PR 16 only**, not PRs 17–20. See [12](12-decision-log.md).
+**Sequencing exception (2026-09-13, widened 2026-09-17):** the owner started **PR 16** in
+parallel with Windows v1 because multiple agents can take the Metal present lab without
+blocking Windows PRs. On 2026-09-17 the owner widened the exception to **PRs 17–20**
+as well, working from a Mac day to day and ahead of Windows PR 8 shipping. D9's product
+call is unchanged — Mac is a host, not a UI port — and Milestone F's own internal
+sequencing (16 → 17 → 18 → 19 → 20, each verify line before the next starts) still
+applies. See [12](12-decision-log.md).
 
 ### PR 16 — Metal present lab
 AppKit window, `CAMetalLayer`, display-link pacing, idle → stop presenting, F3 overlay,
@@ -397,6 +401,9 @@ feature slices; that label does not promise everything in one release.
   integration and out-of-process handlers) are each multi-week for one person on their own.
   Size the milestones, ship them in order, and let the calendar report itself rather than being
   promised up front.
-- **Milestone F waits for Windows PR 8, except the already-authorized PR 16 lab.** From PR 4, keep
+- **Milestone F no longer waits for Windows PR 8** — the owner widened the 2026-09-13
+  exception to all of PRs 16–20 on 2026-09-17 ([12](12-decision-log.md)). From PR 4, keep
   Win32 / D3D11 out of `image/`, `player/`, `edit/`, and `meta/` so F is a host + backends.
-  Chrome is written twice (D1). The Metal present lab is PR 16, not a weekend on top of PR 8.
+  Chrome is written twice (D1). PR 16 is the Metal present lab, PR 18 is SwiftUI chrome on
+  top of it — neither is a weekend project, and F's own PR-to-PR sequencing (each verify
+  line before the next PR starts) still applies even though it no longer waits on PR 8.

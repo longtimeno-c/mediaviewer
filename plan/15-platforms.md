@@ -4,10 +4,12 @@
 second host of the same decode / colour / edit / metadata library, not a rewrite of those.
 The Mac app is **Milestone F** ([10-roadmap.md](10-roadmap.md)), after Windows ships.
 
-This document is the rule set. Do not implement Metal, Swift, VideoToolbox, or a
-`*_mac.cpp` during Windows v1 (PRs 1–8), except the already-authorized PR 16 present
-lab. The hostable-core rules continue through future updates (PRs 9–15); do not call Win32
-from `image/`, `player/`, `edit/`, or `meta/`.
+This document is the rule set. Metal, Swift, and `*_mac.cpp`/`*_mac.mm` work is authorized
+to proceed during Windows v1 for PRs 16–20 only (widened 2026-09-17 from the PR-16-only
+exception of 2026-09-13 — [12](12-decision-log.md)); VideoToolbox specifically waits for
+PR 19, in F's own sequence. The hostable-core rules continue through future Windows
+updates (PRs 9–15) regardless; do not call Win32 from `image/`, `player/`, `edit/`, or
+`meta/`.
 
 ## This is not a UI update
 
@@ -112,12 +114,16 @@ Do not share bytecode.
 
 ## Milestone F — the Mac host (PR 16–20)
 
-Do not start F until PR 8's verify holds **and** PR 1's present-loop verify still
-holds on Windows. F has its own present-loop gate; a DXGI JSON report is not
-evidence on Metal.
+F no longer waits for PR 8's verify to start (widened 2026-09-17, below), but **PR 1's
+present-loop verify must still hold on Windows**, independently, and F has its own
+present-loop gate on Mac; a DXGI JSON report is not evidence on Metal.
 
-**Sequencing exception (2026-09-13):** PR 16 may proceed in parallel with Windows
-v1. PRs 17–20 do not. [12](12-decision-log.md).
+**Sequencing exception (2026-09-13, widened 2026-09-17):** PR 16 was authorized to
+proceed in parallel with Windows v1 on 2026-09-13. On 2026-09-17 the owner widened
+this to PRs 17–20 as well — Milestone F no longer waits on Windows PR 8. D9 itself
+(Mac is a host, not a UI port) is unchanged; F's internal sequencing (16 before 17
+before 18 before 19 before 20, each verify line before the next PR starts) is
+unchanged too. [12](12-decision-log.md).
 
 ### PR 16 — Metal present lab
 
