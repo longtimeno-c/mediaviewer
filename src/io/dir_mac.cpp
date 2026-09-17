@@ -2,15 +2,14 @@
 #include "io/dir.h"
 
 #include <CoreServices/CoreServices.h>
+#include <dispatch/dispatch.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
 #include <algorithm>
-#include <condition_variable>
 #include <cstring>
+#include <memory>
 #include <mutex>
-#include <new>
-#include <thread>
 
 namespace mv::io {
 namespace {
@@ -134,30 +133,39 @@ result<std::string> containing_dir(std::string_view utf8_path) {
   return std::string(utf8_path.substr(0, slash));
 }
 
+// Dispatch-queue based, not thread+CFRunLoopRun/Stop: FSEventStreamScheduleWithRunLoop
+// is deprecated (macOS 13+), and the run-loop-per-thread design had a real race —
+// if stop_locked() called CFRunLoopStop() before the watch thread's CFRunLoopRun()
+// began servicing that pass, the stop was lost and CFRunLoopRun() ran forever,
+// hanging thread.join() (and everything that waits on it) permanently. A private
+// serial dispatch queue has no such start/stop ordering window: FSEventStreamStop +
+// FSEventStreamInvalidate are dispatched onto the same queue the stream is
+// scheduled on and run synchronously from stop_locked()'s caller.
 struct directory_watcher::impl {
   FSEventStreamRef stream = nullptr;
-  std::thread thread;
+  dispatch_queue_t queue = nullptr;
   callback cb = nullptr;
   void* user = nullptr;
 
-  std::mutex start_mutex;
-  std::condition_variable start_cv;
-  CFRunLoopRef run_loop = nullptr;
-  bool started = false;
+  // Static: a private nested type cannot be named from a free function outside
+  // the class, so the FSEvents callback has to live inside `impl` itself.
+  static void fsevents_callback(ConstFSEventStreamRef, void* client_info,
+                                std::size_t num_events, void* /*event_paths*/,
+                                const FSEventStreamEventFlags* /*flags*/,
+                                const FSEventStreamEventId* /*ids*/) {
+    auto* im = static_cast<impl*>(client_info);
+    if (im->cb && num_events > 0) im->cb(im->user);
+  }
+
+  // dispatch_sync_f, not the block-based dispatch_sync: this is a plain .cpp
+  // translation unit (blocks need -fblocks/.mm), and a free function pointer
+  // is all FSEventStreamStop/Invalidate need.
+  static void stop_and_invalidate(void* ctx) noexcept {
+    auto* stream = static_cast<FSEventStreamRef>(ctx);
+    FSEventStreamStop(stream);
+    FSEventStreamInvalidate(stream);
+  }
 };
-
-namespace {
-
-// `impl` must be complete above this point: the callback dereferences
-// `im->cb`/`im->user`, not just casts the pointer.
-void fsevents_callback(ConstFSEventStreamRef, void* client_info, std::size_t num_events,
-                       void* /*event_paths*/, const FSEventStreamEventFlags* /*flags*/,
-                       const FSEventStreamEventId* /*ids*/) {
-  auto* im = static_cast<directory_watcher::impl*>(client_info);
-  if (im->cb && num_events > 0) im->cb(im->user);
-}
-
-}  // namespace
 
 directory_watcher::directory_watcher() = default;
 directory_watcher::~directory_watcher() { stop(); }
@@ -186,47 +194,24 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
   // instead of one per file, matching the "relist on any change" contract
   // dir.h documents (transferred==0 on Windows fires for the same reason).
   FSEventStreamRef stream = FSEventStreamCreate(
-      kCFAllocatorDefault, &fsevents_callback, &ctx, cf_paths, kFSEventStreamEventIdSinceNow,
+      kCFAllocatorDefault, &impl::fsevents_callback, &ctx, cf_paths, kFSEventStreamEventIdSinceNow,
       0.15, kFSEventStreamCreateFlagNoDefer);
   CFRelease(cf_paths);
   if (!stream) return err(status::internal);
   next->stream = stream;
 
-  impl* raw = next.get();
-  try {
-    next->thread = std::thread([raw] {
-      CFRunLoopRef rl = CFRunLoopGetCurrent();
-      FSEventStreamScheduleWithRunLoop(raw->stream, rl, kCFRunLoopDefaultMode);
-      if (!FSEventStreamStart(raw->stream)) {
-        FSEventStreamInvalidate(raw->stream);
-        std::lock_guard<std::mutex> l(raw->start_mutex);
-        raw->started = true;
-        raw->start_cv.notify_all();
-        return;
-      }
-      {
-        std::lock_guard<std::mutex> l(raw->start_mutex);
-        raw->run_loop = rl;
-        raw->started = true;
-      }
-      raw->start_cv.notify_all();
-      CFRunLoopRun();  // returns when stop_locked() calls CFRunLoopStop(rl)
-      FSEventStreamStop(raw->stream);
-      FSEventStreamInvalidate(raw->stream);
-    });
-  } catch (const std::bad_alloc&) {
-    FSEventStreamRelease(next->stream);
+  dispatch_queue_t queue = dispatch_queue_create("mv.io.dir_watch", DISPATCH_QUEUE_SERIAL);
+  if (!queue) {
+    FSEventStreamRelease(stream);
     return err(status::out_of_memory);
   }
+  next->queue = queue;
 
-  {
-    std::unique_lock<std::mutex> l(raw->start_mutex);
-    raw->start_cv.wait(l, [raw] { return raw->started; });
-  }
-  if (!raw->run_loop) {
-    // Start failed inside the thread; join and report.
-    raw->thread.join();
-    FSEventStreamRelease(raw->stream);
+  FSEventStreamSetDispatchQueue(stream, queue);
+  if (!FSEventStreamStart(stream)) {
+    FSEventStreamInvalidate(stream);
+    FSEventStreamRelease(stream);
+    dispatch_release(queue);
     return err(status::internal);
   }
 
@@ -241,12 +226,17 @@ void directory_watcher::stop() noexcept {
 
 void directory_watcher::stop_locked() noexcept {
   if (!impl_) return;
-  {
-    std::lock_guard<std::mutex> l(impl_->start_mutex);
-    if (impl_->run_loop) CFRunLoopStop(impl_->run_loop);
+  FSEventStreamRef stream = impl_->stream;
+  dispatch_queue_t queue = impl_->queue;
+  if (stream && queue) {
+    // Stop/invalidate must run on the queue the stream is scheduled on
+    // (Apple's documented contract); dispatch_sync_f also gives us a
+    // synchronous, race-free "the watch is fully stopped" point to return to,
+    // unlike the old CFRunLoopStop()-and-hope-it-lands design.
+    dispatch_sync_f(queue, stream, &impl::stop_and_invalidate);
+    FSEventStreamRelease(stream);
   }
-  if (impl_->thread.joinable()) impl_->thread.join();
-  if (impl_->stream) FSEventStreamRelease(impl_->stream);
+  if (queue) dispatch_release(queue);
   impl_.reset();
 }
 

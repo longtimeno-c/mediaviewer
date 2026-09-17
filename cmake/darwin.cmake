@@ -156,18 +156,21 @@ find_package(imgui CONFIG REQUIRED)
 # resolved at mediaviewer_lab's own final link — MediaViewerChrome does not
 # link against mediaviewer_lab, only the reverse.
 #
-# Unverified here (no cmake in this sandbox): the exact `swift build`
-# -Xswiftc flag forwarding below. A manual `swiftc -emit-objc-header
-# -emit-objc-header-path ...` against the same sources in this sandbox did
-# succeed and produced the expected `MVChromeHost`/`+makeCommandBarView`
-# declaration, so the underlying mechanism is sound; only this exact CLI
-# wrapper needs confirming on a real machine with a matched Xcode toolchain
-# (this sandbox's bundled SDK does not match its own swiftc, unrelated to
-# this build).
+# Confirmed on a real toolchain (2026-09-17, Swift 6.3.3/arm64-apple-macosx):
+# `swift build -c release` on this Swift version uses the Xcode-style "Swift
+# Build" backend, not classic SwiftPM — it ignores an absolute
+# `-emit-objc-header-path` and instead writes the umbrella ObjC header to
+# `<build-path>/out/Intermediates.noindex/GeneratedModuleMaps/*-Swift.h` and
+# the static lib to `<build-path>/out/Products/Release/*.a`. That layout is
+# this toolchain's, not a stable contract — the wrapper script below finds
+# the real output and copies it to the flat path the rest of this file (and
+# main_mac.mm's `#import`) expects, so a different Swift toolchain's layout
+# doesn't silently break the import path again.
 set(MV_SWIFT_CHROME_DIR "${CMAKE_SOURCE_DIR}/src.swift/MediaViewerChrome")
 set(MV_SWIFT_CHROME_BUILD_DIR "${CMAKE_BINARY_DIR}/swift-chrome")
 set(MV_SWIFT_CHROME_HEADER "${MV_SWIFT_CHROME_BUILD_DIR}/MediaViewerChrome-Swift.h")
 set(MV_SWIFT_CHROME_LIB "${MV_SWIFT_CHROME_BUILD_DIR}/release/libMediaViewerChrome.a")
+set(MV_SWIFT_CHROME_COLLECT "${CMAKE_SOURCE_DIR}/cmake/collect-swift-chrome.sh")
 
 add_custom_command(
   OUTPUT "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}"
@@ -175,11 +178,14 @@ add_custom_command(
           --package-path "${MV_SWIFT_CHROME_DIR}"
           --build-path "${MV_SWIFT_CHROME_BUILD_DIR}"
           -Xswiftc -emit-objc-header-path -Xswiftc "${MV_SWIFT_CHROME_HEADER}"
+  COMMAND /bin/sh "${MV_SWIFT_CHROME_COLLECT}"
+          "${MV_SWIFT_CHROME_BUILD_DIR}" "${MV_SWIFT_CHROME_HEADER}" "${MV_SWIFT_CHROME_LIB}"
   DEPENDS
     "${MV_SWIFT_CHROME_DIR}/Package.swift"
     "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/CommandBarView.swift"
     "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/ChromeHost.swift"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include/mv_chrome_bridge.h"
+    "${MV_SWIFT_CHROME_COLLECT}"
   COMMENT "swift build: MediaViewerChrome (PR 18 command bar)"
   VERBATIM)
 add_custom_target(mv_swift_chrome_build
