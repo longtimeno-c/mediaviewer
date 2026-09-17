@@ -523,6 +523,7 @@ if(MV_BUILD_TESTS)
   find_package(Catch2 3 CONFIG REQUIRED)
 
   add_executable(mv_tests
+    tests/crt_no_dialogs.cpp
     tests/test_result.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
@@ -605,6 +606,7 @@ if(MV_BUILD_TESTS)
   # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
   # build while another session holds that file.
   add_executable(mv_pr16_tests
+    tests/crt_no_dialogs.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
@@ -620,18 +622,25 @@ if(MV_BUILD_TESTS)
   # them as Skipped instead, so the summary says how much was not proved.
   # tests/corpus.h has the rest: a loud report, and MV_REQUIRE_CORPUS=1 to turn
   # a missing clip into a failure in CI.
+  # A per-test timeout, so a test that wedges is named by ctest instead of
+  # taking the whole step down with it fifteen minutes later and the log
+  # ending mid-sentence. These cases run in well under a second; the corpus
+  # sweep sets its own below. This belongs to the suite, not to one CI file:
+  # a hang is a hang whoever runs it.
+  set(MV_TEST_TIMEOUT 300)
   if(MV_ASAN)
     # FFmpeg's D3D11VA hardware-decoder integration can deadlock inside the
     # Windows driver when the executable is ASan-instrumented. Exclude every
     # video-tagged test here, not only cases carrying both [video] and [ring].
     # Normal MSVC and clang-cl jobs still run the complete video suite.
     catch_discover_tests(mv_tests TEST_SPEC "~[video]"
-      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   else()
-    catch_discover_tests(mv_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    catch_discover_tests(mv_tests
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   endif()
   catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
-    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()
@@ -659,7 +668,7 @@ endif()
 # nothing else. Seeds live in tests/data (committed, synthetic, licence-clean).
 # ---------------------------------------------------------------------------
 if(MV_BUILD_TESTS AND NOT MV_FUZZ)
-  add_executable(mv_broken_tests tests/test_broken_corpus.cpp)
+  add_executable(mv_broken_tests tests/test_broken_corpus.cpp tests/crt_no_dialogs.cpp)
   target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
   target_include_directories(mv_broken_tests PRIVATE src)
   target_compile_definitions(mv_broken_tests PRIVATE

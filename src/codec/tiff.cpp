@@ -584,7 +584,11 @@ status read_rgba_image(TIFF* tif, const layout& L, raster& out, const job_contex
 
   std::uint32_t rps = L.height;
   TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &rps);
-  std::uint64_t band = std::clamp<std::uint64_t>(rps, 64, L.height);
+  // At least 64 rows per band, never more rows than the image has. Not
+  // std::clamp: an image shorter than 64 rows passes lo > hi, which is
+  // undefined and trips the debug STL's bounds check — a Debug CI leg then
+  // sits on the assertion dialog until the job times out.
+  std::uint64_t band = std::min<std::uint64_t>(std::max<std::uint64_t>(rps, 64), L.height);
   const std::uint64_t cap = std::max<std::uint64_t>(1, kMaxRgbaBandBytes / (4ull * L.width));
   band = std::min(band, cap);
 

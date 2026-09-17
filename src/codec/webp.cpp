@@ -29,6 +29,32 @@ class webp_source final : public animation_source {
   webp_source& operator=(const webp_source&) = delete;
 
   [[nodiscard]] expected open() {
+    // Check the canvas the file *claims* before libwebp allocates it.
+    // WebPAnimDecoderNew sizes its canvas, and its previous-frame copy, from
+    // the VP8X header the moment it is called, so a hundred-byte file
+    // declaring a huge canvas costs gigabytes before any limit of ours is
+    // consulted — a decompression bomb by header alone. The broken corpus
+    // caught it as "private commit grew by 3078 MiB" against a 2560 MiB
+    // budget, on five mutations of one seed through four entry points.
+    //
+    // Ask the same demuxer the animation decoder builds internally, so the
+    // canvas checked here is exactly the one it would allocate; walking the
+    // chunks does not allocate it. The rejection is the one the check after
+    // the open would have made anyway, only before the memory is spent.
+    const WebPData probe_data{bytes_.data(), bytes_.size()};
+    if (WebPDemuxer* probe = WebPDemux(&probe_data)) {
+      const std::uint32_t declared_w = WebPDemuxGetI(probe, WEBP_FF_CANVAS_WIDTH);
+      const std::uint32_t declared_h = WebPDemuxGetI(probe, WEBP_FF_CANVAS_HEIGHT);
+      WebPDemuxDelete(probe);
+      if (declared_w == 0 || declared_h == 0) return err(status::corrupt);
+      if (declared_w > kMaxDim || declared_h > kMaxDim ||
+          static_cast<std::uint64_t>(declared_w) * declared_h > kMaxPixels) {
+        return err(status::unsupported_format);
+      }
+    }
+    // A file the demuxer cannot parse falls through: the decoder below refuses
+    // it, as it did before. This adds no rejection that was not already made.
+
     WebPAnimDecoderOptions options;
     if (!WebPAnimDecoderOptionsInit(&options)) return err(status::internal);
     options.color_mode = MODE_RGBA;

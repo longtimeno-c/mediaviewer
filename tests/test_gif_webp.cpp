@@ -11,6 +11,7 @@
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <fstream>
 #include <vector>
 
@@ -229,6 +230,29 @@ TEST_CASE("an animated WebP decodes with browser delays and its loop count", "[c
   REQUIRE(first);
   REQUIRE(pixel(first->rgba, 2, 0, 0) == std::array<std::uint8_t, 4>{255, 0, 0, 255});
   REQUIRE(decode_animation(bytes, nullptr, 16).error() == mv::status::unsupported_format);
+}
+
+TEST_CASE("WebP hostile canvas dimensions are refused before allocation", "[codec][webp]") {
+  // The VP8X header declares the canvas, and WebPAnimDecoderNew sizes its
+  // canvas and its previous-frame copy from that declaration before anyone
+  // looks at a pixel. A file claiming an enormous canvas is therefore a
+  // decompression bomb by header alone — the broken corpus caught it as
+  // "private commit grew by 3078 MiB" against a 2560 MiB budget.
+  auto bytes = make_animated_webp(0);
+  REQUIRE(bytes.size() > 30);
+  REQUIRE(std::memcmp(bytes.data() + 12, "VP8X", 4) == 0);
+  // VP8X: canvas height minus one, 24-bit little endian, at offset 27.
+  bytes[27] = 0xFF;
+  bytes[28] = 0xFF;
+  bytes[29] = 0xFF;
+
+  auto still = decode_webp(bytes);
+  REQUIRE_FALSE(still);
+  CHECK(still.error() == mv::status::unsupported_format);
+
+  auto anim = open_webp_animation(std::make_shared<const std::vector<std::uint8_t>>(bytes));
+  REQUIRE_FALSE(anim);
+  CHECK(anim.error() == mv::status::unsupported_format);
 }
 
 TEST_CASE("an animation source yields one frame at a time and rewinds", "[codec][anim]") {

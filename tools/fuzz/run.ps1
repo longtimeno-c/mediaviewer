@@ -96,28 +96,54 @@ foreach ($name in $Harness) {
     if ($Jobs -gt 1) { $fuzzArgs += @("-jobs=$Jobs", "-workers=$Jobs") }
     $fuzzArgs += @($corpus) + $seedDirs
 
-    Write-Host "=== fuzz_$name for $Seconds s (max_len $($table[$name].MaxLen)) ==="
     $log = Join-Path $OutDir "fuzz_$name.log"
-    $proc = Start-Process -FilePath $exe -ArgumentList $fuzzArgs -NoNewWindow -PassThru `
-        -RedirectStandardError $log -RedirectStandardOutput "$log.stdout"
-    # Touch the handle now: without it Windows PowerShell never caches the exit
-    # code of a -PassThru process and ExitCode reads back $null (every clean
-    # run looked like a failure).
-    $null = $proc.Handle
-    if (-not $proc.WaitForExit(($Seconds + $GraceSec) * 1000)) {
-        $proc.Kill()
-        $exit = 'killed (wall-clock guard)'
-    } else {
-        $exit = $proc.ExitCode
+    # A harness that dies before libFuzzer runs a single unit has not fuzzed
+    # anything: the loader refused to start it. Seen in CI as exit
+    # 0xC0000142 (STATUS_DLL_INIT_FAILED) on the last harnesses of a long run
+    # — dead in tens of milliseconds, empty log, no artefact — while the same
+    # binaries' single-format siblings, with the same imports, had just run
+    # clean. That is not a finding, and the table must not let the two read
+    # alike. Give it one more launch, then report it as what it is.
+    for ($attempt = 1; $attempt -le 2; ++$attempt) {
+        Write-Host "=== fuzz_$name for $Seconds s (max_len $($table[$name].MaxLen))$(if ($attempt -gt 1) { ' [relaunch]' }) ==="
+        $proc = Start-Process -FilePath $exe -ArgumentList $fuzzArgs -NoNewWindow -PassThru `
+            -RedirectStandardError $log -RedirectStandardOutput "$log.stdout"
+        # Touch the handle now: without it Windows PowerShell never caches the
+        # exit code of a -PassThru process and ExitCode reads back $null (every
+        # clean run looked like a failure).
+        $null = $proc.Handle
+        if (-not $proc.WaitForExit(($Seconds + $GraceSec) * 1000)) {
+            $proc.Kill()
+            $exit = 'killed (wall-clock guard)'
+        } else {
+            $exit = $proc.ExitCode
+        }
+        $found = @(Get-ChildItem -Path $artifacts -File -ErrorAction SilentlyContinue)
+        $stats = Select-String -Path $log -Pattern 'stat::number_of_executed_units|stat::peak_rss_mb' |
+            ForEach-Object { $_.Line.Trim() }
+        $execs = ($stats | Where-Object { $_ -match 'executed' }) -replace '.*:\s*', ''
+        $launchFailed = ($exit -is [int]) -and ($exit -ne 0) -and (-not $execs) -and
+                        ($found.Count -eq 0)
+        if (-not ($launchFailed -and $attempt -eq 1)) { break }
+        Write-Host ("    did not start (exit 0x{0:X8}); relaunching once" -f $exit)
+        Start-Sleep -Seconds 5
     }
-    $found = @(Get-ChildItem -Path $artifacts -File -ErrorAction SilentlyContinue)
-    $stats = Select-String -Path $log -Pattern 'stat::number_of_executed_units|stat::peak_rss_mb' |
-        ForEach-Object { $_.Line.Trim() }
     Get-Content $log -Tail 25 | Write-Host
+    if ($launchFailed) {
+        # Name it in the log as well as the table: an NTSTATUS in decimal is
+        # not something anyone should have to convert by hand at 2 a.m.
+        # One string, no concatenation: -f binds tighter than +, so a format
+        # split across two quoted parts formats only the second and prints the
+        # first's placeholders verbatim. It did exactly that once already.
+        $known = if ($exit -eq -1073741502) { ' (STATUS_DLL_INIT_FAILED)' } else { '' }
+        $note = 'fuzz_{0}: never started. Exit 0x{1:X8}{2} - the process died before libFuzzer ran a unit, so nothing was fuzzed.'
+        Write-Host ($note -f $name, $exit, $known)
+    }
     $ok = ($exit -eq 0) -and ($found.Count -eq 0)
     $results += [pscustomobject]@{
-        Harness = $name; Exit = $exit; Artifacts = $found.Count
-        Execs = ($stats | Where-Object { $_ -match 'executed' }) -replace '.*:\s*', ''
+        Harness = $name; Exit = $(if ($launchFailed) { '0x{0:X8}' -f $exit } else { $exit })
+        Artifacts = $found.Count
+        Execs = $(if ($launchFailed) { 'never started' } else { $execs })
         Ok = $ok
     }
 }
