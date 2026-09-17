@@ -2,6 +2,10 @@
 // POSIX job pool. Same queues and cancellation as job_system_win.cpp; the
 // Windows file is thread-description / priority, this file is pthread name
 // and QoS. plan/15: the Mac file arrives with Milestone F as a real impl.
+//
+// .mm rather than .cpp: job bodies may call Metal/AppKit APIs (image upload,
+// decode) that autorelease temporaries. A worker thread with no pool in
+// place doesn't crash, it just leaks every one of them silently.
 #include "core/job_system.h"
 
 #include <pthread.h>
@@ -15,6 +19,7 @@
 
 #if defined(__APPLE__)
 #include <pthread/qos.h>
+#include <Foundation/Foundation.h>
 #endif
 
 #include "core/trace.h"
@@ -105,12 +110,14 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         trace::job_begin(job.id, i);
         const job_context ctx(job.id, job.gen, &generation_, i);
         status result = status::invalid_arg;
-        try {
-          if (job.fn) result = job.fn(ctx);
-        } catch (const std::bad_alloc&) {
-          result = status::out_of_memory;
-        } catch (...) {
-          result = status::internal;
+        @autoreleasepool {
+          try {
+            if (job.fn) result = job.fn(ctx);
+          } catch (const std::bad_alloc&) {
+            result = status::out_of_memory;
+          } catch (...) {
+            result = status::internal;
+          }
         }
         trace::job_end(job.id, static_cast<std::int32_t>(result));
 
