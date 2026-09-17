@@ -19,14 +19,19 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_impl_metal.h>
 
 #include "core/trace.h"
 #include "gfx/pace_json.h"
+#include "image/pipeline_mac.h"
+#include "image/upload_mac.h"
 
 using mv::gfx::k_input_tail_seconds;
 using mv::gfx::k_occlusion_poll_ms;
@@ -121,6 +126,39 @@ CAMetalDisplayLinkUpdate* take_link_update() noexcept {
 
 present_lab_mac::~present_lab_mac() { stop(); }
 
+// [any-thread]. Runs once, on the job pool: reads and decodes the --open
+// file, then uploads an immutable MTLTexture. Never on the render thread
+// (rule 1, CLAUDE.md / plan/02) -- device_.native_device() is safe to use
+// from any thread. The file read is a plain blocking std::ifstream on the
+// worker rather than io/file.h's async path: PR 17 is a one-shot lab arg,
+// not folder navigation, and io/ has no Darwin port yet.
+void present_lab_mac::submit_image_load() noexcept {
+  if (options_.open_path.empty() || !options_.jobs || image_load_submitted_) return;
+  image_load_submitted_ = true;
+
+  const std::string path = options_.open_path;
+  void* mtl_device = device_.native_device();
+  std::atomic<image::gpu_image_mac*>* pending = &pending_image_;
+
+  options_.jobs->submit([path, mtl_device, pending](const job_context& ctx) -> status {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return status::io;
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                    std::istreambuf_iterator<char>());
+    if (bytes.empty()) return status::io;
+
+    auto decoded = image::decode_bytes_mac(bytes, &ctx);
+    if (!decoded) return decoded.error();
+    auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+    if (!uploaded) return uploaded.error();
+
+    auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+    image::gpu_image_mac* old = pending->exchange(img);
+    delete old;  // not expected in PR 17's single-open use; safe if it happens
+    return status::ok;
+  });
+}
+
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
   if (!nsview) return err(status::invalid_arg);
   view_ = nsview;
@@ -190,6 +228,24 @@ void present_lab_mac::render_thread_main() noexcept {
     id<MTLDevice> mtl = (__bridge id<MTLDevice>)device_.native_device();
     ImGui_ImplMetal_Init(mtl);
     imgui_ready_ = true;
+
+    // PR 17: the drawable's own pixel format, matching MvMetalView's
+    // makeBackingLayer (main_mac.mm).
+    if (auto built = blitter_.create(device_.native_device(),
+                                     static_cast<std::uint64_t>(MTLPixelFormatBGRA8Unorm_sRGB));
+        !built) {
+      MV_LOG_ERROR("present_lab_mac: blitter create failed (%s)", status_name(built.error()));
+      exit_code_ = 2;
+      start_error_.store(1, std::memory_order_release);
+      ImGui_ImplMetal_Shutdown();
+      layer_.destroy();
+      device_.destroy();
+      ImGui::DestroyContext();
+      finished_.store(true, std::memory_order_release);
+      running_.store(false, std::memory_order_release);
+      return;
+    }
+    submit_image_load();
 
     ready_.store(true, std::memory_order_release);
 
@@ -272,11 +328,66 @@ void present_lab_mac::render_thread_main() noexcept {
             measurement_valid_ = false;
           }
           pacer_.set_refresh(layer_.refresh_interval_seconds());
+          if (current_image_ && camera_.fit_mode()) {
+            camera_.fit(static_cast<float>(current_image_->width),
+                       static_cast<float>(current_image_->height),
+                       static_cast<float>(snapshot.width), static_cast<float>(snapshot.height),
+                       /*immediate=*/false);
+          }
+          redraw = true;
+        }
+
+        // PR 17: a background job finished decoding --open. Take it over and
+        // fit it once; a resize while in fit mode re-fits below.
+        if (image::gpu_image_mac* loaded = pending_image_.exchange(nullptr)) {
+          current_image_.reset(loaded);
+          camera_.reset();
+          camera_.fit(static_cast<float>(current_image_->width),
+                     static_cast<float>(current_image_->height),
+                     static_cast<float>(snapshot.width), static_cast<float>(snapshot.height),
+                     /*immediate=*/true);
           redraw = true;
         }
 
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
+
+        if (current_image_) {
+          const auto image_w = static_cast<float>(current_image_->width);
+          const auto image_h = static_cast<float>(current_image_->height);
+          const auto window_w = static_cast<float>(snapshot.width);
+          const auto window_h = static_cast<float>(snapshot.height);
+
+          if (snapshot.fit_seq != seen_fit_seq_) {
+            seen_fit_seq_ = snapshot.fit_seq;
+            camera_.fit(image_w, image_h, window_w, window_h, /*immediate=*/false);
+            redraw = true;
+          }
+          if (snapshot.one_to_one_seq != seen_one_to_one_seq_) {
+            seen_one_to_one_seq_ = snapshot.one_to_one_seq;
+            camera_.one_to_one();
+            redraw = true;
+          }
+
+          if (snapshot.mouse_down[0] && snapshot.mouse_in_client) {
+            if (!was_dragging_) {
+              camera_.drag_begin();
+              was_dragging_ = true;
+            } else {
+              camera_.drag_delta(snapshot.mouse_x - last_mouse_x_, snapshot.mouse_y - last_mouse_y_);
+            }
+          } else if (was_dragging_) {
+            camera_.drag_end();
+            was_dragging_ = false;
+          }
+          last_mouse_x_ = snapshot.mouse_x;
+          last_mouse_y_ = snapshot.mouse_y;
+
+          if (wheel != 0.0f && snapshot.mouse_in_client) {
+            camera_.wheel_toward(snapshot.mouse_x, snapshot.mouse_y, wheel, window_w, window_h,
+                                 image_w, image_h);
+          }
+        }
         if (redraw) last_input_time_ = elapsed;
 
         gfx::present_request req;
@@ -285,6 +396,8 @@ void present_lab_mac::render_thread_main() noexcept {
         req.occluded = occluded_;
         req.soak = options_.soak_seconds > 0.0;
         req.animating = animating_;
+        req.camera_moving = current_image_ && camera_.moving();
+        req.has_still = current_image_ != nullptr;
         req.redraw = redraw;
         req.painted_static = painted_static_;
         req.elapsed_seconds = elapsed;
@@ -335,6 +448,7 @@ void present_lab_mac::render_thread_main() noexcept {
         const double now = monotonic_seconds();
         const float delta = static_cast<float>(now - last_frame);
         last_frame = now;
+        if (current_image_) camera_.step(delta);
 
         id<CAMetalDrawable> drawable = update.drawable;
         if (!drawable) continue;
@@ -353,7 +467,10 @@ void present_lab_mac::render_thread_main() noexcept {
         feed_imgui(snapshot, delta, wheel);
         ImGui::NewFrame();
 
-        if (animating_) {
+        // The lab sweep/idle text is the PR 16 instrument; once --open has
+        // loaded a still, the image (drawn below, same render pass) replaces
+        // it rather than drawing both.
+        if (!current_image_ && animating_) {
           const auto w = static_cast<float>(snapshot.width);
           const auto h = static_cast<float>(snapshot.height);
           animation_phase_ = std::fmod(elapsed * 0.35, 1.0);
@@ -362,7 +479,7 @@ void present_lab_mac::render_thread_main() noexcept {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           bg->AddRectFilled(ImVec2(x, 0.0f), ImVec2(x + bar_width, h),
                             IM_COL32(230, 230, 235, 255));
-        } else if (overlay_visible_) {
+        } else if (!current_image_ && overlay_visible_) {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           const float w = static_cast<float>(snapshot.width);
           const float h = static_cast<float>(snapshot.height);
@@ -393,6 +510,18 @@ void present_lab_mac::render_thread_main() noexcept {
         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device_.native_queue();
         id<MTLCommandBuffer> cb = [queue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+        if (current_image_) {
+          gfx::blit_params_mac bp;
+          bp.pan_x = camera_.pan_x();
+          bp.pan_y = camera_.pan_y();
+          bp.zoom = camera_.zoom();
+          bp.window_w = static_cast<float>(snapshot.width);
+          bp.window_h = static_cast<float>(snapshot.height);
+          bp.image_w = static_cast<float>(current_image_->width);
+          bp.image_h = static_cast<float>(current_image_->height);
+          bp.time_seconds = static_cast<float>(elapsed);
+          blitter_.draw((__bridge void*)enc, current_image_->texture, bp);
+        }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
         [cb presentDrawable:drawable];
@@ -404,6 +533,13 @@ void present_lab_mac::render_thread_main() noexcept {
         if (!decision.live) painted_static_ = true;
       }
     }
+
+    // submit_image_load()'s job holds a raw (non-retaining) id<MTLDevice>
+    // pointer, so it must be finished before device_.destroy() below, on
+    // every exit path (soak completing here, not just an external stop()).
+    // job_system::shutdown() is documented safe to call twice, so this does
+    // not conflict with a caller's own shutdown (main_mac.mm's windowWillClose).
+    if (options_.jobs) options_.jobs->shutdown();
 
     if (warmed_up_) {
       idle_stats_.elapsed_seconds = monotonic_seconds() - measurement_start_seconds_;
@@ -442,6 +578,9 @@ void present_lab_mac::render_thread_main() noexcept {
       ImGui_ImplMetal_Shutdown();
       imgui_ready_ = false;
     }
+    current_image_.reset();
+    delete pending_image_.exchange(nullptr);
+    blitter_.destroy();
     layer_.destroy();
     device_.destroy();
     ImGui::DestroyContext();

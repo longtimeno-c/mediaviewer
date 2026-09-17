@@ -177,6 +177,7 @@
     [NSApp terminate:nil];
     return;
   }
+  _options.jobs = &_jobs;
   if (auto started = _lab.start((__bridge void*)self.view, _options); !started) {
     MV_LOG_ERROR("present lab failed to start");
     [NSApp terminate:nil];
@@ -191,8 +192,12 @@
 }
 - (void)windowWillClose:(NSNotification*)notification {
   (void)notification;
-  _lab.stop();
+  // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
+  // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
+  // device_.destroy() on the render thread -- shutdown() drains queued jobs
+  // and joins running ones, so this ordering guarantees that.
   _jobs.shutdown();
+  _lab.stop();
 }
 - (void)windowDidChangeOcclusionState:(NSNotification*)notification {
   (void)notification;
@@ -219,8 +224,10 @@ namespace {
 
 void usage() {
   std::fprintf(stderr,
-               "mediaviewer_lab — Metal present lab (PR 16)\n"
-               "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n");
+               "mediaviewer_lab — Metal present lab (PR 16), still decode + pan/zoom (PR 17)\n"
+               "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
+               "  --open PATH   decode a JPEG/PNG/BMP and fit it; wheel to zoom toward the\n"
+               "                cursor, drag to pan, 0 fit, 1 one-to-one\n");
 }
 
 }  // namespace
@@ -241,6 +248,8 @@ int main(int argc, char** argv) {
       options.start_animating = false;
     } else if (std::strcmp(arg, "--no-overlay") == 0) {
       options.overlay_visible = false;
+    } else if (std::strcmp(arg, "--open") == 0) {
+      options.open_path = next();
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
