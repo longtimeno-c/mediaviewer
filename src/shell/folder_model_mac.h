@@ -74,6 +74,13 @@ class folder_model {
     std::vector<io::dir_entry> items;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
+    // Bumped by every open(): `thumbs` is one mutable object re-pointed at a
+    // new directory's cache DB on each open(), so a request_thumb() job
+    // queued for the old directory has no other way to tell, once it finally
+    // runs, that `thumbs` no longer means what it did when the job was
+    // requested (it would otherwise mis-associate an old-directory path
+    // with the new directory's cache database).
+    std::atomic<std::uint64_t> generation{0};
   };
 
   static void watch_callback(void* user) noexcept;

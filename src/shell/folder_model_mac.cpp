@@ -18,6 +18,7 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->dir.assign(dir_utf8);
+    state_->generation.fetch_add(1, std::memory_order_acq_rel);
   }
 
   if (auto opened = state_->thumbs.open(dir_utf8); !opened) return opened;
@@ -98,12 +99,30 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
     return;
   }
 
+  // `thumbs` is one mutable object that open() re-points at a new directory's
+  // cache DB on every call — a generation captured now and rechecked in the
+  // job (see shared_state::generation) is what stops a job queued for the
+  // directory open() when request_thumb() was called from mis-associating
+  // its path with whatever directory's cache happens to be open by the time
+  // the job actually runs.
+  const std::uint64_t requested_generation = state_->generation.load(std::memory_order_acquire);
+
   // Captures `state_` (shared_ptr), never `this` — see the shared_state note
   // in folder_model_mac.h. The job outlives this folder_model if close()/the
   // destructor runs before it starts or finishes.
   jobs_->submit_at(background_generation,
                    [state = state_, path = std::move(path_utf8), mtime_unix, size,
-                    on_ready = std::move(on_ready)](const job_context& ctx) -> status {
+                    on_ready = std::move(on_ready), requested_generation](
+                       const job_context& ctx) -> status {
+                     const auto stale = [&] {
+                       return state->generation.load(std::memory_order_acquire) !=
+                              requested_generation;
+                     };
+                     if (stale()) {
+                       if (on_ready) on_ready(path, {});
+                       return status::cancelled;
+                     }
+
                      const image::thumb_key key{path, mtime_unix, size};
                      if (auto hit = state->thumbs.lookup(key); hit && !hit.value().empty()) {
                        if (on_ready) on_ready(path, hit.value());
@@ -119,6 +138,17 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                      if (!jpeg) {
                        if (on_ready) on_ready(path, {});
                        return jpeg.error();
+                     }
+                     // Recheck right before writing: the read+decode above is
+                     // the job's slowest part and the likeliest place for a
+                     // directory switch to land mid-flight. Skipping the
+                     // store (rather than caching under the new directory's
+                     // db anyway) is the one thing that actually matters —
+                     // dropping this thumbnail just means the new directory
+                     // regenerates it itself when it lists this path.
+                     if (stale()) {
+                       if (on_ready) on_ready(path, {});
+                       return status::cancelled;
                      }
                      auto stored = state->thumbs.store(key, jpeg.value());
                      if (!stored) {
