@@ -88,23 +88,42 @@ target_link_libraries(mv_codec PUBLIC mv_core PRIVATE JPEG::JPEG ${MV_SPNG_TARGE
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
-# mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload.
-# image/pipeline.cpp/upload.cpp/gpu_image.h stay Windows-only (D3D11); PR 17
-# uses pipeline_mac.cpp/upload_mac.mm/gpu_image_mac.h instead (plan/12
-# 2026-09-17).
+# mv_io — portable io/dir.h + io/file.h (PR 18, folded-in PR 4 — plan/12
+# 2026-09-17). dir_mac.cpp uses FSEvents for the watch; dir_win.cpp/file.cpp
+# stay Windows-only.
+# ---------------------------------------------------------------------------
+add_library(mv_io STATIC
+  src/io/dir_mac.cpp
+  src/io/file_mac.cpp
+  src/io/dir.h
+  src/io/file.h
+)
+target_link_libraries(mv_io PUBLIC mv_core PRIVATE "-framework CoreServices")
+add_library(mv::io ALIAS mv_io)
+
+# ---------------------------------------------------------------------------
+# mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
+# PR 18's JPEG-512 thumbnail cache (folded-in PR 4). image/pipeline.cpp/
+# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11 or the '\\'
+# path-join bug in thumb.cpp); PR 17/18 use the _mac twins instead
+# (plan/12 2026-09-17).
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 add_library(mv_image STATIC
   src/image/colour.cpp
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
+  src/image/thumb_mac.cpp
   src/image/colour.h
   src/image/pipeline_mac.h
   src/image/upload_mac.h
   src/image/gpu_image_mac.h
+  src/image/thumb.h
 )
-target_link_libraries(mv_image PUBLIC mv_codec mv_gfx PRIVATE lcms2::lcms2)
+target_link_libraries(mv_image PUBLIC mv_codec mv_gfx mv_io
+  PRIVATE lcms2::lcms2 unofficial::sqlite3::sqlite3)
 add_library(mv::image ALIAS mv_image)
 
 # ---------------------------------------------------------------------------
@@ -135,7 +154,8 @@ target_link_libraries(mediaviewer_lab PRIVATE
   "-framework Foundation"
   "-framework AppKit"
   "-framework Metal"
-  "-framework QuartzCore")
+  "-framework QuartzCore"
+  "-framework CoreServices")
 target_include_directories(mediaviewer_lab PRIVATE src)
 set_source_files_properties(
   src/shell/main_mac.mm
