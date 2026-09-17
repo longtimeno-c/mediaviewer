@@ -9,8 +9,15 @@ port — see [plan/15-platforms.md](plan/15-platforms.md).
 
 **Status: PR 7's slices are all merged and pass locally; its clean-VM HEIC, real
 Live Photo and on-screen no-pop checks are still open. PR 8 packages the Windows viewer
-for its first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
-the tree and unverified on Apple Silicon.** The Windows present lab still owns
+for its first release. PRs 9–15 are future feature updates. The owner widened the
+2026-09-13 sequencing exception on 2026-09-17 ([plan/12-decision-log.md](plan/12-decision-log.md))
+so Mac work (PR 16–20) no longer waits on Windows PR 8 shipping; PR 16 (Metal present lab),
+PR 17 (decode + pan/zoom, folded in the PR 7 formats/Crashpad scope), and PR 18 (SwiftUI
+chrome, folded in the PR 4/PR 6 folder/filmstrip-backend/keyboard scope) are all in the tree.
+The Darwin target now configures, builds, and links with a real toolchain (`cmake`+`ninja`+
+`vcpkg`+`swift build`) and its Catch2 suite passes (182 assertions, 54 cases), but the actual
+on-screen present loop and 60 s soak have only been reviewed, not run on a real Mac with a
+display — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -37,8 +44,17 @@ pull requests and for longer nightly.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab
-(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). It does **not** yet decode,
-host SwiftUI, or play video. A Windows DXGI soak is not that verify.
+(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). PR 17 adds JPEG/PNG/BMP decode,
+immutable Metal texture upload, fit / wheel-zoom-toward-cursor / drag-pan, and an MSL
+twin of the blit shader, plus (folded in from Windows PR 7) the rest of the D5 still
+formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump scrub.
+PR 18 hosts a SwiftUI command bar in the same AppKit window (the canvas stays Metal,
+never ported) and adds the backend a filmstrip/gallery will use — FSEvents folder
+watch, a JPEG-512 SQLite thumbnail cache sharing Windows' `jpg512.1` spec — plus
+(folded in from Windows PR 4/PR 6) `0`/`1` keyboard bindings feeding the same
+`input_snapshot` the SwiftUI buttons do. It does **not** yet play video (PR 19) or
+show a filmstrip/gallery UI or full keyboard-complete browse (both PR 18 backend
+pieces, UI still to come). A Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
 not yet demonstrated on a quiet GPU runner, and PR 5's and PR 6's own verify
@@ -61,7 +77,7 @@ that apply to what you are doing.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | PR 16 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. No SwiftUI, no decode, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
+| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. `--open PATH` decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`/`1`. A SwiftUI command bar (Fit / 1:1) is hosted in the same window via a small C bridge into the render thread's `input_snapshot` — no filmstrip/gallery UI yet, though the FSEvents folder watch and JPEG-512 thumbnail cache backend they'll use already exist. No video, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -99,26 +115,35 @@ cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
 cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opinion
 ```
 
-### macOS (PR 16 present lab)
+### macOS (PR 16–18)
 
-Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, Xcode command-line tools. Intel
-Macs are out of scope (D9). This path does not build FFmpeg, WinUI, or the
-Windows lab.
+Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, a full Xcode install (Command Line
+Tools alone are not enough — `swift build`'s SwiftUI target and `xcrun metal` both
+need it), Swift 6. Intel Macs are out of scope (D9). This path does not build FFmpeg,
+WinUI, or the Windows lab.
 
 ```sh
-cmake -S . -B build
-cmake --build build --config Release
-./build/bin/mediaviewer_lab
+export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped, arm64-osx triplet installed
+cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build
+./build/bin/mediaviewer_lab --open some.jpg
 ./build/bin/frametime --seconds 60 --lab ./build/bin/mediaviewer_lab
 ctest --test-dir build --output-on-failure
 ```
 
+This has been built and linked for real (not just reviewed) with `cmake` + `ninja` +
+a manifest-mode `vcpkg` install (`imgui[metal-binding]`, `libjpeg-turbo`, `libspng`,
+`lcms`, `sqlite3`, `catch2`) and `swift build` for the SwiftUI command bar — `mv_tests`
+passes (182 assertions, 54 cases). What that build **could not** do: run the actual
+windowed present loop or the 60 s soak, since it had no attached display (`view
+backing layer is not CAMetalLayer` — a headless-environment limit, not a code bug).
+Run `frametime`'s soak on a real Mac before trusting the PR 16 gate.
+
 `frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
-Windows DXGI JSON report over is a failed gate, not a pass. The 60 s soak has
-not been run in this checkout — this machine is Windows.
+Windows DXGI JSON report over is a failed gate, not a pass.
 
 `F3` toggles the overlay, `Space` the sweep, `R` resets the measurement, `Esc`
-quits. Idle (`--static`) must park the cursor off the window.
+quits, `0` fits, `1` is 100 %. Idle (`--static`) must park the cursor off the window.
 
 ## Run
 
