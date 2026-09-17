@@ -13,11 +13,14 @@ public struct CommandBarView: View {
   public init() {}
 
   public var body: some View {
+    // No .keyboardShortcut here: MvMetalView's keyDown: (main_mac.mm) already
+    // binds plain `0`/`1` globally for the window. Registering the same keys
+    // here too let a single keypress double-dispatch through both paths
+    // depending on AppKit's key-equivalent resolution; these buttons are
+    // click-only, matching their role as chrome, not a second key router.
     HStack(spacing: 12) {
       Button("Fit") { mv_chrome_fit() }
-        .keyboardShortcut("0", modifiers: [])
       Button("1:1") { mv_chrome_one_to_one() }
-        .keyboardShortcut("1", modifiers: [])
       Spacer()
     }
     .padding(.horizontal, 12)
