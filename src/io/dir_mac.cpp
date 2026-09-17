@@ -134,17 +134,6 @@ result<std::string> containing_dir(std::string_view utf8_path) {
   return std::string(utf8_path.substr(0, slash));
 }
 
-namespace {
-
-void fsevents_callback(ConstFSEventStreamRef, void* client_info, std::size_t num_events,
-                       void* /*event_paths*/, const FSEventStreamEventFlags* /*flags*/,
-                       const FSEventStreamEventId* /*ids*/) {
-  auto* im = static_cast<directory_watcher::impl*>(client_info);
-  if (im->cb && num_events > 0) im->cb(im->user);
-}
-
-}  // namespace
-
 struct directory_watcher::impl {
   FSEventStreamRef stream = nullptr;
   std::thread thread;
@@ -156,6 +145,19 @@ struct directory_watcher::impl {
   CFRunLoopRef run_loop = nullptr;
   bool started = false;
 };
+
+namespace {
+
+// `impl` must be complete above this point: the callback dereferences
+// `im->cb`/`im->user`, not just casts the pointer.
+void fsevents_callback(ConstFSEventStreamRef, void* client_info, std::size_t num_events,
+                       void* /*event_paths*/, const FSEventStreamEventFlags* /*flags*/,
+                       const FSEventStreamEventId* /*ids*/) {
+  auto* im = static_cast<directory_watcher::impl*>(client_info);
+  if (im->cb && num_events > 0) im->cb(im->user);
+}
+
+}  // namespace
 
 directory_watcher::directory_watcher() = default;
 directory_watcher::~directory_watcher() { stop(); }
