@@ -48,6 +48,17 @@ class present_lab_mac {
   void publish(const input_snapshot& snapshot) noexcept { input_.publish(snapshot); }
   void wake() noexcept;
 
+  // [any-thread] Loads `path_utf8`, replacing whatever is on screen once
+  // decode+upload finishes. Safe to call repeatedly, including while a
+  // previous call is still decoding: this bumps job_system's view generation
+  // first (core/job_system.h — "every job carries a generation counter tied
+  // to the current view intent; navigating away bumps it"), so a slow decode
+  // a later open_item() has superseded is abandoned rather than clobbering
+  // the newer selection. Only folder navigation should call this — thumbnail
+  // and relist jobs (folder_model_mac) stay on background_generation and are
+  // unaffected by the bump.
+  void open_item(std::string path_utf8) noexcept;
+
   [[nodiscard]] bool finished() const noexcept {
     return finished_.load(std::memory_order_acquire);
   }
@@ -56,7 +67,7 @@ class present_lab_mac {
  private:
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
-  void submit_image_load() noexcept;
+  void submit_image_load(std::string path_utf8) noexcept;
 
   void* view_ = nullptr;
   void* display_link_ = nullptr;
@@ -75,7 +86,6 @@ class present_lab_mac {
   // exchanges pointer -> nullptr, so there is no ABA window.
   std::atomic<image::gpu_image_mac*> pending_image_{nullptr};
   std::unique_ptr<image::gpu_image_mac> current_image_;
-  bool image_load_submitted_ = false;
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;

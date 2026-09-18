@@ -134,37 +134,54 @@ CAMetalDisplayLinkUpdate* take_link_update() noexcept {
 
 present_lab_mac::~present_lab_mac() { stop(); }
 
-// [any-thread]. Runs once, on the job pool: reads and decodes the --open
-// file, then uploads an immutable MTLTexture. Never on the render thread
-// (rule 1, CLAUDE.md / plan/02) -- device_.native_device() is safe to use
-// from any thread. The file read is a plain blocking std::ifstream on the
-// worker rather than io/file.h's async path: PR 17 is a one-shot lab arg,
-// not folder navigation, and io/ has no Darwin port yet.
-void present_lab_mac::submit_image_load() noexcept {
-  if (options_.open_path.empty() || !options_.jobs || image_load_submitted_) return;
-  image_load_submitted_ = true;
+// [any-thread]. Runs on the job pool: reads and decodes a file, then uploads
+// an immutable MTLTexture. Never on the render thread (rule 1, CLAUDE.md /
+// plan/02) -- device_.native_device() is safe to use from any thread. The
+// file read is a plain blocking std::ifstream on the worker rather than
+// io/file.h's async path: this is one folder-navigation stop, not the
+// directory scan itself (folder_model_mac already uses io/file.h for that).
+//
+// Called only from open_item(), which has already bumped job_system's view
+// generation, so `ctx` carries that new generation. If a newer open_item()
+// call bumps it again before this finishes -- the user arrowed past this
+// item before it loaded -- ctx.cancelled() catches it below and the result
+// is discarded instead of clobbering the newer selection.
+void present_lab_mac::submit_image_load(std::string path_utf8) noexcept {
+  if (path_utf8.empty() || !options_.jobs) return;
 
-  const std::string path = options_.open_path;
   void* mtl_device = device_.native_device();
   std::atomic<image::gpu_image_mac*>* pending = &pending_image_;
 
-  options_.jobs->submit([path, mtl_device, pending](const job_context& ctx) -> status {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return status::io;
-    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                    std::istreambuf_iterator<char>());
-    if (bytes.empty()) return status::io;
+  options_.jobs->submit(
+      [path = std::move(path_utf8), mtl_device, pending](const job_context& ctx) -> status {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return status::io;
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                        std::istreambuf_iterator<char>());
+        if (bytes.empty()) return status::io;
 
-    auto decoded = image::decode_bytes_mac(bytes, &ctx);
-    if (!decoded) return decoded.error();
-    auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
-    if (!uploaded) return uploaded.error();
+        auto decoded = image::decode_bytes_mac(bytes, &ctx);
+        if (!decoded) return decoded.error();
+        auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+        if (!uploaded) return uploaded.error();
 
-    auto* img = new image::gpu_image_mac(std::move(uploaded).value());
-    image::gpu_image_mac* old = pending->exchange(img);
-    delete old;  // not expected in PR 17's single-open use; safe if it happens
-    return status::ok;
-  });
+        if (ctx.cancelled()) return status::cancelled;
+
+        auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+        image::gpu_image_mac* old = pending->exchange(img);
+        delete old;  // a load superseded before the render thread took it over
+        return status::ok;
+      });
+}
+
+void present_lab_mac::open_item(std::string path_utf8) noexcept {
+  if (path_utf8.empty() || !options_.jobs) return;
+  // Abandons whatever the previous open_item() call had in flight (folder
+  // navigation is a new view intent) without touching folder_model_mac's own
+  // relist/thumb jobs, which stay pinned to background_generation and are
+  // never cancelled by this.
+  options_.jobs->bump_generation();
+  submit_image_load(std::move(path_utf8));
 }
 
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
@@ -253,7 +270,7 @@ void present_lab_mac::render_thread_main() noexcept {
       running_.store(false, std::memory_order_release);
       return;
     }
-    submit_image_load();
+    if (!options_.open_path.empty()) open_item(options_.open_path);
 
     ready_.store(true, std::memory_order_release);
 
