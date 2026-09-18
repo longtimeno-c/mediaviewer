@@ -141,6 +141,19 @@ add_library(mv_canvas STATIC
 target_link_libraries(mv_canvas PUBLIC mv_core)
 add_library(mv::canvas ALIAS mv_canvas)
 
+# ---------------------------------------------------------------------------
+# mv_shell — browse_index, the wrapping next/prev/first/last/skip arithmetic
+# behind PR 18's folded-in PR 4/6 navigation (plan/16-commands.md's Browse
+# table). Zero platform dependency on purpose, so it is unit-testable without
+# the AppKit glue that drives it (main_mac.mm).
+# ---------------------------------------------------------------------------
+add_library(mv_shell STATIC
+  src/shell/browse_index.cpp
+  src/shell/browse_index.h
+)
+target_link_libraries(mv_shell PUBLIC mv_core)
+add_library(mv::shell ALIAS mv_shell)
+
 find_package(imgui CONFIG REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -204,6 +217,8 @@ target_link_libraries(mediaviewer_lab PRIVATE
   mv_gfx
   mv_image
   mv_canvas
+  mv_shell
+  mv_io
   imgui::imgui
   "${MV_SWIFT_CHROME_LIB}"
   "-framework Foundation"
@@ -244,10 +259,12 @@ if(MV_BUILD_TESTS)
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
+    tests/test_browse_index.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx
+    mv_shell
     Catch2::Catch2WithMain)
   target_include_directories(mv_tests PRIVATE src tools)
   include(Catch)
