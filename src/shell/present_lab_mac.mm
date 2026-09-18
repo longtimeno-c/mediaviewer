@@ -52,12 +52,15 @@ double process_cpu_seconds() noexcept {
          static_cast<double>(ru.ru_stime.tv_sec) + static_cast<double>(ru.ru_stime.tv_usec) * 1e-6;
 }
 
-// PR 18: the height of the canvas rect below the SwiftUI command bar. The
-// swapchain itself still spans the full backing size (main_mac.mm's
-// MvMetalView is never resized) — only fit/pan and the blit's origin_y see
-// this, same as Windows' chrome_height_px (gfx/blit.h).
+// PR 18: the height of the canvas rect between the SwiftUI command bar and
+// the filmstrip strip. The swapchain itself still spans the full backing
+// size (main_mac.mm's MvMetalView is never resized) — only fit/pan and the
+// blit's origin_y see this, same as Windows' chrome_height_px/chrome_bottom_px
+// (gfx/blit.h). chrome_bottom_px is 0 when the filmstrip is hidden (`T`),
+// same "canvas reclaims the space" behaviour Windows' filmstrip toggle has.
 float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
-  return std::max(1.0f, static_cast<float>(s.height) - static_cast<float>(s.chrome_height_px));
+  return std::max(1.0f, static_cast<float>(s.height) - static_cast<float>(s.chrome_height_px) -
+                            static_cast<float>(s.chrome_bottom_px));
 }
 
 void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
