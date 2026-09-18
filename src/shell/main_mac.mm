@@ -283,19 +283,27 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 // plan/16-commands.md "Opening (argv, drop, PR 6)": accept the drop as long
 // as it names at least one file: URL, so -performDragOperation: can apply
 // the same "first folder wins, else the first file's folder" rule -openEntryPath:
-// already implements for argv. Any other pasteboard content (text, images
-// dragged from a browser) is not a file and is refused.
+// already implements for argv. Any other pasteboard content (text, a web
+// link dragged from a browser, images) is not a file and is refused.
+// NSPasteboardURLReadingFileURLsOnlyKey matters here, not just as a filter
+// convenience: without it, readObjectsForClasses: happily decodes a
+// non-file NSURL (e.g. a Safari address-bar drag) too, so
+// -draggingEntered: would show the accept cursor for something
+// -performDragOperation: can only fail (is_directory() on a non-file path)
+// and silently beep on drop.
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
-  NSArray<NSURL*>* urls = [sender.draggingPasteboard readObjectsForClasses:@[ NSURL.class ]
-                                                                    options:nil];
+  NSArray<NSURL*>* urls = [sender.draggingPasteboard
+      readObjectsForClasses:@[ NSURL.class ]
+                     options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
   return urls.count > 0 ? NSDragOperationCopy : NSDragOperationNone;
 }
 - (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
   return [self draggingEntered:sender];
 }
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
-  NSArray<NSURL*>* urls = [sender.draggingPasteboard readObjectsForClasses:@[ NSURL.class ]
-                                                                    options:nil];
+  NSArray<NSURL*>* urls = [sender.draggingPasteboard
+      readObjectsForClasses:@[ NSURL.class ]
+                     options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
   NSString* first = urls.firstObject.path;
   if (!first || !self.app) return NO;
   const bool opened = [self.app openEntryPath:first.UTF8String];
