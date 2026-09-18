@@ -270,8 +270,11 @@ void present_lab_mac::render_thread_main() noexcept {
       running_.store(false, std::memory_order_release);
       return;
     }
-    if (!options_.open_path.empty()) open_item(options_.open_path);
-
+    // No longer auto-loads options_.open_path here: MvLabApp now resolves
+    // --open (and a bare argv path, and a drop) through folder_model_mac --
+    // "a file opens its folder with that file selected" (plan/16-commands.md)
+    // -- and calls open_item() itself once the async folder listing
+    // resolves the selected index. See main_mac.mm's -openEntryPath:.
     ready_.store(true, std::memory_order_release);
 
     MvMetalLinkTarget* target =

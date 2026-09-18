@@ -15,9 +15,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "core/job_system.h"
 #include "core/trace.h"
+#include "io/dir.h"
+#include "shell/browse_index.h"
+#include "shell/folder_model_mac.h"
 #include "shell/input_state.h"
 #include "shell/present_lab_mac.h"
 
@@ -65,9 +69,40 @@ extern "C" void mv_chrome_one_to_one(void) {
 // physical pixels, matching Windows' PerMonitorV2 convention).
 constexpr CGFloat kChromeBarHeightPoints = 44.0;
 
+// Declared in full (not just `@class`) because MvMetalView's own methods,
+// defined below, send it messages (navigatePrev etc.) -- a bare forward
+// declaration only lets the compiler know the type exists, not what it
+// responds to. The @implementation stays further down, after MvMetalView's,
+// so the file still reads outside-in (canvas, then chrome/app).
+@class MvMetalView;
+@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@property(nonatomic, strong) NSWindow* window;
+@property(nonatomic, strong) MvMetalView* view;
+@property(nonatomic, strong) NSView* commandBar;
+
+// plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
+// exists wins -- a folder opens that folder, a file opens its folder with
+// that file selected. Used by argv parsing (main(), below) and
+// -[MvMetalView performDragOperation:]. Returns NO (and the caller beeps)
+// when nothing at `utf8_path` exists.
+- (BOOL)openEntryPath:(const char*)utf8_path;
+- (BOOL)hasFolder;
+- (void)navigateNext;
+- (void)navigatePrev;
+- (void)navigateFirst;
+- (void)navigateLast;
+- (void)navigateSkip:(std::ptrdiff_t)delta;
+@end
+
 @interface MvMetalView : NSView
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
 @property(nonatomic, assign) mv::shell::input_snapshot* snap;
+// Weak-by-convention (assign, not strong): MvLabApp owns this view for its
+// whole lifetime, the reverse is never true. Used for the browse commands
+// (arrows, Home/End/PageUp/PageDown, Space/Backspace once a folder is open)
+// that need folder_model/browse_index state MvLabApp owns, not just an
+// input_snapshot bump like every other key here.
+@property(nonatomic, assign) MvLabApp* app;
 @end
 
 @implementation MvMetalView
@@ -107,7 +142,31 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
+  [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
   [self syncSize];
+}
+
+// plan/16-commands.md "Opening (argv, drop, PR 6)": accept the drop as long
+// as it names at least one file: URL, so -performDragOperation: can apply
+// the same "first folder wins, else the first file's folder" rule -openEntryPath:
+// already implements for argv. Any other pasteboard content (text, images
+// dragged from a browser) is not a file and is refused.
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  NSArray<NSURL*>* urls = [sender.draggingPasteboard readObjectsForClasses:@[ NSURL.class ]
+                                                                    options:nil];
+  return urls.count > 0 ? NSDragOperationCopy : NSDragOperationNone;
+}
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+  return [self draggingEntered:sender];
+}
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  NSArray<NSURL*>* urls = [sender.draggingPasteboard readObjectsForClasses:@[ NSURL.class ]
+                                                                    options:nil];
+  NSString* first = urls.firstObject.path;
+  if (!first || !self.app) return NO;
+  const bool opened = [self.app openEntryPath:first.UTF8String];
+  if (!opened) NSBeep();
+  return opened ? YES : NO;
 }
 
 - (void)setFrameSize:(NSSize)newSize {
@@ -169,9 +228,60 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 - (void)keyDown:(NSEvent*)event {
   const NSString* chars = event.charactersIgnoringModifiers;
   const unichar c = chars.length > 0 ? [chars characterAtIndex:0] : 0;
+
+  // plan/16-commands.md Browse table: <-/-> or A/D previous/next in every
+  // mode; Home/End first/last; PageUp/PageDown skip ~10. These go through
+  // MvLabApp (folder_model_mac + browse_index), not an input_snapshot seq --
+  // navigation is "load this specific path next," a one-shot command, not
+  // per-frame render-thread state the way pan/zoom/mouse are.
+  if (c == NSLeftArrowFunctionKey || c == 'a' || c == 'A') {
+    [self.app navigatePrev];
+    return;
+  }
+  if (c == NSRightArrowFunctionKey || c == 'd' || c == 'D') {
+    [self.app navigateNext];
+    return;
+  }
+  if (c == NSHomeFunctionKey) {
+    [self.app navigateFirst];
+    return;
+  }
+  if (c == NSEndFunctionKey) {
+    [self.app navigateLast];
+    return;
+  }
+  if (c == NSPageUpFunctionKey) {
+    [self.app navigateSkip:-10];
+    return;
+  }
+  if (c == NSPageDownFunctionKey) {
+    [self.app navigateSkip:10];
+    return;
+  }
+  // The physical key labelled "delete" on a Mac keyboard sends 0x7F (what
+  // AppKit calls NSDeleteCharacter) and sits where a PC's Backspace does --
+  // plan/16 pairs this with Space as previous/next. A PC-style separate
+  // forward-delete (fn+Delete, NSDeleteFunctionKey on the keys that have
+  // one) is left unbound here on purpose: plan/16's actual `Delete` command
+  // (Trash, with confirm) is follow-up work, and reusing this same key for
+  // it would collide with "previous" the moment it lands -- whoever wires
+  // Trash needs to pick a different binding or revisit this one.
+  if (c == NSDeleteCharacter && self.app && [self.app hasFolder]) {
+    [self.app navigatePrev];
+    return;
+  }
+
   if (c == NSF3FunctionKey || c == 'f' || c == 'F') {
     ++self.snap->toggle_overlay_seq;
   } else if (c == ' ') {
+    // Space is the lab's own sweep-bar toggle only when no folder is open
+    // (plain `mediaviewer_lab --soak N`, the PR 16 present-loop instrument).
+    // Once a folder is open, plan/16 is explicit: "Space is not the lab
+    // sweep after PR 6" -- it becomes next.
+    if (self.app && [self.app hasFolder]) {
+      [self.app navigateNext];
+      return;
+    }
     ++self.snap->toggle_animation_seq;
   } else if (c == 'r' || c == 'R') {
     ++self.snap->reset_stats_seq;
@@ -189,18 +299,31 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 }
 @end
 
-@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate>
-@property(nonatomic, strong) NSWindow* window;
-@property(nonatomic, strong) MvMetalView* view;
-@property(nonatomic, strong) NSView* commandBar;
-@end
-
 @implementation MvLabApp {
   mv::shell::present_lab_mac _lab;
   mv::shell::input_snapshot _snap;
   mv::job_system _jobs;
   mv::shell::mac_lab_options _options;
   bool _terminating;
+
+  // Folder navigation (PR 18, folded-in PR 4/6 -- plan/12 2026-09-17).
+  // `_items`/`_index` are a cache: refreshed only when -refreshFolderIfChanged
+  // sees folder_model_mac's watch fire, not re-fetched on every keypress --
+  // plan/16's own speed rule ("warm arrow-key < 40 ms... no marshalling hop
+  // per key-repeat") is why this isn't just `_folder.items()` called from
+  // -navigateNext etc, which would copy the whole listing (paths and all)
+  // on every arrow key.
+  mv::shell::folder_model _folder;
+  mv::shell::browse_index _index;
+  std::vector<mv::io::dir_entry> _items;
+  // The path -selectIndex: last asked to display. Anchors the selection
+  // across a relist: found again -> that's the new index (files added
+  // elsewhere in the folder don't move the selection); not found (removed)
+  // -> falls back to clamping the old numeric index, which is "the next one
+  // slides into its place" for a mid-list removal and "the previous one" for
+  // the last item, without needing to special-case either (plan/16).
+  std::string _wantSelectedPath;
+  NSTimer* _folderPollTimer;
 }
 - (instancetype)initWithOptions:(const mv::shell::mac_lab_options&)options {
   self = [super init];
@@ -233,6 +356,7 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   self.view.lab = &_lab;
   self.view.snap = &_snap;
+  self.view.app = self;
   [container addSubview:self.view];
 
   self.commandBar = [MVChromeHost makeCommandBarView];
@@ -262,8 +386,155 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
     [NSApp terminate:nil];
     return;
   }
+
+  // plan/16 "Opening (argv, drop, PR 6)": --open (or a bare positional path,
+  // parsed into the same options_.open_path below) resolves through the same
+  // folder+select rule a drop does, now that folder_model_mac exists to
+  // resolve it -- not a direct one-off open_item() with no folder context.
+  if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
+    NSBeep();
+  }
+
+  // folder_model_mac's relist/thumb watch fires on its own FSEvents thread
+  // (io/dir.h: "must not block and must not re-enter the watcher" -- it
+  // just flips an atomic). Polling consume_changed() on a UI-thread timer,
+  // rather than doing real work from that callback, is what keeps this
+  // rule intact while still picking up "a file dropped into the folder
+  // appears without restart" (plan/10-roadmap.md PR 4's verify line).
+  _folderPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
+                                                       target:self
+                                                     selector:@selector(refreshFolderIfChanged)
+                                                     userInfo:nil
+                                                      repeats:YES];
+
   [self.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (BOOL)hasFolder {
+  return !_items.empty();
+}
+
+- (BOOL)openEntryPath:(const char*)utf8_path {
+  if (!utf8_path || !*utf8_path) return NO;
+  const std::string path(utf8_path);
+  // A single stat() to answer "does anything exist here" is the one I/O
+  // this method does inline -- cheap and synchronous by nature, the same
+  // exception every "no I/O on the UI thread" codebase makes for a stat
+  // call, unlike the real I/O folder_model::open() below does.
+  auto is_dir = mv::io::is_directory(path);
+  if (!is_dir) return NO;  // stat failed: nothing exists at this path
+
+  std::string dir;
+  std::string select_path;
+  if (is_dir.value()) {
+    dir = path;
+  } else {
+    auto containing = mv::io::containing_dir(path);
+    if (!containing) return NO;
+    dir = containing.value();
+    select_path = path;
+  }
+
+  // The listing itself is already async (folder_model_mac::relist_async
+  // submits its own job); -refreshFolderIfChanged picks it up once
+  // consume_changed() fires and resolves `_wantSelectedPath` against the
+  // real listing. Resetting `_index`/`_items` now, synchronously (no I/O
+  // here, just clearing C++ containers), means a relist that lands for a
+  // *different* folder in flight can never be mistaken for this one's.
+  _wantSelectedPath = select_path;
+  _items.clear();
+  _index.reset(0);
+
+  // folder_model::open() itself is real I/O -- opening, and maybe creating,
+  // the thumbnail cache's SQLite file -- so it never runs on the UI thread
+  // (CLAUDE.md rule 1: "no I/O"), unlike the is_directory() stat above.
+  // `&_folder`/`&_jobs` stay valid for the job's duration because MvLabApp
+  // is never destroyed before the process exits -- unlike folder_model_mac's
+  // own internal jobs, which capture a shared_ptr<shared_state> precisely
+  // because a folder_model *can* be destroyed mid-job in general.
+  mv::shell::folder_model* folder = &_folder;
+  mv::job_system* jobs = &_jobs;
+  _jobs.submit_at(mv::background_generation,
+                  [folder, jobs, dir](const mv::job_context&) -> mv::status {
+                    auto opened = folder->open(dir, *jobs);
+                    if (!opened) {
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        NSBeep();
+                      });
+                      return opened.error();
+                    }
+                    return mv::status::ok;
+                  });
+  return YES;
+}
+
+- (void)refreshFolderIfChanged {
+  if (!_folder.consume_changed()) return;
+  _items = _folder.items();
+
+  std::size_t new_index = 0;
+  if (!_items.empty()) {
+    bool found = false;
+    if (!_wantSelectedPath.empty()) {
+      for (std::size_t i = 0; i < _items.size(); ++i) {
+        if (_items[i].path_utf8 == _wantSelectedPath) {
+          new_index = i;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) {
+      new_index = std::min(_index.current(), _items.size() - 1);
+    }
+  }
+  [self selectIndex:new_index];
+}
+
+- (void)selectIndex:(std::size_t)new_index {
+  _index.reset(_items.size(), new_index);
+
+  if (_items.empty()) {
+    _wantSelectedPath.clear();
+    _snap.item_index = 0;
+    _snap.item_count = 0;
+    _snap.item_name[0] = '\0';
+  } else {
+    const mv::io::dir_entry& entry = _items[_index.current()];
+    _wantSelectedPath = entry.path_utf8;
+    _lab.open_item(entry.path_utf8);
+    _snap.item_index = static_cast<std::uint32_t>(_index.current());
+    _snap.item_count = static_cast<std::uint32_t>(_items.size());
+    const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
+    std::memcpy(_snap.item_name, entry.name_utf8.data(), n);
+    _snap.item_name[n] = '\0';
+  }
+
+  ++_snap.activity_seq;
+  [self.view publish];
+  _lab.wake();
+}
+
+- (void)navigateNext {
+  if (_items.empty()) return;
+  [self selectIndex:_index.next()];
+}
+- (void)navigatePrev {
+  if (_items.empty()) return;
+  [self selectIndex:_index.prev()];
+}
+- (void)navigateFirst {
+  if (_items.empty()) return;
+  [self selectIndex:_index.first()];
+}
+- (void)navigateLast {
+  if (_items.empty()) return;
+  [self selectIndex:_index.last()];
+}
+- (void)navigateSkip:(std::ptrdiff_t)delta {
+  if (_items.empty()) return;
+  [self selectIndex:_index.skip(delta)];
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
   (void)sender;
@@ -282,6 +553,12 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   // fires only after the window has already closed.
   g_chrome_snap = nullptr;
   g_chrome_lab = nullptr;
+  [_folderPollTimer invalidate];
+  _folderPollTimer = nil;
+  // Stops and joins the FSEvents watch thread; safe on the main thread per
+  // io/dir.h's contract, and cheap -- in-flight relist/thumb jobs keep their
+  // own shared_ptr<shared_state> and finish safely regardless (folder_model_mac.h).
+  _folder.close();
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
   (void)sender;
@@ -327,10 +604,14 @@ namespace {
 
 void usage() {
   std::fprintf(stderr,
-               "mediaviewer_lab — Metal present lab (PR 16), still decode + pan/zoom (PR 17)\n"
+               "mediaviewer_lab — Metal present lab (PR 16), still decode + pan/zoom (PR 17),\n"
+               "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
-               "  --open PATH   decode a JPEG/PNG/BMP and fit it; wheel to zoom toward the\n"
-               "                cursor, drag to pan, 0 fit, 1 one-to-one\n");
+               "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
+               "                folder with that file selected (plan/16-commands.md). Wheel to\n"
+               "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
+               "                Left/Right or A/D previous/next, Home/End first/last,\n"
+               "                PageUp/PageDown skip ~10, Space next once a folder is open.\n");
 }
 
 }  // namespace
@@ -356,6 +637,13 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
+    } else if (arg[0] != '-') {
+      // A bare positional path: "the first entry that exists wins"
+      // (plan/16-commands.md) -- MvLabApp resolves it (folder, or a file's
+      // containing folder with that file selected) after the lab starts.
+      // The first one given wins if more than one is passed; later ones are
+      // ignored rather than erroring, matching a drop of several files.
+      if (options.open_path.empty()) options.open_path = arg;
     } else {
       std::fprintf(stderr, "mediaviewer_lab: unrecognised argument %s\n", arg);
       usage();
