@@ -770,6 +770,20 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   if (!_folder.consume_changed()) return;
   _items = _folder.items();
 
+  // Marks are kept by path specifically so they survive a relist that
+  // merely reorders _items, but a path can also drop out of the listing
+  // entirely here -- external deletion/rename, not just this app's own
+  // copy/move/Trash (which already prune their own successes directly).
+  // Without this, a mark for a file that is simply gone would sit in
+  // _marks forever, inflating _snap.marked_count.
+  if (!_marks.empty()) {
+    std::set<std::string> live_paths;
+    for (const auto& entry : _items) live_paths.insert(entry.path_utf8);
+    std::erase_if(_marks, [&live_paths](const std::string& path) {
+      return !live_paths.count(path);
+    });
+  }
+
   std::size_t new_index = 0;
   if (!_items.empty()) {
     bool found = false;
