@@ -377,17 +377,23 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 - (void)keyDown:(NSEvent*)event {
   const NSString* chars = event.charactersIgnoringModifiers;
   const unichar c = chars.length > 0 ? [chars characterAtIndex:0] : 0;
+  // Computed up front: charactersIgnoringModifiers still yields plain 'a'/'d'
+  // with Control held (it only accounts for Shift), so the A/D
+  // previous/next checks just below must not shadow Ctrl+A/Ctrl+D
+  // (mark-all/unmark-all, further down this function) the way they did
+  // before this existed -- Ctrl+A/Ctrl+D never reached their own handlers.
+  const NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 
   // plan/16-commands.md Browse table: <-/-> or A/D previous/next in every
   // mode; Home/End first/last; PageUp/PageDown skip ~10. These go through
   // MvLabApp (folder_model_mac + browse_index), not an input_snapshot seq --
   // navigation is "load this specific path next," a one-shot command, not
   // per-frame render-thread state the way pan/zoom/mouse are.
-  if (c == NSLeftArrowFunctionKey || c == 'a' || c == 'A') {
+  if (c == NSLeftArrowFunctionKey || ((c == 'a' || c == 'A') && mods != NSEventModifierFlagControl)) {
     [self.app navigatePrev];
     return;
   }
-  if (c == NSRightArrowFunctionKey || c == 'd' || c == 'D') {
+  if (c == NSRightArrowFunctionKey || ((c == 'd' || c == 'D') && mods != NSEventModifierFlagControl)) {
     [self.app navigateNext];
     return;
   }
@@ -412,7 +418,6 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // for the external/PC keyboards that have a physical Insert key; laptop
   // keyboards have none, which is exactly why plan/16 pairs it with
   // Shift+Space as an always-available alternative.
-  const NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
   if (self.app && [self.app hasFolder]) {
     if (c == NSInsertFunctionKey || (c == ' ' && (mods & NSEventModifierFlagShift))) {
       [self.app toggleMarkCurrent];
