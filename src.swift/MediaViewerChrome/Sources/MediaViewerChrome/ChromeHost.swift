@@ -16,4 +16,20 @@ public final class MVChromeHost: NSObject {
     hosting.translatesAutoresizingMaskIntoConstraints = false
     return hosting
   }
+
+  // PR 18 filmstrip/gallery follow-up (plan/12 2026-09-17). Same hosting
+  // shape as makeCommandBarView above -- main_mac.mm only ever sees an
+  // NSView*, never SwiftUI/NSHostingView types (plan/14-abi.md's boundary,
+  // scoped to this lab).
+  @objc public static func makeFilmstripView() -> NSView {
+    let hosting = NSHostingView(rootView: FilmstripView())
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    return hosting
+  }
+
+  @objc public static func makeGalleryView() -> NSView {
+    let hosting = NSHostingView(rootView: GalleryView())
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    return hosting
+  }
 }

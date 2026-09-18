@@ -6,6 +6,9 @@
 // to what PR 18's command-bar scaffold needs.
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +18,62 @@ void mv_chrome_fit(void);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
+
+// PR 18 (folded-in PR 4, plan/12 2026-09-17): the filmstrip/gallery
+// SwiftUI-side follow-up. These all read/mutate state MvLabApp owns
+// (folder_model + browse_index, src/shell/main_mac.mm) — never folder_model
+// or browse_index directly, so this stays the one boundary between Swift
+// chrome and the host, same as plan/14-abi.md's C-ABI shape rule scoped down
+// to what this lab needs. [main-thread] for all of these: SwiftUI runs on
+// the main actor, and so does every keyDown:/NSTimer call on the C++ side
+// that also touches this state, so there is no cross-thread synchronization
+// here beyond what input_snapshot's publish/wake already does.
+
+// 0 when no folder is open. Matches the count `mv_chrome_item_name`/
+// `mv_chrome_select_index` index against.
+int32_t mv_chrome_item_count(void);
+
+// -1 when no folder is open (mirrors browse_index::current() being
+// meaningless on an empty listing).
+int32_t mv_chrome_current_index(void);
+
+// Copies the UTF-8 name of the item at `index` into `out_buf` (NUL-
+// terminated, truncated to fit `out_buf_size`). Returns false and leaves
+// `out_buf` untouched if `index` is out of `[0, mv_chrome_item_count())`.
+bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size);
+
+// Navigates to `index` the same way clicking a filmstrip/gallery cell does
+// (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
+// A no-op if `index` is out of range or no folder is open.
+void mv_chrome_select_index(int32_t index);
+
+// Registered once at startup. Called on the main thread when a thumbnail
+// requested via mv_chrome_request_thumb becomes ready; `thumb_path_utf8` is
+// NULL on failure (folder_model::thumb_ready_fn's contract, forwarded here
+// after the host has already hopped back to the main thread — the callback
+// this registers is never invoked from a pool thread).
+typedef void (*mv_chrome_thumb_ready_fn)(int32_t index, const char* thumb_path_utf8);
+void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
+
+// Asynchronously requests (looks up, or decodes + caches) the JPEG-512
+// thumbnail for the item at `index`. The result arrives later through the
+// callback registered with mv_chrome_set_thumb_ready_callback — this never
+// blocks (CLAUDE.md rule 1: the request itself does real I/O on a
+// folder_model job, same contract as folder_model::request_thumb).
+// A no-op if `index` is out of range.
+void mv_chrome_request_thumb(int32_t index);
+
+// T / G toggle these from keyDown: (main_mac.mm); Swift polls them (they are
+// plain bools, not worth a push channel the way thumbnails are) to decide
+// whether to show the filmstrip/gallery views it already hosts.
+bool mv_chrome_filmstrip_visible(void);
+bool mv_chrome_gallery_visible(void);
+
+// Called by the gallery view when a cell is clicked: selects `index` (same
+// as mv_chrome_select_index) and closes the gallery in one call, so a click
+// cannot land between the two and briefly show the old selection with the
+// gallery already gone.
+void mv_chrome_select_index_and_close_gallery(int32_t index);
 
 #ifdef __cplusplus
 }
