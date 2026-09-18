@@ -1196,6 +1196,18 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   g_chrome_app = nullptr;
   [_folderPollTimer invalidate];
   _folderPollTimer = nil;
+  // _slideshowTimer's target is self, retained by NSTimer until invalidated
+  // -- nulling g_chrome_app above does not stop it, since it calls
+  // -navigateNext directly rather than through the bridge globals. Left
+  // running, it would keep firing -navigateNext/-selectIndex: on a
+  // half-torn-down MvLabApp after the window (and _folder) are gone, racing
+  // -applicationShouldTerminate:'s own off-main-thread teardown. Not
+  // routed through -leaveSlideshow: that also un-fullscreens the window,
+  // which is unnecessary work on a window that is already closing.
+  [_slideshowTimer invalidate];
+  _slideshowTimer = nil;
+  _slideshowActive = NO;
+  _slideshowPaused = NO;
   // Stops and joins the FSEvents watch thread; safe on the main thread per
   // io/dir.h's contract, and cheap -- in-flight relist/thumb jobs keep their
   // own shared_ptr<shared_state> and finish safely regardless (folder_model_mac.h).
