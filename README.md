@@ -15,9 +15,9 @@ so Mac work (PR 16–20) no longer waits on Windows PR 8 shipping; PR 16 (Metal 
 PR 17 (decode + pan/zoom, folded in the PR 7 formats/Crashpad scope), and PR 18 (SwiftUI
 chrome, folded in the PR 4/PR 6 folder/filmstrip-backend/keyboard scope) are all in the tree.
 The Darwin target now configures, builds, and links with a real toolchain (`cmake`+`ninja`+
-`vcpkg`+`swift build`) and its Catch2 suite passes (182 assertions, 54 cases), but the actual
-on-screen present loop and 60 s soak have only been reviewed, not run on a real Mac with a
-display — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
+`vcpkg`+`swift build`) and its Catch2 suite passes (210 assertions, 60 cases), but the actual
+on-screen present loop, 60 s soak, and any interactive UI/drag-and-drop have only been
+reviewed, not run on a real Mac with a display — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -48,13 +48,15 @@ host of the same core — not a UI-only port. PR 16 is the Metal present lab
 immutable Metal texture upload, fit / wheel-zoom-toward-cursor / drag-pan, and an MSL
 twin of the blit shader, plus (folded in from Windows PR 7) the rest of the D5 still
 formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump scrub.
-PR 18 hosts a SwiftUI command bar in the same AppKit window (the canvas stays Metal,
-never ported) and adds the backend a filmstrip/gallery will use — FSEvents folder
-watch, a JPEG-512 SQLite thumbnail cache sharing Windows' `jpg512.1` spec — plus
-(folded in from Windows PR 4/PR 6) `0`/`1` keyboard bindings feeding the same
-`input_snapshot` the SwiftUI buttons do. It does **not** yet play video (PR 19) or
-show a filmstrip/gallery UI or full keyboard-complete browse (both PR 18 backend
-pieces, UI still to come). A Windows DXGI soak is not that verify.
+PR 18 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
+ported): a command bar, a bottom filmstrip, and a full-grid gallery overlay, all driven
+by an FSEvents-backed folder model and a JPEG-512 SQLite thumbnail cache sharing
+Windows' `jpg512.1` spec, lazy-loading thumbnails so a large folder doesn't stall the
+scroll. Real folder navigation (argv, drag-and-drop-in, arrow keys and the rest of
+plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscreen,
+a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
+It does **not** yet play video (PR 19) or handle rating/metadata/RAW-pairing UI. A
+Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
 not yet demonstrated on a quiet GPU runner, and PR 5's and PR 6's own verify
@@ -77,7 +79,7 @@ that apply to what you are doing.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. `--open PATH` decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`/`1`. A SwiftUI command bar (Fit / 1:1) is hosted in the same window via a small C bridge into the render thread's `input_snapshot` — no filmstrip/gallery UI yet, though the FSEvents folder watch and JPEG-512 thumbnail cache backend they'll use already exist. No video, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
+| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Backspace`/`Home`/`End`/`PageUp`/`PageDown` navigate it, an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a command bar (Fit / 1:1), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). No video, no `AVPlayer`, no rating/metadata/RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -133,17 +135,26 @@ ctest --test-dir build --output-on-failure
 
 This has been built and linked for real (not just reviewed) with `cmake` + `ninja` +
 a manifest-mode `vcpkg` install (`imgui[metal-binding]`, `libjpeg-turbo`, `libspng`,
-`lcms`, `sqlite3`, `catch2`) and `swift build` for the SwiftUI command bar — `mv_tests`
-passes (182 assertions, 54 cases). What that build **could not** do: run the actual
-windowed present loop or the 60 s soak, since it had no attached display (`view
-backing layer is not CAMetalLayer` — a headless-environment limit, not a code bug).
-Run `frametime`'s soak on a real Mac before trusting the PR 16 gate.
+`lcms`, `sqlite3`, `catch2`) and `swift build` for the SwiftUI chrome — `mv_tests`
+passes (210 assertions, 60 cases). **The macOS SDK matters**: once the filmstrip/gallery
+pulled in SwiftUI's `Lazy*Stack`, linking against an SDK that doesn't match the Swift
+toolchain's own SDK failed with "cannot link directly with 'SwiftUICore'" — use
+`xcrun --show-sdk-path` (or the SDK your installed Xcode ships) rather than an older one
+you may have lying around for a lower deployment target; `CMAKE_OSX_DEPLOYMENT_TARGET`
+stays 14.0 either way. What this build **could not** do: run the actual windowed present
+loop, the 60 s soak, or any interactive UI/drag-and-drop, since it had no attached display
+(`view backing layer is not CAMetalLayer` — a headless-environment limit, not a code bug).
+Run `frametime`'s soak, and a manual pass over navigation/marks/copy/move/Trash/
+fullscreen/slideshow/drag-drop, on a real Mac before trusting any of it.
 
 `frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
 Windows DXGI JSON report over is a failed gate, not a pass.
 
-`F3` toggles the overlay, `Space` the sweep, `R` resets the measurement, `Esc`
-quits, `0` fits, `1` is 100 %. Idle (`--static`) must park the cursor off the window.
+`F3` toggles the overlay, `Space` advances the folder (or pauses a running slideshow),
+`R` resets the frame-time measurement, `Esc` closes the gallery / leaves fullscreen or
+slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/gallery,
+`F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
+cursor off the window.
 
 ## Run
 
