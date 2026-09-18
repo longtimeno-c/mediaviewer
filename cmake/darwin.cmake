@@ -228,7 +228,8 @@ target_link_libraries(mediaviewer_lab PRIVATE
   "-framework CoreServices"
   "-framework SwiftUI"
   "-framework Combine")
-target_include_directories(mediaviewer_lab PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}")
+target_include_directories(mediaviewer_lab PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
+  "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
 set_source_files_properties(
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm

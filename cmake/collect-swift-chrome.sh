@@ -14,11 +14,19 @@ build_dir="$1"
 header_dst="$2"
 lib_dst="$3"
 
-# Already at the flat, expected path (classic SwiftPM layout) — nothing to do.
-if [ -f "$header_dst" ] && [ -f "$lib_dst" ]; then
-  exit 0
-fi
-
+# Real bug, found the hard way (2026-09-18): this used to early-exit here
+# whenever both destination files already existed, on the theory that meant
+# "classic SwiftPM already wrote straight to the flat path, nothing to do."
+# It does not mean that under the Xcode-style "Swift Build" backend this
+# toolchain uses: `swift build -c release` writes a fresh libMediaViewerChrome.a
+# straight to $lib_dst itself (a compatibility path apparently, since
+# collect-swift-chrome.sh is never asked to touch it), but never touches
+# $header_dst at all -- so a *second* build (both destination files already
+# present from the first) hit the early exit and silently kept serving the
+# first build's stale header forever, however many times ChromeHost.swift
+# changed afterwards. Always finding and copying the header fresh, every
+# time this script runs, is the fix -- `cp` is cheap, and "maybe stale" is
+# a worse failure mode than "recopied a file that happened not to change."
 header_src=$(find "$build_dir" -name "*-Swift.h" -path "*GeneratedModuleMaps*" -print -quit)
 if [ -z "$header_src" ]; then
   header_src=$(find "$build_dir" -name "*-Swift.h" -print -quit)
@@ -27,8 +35,14 @@ if [ -z "$header_src" ]; then
   echo "collect-swift-chrome.sh: no generated ObjC header found under $build_dir" >&2
   exit 1
 fi
-cp "$header_src" "$header_dst"
+if [ "$header_src" != "$header_dst" ]; then
+  mkdir -p "$(dirname "$header_dst")"
+  cp "$header_src" "$header_dst"
+fi
 
+# The lib, observed empirically, already lands at $lib_dst as part of
+# `swift build` itself on this toolchain -- this is the fallback for a
+# toolchain where that is not true, not the common path.
 if [ ! -f "$lib_dst" ]; then
   lib_src=$(find "$build_dir" -name "lib*.a" -path "*Products*Release*" -print -quit)
   if [ -z "$lib_src" ]; then
