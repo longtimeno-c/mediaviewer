@@ -45,8 +45,9 @@ private struct FilmstripCell: View {
   @ObservedObject private var store = FolderStore.shared
 
   var body: some View {
+    let itemName = store.name(at: index)
     ZStack {
-      if let image = store.thumbnails[index] {
+      if let image = store.thumbnails[itemName] {
         Image(nsImage: image)
           .resizable()
           .aspectRatio(contentMode: .fit)

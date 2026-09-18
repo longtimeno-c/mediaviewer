@@ -1111,13 +1111,19 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 - (void)requestThumbAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return;
   const mv::io::dir_entry& entry = _items[static_cast<std::size_t>(index)];
-  const int32_t idx = static_cast<int32_t>(index);
+  // Captured by value (not read from `_items`/index again when the job
+  // completes): if a relist reorders `_items` between the request and the
+  // callback firing, `name` still names the file this thumbnail is actually
+  // for, which is exactly why mv_chrome_bridge.h keys the callback by name
+  // rather than by the index this request started at.
+  const std::string name = entry.name_utf8;
   _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
-                        [idx](std::string /*path_utf8*/, std::string thumb_path) {
+                        [name](std::string /*path_utf8*/, std::string thumb_path) {
                           dispatch_async(dispatch_get_main_queue(), ^{
                             if (!g_thumb_ready_callback) return;
-                            g_thumb_ready_callback(idx, thumb_path.empty() ? nullptr
-                                                                           : thumb_path.c_str());
+                            g_thumb_ready_callback(name.c_str(), thumb_path.empty()
+                                                                      ? nullptr
+                                                                      : thumb_path.c_str());
                           });
                         });
 }

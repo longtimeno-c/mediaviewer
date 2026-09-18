@@ -52,7 +52,15 @@ void mv_chrome_select_index(int32_t index);
 // NULL on failure (folder_model::thumb_ready_fn's contract, forwarded here
 // after the host has already hopped back to the main thread — the callback
 // this registers is never invoked from a pool thread).
-typedef void (*mv_chrome_thumb_ready_fn)(int32_t index, const char* thumb_path_utf8);
+//
+// `name_utf8` identifies which item this result is for — not the index it
+// was requested at. A directory can't have two entries with the same name,
+// so it is a stable key across a relist the way a raw index is not: if the
+// listing reorders (including from the app's own copy/move/Trash) between
+// the request and this callback firing, an index-keyed cache would attach
+// the result to whatever item now sits at that index instead of the one
+// that was actually asked for. Always non-NULL.
+typedef void (*mv_chrome_thumb_ready_fn)(const char* name_utf8, const char* thumb_path_utf8);
 void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 
 // Asynchronously requests (looks up, or decodes + caches) the JPEG-512

@@ -16,13 +16,18 @@ final class FolderStore: ObservableObject {
 
   @Published private(set) var itemCount: Int = 0
   @Published private(set) var currentIndex: Int = -1
-  @Published private(set) var thumbnails: [Int: NSImage] = [:]
+  @Published private(set) var thumbnails: [String: NSImage] = [:]
 
-  // Indices already asked for, so scrolling back and forth over the same
+  // Names already asked for, so scrolling back and forth over the same
   // cells doesn't re-request a thumbnail that's already in flight or cached
   // (folder_model_mac's own SQLite lookup is cheap on a hit, but still a
-  // pool-thread round trip worth not repeating per redraw).
-  private var requested: Set<Int> = []
+  // pool-thread round trip worth not repeating per redraw). Keyed by name,
+  // not index: a relist (including one triggered by this app's own
+  // copy/move/Trash) can shift which item sits at a given index, and an
+  // index-keyed cache would then show a cached image for the wrong file --
+  // mv_chrome_bridge.h's thumb-ready callback is keyed by name for the same
+  // reason.
+  private var requested: Set<String> = []
   private var pollTimer: Timer?
 
   private init() {
@@ -81,14 +86,17 @@ final class FolderStore: ObservableObject {
   // decoding 2000 files up front is exactly the "filmstrip scrolls without
   // a hitch" bar this is here to clear).
   func requestThumbnailIfNeeded(at index: Int) {
-    guard thumbnails[index] == nil, !requested.contains(index) else { return }
-    requested.insert(index)
+    let itemName = name(at: index)
+    guard !itemName.isEmpty, thumbnails[itemName] == nil, !requested.contains(itemName) else {
+      return
+    }
+    requested.insert(itemName)
     mv_chrome_request_thumb(Int32(index))
   }
 
-  fileprivate func thumbnailReady(index: Int, path: String?) {
+  fileprivate func thumbnailReady(name: String, path: String?) {
     guard let path, let image = NSImage(contentsOfFile: path) else { return }
-    thumbnails[index] = image
+    thumbnails[name] = image
   }
 }
 
@@ -101,9 +109,13 @@ final class FolderStore: ObservableObject {
 // implementation of mv_chrome_request_thumb always hops to
 // dispatch_get_main_queue() before calling this (mv_chrome_bridge.h's
 // documented contract), which is the same thread Swift's main actor runs on.
-private func thumbReadyTrampoline(_ index: Int32, _ pathUTF8: UnsafePointer<CChar>?) {
+private func thumbReadyTrampoline(
+  _ nameUTF8: UnsafePointer<CChar>?, _ pathUTF8: UnsafePointer<CChar>?
+) {
+  guard let nameUTF8 else { return }
+  let name = String(cString: nameUTF8)
   let path = pathUTF8.map { String(cString: $0) }
   MainActor.assumeIsolated {
-    FolderStore.shared.thumbnailReady(index: Int(index), path: path)
+    FolderStore.shared.thumbnailReady(name: name, path: path)
   }
 }

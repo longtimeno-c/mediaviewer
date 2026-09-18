@@ -34,9 +34,10 @@ private struct GalleryCell: View {
   @ObservedObject private var store = FolderStore.shared
 
   var body: some View {
+    let itemName = store.name(at: index)
     VStack(spacing: 4) {
       ZStack {
-        if let image = store.thumbnails[index] {
+        if let image = store.thumbnails[itemName] {
           Image(nsImage: image)
             .resizable()
             .aspectRatio(contentMode: .fit)
@@ -50,7 +51,7 @@ private struct GalleryCell: View {
         RoundedRectangle(cornerRadius: 6)
           .strokeBorder(index == store.currentIndex ? Color.accentColor : .clear, lineWidth: 2)
       )
-      Text(store.name(at: index))
+      Text(itemName)
         .font(.caption)
         .lineLimit(1)
         .truncationMode(.middle)
