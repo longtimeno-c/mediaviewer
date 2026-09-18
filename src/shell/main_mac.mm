@@ -11,7 +11,9 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -557,6 +559,20 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // slides into its place" for a mid-list removal and "the previous one" for
   // the last item, without needing to special-case either (plan/16).
   std::string _wantSelectedPath;
+  // Bumped by every -openEntryPath: call, read from the background job it
+  // submits. folder_model::open() writes state_->dir/generation under its
+  // own mutex, but its thumbs.open()/watcher_.start() calls run outside
+  // that lock -- two folder->open() calls for different directories
+  // in flight at once (a startup --open immediately followed by a drop, say)
+  // can then interleave and leave the watcher pointed at one directory while
+  // the thumbnail cache is opened against another. A superseded open's job
+  // checks this before ever calling folder->open() and bails instead,
+  // rather than letting two opens race each other's side effects.
+  // No brace-initializer: Objective-C ivar declarations don't support one
+  // (unlike a C++ class body). std::atomic<T>'s default constructor
+  // value-initializes to 0 as of C++20 (this file builds -std=c++2a), so
+  // this starts at 0 regardless.
+  std::atomic<std::uint64_t> _openGeneration;
   NSTimer* _folderPollTimer;
 
   // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
@@ -752,8 +768,19 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // because a folder_model *can* be destroyed mid-job in general.
   mv::shell::folder_model* folder = &_folder;
   mv::job_system* jobs = &_jobs;
+  const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  std::atomic<std::uint64_t>* open_generation = &_openGeneration;
   _jobs.submit_at(mv::background_generation,
-                  [folder, jobs, dir](const mv::job_context&) -> mv::status {
+                  [folder, jobs, dir, my_generation, open_generation](
+                      const mv::job_context&) -> mv::status {
+                    // A newer -openEntryPath: call already arrived: calling
+                    // folder->open() now would race that one's own open()
+                    // call outside folder_model's internal locking (see
+                    // _openGeneration's declaration comment). Let the newer
+                    // request own this folder_model unopposed instead.
+                    if (open_generation->load(std::memory_order_acquire) != my_generation) {
+                      return mv::status::cancelled;
+                    }
                     auto opened = folder->open(dir, *jobs);
                     if (!opened) {
                       dispatch_async(dispatch_get_main_queue(), ^{
