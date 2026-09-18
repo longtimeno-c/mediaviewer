@@ -11,14 +11,17 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "core/job_system.h"
 #include "core/trace.h"
+#include "io/collision_name.h"
 #include "io/dir.h"
 #include "shell/browse_index.h"
 #include "shell/folder_model_mac.h"
@@ -32,6 +35,18 @@
 // src.swift/MediaViewerChrome/Sources/MediaViewerChrome/ChromeHost.swift.
 #import "MediaViewerChrome-Swift.h"
 
+// The Swift-facing declarations this file implements (mv_chrome_fit and
+// friends). Included, not just matched by extern "C" convention, so the
+// compiler catches a signature drift here instead of it only surfacing as a
+// link error against the Swift side.
+#include "mv_chrome_bridge.h"
+
+// Forward declaration: the globals just below need the type, but MvLabApp's
+// @interface is later in this file (it in turn needs MvMetalView, declared
+// further down still) -- same reason MvMetalView gets a `@class` forward
+// declaration below rather than reordering the whole file.
+@class MvLabApp;
+
 namespace {
 // Bridge target for mv_chrome_fit()/mv_chrome_one_to_one() (declared in
 // src.swift/MediaViewerChrome/Sources/MVChromeBridge, called from
@@ -41,6 +56,16 @@ namespace {
 // process's only window (plan/14-abi.md's shape, scoped to the lab).
 mv::shell::input_snapshot* g_chrome_snap = nullptr;
 mv::shell::present_lab_mac* g_chrome_lab = nullptr;
+// Filmstrip/gallery bridge target (plan/12 2026-09-17): same lifetime and
+// same reasoning as g_chrome_snap/g_chrome_lab above, set/cleared alongside
+// them. Needed because mv_chrome_item_count() etc read `_items`/`_folder`,
+// private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
+// functions below call through this pointer rather than duplicating state.
+MvLabApp* g_chrome_app = nullptr;
+// Registered once by Swift via mv_chrome_set_thumb_ready_callback. A plain
+// C function pointer, not a std::function: this crosses the same boundary
+// mv_chrome_bridge.h's other declarations do, POD only.
+mv_chrome_thumb_ready_fn g_thumb_ready_callback = nullptr;
 }  // namespace
 
 // [any-thread] SwiftUI runs button actions on the main actor, so these run
@@ -68,6 +93,9 @@ extern "C" void mv_chrome_one_to_one(void) {
 // — that field, and every canvas-rect field alongside it, is already in
 // physical pixels, matching Windows' PerMonitorV2 convention).
 constexpr CGFloat kChromeBarHeightPoints = 44.0;
+// Filmstrip strip height, in points -- same conversion-to-backing-pixels
+// treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
+constexpr CGFloat kFilmstripHeightPoints = 96.0;
 
 // Declared in full (not just `@class`) because MvMetalView's own methods,
 // defined below, send it messages (navigatePrev etc.) -- a bare forward
@@ -79,6 +107,8 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 @property(nonatomic, strong) NSWindow* window;
 @property(nonatomic, strong) MvMetalView* view;
 @property(nonatomic, strong) NSView* commandBar;
+@property(nonatomic, strong) NSView* filmstripHost;
+@property(nonatomic, strong) NSView* galleryHost;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -92,9 +122,94 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 - (void)navigateFirst;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
+
+// Marks, copy/move, Trash (plan/16-commands.md "Marks, copy, move"; folded
+// into PR 18 from Windows PR 6, plan/12 2026-09-17).
+- (void)toggleMarkCurrent;
+- (void)markAll;
+- (void)unmarkAll;
+- (void)copyMarkedPickDestination:(BOOL)pick;
+- (void)moveMarkedPickDestination:(BOOL)pick;
+- (void)deleteMarkedToTrash;
+// Shared by both of the above -- copy and move differ only in the
+// NSFileManager call and the "F7"/"F8" verb in the resulting NSBeep-on-
+// failure path, not in destination resolution or collision handling.
+- (void)transferMarkedPickDestination:(BOOL)pick move:(BOOL)move;
+
+// Fullscreen (F11 / F) and slideshow (F5), plan/16's Browse and Slideshow
+// tables. No video on Mac yet (PR 19), so slideshow is a plain interval
+// timer over stills only.
+- (void)toggleFullscreen;
+- (BOOL)isSlideshowActive;
+- (void)startSlideshow;
+- (void)leaveSlideshow;
+- (void)toggleSlideshowPause;
+- (void)adjustSlideshowInterval:(double)deltaSeconds;
+
+// Drag-out (plan/16 "Opening (argv, drop, PR 6)" mentions drag-in; drag-out
+// is the symmetric case -- dragging the displayed item to Finder/another
+// app). nil when nothing is open.
+- (NSString*)currentItemPathForDrag;
+
+// Filmstrip/gallery follow-up (plan/12 2026-09-17): -selectIndex: is already
+// defined below (folder_model relist / navigateNext etc all call it as a
+// same-@implementation self-call, which doesn't need a declaration here) but
+// the mv_chrome_* bridge functions call it on a statically-typed MvLabApp*
+// from outside this @implementation, which does. itemCount/currentIndex/
+// itemNameAtIndex:into:size:/requestThumbAtIndex: are the MvLabApp-side half
+// of that same bridge — declared here because they read `_items`/`_folder`,
+// private ivars only MvLabApp's own methods can reach.
+- (void)selectIndex:(std::size_t)new_index;
+- (NSInteger)itemCount;
+- (NSInteger)currentIndex;
+- (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
+- (void)requestThumbAtIndex:(NSInteger)index;
+- (BOOL)filmstripVisible;
+- (BOOL)galleryVisible;
+- (void)setGalleryVisible:(BOOL)visible;
+- (void)toggleFilmstrip;
+- (void)toggleGallery;
 @end
 
-@interface MvMetalView : NSView
+// Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
+// after MvLabApp's @interface (which they need) and before MvMetalView's,
+// rather than beside mv_chrome_fit/mv_chrome_one_to_one above, which predate
+// MvLabApp's declaration in this file. [main-thread] -- see the header's
+// doc comment; every one of these just forwards to g_chrome_app.
+extern "C" int32_t mv_chrome_item_count(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app itemCount]) : 0;
+}
+extern "C" int32_t mv_chrome_current_index(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app currentIndex]) : -1;
+}
+extern "C" bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size) {
+  if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
+  return [g_chrome_app itemNameAtIndex:index into:out_buf size:out_buf_size] == YES;
+}
+extern "C" void mv_chrome_select_index(int32_t index) {
+  if (!g_chrome_app || index < 0) return;
+  [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+}
+extern "C" void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback) {
+  g_thumb_ready_callback = callback;
+}
+extern "C" void mv_chrome_request_thumb(int32_t index) {
+  if (!g_chrome_app || index < 0) return;
+  [g_chrome_app requestThumbAtIndex:index];
+}
+extern "C" bool mv_chrome_filmstrip_visible(void) {
+  return g_chrome_app ? [g_chrome_app filmstripVisible] == YES : false;
+}
+extern "C" bool mv_chrome_gallery_visible(void) {
+  return g_chrome_app ? [g_chrome_app galleryVisible] == YES : false;
+}
+extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
+  if (!g_chrome_app || index < 0) return;
+  [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  [g_chrome_app setGalleryVisible:NO];
+}
+
+@interface MvMetalView : NSView <NSDraggingSource>
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
 @property(nonatomic, assign) mv::shell::input_snapshot* snap;
 // Weak-by-convention (assign, not strong): MvLabApp owns this view for its
@@ -106,6 +221,15 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 @end
 
 @implementation MvMetalView
+// NSDraggingSource: Cmd+drag-out (mouseDown: above). Copy-only -- dragging
+// the displayed item out never removes it from the folder; that's what
+// Delete/Trash and F8/move are for.
+- (NSDragOperation)draggingSession:(NSDraggingSession*)session
+    sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  (void)session;
+  (void)context;
+  return NSDragOperationCopy;
+}
 - (BOOL)wantsLayer {
   return YES;
 }
@@ -135,6 +259,14 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   self.snap->dpi_scale = static_cast<float>(self.window.backingScaleFactor);
   self.snap->chrome_height_px = static_cast<std::uint32_t>(
       kChromeBarHeightPoints * self.window.backingScaleFactor);
+  // chrome_bottom_px: 0 when the filmstrip is hidden, so present_lab_mac.mm's
+  // usable_window_h() lets the canvas reclaim that space the moment `T`
+  // hides it -- single source of truth here, same as chrome_height_px above,
+  // rather than -toggleFilmstrip computing this itself and risking the two
+  // falling out of sync on a resize/DPI change.
+  self.snap->chrome_bottom_px = (self.app && [self.app filmstripVisible])
+      ? static_cast<std::uint32_t>(kFilmstripHeightPoints * self.window.backingScaleFactor)
+      : 0;
   ++self.snap->resize_seq;
   [self publish];
   if (self.lab) self.lab->wake();
@@ -181,7 +313,24 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
 }
 
 - (void)mouseDown:(NSEvent*)event {
-  (void)event;
+  // Drag-out (plan/16 "Opening (argv, drop, PR 6)"): Cmd+drag starts a file
+  // drag of the currently displayed item instead of panning. Gated on a
+  // modifier rather than any mouseDown+move, because mouseDragged: already
+  // means "pan" for every existing gesture -- overloading the same bare
+  // click-drag would make an accidental small drag-out fire on every pan.
+  if ((event.modifierFlags & NSEventModifierFlagCommand) && self.app) {
+    NSString* path = [self.app currentItemPathForDrag];
+    if (path) {
+      NSPasteboardItem* item = [[NSPasteboardItem alloc] init];
+      [item setString:[[NSURL fileURLWithPath:path] absoluteString]
+              forType:NSPasteboardTypeFileURL];
+      NSDraggingItem* dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter:item];
+      const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+      dragItem.draggingFrame = NSMakeRect(p.x - 16, p.y - 16, 32, 32);
+      [self beginDraggingSessionWithItems:@[ dragItem ] event:event source:self];
+      return;
+    }
+  }
   self.snap->mouse_down[0] = true;
   ++self.snap->activity_seq;
   [self publish];
@@ -258,21 +407,101 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
     [self.app navigateSkip:10];
     return;
   }
+  // plan/16-commands.md "Marks, copy, move" -- Insert or Shift+Space toggles
+  // a mark; Ctrl+A / Ctrl+D mark-all / unmark-all. NSInsertFunctionKey exists
+  // for the external/PC keyboards that have a physical Insert key; laptop
+  // keyboards have none, which is exactly why plan/16 pairs it with
+  // Shift+Space as an always-available alternative.
+  const NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  if (self.app && [self.app hasFolder]) {
+    if (c == NSInsertFunctionKey || (c == ' ' && (mods & NSEventModifierFlagShift))) {
+      [self.app toggleMarkCurrent];
+      return;
+    }
+    if (c == 'a' && mods == NSEventModifierFlagControl) {
+      [self.app markAll];
+      return;
+    }
+    if (c == 'd' && mods == NSEventModifierFlagControl) {
+      [self.app unmarkAll];
+      return;
+    }
+    // F7 copies marked (or current) to the last-used destination; Shift+F7
+    // prompts for one first. F8/Shift+F8 are the same for move -- plan/16
+    // only spells out Shift+F7 explicitly, but the symmetric Shift+F8 for
+    // move's destination picker follows the same shape and there is no
+    // other binding that would want it.
+    if (c == NSF7FunctionKey) {
+      [self.app copyMarkedPickDestination:(mods & NSEventModifierFlagShift) != 0];
+      return;
+    }
+    if (c == NSF8FunctionKey) {
+      [self.app moveMarkedPickDestination:(mods & NSEventModifierFlagShift) != 0];
+      return;
+    }
+  }
   // The physical key labelled "delete" on a Mac keyboard sends 0x7F (what
-  // AppKit calls NSDeleteCharacter) and sits where a PC's Backspace does --
-  // plan/16 pairs this with Space as previous/next. A PC-style separate
-  // forward-delete (fn+Delete, NSDeleteFunctionKey on the keys that have
-  // one) is left unbound here on purpose: plan/16's actual `Delete` command
-  // (Trash, with confirm) is follow-up work, and reusing this same key for
-  // it would collide with "previous" the moment it lands -- whoever wires
-  // Trash needs to pick a different binding or revisit this one.
+  // AppKit calls NSDeleteCharacter) and sits where a PC's Backspace does.
+  // plan/16's `Delete` command is Trash, with confirm, marks if any else
+  // current -- never a silent permanent delete.
   if (c == NSDeleteCharacter && self.app && [self.app hasFolder]) {
-    [self.app navigatePrev];
+    [self.app deleteMarkedToTrash];
     return;
   }
 
-  if (c == NSF3FunctionKey || c == 'f' || c == 'F') {
+  if ([self.app isSlideshowActive]) {
+    // Slideshow mode reinterprets a few keys already bound above it
+    // (plan/16's Slideshow table): Space pauses instead of advancing to the
+    // next item, +/- change the interval instead of zoom, Esc leaves instead
+    // of closing the window. Checked after Insert/marks/Delete (slideshow
+    // doesn't suspend those) but before the plain view/window bindings below.
+    if (c == ' ') {
+      [self.app toggleSlideshowPause];
+      return;
+    }
+    if (c == '+' || c == '=') {
+      [self.app adjustSlideshowInterval:1.0];
+      return;
+    }
+    if (c == '-') {
+      [self.app adjustSlideshowInterval:-1.0];
+      return;
+    }
+    if (c == 0x1b) {
+      [self.app leaveSlideshow];
+      return;
+    }
+  }
+
+  // plan/16-commands.md: "Esc walks out... The gallery covers the canvas
+  // like an overlay, so it closes before the window-level states." Checked
+  // ahead of the fallback Esc-closes-window case below, so a gallery open
+  // over the canvas absorbs one Esc instead of the window vanishing under it.
+  if (c == 0x1b && self.app && [self.app galleryVisible]) {
+    [self.app setGalleryVisible:NO];
+    return;
+  }
+  // T / G (plan/16 View table): filmstrip show/hide, gallery open/close.
+  if (c == 't' || c == 'T') {
+    if (self.app) [self.app toggleFilmstrip];
+    return;
+  }
+  if (c == 'g' || c == 'G') {
+    if (self.app) [self.app toggleGallery];
+    return;
+  }
+
+  if (c == NSF3FunctionKey) {
     ++self.snap->toggle_overlay_seq;
+  } else if (c == NSF11FunctionKey || c == 'f' || c == 'F') {
+    // plan/16 Browse table: "F11 / F: Fullscreen... F3 stays the frame-time
+    // overlay" -- F3 keeps its own dedicated binding above; plain f/F moves
+    // here from the lab's original overlay-toggle binding now that a second,
+    // more specific command wants it and the plan is explicit F3 is the
+    // overlay's only key.
+    if (self.app) [self.app toggleFullscreen];
+  } else if (c == NSF5FunctionKey && self.app && [self.app hasFolder]) {
+    [self.app startSlideshow];
   } else if (c == ' ') {
     // Space is the lab's own sweep-bar toggle only when no folder is open
     // (plain `mediaviewer_lab --soak N`, the PR 16 present-loop instrument).
@@ -324,10 +553,42 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   // the last item, without needing to special-case either (plan/16).
   std::string _wantSelectedPath;
   NSTimer* _folderPollTimer;
+
+  // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
+  // index -- plan/16: "Marks clear only for items that succeeded," which only
+  // means something if a mark identifies a specific file rather than a slot
+  // that survives a relist meaning something else.
+  std::set<std::string> _marks;
+  NSURL* _lastDestination;
+
+  // Slideshow (plan/16 "Slideshow", folded into PR 18 -- stills only, no
+  // video on Mac yet, PR 19). _enteredFullscreenForSlideshow distinguishes
+  // "F5 made us fullscreen, so Esc/leave should undo that" from "the window
+  // was already fullscreen when F5 fired, so leaving shouldn't un-fullscreen
+  // it" (plan/16: "starts from the canvas in browse (fullscreen if the
+  // window is not; leaving puts it back)").
+  BOOL _slideshowActive;
+  BOOL _slideshowPaused;
+  BOOL _enteredFullscreenForSlideshow;
+  double _slideshowIntervalSeconds;
+  NSTimer* _slideshowTimer;
+
+  // Filmstrip/gallery visibility (plan/16 View table's T/G, folded-in PR 4,
+  // plan/12 2026-09-17). Filmstrip defaults visible once a folder is open --
+  // there is no Settings screen yet to remember a per-mode preference
+  // (plan/10-roadmap.md PR 4's own note that this is normally per-open-mode
+  // and persisted; both wait on Settings existing at all). Gallery defaults
+  // hidden: it is an explicit `G`, not something a folder open should show.
+  BOOL _filmstripVisible;
+  BOOL _galleryVisible;
 }
 - (instancetype)initWithOptions:(const mv::shell::mac_lab_options&)options {
   self = [super init];
-  if (self) _options = options;
+  if (self) {
+    _options = options;
+    _slideshowIntervalSeconds = 4.0;  // plan/16 Slideshow table's default
+    _filmstripVisible = YES;
+  }
   return self;
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
@@ -341,6 +602,9 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
                     defer:NO];
   self.window.title = @"MediaViewer present lab";
   self.window.delegate = self;
+  // F11/F (plan/16): -toggleFullscreen below needs this set once, up front,
+  // or [self.window toggleFullScreen:nil] silently does nothing.
+  self.window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
   [self.window center];
 
   // PR 18: contentView becomes a plain container holding two siblings — the
@@ -368,8 +632,36 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
     [self.commandBar.heightAnchor constraintEqualToConstant:kChromeBarHeightPoints],
   ]];
 
+  // Filmstrip: a bottom strip, the same "sibling drawn over the canvas's own
+  // pixels" shape as the command bar above, not a resize of MvMetalView.
+  // Visible by default (`T` hides it) -- -syncSize below is what actually
+  // reserves canvas space for it, via chrome_bottom_px.
+  self.filmstripHost = [MVChromeHost makeFilmstripView];
+  [container addSubview:self.filmstripHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.filmstripHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.filmstripHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.filmstripHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    [self.filmstripHost.heightAnchor constraintEqualToConstant:kFilmstripHeightPoints],
+  ]];
+
+  // Gallery: a full-container overlay (plan/16: "covers the canvas like an
+  // overlay"), hidden by default -- `G` shows it, a click or Esc hides it
+  // again. The canvas keeps rendering underneath; hiding this view is enough,
+  // no chrome_*_px accounting needed the way the filmstrip strip needs.
+  self.galleryHost = [MVChromeHost makeGalleryView];
+  self.galleryHost.hidden = YES;
+  [container addSubview:self.galleryHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.galleryHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.galleryHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.galleryHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [self.galleryHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+  ]];
+
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
+  g_chrome_app = self;
 
   _snap.window_visible = YES;
   _snap.window_active = YES;
@@ -510,10 +802,347 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
     std::memcpy(_snap.item_name, entry.name_utf8.data(), n);
     _snap.item_name[n] = '\0';
   }
+  [self updateMarkSnapshot];
+  [self publish];
+}
 
+// input_snapshot.item_marked/marked_count (src/shell/input_state.h) refresh
+// point, shared by -selectIndex: (selection changed) and every mark
+// mutator below (the set changed, selection didn't). Does not bump
+// activity_seq/publish/wake itself -- callers that are not already doing
+// that as part of a larger update (the mark mutators) do it themselves.
+- (void)updateMarkSnapshot {
+  _snap.marked_count = static_cast<std::uint32_t>(_marks.size());
+  _snap.item_marked = !_items.empty() && _index.current() < _items.size() &&
+                      _marks.count(_items[_index.current()].path_utf8) != 0;
+}
+
+// A small RAII-ish helper `publish` wrapper every mutator below shares, so
+// none of them has to repeat the three-line "bump, publish, wake" dance
+// -selectIndex: already established.
+- (void)publish {
   ++_snap.activity_seq;
   [self.view publish];
   _lab.wake();
+}
+
+- (NSString*)currentItemPathForDrag {
+  if (_items.empty() || _index.current() >= _items.size()) return nil;
+  const std::string& path = _items[_index.current()].path_utf8;
+  return [NSString stringWithUTF8String:path.c_str()];
+}
+
+- (std::vector<mv::io::dir_entry>)markedOrCurrentEntries {
+  std::vector<mv::io::dir_entry> out;
+  if (!_marks.empty()) {
+    for (const auto& entry : _items) {
+      if (_marks.count(entry.path_utf8)) out.push_back(entry);
+    }
+    return out;
+  }
+  if (!_items.empty() && _index.current() < _items.size()) {
+    out.push_back(_items[_index.current()]);
+  }
+  return out;
+}
+
+- (void)toggleMarkCurrent {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const std::string& path = _items[_index.current()].path_utf8;
+  if (!_marks.insert(path).second) _marks.erase(path);
+  [self updateMarkSnapshot];
+  [self publish];
+}
+- (void)markAll {
+  for (const auto& entry : _items) _marks.insert(entry.path_utf8);
+  [self updateMarkSnapshot];
+  [self publish];
+}
+- (void)unmarkAll {
+  _marks.clear();
+  [self updateMarkSnapshot];
+  [self publish];
+}
+
+- (void)copyMarkedPickDestination:(BOOL)pick {
+  [self transferMarkedPickDestination:pick move:NO];
+}
+- (void)moveMarkedPickDestination:(BOOL)pick {
+  [self transferMarkedPickDestination:pick move:YES];
+}
+
+// plan/16 "Marks, copy, move": F7/F8 to the last destination, Shift+F7/F8 to
+// pick one first; never overwrite an original (collision: "name (2).ext");
+// same-volume move is a rename, cross-volume falls back to copy+delete
+// (-[NSFileManager moveItemAtURL:toURL:error:] does this internally -- it is
+// not a thin wrapper over rename(2) the way Windows' MoveFileEx needs an
+// explicit COPY_ALLOWED flag for). Runs on the job pool, never the UI thread
+// (CLAUDE.md rule 1: file I/O) -- background_generation, like folder_model's
+// own jobs, because a copy/move a user started should finish even if they
+// navigate away before it does.
+- (void)transferMarkedPickDestination:(BOOL)pick move:(BOOL)move {
+  if (_items.empty()) return;
+  const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
+  if (entries.empty()) return;
+
+  if (pick || !_lastDestination) {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.canChooseDirectories = YES;
+    panel.canChooseFiles = NO;
+    panel.canCreateDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = move ? @"Move" : @"Copy";
+    if ([panel runModal] != NSModalResponseOK || panel.URL == nil) return;
+    _lastDestination = panel.URL;
+  }
+
+  NSURL* destDir = _lastDestination;
+  std::vector<std::string> src_paths;
+  std::vector<std::string> src_names;
+  src_paths.reserve(entries.size());
+  src_names.reserve(entries.size());
+  for (const auto& entry : entries) {
+    src_paths.push_back(entry.path_utf8);
+    src_names.push_back(entry.name_utf8);
+  }
+
+  // A move relocates the marked file's identity (its old path stops
+  // existing); a copy leaves the original untouched. Only move needs to walk
+  // succeeded paths out of `_marks` afterward -- weak, the same lifetime
+  // guard -deleteMarkedToTrash's completion handler uses, since this job can
+  // finish after the window (and MvLabApp) has gone away.
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(
+      mv::background_generation,
+      [src_paths, src_names, destDir, move, weakSelf](const mv::job_context&) -> mv::status {
+        NSFileManager* fm = [NSFileManager defaultManager];
+        NSString* destPath = destDir.path;
+        std::vector<std::string> succeeded;
+        NSUInteger failures = 0;
+        succeeded.reserve(src_paths.size());
+
+        for (std::size_t i = 0; i < src_paths.size(); ++i) {
+          // unique_name's `exists` callback is a plain fileExistsAtPath check
+          // against the destination directory -- cheap, and exactly the
+          // "never overwrite" rule collision_name.h was written for.
+          const std::string chosen = mv::io::unique_name(
+              src_names[i].c_str(), [&](std::string_view candidate) {
+                NSString* candidateName =
+                    [[NSString alloc] initWithBytes:candidate.data()
+                                              length:candidate.size()
+                                            encoding:NSUTF8StringEncoding];
+                NSString* candidatePath = [destPath stringByAppendingPathComponent:candidateName];
+                return [fm fileExistsAtPath:candidatePath];
+              });
+          if (chosen.empty()) {
+            ++failures;  // every "(n).ext" up to the cap is taken
+            continue;
+          }
+          NSString* chosenName = [NSString stringWithUTF8String:chosen.c_str()];
+          NSURL* srcURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_paths[i].c_str()]];
+          NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
+
+          NSError* error = nil;
+          const BOOL ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
+                               : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+          if (ok) {
+            succeeded.push_back(src_paths[i]);
+          } else {
+            ++failures;
+          }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (failures > 0) NSBeep();
+          if (!move) return;
+          MvLabApp* strongSelf = weakSelf;
+          if (!strongSelf) return;
+          for (const auto& path : succeeded) strongSelf->_marks.erase(path);
+          [strongSelf updateMarkSnapshot];
+          [strongSelf publish];
+        });
+        return failures == 0 ? mv::status::ok : mv::status::io;
+      });
+}
+
+// plan/16 "Delete only ever uses the Recycle Bin [Trash]... refused, not
+// deleted... there is no silent permanent delete." -recycleURLs:completionHandler:
+// is documented async (it returns immediately and reports back through the
+// handler), which is why this calls it directly from the confirm alert's
+// main-thread continuation rather than routing through job_system the way
+// copy/move's genuinely-synchronous NSFileManager calls have to.
+- (void)deleteMarkedToTrash {
+  if (_items.empty()) return;
+  const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
+  if (entries.empty()) return;
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = entries.size() == 1
+      ? [NSString stringWithFormat:@"Move “%s” to the Trash?", entries[0].name_utf8.c_str()]
+      : [NSString stringWithFormat:@"Move %lu items to the Trash?", (unsigned long)entries.size()];
+  alert.alertStyle = NSAlertStyleWarning;
+  [alert addButtonWithTitle:@"Move to Trash"];
+  [alert addButtonWithTitle:@"Cancel"];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return;
+
+  NSMutableArray<NSURL*>* urls = [NSMutableArray arrayWithCapacity:entries.size()];
+  for (const auto& entry : entries) {
+    [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
+  }
+
+  MvLabApp* __weak weakSelf = self;
+  [[NSWorkspace sharedWorkspace]
+      recycleURLs:urls
+      completionHandler:^(NSDictionary<NSURL*, NSURL*>* newURLs, NSError* error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          MvLabApp* strongSelf = weakSelf;
+          if (!strongSelf) return;
+          for (NSURL* url in newURLs) {
+            const char* path = url.path.UTF8String;
+            if (path) strongSelf->_marks.erase(std::string(path));
+          }
+          if (error) NSBeep();
+          // The watcher's own FSEvents fire independently and will relist;
+          // this only needs to refresh the mark count now that some may have
+          // been cleared.
+          [strongSelf updateMarkSnapshot];
+          [strongSelf publish];
+        });
+      }];
+}
+
+- (void)toggleFullscreen {
+  [self.window toggleFullScreen:nil];
+}
+
+- (BOOL)isSlideshowActive {
+  return _slideshowActive;
+}
+
+- (void)armSlideshowTimer {
+  [_slideshowTimer invalidate];
+  _slideshowTimer = [NSTimer scheduledTimerWithTimeInterval:_slideshowIntervalSeconds
+                                                      target:self
+                                                    selector:@selector(navigateNext)
+                                                    userInfo:nil
+                                                     repeats:YES];
+}
+
+- (void)startSlideshow {
+  if (_slideshowActive || _items.empty()) return;
+  _slideshowActive = YES;
+  _slideshowPaused = NO;
+  // plan/16: "starts from the canvas in browse (fullscreen if the window is
+  // not; leaving puts it back)".
+  _enteredFullscreenForSlideshow = (self.window.styleMask & NSWindowStyleMaskFullScreen) ? NO : YES;
+  if (_enteredFullscreenForSlideshow) [self.window toggleFullScreen:nil];
+  [self armSlideshowTimer];
+}
+
+- (void)leaveSlideshow {
+  if (!_slideshowActive) return;
+  _slideshowActive = NO;
+  _slideshowPaused = NO;
+  [_slideshowTimer invalidate];
+  _slideshowTimer = nil;
+  if (_enteredFullscreenForSlideshow && (self.window.styleMask & NSWindowStyleMaskFullScreen)) {
+    [self.window toggleFullScreen:nil];
+  }
+  _enteredFullscreenForSlideshow = NO;
+}
+
+- (void)toggleSlideshowPause {
+  if (!_slideshowActive) return;
+  _slideshowPaused = !_slideshowPaused;
+  if (_slideshowPaused) {
+    [_slideshowTimer invalidate];
+    _slideshowTimer = nil;
+  } else {
+    [self armSlideshowTimer];
+  }
+}
+
+- (void)adjustSlideshowInterval:(double)deltaSeconds {
+  if (!_slideshowActive) return;
+  // plan/16's step ladder: 1/2/3/4/5/7/10/15/20/30/60s. +/- move one rung,
+  // not a fixed number of seconds -- deltaSeconds here is +1/-1, a rung
+  // index delta, despite the "seconds" name matching the public selector's
+  // intent (adjust the interval); the ladder itself is the actual unit.
+  static const double kLadder[] = {1, 2, 3, 4, 5, 7, 10, 15, 20, 30, 60};
+  constexpr int kLadderCount = static_cast<int>(sizeof(kLadder) / sizeof(kLadder[0]));
+  int rung = 0;
+  double best = 1e9;
+  for (int i = 0; i < kLadderCount; ++i) {
+    const double d = std::fabs(kLadder[i] - _slideshowIntervalSeconds);
+    if (d < best) {
+      best = d;
+      rung = i;
+    }
+  }
+  rung = std::clamp(rung + (deltaSeconds > 0 ? 1 : -1), 0, kLadderCount - 1);
+  _slideshowIntervalSeconds = kLadder[rung];
+  if (!_slideshowPaused) [self armSlideshowTimer];
+}
+
+// Filmstrip/gallery bridge (mv_chrome_bridge.h), folded-in PR 4 -- plan/12
+// 2026-09-17. `itemCount`/`currentIndex`/`itemNameAtIndex:into:size:` mirror
+// the same `_items`/`_index` state -selectIndex: and the navigate* methods
+// already use; nothing new is computed here, just exposed across the bridge.
+- (NSInteger)itemCount {
+  return static_cast<NSInteger>(_items.size());
+}
+- (NSInteger)currentIndex {
+  return _items.empty() ? -1 : static_cast<NSInteger>(_index.current());
+}
+- (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return NO;
+  const std::string& name = _items[static_cast<std::size_t>(index)].name_utf8;
+  const std::size_t n = std::min(name.size(), static_cast<std::size_t>(size) - 1);
+  std::memcpy(buf, name.data(), n);
+  buf[n] = '\0';
+  return YES;
+}
+
+// folder_model::request_thumb's callback runs on the pool thread that
+// produced the result (folder_model_mac.h's contract) -- this hops to the
+// main thread before calling the Swift-registered callback, so
+// mv_chrome_bridge.h's promise ("always the main thread") holds regardless
+// of which job_system worker actually decoded the thumbnail.
+- (void)requestThumbAtIndex:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return;
+  const mv::io::dir_entry& entry = _items[static_cast<std::size_t>(index)];
+  const int32_t idx = static_cast<int32_t>(index);
+  _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
+                        [idx](std::string /*path_utf8*/, std::string thumb_path) {
+                          dispatch_async(dispatch_get_main_queue(), ^{
+                            if (!g_thumb_ready_callback) return;
+                            g_thumb_ready_callback(idx, thumb_path.empty() ? nullptr
+                                                                           : thumb_path.c_str());
+                          });
+                        });
+}
+
+- (BOOL)filmstripVisible {
+  return _filmstripVisible;
+}
+- (BOOL)galleryVisible {
+  return _galleryVisible;
+}
+- (void)setGalleryVisible:(BOOL)visible {
+  _galleryVisible = visible;
+  self.galleryHost.hidden = !visible;
+}
+- (void)toggleFilmstrip {
+  _filmstripVisible = !_filmstripVisible;
+  self.filmstripHost.hidden = !_filmstripVisible;
+  // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
+  // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
+  // already recomputes it from -filmstripVisible and republishes, the same
+  // "single source of truth" shape chrome_height_px already has.
+  [self.view syncSize];
+}
+- (void)toggleGallery {
+  [self setGalleryVisible:!_galleryVisible];
 }
 
 - (void)navigateNext {
@@ -553,6 +1182,7 @@ constexpr CGFloat kChromeBarHeightPoints = 44.0;
   // fires only after the window has already closed.
   g_chrome_snap = nullptr;
   g_chrome_lab = nullptr;
+  g_chrome_app = nullptr;
   [_folderPollTimer invalidate];
   _folderPollTimer = nil;
   // Stops and joins the FSEvents watch thread; safe on the main thread per
