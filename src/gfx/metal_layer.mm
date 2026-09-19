@@ -37,7 +37,10 @@ expected metal_layer::attach(void* nsview, metal_device& dev, std::uint32_t widt
   layer.device = (__bridge id<MTLDevice>)dev.native_device();
   layer.pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
   layer.framebufferOnly = YES;
-  layer.maximumDrawableCount = 1;
+  // 2, not 1: see the matching comment on MvMetalView's -makeBackingLayer
+  // (src/shell/main_mac.mm) -- CAMetalLayer only accepts [2, 3], found on
+  // real hardware (2026-09-18).
+  layer.maximumDrawableCount = 2;
   layer.displaySyncEnabled = YES;
   layer.contentsScale = contents_scale > 0.0 ? contents_scale : 1.0;
   layer.drawableSize = CGSizeMake(static_cast<CGFloat>(width), static_cast<CGFloat>(height));

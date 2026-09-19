@@ -894,6 +894,15 @@ PR 18 turns out too large to land and verify as one slice in practice, splitting
 5 was split remains available — this entry is not a bar against that, only a record that it
 wasn't the first choice.
 
+## 2026-09-19 — Metal `maximumDrawableCount` is 2, not 1
+
+**Not a D1–D9 reversal.** plan/15 and the PR 16 spec say "max drawable 1", carried over from
+D3D11's `SetMaximumFrameLatency(1)`. On real hardware `CAMetalLayer` throws
+`CAMetalLayerInvalidMaximumDrawableCount` for anything outside [2, 3], so 1 cannot be expressed.
+2 is the lowest-latency setting Metal allows and is what ships (`gfx/metal_layer.mm`,
+`MvMetalView`). The intent — one frame of latency, wait on the display link before encoding —
+is unchanged, and the 60 s gate passes with it (3600 frames, 0 dropped, p99 16.9 ms, 2026-09-19).
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
