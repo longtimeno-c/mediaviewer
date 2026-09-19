@@ -3,27 +3,55 @@
 // 2026-09-17): "a full-client thumbnail grid... a click opens it in the
 // viewer" (plan/16-commands.md's `G` row). `G` toggles visibility and `Esc`
 // closes it (main_mac.mm's keyDown:, checked ahead of the fallback
-// Esc-closes-window case) -- this view only draws and reacts to clicks, it
-// doesn't own its own visibility state.
+// Esc-closes-window case). Up/Down/W/S move by row, `+`/`-` resize the cells
+// (also main_mac.mm's keyDown:); this view lays out the grid and reports how
+// many cells sit in a row (mv_chrome_set_gallery_columns) so the host can do
+// that arithmetic.
+import MVChromeBridge
 import SwiftUI
 
 struct GalleryView: View {
   @ObservedObject private var store = FolderStore.shared
-  private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 8)]
+  private let spacing: CGFloat = 8
+  private let inset: CGFloat = 12
 
   var body: some View {
-    ScrollView {
-      // LazyVGrid: same "don't build 2000 cells up front" reasoning as
-      // FilmstripView's LazyHStack -- the gallery is the one place all 2000
-      // items are visible at once in principle, so laziness matters even
-      // more here.
-      LazyVGrid(columns: columns, spacing: 8) {
-        ForEach(0..<store.itemCount, id: \.self) { index in
-          GalleryCell(index: index)
-            .onTapGesture { store.selectAndCloseGallery(index) }
+    GeometryReader { geo in
+      let cell = store.galleryCellSize
+      let columns = max(1, Int((geo.size.width - 2 * inset + spacing) / (cell + spacing)))
+      ScrollViewReader { proxy in
+        ScrollView {
+          // LazyVGrid: same "don't build 2000 cells up front" reasoning as
+          // FilmstripView's LazyHStack. A fixed column count (not .adaptive)
+          // so the host knows exactly how many cells are in a row.
+          LazyVGrid(
+            columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
+            spacing: spacing
+          ) {
+            ForEach(store.names.indices, id: \.self) { index in
+              GalleryCell(
+                index: index, name: store.names[index], size: cell,
+                isCurrent: index == store.currentIndex,
+                slot: store.slot(for: store.names[index])
+              )
+              .id(index)
+              .onTapGesture { store.selectAndCloseGallery(index) }
+            }
+          }
+          .padding(inset)
+          .frame(maxWidth: .infinity)
+        }
+        // Row-wise keyboard movement must keep the selection on screen.
+        .onChange(of: store.currentIndex) { _, newIndex in
+          guard newIndex >= 0 else { return }
+          proxy.scrollTo(newIndex)
+        }
+        .onChange(of: store.galleryCellSize) { _, _ in
+          if store.currentIndex >= 0 { proxy.scrollTo(store.currentIndex, anchor: .center) }
         }
       }
-      .padding(12)
+      .onAppear { mv_chrome_set_gallery_columns(Int32(columns)) }
+      .onChange(of: columns) { _, new in mv_chrome_set_gallery_columns(Int32(new)) }
     }
     .background(.regularMaterial)
   }
@@ -31,31 +59,37 @@ struct GalleryView: View {
 
 private struct GalleryCell: View {
   let index: Int
-  @ObservedObject private var store = FolderStore.shared
+  let name: String
+  let size: CGFloat
+  let isCurrent: Bool
+  @ObservedObject var slot: ThumbSlot
 
   var body: some View {
-    let itemName = store.name(at: index)
     VStack(spacing: 4) {
-      ZStack {
-        if let image = store.thumbnails[itemName] {
-          Image(nsImage: image)
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-        } else {
-          Rectangle().fill(.quaternary)
+      // Always a square: the placeholder and the loaded image must occupy the
+      // same box, or rows go ragged as thumbnails arrive.
+      Color.clear
+        .frame(width: size, height: size)
+        .overlay {
+          if let image = slot.image {
+            Image(decorative: image, scale: 1)
+              .resizable()
+              .aspectRatio(contentMode: .fit)
+          } else {
+            Rectangle().fill(.quaternary)
+          }
         }
-      }
-      .aspectRatio(1, contentMode: .fit)
-      .clipShape(RoundedRectangle(cornerRadius: 6))
-      .overlay(
-        RoundedRectangle(cornerRadius: 6)
-          .strokeBorder(index == store.currentIndex ? Color.accentColor : .clear, lineWidth: 2)
-      )
-      Text(itemName)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+          RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
+        )
+      Text(name)
         .font(.caption)
         .lineLimit(1)
         .truncationMode(.middle)
+        .frame(width: size)
     }
-    .onAppear { store.requestThumbnailIfNeeded(at: index) }
+    .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }

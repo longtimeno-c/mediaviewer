@@ -68,6 +68,9 @@ MvLabApp* g_chrome_app = nullptr;
 // C function pointer, not a std::function: this crosses the same boundary
 // mv_chrome_bridge.h's other declarations do, POD only.
 mv_chrome_thumb_ready_fn g_thumb_ready_callback = nullptr;
+// Cells per gallery row, reported by the SwiftUI grid (mv_chrome_set_gallery_
+// columns). Main-thread only, like every other bridge call.
+int32_t g_gallery_columns = 1;
 }  // namespace
 
 // [any-thread] SwiftUI runs button actions on the main actor, so these run
@@ -111,6 +114,7 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 @property(nonatomic, strong) NSView* commandBar;
 @property(nonatomic, strong) NSView* filmstripHost;
 @property(nonatomic, strong) NSView* galleryHost;
+@property(nonatomic, strong) NSView* helpHost;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -171,6 +175,16 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 - (void)setGalleryVisible:(BOOL)visible;
 - (void)toggleFilmstrip;
 - (void)toggleGallery;
+// Gallery keyboard navigation (plan/16 `G` row): Up/Down/W/S move by row, `+`/`-`
+// resize the cells. Enter just closes the gallery -- the selection is already
+// what the canvas shows.
+- (void)galleryMoveRows:(NSInteger)rows;
+- (void)adjustGalleryCellSize:(NSInteger)direction;
+// `?` cheat sheet (SwiftUI HelpView), an overlay like the gallery.
+- (BOOL)helpVisible;
+- (void)setHelpVisible:(BOOL)visible;
+- (void)toggleHelp;
+- (uint64_t)listingGeneration;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -210,6 +224,12 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
   [g_chrome_app setGalleryVisible:NO];
 }
+extern "C" uint64_t mv_chrome_listing_generation(void) {
+  return g_chrome_app ? [g_chrome_app listingGeneration] : 0;
+}
+extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
+  g_gallery_columns = columns < 1 ? 1 : columns;
+}
 
 @interface MvMetalView : NSView <NSDraggingSource>
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
@@ -239,7 +259,13 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   CAMetalLayer* layer = [CAMetalLayer layer];
   layer.pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
   layer.framebufferOnly = YES;
-  layer.maximumDrawableCount = 1;
+  // 2, not 1: found on real hardware (2026-09-18) -- CAMetalLayer rejects
+  // maximumDrawableCount outside [2, 3] and throws
+  // CAMetalLayerInvalidMaximumDrawableCount. plan/15's PR 16 spec says "max
+  // drawable 1", carried over from D3D11's SetMaximumFrameLatency(1); Metal
+  // has no equivalent of 1, so 2 (the minimum it allows) is the actual
+  // lowest-latency setting achievable, not a relaxation of the same intent.
+  layer.maximumDrawableCount = 2;
   layer.displaySyncEnabled = YES;
   return layer;
 }
@@ -399,6 +425,31 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // MvLabApp (folder_model_mac + browse_index), not an input_snapshot seq --
   // navigation is "load this specific path next," a one-shot command, not
   // per-frame render-thread state the way pan/zoom/mouse are.
+  // plan/16 `G` row: with the gallery open, Up/Down/W/S move by row, Enter
+  // opens the selection (closes the gallery), +/-/= resize the cells. Left/
+  // Right and A/D fall through to the by-item navigation just below.
+  if (self.app && [self.app galleryVisible]) {
+    if (c == NSUpArrowFunctionKey || ((c == 'w' || c == 'W') && mods != NSEventModifierFlagControl)) {
+      [self.app galleryMoveRows:-1];
+      return;
+    }
+    if (c == NSDownArrowFunctionKey || ((c == 's' || c == 'S') && mods != NSEventModifierFlagControl)) {
+      [self.app galleryMoveRows:1];
+      return;
+    }
+    if (c == '\r' || c == 0x03) {
+      [self.app setGalleryVisible:NO];
+      return;
+    }
+    if (c == '+' || c == '=') {
+      [self.app adjustGalleryCellSize:1];
+      return;
+    }
+    if (c == '-') {
+      [self.app adjustGalleryCellSize:-1];
+      return;
+    }
+  }
   if (c == NSLeftArrowFunctionKey || ((c == 'a' || c == 'A') && mods != NSEventModifierFlagControl)) {
     [self.app navigatePrev];
     return;
@@ -492,6 +543,14 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // like an overlay, so it closes before the window-level states." Checked
   // ahead of the fallback Esc-closes-window case below, so a gallery open
   // over the canvas absorbs one Esc instead of the window vanishing under it.
+  if (c == '?' && self.app) {
+    [self.app toggleHelp];
+    return;
+  }
+  if (c == 0x1b && self.app && [self.app helpVisible]) {
+    [self.app setHelpVisible:NO];
+    return;
+  }
   if (c == 0x1b && self.app && [self.app galleryVisible]) {
     [self.app setGalleryVisible:NO];
     return;
@@ -582,6 +641,10 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // this starts at 0 regardless.
   std::atomic<std::uint64_t> _openGeneration;
   NSTimer* _folderPollTimer;
+  // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
+  // it (mv_chrome_listing_generation).
+  std::uint64_t _listingGeneration;
+  BOOL _helpVisible;
 
   // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
   // index -- plan/16: "Marks clear only for items that succeeded," which only
@@ -630,11 +693,18 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
                   backing:NSBackingStoreBuffered
                     defer:NO];
   self.window.title = @"MediaViewer present lab";
+  // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
+  // Tabs to the View menu.
+  self.window.tabbingMode = NSWindowTabbingModeDisallowed;
   self.window.delegate = self;
   // F11/F (plan/16): -toggleFullscreen below needs this set once, up front,
   // or [self.window toggleFullScreen:nil] silently does nothing.
   self.window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
   [self.window center];
+  // Found on real hardware (2026-09-18), alongside the Auto Layout fix a few
+  // lines down: even with every subview properly pinned, a hard floor here
+  // means a future layout mistake shrinks a control, not the whole window.
+  self.window.contentMinSize = NSMakeSize(480.0, 320.0);
 
   // PR 18: contentView becomes a plain container holding two siblings — the
   // Metal canvas (full bounds, unchanged from PR 16/17) and the SwiftUI
@@ -646,13 +716,78 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   self.window.contentView = container;
 
   self.view = [[MvMetalView alloc] initWithFrame:container.bounds];
-  self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   self.view.lab = &_lab;
   self.view.snap = &_snap;
   self.view.app = self;
   [container addSubview:self.view];
+  // Found on real hardware (2026-09-18): this used to be autoresizingMask =
+  // NSViewWidthSizable|NSViewHeightSizable instead of an Auto Layout pin, on
+  // the theory that a plain frame-based contentView (container, below) with
+  // an autoresizing-mask subview needs no Auto Layout at all. That stopped
+  // being true the moment the command bar/filmstrip/gallery views (added a
+  // few lines down) became real Auto Layout participants: mixing an
+  // autoresizing-mask-only view with Auto-Layout-driven siblings under one
+  // container makes AppKit auto-size the *window* to the narrowest fitting
+  // size Auto Layout can compute -- and since an autoresizing-mask view
+  // contributes no intrinsic size to that computation, it's invisible to
+  // it. The window collapsed to ~76pt wide (a SwiftUI button's minimum
+  // width) with the canvas nowhere in the accounting; NSWindowStyleMask
+  // Resizable was set correctly the entire time; there was nothing wrong to
+  // resize, the window really was that narrow. Pinning all four edges here,
+  // the same way the other three subviews already are, gives every
+  // participant in the layout an actual say in the window's size.
+  self.view.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+    [self.view.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.view.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.view.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [self.view.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+  ]];
+  // Force the backing layer to exist now, not on AppKit's own lazy schedule:
+  // _lab.start() below reads self.view.layer immediately (metal_layer's
+  // attach()) and needs the real CAMetalLayer from -makeBackingLayer to
+  // already exist. See the assignment a few lines down for why this can't
+  // just be a `.layer` property read.
+  // Found on real hardware (2026-09-18): reading `.layer` on a wantsLayer=YES
+  // NSView does NOT synchronously call -makeBackingLayer the way the getter
+  // comment above assumed -- AppKit only builds the layer during a real
+  // layout/display pass (confirmed: the crash from the first version of this
+  // fix showed -makeBackingLayer running deep inside
+  // NSWindowUpdateLayerTree/_buildLayerTreeWithOwnLayerRequirement, not from
+  // a direct property read). Assigning the layer directly, from
+  // -makeBackingLayer itself, sidesteps AppKit's lazy timing entirely.
+  self.view.layer = [self.view makeBackingLayer];
 
   self.commandBar = [MVChromeHost makeCommandBarView];
+  // Found on real hardware (2026-09-18): without this, AppKit's default
+  // translatesAutoresizingMaskIntoConstraints=YES auto-generates constraints
+  // from the view's zero/default frame that fight the explicit ones just
+  // below, which is what "squashed" chrome actually was -- both sets of
+  // constraints active at once, Auto Layout breaking one arbitrarily.
+  self.commandBar.translatesAutoresizingMaskIntoConstraints = NO;
+  // Found on real hardware (2026-09-18), the actual root cause of the window
+  // itself shrinking to ~76pt wide (not just its content), confirmed
+  // empirically (forcing the frame back to 1280 wide, it silently reverted
+  // to 76 on the very next layout pass, not just once at startup): the
+  // leading/trailing==container equality below forces commandBar.width to
+  // exactly equal container.width, but NSHostingView also auto-generates an
+  // *internal* content-hugging constraint pulling commandBar toward its
+  // intrinsicContentSize -- and because CommandBarView.swift's HStack ends
+  // in a Spacer(), SwiftUI reports that intrinsic size as just the two
+  // buttons' combined width (~76pt): a Spacer has no size of its own to
+  // report when asked "what's your ideal size with nothing else to go on."
+  // With no required constraint pinning container to anything *larger*,
+  // Auto Layout is free to satisfy that hugging pull at zero cost by
+  // shrinking container (and the window) down to exactly 76 -- every
+  // layout pass, not just the first. (Compression resistance, tried first
+  // and left at its default here, governs the *opposite* direction: how
+  // hard a view resists being made *smaller* than its intrinsic size. That
+  // was never the fight; nothing was trying to shrink commandBar below 76,
+  // something was trying to shrink the *window* down *to* 76.) Lowering
+  // hugging priority says "don't insist on staying at your natural size --
+  // it's fine to be stretched wider by whatever the window actually is."
+  [self.commandBar setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                               forOrientation:NSLayoutConstraintOrientationHorizontal];
   [container addSubview:self.commandBar];
   [NSLayoutConstraint activateConstraints:@[
     [self.commandBar.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -666,6 +801,9 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // Visible by default (`T` hides it) -- -syncSize below is what actually
   // reserves canvas space for it, via chrome_bottom_px.
   self.filmstripHost = [MVChromeHost makeFilmstripView];
+  self.filmstripHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.filmstripHost setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                                  forOrientation:NSLayoutConstraintOrientationHorizontal];
   [container addSubview:self.filmstripHost];
   [NSLayoutConstraint activateConstraints:@[
     [self.filmstripHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -680,6 +818,9 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   // no chrome_*_px accounting needed the way the filmstrip strip needs.
   self.galleryHost = [MVChromeHost makeGalleryView];
   self.galleryHost.hidden = YES;
+  self.galleryHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.galleryHost setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                                forOrientation:NSLayoutConstraintOrientationHorizontal];
   [container addSubview:self.galleryHost];
   [NSLayoutConstraint activateConstraints:@[
     [self.galleryHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -687,6 +828,21 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
     [self.galleryHost.topAnchor constraintEqualToAnchor:container.topAnchor],
     [self.galleryHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
+
+  // `?` cheat sheet: a full-container overlay above everything, hidden until
+  // toggled -- the same shape as the gallery.
+  self.helpHost = [MVChromeHost makeHelpView];
+  self.helpHost.hidden = YES;
+  self.helpHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.helpHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.helpHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.helpHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.helpHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [self.helpHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+  ]];
+
+  [self installMainMenu];
 
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
@@ -804,6 +960,7 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 - (void)refreshFolderIfChanged {
   if (!_folder.consume_changed()) return;
   _items = _folder.items();
+  ++_listingGeneration;
 
   // Marks are kept by path specifically so they survive a relist that
   // merely reorders _items, but a path can also drop out of the listing
@@ -1204,6 +1361,165 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 - (void)toggleGallery {
   [self setGalleryVisible:!_galleryVisible];
 }
+- (uint64_t)listingGeneration {
+  return _listingGeneration;
+}
+- (void)galleryMoveRows:(NSInteger)rows {
+  if (_items.empty()) return;
+  const NSInteger count = static_cast<NSInteger>(_items.size());
+  const NSInteger cols = std::max<NSInteger>(1, g_gallery_columns);
+  const NSInteger cur = [self currentIndex];
+  NSInteger target = cur + rows * cols;
+  if (target < 0) return;  // already on the first row
+  if (target >= count) {
+    // Down from a row above the last: land on the final item rather than
+    // doing nothing (a short last row has no cell directly below).
+    if (cur / cols >= (count - 1) / cols) return;
+    target = count - 1;
+  }
+  [self selectIndex:static_cast<std::size_t>(target)];
+}
+- (void)adjustGalleryCellSize:(NSInteger)direction {
+  [MVChromeHost adjustGalleryCellSize:direction];
+}
+- (BOOL)helpVisible {
+  return _helpVisible;
+}
+- (void)setHelpVisible:(BOOL)visible {
+  _helpVisible = visible;
+  self.helpHost.hidden = !visible;
+}
+- (void)toggleHelp {
+  [self setHelpVisible:!_helpVisible];
+}
+
+// ---- Main menu ------------------------------------------------------------
+// A real menu bar (it had none: the bar showed only the process name). Every
+// item routes to an action the key router already performs, so the menu and
+// the keys cannot disagree; letter keys that keyDown: owns are shown as key
+// equivalents so the menu advertises them.
+enum MvMenuCmd : NSInteger {
+  kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
+  kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
+  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp,
+};
+
+- (void)menuAction:(NSMenuItem*)item {
+  switch (static_cast<MvMenuCmd>(item.tag)) {
+    case kMenuOpen: [self openFolderPanel]; break;
+    case kMenuTrash: [self deleteMarkedToTrash]; break;
+    case kMenuCopyTo: [self copyMarkedPickDestination:YES]; break;
+    case kMenuMoveTo: [self moveMarkedPickDestination:YES]; break;
+    case kMenuMark: [self toggleMarkCurrent]; break;
+    case kMenuFit: mv_chrome_fit(); break;
+    case kMenuOneToOne: mv_chrome_one_to_one(); break;
+    case kMenuFilmstrip: [self toggleFilmstrip]; break;
+    case kMenuGallery: [self toggleGallery]; break;
+    case kMenuFullscreen: [self toggleFullscreen]; break;
+    case kMenuSlideshow: [self startSlideshow]; break;
+    case kMenuNext: [self navigateNext]; break;
+    case kMenuPrev: [self navigatePrev]; break;
+    case kMenuFirst: [self navigateFirst]; break;
+    case kMenuLast: [self navigateLast]; break;
+    case kMenuHelp: [self toggleHelp]; break;
+  }
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem*)item {
+  if (item.action != @selector(menuAction:)) return YES;
+  switch (static_cast<MvMenuCmd>(item.tag)) {
+    case kMenuOpen: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp:
+      return YES;
+    default:
+      return [self hasFolder];
+  }
+}
+
+- (void)openFolderPanel {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.canChooseDirectories = YES;
+  panel.canChooseFiles = YES;
+  panel.allowsMultipleSelection = NO;
+  if ([panel runModal] != NSModalResponseOK || panel.URL == nil) return;
+  if (![self openEntryPath:panel.URL.fileSystemRepresentation]) NSBeep();
+}
+
+- (NSMenuItem*)addMenuItem:(NSString*)title
+                       cmd:(MvMenuCmd)cmd
+                       key:(NSString*)key
+                      mods:(NSEventModifierFlags)mods
+                    toMenu:(NSMenu*)menu {
+  NSMenuItem* item = [menu addItemWithTitle:title action:@selector(menuAction:) keyEquivalent:key];
+  item.target = self;
+  item.tag = cmd;
+  item.keyEquivalentModifierMask = mods;
+  return item;
+}
+
+- (void)installMainMenu {
+  NSMenu* bar = [[NSMenu alloc] init];
+  auto submenu = [bar](NSString* title) {
+    NSMenuItem* holder = [bar addItemWithTitle:title action:nil keyEquivalent:@""];
+    NSMenu* menu = [[NSMenu alloc] initWithTitle:title];
+    holder.submenu = menu;
+    return menu;
+  };
+
+  NSMenu* app = submenu(@"MediaViewer");
+  [app addItemWithTitle:@"About MediaViewer"
+                 action:@selector(orderFrontStandardAboutPanel:)
+          keyEquivalent:@""];
+  [app addItem:[NSMenuItem separatorItem]];
+  [app addItemWithTitle:@"Hide MediaViewer" action:@selector(hide:) keyEquivalent:@"h"];
+  [app addItem:[NSMenuItem separatorItem]];
+  [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
+
+  NSMenu* file = submenu(@"File");
+  [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
+  [file addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Mark / Unmark" cmd:kMenuMark key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Copy Marked To…" cmd:kMenuCopyTo key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Move Marked To…" cmd:kMenuMoveTo key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Move to Trash"
+                cmd:kMenuTrash
+                key:[NSString stringWithFormat:@"%C", static_cast<unichar>(NSBackspaceCharacter)]
+               mods:NSEventModifierFlagCommand
+             toMenu:file];
+  [file addItem:[NSMenuItem separatorItem]];
+  [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
+
+  // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
+  NSMenu* view = submenu(@"View");
+  [self addMenuItem:@"Fit to Window" cmd:kMenuFit key:@"0" mods:0 toMenu:view];
+  [self addMenuItem:@"Actual Size" cmd:kMenuOneToOne key:@"1" mods:0 toMenu:view];
+  [view addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"t" mods:0 toMenu:view];
+  [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"g" mods:0 toMenu:view];
+  [view addItem:[NSMenuItem separatorItem]];
+  // The standard action (nil target -> the window via the responder chain):
+  // AppKit titles it Enter/Exit Full Screen itself, and doesn't inject a
+  // second copy of its own into this menu when one already exists.
+  [view addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"]
+      .keyEquivalentModifierMask = 0;
+  [self addMenuItem:@"Start Slideshow" cmd:kMenuSlideshow key:@"" mods:0 toMenu:view];
+
+  NSMenu* go = submenu(@"Go");
+  [self addMenuItem:@"Next" cmd:kMenuNext key:@"" mods:0 toMenu:go];
+  [self addMenuItem:@"Previous" cmd:kMenuPrev key:@"" mods:0 toMenu:go];
+  [self addMenuItem:@"First" cmd:kMenuFirst key:@"" mods:0 toMenu:go];
+  [self addMenuItem:@"Last" cmd:kMenuLast key:@"" mods:0 toMenu:go];
+
+  NSMenu* window = submenu(@"Window");
+  [window addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+  [window addItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""];
+  NSApp.windowsMenu = window;
+
+  NSMenu* help = submenu(@"Help");
+  [self addMenuItem:@"Keyboard Shortcuts" cmd:kMenuHelp key:@"" mods:0 toMenu:help];
+  NSApp.helpMenu = help;
+
+  NSApp.mainMenu = bar;
+}
 
 - (void)navigateNext {
   if (_items.empty()) return;
@@ -1275,9 +1591,17 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     _jobs.shutdown();
     _lab.stop();
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Not dispatch_async(main queue): while NSTerminateLater is pending,
+    // -[NSApplication terminate:] spins a nested run loop in a mode that does
+    // not service the main dispatch queue, so that block never ran and the
+    // process never exited (found on real hardware, 2026-09-19: every
+    // --soak run, and so frametime, timed out after writing its report).
+    // Performing the block in the common modes runs in whichever mode the
+    // wait is in.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
       [NSApp replyToApplicationShouldTerminate:YES];
     });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
   });
   return NSTerminateLater;
 }

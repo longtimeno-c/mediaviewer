@@ -83,6 +83,18 @@ bool mv_chrome_gallery_visible(void);
 // gallery already gone.
 void mv_chrome_select_index_and_close_gallery(int32_t index);
 
+// Bumped every time the host replaces its folder listing (a relist after a
+// watch event, or opening another folder). Swift compares it against the last
+// value it saw to know when a cached name/thumbnail-by-index mapping is
+// stale even if the item count is unchanged (a rename, or one file added and
+// another removed). [main-thread]
+uint64_t mv_chrome_listing_generation(void);
+
+// The gallery reports how many cells it currently lays out per row, so the
+// host can move the selection by row for Up/Down/W/S (plan/16 `G` row).
+// Values < 1 are clamped to 1. [main-thread]
+void mv_chrome_set_gallery_columns(int32_t columns);
+
 #ifdef __cplusplus
 }
 #endif

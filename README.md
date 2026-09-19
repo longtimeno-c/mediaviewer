@@ -15,9 +15,12 @@ so Mac work (PR 16–20) no longer waits on Windows PR 8 shipping; PR 16 (Metal 
 PR 17 (decode + pan/zoom, folded in the PR 7 formats/Crashpad scope), and PR 18 (SwiftUI
 chrome, folded in the PR 4/PR 6 folder/filmstrip-backend/keyboard scope) are all in the tree.
 The Darwin target now configures, builds, and links with a real toolchain (`cmake`+`ninja`+
-`vcpkg`+`swift build`) and its Catch2 suite passes (210 assertions, 60 cases), but the actual
-on-screen present loop, 60 s soak, and any interactive UI/drag-and-drop have only been
-reviewed, not run on a real Mac with a display — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
+`vcpkg`+`swift build`) and its Catch2 suite passes (210 assertions, 60 cases). It has been run
+on a real Mac with a display (2026-09-19): the 60 s present-loop gate passes with the chrome on
+screen, and the window, menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still
+unproven on Mac: 2000-JPEG scroll timing, drag-and-drop, copy/move/Trash and slideshow on real
+folders, and HEIC/RAW/TIFF/WebP decode (PR 17's folded-in formats) — see
+[macOS](#macos-pr-1618) below.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -141,11 +144,15 @@ pulled in SwiftUI's `Lazy*Stack`, linking against an SDK that doesn't match the 
 toolchain's own SDK failed with "cannot link directly with 'SwiftUICore'" — use
 `xcrun --show-sdk-path` (or the SDK your installed Xcode ships) rather than an older one
 you may have lying around for a lower deployment target; `CMAKE_OSX_DEPLOYMENT_TARGET`
-stays 14.0 either way. What this build **could not** do: run the actual windowed present
-loop, the 60 s soak, or any interactive UI/drag-and-drop, since it had no attached display
-(`view backing layer is not CAMetalLayer` — a headless-environment limit, not a code bug).
-Run `frametime`'s soak, and a manual pass over navigation/marks/copy/move/Trash/
-fullscreen/slideshow/drag-drop, on a real Mac before trusting any of it.
+stays 14.0 either way. On a real display (2026-09-19) `frametime --seconds 60` passes with the SwiftUI chrome
+on screen (3600 frames, 0 dropped, p99 16.9 ms, idle 0.14 % of one core, 0 presents). Not yet
+exercised by hand: drag-and-drop, copy/move/Trash and slideshow on real folders — do a manual
+pass before trusting them. Thumbnails are cached in `~/Library/Caches/MediaViewer/thumbs`,
+never in the folder being browsed.
+
+The Mac has a real menu bar (File / View / Go / Window / Help), `?` opens a shortcuts sheet,
+and in the gallery `↑`/`↓`/`W`/`S` move by row, `Enter` opens the selection and `+`/`-` resize the
+thumbnails. Video is **not** on Mac yet: that is PR 19 (VideoToolbox + Core Audio).
 
 `frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
 Windows DXGI JSON report over is a failed gate, not a pass.

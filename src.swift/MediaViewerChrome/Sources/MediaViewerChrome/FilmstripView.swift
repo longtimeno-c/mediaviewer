@@ -16,10 +16,13 @@ struct FilmstripView: View {
         // JPEGs to scroll "without a hitch" -- eagerly building 2000 cells
         // (and requesting 2000 thumbnails) up front is exactly the hitch.
         LazyHStack(spacing: 4) {
-          ForEach(0..<store.itemCount, id: \.self) { index in
-            FilmstripCell(index: index)
-              .id(index)
-              .onTapGesture { store.select(index) }
+          ForEach(store.names.indices, id: \.self) { index in
+            FilmstripCell(
+              index: index, name: store.names[index], isCurrent: index == store.currentIndex,
+              slot: store.slot(for: store.names[index])
+            )
+            .id(index)
+            .onTapGesture { store.select(index) }
           }
         }
         .padding(.horizontal, 8)
@@ -27,14 +30,12 @@ struct FilmstripView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(.regularMaterial)
-      // Keeps the current selection in view across arrow-key navigation,
-      // not just mouse clicks inside the strip -- plan/16's Filmstrip mode
-      // row ("Prev/next thumb") is the keyboard path; Browse-mode arrow
-      // keys drive the same selection through MvLabApp, and this strip
-      // should track it either way.
+      // Keeps the current selection in view across arrow-key navigation, not
+      // just mouse clicks inside the strip. Deliberately not animated: an
+      // animation per key-repeat queued up behind each other and read as lag.
       .onChange(of: store.currentIndex) { _, newIndex in
         guard newIndex >= 0 else { return }
-        withAnimation { proxy.scrollTo(newIndex, anchor: .center) }
+        proxy.scrollTo(newIndex, anchor: .center)
       }
     }
   }
@@ -42,13 +43,15 @@ struct FilmstripView: View {
 
 private struct FilmstripCell: View {
   let index: Int
-  @ObservedObject private var store = FolderStore.shared
+  let name: String
+  let isCurrent: Bool
+  // Observed per cell: a thumbnail arriving re-renders this cell only.
+  @ObservedObject var slot: ThumbSlot
 
   var body: some View {
-    let itemName = store.name(at: index)
     ZStack {
-      if let image = store.thumbnails[itemName] {
-        Image(nsImage: image)
+      if let image = slot.image {
+        Image(decorative: image, scale: 1)
           .resizable()
           .aspectRatio(contentMode: .fit)
       } else {
@@ -59,8 +62,8 @@ private struct FilmstripCell: View {
     .clipShape(RoundedRectangle(cornerRadius: 4))
     .overlay(
       RoundedRectangle(cornerRadius: 4)
-        .strokeBorder(index == store.currentIndex ? Color.accentColor : .clear, lineWidth: 2)
+        .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
     )
-    .onAppear { store.requestThumbnailIfNeeded(at: index) }
+    .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }
