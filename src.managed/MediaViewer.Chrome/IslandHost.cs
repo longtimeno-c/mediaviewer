@@ -59,6 +59,7 @@ public static partial class IslandHost
         public const int Popup = 1000;
         public const int Rebind = 1001;
         public const int ResetKeys = 1002;
+        public const int UpdateRestart = 1003;  // PR 8: chrome, not a keyed command
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -75,6 +76,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
+                UpdateRestart,
             };
             unchecked
             {
@@ -106,9 +108,11 @@ public static partial class IslandHost
         public const int StickyZoom = 1 << 3;
         public const int BackgroundShift = 4;
         public const int BackgroundMask = 3 << 4;
+        // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
+        public const int UpdateAutoCheck = 1 << 8;
     }
 
-    private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap;
+    private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeCommand(IntPtr context, int command, float arg);
@@ -199,6 +203,7 @@ public static partial class IslandHost
             _source.Content = BuildChrome();
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
             EnsureFocusHook();
+            StartUpdater();
             return 0;
         }
         catch (Exception ex)
@@ -1091,6 +1096,7 @@ public static partial class IslandHost
         row.Children.Add(viewBtn);
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
+        row.Children.Add(BuildUpdateButton());
 
         var speed = BuildSpeed();
         speed.HorizontalAlignment = HorizontalAlignment.Right;

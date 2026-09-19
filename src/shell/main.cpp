@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <commctrl.h>  // LoadIconWithScaleDown (comctl32 v6 via app.manifest)
@@ -45,6 +46,7 @@
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
+#include "shell/update_guard.h"
 #include "shell/av_soak.h"
 #include "shell/crash_reporter_win.h"
 
@@ -87,6 +89,10 @@ constexpr UINT_PTR kMotionTimerId = 0x7101;
 constexpr UINT kMotionTickMs = 100;
 // A motion clip that never opens (unreadable MOV) gives the still back.
 constexpr ULONGLONG kMotionOpenGiveUpMs = 10000;
+// PR 8 updater: a new version counts as "started" once the chrome attached and
+// it stayed up this long (or exited in order). Until then trial.ini counts it.
+constexpr UINT_PTR kUpdateConfirmTimerId = 0x7301;
+constexpr UINT kUpdateConfirmMs = 10000;
 
 struct app_state {
   present_lab lab;
@@ -165,6 +171,26 @@ struct app_state {
   ULONGLONG motion_started = 0;
 };
 
+// PR 8 updater (shell/update_guard.h). Set once at startup on the UI thread.
+mv::shell::update::install_layout g_install;
+bool g_start_confirmed = false;
+// What an update restart asked us to put back (--restore-*). Applied once.
+struct pending_restore {
+  unsigned zoom_percent = 0;
+  bool fullscreen = false;
+  bool gallery = false;
+} g_restore;
+
+void confirm_update_start_async() noexcept {
+  if (g_start_confirmed || !g_install.installed()) return;
+  g_start_confirmed = true;
+  try {
+    // A small file write: off the UI thread (rule 1).
+    std::thread([layout = g_install] { mv::shell::update::confirm_started(layout); }).detach();
+  } catch (...) {
+  }
+}
+
 app_state* state_from(HWND hwnd) noexcept {
   return reinterpret_cast<app_state*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
@@ -172,6 +198,13 @@ app_state* state_from(HWND hwnd) noexcept {
 void publish(app_state* app) noexcept {
   app->lab.publish(app->input);
   app->lab.wake();
+}
+
+// The settings word the island sees: view_settings plus [update] auto_check.
+// One place, so the update switch rides the existing ApplySettings push.
+std::int32_t chrome_flags(const app_state* app) noexcept {
+  const bool auto_check = mv::shell::app_settings().get_int("update", "auto_check", 1) != 0;
+  return app->settings.flags() | (auto_check ? mv::shell::update::kChromeFlagUpdateAutoCheck : 0);
 }
 
 std::string utf8_from_wide(std::wstring_view wide) {
@@ -649,7 +682,7 @@ void toggle_filmstrip_setting(app_state* app) {
                                              : app->settings.filmstrip_for_folder;
   flag = !flag;
   mv::shell::save_view_settings(app->settings);
-  app->chrome.apply_settings(app->settings.flags());
+  app->chrome.apply_settings(chrome_flags(app));
   apply_view_state(app);
 }
 
@@ -709,9 +742,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_set_settings:
       app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
       mv::shell::save_view_settings(app->settings);
+      mv::shell::app_settings().set_int(
+          "update", "auto_check",
+          (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdateAutoCheck) != 0 ? 1 : 0);
       app->input.sticky_zoom = app->settings.sticky_zoom;
       app->input.background = app->settings.background;
-      app->chrome.apply_settings(app->settings.flags());
+      app->chrome.apply_settings(chrome_flags(app));
       apply_view_state(app);
       return;
     case mv::shell::chrome_cmd_rebind: {
@@ -751,12 +787,50 @@ void chrome_on_command(void* ctx, int command, float arg) {
       refresh_item_info(app);
       refresh_mark_state(app);
       apply_view_state(app);
+      if (g_restore.gallery && arg > 0.0f) {
+        g_restore.gallery = false;
+        set_gallery(app, true);
+      }
       return;
     case mv::shell::chrome_cmd_focus_changed: {
       const int kind = static_cast<int>(arg);
       if (kind >= static_cast<int>(mv::shell::focus_kind::command_bar) &&
           kind <= static_cast<int>(mv::shell::focus_kind::text)) {
         app->island_focus = static_cast<mv::shell::focus_kind>(kind);
+      }
+      return;
+    }
+    case mv::shell::chrome_cmd_update_restart: {
+      if (arg != 0.0f) {
+        // Update.exe is armed and waiting for this pid: leave the ordinary way.
+        if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+        return;
+      }
+      // plan/13: never restart under a playing clip (no export/trim jobs in v1).
+      std::uint32_t state = MV_PLAY_STOPPED;
+      if (app->session) (void)mv_video_state(app->session, &state);
+      const bool playing = (app->session && mv::abi::video_open(app->session) &&
+                            state == MV_PLAY_PLAYING) ||
+                           app->motion_playing;
+      if (playing) {
+        ::MessageBeep(MB_ICONWARNING);
+        return;
+      }
+      mv::shell::update::view_restore view;
+      if (app->mode != open_mode::none) {
+        const std::string utf8 = current_item_path(app);
+        const int n = utf8.empty() ? 0 : ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+        if (n > 1) {
+          view.path.assign(static_cast<std::size_t>(n - 1), L'\0');
+          ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, view.path.data(), n);
+        }
+      }
+      view.zoom_percent = app->lab.view_fitted() ? 0 : app->lab.status_zoom_percent();
+      view.fullscreen = app->fullscreen;
+      view.gallery = app->gallery_visible;
+      const auto args = mv::shell::update::restart_arguments(view);
+      if (!app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) {
+        ::MessageBeep(MB_ICONWARNING);
       }
       return;
     }
@@ -1749,7 +1823,7 @@ bool attach_chrome(app_state* app) {
                                      rc.right - rc.left, height, dpi);
   (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
                                    rc.right - rc.left, height, dpi);
-  app->chrome.apply_settings(app->settings.flags());
+  app->chrome.apply_settings(chrome_flags(app));
   // `?` and the palette read the same static table as the router (plan/16).
   publish_command_table(app);
   app->chrome.refresh_island_windows();
@@ -2042,6 +2116,19 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_TIMER:
       if (wparam == kTitleTimerId) {
         update_title(app);
+        // An update restart's zoom goes back once the still is on screen; a
+        // preset before the decode lands would be replaced by the fit.
+        if (g_restore.zoom_percent > 0 && app->lab.showing_still()) {
+          app->input.zoom_preset = static_cast<float>(g_restore.zoom_percent) / 100.0f;
+          ++app->input.zoom_preset_seq;
+          g_restore.zoom_percent = 0;
+          publish(app);
+        }
+        return 0;
+      }
+      if (wparam == kUpdateConfirmTimerId) {
+        ::KillTimer(hwnd, kUpdateConfirmTimerId);
+        confirm_update_start_async();
         return 0;
       }
       if (wparam == kSlideshowTimerId) {
@@ -2166,6 +2253,18 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) open_paths.push_back(std::move(value));
     } else if (arg == L"--no-chrome") {
       chrome_enabled = false;
+    } else if (arg == L"--restore-zoom") {
+      // PR 8: written by an update restart (update_guard.h), never by a user.
+      std::wstring value;
+      next(value);
+      if (ok) {
+        const unsigned long pct = std::wcstoul(value.c_str(), nullptr, 10);
+        g_restore.zoom_percent = pct <= 6400 ? static_cast<unsigned>(pct) : 0;
+      }
+    } else if (arg == L"--restore-fullscreen") {
+      g_restore.fullscreen = true;
+    } else if (arg == L"--restore-gallery") {
+      g_restore.gallery = true;
     } else if (!arg.empty() && arg[0] != L'-') {
       // Every positional path: Explorer's "Open" with several files passes
       // them all. open_paths decides (plan/16).
@@ -2184,6 +2283,22 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
+  // PR 8 updater, before anything that can fail or show a window. Velopack
+  // runs the exe with --veloapp-* during install/update/uninstall and kills it
+  // after 15-30 s; the viewer has no work there.
+  {
+    int argc = 0;
+    if (LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc)) {
+      const bool hook = argc >= 2 && mv::shell::update::is_velopack_hook(argv[1]);
+      ::LocalFree(argv);
+      if (hook) return 0;
+    }
+  }
+  // Counts this start of a freshly applied version; after two that never
+  // confirmed, hands the kept prior package to Update.exe and exits.
+  g_install = mv::shell::update::locate_install();
+  if (mv::shell::update::run_start_guard(g_install)) return 0;
+
   // PerMonitorV2 is also declared in the manifest; this is the belt to that
   // braces, because a manifest can be lost by a repackaging step and the
   // failure mode is a blurry window nobody files a bug about.
@@ -2304,6 +2419,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     publish(&app);
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
+  if (g_restore.fullscreen) set_fullscreen(&app, true);
+  // Chrome attached (or was not asked for) and the window is up: start the
+  // clock on "this version starts". A crash before it fires counts.
+  if (g_install.installed() && (!app.chrome_enabled || app.chrome_on_screen)) {
+    ::SetTimer(hwnd, kUpdateConfirmTimerId, kUpdateConfirmMs, nullptr);
+  }
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -2335,6 +2456,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // Exit may wait briefly for the last settings snapshot to reach disk (WM_CLOSE
   // has already torn the islands down in its own order); the render loop never
   // waits on it.
+  // PR 8 updater, exit path (the window is gone): an orderly exit of a version
+  // whose chrome attached is a successful start; then any staged update is
+  // handed to Update.exe to apply after this process exits (no restart).
+  if (g_install.installed() && !g_start_confirmed && (!app.chrome_enabled || app.chrome.loaded())) {
+    g_start_confirmed = true;
+    mv::shell::update::confirm_started(g_install);
+  }
+  app.chrome.updater_exit();
   if (!mv::shell::app_settings().flush(1000)) {
     MV_LOG_WARN("settings: last change did not reach settings.ini before exit");
   }

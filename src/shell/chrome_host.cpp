@@ -235,8 +235,23 @@ expected chrome_host::load() noexcept {
     return err(status::internal);
   }
 
+  // Optional: a chrome without the updater still loads.
+  update_restart_ = get_entry(L"UpdateRestart");
+  updater_exit_ = get_entry(L"UpdaterExit");
+
   MV_LOG_INFO("chrome: runtime loaded from %ls", chrome_dll_);
   return {};
+}
+
+bool chrome_host::request_update_restart(const std::wstring& args_blob) noexcept {
+  if (!attached_ || !update_restart_) return false;
+  const auto bytes = static_cast<std::int32_t>(args_blob.size() * sizeof(wchar_t));
+  return update_restart_(const_cast<wchar_t*>(args_blob.data()), bytes) == 0;
+}
+
+void chrome_host::updater_exit() noexcept {
+  if (!updater_exit_) return;
+  (void)updater_exit_(nullptr, 0);
 }
 
 int chrome_host::probe() const noexcept {
