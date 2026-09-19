@@ -185,6 +185,9 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 - (void)setHelpVisible:(BOOL)visible;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
+- (uint64_t)marksGeneration;
+- (BOOL)isIndexMarked:(NSInteger)index;
+- (NSInteger)markedCount;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -226,6 +229,15 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 }
 extern "C" uint64_t mv_chrome_listing_generation(void) {
   return g_chrome_app ? [g_chrome_app listingGeneration] : 0;
+}
+extern "C" uint64_t mv_chrome_marks_generation(void) {
+  return g_chrome_app ? [g_chrome_app marksGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_marked_count(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app markedCount]) : 0;
+}
+extern "C" bool mv_chrome_is_marked(int32_t index) {
+  return g_chrome_app && [g_chrome_app isIndexMarked:index] == YES;
 }
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   g_gallery_columns = columns < 1 ? 1 : columns;
@@ -644,6 +656,9 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
   std::uint64_t _listingGeneration;
+  // Bumped by every change to `_marks`; Swift rebuilds its marked-name set
+  // when it moves (mv_chrome_marks_generation).
+  std::uint64_t _marksGeneration;
   BOOL _helpVisible;
 
   // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
@@ -974,6 +989,7 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     std::erase_if(_marks, [&live_paths](const std::string& path) {
       return !live_paths.count(path);
     });
+    ++_marksGeneration;
   }
 
   std::size_t new_index = 0;
@@ -1061,17 +1077,17 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string& path = _items[_index.current()].path_utf8;
   if (!_marks.insert(path).second) _marks.erase(path);
-  [self updateMarkSnapshot];
+  [self marksDidChange];
   [self publish];
 }
 - (void)markAll {
   for (const auto& entry : _items) _marks.insert(entry.path_utf8);
-  [self updateMarkSnapshot];
+  [self marksDidChange];
   [self publish];
 }
 - (void)unmarkAll {
   _marks.clear();
-  [self updateMarkSnapshot];
+  [self marksDidChange];
   [self publish];
 }
 
@@ -1169,7 +1185,7 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
           MvLabApp* strongSelf = weakSelf;
           if (!strongSelf) return;
           for (const auto& path : succeeded) strongSelf->_marks.erase(path);
-          [strongSelf updateMarkSnapshot];
+          [strongSelf marksDidChange];
           [strongSelf publish];
         });
         return failures == 0 ? mv::status::ok : mv::status::io;
@@ -1216,7 +1232,7 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
           // The watcher's own FSEvents fire independently and will relist;
           // this only needs to refresh the mark count now that some may have
           // been cleared.
-          [strongSelf updateMarkSnapshot];
+          [strongSelf marksDidChange];
           [strongSelf publish];
         });
       }];
@@ -1363,6 +1379,22 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 }
 - (uint64_t)listingGeneration {
   return _listingGeneration;
+}
+- (uint64_t)marksGeneration {
+  return _marksGeneration;
+}
+- (NSInteger)markedCount {
+  return static_cast<NSInteger>(_marks.size());
+}
+- (BOOL)isIndexMarked:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return NO;
+  return _marks.count(_items[static_cast<std::size_t>(index)].path_utf8) != 0;
+}
+// Every place that changes `_marks` goes through this rather than calling
+// -updateMarkSnapshot directly, so the chrome's marked-set cache can't go stale.
+- (void)marksDidChange {
+  ++_marksGeneration;
+  [self updateMarkSnapshot];
 }
 - (void)galleryMoveRows:(NSInteger)rows {
   if (_items.empty()) return;

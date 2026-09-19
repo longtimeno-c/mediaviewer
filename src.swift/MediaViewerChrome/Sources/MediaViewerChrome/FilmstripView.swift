@@ -19,6 +19,7 @@ struct FilmstripView: View {
           ForEach(store.names.indices, id: \.self) { index in
             FilmstripCell(
               index: index, name: store.names[index], isCurrent: index == store.currentIndex,
+              isMarked: store.markedNames.contains(store.names[index]),
               slot: store.slot(for: store.names[index])
             )
             .id(index)
@@ -45,6 +46,7 @@ private struct FilmstripCell: View {
   let index: Int
   let name: String
   let isCurrent: Bool
+  let isMarked: Bool
   // Observed per cell: a thumbnail arriving re-renders this cell only.
   @ObservedObject var slot: ThumbSlot
 
@@ -64,6 +66,7 @@ private struct FilmstripCell: View {
       RoundedRectangle(cornerRadius: 4)
         .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
     )
+    .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }

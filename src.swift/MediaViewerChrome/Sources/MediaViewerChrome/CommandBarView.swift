@@ -10,6 +10,8 @@ import SwiftUI
 import MVChromeBridge
 
 public struct CommandBarView: View {
+  @ObservedObject private var store = FolderStore.shared
+
   public init() {}
 
   public var body: some View {
@@ -22,6 +24,12 @@ public struct CommandBarView: View {
       Button("Fit") { mv_chrome_fit() }
       Button("1:1") { mv_chrome_one_to_one() }
       Spacer()
+      // What F7 / F8 / Delete will act on (plan/16): the marks if any, else
+      // the current item.
+      if store.markedCount > 0 {
+        Label("\(store.markedCount) marked", systemImage: "checkmark.circle.fill")
+          .foregroundStyle(Color.accentColor)
+      }
     }
     .padding(.horizontal, 12)
     .frame(maxWidth: .infinity, maxHeight: .infinity)

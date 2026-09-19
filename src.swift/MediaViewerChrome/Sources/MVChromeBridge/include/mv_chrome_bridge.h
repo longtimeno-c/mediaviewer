@@ -90,6 +90,13 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
 
+// Marks (plan/16 "Marks, copy, move"): bumped whenever the mark set changes,
+// so Swift can rebuild its marked-item cache only when it must.
+// `mv_chrome_is_marked` is false for an out-of-range index. [main-thread]
+uint64_t mv_chrome_marks_generation(void);
+int32_t mv_chrome_marked_count(void);
+bool mv_chrome_is_marked(int32_t index);
+
 // The gallery reports how many cells it currently lays out per row, so the
 // host can move the selection by row for Up/Down/W/S (plan/16 `G` row).
 // Values < 1 are clamped to 1. [main-thread]

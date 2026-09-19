@@ -36,6 +36,10 @@ final class FolderStore: ObservableObject {
   @Published private(set) var currentIndex: Int = -1
   /// Item names by index; replaced wholesale when the host relists.
   @Published private(set) var names: [String] = []
+  /// Names of marked items (plan/16 marks), rebuilt only when the host's marks
+  /// generation or listing changes.
+  @Published private(set) var markedNames: Set<String> = []
+  @Published private(set) var markedCount: Int = 0
   /// Gallery cell edge in points (plan/16 `+`/`-`: 24 pt steps, 80-344, start 152).
   @Published private(set) var galleryCellSize: CGFloat = 152
 
@@ -50,6 +54,7 @@ final class FolderStore: ObservableObject {
   private var decoded: [String] = []
   private let maxDecoded = 300
   private var listingGeneration: UInt64 = .max
+  private var marksGeneration: UInt64 = .max
   private var pollTimer: Timer?
 
   private static let decodeQueue = DispatchQueue(
@@ -74,9 +79,15 @@ final class FolderStore: ObservableObject {
     let index = Int(mv_chrome_current_index())
     let generation = mv_chrome_listing_generation()
 
-    if generation != listingGeneration || count != names.count {
+    let listingChanged = generation != listingGeneration || count != names.count
+    if listingChanged {
       listingGeneration = generation
       reloadNames(count: count)
+    }
+    let marks = mv_chrome_marks_generation()
+    if listingChanged || marks != marksGeneration {
+      marksGeneration = marks
+      reloadMarks()
     }
     if count != itemCount { itemCount = count }
     if index != currentIndex {
@@ -102,6 +113,16 @@ final class FolderStore: ObservableObject {
       requested.removeAll()
       decoded.removeAll()
     }
+  }
+
+  private func reloadMarks() {
+    let total = Int(mv_chrome_marked_count())
+    var fresh = Set<String>()
+    if total > 0 {
+      for i in names.indices where mv_chrome_is_marked(Int32(i)) { fresh.insert(names[i]) }
+    }
+    if total != markedCount { markedCount = total }
+    if fresh != markedNames { markedNames = fresh }
   }
 
   func name(at index: Int) -> String {

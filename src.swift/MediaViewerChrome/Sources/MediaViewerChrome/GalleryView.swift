@@ -32,6 +32,7 @@ struct GalleryView: View {
               GalleryCell(
                 index: index, name: store.names[index], size: cell,
                 isCurrent: index == store.currentIndex,
+                isMarked: store.markedNames.contains(store.names[index]),
                 slot: store.slot(for: store.names[index])
               )
               .id(index)
@@ -62,6 +63,7 @@ private struct GalleryCell: View {
   let name: String
   let size: CGFloat
   let isCurrent: Bool
+  let isMarked: Bool
   @ObservedObject var slot: ThumbSlot
 
   var body: some View {
@@ -84,6 +86,7 @@ private struct GalleryCell: View {
           RoundedRectangle(cornerRadius: 6)
             .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
         )
+        .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
       Text(name)
         .font(.caption)
         .lineLimit(1)
