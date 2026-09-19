@@ -308,13 +308,24 @@ the same core**, not a UI-only follow-up or a dual-track requirement for those u
 the C ABI transfer. Present, hardware decode, audio, I/O, chrome, and the installer do not.
 Full split and the hostable-core rule: [15-platforms.md](15-platforms.md).
 
-Do not start F until PR 8's verify holds **and** PR 1's present-loop verify still holds on
-Windows. F has its own present-loop gate.
+**Parity note (2026-09-17, [12](12-decision-log.md)):** the original PR 16–20 split only
+reached Windows PR 1/2/3/5abc/8 parity — Windows PR 4 (folder/filmstrip/gallery), PR 6
+(keyboard-complete browse), and PR 7 (camera-dump formats + crashpad), all already shipped
+on Windows, had no assigned Mac PR. The owner chose to fold that scope into the existing
+PR 17/18/20 slots rather than add new PR numbers — PR 17 and PR 18 are wider than their
+Windows twins as a result, each still with its own verify line below.
 
-**Sequencing exception (2026-09-13):** the owner started **PR 16** in parallel with
-Windows v1 because multiple agents can take the Metal present lab without blocking
-Windows PRs. D9's product call is unchanged — Mac is a host, not a UI port — and
-this exception is **PR 16 only**, not PRs 17–20. See [12](12-decision-log.md).
+F no longer waits for PR 8's verify (widened 2026-09-13 → 2026-09-17 below), but **PR 1's
+present-loop verify must still hold on Windows** and F has its own present-loop gate on Mac —
+both are checked independently, not waived by the other.
+
+**Sequencing exception (2026-09-13, widened 2026-09-17):** the owner started **PR 16** in
+parallel with Windows v1 because multiple agents can take the Metal present lab without
+blocking Windows PRs. On 2026-09-17 the owner widened the exception to **PRs 17–20**
+as well, working from a Mac day to day and ahead of Windows PR 8 shipping. D9's product
+call is unchanged — Mac is a host, not a UI port — and Milestone F's own internal
+sequencing (16 → 17 → 18 → 19 → 20, each verify line before the next starts) still
+applies. See [12](12-decision-log.md).
 
 ### PR 16 — Metal present lab
 AppKit window, `CAMetalLayer`, display-link pacing, idle → stop presenting, F3 overlay,
@@ -326,10 +337,22 @@ harness the way the Win32 lab is.
 not this verify.
 
 ### PR 17 — Still decode + pan/zoom, on Metal
-Same ABI and decoders as PR 2. Immutable Metal texture upload from the worker pool, fit /
-wheel-zoom-toward-cursor / drag-pan. First blit shader gets its MSL twin.
+Same ABI and decoders as PR 2 (JPEG/PNG/BMP) to start. Immutable Metal texture upload from
+the worker pool, fit / wheel-zoom-toward-cursor / drag-pan. First blit shader gets its MSL
+twin.
 
-**Verify:** a 12 MP JPEG pans at refresh with zero decode on mouse move; a tagged AdobeRGB
+**Folded in (2026-09-17, [12](12-decision-log.md)):** the rest of the Windows PR 7 camera-dump
+format set — TIFF, WebP, ICO, HEIC/HEIF, AVIF, RAW via LibRaw with embedded-preview-as-first-pixel
+— and Crashpad + the Mac minidump scrub, landing here for the same reason PR 7 paired them on
+Windows: this is the PR where hostile real-world files first meet Mac decoders. RAW+JPEG and Live
+Photo pairing *detection* (`io/pairing.h` logic) can land here too, decode-side; surfacing a pair as
+one filmstrip stop is PR 18's job once a filmstrip exists.
+
+**Verify:** everything PR 2's verify line asked, plus: iPhone HEIC opens with no extra codec
+install; a CR2/NEF/ARW shows a preview in JPEG-comparable time and the full decode replaces it
+without a visible pop; **original RAW bytes unchanged**; nothing in the broken-file corpus
+crashes or hangs; a deliberately corrupted RAW produces a minidump containing no path, filename,
+or pixel data. A 12 MP JPEG pans at refresh with zero decode on mouse move; a tagged AdobeRGB
 JPEG renders correctly and an untagged one is treated as sRGB, with **no tone-map applied
 to either** (D6).
 
@@ -337,9 +360,23 @@ to either** (D6).
 **The canvas is not ported to SwiftUI.** PR 16's AppKit window and `CAMetalLayer` stay;
 SwiftUI chrome is hosted inside them. Command bar and window chrome only.
 
+**Folded in (2026-09-17, [12](12-decision-log.md)):** the Windows PR 4 and PR 6 scope that has
+nowhere else to go once chrome exists — folder listing + sort, `kqueue`/`FSEvents` dir watch
+(`io/dir_mac.cpp`), filmstrip + gallery as SwiftUI views over the same folder model and the same
+JPEG-512 thumbnail cache spec (`jpg512.1`) Windows uses, and PR 6's keyboard-complete browse: one
+key router with a Mac default map (`⌘` not `Ctrl`), `?` overlay, marks, copy-to/move-to, Trash
+(not Recycle Bin) with confirm, drag-and-drop in and out, argv handling, fullscreen, slideshow as
+a mode, fit/100%/fill, animated GIF/APNG/WebP on the display-link frame clock. Same command ids as
+Windows ([16-commands.md](16-commands.md)); the Mac host writes its own default map rather than
+importing the XAML one.
+
 **Verify:** zero dropped frames while panning a cached image at display refresh, unchanged
 from PR 17 now that chrome is on screen. Focus and keyboard traversal cross the SwiftUI /
-canvas boundary; a popover opens over the canvas without clipping.
+canvas boundary; a popover opens over the canvas without clipping. 2000 mixed JPEGs — filmstrip
+scrolls without a hitch, second folder visit has near-instant thumbnails; keyboard-only browse of
+a real folder — open, next/prev, zoom/fit/100%, mark, copy-to, delete to Trash, fullscreen,
+slideshow start/stop — without the mouse, with `?` listing those bindings; a file dropped into the
+folder appears without restart; animation timing matches a browser.
 
 ### PR 19 — VideoToolbox + Core Audio
 FFmpeg + VideoToolbox on *your* `MTLDevice`, copy out of the decoder pool into a
@@ -352,7 +389,8 @@ photo → video → photo leaks no textures.
 
 ### PR 20 — Finder + notarized ship
 UTIs for the D5 still set, never a silent default-app hijack. Quick Look / thumbnails in a
-**separate process**. Notarized Sparkle, Apple Silicon only.
+**separate process**. Notarized Sparkle, Apple Silicon only. Crash reporting already exists
+from PR 17 (folded in 2026-09-17, mirroring Windows PR 7) — this PR does not add it.
 
 **Verify:** double-clicking a HEIC in Finder opens the app; a deliberately corrupted HEIC
 in a browsed folder leaves Finder running; a clean Mac → install from the notarized image
@@ -397,6 +435,9 @@ feature slices; that label does not promise everything in one release.
   integration and out-of-process handlers) are each multi-week for one person on their own.
   Size the milestones, ship them in order, and let the calendar report itself rather than being
   promised up front.
-- **Milestone F waits for Windows PR 8, except the already-authorized PR 16 lab.** From PR 4, keep
+- **Milestone F no longer waits for Windows PR 8** — the owner widened the 2026-09-13
+  exception to all of PRs 16–20 on 2026-09-17 ([12](12-decision-log.md)). From PR 4, keep
   Win32 / D3D11 out of `image/`, `player/`, `edit/`, and `meta/` so F is a host + backends.
-  Chrome is written twice (D1). The Metal present lab is PR 16, not a weekend on top of PR 8.
+  Chrome is written twice (D1). PR 16 is the Metal present lab, PR 18 is SwiftUI chrome on
+  top of it — neither is a weekend project, and F's own PR-to-PR sequencing (each verify
+  line before the next PR starts) still applies even though it no longer waits on PR 8.

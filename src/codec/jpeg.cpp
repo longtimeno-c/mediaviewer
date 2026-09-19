@@ -96,10 +96,14 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
 
   // C4611: longjmp skips C++ destructors. Everything live across this setjmp
   // is POD or a malloc the jump handler frees.
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4611)
+#endif
   if (setjmp(jerr.jump)) {
+#if defined(_MSC_VER)
 #pragma warning(pop)
+#endif
     jpeg_destroy_decompress(&cinfo);
     std::free(jerr.rgba);
     std::free(jerr.row);
@@ -205,10 +209,14 @@ result<jpeg_size> jpeg_dimensions(std::span<const std::uint8_t> bytes) {
   jerr.pub.error_exit = jpeg_error_exit;
   jerr.pub.output_message = [](j_common_ptr) {};
 
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4611)
+#endif
   if (setjmp(jerr.jump)) {
+#if defined(_MSC_VER)
 #pragma warning(pop)
+#endif
     jpeg_destroy_decompress(&cinfo);
     return err(status::corrupt);
   }
@@ -272,10 +280,14 @@ result<std::vector<std::uint8_t>> encode_jpeg_rgba(std::span<const std::uint8_t>
 
   // C4611: longjmp skips C++ destructors. Everything live across this setjmp
   // is POD or a malloc the jump handler frees.
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4611)
+#endif
   if (setjmp(trap.jump)) {
+#if defined(_MSC_VER)
 #pragma warning(pop)
+#endif
     const bool oom = trap.oom;
     jpeg_destroy_compress(&cinfo);
     std::free(trap.out);

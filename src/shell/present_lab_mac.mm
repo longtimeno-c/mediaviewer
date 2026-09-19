@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab_mac.h"
 
+#include "image/pipeline.h"
+
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
@@ -19,14 +21,19 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_impl_metal.h>
 
 #include "core/trace.h"
 #include "gfx/pace_json.h"
+#include "image/pipeline_mac.h"
+#include "image/upload_mac.h"
 
 using mv::gfx::k_input_tail_seconds;
 using mv::gfx::k_occlusion_poll_ms;
@@ -45,6 +52,17 @@ double process_cpu_seconds() noexcept {
   getrusage(RUSAGE_SELF, &ru);
   return static_cast<double>(ru.ru_utime.tv_sec) + static_cast<double>(ru.ru_utime.tv_usec) * 1e-6 +
          static_cast<double>(ru.ru_stime.tv_sec) + static_cast<double>(ru.ru_stime.tv_usec) * 1e-6;
+}
+
+// PR 18: the height of the canvas rect between the SwiftUI command bar and
+// the filmstrip strip. The swapchain itself still spans the full backing
+// size (main_mac.mm's MvMetalView is never resized) — only fit/pan and the
+// blit's origin_y see this, same as Windows' chrome_height_px/chrome_bottom_px
+// (gfx/blit.h). chrome_bottom_px is 0 when the filmstrip is hidden (`T`),
+// same "canvas reclaims the space" behaviour Windows' filmstrip toggle has.
+float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
+  return std::max(1.0f, static_cast<float>(s.height) - static_cast<float>(s.chrome_height_px) -
+                            static_cast<float>(s.chrome_bottom_px));
 }
 
 void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
@@ -121,6 +139,97 @@ CAMetalDisplayLinkUpdate* take_link_update() noexcept {
 
 present_lab_mac::~present_lab_mac() { stop(); }
 
+// [any-thread]. Runs on the job pool: reads and decodes a file, then uploads
+// an immutable MTLTexture. Never on the render thread (rule 1, CLAUDE.md /
+// plan/02) -- device_.native_device() is safe to use from any thread. The
+// file read is a plain blocking std::ifstream on the worker rather than
+// io/file.h's async path: this is one folder-navigation stop, not the
+// directory scan itself (folder_model_mac already uses io/file.h for that).
+//
+// Called only from open_item(), which has already bumped job_system's view
+// generation, so `ctx` carries that new generation. If a newer open_item()
+// call bumps it again before this finishes -- the user arrowed past this
+// item before it loaded -- ctx.cancelled() catches it below and the result
+// is discarded instead of clobbering the newer selection.
+void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept {
+  if (path_utf8.empty() || !options_.jobs) return;
+
+  void* mtl_device = device_.native_device();
+  std::atomic<image::gpu_image_mac*>* pending = &pending_image_;
+
+  options_.jobs->submit(
+      [this, path = std::move(path_utf8), mtl_device, pending,
+       item_id](const job_context& ctx) -> status {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f) return status::io;
+        // One sized read: a byte-at-a-time istreambuf_iterator copy of a
+        // 40 MB RAW cost over a second before decoding even started.
+        const std::streamoff size = f.tellg();
+        if (size <= 0) return status::io;
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+        f.seekg(0);
+        if (!f.read(reinterpret_cast<char*>(bytes.data()), size)) return status::io;
+
+        // Rule 3: first pixel is never the full decode. A JPEG's DCT 1/4 or a
+        // RAW's embedded JPEG goes up first; the full decode then replaces it
+        // as a refinement of the same item (item_id), keeping the view.
+        const double t_start = monotonic_seconds();
+        if (auto preview = image::decode_preview(bytes, &ctx)) {
+          if (ctx.cancelled()) return status::cancelled;
+          if (auto up = image::upload(mtl_device, preview.value(), &ctx)) {
+            auto* first = new image::gpu_image_mac(std::move(up).value());
+            first->item_id = item_id;
+            first->preview = true;
+            delete pending->exchange(first);
+            // The render thread parks when idle (0 % GPU on a still); a load
+            // that outlasts the post-navigation activity window would
+            // otherwise sit in `pending` until the next input.
+            wake();
+            MV_LOG_INFO("open: preview %ux%u ready in %.0f ms", preview.value().width,
+                        preview.value().height, (monotonic_seconds() - t_start) * 1000.0);
+          } else if (up.error() == status::cancelled) {
+            return status::cancelled;
+          } else {
+            MV_LOG_WARN("open: preview upload failed (%s)", status_name(up.error()));
+          }
+        } else if (preview.error() == status::cancelled) {
+          return status::cancelled;
+        } else {
+          // Expected for formats with no cheap first pixel (PNG, HEIC, ...).
+        }
+
+        auto decoded = image::decode_bytes_mac(bytes, &ctx);
+        if (!decoded) {
+          if (decoded.error() != status::cancelled)
+            MV_LOG_WARN("open: decode failed (%s)", status_name(decoded.error()));
+          return decoded.error();
+        }
+        auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+        if (!uploaded) return uploaded.error();
+        MV_LOG_INFO("open: full %ux%u ready in %.0f ms", decoded.value().width,
+                    decoded.value().height, (monotonic_seconds() - t_start) * 1000.0);
+
+        if (ctx.cancelled()) return status::cancelled;
+
+        auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+        img->item_id = item_id;
+        image::gpu_image_mac* old = pending->exchange(img);
+        delete old;  // a load superseded before the render thread took it over
+        wake();
+        return status::ok;
+      });
+}
+
+void present_lab_mac::open_item(std::string path_utf8) noexcept {
+  if (path_utf8.empty() || !options_.jobs) return;
+  // Abandons whatever the previous open_item() call had in flight (folder
+  // navigation is a new view intent) without touching folder_model_mac's own
+  // relist/thumb jobs, which stay pinned to background_generation and are
+  // never cancelled by this.
+  options_.jobs->bump_generation();
+  submit_image_load(std::move(path_utf8), ++item_counter_);
+}
+
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
   if (!nsview) return err(status::invalid_arg);
   view_ = nsview;
@@ -191,6 +300,27 @@ void present_lab_mac::render_thread_main() noexcept {
     ImGui_ImplMetal_Init(mtl);
     imgui_ready_ = true;
 
+    // PR 17: the drawable's own pixel format, matching MvMetalView's
+    // makeBackingLayer (main_mac.mm).
+    if (auto built = blitter_.create(device_.native_device(),
+                                     static_cast<std::uint64_t>(MTLPixelFormatBGRA8Unorm_sRGB));
+        !built) {
+      MV_LOG_ERROR("present_lab_mac: blitter create failed (%s)", status_name(built.error()));
+      exit_code_ = 2;
+      start_error_.store(1, std::memory_order_release);
+      ImGui_ImplMetal_Shutdown();
+      layer_.destroy();
+      device_.destroy();
+      ImGui::DestroyContext();
+      finished_.store(true, std::memory_order_release);
+      running_.store(false, std::memory_order_release);
+      return;
+    }
+    // No longer auto-loads options_.open_path here: MvLabApp now resolves
+    // --open (and a bare argv path, and a drop) through folder_model_mac --
+    // "a file opens its folder with that file selected" (plan/16-commands.md)
+    // -- and calls open_item() itself once the async folder listing
+    // resolves the selected index. See main_mac.mm's -openEntryPath:.
     ready_.store(true, std::memory_order_release);
 
     MvMetalLinkTarget* target =
@@ -272,11 +402,91 @@ void present_lab_mac::render_thread_main() noexcept {
             measurement_valid_ = false;
           }
           pacer_.set_refresh(layer_.refresh_interval_seconds());
+          if (current_image_ && camera_.fit_mode()) {
+            camera_.fit(static_cast<float>(current_image_->width),
+                       static_cast<float>(current_image_->height),
+                       static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                       /*immediate=*/false);
+          }
           redraw = true;
+        }
+
+        // PR 17: a background job finished decoding --open. Take it over and
+        // fit it once; a resize while in fit mode re-fits below.
+        if (image::gpu_image_mac* loaded = pending_image_.exchange(nullptr)) {
+          // Same item, better pixels (preview -> full): keep the view as a
+          // fraction of the image so nothing pops, refits or snaps. A new
+          // item resets and fits.
+          const bool refinement = current_image_ && loaded->item_id != 0 &&
+                                  current_image_->item_id == loaded->item_id;
+          const auto old_w = current_image_ ? static_cast<float>(current_image_->width) : 0.0f;
+          const auto old_h = current_image_ ? static_cast<float>(current_image_->height) : 0.0f;
+          current_image_.reset(loaded);
+          if (refinement) {
+            camera_.refine(old_w, old_h, static_cast<float>(current_image_->width),
+                           static_cast<float>(current_image_->height),
+                           static_cast<float>(snapshot.width), usable_window_h(snapshot));
+          } else {
+            camera_.reset();
+            camera_.fit(static_cast<float>(current_image_->width),
+                        static_cast<float>(current_image_->height),
+                        static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                        /*immediate=*/true);
+          }
+          redraw = true;
+          // A still popping in mid-measurement changes what's on screen just
+          // like a resize/toggle/reset does -- same invalidation those
+          // branches already apply.
+          if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
 
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
+
+        if (current_image_) {
+          const auto image_w = static_cast<float>(current_image_->width);
+          const auto image_h = static_cast<float>(current_image_->height);
+          const auto window_w = static_cast<float>(snapshot.width);
+          // PR 18: the SwiftUI command bar covers the top chrome_height_px of
+          // the canvas, the same "swapchain spans the client area, chrome is
+          // composited over it" shape as blit.h's origin_x/origin_y on
+          // Windows (gfx/blit.h) -- fit/pan only see the rect below it.
+          const float window_h = usable_window_h(snapshot);
+
+          if (snapshot.fit_seq != seen_fit_seq_) {
+            seen_fit_seq_ = snapshot.fit_seq;
+            camera_.fit(image_w, image_h, window_w, window_h, /*immediate=*/false);
+            redraw = true;
+          }
+          if (snapshot.one_to_one_seq != seen_one_to_one_seq_) {
+            seen_one_to_one_seq_ = snapshot.one_to_one_seq;
+            camera_.one_to_one();
+            redraw = true;
+          }
+
+          // A drag that started inside the view keeps tracking on
+          // mouse_down[0] alone once under way, even past the view's edge
+          // (panning toward an edge is the common case this covers) --
+          // mouse_in_client only gates *starting* a new drag.
+          if (snapshot.mouse_down[0] && (was_dragging_ || snapshot.mouse_in_client)) {
+            if (!was_dragging_) {
+              camera_.drag_begin();
+              was_dragging_ = true;
+            } else {
+              camera_.drag_delta(snapshot.mouse_x - last_mouse_x_, snapshot.mouse_y - last_mouse_y_);
+            }
+          } else if (was_dragging_) {
+            camera_.drag_end();
+            was_dragging_ = false;
+          }
+          last_mouse_x_ = snapshot.mouse_x;
+          last_mouse_y_ = snapshot.mouse_y;
+
+          if (wheel != 0.0f && snapshot.mouse_in_client) {
+            camera_.wheel_toward(snapshot.mouse_x, snapshot.mouse_y, wheel, window_w, window_h,
+                                 image_w, image_h);
+          }
+        }
         if (redraw) last_input_time_ = elapsed;
 
         gfx::present_request req;
@@ -285,6 +495,8 @@ void present_lab_mac::render_thread_main() noexcept {
         req.occluded = occluded_;
         req.soak = options_.soak_seconds > 0.0;
         req.animating = animating_;
+        req.camera_moving = current_image_ && camera_.moving();
+        req.has_still = current_image_ != nullptr;
         req.redraw = redraw;
         req.painted_static = painted_static_;
         req.elapsed_seconds = elapsed;
@@ -335,6 +547,7 @@ void present_lab_mac::render_thread_main() noexcept {
         const double now = monotonic_seconds();
         const float delta = static_cast<float>(now - last_frame);
         last_frame = now;
+        if (current_image_) camera_.step(delta);
 
         id<CAMetalDrawable> drawable = update.drawable;
         if (!drawable) continue;
@@ -353,7 +566,10 @@ void present_lab_mac::render_thread_main() noexcept {
         feed_imgui(snapshot, delta, wheel);
         ImGui::NewFrame();
 
-        if (animating_) {
+        // The lab sweep/idle text is the PR 16 instrument; once --open has
+        // loaded a still, the image (drawn below, same render pass) replaces
+        // it rather than drawing both.
+        if (!current_image_ && animating_) {
           const auto w = static_cast<float>(snapshot.width);
           const auto h = static_cast<float>(snapshot.height);
           animation_phase_ = std::fmod(elapsed * 0.35, 1.0);
@@ -362,7 +578,7 @@ void present_lab_mac::render_thread_main() noexcept {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           bg->AddRectFilled(ImVec2(x, 0.0f), ImVec2(x + bar_width, h),
                             IM_COL32(230, 230, 235, 255));
-        } else if (overlay_visible_) {
+        } else if (!current_image_ && overlay_visible_) {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           const float w = static_cast<float>(snapshot.width);
           const float h = static_cast<float>(snapshot.height);
@@ -372,7 +588,11 @@ void present_lab_mac::render_thread_main() noexcept {
 
         if (overlay_visible_) {
           const auto stats = pacer_.stats();
-          ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
+          // Below the SwiftUI command bar, which covers the canvas's top
+          // chrome_height_px (both are backing pixels); a fixed (12, 12)
+          // hid the first line under it (found on real hardware, 2026-09-19).
+          ImGui::SetNextWindowPos(ImVec2(12.0f, static_cast<float>(snapshot.chrome_height_px) + 12.0f),
+                                  ImGuiCond_Always);
           ImGui::SetNextWindowBgAlpha(0.72f);
           ImGui::Begin("##f3", nullptr,
                        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
@@ -393,6 +613,19 @@ void present_lab_mac::render_thread_main() noexcept {
         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device_.native_queue();
         id<MTLCommandBuffer> cb = [queue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+        if (current_image_) {
+          gfx::blit_params_mac bp;
+          bp.pan_x = camera_.pan_x();
+          bp.pan_y = camera_.pan_y();
+          bp.zoom = camera_.zoom();
+          bp.window_w = static_cast<float>(snapshot.width);
+          bp.window_h = usable_window_h(snapshot);
+          bp.origin_y = static_cast<float>(snapshot.chrome_height_px);
+          bp.image_w = static_cast<float>(current_image_->width);
+          bp.image_h = static_cast<float>(current_image_->height);
+          bp.time_seconds = static_cast<float>(elapsed);
+          blitter_.draw((__bridge void*)enc, current_image_->texture, bp);
+        }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
         [cb presentDrawable:drawable];
@@ -404,6 +637,13 @@ void present_lab_mac::render_thread_main() noexcept {
         if (!decision.live) painted_static_ = true;
       }
     }
+
+    // submit_image_load()'s job holds a raw (non-retaining) id<MTLDevice>
+    // pointer, so it must be finished before device_.destroy() below, on
+    // every exit path (soak completing here, not just an external stop()).
+    // job_system::shutdown() is documented safe to call twice, so this does
+    // not conflict with a caller's own shutdown (main_mac.mm's windowWillClose).
+    if (options_.jobs) options_.jobs->shutdown();
 
     if (warmed_up_) {
       idle_stats_.elapsed_seconds = monotonic_seconds() - measurement_start_seconds_;
@@ -442,16 +682,37 @@ void present_lab_mac::render_thread_main() noexcept {
       ImGui_ImplMetal_Shutdown();
       imgui_ready_ = false;
     }
+    current_image_.reset();
+    delete pending_image_.exchange(nullptr);
+    blitter_.destroy();
     layer_.destroy();
     device_.destroy();
     ImGui::DestroyContext();
   }
 
+  // The loop above exits two ways: running_ went false (an external stop()
+  // call — main_mac.mm's applicationShouldTerminate: already owns quitting
+  // the app once this call returns) or a soak's `break` above completed on
+  // its own with running_ still true (nothing else is going to ask the app
+  // to quit, so the tail below must). Nothing between here and the loop
+  // touches running_, so reading it now is equivalent to reading it right
+  // after the loop exited, before teardown — just without the scoping
+  // problem of declaring it inside the block above and using it after.
+  const bool self_initiated_exit = running_.load(std::memory_order_acquire);
+
   finished_.store(true, std::memory_order_release);
   running_.store(false, std::memory_order_release);
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [NSApp terminate:nil];
-  });
+  // Only self-terminate when nothing external asked us to stop: an
+  // external stop() (main_mac.mm's applicationShouldTerminate:, mid its own
+  // background-queue shutdown) already owns the one NSTerminateLater /
+  // replyToApplicationShouldTerminate: cycle for this quit. Calling
+  // [NSApp terminate:nil] again here would re-enter
+  // applicationShouldTerminate: for a termination already in flight.
+  if (self_initiated_exit) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [NSApp terminate:nil];
+    });
+  }
 }
 
 bool present_lab_mac::write_json_report() const noexcept {

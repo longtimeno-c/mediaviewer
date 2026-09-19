@@ -9,8 +9,18 @@ port — see [plan/15-platforms.md](plan/15-platforms.md).
 
 **Status: PR 7's slices are all merged and pass locally; its clean-VM HEIC, real
 Live Photo and on-screen no-pop checks are still open. PR 8 packages the Windows viewer
-for its first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
-the tree and unverified on Apple Silicon.** The Windows present lab still owns
+for its first release. PRs 9–15 are future feature updates. The owner widened the
+2026-09-13 sequencing exception on 2026-09-17 ([plan/12-decision-log.md](plan/12-decision-log.md))
+so Mac work (PR 16–20) no longer waits on Windows PR 8 shipping; PR 16 (Metal present lab),
+PR 17 (decode + pan/zoom, folded in the PR 7 formats/Crashpad scope), and PR 18 (SwiftUI
+chrome, folded in the PR 4/PR 6 folder/filmstrip-backend/keyboard scope) are all in the tree.
+The Darwin target now configures, builds, and links with a real toolchain (`cmake`+`ninja`+
+`vcpkg`+`swift build`) and its Catch2 suite passes (210 assertions, 60 cases). It has been run
+on a real Mac with a display (2026-09-19): the 60 s present-loop gate passes with the chrome on
+screen, and the window, menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still
+unproven on Mac: drag-and-drop, copy/move/Trash and slideshow on real folders, animated
+GIF/APNG/WebP playback (they show frame 0 as a still), and the tonal step when a RAW's
+embedded preview is replaced by the full decode — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -37,8 +47,19 @@ pull requests and for longer nightly.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
 host of the same core — not a UI-only port. PR 16 is the Metal present lab
-(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). It does **not** yet decode,
-host SwiftUI, or play video. A Windows DXGI soak is not that verify.
+(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). PR 17 adds JPEG/PNG/BMP decode,
+immutable Metal texture upload, fit / wheel-zoom-toward-cursor / drag-pan, and an MSL
+twin of the blit shader, plus (folded in from Windows PR 7) the rest of the D5 still
+formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump scrub.
+PR 18 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
+ported): a command bar, a bottom filmstrip, and a full-grid gallery overlay, all driven
+by an FSEvents-backed folder model and a JPEG-512 SQLite thumbnail cache sharing
+Windows' `jpg512.1` spec, lazy-loading thumbnails so a large folder doesn't stall the
+scroll. Real folder navigation (argv, drag-and-drop-in, arrow keys and the rest of
+plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscreen,
+a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
+It does **not** yet play video (PR 19) or handle rating/metadata/RAW-pairing UI. A
+Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
 not yet demonstrated on a quiet GPU runner, and PR 5's and PR 6's own verify
@@ -61,7 +82,7 @@ that apply to what you are doing.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | PR 16 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. No SwiftUI, no decode, no `AVPlayer`. Built only on Apple Silicon / macOS 14+. |
+| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Backspace`/`Home`/`End`/`PageUp`/`PageDown` navigate it, an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a command bar (Fit / 1:1), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). No video, no `AVPlayer`, no rating/metadata/RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -99,26 +120,64 @@ cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
 cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opinion
 ```
 
-### macOS (PR 16 present lab)
+### macOS (PR 16–18)
 
-Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, Xcode command-line tools. Intel
-Macs are out of scope (D9). This path does not build FFmpeg, WinUI, or the
-Windows lab.
+Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, a full Xcode install (Command Line
+Tools alone are not enough — `swift build`'s SwiftUI target and `xcrun metal` both
+need it), Swift 6. Intel Macs are out of scope (D9). This path does not build FFmpeg,
+WinUI, or the Windows lab.
 
 ```sh
-cmake -S . -B build
-cmake --build build --config Release
-./build/bin/mediaviewer_lab
+export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped
+# Format libraries. libheif (+ libde265) and LibRaw are LGPL and must be dynamic
+# (CLAUDE.md, plan/11), so they go in the dynamic triplet; the rest are permissive
+# and static. libheif's default features stay off (its `hevc` feature is x265).
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx giflib libwebp tiff "libavif[core,dav1d]"
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic "libheif[core]" libraw
+cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build
+./build/bin/mediaviewer_lab --open some.jpg
 ./build/bin/frametime --seconds 60 --lab ./build/bin/mediaviewer_lab
 ctest --test-dir build --output-on-failure
 ```
 
-`frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
-Windows DXGI JSON report over is a failed gate, not a pass. The 60 s soak has
-not been run in this checkout — this machine is Windows.
+This has been built and linked for real (not just reviewed) with `cmake` + `ninja` +
+a manifest-mode `vcpkg` install (`imgui[metal-binding]`, `libjpeg-turbo`, `libspng`,
+`lcms`, `sqlite3`, `catch2`) and `swift build` for the SwiftUI chrome — `mv_tests`
+passes (210 assertions, 60 cases). **The macOS SDK matters**: once the filmstrip/gallery
+pulled in SwiftUI's `Lazy*Stack`, linking against an SDK that doesn't match the Swift
+toolchain's own SDK failed with "cannot link directly with 'SwiftUICore'" — use
+`xcrun --show-sdk-path` (or the SDK your installed Xcode ships) rather than an older one
+you may have lying around for a lower deployment target; `CMAKE_OSX_DEPLOYMENT_TARGET`
+stays 14.0 either way. On a real display (2026-09-19) `frametime --seconds 60` passes with the SwiftUI chrome
+on screen (3600 frames, 0 dropped, p99 16.9 ms, idle 0.14 % of one core, 0 presents). Not yet
+exercised by hand: drag-and-drop, copy/move/Trash and slideshow on real folders — do a manual
+pass before trusting them. Thumbnails are cached in `~/Library/Caches/MediaViewer/thumbs`,
+never in the folder being browsed.
 
-`F3` toggles the overlay, `Space` the sweep, `R` resets the measurement, `Esc`
-quits. Idle (`--static`) must park the cursor off the window.
+The whole D5 still set decodes on Mac: JPEG, PNG, BMP, GIF, APNG, TIFF, WebP, ICO, HEIC/HEIF,
+AVIF, and camera RAW (CR2/CR3/NEF/ARW/DNG through LibRaw). Verified on real files (the CC0
+RAW set in `tools/testmedia/raw-manifest.json`, the libheif example HEIC) plus generated
+samples: every format thumbnails and opens on the canvas, and `mv_tests` runs the codec tests
+including the RAW ones ("original bytes unchanged", cancel latency) when
+`tools/testmedia/raw/` and `heif/` are populated (they skip otherwise; `fetch-raw.ps1` is the
+Windows fetcher, the manifests are plain JSON). A JPEG or RAW shows its preview first (JPEG
+DCT 1/4, or the RAW's embedded JPEG: about 100 ms on a 42 MP ARW) and the full decode
+(about 5 s for that ARW) replaces it in place. HEIC always uses the bundled libheif here; an
+ImageIO fast path is a later change to `codec/os_decode_mac.cpp`.
+
+The Mac has a real menu bar (File / View / Go / Window / Help), `?` opens a shortcuts sheet,
+and in the gallery `↑`/`↓`/`W`/`S` move by row, `Enter` opens the selection and `+`/`-` resize the
+thumbnails. Video is **not** on Mac yet: that is PR 19 (VideoToolbox + Core Audio).
+
+`frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
+Windows DXGI JSON report over is a failed gate, not a pass.
+
+`F3` toggles the overlay, `Space` advances the folder (or pauses a running slideshow),
+`R` resets the frame-time measurement, `Esc` closes the gallery / leaves fullscreen or
+slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/gallery,
+`F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
+cursor off the window.
 
 ## Run
 

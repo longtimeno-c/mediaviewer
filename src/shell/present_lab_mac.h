@@ -5,15 +5,20 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 
+#include "canvas/camera.h"
+#include "core/job_system.h"
 #include "core/result.h"
 #include "core/spsc_ring.h"
+#include "gfx/blit_metal.h"
 #include "gfx/device_mac.h"
 #include "gfx/metal_layer.h"
 #include "gfx/metal_pacer.h"
 #include "gfx/present_policy.h"
+#include "image/gpu_image_mac.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -24,6 +29,10 @@ struct mac_lab_options {
   bool gate_exit_code = false;
   bool start_animating = false;
   bool overlay_visible = true;
+  // PR 17: a still to open on start (--open PATH), decoded and uploaded on a
+  // job_system worker, never on the render thread (rule 1, plan/02).
+  std::string open_path;
+  mv::job_system* jobs = nullptr;  // non-owning; started by main_mac.mm
 };
 
 class present_lab_mac {
@@ -39,6 +48,17 @@ class present_lab_mac {
   void publish(const input_snapshot& snapshot) noexcept { input_.publish(snapshot); }
   void wake() noexcept;
 
+  // [any-thread] Loads `path_utf8`, replacing whatever is on screen once
+  // decode+upload finishes. Safe to call repeatedly, including while a
+  // previous call is still decoding: this bumps job_system's view generation
+  // first (core/job_system.h — "every job carries a generation counter tied
+  // to the current view intent; navigating away bumps it"), so a slow decode
+  // a later open_item() has superseded is abandoned rather than clobbering
+  // the newer selection. Only folder navigation should call this — thumbnail
+  // and relist jobs (folder_model_mac) stay on background_generation and are
+  // unaffected by the bump.
+  void open_item(std::string path_utf8) noexcept;
+
   [[nodiscard]] bool finished() const noexcept {
     return finished_.load(std::memory_order_acquire);
   }
@@ -47,6 +67,7 @@ class present_lab_mac {
  private:
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
+  void submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept;
 
   void* view_ = nullptr;
   void* display_link_ = nullptr;
@@ -56,6 +77,17 @@ class present_lab_mac {
   gfx::metal_device device_;
   gfx::metal_layer layer_;
   gfx::metal_pacer pacer_;
+  gfx::blitter_mac blitter_;
+  canvas::camera camera_;
+
+  // Posted by the decode-worker job (submit_image_load), taken over by the
+  // render thread. Never touched from two threads at once: the worker only
+  // ever exchanges nullptr -> pointer, and the render thread only ever
+  // exchanges pointer -> nullptr, so there is no ABA window.
+  std::atomic<image::gpu_image_mac*> pending_image_{nullptr};
+  // Bumped by every open_item(); stamped on the images that open produces.
+  std::atomic<std::uint64_t> item_counter_{0};
+  std::unique_ptr<image::gpu_image_mac> current_image_;
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;
@@ -87,6 +119,15 @@ class present_lab_mac {
   std::uint32_t seen_display_seq_ = 0;
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;
+
+  // PR 17 pan/zoom input. Drag delta is computed from consecutive snapshots
+  // (the snapshot itself carries only the absolute mouse position, same as
+  // the Windows shell) rather than published as a delta.
+  std::uint32_t seen_fit_seq_ = 0;
+  std::uint32_t seen_one_to_one_seq_ = 0;
+  float last_mouse_x_ = 0.0f;
+  float last_mouse_y_ = 0.0f;
+  bool was_dragging_ = false;
 };
 
 }  // namespace mv::shell
