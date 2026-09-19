@@ -98,8 +98,10 @@ add_library(mv::codec ALIAS mv_codec)
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
   src/io/file_mac.cpp
+  src/io/paths_mac.cpp
   src/io/dir.h
   src/io/file.h
+  src/io/paths.h
 )
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE "-framework CoreServices")
 add_library(mv::io ALIAS mv_io)

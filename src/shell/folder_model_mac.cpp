@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "io/file.h"
+#include "io/paths.h"
 
 namespace mv::shell {
 
@@ -21,7 +22,12 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
     state_->generation.fetch_add(1, std::memory_order_acq_rel);
   }
 
-  if (auto opened = state_->thumbs.open(dir_utf8); !opened) return opened;
+  // The cache lives in ~/Library/Caches, not in dir_utf8: the browsed folder
+  // is the user's, and thumbnails written there would appear in its own
+  // listing (and be thumbnailed in turn).
+  auto cache = io::thumb_cache_dir();
+  if (!cache) return err(cache.error());
+  if (auto opened = state_->thumbs.open(cache.value()); !opened) return opened;
   if (auto started = watcher_.start(dir_utf8, &folder_model::watch_callback, this); !started) {
     state_->thumbs.close();
     return started;
