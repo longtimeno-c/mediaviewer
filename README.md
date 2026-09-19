@@ -18,9 +18,9 @@ The Darwin target now configures, builds, and links with a real toolchain (`cmak
 `vcpkg`+`swift build`) and its Catch2 suite passes (210 assertions, 60 cases). It has been run
 on a real Mac with a display (2026-09-19): the 60 s present-loop gate passes with the chrome on
 screen, and the window, menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still
-unproven on Mac: 2000-JPEG scroll timing, drag-and-drop, copy/move/Trash and slideshow on real
-folders, and HEIC/RAW/TIFF/WebP decode (PR 17's folded-in formats) — see
-[macOS](#macos-pr-1618) below.** The Windows present lab still owns
+unproven on Mac: drag-and-drop, copy/move/Trash and slideshow on real folders, animated
+GIF/APNG/WebP playback (they show frame 0 as a still), and the tonal step when a RAW's
+embedded preview is replaced by the full decode — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -128,7 +128,12 @@ need it), Swift 6. Intel Macs are out of scope (D9). This path does not build FF
 WinUI, or the Windows lab.
 
 ```sh
-export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped, arm64-osx triplet installed
+export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped
+# Format libraries. libheif (+ libde265) and LibRaw are LGPL and must be dynamic
+# (CLAUDE.md, plan/11), so they go in the dynamic triplet; the rest are permissive
+# and static. libheif's default features stay off (its `hevc` feature is x265).
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx giflib libwebp tiff "libavif[core,dav1d]"
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic "libheif[core]" libraw
 cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build build
 ./build/bin/mediaviewer_lab --open some.jpg
@@ -149,6 +154,17 @@ on screen (3600 frames, 0 dropped, p99 16.9 ms, idle 0.14 % of one core, 0 prese
 exercised by hand: drag-and-drop, copy/move/Trash and slideshow on real folders — do a manual
 pass before trusting them. Thumbnails are cached in `~/Library/Caches/MediaViewer/thumbs`,
 never in the folder being browsed.
+
+The whole D5 still set decodes on Mac: JPEG, PNG, BMP, GIF, APNG, TIFF, WebP, ICO, HEIC/HEIF,
+AVIF, and camera RAW (CR2/CR3/NEF/ARW/DNG through LibRaw). Verified on real files (the CC0
+RAW set in `tools/testmedia/raw-manifest.json`, the libheif example HEIC) plus generated
+samples: every format thumbnails and opens on the canvas, and `mv_tests` runs the codec tests
+including the RAW ones ("original bytes unchanged", cancel latency) when
+`tools/testmedia/raw/` and `heif/` are populated (they skip otherwise; `fetch-raw.ps1` is the
+Windows fetcher, the manifests are plain JSON). A JPEG or RAW shows its preview first (JPEG
+DCT 1/4, or the RAW's embedded JPEG: about 100 ms on a 42 MP ARW) and the full decode
+(about 5 s for that ARW) replaces it in place. HEIC always uses the bundled libheif here; an
+ImageIO fast path is a later change to `codec/os_decode_mac.cpp`.
 
 The Mac has a real menu bar (File / View / Go / Window / Help), `?` opens a shortcuts sheet,
 and in the gallery `↑`/`↓`/`W`/`S` move by row, `Enter` opens the selection and `+`/`-` resize the

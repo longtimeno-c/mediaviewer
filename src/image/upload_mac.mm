@@ -220,7 +220,9 @@ gpu_image_mac::gpu_image_mac(gpu_image_mac&& other) noexcept
       mip_levels(other.mip_levels),
       format(other.format),
       icc_tagged(other.icc_tagged),
-      mean_luma(other.mean_luma) {
+      mean_luma(other.mean_luma),
+      item_id(other.item_id),
+      preview(other.preview) {
   other.texture = nullptr;
 }
 
@@ -236,6 +238,8 @@ gpu_image_mac& gpu_image_mac::operator=(gpu_image_mac&& other) noexcept {
   format = other.format;
   icc_tagged = other.icc_tagged;
   mean_luma = other.mean_luma;
+  item_id = other.item_id;
+  preview = other.preview;
   other.texture = nullptr;
   return *this;
 }

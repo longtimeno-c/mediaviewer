@@ -14,6 +14,7 @@
 
 #include "codec/decode.h"
 #include "codec/format.h"
+#include "image/pipeline.h"
 #include "image/pipeline_mac.h"
 #include "io/file.h"
 
@@ -248,9 +249,17 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
     }
   }
   if (!decoded) {
-    // PNG/BMP fallback (PR 17's format set). Not decode_bytes(): that
-    // dispatches through codec::decode(), which is not built on Darwin
-    // outside JPEG/PNG/BMP yet (image/pipeline_mac.h).
+    // A RAW's embedded JPEG is the thumbnail source: a full LibRaw demosaic
+    // per file would make a folder of RAWs take minutes to thumbnail.
+    // decode_preview is unsupported for everything but JPEG/RAW, so this is a
+    // no-op for the other formats.
+    if (auto preview = decode_preview(src_bytes, ctx)) {
+      decoded = std::move(preview);
+    } else if (preview.error() == status::cancelled) {
+      return err(status::cancelled);
+    }
+  }
+  if (!decoded) {
     decoded = decode_bytes_mac(src_bytes, ctx);
     if (!decoded) return err(decoded.error());
   }

@@ -9,9 +9,11 @@
 
 namespace mv::image {
 
-// Same field set and semantics as image::gpu_image (image/gpu_image.h);
-// no tile_set/quality/item_key/generation fields yet — PR 17 has no filmstrip
-// or preview→full refinement to track, only a single opened still.
+// Same field set and semantics as image::gpu_image (image/gpu_image.h), minus
+// tiling. `item_id` is the identity for preview → full refinement: the lab
+// stamps every open with a fresh id, so a later image carrying the same id is
+// the same picture arriving at a better resolution (camera_.refine), not a
+// new item (camera_.fit).
 struct gpu_image_mac {
   gpu_image_mac() noexcept = default;
   ~gpu_image_mac();
@@ -35,6 +37,8 @@ struct gpu_image_mac {
   codec::format_family format = codec::format_family::unknown;
   bool icc_tagged = false;
   std::uint8_t mean_luma = 0;
+  std::uint64_t item_id = 0;
+  bool preview = false;
 
   [[nodiscard]] bool valid() const noexcept { return texture != nullptr; }
 };

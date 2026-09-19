@@ -105,7 +105,7 @@
 
   "$comment-v1-pending": {
     "PR 2": "landed: libjpeg-turbo, libspng, lcms",
-    "PR 17 (osx)": "landed: libjpeg-turbo, libspng, lcms on the osx platform too -- PR 17 is PR 2's format set (JPEG/PNG/BMP + LCMS colour) on Metal. No giflib/libwebp/tiff/libheif/libavif/libraw/ffmpeg on osx yet -- those follow with their own PRs.",
+    "PR 17 (osx)": "landed: libjpeg-turbo, libspng, lcms on the osx platform (JPEG/PNG/BMP + LCMS colour on Metal), then the rest of the D5 still set (plan/12 2026-09-17): giflib, libwebp, tiff, libavif[core,dav1d] in the default arm64-osx triplet (static, permissive), and libheif[core] + libraw in the arm64-osx-dynamic triplet (LGPL: dynamic-link only; libde265 comes with libheif). Installed with `vcpkg install --triplet ...` (see README, macOS) rather than listed under dependencies: a manifest entry would build them all in the one default triplet and silently static-link the LGPL ones.",
     "PR 18 (osx, folded-in PR 4)": "landed: sqlite3 on osx -- JPEG-512 thumbnail cache (image/thumb_mac.cpp), same spec jpg512.1 and schema as Windows (plan/12 2026-09-17).",
     "PR 4": "landed: sqlite3. JPEG-512 thumbs in the island; DirectXTex/BC7 waits until a thumb must be GPU-resident (plan/12 2026-09-07).",
     "PR 4-deferred": ["directxtex"],

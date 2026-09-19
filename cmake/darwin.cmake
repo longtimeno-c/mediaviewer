@@ -29,6 +29,8 @@ target_compile_definitions(mv_project_options INTERFACE MV_DARWIN=1)
 add_library(mv_core STATIC
   src/core/job_system_posix.mm
   src/core/trace_posix.cpp
+  src/core/crash_context.cpp
+  src/core/crash_context.h
   src/core/job_system.h
   src/core/result.h
   src/core/spsc_ring.h
@@ -63,11 +65,35 @@ target_link_libraries(mv_gfx PRIVATE
 add_library(mv::gfx ALIAS mv_gfx)
 
 # ---------------------------------------------------------------------------
-# mv_codec — PR 17's format set: JPEG/PNG/BMP only (PR 2 parity). Not
-# codec/decode.cpp or codec/os_decode_win.cpp: those pull in GIF/WebP/TIFF/
-# HEIC/AVIF/RAW decoders and the Windows OS-codec probe, none of which are
-# built on Darwin yet (plan/15 PR 17 scope).
+# mv_codec — the D5 still set, same TUs as the Windows target (plan/12
+# 2026-09-17 folded the PR 7 camera-dump formats into PR 17): JPEG, PNG, BMP,
+# GIF, WebP, TIFF, ICO, HEIC/HEIF, AVIF, RAW, APNG. Only the OS-codec hook
+# differs (os_decode_mac.cpp).
+#
+# Linkage (CLAUDE.md "Licensing", plan/11): libheif, libde265 and LibRaw are
+# dynamic-link only, so they come from vcpkg's arm64-osx-dynamic triplet;
+# giflib, libwebp, libtiff and libavif+dav1d are permissive and stay static
+# in the default arm64-osx triplet. Install once with:
+#   vcpkg install --triplet arm64-osx giflib libwebp tiff "libavif[core,dav1d]"
+#   vcpkg install --triplet arm64-osx-dynamic "libheif[core]" libraw
+# libheif's default features are OFF for the same reason as on Windows: the
+# port's `hevc` feature is x265 encode, which is forbidden.
 # ---------------------------------------------------------------------------
+if(DEFINED _VCPKG_INSTALLED_DIR)
+  set(MV_DYNAMIC_PREFIX_DEFAULT "${_VCPKG_INSTALLED_DIR}/arm64-osx-dynamic")
+else()
+  set(MV_DYNAMIC_PREFIX_DEFAULT "")
+endif()
+set(MV_VCPKG_DYNAMIC_PREFIX "${MV_DYNAMIC_PREFIX_DEFAULT}" CACHE PATH
+  "vcpkg arm64-osx-dynamic install prefix (libheif, libde265, LibRaw)")
+if(NOT MV_VCPKG_DYNAMIC_PREFIX OR NOT IS_DIRECTORY "${MV_VCPKG_DYNAMIC_PREFIX}")
+  message(FATAL_ERROR
+    "arm64-osx-dynamic prefix not found (${MV_VCPKG_DYNAMIC_PREFIX}); install "
+    "libheif[core] and libraw with `vcpkg install --triplet arm64-osx-dynamic`, or set "
+    "MV_VCPKG_DYNAMIC_PREFIX.")
+endif()
+list(APPEND CMAKE_PREFIX_PATH "${MV_VCPKG_DYNAMIC_PREFIX}")
+
 find_package(JPEG REQUIRED)
 find_package(spng CONFIG REQUIRED)
 if(TARGET spng::spng)
@@ -77,17 +103,58 @@ elseif(TARGET spng::spng_static)
 else()
   message(FATAL_ERROR "libspng imported target not found")
 endif()
+find_package(GIF REQUIRED)
+find_package(WebP CONFIG REQUIRED)
+find_package(TIFF REQUIRED)
+find_package(libheif CONFIG REQUIRED)
+if(TARGET libheif::heif)
+  set(MV_HEIF_TARGET libheif::heif)
+elseif(TARGET heif)
+  set(MV_HEIF_TARGET heif)
+else()
+  message(FATAL_ERROR "libheif imported target not found")
+endif()
+find_package(libavif CONFIG REQUIRED)
+if(TARGET avif)
+  set(MV_AVIF_TARGET avif)
+elseif(TARGET libavif::avif)
+  set(MV_AVIF_TARGET libavif::avif)
+else()
+  message(FATAL_ERROR "libavif imported target not found")
+endif()
+# LibRaw's thread-safe raw_r target: decode runs on the job pool.
+find_package(libraw CONFIG REQUIRED)
 
 add_library(mv_codec STATIC
   src/codec/probe.cpp
+  src/codec/decode.cpp
   src/codec/jpeg.cpp
   src/codec/png.cpp
   src/codec/bmp.cpp
+  src/codec/anim.cpp
+  src/codec/anim.h
+  src/codec/apng.cpp
+  src/codec/apng.h
+  src/codec/gif.cpp
+  src/codec/webp.cpp
+  src/codec/tiff.cpp
+  src/codec/ico.cpp
+  src/codec/heif.cpp
+  src/codec/avif.cpp
+  src/codec/raw.cpp
+  src/codec/raw_internal.h
+  src/codec/os_decode_mac.cpp
+  src/codec/os_decode.h
+  src/codec/crash_test_hook.cpp
+  src/codec/crash_test_hook.h
   src/codec/format.h
   src/codec/raster.h
   src/codec/decode.h
 )
-target_link_libraries(mv_codec PUBLIC mv_core PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+target_link_libraries(mv_codec
+  PUBLIC mv_core
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
+          TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r)
 add_library(mv::codec ALIAS mv_codec)
 
 # ---------------------------------------------------------------------------
@@ -118,10 +185,12 @@ find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 add_library(mv_image STATIC
   src/image/colour.cpp
+  src/image/pipeline.cpp
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
   src/image/thumb_mac.cpp
   src/image/colour.h
+  src/image/pipeline.h
   src/image/pipeline_mac.h
   src/image/upload_mac.h
   src/image/gpu_image_mac.h
@@ -263,11 +332,34 @@ if(MV_BUILD_TESTS)
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
     tests/test_browse_index.cpp
+    # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
+    # optional corpora which SKIP when absent (plan/09: no RAW in git).
+    tests/test_probe.cpp
+    tests/test_decode.cpp
+    tests/test_tiff_ico.cpp
+    tests/test_gif_webp.cpp
+    tests/test_heif_avif.cpp
+    tests/test_raw.cpp
+    tests/test_anim.cpp
+    tests/test_colour.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx
     mv_shell
+    mv_codec
+    mv_image
+    JPEG::JPEG
+    ${MV_SPNG_TARGET}
+    GIF::GIF
+    WebP::webp
+    WebP::webpdemux
+    WebP::libwebpmux  # tests only: WebPAnimEncoder builds animated fixtures
+    TIFF::TIFF        # tests only: in-memory TIFF fixtures (tests/fixtures_tiff_ico.h)
+    ${MV_HEIF_TARGET}
+    ${MV_AVIF_TARGET}
+    libraw::raw_r
+    lcms2::lcms2
     Catch2::Catch2WithMain)
   target_include_directories(mv_tests PRIVATE src tools)
   include(Catch)

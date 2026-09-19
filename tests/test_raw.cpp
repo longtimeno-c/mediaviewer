@@ -649,7 +649,9 @@ TEST_CASE("decoding a RAW never modifies the original or writes beside it", "[co
   REQUIRE(full);
 
   CHECK(file_hash(path) == before_hash);
-  CHECK(std::filesystem::last_write_time(path) == before_time);
+  // Parenthesised so Catch does not try to print the time_points: libc++'s
+  // file_time_type has an __int128 rep that has no operator<<.
+  CHECK((std::filesystem::last_write_time(path) == before_time));
   CHECK(dir_listing(dir) == before_list);
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
@@ -713,7 +715,7 @@ TEST_CASE("camera RAW: preview first, full decode replaces it in place, bytes un
   CHECK(corr > 0.85);
 
   CHECK(file_hash(fs_path) == before_hash);
-  CHECK(std::filesystem::last_write_time(fs_path) == before_time);
+  CHECK((std::filesystem::last_write_time(fs_path) == before_time));
   CHECK(dir_listing(fs_path.parent_path()) == before_list);
 }
 

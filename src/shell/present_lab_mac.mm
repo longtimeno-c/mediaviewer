@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab_mac.h"
 
+#include "image/pipeline.h"
+
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
@@ -149,30 +151,71 @@ present_lab_mac::~present_lab_mac() { stop(); }
 // call bumps it again before this finishes -- the user arrowed past this
 // item before it loaded -- ctx.cancelled() catches it below and the result
 // is discarded instead of clobbering the newer selection.
-void present_lab_mac::submit_image_load(std::string path_utf8) noexcept {
+void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept {
   if (path_utf8.empty() || !options_.jobs) return;
 
   void* mtl_device = device_.native_device();
   std::atomic<image::gpu_image_mac*>* pending = &pending_image_;
 
   options_.jobs->submit(
-      [path = std::move(path_utf8), mtl_device, pending](const job_context& ctx) -> status {
-        std::ifstream f(path, std::ios::binary);
+      [this, path = std::move(path_utf8), mtl_device, pending,
+       item_id](const job_context& ctx) -> status {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) return status::io;
-        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                        std::istreambuf_iterator<char>());
-        if (bytes.empty()) return status::io;
+        // One sized read: a byte-at-a-time istreambuf_iterator copy of a
+        // 40 MB RAW cost over a second before decoding even started.
+        const std::streamoff size = f.tellg();
+        if (size <= 0) return status::io;
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+        f.seekg(0);
+        if (!f.read(reinterpret_cast<char*>(bytes.data()), size)) return status::io;
+
+        // Rule 3: first pixel is never the full decode. A JPEG's DCT 1/4 or a
+        // RAW's embedded JPEG goes up first; the full decode then replaces it
+        // as a refinement of the same item (item_id), keeping the view.
+        const double t_start = monotonic_seconds();
+        if (auto preview = image::decode_preview(bytes, &ctx)) {
+          if (ctx.cancelled()) return status::cancelled;
+          if (auto up = image::upload(mtl_device, preview.value(), &ctx)) {
+            auto* first = new image::gpu_image_mac(std::move(up).value());
+            first->item_id = item_id;
+            first->preview = true;
+            delete pending->exchange(first);
+            // The render thread parks when idle (0 % GPU on a still); a load
+            // that outlasts the post-navigation activity window would
+            // otherwise sit in `pending` until the next input.
+            wake();
+            MV_LOG_INFO("open: preview %ux%u ready in %.0f ms", preview.value().width,
+                        preview.value().height, (monotonic_seconds() - t_start) * 1000.0);
+          } else if (up.error() == status::cancelled) {
+            return status::cancelled;
+          } else {
+            MV_LOG_WARN("open: preview upload failed (%s)", status_name(up.error()));
+          }
+        } else if (preview.error() == status::cancelled) {
+          return status::cancelled;
+        } else {
+          // Expected for formats with no cheap first pixel (PNG, HEIC, ...).
+        }
 
         auto decoded = image::decode_bytes_mac(bytes, &ctx);
-        if (!decoded) return decoded.error();
+        if (!decoded) {
+          if (decoded.error() != status::cancelled)
+            MV_LOG_WARN("open: decode failed (%s)", status_name(decoded.error()));
+          return decoded.error();
+        }
         auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
         if (!uploaded) return uploaded.error();
+        MV_LOG_INFO("open: full %ux%u ready in %.0f ms", decoded.value().width,
+                    decoded.value().height, (monotonic_seconds() - t_start) * 1000.0);
 
         if (ctx.cancelled()) return status::cancelled;
 
         auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+        img->item_id = item_id;
         image::gpu_image_mac* old = pending->exchange(img);
         delete old;  // a load superseded before the render thread took it over
+        wake();
         return status::ok;
       });
 }
@@ -184,7 +227,7 @@ void present_lab_mac::open_item(std::string path_utf8) noexcept {
   // relist/thumb jobs, which stay pinned to background_generation and are
   // never cancelled by this.
   options_.jobs->bump_generation();
-  submit_image_load(std::move(path_utf8));
+  submit_image_load(std::move(path_utf8), ++item_counter_);
 }
 
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
@@ -371,12 +414,25 @@ void present_lab_mac::render_thread_main() noexcept {
         // PR 17: a background job finished decoding --open. Take it over and
         // fit it once; a resize while in fit mode re-fits below.
         if (image::gpu_image_mac* loaded = pending_image_.exchange(nullptr)) {
+          // Same item, better pixels (preview -> full): keep the view as a
+          // fraction of the image so nothing pops, refits or snaps. A new
+          // item resets and fits.
+          const bool refinement = current_image_ && loaded->item_id != 0 &&
+                                  current_image_->item_id == loaded->item_id;
+          const auto old_w = current_image_ ? static_cast<float>(current_image_->width) : 0.0f;
+          const auto old_h = current_image_ ? static_cast<float>(current_image_->height) : 0.0f;
           current_image_.reset(loaded);
-          camera_.reset();
-          camera_.fit(static_cast<float>(current_image_->width),
-                     static_cast<float>(current_image_->height),
-                     static_cast<float>(snapshot.width), usable_window_h(snapshot),
-                     /*immediate=*/true);
+          if (refinement) {
+            camera_.refine(old_w, old_h, static_cast<float>(current_image_->width),
+                           static_cast<float>(current_image_->height),
+                           static_cast<float>(snapshot.width), usable_window_h(snapshot));
+          } else {
+            camera_.reset();
+            camera_.fit(static_cast<float>(current_image_->width),
+                        static_cast<float>(current_image_->height),
+                        static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                        /*immediate=*/true);
+          }
           redraw = true;
           // A still popping in mid-measurement changes what's on screen just
           // like a resize/toggle/reset does -- same invalidation those

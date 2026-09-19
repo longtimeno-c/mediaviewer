@@ -67,7 +67,7 @@ class present_lab_mac {
  private:
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
-  void submit_image_load(std::string path_utf8) noexcept;
+  void submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept;
 
   void* view_ = nullptr;
   void* display_link_ = nullptr;
@@ -85,6 +85,8 @@ class present_lab_mac {
   // ever exchanges nullptr -> pointer, and the render thread only ever
   // exchanges pointer -> nullptr, so there is no ABA window.
   std::atomic<image::gpu_image_mac*> pending_image_{nullptr};
+  // Bumped by every open_item(); stamped on the images that open produces.
+  std::atomic<std::uint64_t> item_counter_{0};
   std::unique_ptr<image::gpu_image_mac> current_image_;
 
   publish_slot<input_snapshot> input_;
