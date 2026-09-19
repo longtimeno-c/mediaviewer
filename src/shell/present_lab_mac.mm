@@ -532,7 +532,11 @@ void present_lab_mac::render_thread_main() noexcept {
 
         if (overlay_visible_) {
           const auto stats = pacer_.stats();
-          ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
+          // Below the SwiftUI command bar, which covers the canvas's top
+          // chrome_height_px (both are backing pixels); a fixed (12, 12)
+          // hid the first line under it (found on real hardware, 2026-09-19).
+          ImGui::SetNextWindowPos(ImVec2(12.0f, static_cast<float>(snapshot.chrome_height_px) + 12.0f),
+                                  ImGuiCond_Always);
           ImGui::SetNextWindowBgAlpha(0.72f);
           ImGui::Begin("##f3", nullptr,
                        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
