@@ -110,8 +110,15 @@ public static partial class IslandHost
         public const int BackgroundMask = 3 << 4;
         // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
         public const int UpdateAutoCheck = 1 << 8;
+        // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).
+        // Consent, default off. Asked records that the first-run screen has
+        // been answered - either way. Asked is not consent (plan/13 Part 3).
+        public const int Telemetry = 1 << 9;
+        public const int TelemetryAsked = 1 << 10;
     }
 
+    // Telemetry is absent from this initial word on purpose: until native
+    // pushes the real settings in, the chrome assumes off (plan/13).
     private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -395,6 +402,11 @@ public static partial class IslandHost
             _settingFlags = args.Flags;
             RefreshSettingsMenu();
             RefreshSettingsScreen();
+            // PR 8: the telemetry first-run screen, once, when native reports
+            // the choice has never been made (IslandHost.Telemetry.cs). It
+            // rides this push rather than the bar build so a fresh profile
+            // sees it on the first launch, not the second.
+            if (_telemetryAnchor is not null) MaybeShowConsent(_telemetryAnchor);
             return 0;
         }
         catch (Exception ex)
@@ -1083,6 +1095,9 @@ public static partial class IslandHost
             if (aboutBtn is not null) FlyoutBase.ShowAttachedFlyout(aboutBtn);
         });
         AttachBarFlyout(aboutBtn, aboutFlyout);
+        // The first-run telemetry screen hangs off About, which is where the
+        // privacy note and the licence already live.
+        _telemetryAnchor = aboutBtn;
 
         var row = new StackPanel
         {
