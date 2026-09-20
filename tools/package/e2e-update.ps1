@@ -59,6 +59,15 @@ function Stage-Payload($version, [switch]$Broken) {
     dotnet publish (Join-Path $repo "src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj") --nologo -c Release `
         -r win-x64 --no-self-contained -p:Platform=x64 -p:MvUpdaterDev=true -o $dir | Out-Null
     if ($LASTEXITCODE) { throw "dev chrome publish failed" }
+    # Same exclusion build-release.ps1 applies, and for the same reason
+    # (plan/13: do not ship Windows App SDK AI / ONNX / DirectML / WebView2).
+    # It matters twice over here: this check must exercise the payload that
+    # actually ships, and without it the run packs three versions of an extra
+    # 43 MB each, plus Velopack's temp copies - which is how this script first
+    # died, on "There is not enough space on the disk: onnxruntime.dll".
+    Get-ChildItem $dir -Recurse -File |
+        Where-Object { $_.Name -match '(?i)^(DirectML|onnxruntime|Microsoft\.ML\.OnnxRuntime|Microsoft\.Web\.WebView2|Microsoft\.Windows\.AI\.|Microsoft\.Graphics\.Imaging)' } |
+        Remove-Item -Force
     if ($Broken) {
         # A build that never finishes starting: the chrome assembly is garbage.
         [IO.File]::WriteAllBytes((Join-Path $dir "MediaViewer.Chrome.dll"), [byte[]](1..4096 | ForEach-Object { 0x5A }))
