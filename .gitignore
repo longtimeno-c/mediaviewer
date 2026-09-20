@@ -1,6 +1,10 @@
 # Build output
 build/
 build-*/
+# PR 8 release artefacts: the payload tree, the Velopack release set and the
+# wizard. Hundreds of MB, reproducible from a build, and a release belongs on a
+# tag rather than in the tree.
+dist/
 out/
 [Bb]in/
 [Oo]bj/
