@@ -116,8 +116,54 @@ if(MV_ASAN)
       _DISABLE_VECTOR_ANNOTATION
       _DISABLE_STRING_ANNOTATION
       _DISABLE_OPTIONAL_ANNOTATION)
+
+    # The ASan runtime is a DLL, and it ships beside cl.exe and nowhere else:
+    # "These files are never placed in C:\Windows\System32 ... These locations
+    # are on the path in debugging sessions and in Visual Studio developer
+    # command prompts."
+    # https://learn.microsoft.com/cpp/sanitizers/asan-known-issues
+    #
+    # Nothing copies it for us. vcpkg's applocal deploy only knows DLLs from the
+    # vcpkg tree, and CMake does not know about it at all. So an ASan build left
+    # to itself produces executables that run only inside a developer prompt.
+    #
+    # That is exactly how the msvc-asan CI leg failed from the day it was added.
+    # `catch_discover_tests` enumerates by running the test exe as an MSBuild
+    # POST_BUILD step, and MSBuild puts VC\Tools\MSVC\<ver>\bin\HostX64\x64
+    # first on PATH -- so discovery found all 426 tests in under a second. The
+    # `ctest` step is a bare shell with no developer environment, so every one
+    # of those 426 processes died in the loader instead. A loader failure is a
+    # hard error, not a message on stderr: the process sits on it until killed,
+    # which ctest reports as "***Timeout 300.02 sec" with no output at all --
+    # no stack, no exit code, nothing to read. Copying the DLL beside the
+    # binaries fixes it for ctest, for a double-click, and for anyone running
+    # the exe by hand, which is why it belongs here and not in a CI `env:` line.
+    get_filename_component(MV_MSVC_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    file(GLOB MV_ASAN_RUNTIME "${MV_MSVC_BIN}/clang_rt.asan*dynamic-*.dll")
+    if(NOT MV_ASAN_RUNTIME)
+      message(FATAL_ERROR
+        "MV_ASAN=ON but no ASan runtime DLL was found next to the compiler:\n"
+        "  ${MV_MSVC_BIN}\n"
+        "Install the \"C++ AddressSanitizer\" component "
+        "(Microsoft.VisualStudio.Component.VC.ASAN) in the Visual Studio "
+        "Installer. Configuring without it yields a build whose every test "
+        "hangs for the full timeout with nothing in the log.")
+    endif()
+    message(STATUS "ASan runtime: ${MV_ASAN_RUNTIME}")
   endif()
 endif()
+
+# Put the ASan runtime beside a target's executable. A no-op unless MV_ASAN.
+# Every executable needs it, including the ones that only load an instrumented
+# DLL, because the runtime is resolved by the loader per process.
+function(mv_asan_runtime_beside target)
+  foreach(dll IN LISTS MV_ASAN_RUNTIME)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${dll}" "$<TARGET_FILE_DIR:${target}>"
+      COMMENT "Copy the ASan runtime beside ${target}")
+  endforeach()
+endfunction()
 
 # ---------------------------------------------------------------------------
 # mv_core — arena, job system, result<T>, logging, ETW
@@ -433,6 +479,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
 set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
 if(EXISTS "${MV_CRASHPAD_TOOLS}/crashpad_handler.exe")
@@ -457,6 +504,7 @@ add_executable(mv_minidump_scrub
 )
 target_link_libraries(mv_minidump_scrub PRIVATE mv_project_options)
 target_include_directories(mv_minidump_scrub PRIVATE src)
+mv_asan_runtime_beside(mv_minidump_scrub)
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -510,6 +558,7 @@ add_executable(mv_frametime
 target_link_libraries(mv_frametime PRIVATE mv_core)
 target_include_directories(mv_frametime PRIVATE src)
 set_target_properties(mv_frametime PROPERTIES OUTPUT_NAME "frametime")
+mv_asan_runtime_beside(mv_frametime)
 add_dependencies(mv_frametime mediaviewer_lab)
 if(TARGET mv_chrome)
   add_dependencies(mv_frametime mv_chrome)
@@ -602,6 +651,9 @@ if(MV_BUILD_TESTS)
     uuid
     mv_io)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+  # Before catch_discover_tests below: discovery runs this exe, and it must not
+  # have to borrow MSBuild's PATH to start.
+  mv_asan_runtime_beside(mv_tests)
 
   # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
   # build while another session holds that file.
@@ -613,6 +665,7 @@ if(MV_BUILD_TESTS)
   )
   target_link_libraries(mv_pr16_tests PRIVATE mv_gfx Catch2::Catch2WithMain)
   target_include_directories(mv_pr16_tests PRIVATE src tools)
+  mv_asan_runtime_beside(mv_pr16_tests)
 
   include(Catch)
   # A Catch2 SKIP exits 0, so ctest counted every corpus-gated video test as
@@ -649,6 +702,8 @@ if(MV_BUILD_TESTS)
   add_executable(mv_swapchain_recovery tests/swapchain_recovery.cpp)
   target_link_libraries(mv_swapchain_recovery PRIVATE mv_gfx)
   target_link_libraries(mv_frametime_fixture PRIVATE mv_project_options)
+  mv_asan_runtime_beside(mv_frametime_fixture)
+  mv_asan_runtime_beside(mv_swapchain_recovery)
   add_test(NAME frametime_harness COMMAND powershell -NoProfile -ExecutionPolicy Bypass
     -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frametime.ps1"
     -Harness $<TARGET_FILE:mv_frametime> -Fixture $<TARGET_FILE:mv_frametime_fixture>
@@ -671,6 +726,7 @@ if(MV_BUILD_TESTS AND NOT MV_FUZZ)
   add_executable(mv_broken_tests tests/test_broken_corpus.cpp tests/crt_no_dialogs.cpp)
   target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
   target_include_directories(mv_broken_tests PRIVATE src)
+  mv_asan_runtime_beside(mv_broken_tests)
   target_compile_definitions(mv_broken_tests PRIVATE
     MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   catch_discover_tests(mv_broken_tests TEST_PREFIX "broken_"

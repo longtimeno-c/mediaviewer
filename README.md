@@ -99,6 +99,14 @@ cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
 cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opinion
 ```
 
+`-DMV_ASAN=ON` needs the **C++ AddressSanitizer** component
+(`Microsoft.VisualStudio.Component.VC.ASAN`) in the Visual Studio Installer — the
+ASan runtime is a DLL that ships beside `cl.exe` and nowhere else. The build
+copies it next to every executable, so `ctest` and a double-click both work
+outside a developer prompt. Configure says so and stops if the component is
+missing, rather than producing a tree whose every test hangs for its full
+timeout with nothing in the log.
+
 ### macOS (PR 16 present lab)
 
 Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, Xcode command-line tools. Intel
