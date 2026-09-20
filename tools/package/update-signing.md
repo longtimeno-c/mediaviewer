@@ -57,3 +57,85 @@ committed. The local end-to-end check (`tools/package/e2e-update.ps1`) needs a
 A normal Debug or Release build compiles all three out. The signature check is
 the same code path for the local feed as for GitHub, so neither variable is an
 unsigned bypass.
+
+---
+
+# Authenticode: the wizard, the binaries and the bundle (PR 8)
+
+The Ed25519 key above signs the update *manifest*. It says nothing about
+whether Windows trusts the executables. That is Authenticode, it is a separate
+credential, and without it every early user gets a SmartScreen block on first
+run — which PR 8's verify line calls out by name.
+
+**Use Azure Trusted Signing** (plan/13 "Signing"): far cheaper than a
+traditional EV certificate, and it builds SmartScreen reputation the same way.
+
+## What must be signed
+
+| Artefact | Signed by |
+|---|---|
+| Every `.exe` and `.dll` in the payload | `vpk pack`, from `--azureTrustedSignFile` |
+| `MediaViewer-win-Setup.exe` (the Velopack bundle) | `vpk pack`, same flag |
+| `Update.exe` | `vpk pack`, same flag |
+| `MediaViewer-<version>-Setup.exe` (the Inno wizard) | a separate `signtool` step, after ISCC |
+| `mediaviewer-manifest.json` | the Ed25519 key above — *not* Authenticode |
+
+The wizard is signed after ISCC rather than through Inno's `SignTool=`
+directive. Two reasons: the wizard wraps the already-signed Velopack bundle, so
+it has to be built last anyway, and a release pipeline should hold the signing
+credential for one step rather than for the whole compile.
+
+## The seam
+
+`tools/package/build-release.ps1` takes **one** of:
+
+* `-SigningMetadata <path to trusted-signing metadata.json>` — Azure Trusted
+  Signing, the intended production path;
+* `-SignParams "<signtool arguments>"` — an EV certificate or a local test
+  certificate.
+
+Given neither, it prints an UNSIGNED BUILD warning three lines tall and carries
+on, because a local packaging change must be testable without a credential. It
+never fabricates a certificate and never quietly skips the step: an unsigned
+artefact says so on the last line of its own output.
+
+`metadata.json` for Azure Trusted Signing looks like this. It contains no
+secret — authentication is the Azure identity of whoever runs the build — so it
+may live in the pipeline, but not in this repo, because the endpoint and
+account names are deployment details rather than source:
+
+```json
+{
+  "Endpoint": "https://eus.codesigning.azure.net/",
+  "CodeSigningAccountName": "<account>",
+  "CertificateProfileName": "<profile>",
+  "CorrelationId": "mediaviewer-<version>"
+}
+```
+
+## Signing the wizard
+
+```powershell
+signtool sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 `
+  /dlib <Azure.CodeSigning.Dlib.dll> /dmdf <metadata.json> `
+  dist\MediaViewer-<version>-Setup.exe
+```
+
+Timestamping is not optional. Without `/tr`, every signature expires with the
+certificate and installers already in the wild start failing.
+
+## What a human still has to do once
+
+1. Create the Azure Trusted Signing account, certificate profile, and an
+   identity the release pipeline can use. This needs a verified organisation or
+   individual; it is not a same-day step.
+2. Generate the Ed25519 release keypair (above) and paste the public half into
+   `UpdateKeys.cs`.
+3. Store the Ed25519 private key and the Azure identity in the release secret
+   store.
+
+Until (1) and (2) are done, `build-release.ps1` produces an artefact that is
+useful for testing the wizard and the update mechanics on a VM, and is not
+publishable: the binaries trip SmartScreen, and the manifest is rejected by
+every client because the pinned key is still the all-zero placeholder. That is
+the intended failure mode — fail closed, loudly.

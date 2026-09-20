@@ -103,3 +103,37 @@ TEST_CASE("update guard: restart arguments carry the view", "[update]") {
   const std::wstring blob = join_arguments({L"a", L"bc"});
   CHECK(blob == std::wstring(L"a\0bc\0", 5));
 }
+
+// plan/10 PR 8 verify: "Uninstall from Apps & features removes the shortcuts
+// and install directory." Velopack writes a second entry that would remove the
+// directory WITHOUT the wizard's shortcuts (and, from PR 15, without the
+// ProgId registrations), so the host deletes it after every update. It must
+// only ever delete an entry that points at this install's own Update.exe.
+TEST_CASE("update guard: only Velopack's own uninstall entry is claimed", "[update]") {
+  const std::wstring update_exe = LR"(C:\Users\a\AppData\Local\MediaViewer\Update.exe)";
+
+  CHECK(is_velopack_uninstall_string(L"\"" + update_exe + L"\" --uninstall", update_exe));
+  CHECK(is_velopack_uninstall_string(update_exe + L" --uninstall", update_exe));
+  // Case-insensitive, like the filesystem.
+  CHECK(is_velopack_uninstall_string(
+      LR"("c:\users\a\appdata\local\mediaviewer\update.exe" --uninstall)", update_exe));
+  // No arguments at all is still ours.
+  CHECK(is_velopack_uninstall_string(L"\"" + update_exe + L"\"", update_exe));
+
+  // The wizard's own entry: left alone, or the app becomes ununinstallable.
+  CHECK_FALSE(is_velopack_uninstall_string(
+      LR"("C:\Users\a\AppData\Local\MediaViewer\unins000.exe" /SILENT)", update_exe));
+  // Another install of the same app elsewhere.
+  CHECK_FALSE(is_velopack_uninstall_string(LR"("D:\Other\MediaViewer\Update.exe" --uninstall)",
+                                           update_exe));
+  // A different product that happens to use the key name.
+  CHECK_FALSE(is_velopack_uninstall_string(LR"("C:\Program Files\Thing\unins.exe")", update_exe));
+  // Malformed input must not match anything.
+  CHECK_FALSE(is_velopack_uninstall_string(L"\"" + update_exe, update_exe));
+  CHECK_FALSE(is_velopack_uninstall_string(L"", update_exe));
+  CHECK_FALSE(is_velopack_uninstall_string(L"\"" + update_exe + L"\" --uninstall", L""));
+
+  // A dev build is not an install: nothing is touched.
+  install_layout dev;
+  CHECK_FALSE(remove_velopack_uninstall_entry(dev));
+}

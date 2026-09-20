@@ -296,4 +296,64 @@ void confirm_started(const install_layout& layout) noexcept {
   }
 }
 
+namespace {
+
+[[nodiscard]] bool iequals(std::wstring_view a, std::wstring_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (::towlower(a[i]) != ::towlower(b[i])) return false;
+  }
+  return true;
+}
+
+constexpr const wchar_t* kUninstallKey =
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MediaViewer";
+
+}  // namespace
+
+bool is_velopack_uninstall_string(std::wstring_view uninstall_string,
+                                  std::wstring_view update_exe) noexcept {
+  if (uninstall_string.empty() || update_exe.empty()) return false;
+  // Velopack writes it quoted: "<root>\Update.exe" --uninstall
+  std::wstring_view s = uninstall_string;
+  if (s.front() == L'"') {
+    s.remove_prefix(1);
+    const std::size_t close = s.find(L'"');
+    if (close == std::wstring_view::npos) return false;
+    s = s.substr(0, close);
+  } else {
+    const std::size_t space = s.find(L' ');
+    if (space != std::wstring_view::npos) s = s.substr(0, space);
+  }
+  return iequals(s, update_exe);
+}
+
+bool remove_velopack_uninstall_entry(const install_layout& layout) noexcept {
+  if (!layout.installed() || layout.update_exe.empty()) return false;
+  try {
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(HKEY_CURRENT_USER, kUninstallKey, 0, KEY_QUERY_VALUE, &key) !=
+        ERROR_SUCCESS) {
+      return false;
+    }
+    wchar_t value[1024] = {};
+    DWORD bytes = sizeof(value) - sizeof(wchar_t);
+    DWORD type = 0;
+    const LSTATUS read = ::RegQueryValueExW(key, L"UninstallString", nullptr, &type,
+                                            reinterpret_cast<BYTE*>(value), &bytes);
+    ::RegCloseKey(key);
+    if (read != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return false;
+    if (!is_velopack_uninstall_string(value, layout.update_exe)) return false;
+
+    if (::RegDeleteTreeW(HKEY_CURRENT_USER, kUninstallKey) != ERROR_SUCCESS) {
+      MV_LOG_WARN("updater: could not remove Velopack's duplicate uninstall entry");
+      return false;
+    }
+    MV_LOG_INFO("updater: removed Velopack's duplicate Apps & features entry");
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 }  // namespace mv::shell::update

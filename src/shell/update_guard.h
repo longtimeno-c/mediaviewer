@@ -106,4 +106,26 @@ struct install_layout {
 // thread.
 void confirm_started(const install_layout& layout) noexcept;
 
+// Velopack registers its own Apps & features entry (HKCU ...\Uninstall\
+// MediaViewer -> Update.exe --uninstall) every time it applies a package. The
+// Inno wizard owns uninstall for this app (tools/package/mediaviewer.iss), so
+// that second entry is a half-uninstall waiting to happen: it takes the tree
+// without the wizard's shortcuts, and once PR 15 adds ProgId and handler
+// registrations, without those either.
+//
+// The wizard deletes the key after the first install; this deletes it again
+// after an update, which is the only other moment Velopack writes it.
+// Idempotent; a no-op when the key is absent or this is not an install. A
+// small registry delete: any thread, but not the UI thread (rule 1).
+//
+// True when a key was actually removed.
+bool remove_velopack_uninstall_entry(const install_layout& layout) noexcept;
+
+// Pure. The entry is Velopack's (and therefore ours to delete) only when its
+// UninstallString names the Update.exe of THIS install. Anything else is the
+// wizard's own entry, or another product that happens to share the name, and
+// is left alone.
+[[nodiscard]] bool is_velopack_uninstall_string(std::wstring_view uninstall_string,
+                                                std::wstring_view update_exe) noexcept;
+
 }  // namespace mv::shell::update

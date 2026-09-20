@@ -46,6 +46,7 @@
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
+#include "shell/telemetry.h"
 #include "shell/update_guard.h"
 #include "shell/av_soak.h"
 #include "shell/crash_reporter_win.h"
@@ -185,8 +186,13 @@ void confirm_update_start_async() noexcept {
   if (g_start_confirmed || !g_install.installed()) return;
   g_start_confirmed = true;
   try {
-    // A small file write: off the UI thread (rule 1).
-    std::thread([layout = g_install] { mv::shell::update::confirm_started(layout); }).detach();
+    // A small file write and a registry delete: off the UI thread (rule 1).
+    // The uninstall-entry sweep rides here because this is the first moment
+    // after an update at which Velopack has finished writing its own entry.
+    std::thread([layout = g_install] {
+      mv::shell::update::confirm_started(layout);
+      (void)mv::shell::update::remove_velopack_uninstall_entry(layout);
+    }).detach();
   } catch (...) {
   }
 }
@@ -200,11 +206,18 @@ void publish(app_state* app) noexcept {
   app->lab.wake();
 }
 
-// The settings word the island sees: view_settings plus [update] auto_check.
-// One place, so the update switch rides the existing ApplySettings push.
+// The settings word the island sees: view_settings plus [update] auto_check
+// plus the two [telemetry] bits. One place, so both switches ride the existing
+// ApplySettings push.
 std::int32_t chrome_flags(const app_state* app) noexcept {
   const bool auto_check = mv::shell::app_settings().get_int("update", "auto_check", 1) != 0;
-  return app->settings.flags() | (auto_check ? mv::shell::update::kChromeFlagUpdateAutoCheck : 0);
+  std::int32_t flags = app->settings.flags();
+  if (auto_check) flags |= mv::shell::update::kChromeFlagUpdateAutoCheck;
+  // Default off, and the island shows the first-run screen exactly while
+  // `asked` is clear (plan/13 Part 3).
+  if (mv::shell::telemetry::enabled()) flags |= mv::shell::telemetry::kChromeFlagTelemetry;
+  if (mv::shell::telemetry::asked()) flags |= mv::shell::telemetry::kChromeFlagTelemetryAsked;
+  return flags;
 }
 
 std::string utf8_from_wide(std::wstring_view wide) {
@@ -745,6 +758,13 @@ void chrome_on_command(void* ctx, int command, float arg) {
       mv::shell::app_settings().set_int(
           "update", "auto_check",
           (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdateAutoCheck) != 0 ? 1 : 0);
+      // Telemetry only ever changes through an explicit answer: the first-run
+      // screen, or the Settings row. Both arrive here with the Asked bit set,
+      // and a word without it leaves consent exactly as it was (plan/13).
+      if ((static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetryAsked) != 0) {
+        mv::shell::telemetry::set_enabled(
+            (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
+      }
       app->input.sticky_zoom = app->settings.sticky_zoom;
       app->input.background = app->settings.background;
       app->chrome.apply_settings(chrome_flags(app));
