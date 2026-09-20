@@ -95,19 +95,18 @@ Name: "startmenu"; Description: "Create a Start Menu shortcut"; GroupDescription
 Name: "desktopicon"; Description: "Create a Desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Files]
-; Extracted to {tmp} and run; it is not part of the installed tree.
-Source: "{#MvPayloadSetup}"; DestDir: "{tmp}"; DestName: "velopack-setup.exe"; Flags: deleteafterinstall ignoreversion
-; The licence texts live beside the app too, so About and the uninstaller can
-; point at a local copy (plan/11 - the offer has to survive going offline).
-Source: "{#MvRepoRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#MvRepoRoot}\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
+; `dontcopy`: the bundle is extracted and run by [Code] BEFORE Inno lays
+; anything down. Velopack's --installto CLEARS the directory it is given, so
+; anything the wizard writes first - including its own unins000.exe - is
+; deleted, leaving an Apps & features entry that points at a file which no
+; longer exists. Measured on vpk 1.2.0, not assumed.
+;
+; The licence texts are not installed to {app} either: the payload already
+; carries LICENSE and THIRD-PARTY.md into current\, which is where About reads
+; them from, and a second copy at {app} would be the one that goes stale.
+Source: "{#MvPayloadSetup}"; Flags: dontcopy
 
 [Run]
-; Velopack writes the versioned layout. --silent answers its own prompts; it
-; shows no UI of its own, so the wizard's progress page stays in front.
-Filename: "{tmp}\velopack-setup.exe"; Parameters: "--silent --installto ""{app}"""; \
-  StatusMsg: "Installing MediaViewer..."; Flags: waituntilterminated runhidden
-
 ; Finish page. "Launch" is the primary checkbox; GitHub and Licence are the two
 ; secondary links. Nothing here is pre-ticked except Launch, and nothing opens
 ; a browser unless the user asks for it (plan/13: do not auto-open the repo).
@@ -115,7 +114,7 @@ Filename: "{app}\MediaViewer.exe"; Description: "Launch {#MvAppName}"; \
   Flags: nowait postinstall skipifsilent
 Filename: "{#MvRepoUrl}"; Description: "Visit the project on GitHub"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
-Filename: "{app}\LICENSE"; Description: "Read the licence (GPL-2.0-or-later)"; \
+Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-2.0-or-later)"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
 
 [Icons]
@@ -130,13 +129,29 @@ Name: "{userdesktop}\{#MvAppName}"; Filename: "{app}\MediaViewer.exe"; \
   IconFilename: "{app}\MediaViewer.exe"; Tasks: desktopicon
 
 [UninstallDelete]
-; Velopack's uninstall clears its own tree; these are the wizard's own files
-; plus anything an update left behind (plan/13: "including leftover app-*
-; folders"). The directory itself goes last.
+; The whole Velopack layout. Inno removes what it installed by itself, and it
+; installed NONE of this: the payload, the stub and Update.exe were written by
+; the bundle, so without these lines the uninstaller leaves MediaViewer.exe and
+; Update.exe behind and the directory cannot be removed. Measured - "dirGone
+; False" with only the folders listed.
+;
+; plan/13 asks for the install directory "including leftover app-* folders",
+; which is the shape a half-applied update leaves.
+;
+; Entries are enumerated rather than globbing {app}\* because the user may have
+; pointed the Location page at a directory that is not exclusively ours.
 Type: filesandordirs; Name: "{app}\packages"
 Type: filesandordirs; Name: "{app}\current"
 Type: filesandordirs; Name: "{app}\updater"
 Type: filesandordirs; Name: "{app}\staging"
+Type: filesandordirs; Name: "{app}\app-*"
+Type: filesandordirs; Name: "{app}\telemetry"
+Type: files; Name: "{app}\MediaViewer.exe"
+Type: files; Name: "{app}\Update.exe"
+Type: files; Name: "{app}\sq.version"
+Type: files; Name: "{app}\*.log"
+Type: files; Name: "{app}\settings.ini"
+; Only if nothing the user put there remains.
 Type: dirifempty; Name: "{app}"
 
 [Code]
@@ -154,27 +169,58 @@ begin
     RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, VelopackUninstallKey);
 end;
 
+(* Lay the Velopack tree down FIRST, in ssInstall, which runs before Inno
+   copies its own files, creates the shortcuts, or writes unins000.exe.
+   --installto CLEARS its target directory, so this has to be the first thing
+   that touches the install directory - otherwise the wizard deletes its own
+   uninstaller and leaves an Apps & features entry pointing at nothing.
+   --silent shows no UI of its own, so the progress page stays in front.
+
+   A Pascal brace comment is not used here on purpose: an Inno constant in
+   braces inside one would close the comment early. *)
+procedure InstallPayload;
+var
+  Bundle: String;
+  ResultCode: Integer;
+begin
+  Bundle := ExpandConstant('{tmp}\{#ExtractFileName(MvPayloadSetup)}');
+  ExtractTemporaryFile('{#ExtractFileName(MvPayloadSetup)}');
+  if not Exec(Bundle, '--silent --installto "' + ExpandConstant('{app}') + '"',
+              '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Could not start the MediaViewer payload installer.');
+  if ResultCode <> 0 then
+    RaiseException('The MediaViewer payload installer failed with code '
+                   + IntToStr(ResultCode) + '.');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  { ssInstall fires before any file is copied. }
+  if CurStep = ssInstall then
+    InstallPayload;
   if CurStep = ssPostInstall then
     RemoveVelopackUninstallEntry;
 end;
 
-{ Uninstall: hand the tree to Update.exe first, so Velopack removes the
-  shortcuts and registrations it created, then let [UninstallDelete] sweep up
-  whatever a failed or partial update left. When PR 15 adds ProgId and handler
-  registrations, they are removed HERE, before the tree goes - plan/10: "an
-  update that leaves a zombie association is a failed uninstall". }
+(* Uninstall.
+
+   Update.exe --uninstall is deliberately NOT called. It would remove the
+   registry key this wizard already owns and the shortcuts Velopack was told
+   not to create (--shortcuts None), so it has nothing left to do here - but it
+   detaches a cleanup process that races Inno's own directory removal. Measured:
+   with it, the uninstaller logs "Failed to delete directory (145)" and exits 1
+   while Velopack finishes the job a second later. The tree comes out either
+   way, but an uninstaller that reports failure on success is one users retry.
+
+   So: [UninstallDelete] takes the versioned layout and anything a failed or
+   partial update left, and this hook removes the duplicate registry entry if
+   an update put it back since install.
+
+   When PR 15 adds ProgId and handler registrations, they are removed HERE,
+   before the tree goes - plan/10: "an update that leaves a zombie association
+   is a failed uninstall". *)
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  UpdateExe: String;
-  ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
-  begin
-    UpdateExe := ExpandConstant('{app}\Update.exe');
-    if FileExists(UpdateExe) then
-      Exec(UpdateExe, '--silent uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     RemoveVelopackUninstallEntry;
-  end;
 end;
