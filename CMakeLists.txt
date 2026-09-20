@@ -508,7 +508,9 @@ add_executable(mv_frametime
   tools/frametime/main.cpp
 )
 target_link_libraries(mv_frametime PRIVATE mv_core)
-target_include_directories(mv_frametime PRIVATE src)
+# `tools` so --no-pop shares tools/frametime/report.h with the unit tests
+# instead of growing a second copy of the gate.
+target_include_directories(mv_frametime PRIVATE src tools)
 set_target_properties(mv_frametime PROPERTIES OUTPUT_NAME "frametime")
 add_dependencies(mv_frametime mediaviewer_lab)
 if(TARGET mv_chrome)
@@ -563,6 +565,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_live_photo.cpp
     tests/test_raw.cpp
     tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
@@ -675,6 +678,21 @@ if(MV_BUILD_TESTS AND NOT MV_FUZZ)
     MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   catch_discover_tests(mv_broken_tests TEST_PREFIX "broken_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 1800 LABELS broken)
+
+  # PR 7 verify, "iPhone HEIC opens on a clean VM with no Store packs". Also its
+  # own executable, and for a stronger reason than the broken corpus: the test
+  # asserts that NO Media Foundation / WIC-extension / Store module is mapped
+  # into the process while a HEIC decodes through libheif. Inside mv_tests any
+  # earlier video case would have loaded mfplat.dll and the assertion could
+  # never be made again. See tests/test_clean_vm_heic.cpp.
+  add_executable(mv_clean_vm_tests tests/test_clean_vm_heic.cpp tests/crt_no_dialogs.cpp)
+  target_link_libraries(mv_clean_vm_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
+  target_include_directories(mv_clean_vm_tests PRIVATE src)
+  target_compile_definitions(mv_clean_vm_tests PRIVATE
+    MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    MV_TESTMEDIA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/testmedia")
+  catch_discover_tests(mv_clean_vm_tests TEST_PREFIX "cleanvm_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120 LABELS cleanvm)
 endif()
 
 # ---------------------------------------------------------------------------
