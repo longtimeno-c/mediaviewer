@@ -82,10 +82,21 @@ function Publish-Manifest($version, [switch]$Tamper) {
     $m = Join-Path $feed "mediaviewer-manifest.json"
     Tool sign $m (Join-Path $keys "dev.key")
     if ($Tamper) {
-        # One byte after signing: "min_version" 0.1.0 -> 0.1.1.
-        (Get-Content $m -Raw).Replace('"min_version": "0.1.0"', '"min_version": "0.1.1"') |
-            Set-Content -NoNewline -Encoding utf8NoBOM $m -ErrorAction SilentlyContinue
-        if (-not $?) { [IO.File]::WriteAllText($m, (Get-Content $m -Raw).Replace('"min_version": "0.1.0"', '"min_version": "0.1.1"')) }
+        # Change the manifest AFTER signing: "min_version" 0.1.0 -> 0.1.1. The
+        # signature is over the exact bytes, so this must be a byte-exact
+        # rewrite - no BOM, no re-encoding, no added newline. Read and write
+        # the bytes rather than going through Get-Content/Set-Content, which
+        # decide all three for you.
+        #
+        # (The previous version used `Set-Content -Encoding utf8NoBOM`, which
+        # is PowerShell 7 only; on Windows PowerShell 5.1 it is a terminating
+        # parameter-binding error, and the `-ErrorAction SilentlyContinue`
+        # fallback beside it never ran.)
+        $bytes = [IO.File]::ReadAllBytes($m)
+        $text = [Text.Encoding]::UTF8.GetString($bytes)
+        $tampered = $text.Replace('"min_version": "0.1.0"', '"min_version": "0.1.1"')
+        if ($tampered -eq $text) { throw "tamper found nothing to change; the manifest format moved" }
+        [IO.File]::WriteAllBytes($m, [Text.Encoding]::UTF8.GetBytes($tampered))
     }
 }
 
