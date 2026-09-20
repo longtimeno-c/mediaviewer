@@ -39,6 +39,9 @@ param(
     # Oldest version allowed to stay on the channel.
     [string]$MinVersion,
     [string]$Iscc,
+    # Replace this version in the LOCAL release set. For iterating on the
+    # packaging; never for a channel anyone has installed from.
+    [switch]$Republish,
     # Skip the wizard (release set only), e.g. when iterating on the updater.
     [switch]$NoWizard
 )
@@ -92,8 +95,24 @@ if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
 New-Item -ItemType Directory -Force $payload, $releases | Out-Null
 
 $skipFile = '^(mv_.*|.*_tests?|frametime.*|mediaviewer_lab\.exe)$'
+
+# plan/13, "Delta patches earn their keep here": "Do not ship Windows App SDK
+# AI / ONNX / DirectML / WebView2: they are not a dependency, and they are
+# currently the largest files in a framework-dependent publish."
+#
+# They arrive anyway, because `dotnet publish` of a Windows App SDK project
+# copies the whole framework's projection set whether the app touches it or
+# not. Measured on this build: 43.4 MB of 119.6 MB - 36 % of every download,
+# and of every delta that happens to touch them - for an image viewer that
+# does no inference and hosts no browser.
+$forbiddenBloat = '(?i)^(DirectML|onnxruntime|Microsoft\.ML\.OnnxRuntime|Microsoft\.Web\.WebView2|Microsoft\.Windows\.AI\.|Microsoft\.Graphics\.Imaging)'
+
 Get-ChildItem $bin -File |
-    Where-Object { $_.Extension -notin ".pdb", ".ilk", ".exp", ".lib" -and $_.Name -notmatch $skipFile } |
+    Where-Object {
+        $_.Extension -notin ".pdb", ".ilk", ".exp", ".lib" -and
+        $_.Name -notmatch $skipFile -and
+        $_.Name -notmatch $forbiddenBloat
+    } |
     Copy-Item -Destination $payload
 Get-ChildItem $bin -Directory |
     Where-Object { $_.Name -notmatch '^(tests?|frametime|fuzz)$' } |
@@ -103,6 +122,13 @@ Copy-Item (Join-Path $bin "mediaviewer_lab.exe") (Join-Path $payload "MediaViewe
 foreach ($required in "MediaViewer.exe", "MediaViewer.Chrome.dll", "crashpad_handler.exe", "LICENSE", "THIRD-PARTY.md") {
     if (-not (Test-Path (Join-Path $payload $required))) { Fail "payload is missing $required" }
 }
+# The recursive copy above could reintroduce them from a subdirectory, so the
+# ban is asserted on the finished tree rather than trusted to the filter.
+$bloat = Get-ChildItem $payload -Recurse -File | Where-Object { $_.Name -match $forbiddenBloat }
+if ($bloat) {
+    Fail ("plan/13 forbids shipping these: " + (($bloat | Select-Object -Expand Name) -join ", "))
+}
+
 $size = [math]::Round((Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
 Write-Host "payload: $size MB"
 # plan/09 caps the installed size. A payload over it is a release problem, not
@@ -157,6 +183,22 @@ $packArgs = @(
     "--shortcuts", "None",
     "--exclude", ".*\.(pdb|ilk|exp)$"
 ) + $signArgs
+# The release directory is the channel's history: vpk needs the previous
+# versions there to build deltas, and it refuses to pack a version that is
+# already in it. That refusal is right for a real channel - re-cutting a
+# version people may already have installed is how you ship two different
+# builds under one number - but it blocks re-running this script while
+# iterating locally, so say which it is.
+$existing = Join-Path $releases "$packId-$Version-full.nupkg"
+if (Test-Path $existing) {
+    if ($Republish) {
+        Write-Warning "Removing the existing $Version from the local release set (-Republish)."
+        Remove-Item (Join-Path $releases "$packId-$Version-*.nupkg") -Force
+    } else {
+        Fail "$Version is already in $releases. Bump project(VERSION), or pass -Republish to replace it locally (never on a published channel)."
+    }
+}
+
 & vpk @packArgs
 if ($LASTEXITCODE) { Fail "vpk pack failed" }
 
