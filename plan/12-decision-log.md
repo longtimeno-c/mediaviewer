@@ -857,6 +857,60 @@ ask-only-with-an-endpoint check exist, but no endpoint exists yet, so there is n
 to ask. It lands with the upload path in PR 8 and must not stack with other first-run
 prompts. Crashes inside the OS-codec probe (before the bundled dispatch) are not annotated.
 
+## 2026-09-20 — PR 8: the wizard owns uninstall, not Velopack
+
+**Decision.** The Inno wizard owns the Apps & features entry, the shortcuts, and the
+install directory. Velopack is packed with `--shortcuts None`, and the duplicate uninstall
+entry it registers is deleted — by the wizard at install, and by the host after an update,
+which is the only other moment Velopack writes it.
+
+**Why this came up.** Velopack registers `HKCU\...\Uninstall\MediaViewer` →
+`Update.exe --uninstall` every time it applies a package. With the wizard also registering
+one, a user sees MediaViewer twice in Apps & features, and the Velopack entry removes the
+tree *without* the wizard's shortcuts — and, once PR 15 lands, without the `ProgId` and
+handler registrations. plan/10 is explicit that "an update that leaves a zombie association
+is a failed uninstall".
+
+**Why the wizard and not Velopack.** Velopack's entry is self-healing across updates, which
+argued for letting it win. Against that: it cannot know about anything the wizard or a
+later PR adds, and PR 15's handler removal needs one place to live. The wizard is that
+place, and the host's post-update sweep covers the self-healing gap. The sweep only ever
+deletes an entry whose `UninstallString` names *this* install's `Update.exe`, so the
+wizard's own entry and any unrelated product sharing the key name are untouched
+(`is_velopack_uninstall_string`, tested).
+
+**Also settled by measuring, rather than by reading docs.**
+
+- Velopack's `--installto` **clears its target directory**. The bundle therefore runs from
+  `[Code]` at `ssInstall`, before Inno writes anything; as a `[Run]` entry it deleted the
+  wizard's own `unins000.exe` and left an Apps & features entry pointing at nothing.
+- `Update.exe --silent uninstall` is **not** called at uninstall. It detaches a cleanup
+  process that races Inno's directory removal — the uninstaller logged "Failed to delete
+  directory (145)" and exited 1 while Velopack finished the job a second later. With
+  `--shortcuts None` and the registry entry already ours, it had nothing left to do.
+- `[UninstallDelete]` must name the Velopack layout explicitly. Inno removes only what it
+  installed, and it installed neither the stub nor `Update.exe`.
+
+**Rejected:** a per-machine MSI as the consumer channel (plan/13 already rejects it —
+elevation on every update), and letting both entries stand.
+
+## 2026-09-20 — PR 8: the AI and WebView2 payload is excluded at packaging
+
+plan/13 already says not to ship Windows App SDK AI / ONNX / DirectML / WebView2. They
+arrived anyway: `dotnet publish` of a Windows App SDK project copies the framework's whole
+projection set regardless of use. Measured at 43.4 MB of a 119.6 MB payload — 36 % of every
+download, for a viewer that does no inference and hosts no browser.
+
+`tools/package/build-release.ps1` filters them out and then **asserts** they are absent
+from the finished tree, because the recursive directory copy could reintroduce them.
+Payload is 72.7 MB.
+
+**Open.** The payload is still framework-dependent: the Windows App SDK runtime is an
+assumed prerequisite on the target machine. The wizard neither installs nor detects it,
+which is a hole sitting directly under PR 8's "no missing-codec dialog anywhere" clause,
+since that clause is about a machine with nothing installed. Either the wizard gains a
+runtime bootstrap or the publish becomes self-contained; not decided.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
