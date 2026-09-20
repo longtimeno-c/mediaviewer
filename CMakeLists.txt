@@ -413,6 +413,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/settings_store.h
   src/shell/update_guard.cpp
   src/shell/update_guard.h
+  src/shell/telemetry.cpp
+  src/shell/telemetry.h
   src/shell/crash_reporter_win.cpp
   src/shell/crash_reporter_win.h
   src/shell/minidump_scrub.cpp
@@ -501,6 +503,7 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Update.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Telemetry.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateManifest.cs"
@@ -585,6 +588,7 @@ if(MV_BUILD_TESTS)
     tests/test_file_jobs.cpp
     tests/test_settings_store.cpp
     tests/test_update_guard.cpp
+    tests/test_telemetry.cpp
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
@@ -610,14 +614,17 @@ if(MV_BUILD_TESTS)
     src/shell/settings.cpp
     src/shell/settings_store.cpp
     src/shell/update_guard.cpp
+    src/shell/telemetry.cpp
     src/shell/app.manifest
   )
   # PR 8 verify: update signature rejection (managed half of the updater).
   if(DOTNET_EXE)
+    # No --nologo: `dotnet run` forwards it to the program, which answers with
+    # its usage and exit code 2 instead of running the suite.
     add_test(NAME updater_manifest_verification
       COMMAND ${DOTNET_EXE} run --project
               "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater.Tests/MediaViewer.Updater.Tests.csproj"
-              -c Release --nologo)
+              -c Release)
     set_tests_properties(updater_manifest_verification PROPERTIES TIMEOUT 300 LABELS updater)
   endif()
   target_link_libraries(mv_tests PRIVATE

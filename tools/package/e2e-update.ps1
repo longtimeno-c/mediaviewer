@@ -64,7 +64,7 @@ function Stage-Payload($version, [switch]$Broken) {
         [IO.File]::WriteAllBytes((Join-Path $dir "MediaViewer.Chrome.dll"), [byte[]](1..4096 | ForEach-Object { 0x5A }))
     }
     & $Vpk pack --packId $packId --packVersion $version --packDir $dir --mainExe MediaViewer.exe `
-        --channel win --outputDir $feed --shortcuts "" --skipVeloAppCheck | Out-Host
+        --channel win --outputDir $feed --shortcuts None --skipVeloAppCheck | Out-Host
     if ($LASTEXITCODE) { throw "vpk pack $version failed" }
 }
 
