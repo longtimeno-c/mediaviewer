@@ -94,6 +94,7 @@ std::size_t packet_queue::size() const noexcept {
 
 frame_ring::~frame_ring() { destroy(); }
 
+#if !defined(MV_DARWIN)
 expected frame_ring::create_slot(video_frame& slot) {
   D3D11_TEXTURE2D_DESC desc{};
   desc.Width = texture_w_;
@@ -129,8 +130,9 @@ expected frame_ring::create_slot(video_frame& slot) {
   slot.ten_bit = ten_bit_;
   return {};
 }
+#endif  // !MV_DARWIN (the Metal slot lives in frame_ring_mac.mm)
 
-expected frame_ring::create(ID3D11Device* device, std::uint32_t texture_w,
+expected frame_ring::create(gpu_device_ptr device, std::uint32_t texture_w,
                             std::uint32_t texture_h, bool ten_bit) {
   destroy();
   if (!device || texture_w == 0 || texture_h == 0) return err(status::invalid_arg);
@@ -167,7 +169,12 @@ expected frame_ring::create(ID3D11Device* device, std::uint32_t texture_w,
 
 void frame_ring::destroy() noexcept {
   initialized_.store(false, std::memory_order_release);
-  for (auto& slot : slots_) slot = video_frame{};
+  for (auto& slot : slots_) {
+#if defined(MV_DARWIN)
+    release_slot(slot);
+#endif
+    slot = video_frame{};
+  }
   device_ = nullptr;
   texture_w_ = texture_h_ = 0;
   ten_bit_ = false;

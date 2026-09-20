@@ -45,6 +45,8 @@ target_link_libraries(mv_core PRIVATE "-framework Foundation")
 add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
+  src/gfx/colour_desc.cpp
+  src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
   src/gfx/device_mac.mm
   src/gfx/metal_layer.mm
@@ -199,6 +201,64 @@ add_library(mv_image STATIC
 target_link_libraries(mv_image PUBLIC mv_codec mv_gfx mv_io
   PRIVATE lcms2::lcms2 unofficial::sqlite3::sqlite3)
 add_library(mv::image ALIAS mv_image)
+
+# ---------------------------------------------------------------------------
+# mv_player -- demux, decode, A/V clock, transport (PR 19, plan/05 + plan/15).
+# The same portable TUs as the Windows target; the D9 host files are the Metal /
+# VideoToolbox / Core Audio twins: hwdecode_mac.mm, frame_ring_mac.mm,
+# audio_mac.cpp. FFmpeg is LGPL and dynamic-link only (CLAUDE.md), so it comes
+# from the arm64-osx-dynamic triplet:
+#   vcpkg install --triplet arm64-osx-dynamic \
+#     "ffmpeg[core,avcodec,avformat,avfilter,swresample,swscale,dav1d]"
+# (add the `ffmpeg` feature if you want the CLI for tools/testmedia clips).
+# ---------------------------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH "${MV_VCPKG_DYNAMIC_PREFIX}/share/ffmpeg")
+set(ENV{PKG_CONFIG_PATH}
+    "${MV_VCPKG_DYNAMIC_PREFIX}/lib/pkgconfig:${MV_VCPKG_DYNAMIC_PREFIX}/debug/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+find_package(FFMPEG REQUIRED)
+
+add_library(mv_player STATIC
+  src/player/demux.cpp
+  src/player/video_decode.cpp
+  src/player/frame_ring.cpp
+  src/player/frame_ring_mac.mm
+  src/player/video_source.cpp
+  src/player/media_source.cpp
+  src/player/hwdecode_mac.mm       # D9: the only player/ file that names CoreVideo/Metal decode
+  src/player/audio_decode.cpp
+  src/player/av_clock.cpp
+  src/player/audio_mac.cpp         # D9: the only player/ file that names Core Audio
+  src/player/transport.cpp
+  src/player/presenter.cpp
+  src/player/container_probe.cpp
+  src/player/poster.cpp
+  src/player/media_source.h
+  src/player/video_source.h
+  src/player/audio_sink.h
+  src/player/audio_block.h
+  src/player/av_clock.h
+  src/player/presenter.h
+  src/player/transport.h
+  src/player/container_probe.h
+  src/player/poster.h
+  src/player/video_internal.h
+)
+# SYSTEM so FFmpeg's own headers do not trip -Werror; ours stay fully checked.
+target_include_directories(mv_player SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_player
+  PUBLIC mv_core mv_gfx
+  PRIVATE mv_codec mv_io ${FFMPEG_LIBRARIES}
+          "-framework Foundation" "-framework Metal" "-framework CoreVideo"
+          "-framework CoreMedia" "-framework VideoToolbox" "-framework AudioToolbox"
+          "-framework CoreAudio" "-framework CoreFoundation")
+add_library(mv::player ALIAS mv_player)
+
+# playprobe -- headless pipeline check (tools/playprobe): decoder actually used,
+# presenter counters, drift slope. Not shipped.
+add_executable(playprobe tools/playprobe/main_mac.mm)
+target_link_libraries(playprobe PRIVATE mv_player mv_core "-framework Foundation" "-framework Metal")
+target_include_directories(playprobe PRIVATE src)
 
 # ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom camera + springs (plan/03: omega=18, zeta=1). Zero

@@ -44,6 +44,26 @@ extern "C" {
 namespace mv::player {
 
 // ---------------------------------------------------------------------------
+// The one place the host's GPU/decoder names are picked (D9). Everything below
+// this line is host-neutral except the hwdecode_* and frame_ring texture code,
+// which each host implements in its own file.
+// ---------------------------------------------------------------------------
+#if defined(MV_DARWIN)
+// id<MTLDevice>, borrowed: the shell outlives the clip.
+using gpu_device_ptr = void*;
+inline constexpr AVPixelFormat  kHwPixFmt      = AV_PIX_FMT_VIDEOTOOLBOX;
+inline constexpr AVHWDeviceType kHwDeviceType  = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
+inline constexpr decoder_kind   kHwDecoderKind = decoder_kind::videotoolbox;
+inline constexpr const char*    kHwDecoderName = "VideoToolbox";
+#else
+using gpu_device_ptr = ID3D11Device*;
+inline constexpr AVPixelFormat  kHwPixFmt      = AV_PIX_FMT_D3D11;
+inline constexpr AVHWDeviceType kHwDeviceType  = AV_HWDEVICE_TYPE_D3D11VA;
+inline constexpr decoder_kind   kHwDecoderKind = decoder_kind::d3d11va;
+inline constexpr const char*    kHwDecoderName = "D3D11VA";
+#endif
+
+// ---------------------------------------------------------------------------
 // FFmpeg RAII. No exceptions on the hot path, so every one of these is a
 // unique_ptr with a noexcept deleter rather than a try/finally.
 // ---------------------------------------------------------------------------
@@ -162,7 +182,7 @@ class frame_ring {
   // D3D11VA surface is padded up to the decoder's alignment. Ours must match
   // exactly, because CopySubresourceRegion with a null box requires identical
   // dimensions. The visible size travels separately in video_frame.
-  [[nodiscard]] expected create(ID3D11Device* device, std::uint32_t texture_w,
+  [[nodiscard]] expected create(gpu_device_ptr device, std::uint32_t texture_w,
                                 std::uint32_t texture_h, bool ten_bit);
   void destroy() noexcept;
 
@@ -193,9 +213,13 @@ class frame_ring {
 
  private:
   [[nodiscard]] expected create_slot(video_frame& slot);
+#if defined(MV_DARWIN)
+  // Releases the retained id<MTLTexture>s a slot holds (frame_ring_mac.mm).
+  static void release_slot(video_frame& slot) noexcept;
+#endif
 
   std::atomic<bool> initialized_{false};
-  ID3D11Device* device_ = nullptr;  // borrowed; the shell outlives the clip
+  gpu_device_ptr device_ = nullptr;  // borrowed; the shell outlives the clip
   std::uint32_t texture_w_ = 0;
   std::uint32_t texture_h_ = 0;
   bool          ten_bit_ = false;
@@ -226,7 +250,7 @@ class frame_ring {
 // Builds the FFmpeg D3D11VA hardware device context from OUR ID3D11Device
 // (plan/05: "not a device FFmpeg makes"). The device is AddRef'd for the
 // lifetime of the returned ref.
-[[nodiscard]] result<AVBufferRef*> create_hw_device_ctx(ID3D11Device* device) noexcept;
+[[nodiscard]] result<AVBufferRef*> create_hw_device_ctx(gpu_device_ptr device) noexcept;
 
 // The decoder pool's allocation size behind a hardware frame, and its depth.
 // The allocation is padded up to the decoder's alignment; the visible size is
@@ -252,14 +276,24 @@ class frame_ring {
 //
 // Copies only. No Map, no Flush, no ClearState, no query wait, no GPU sync of
 // any kind happens on this thread.
+#if defined(MV_DARWIN)
+// Metal host: `dst` is a ring slot (luma + chroma textures). The frame is a
+// CVPixelBuffer (data[3]); its two planes are wrapped through a
+// CVMetalTextureCache and blit-copied into the slot's textures, and the copy is
+// WAITED for on this decode thread (never the render thread) so the slot is
+// complete before commit() publishes it and the pixel buffer can be released.
+[[nodiscard]] status copy_hw_surface(AVBufferRef* hw_device_ctx, const AVFrame* frame,
+                                     video_frame* dst) noexcept;
+#else
 [[nodiscard]] status copy_hw_surface(AVBufferRef* hw_device_ctx, const AVFrame* frame,
                                      ID3D11Texture2D* dst) noexcept;
+#endif
 
 // Software-decode fallback. Creates a NEW texture from CPU planes with
 // D3D11_SUBRESOURCE_DATA and no device context at all — which is plan/02's
 // blessed worker-thread pattern, and deliberately does not extend the
 // immediate-context exception above to a path that does not need it.
-[[nodiscard]] status create_texture_from_planes(ID3D11Device* device, std::uint32_t width,
+[[nodiscard]] status create_texture_from_planes(gpu_device_ptr device, std::uint32_t width,
                                                 std::uint32_t height, bool ten_bit,
                                                 const std::uint8_t* luma, int luma_pitch,
                                                 const std::uint8_t* chroma, int chroma_pitch,
@@ -276,8 +310,10 @@ struct video_pipeline {
   format_ctx_ptr  format;
   codec_ctx_ptr   codec;
   buffer_ref_ptr  hw_device;
+#if !defined(MV_DARWIN)
   gfx::com_ptr<ID3D11Device> device_owner;
-  ID3D11Device*   device = nullptr;
+#endif
+  gpu_device_ptr  device = nullptr;
   int             video_stream = -1;
   int             audio_stream = -1;  // demuxed for 5b; dropped while unclaimed
   AVRational      time_base{0, 1};
