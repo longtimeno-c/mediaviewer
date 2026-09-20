@@ -178,6 +178,39 @@ void present_lab::wake() noexcept {
   if (wake_event_) ::SetEvent(wake_event_);
 }
 
+// --- PR 7 no-pop instrument -------------------------------------------------
+// plan/10 PR 7: "the full decode replaces it without a visible pop". A person
+// still has to look at a RAW once; these three make the rest of it a number in
+// the report, so a hard cut, a jumped view or a stutter inside the fade fails a
+// gate instead of passing quietly. Render thread only.
+void present_lab::refine_fade_begun() noexcept {
+  // A fade that starts while one is running is the same pop, counted honestly:
+  // the one it interrupts never reached alpha 1.
+  if (refine_fade_running_) ++refine_fades_cancelled_;
+  ++refine_fades_started_;
+  refine_fade_running_ = true;
+  refine_fade_drops_at_start_ = pacer_.dropped_frames_so_far();
+}
+
+void present_lab::refine_fade_abandoned() noexcept {
+  if (!refine_fade_running_) return;
+  ++refine_fades_cancelled_;
+  refine_fade_running_ = false;
+}
+
+void present_lab::refine_fade_tick(double elapsed) noexcept {
+  if (!refine_fade_running_) return;
+  if (fade_.active(elapsed)) {
+    ++refine_fade_frames_;
+    return;
+  }
+  // Reached alpha 1 on real time: the swap is finished, not cut short.
+  ++refine_fades_completed_;
+  refine_fade_running_ = false;
+  const std::uint64_t now = pacer_.dropped_frames_so_far();
+  if (now > refine_fade_drops_at_start_) refine_fade_dropped_ += now - refine_fade_drops_at_start_;
+}
+
 expected present_lab::rebuild_device() noexcept {
   if (warmed_up_) measurement_valid_ = false;
   if (imgui_ready_) {
@@ -192,6 +225,7 @@ expected present_lab::rebuild_device() noexcept {
   fade_from_.reset();
   refine_base_.reset();
   fade_.cancel();
+  refine_fade_abandoned();
   tile_draws_ = {};
   anim_frame_.reset();
   if (session_) mv::abi::detach_device(session_);
@@ -376,6 +410,7 @@ void present_lab::render_thread_main() noexcept {
       fade_from_.reset();
       refine_base_.reset();
       fade_.cancel();
+      refine_fade_abandoned();
       anim_frame_.reset();
       current_video_ = {};
       redraw = true;
@@ -409,8 +444,43 @@ void present_lab::render_thread_main() noexcept {
             // Hold-previous and a playing animation are not touched.
             ++refinements_;
             const auto view = usable_canvas(snapshot);
+            // The pop this verify line is about is geometric: where the
+            // picture's edges sit on screen before the swap, and where they sit
+            // after. Measured around camera_.refine, because that call is the
+            // only thing that can move them — the fade is alpha only.
+            const float old_zoom = camera_.zoom();
+            const float old_pan_x = camera_.pan_x();
+            const float old_pan_y = camera_.pan_y();
             camera_.refine(old_w, old_h, static_cast<float>(ready->width),
                            static_cast<float>(ready->height), view.w, view.h);
+            if (old_w > 0.0f && old_h > 0.0f) {
+              // A screen position is (p - pan) * zoom plus a constant the two
+              // views share, so the constant cancels in the difference.
+              const auto edge = [](float p, float pan, float zoom) {
+                return static_cast<double>((p - pan) * zoom);
+              };
+              const float nw = static_cast<float>(ready->width);
+              const float nh = static_cast<float>(ready->height);
+              const double before[4] = {
+                  edge(0.0f, old_pan_x, old_zoom), edge(old_w, old_pan_x, old_zoom),
+                  edge(0.0f, old_pan_y, old_zoom), edge(old_h, old_pan_y, old_zoom)};
+              const double after[4] = {
+                  edge(0.0f, camera_.pan_x(), camera_.zoom()),
+                  edge(nw, camera_.pan_x(), camera_.zoom()),
+                  edge(0.0f, camera_.pan_y(), camera_.zoom()),
+                  edge(nh, camera_.pan_y(), camera_.zoom())};
+              for (int i = 0; i < 4; ++i) {
+                const double shift = std::abs(after[i] - before[i]);
+                if (shift > refine_max_edge_shift_px_) refine_max_edge_shift_px_ = shift;
+              }
+              const double shown_before = before[1] - before[0];
+              const double shown_after = after[1] - after[0];
+              if (shown_before > 0.0 && shown_after > 0.0) {
+                const double ratio = shown_after > shown_before ? shown_after / shown_before
+                                                                : shown_before / shown_after;
+                if (ratio > refine_max_scale_step_) refine_max_scale_step_ = ratio;
+              }
+            }
             if (current_image_->texture.Get() != ready->texture.Get()) {
               const bool keep_as_base = ready->tiles && !current_image_->tiles &&
                                         current_image_->texture_width > ready->texture_width;
@@ -420,10 +490,24 @@ void present_lab::render_thread_main() noexcept {
                 refine_base_ = std::move(current_image_);
                 fade_from_.reset();
                 fade_.cancel();
+                refine_fade_abandoned();
+              } else if (fade_.active(elapsed) && fade_from_ &&
+                         current_image_->width == ready->width &&
+                         current_image_->height == ready->height) {
+                // A still refines twice: full_top (the top level, as soon as it
+                // exists) and then full (with its mip chain), the same pixels
+                // both times. Restarting the fade here would snap the outgoing
+                // preview from wherever it had got to straight back out —
+                // measured at 0.6 alpha on a CR2, which on a RAW is a
+                // brightness step of most of the preview-to-render difference.
+                // One fade, from the preview, running to its end: the incoming
+                // texture is swapped under it instead.
+                current_image_.reset();
               } else {
                 fade_.begin(elapsed, canvas::refine_fade_seconds(current_image_->mean_luma,
                                                                  ready->mean_luma));
                 fade_from_ = std::move(current_image_);
+                refine_fade_begun();
               }
             }
             current_image_.reset(ready);
@@ -435,6 +519,7 @@ void present_lab::render_thread_main() noexcept {
             fade_from_.reset();
             refine_base_.reset();
             fade_.cancel();
+            refine_fade_abandoned();
             seen_tile_seq_ = 0;
             item_start_seconds_ = elapsed;
             first_pixel_seconds_ = elapsed;
@@ -812,7 +897,7 @@ void present_lab::render_thread_main() noexcept {
       if (mv::abi::poll_video(session_, static_cast<player::time_ns>(swapchain_.refresh_interval_seconds() * 1'000'000'000.0), frame, video_active_)) {
         // A clip is not a burst: do not keep a 4K still pinned behind it.
         current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
-        fade_from_.reset(); refine_base_.reset(); fade_.cancel();
+        fade_from_.reset(); refine_base_.reset(); fade_.cancel(); refine_fade_abandoned();
         current_video_ = std::move(frame);
         if (first_video) {
           const auto view = usable_canvas(snapshot);
@@ -832,6 +917,9 @@ void present_lab::render_thread_main() noexcept {
     feed_imgui(snapshot, delta, wheel);
     ImGui::NewFrame();
 
+    // Inside the recorded frame, so a fade's frames and drops are the ones the
+    // pacer scored (PR 7 no-pop instrument).
+    refine_fade_tick(elapsed);
     draw_frame(snapshot, elapsed);
     draw_view_overlays(snapshot);
     if (overlay_visible_) draw_overlay(snapshot);
@@ -1036,6 +1124,7 @@ void present_lab::render_thread_main() noexcept {
   fade_from_.reset();
   refine_base_.reset();
   fade_.cancel();
+  refine_fade_abandoned();
   tile_draws_ = {};
   anim_frame_.reset();
   if (session_) mv::abi::detach_device(session_);
@@ -1247,6 +1336,16 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
                   static_cast<unsigned long long>(refinements_),
                   static_cast<unsigned long long>(stale_drops_),
                   refine_base_ ? "  preview kept under tiles" : "");
+      // The no-pop numbers, beside the ones they qualify: a cut fade, a jumped
+      // view or a stutter inside the fade all show here as well as in --json.
+      ImGui::Text("no-pop   fades %llu started / %llu completed / %llu cut  %llu frames"
+                  "  %llu dropped  view shift %.2f px  scale x%.4f",
+                  static_cast<unsigned long long>(refine_fades_started_),
+                  static_cast<unsigned long long>(refine_fades_completed_),
+                  static_cast<unsigned long long>(refine_fades_cancelled_),
+                  static_cast<unsigned long long>(refine_fade_frames_),
+                  static_cast<unsigned long long>(refine_fade_dropped_),
+                  refine_max_edge_shift_px_, refine_max_scale_step_);
     } else {
       ImGui::Text("clip     %ux%u  %s", current_video_.width, current_video_.height,
                   current_video_.ten_bit ? "P010" : "NV12");
@@ -1346,6 +1445,13 @@ bool present_lab::write_json_report() const noexcept {
                "  \"still_full_s\": %.3f,\n"
                "  \"still_tiles_complete_s\": %.3f,\n"
                "  \"still_refinements\": %llu,\n"
+               "  \"refine_fades_started\": %llu,\n"
+               "  \"refine_fades_completed\": %llu,\n"
+               "  \"refine_fades_cancelled\": %llu,\n"
+               "  \"refine_fade_frames\": %llu,\n"
+               "  \"refine_fade_dropped\": %llu,\n"
+               "  \"refine_max_edge_shift_px\": %.4f,\n"
+               "  \"refine_max_scale_step\": %.6f,\n"
                "  \"tiles_created\": %llu,\n"
                "  \"tiles_evicted\": %llu,\n"
                "  \"tiles_vram_peak_mb\": %.1f,\n"
@@ -1378,6 +1484,12 @@ bool present_lab::write_json_report() const noexcept {
                static_cast<double>(anim.last_icc_us) / 1000.0,
                first_pixel_seconds_, full_seconds_, tiles_complete_seconds_,
                static_cast<unsigned long long>(refinements_),
+               static_cast<unsigned long long>(refine_fades_started_),
+               static_cast<unsigned long long>(refine_fades_completed_),
+               static_cast<unsigned long long>(refine_fades_cancelled_),
+               static_cast<unsigned long long>(refine_fade_frames_),
+               static_cast<unsigned long long>(refine_fade_dropped_),
+               refine_max_edge_shift_px_, refine_max_scale_step_,
                static_cast<unsigned long long>(tile_stats.created),
                static_cast<unsigned long long>(tile_stats.evicted),
                static_cast<double>(tile_stats.vram_peak_bytes) / 1048576.0,

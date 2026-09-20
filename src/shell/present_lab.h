@@ -164,6 +164,30 @@ class present_lab {
   std::uint64_t seen_tile_seq_ = 0;
   std::uint64_t refinements_ = 0;
   std::uint64_t stale_drops_ = 0;
+  // PR 7 verify, "the full decode replaces it without a visible pop" — the
+  // measurable half of it, so a report can fail a pop instead of a person
+  // squinting at a RAW. A pop is one of three things, and each has a counter:
+  //   * the view jumping — refine_max_edge_shift_px_ / refine_max_scale_step_
+  //   * the fade not running to its end, i.e. a hard cut — started vs completed
+  //   * a dropped frame inside the fade window — refine_fade_dropped_
+  // A refinement that never started a fade is not a pass either: it would read
+  // as zero shift and zero drops. The gate requires started >= 1.
+  std::uint64_t refine_fades_started_ = 0;
+  std::uint64_t refine_fades_completed_ = 0;
+  std::uint64_t refine_fades_cancelled_ = 0;
+  std::uint64_t refine_fade_frames_ = 0;   // frames recorded while a fade ran
+  std::uint64_t refine_fade_dropped_ = 0;  // pacer drops inside fade windows
+  std::uint64_t refine_fade_drops_at_start_ = 0;
+  bool refine_fade_running_ = false;
+  // Worst corner displacement (px) of the picture's on-screen rectangle across
+  // a refinement, and the worst ratio of its on-screen width. 0 and 1 when
+  // nothing refined.
+  double refine_max_edge_shift_px_ = 0.0;
+  double refine_max_scale_step_ = 1.0;
+  // Render thread only: the refinement branch and every site that drops a fade.
+  void refine_fade_begun() noexcept;
+  void refine_fade_abandoned() noexcept;
+  void refine_fade_tick(double elapsed) noexcept;
   // --json: seconds since the render thread started (so, for --open, since
   // launch) at which the last item showed its first pixel, its
   // full-quality publish, and (tiled) the first frame with every visible tile.
