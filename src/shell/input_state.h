@@ -87,6 +87,11 @@ struct input_snapshot {
   std::int64_t video_skip_ms = 0;
   std::int32_t video_speed_steps = 0;
   std::uint32_t video_mute_seq = 0;
+  // Absolute seek from the transport strip's scrubber. `exact` is false while the
+  // thumb is being dragged (nearest keyframe, instant) and true on release.
+  std::uint32_t video_seek_seq = 0;
+  std::int64_t video_seek_ms = 0;
+  bool video_seek_exact = true;
 
   bool window_visible = true;
   bool window_active = true;

@@ -903,6 +903,30 @@ D3D11's `SetMaximumFrameLatency(1)`. On real hardware `CAMetalLayer` throws
 `MvMetalView`). The intent — one frame of latency, wait on the display link before encoding —
 is unchanged, and the 60 s gate passes with it (3600 frames, 0 dropped, p99 16.9 ms, 2026-09-19).
 
+## 2026-09-20 — PR 19 host choices: VideoToolbox through a texture cache and a copy, Core Audio position anchoring
+
+**Not a D1–D9 reversal** — D2 and D9 hold (FFmpeg, our own presentation ring, no `AVPlayer`, no
+Store codec). Choices the plan left open for the Metal host:
+
+- **"On *your* `MTLDevice`" means the texture cache and the blit, not the decoder.** VideoToolbox
+  owns its decode sessions and takes no device; the device is used for the `CVMetalTextureCache`
+  that wraps the decoder's IOSurface-backed pixel buffers, and the blit that copies them *out* of
+  the decoder pool into the ring runs on a queue of that device. The blit is waited for on the
+  decode thread (~1 ms for 4K): that thread is neither UI nor render, and it makes the slot
+  complete before it is published and the pixel buffer returned, so there is no ordering hazard to
+  reason about (Windows needs the immediate-context ordering argument in plan/12 2026-09-07; Metal
+  does not).
+- **A slot is two textures (R + RG), not one planar texture with two views** — Metal has no
+  planar NV12/P010 texture to view. Same R8/RG8, R16/RG16 pair plan/05 specifies, shared storage.
+- **A presented frame is held two more presents before release** (Darwin ring is 6 slots, not 4):
+  the GPU may still sample it and the decode thread reuses a released slot at once.
+- **Played position is anchored to each render callback's host time with a *signed* offset.**
+  `mHostTime` is always in the future by the output latency, so an "only if now > host" extrapolation
+  never engages and the clock steps by one callback (~11 ms); a 60 Hz presenter sampling that
+  staircase dropped a third of a 30 fps clip as "late". Found with `tools/playprobe`.
+- **MPEG-2 has no VideoToolbox decode on this hardware**, so it runs in software and the F3
+  overlay says `SOFTWARE`. D5 lists MPEG-2 as supported; it is, without hardware.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

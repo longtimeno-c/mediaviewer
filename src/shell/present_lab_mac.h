@@ -61,6 +61,27 @@ class present_lab_mac {
   // unaffected by the bump.
   void open_item(std::string path_utf8) noexcept;
 
+  // [any-thread] What the SwiftUI transport strip shows. Published by the render
+  // thread through atomics; `active` is false when no clip is on screen.
+  struct video_status {
+    bool active = false;
+    bool playing = false;
+    bool muted = false;
+    std::int64_t position_ms = 0;
+    std::int64_t duration_ms = 0;
+    int rate_x100 = 100;
+  };
+  [[nodiscard]] video_status video_status_snapshot() const noexcept {
+    video_status s;
+    s.active = vs_active_.load(std::memory_order_acquire);
+    s.playing = vs_playing_.load(std::memory_order_relaxed);
+    s.muted = vs_muted_.load(std::memory_order_relaxed);
+    s.position_ms = vs_pos_ms_.load(std::memory_order_relaxed);
+    s.duration_ms = vs_dur_ms_.load(std::memory_order_relaxed);
+    s.rate_x100 = vs_rate_x100_.load(std::memory_order_relaxed);
+    return s;
+  }
+
   [[nodiscard]] bool finished() const noexcept {
     return finished_.load(std::memory_order_acquire);
   }
@@ -76,6 +97,7 @@ class present_lab_mac {
   // media_source (which joins its threads) on a worker, never here.
   void retire_media() noexcept;
   bool apply_video_input(const input_snapshot& snapshot) noexcept;
+  void update_video_status() noexcept;
   // The picture on the canvas, still or video frame. False when there is none.
   [[nodiscard]] bool picture_size(float* w, float* h) const noexcept;
 
@@ -124,6 +146,13 @@ class present_lab_mac {
   std::int32_t seen_video_speed_ = 0;
   std::uint32_t seen_video_mute_ = 0;
   bool video_muted_ = false;
+  std::uint32_t seen_video_seek_ = 0;
+  std::atomic<bool> vs_active_{false};
+  std::atomic<bool> vs_playing_{false};
+  std::atomic<bool> vs_muted_{false};
+  std::atomic<std::int64_t> vs_pos_ms_{0};
+  std::atomic<std::int64_t> vs_dur_ms_{0};
+  std::atomic<int> vs_rate_x100_{100};
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;

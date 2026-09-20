@@ -256,6 +256,20 @@ void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t ite
       });
 }
 
+void present_lab_mac::update_video_status() noexcept {
+  if (!media_) {
+    vs_active_.store(false, std::memory_order_release);
+    return;
+  }
+  static constexpr int kRateX100[] = {25, 50, 100, 150, 200, 400};
+  vs_pos_ms_.store(media_->position_ns() / 1'000'000, std::memory_order_relaxed);
+  vs_dur_ms_.store(media_->info().duration_ns / 1'000'000, std::memory_order_relaxed);
+  vs_playing_.store(media_->state() == player::play_state::playing, std::memory_order_relaxed);
+  vs_muted_.store(video_muted_, std::memory_order_relaxed);
+  vs_rate_x100_.store(kRateX100[std::clamp(speed_rung_, 0, 5)], std::memory_order_relaxed);
+  vs_active_.store(true, std::memory_order_release);
+}
+
 bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
   if (video_frame_) {
     *w = static_cast<float>(video_frame_->width);
@@ -310,6 +324,7 @@ bool present_lab_mac::apply_video_input(const input_snapshot& s) noexcept {
     seen_video_skip_ = s.video_skip_ms;
     seen_video_speed_ = s.video_speed_steps;
     seen_video_mute_ = s.video_mute_seq;
+    seen_video_seek_ = s.video_seek_seq;
     return false;
   }
   bool changed = false;
@@ -342,6 +357,14 @@ bool present_lab_mac::apply_video_input(const input_snapshot& s) noexcept {
     seen_video_speed_ = s.video_speed_steps;
     speed_rung_ = std::clamp(speed_rung_ + d, 0, kRungs - 1);
     media_->set_rate(kLadder[speed_rung_]);
+    changed = true;
+  }
+  if (s.video_seek_seq != seen_video_seek_) {
+    seen_video_seek_ = s.video_seek_seq;
+    const player::time_ns duration = media_->info().duration_ns;
+    player::time_ns target = s.video_seek_ms * 1'000'000;
+    target = std::max<player::time_ns>(0, duration > 0 ? std::min(target, duration - 1) : target);
+    media_->seek(target, s.video_seek_exact);
     changed = true;
   }
   if (s.video_mute_seq != seen_video_mute_) {
@@ -599,6 +622,7 @@ void present_lab_mac::render_thread_main() noexcept {
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
         if (apply_video_input(snapshot)) redraw = true;
+        update_video_status();
         if (media_ && media_->needs_present()) {
           const auto vblank_ns =
               static_cast<player::time_ns>(layer_.refresh_interval_seconds() * 1e9);

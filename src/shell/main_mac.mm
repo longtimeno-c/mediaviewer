@@ -116,6 +116,8 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 @property(nonatomic, strong) NSView* filmstripHost;
 @property(nonatomic, strong) NSView* galleryHost;
 @property(nonatomic, strong) NSView* helpHost;
+@property(nonatomic, strong) NSView* transportHost;
+@property(nonatomic, strong) NSLayoutConstraint* transportBottom;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -240,6 +242,56 @@ extern "C" int32_t mv_chrome_marked_count(void) {
 }
 extern "C" bool mv_chrome_is_marked(int32_t index) {
   return g_chrome_app && [g_chrome_app isIndexMarked:index] == YES;
+}
+// --- Video transport (PR 19). Commands are the same latched counters the keys
+// bump; the render thread consumes them. Status is what the render thread
+// published. [main-thread]
+static void MvPublishVideoInput() {
+  if (!g_chrome_snap) return;
+  ++g_chrome_snap->activity_seq;
+  if (g_chrome_lab) {
+    g_chrome_lab->publish(*g_chrome_snap);
+    g_chrome_lab->wake();
+  }
+}
+extern "C" bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_ms, bool* playing,
+                                       int32_t* rate_x100, bool* muted) {
+  if (!g_chrome_lab) return false;
+  const auto s = g_chrome_lab->video_status_snapshot();
+  if (!s.active) return false;
+  if (position_ms) *position_ms = s.position_ms;
+  if (duration_ms) *duration_ms = s.duration_ms;
+  if (playing) *playing = s.playing;
+  if (rate_x100) *rate_x100 = s.rate_x100;
+  if (muted) *muted = s.muted;
+  return true;
+}
+extern "C" void mv_chrome_video_toggle(void) {
+  if (!g_chrome_snap) return;
+  ++g_chrome_snap->anim_toggle_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_skip(int64_t delta_ms) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_skip_ms += delta_ms;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_seek(int64_t position_ms, bool exact) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_seek_ms = position_ms;
+  g_chrome_snap->video_seek_exact = exact;
+  ++g_chrome_snap->video_seek_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_speed_step(int32_t direction) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_speed_steps += direction;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_toggle_mute(void) {
+  if (!g_chrome_snap) return;
+  ++g_chrome_snap->video_mute_seq;
+  MvPublishVideoInput();
 }
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   g_gallery_columns = columns < 1 ? 1 : columns;
@@ -859,6 +911,30 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     [self.filmstripHost.heightAnchor constraintEqualToConstant:kFilmstripHeightPoints],
   ]];
 
+  // Clip transport (PR 19): bottom-centre, floating above the filmstrip. Hidden
+  // until a clip is on screen (-refreshFolderIfChanged flips it).
+  self.transportHost = [MVChromeHost makeTransportView];
+  self.transportHost.hidden = YES;
+  self.transportHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.transportHost];
+  self.transportBottom = [self.transportHost.bottomAnchor
+      constraintEqualToAnchor:container.bottomAnchor
+                     constant:-(kFilmstripHeightPoints + 10.0)];
+  NSLayoutConstraint* preferredWidth =
+      [self.transportHost.widthAnchor constraintEqualToConstant:720.0];
+  preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+  [NSLayoutConstraint activateConstraints:@[
+    [self.transportHost.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+    [self.transportHost.widthAnchor constraintLessThanOrEqualToConstant:720.0],
+    [self.transportHost.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor
+                                                                  constant:16.0],
+    [self.transportHost.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor
+                                                                constant:-16.0],
+    [self.transportHost.heightAnchor constraintEqualToConstant:44.0],
+    self.transportBottom,
+    preferredWidth,
+  ]];
+
   // Gallery: a full-container overlay (plan/16: "covers the canvas like an
   // overlay"), hidden by default -- `G` shows it, a click or Esc hides it
   // again. The canvas keeps rendering underneath; hiding this view is enough,
@@ -1005,6 +1081,13 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 }
 
 - (void)refreshFolderIfChanged {
+  // The transport strip belongs to a clip: shown while one is on screen (the
+  // render thread publishes that), hidden otherwise so it never blocks the
+  // canvas's mouse. Polled here, on the 0.2 s timer that already exists.
+  if (self.transportHost) {
+    const bool active = g_chrome_lab && g_chrome_lab->video_status_snapshot().active;
+    if (self.transportHost.hidden == active) self.transportHost.hidden = !active;
+  }
   if (!_folder.consume_changed()) return;
   _items = _folder.items();
   ++_listingGeneration;
@@ -1400,6 +1483,7 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 - (void)toggleFilmstrip {
   _filmstripVisible = !_filmstripVisible;
   self.filmstripHost.hidden = !_filmstripVisible;
+  self.transportBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints + 10.0 : 10.0);
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same

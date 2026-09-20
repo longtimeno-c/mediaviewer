@@ -82,7 +82,7 @@ that apply to what you are doing.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 1, 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Backspace`/`Home`/`End`/`PageUp`/`PageDown` navigate it, an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a command bar (Fit / 1:1), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). No video, no `AVPlayer`, no rating/metadata/RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
+| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Backspace`/`Home`/`End`/`PageUp`/`PageDown` navigate it, an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a command bar (Fit / 1:1), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). **Video (PR 19):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. No rating/metadata/RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -168,7 +168,36 @@ ImageIO fast path is a later change to `codec/os_decode_mac.cpp`.
 
 The Mac has a real menu bar (File / View / Go / Window / Help), `?` opens a shortcuts sheet,
 and in the gallery `↑`/`↓`/`W`/`S` move by row, `Enter` opens the selection and `+`/`-` resize the
-thumbnails. Video is **not** on Mac yet: that is PR 19 (VideoToolbox + Core Audio).
+thumbnails.
+
+**Video on Mac (PR 19).** FFmpeg is LGPL and dynamic-link only, so it joins libheif/LibRaw in
+the dynamic triplet:
+
+```sh
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
+  "ffmpeg[core,avcodec,avformat,avfilter,swresample,swscale,dav1d]"   # + `ffmpeg` for the CLI
+```
+
+Open a folder with clips in it. `Space`/`K` play/pause, `,` `.` frame step, `Q`/`E` ±2 s,
+`J`/`L` ±10 s, `Shift+Q`/`Shift+E` speed 0.25–4×, `Shift+M` mute (`?` lists them; the transport
+strip appears above the filmstrip while a clip is on screen). `F3` names the decoder that is
+*actually* running (`SOFTWARE` is spelled out, never silent), the clock source, the A/V error
+and the counters. H.264 and HEVC (8- and 10-bit) decode in hardware; MPEG-2 and MPEG-4 fall
+back to software on Apple Silicon and say so.
+
+`playprobe` is the headless pipeline check — it plays a clip on the system `MTLDevice` against
+a 60 Hz timer and prints the decoder used, the presenter counters and the drift slope:
+
+```sh
+./build-darwin/bin/playprobe clip.mov --seconds 30 --expect hw --mute
+```
+
+Verified on an Apple Silicon Mac with generated clips (H.264, 4K60 10-bit HEVC, an HLG-tagged
+HEVC, MPEG-2 TS, MKV, AVI, no audio): 4K60 10-bit HEVC plays at full rate through VideoToolbox
+(P010 path) with 0 dropped frames; skip and frame-step land on the exact frame against a
+burned-in timecode; repeated photo ↔ video navigation leaves memory and thread count flat.
+Not yet verified: an iPhone HLG capture (only a synthetic HLG-tagged clip), VP9/AV1/WebM (no
+encoder in the LGPL build to make a clip), and audio-device hot-swap.
 
 `frametime` on Darwin requires `drop_source` `Metal display-link`. Copying a
 Windows DXGI JSON report over is a failed gate, not a pass.

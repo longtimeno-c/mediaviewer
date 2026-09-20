@@ -102,6 +102,24 @@ bool mv_chrome_is_marked(int32_t index);
 // Values < 1 are clamped to 1. [main-thread]
 void mv_chrome_set_gallery_columns(int32_t columns);
 
+// Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
+// these read the status it publishes and post commands back as latched counters.
+// [main-thread]
+//
+// Fills the out-params and returns true while a clip is on screen; false (out
+// params untouched) otherwise. `rate_x100` is the playback rate times 100.
+bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_ms, bool* playing,
+                            int32_t* rate_x100, bool* muted);
+void mv_chrome_video_toggle(void);
+// Relative skip, exact.
+void mv_chrome_video_skip(int64_t delta_ms);
+// Absolute seek. exact=false is the scrubber drag (nearest keyframe, instant);
+// exact=true is the release (decode forward to the frame).
+void mv_chrome_video_seek(int64_t position_ms, bool exact);
+// One rung down (-1) / up (+1) the 0.25 / 0.5 / 1 / 1.5 / 2 / 4 ladder.
+void mv_chrome_video_speed_step(int32_t direction);
+void mv_chrome_video_toggle_mute(void);
+
 #ifdef __cplusplus
 }
 #endif

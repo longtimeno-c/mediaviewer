@@ -41,6 +41,10 @@ public final class MVChromeHost: NSObject {
     host(GalleryView())
   }
 
+  @objc public static func makeTransportView() -> NSView {
+    host(TransportView())
+  }
+
   @objc public static func makeHelpView() -> NSView {
     host(HelpView())
   }
