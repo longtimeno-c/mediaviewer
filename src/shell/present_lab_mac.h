@@ -18,7 +18,9 @@
 #include "gfx/metal_layer.h"
 #include "gfx/metal_pacer.h"
 #include "gfx/present_policy.h"
+#include "gfx/video_blit_metal.h"
 #include "image/gpu_image_mac.h"
+#include "player/media_source.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -68,6 +70,14 @@ class present_lab_mac {
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
   void submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept;
+  // PR 19: opens a clip on a worker (open_media blocks on I/O) and posts it.
+  void submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept;
+  // [render-thread] Frees the current clip: releases its frames now, closes the
+  // media_source (which joins its threads) on a worker, never here.
+  void retire_media() noexcept;
+  bool apply_video_input(const input_snapshot& snapshot) noexcept;
+  // The picture on the canvas, still or video frame. False when there is none.
+  [[nodiscard]] bool picture_size(float* w, float* h) const noexcept;
 
   void* view_ = nullptr;
   void* display_link_ = nullptr;
@@ -88,6 +98,32 @@ class present_lab_mac {
   // Bumped by every open_item(); stamped on the images that open produces.
   std::atomic<std::uint64_t> item_counter_{0};
   std::unique_ptr<image::gpu_image_mac> current_image_;
+
+  // PR 19 video. The render thread owns `media_` and `video_frame_`; a worker
+  // opens the clip and posts it here, the same one-way handoff as
+  // pending_image_. `item` ties it to the open_item() that asked for it.
+  struct pending_media {
+    player::media_source* source = nullptr;
+    std::uint64_t item = 0;
+  };
+  gfx::video_blitter_mac video_blitter_;
+  std::atomic<pending_media*> pending_media_{nullptr};
+  std::atomic<std::uint64_t> video_opening_{0};  // item id being opened, 0 = none
+  player::media_source* media_ = nullptr;
+  std::uint64_t media_item_ = 0;
+  player::video_frame* video_frame_ = nullptr;
+  // Frames already presented but not yet released: the GPU may still be reading
+  // them, and the decode thread reuses a released slot at once.
+  static constexpr std::size_t kRetiredFrames = 2;
+  player::video_frame* retired_frames_[kRetiredFrames] = {};
+  bool media_fitted_ = false;
+  int speed_rung_ = 2;  // index into the 0.25 .. 4 ladder; 2 = 1x
+  std::uint32_t seen_anim_toggle_ = 0;
+  std::int64_t seen_anim_steps_ = 0;
+  std::int64_t seen_video_skip_ = 0;
+  std::int32_t seen_video_speed_ = 0;
+  std::uint32_t seen_video_mute_ = 0;
+  bool video_muted_ = false;
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;

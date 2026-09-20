@@ -80,6 +80,13 @@ struct input_snapshot {
   // An animated item: Space toggles play / pause, `,` `.` step (cumulative).
   std::uint32_t anim_toggle_seq = 0;
   std::int64_t anim_steps = 0;
+  // Clip transport beyond play/pause and frame step (plan/16 "Video"): skips in
+  // milliseconds (cumulative, so coalesced key-repeat loses none), speed-ladder
+  // rungs (cumulative), and a mute edge. Space and `,` `.` reuse the two fields
+  // above, exactly as an animation does.
+  std::int64_t video_skip_ms = 0;
+  std::int32_t video_speed_steps = 0;
+  std::uint32_t video_mute_seq = 0;
 
   bool window_visible = true;
   bool window_active = true;

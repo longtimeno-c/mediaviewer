@@ -168,7 +168,14 @@ class packet_queue {
 
 // plan/05: "3-4 is plenty". Four at 4K P010 is ~100 MB of VRAM, which is the
 // right trade against a decoder stall.
+#if defined(MV_DARWIN)
+// The Metal host holds a presented frame for two more presents before releasing
+// it (the GPU may still be sampling it, and the decode thread must not blit over
+// a slot in flight), so it needs headroom beyond the 4 the D3D11 host uses.
+inline constexpr std::uint32_t frame_ring_slots = 6;
+#else
 inline constexpr std::uint32_t frame_ring_slots = 4;
+#endif
 
 class frame_ring {
  public:

@@ -51,6 +51,8 @@ add_library(mv_gfx STATIC
   src/gfx/device_mac.mm
   src/gfx/metal_layer.mm
   src/gfx/blit_metal.mm
+  src/gfx/video_blit_metal.mm
+  src/gfx/video_blit_metal.h
   src/gfx/metal_pacer.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
@@ -339,6 +341,7 @@ add_executable(mediaviewer_lab
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
+  src/shell/media_kind.h
   src/shell/input_state.h
   src/shell/folder_model_mac.cpp
   src/shell/folder_model_mac.h
@@ -350,6 +353,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   mv_canvas
   mv_shell
   mv_io
+  mv_player
   imgui::imgui
   "${MV_SWIFT_CHROME_LIB}"
   "-framework Foundation"
@@ -402,6 +406,15 @@ if(MV_BUILD_TESTS)
     tests/test_raw.cpp
     tests/test_anim.cpp
     tests/test_colour.cpp
+    # PR 19: the portable player logic (clock, drift, presenter, transport, probe,
+    # the audio-sink contract). test_video_ring / test_video_colour build D3D11
+    # textures and test_video_transport goes through the Windows ABI header, so
+    # they stay Windows-only; playprobe covers the Metal ring for real.
+    tests/test_av_clock.cpp
+    tests/test_audio_sink.cpp
+    tests/test_presenter.cpp
+    tests/test_transport.cpp
+    tests/test_container_probe.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -409,6 +422,7 @@ if(MV_BUILD_TESTS)
     mv_shell
     mv_codec
     mv_image
+    mv_player
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF

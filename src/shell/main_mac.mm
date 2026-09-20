@@ -42,6 +42,7 @@
 // compiler catches a signature drift here instead of it only surfacing as a
 // link error against the Swift side.
 #include "mv_chrome_bridge.h"
+#include "shell/media_kind.h"
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -185,6 +186,7 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 - (void)setHelpVisible:(BOOL)visible;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
+- (BOOL)currentItemIsVideo;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
@@ -459,6 +461,36 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     }
     if (c == '-') {
       [self.app adjustGalleryCellSize:-1];
+      return;
+    }
+  }
+  // plan/16 "Video": while the current item is a clip the transport keys are
+  // live. They reach the render thread as latched counters (input_snapshot), the
+  // same way pan/zoom does; the render thread owns the media_source. Arrows and
+  // A/D stay previous/next on a clip (only Space changes meaning).
+  if (self.app && [self.app currentItemIsVideo] && ![self.app galleryVisible] &&
+      ![self.app helpVisible] && ![self.app isSlideshowActive] &&
+      !(mods & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+                NSEventModifierFlagOption))) {
+    const bool shift = (mods & NSEventModifierFlagShift) != 0;
+    const unichar lc = (c < 128) ? static_cast<unichar>(std::tolower(static_cast<int>(c))) : c;
+    bool handled = true;
+    if (c == ' ' && !shift) ++self.snap->anim_toggle_seq;                 // play / pause
+    else if (lc == 'k') ++self.snap->anim_toggle_seq;                     // pause (toggle)
+    else if (c == ',') --self.snap->anim_steps;                           // frame step back
+    else if (c == '.') ++self.snap->anim_steps;                           // frame step forward
+    else if (lc == 'j') self.snap->video_skip_ms -= 10000;                // -10 s
+    else if (lc == 'l') self.snap->video_skip_ms += 10000;                // +10 s
+    else if (lc == 'q' && shift) self.snap->video_speed_steps -= 1;       // speed down
+    else if (lc == 'e' && shift) self.snap->video_speed_steps += 1;       // speed up
+    else if (lc == 'q') self.snap->video_skip_ms -= 2000;                 // -2 s
+    else if (lc == 'e') self.snap->video_skip_ms += 2000;                 // +2 s
+    else if (lc == 'm' && shift) ++self.snap->video_mute_seq;             // mute
+    else handled = false;
+    if (handled) {
+      ++self.snap->activity_seq;
+      [self publish];
+      if (self.lab) self.lab->wake();
       return;
     }
   }
@@ -1379,6 +1411,11 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 }
 - (uint64_t)listingGeneration {
   return _listingGeneration;
+}
+- (BOOL)currentItemIsVideo {
+  if (_items.empty()) return NO;
+  const std::size_t i = _index.current();
+  return i < _items.size() && mv::shell::is_video_name(_items[i].name_utf8);
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;

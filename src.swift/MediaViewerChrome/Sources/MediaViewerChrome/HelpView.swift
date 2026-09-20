@@ -48,6 +48,14 @@ struct HelpView: View {
       Row(keys: "F7  F8", action: "Copy / move marked (⇧ picks folder)"),
       Row(keys: "⌫  ⌘⌫", action: "Move marked or current to Trash"),
     ]),
+    Section(title: "Video", rows: [
+      Row(keys: "Space  K", action: "Play / pause"),
+      Row(keys: ", .", action: "Frame step back / forward"),
+      Row(keys: "Q  E", action: "Skip -2 s / +2 s"),
+      Row(keys: "J  L", action: "Skip -10 s / +10 s"),
+      Row(keys: "⇧Q  ⇧E", action: "Slower / faster (0.25x - 4x)"),
+      Row(keys: "⇧M", action: "Mute"),
+    ]),
     Section(title: "Slideshow", rows: [
       Row(keys: "Space", action: "Pause / resume"),
       Row(keys: "+  −", action: "Interval"),

@@ -9,7 +9,7 @@
 // still put pictures on screen.
 //
 //   playprobe CLIP [--seconds N] [--refresh HZ] [--seek-at S --seek-to S]
-//             [--pause-at S --resume-at S] [--rate R] [--expect hw|sw]
+//             [--pause-at S --resume-at S] [--rate R] [--expect hw|sw] [--mute] [--trace]
 //
 // Exit 0 when the run was clean (and matched --expect), 1 otherwise.
 #import <Foundation/Foundation.h>
@@ -47,7 +47,7 @@ const char* decoder_name(mv::player::decoder_kind k) {
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: playprobe CLIP [--seconds N] [--refresh HZ] [--seek-at S --seek-to S] "
-                         "[--pause-at S --resume-at S] [--rate R] [--expect hw|sw]\n");
+                         "[--pause-at S --resume-at S] [--rate R] [--expect hw|sw] [--mute] [--trace]\n");
     return 2;
   }
   const char* path = argv[1];
@@ -55,9 +55,10 @@ int main(int argc, char** argv) {
          rate = 1.0;
   std::string expect;
   bool trace = false;
+  bool mute = false;
   for (int i = 2; i < argc; ++i) {
-    if (!std::strcmp(argv[i], "--trace")) {
-      trace = true;
+    if (!std::strcmp(argv[i], "--trace") || !std::strcmp(argv[i], "--mute")) {
+      if (!std::strcmp(argv[i], "--mute")) mute = true; else trace = true;
       // consume the flag by moving the last arg into its place
       for (int j = i; j + 1 < argc; ++j) argv[j] = argv[j + 1];
       --argc;
@@ -91,6 +92,9 @@ int main(int argc, char** argv) {
     mv::player::media_source* src = opened.value();
     const auto info = src->info();
     if (rate != 1.0) src->set_rate(rate);
+    // Muted output still runs the Core Audio callback (gain 0), so the clock under
+    // test is the real one -- it just is not audible on someone's desk.
+    if (mute) src->set_muted(true);
     src->play();
 
     const double interval = 1.0 / refresh;
