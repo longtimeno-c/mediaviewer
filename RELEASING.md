@@ -133,8 +133,60 @@ it. Updates still work unsigned — only the first-run warning is affected.
 
 Same model, different machinery: Sparkle instead of Velopack, a notarized `.dmg` instead of
 the wizard, and `appcast.xml` instead of the manifest — reading the same
-`/releases/latest/download/`. Built on a Mac with `tools/mac/macpack.py`.
+`/releases/latest/download/`.
 
-It needs its own two credentials: a **Sparkle EdDSA keypair** for `SUPublicEDKey` (free;
-without it the app is built with *no updater at all*), and an **Apple Developer ID plus
-notarytool profile** for notarization (paid; without it Gatekeeper blocks the image).
+**CI builds it.** The `macOS` job in `.github/workflows/release.yml` runs after the Windows
+job on every push to `main`: build, test, sign with Developer ID, notarize, staple, then
+attach to the same GitHub Release:
+
+| Asset | Purpose |
+|---|---|
+| `MediaViewer-<version>.dmg` | first install: drag to Applications, GPL shown on mount |
+| `MediaViewer-<version>.zip` | what Sparkle installs on every later update |
+| `appcast.xml` | signed feed the app reads; **every release must carry its own** |
+
+Every push makes a new "latest" release, and the app reads `latest/download/appcast.xml`,
+so a release without the feed would strand Mac users until the next one. The job attaches
+all three together, or none.
+
+### One-time setup: repository secrets
+
+The job needs six secrets. Without them it still builds, but the image is ad-hoc signed and
+is **not** attached to the release (a tagged release fails outright instead).
+
+| Secret | What | How to get it |
+|---|---|---|
+| `MV_MAC_CERT_P12_BASE64` | Developer ID Application certificate **and its private key** | Keychain Access → My Certificates → right-click *Developer ID Application: …* → Export → `.p12`, set a password |
+| `MV_MAC_CERT_PASSWORD` | that `.p12` password | you chose it |
+| `APPLE_ID` | Apple ID that owns the developer account | |
+| `APPLE_TEAM_ID` | 10-character Team ID | developer.apple.com → Membership |
+| `APPLE_APP_PASSWORD` | app-specific password for notarization | appleid.apple.com → Sign-In and Security |
+| `MV_SPARKLE_PRIVATE_KEY` | Sparkle EdDSA private key | `generate_keys -x file` (below) |
+
+```sh
+base64 -i DeveloperID.p12 | gh secret set MV_MAC_CERT_P12_BASE64
+gh secret set MV_MAC_CERT_PASSWORD
+gh secret set APPLE_ID
+gh secret set APPLE_TEAM_ID --body 23FQ4A4Q35
+gh secret set APPLE_APP_PASSWORD
+gh secret set MV_SPARKLE_PRIVATE_KEY < ~/.mediaviewer-release/sparkle_ed25519.key
+rm DeveloperID.p12          # the private key must not stay on disk
+```
+
+`gh secret set` with no value prompts for it, so nothing lands in shell history. The Sparkle
+**public** key and the signing identity name are not secret and live in the workflow's `env:`.
+
+> **Back up the Sparkle private key** (`~/.mediaviewer-release/sparkle_ed25519.key`,
+> also in your login keychain). It is the Mac twin of the Windows manifest key: lose it and
+> no installed copy can ever accept another update. Rotating it means shipping a build with
+> the new public key first, signed under the old one.
+
+The certificate and its private key are the Mac-side identity of the developer account, and a
+GitHub secret is readable by anything the workflow runs. Keep workflow changes reviewed, and
+do not enable `pull_request_target` or run untrusted fork code with these secrets.
+
+### Building by hand
+
+For a rehearsal, or a build outside CI, see the runbook in the README ("macOS: build, sign,
+release, update"): `tools/mac/macpack.py release --skip-notarize` signs and builds the image
+locally without contacting Apple.
