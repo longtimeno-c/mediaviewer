@@ -5,21 +5,23 @@ namespace MediaViewer.Updater;
 /// The update-manifest signing key pinned into the app (plan/13 "Signing").
 /// </summary>
 /// <remarks>
-/// <para><b>PRODUCTION PUBLIC KEY — PLACEHOLDER. The owner replaces this
-/// constant before the first external build</b> (procedure:
-/// tools/package/update-signing.md). It is 32 bytes of raw Ed25519 public key,
-/// lowercase hex.</para>
-/// <para>While it is the all-zero placeholder, <see cref="ManifestVerifier"/>
-/// rejects every manifest with <see cref="ManifestRejection.KeyNotConfigured"/>,
-/// so an unconfigured build can never trust an update — it fails closed.</para>
+/// <para><b>PRODUCTION PUBLIC KEY.</b> 32 bytes of raw Ed25519 public key,
+/// lowercase hex. Pinned 2026-09-23; its private half signs every release
+/// manifest (procedure: tools/package/update-signing.md).</para>
+/// <para>An all-zero value is the placeholder, and <see cref="ManifestVerifier"/>
+/// rejects every manifest with <see cref="ManifestRejection.KeyNotConfigured"/>
+/// while it is set, so an unconfigured build fails closed. Rotating this key
+/// means shipping a build carrying the new key, signed under the old one,
+/// first — there is no in-band key update.</para>
 /// <para>Only the public half is ever in the tree. The private key lives with
 /// the release signer, never in git, never in CI logs.</para>
 /// </remarks>
 public static class UpdateKeys
 {
-    /// <summary>PLACEHOLDER — replace with the release Ed25519 public key (64 hex chars).</summary>
+    /// <summary>The release Ed25519 public key. Its private half is held by the
+    /// release signer and is never in this repository (update-signing.md).</summary>
     public const string ProductionPublicKeyHex =
-        "0000000000000000000000000000000000000000000000000000000000000000";
+        "0451bfecfb6a26d9058fb09cfa7a9305dcf1cea7c87221e9185b0038b1cc908c";
 
     public const string Channel = "win";
     public const string PackId = "MediaViewer";

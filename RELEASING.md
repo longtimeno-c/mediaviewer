@@ -1,0 +1,140 @@
+# Releasing MediaViewer
+
+How a build gets to a person, and how the next one reaches them without asking.
+
+Full design: [plan/13](plan/13-updates-and-telemetry.md). Signing procedure:
+[tools/package/update-signing.md](tools/package/update-signing.md).
+
+## The model in one paragraph
+
+**The wizard is a one-time download.** Someone installs `MediaViewer-<version>-Setup.exe`
+once, and from then on the app updates itself: it checks GitHub on launch and every six
+hours, downloads and stages in the background, and shows a quiet *"Update ready —
+restart"*. No wizard, no download page, no clicking through an installer again. Updates
+never interrupt — not during playback, not during a job. If the new version fails to start
+twice, the stub falls back to the previous one.
+
+```
+ first install              every update after
+ ─────────────              ──────────────────
+ GitHub Release             GitHub Release
+   MediaViewer-Setup.exe      mediaviewer-manifest.json(.sig)   ← trust root
+        ↓                     MediaViewer-<v>-full.nupkg        ← the payload
+   wizard runs once           RELEASES / releases.win.json      ← the index
+        ↓                              ↓
+ %LocalAppData%\MediaViewer    app downloads, verifies, stages
+                                       ↓
+                               "Update ready — restart"
+```
+
+## What a release must contain
+
+The wizard is **not** the update. Upload only the wizard and existing users get nothing —
+they stay on the version they have, silently. Every release needs the feed files too.
+
+A local build writes all of them into `dist/`:
+
+| Asset | Needed for | Purpose |
+|---|---|---|
+| `MediaViewer-<version>-Setup.exe` | first install | the Inno wizard |
+| `MediaViewer-<version>-full.nupkg` | updates | the payload the app downloads |
+| `RELEASES`, `releases.win.json`, `assets.win.json` | updates | Velopack's index |
+| `mediaviewer-manifest.json` | updates | version, min_version, blocklist, hashes |
+| `mediaviewer-manifest.json.sig` | updates | detached Ed25519 signature — **without it every client refuses** |
+
+The updater reads `https://github.com/longtimeno-c/mediaviewer/releases/latest/download/`,
+so the release carrying these must be the **latest** one on GitHub.
+
+## Cutting a release
+
+### 1. Bump the version
+
+`CMakeLists.txt` is the single source. **The version must increase every release** — the
+updater compares against the running version, so a release at the same number is invisible
+to everyone who already has it.
+
+```cmake
+project(mediaviewer VERSION 0.1.1 LANGUAGES C CXX)
+```
+
+Versions are strict `x.y.z`. Not `0.1.1-beta`, not `0.1.1.4`: `ReleaseVersion` parses three
+numeric parts and nothing else, and a version it cannot parse makes the updater go **inert**
+rather than fail loudly.
+
+### 2. Build
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+```
+
+### 3. Package and sign
+
+```powershell
+.\tools\package\build-release.ps1 -BuildDir build `
+  -ManifestKey $env:USERPROFILE\.mediaviewer-release\dev.key `
+  -SigningMetadata trusted-signing.json      # optional; see "SmartScreen" below
+```
+
+It refuses to continue if the app exceeds plan/09's 250 MB cap, fails plan/11's licence
+gate, or contains the Windows App SDK AI / ONNX / DirectML / WebView2 files plan/13 forbids
+shipping. It prints `manifest signed` when the key took, and warns loudly when it did not.
+
+### 4. Publish
+
+Everything in `dist\releases\`, plus the wizard:
+
+```powershell
+$v = "0.1.1"
+gh release create "v$v" --title "MediaViewer $v" `
+  (Get-ChildItem dist\releases -File).FullName `
+  "dist\MediaViewer-$v-Setup.exe"
+```
+
+Existing installs pick it up within six hours, or on their next launch.
+
+## Signing: two separate credentials
+
+They are unrelated, and they fail in different ways.
+
+### Update manifest — Ed25519 (free, already set up)
+
+Proves an update came from you. The public half is pinned in
+`src.managed/MediaViewer.Updater/UpdateKeys.cs`; the private half lives at
+`%USERPROFILE%\.mediaviewer-release\dev.key` and must never enter git or CI.
+
+> **Back this key up.** There is no in-band key rotation. Rotating means shipping a build
+> carrying the new public key, signed under the old one, *first*. Lose the private key and
+> every existing install is permanently unreachable — they keep working, they just never
+> update again, and the only fix is asking each person to reinstall by hand.
+
+### Authenticode — SmartScreen (paid, not yet set up)
+
+Proves Windows should trust the executable. Without it every early user gets a SmartScreen
+block on first run. Use Azure Trusted Signing (plan/13) and pass `-SigningMetadata`.
+
+This is an enrolled identity, not a build step: building locally does not substitute for
+it. Updates still work unsigned — only the first-run warning is affected.
+
+## Status
+
+| | |
+|---|---|
+| Wizard, per-user, no UAC | ✅ built and tested |
+| Uninstall via Apps & features | ✅ tested; wizard owns it, not Velopack |
+| Bundled runtimes (no prerequisites) | ✅ App SDK + .NET in the payload |
+| Update: download, stage, restart | ✅ end-to-end 16/16 locally |
+| Update: tamper rejection, rollback | ✅ tested |
+| Ed25519 manifest signing | ✅ key generated, public key pinned |
+| Authenticode / SmartScreen | ❌ needs Azure Trusted Signing |
+| Clean-VM verify | ❌ not run |
+
+## macOS
+
+Same model, different machinery: Sparkle instead of Velopack, a notarized `.dmg` instead of
+the wizard, and `appcast.xml` instead of the manifest — reading the same
+`/releases/latest/download/`. Built on a Mac with `tools/mac/macpack.py`.
+
+It needs its own two credentials: a **Sparkle EdDSA keypair** for `SUPublicEDKey` (free;
+without it the app is built with *no updater at all*), and an **Apple Developer ID plus
+notarytool profile** for notarization (paid; without it Gatekeeper blocks the image).

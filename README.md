@@ -596,6 +596,10 @@ reason the corpus now carries an audio-bearing 31-minute clip.
 
 ## Package and install (PR 8)
 
+> Cutting a release, and how updates reach people who already installed:
+> **[RELEASING.md](RELEASING.md)**. The short version — the wizard is a one-time
+> download, and every update after it arrives in-app from GitHub Releases.
+
 The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, with **no
 UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
 for every update, which is how update mechanisms stop working
