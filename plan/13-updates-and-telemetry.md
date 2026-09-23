@@ -158,10 +158,15 @@ like the Velopack manifest. Sparkle keeps no previous version, so "fails to star
 → roll back" has no Mac mechanism yet. **Open for PR 20:** build it, or accept
 kill-switch-only on Mac and log that call.
 
+**What Sparkle installs** is a zip of the stapled app, never the disk image: the licence
+agreement is a first-install page, like Inno's. The feed and the zip are both checked
+against the pinned key (`SURequireSignedFeed`, `SUVerifyUpdateBeforeExtraction`). No
+system profile is sent.
+
 **Uninstall** is dragging the app to the Trash. The Quick Look extension lives inside the
-bundle, so it goes with it. Caches, the thumbnail DB, and crash reports sit under
-`~/Library/Caches/MediaViewer` and `~/Library/Application Support/MediaViewer`. About
-names them; a removal command is not needed.
+bundle, so it goes with it. What stays behind is the thumbnail cache
+(`~/Library/Caches/MediaViewer`) and preferences (`~/Library/Preferences/<bundle id>.plist`).
+A removal command is not needed.
 
 No per-machine / enterprise variant in PR 20.
 

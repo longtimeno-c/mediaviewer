@@ -9,6 +9,14 @@
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
+// Sparkle 2 (PR 20, plan/13): only MediaViewer.app links it, and only when the
+// build was given the EdDSA public key (cmake/darwin-app.cmake). The bare
+// mediaviewer_lab never checks for updates.
+#if MV_WITH_SPARKLE
+#import <Sparkle/Sparkle.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -109,7 +117,11 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 // responds to. The @implementation stays further down, after MvMetalView's,
 // so the file still reads outside-in (canvas, then chrome/app).
 @class MvMetalView;
-@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate
+#if MV_WITH_SPARKLE
+                                 , SPUUpdaterDelegate
+#endif
+                                 >
 @property(nonatomic, strong) NSWindow* window;
 @property(nonatomic, strong) MvMetalView* view;
 @property(nonatomic, strong) NSView* commandBar;
@@ -192,6 +204,12 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
+
+// PR 20 updates (plan/13): an update Sparkle has downloaded and staged waits
+// for the user. The command bar shows "Update ready — restart"; nothing
+// restarts the app on its own.
+- (BOOL)updateReady;
+- (void)restartToUpdate;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -295,6 +313,12 @@ extern "C" void mv_chrome_video_toggle_mute(void) {
 }
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   g_gallery_columns = columns < 1 ? 1 : columns;
+}
+extern "C" bool mv_chrome_update_ready(void) {
+  return g_chrome_app && [g_chrome_app updateReady];
+}
+extern "C" void mv_chrome_restart_to_update(void) {
+  if (g_chrome_app) [g_chrome_app restartToUpdate];
 }
 
 @interface MvMetalView : NSView <NSDraggingSource>
@@ -772,6 +796,18 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   // hidden: it is an explicit `G`, not something a folder open should show.
   BOOL _filmstripVisible;
   BOOL _galleryVisible;
+
+  // PR 20. _launched: -applicationDidFinishLaunching: has started the lab, so
+  // a Finder open can go straight to -openEntryPath:. Before that, Finder's
+  // open arrives between will- and did-finish-launching and is stashed in
+  // _options.open_path, the same slot argv uses.
+  BOOL _launched;
+  BOOL _askedDefaultViewer;
+#if MV_WITH_SPARKLE
+  SPUStandardUpdaterController* _updater;
+  // Sparkle's "install now and relaunch" block, held while an update waits.
+  void (^_installUpdateNow)(void);
+#endif
 }
 - (instancetype)initWithOptions:(const mv::shell::mac_lab_options&)options {
   self = [super init];
@@ -791,7 +827,11 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
                           NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
+#if MV_APP_BUNDLE
+  self.window.title = @"MediaViewer";
+#else
   self.window.title = @"MediaViewer present lab";
+#endif
   // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;
@@ -965,6 +1005,15 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     [self.helpHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
+#if MV_WITH_SPARKLE
+  // Started here, not at init: the updater's first check must not race the
+  // window and lab coming up. Checks and downloads run in the background
+  // (Info.plist: SUEnableAutomaticChecks, SUAutomaticallyUpdate); the
+  // delegate below holds a staged update until the user restarts.
+  _updater = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
+                                                            updaterDelegate:self
+                                                         userDriverDelegate:nil];
+#endif
   [self installMainMenu];
 
   g_chrome_snap = &_snap;
@@ -991,6 +1040,20 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   // parsed into the same options_.open_path below) resolves through the same
   // folder+select rule a drop does, now that folder_model_mac exists to
   // resolve it -- not a direct one-off open_item() with no folder context.
+#if MV_APP_BUNDLE
+  // An update restart puts the user back where they were (plan/13 "Preserve
+  // state across the restart"): the folder and the selected file. Only an
+  // explicit open (argv, Finder) outranks it.
+  NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+  if (NSString* resume = [defaults stringForKey:@"MVResumeAfterUpdate"]) {
+    [defaults removeObjectForKey:@"MVResumeAfterUpdate"];
+    if (_options.open_path.empty()) _options.open_path = resume.fileSystemRepresentation;
+  }
+  _askedDefaultViewer = [defaults boolForKey:@"MVAskedDefaultViewer"];
+#else
+  _askedDefaultViewer = YES;  // the lab never asks
+#endif
+  _launched = YES;
   if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
     NSBeep();
   }
@@ -1081,6 +1144,9 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 }
 
 - (void)refreshFolderIfChanged {
+  if (!_askedDefaultViewer && _options.soak_seconds <= 0.0 && _lab.stills_shown() > 0) {
+    [self askDefaultViewerOnce];
+  }
   // The transport strip belongs to a clip: shown while one is on screen (the
   // render thread publishes that), hidden otherwise so it never blocks the
   // canvas's mouse. Polled here, on the 0.2 s timer that already exists.
@@ -1579,6 +1645,13 @@ enum MvMenuCmd : NSInteger {
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
+#if MV_WITH_SPARKLE
+  if (item.action == @selector(toggleAutomaticUpdateChecks:)) {
+    item.state = _updater.updater.automaticallyChecksForUpdates ? NSControlStateValueOn
+                                                               : NSControlStateValueOff;
+    return YES;
+  }
+#endif
   if (item.action != @selector(menuAction:)) return YES;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuOpen: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp:
@@ -1622,6 +1695,24 @@ enum MvMenuCmd : NSInteger {
   [app addItemWithTitle:@"About MediaViewer"
                  action:@selector(orderFrontStandardAboutPanel:)
           keyEquivalent:@""];
+#if MV_WITH_SPARKLE
+  // The update check is a network call even with nothing else ever sent
+  // (plan/13): it can be turned off here and stays off.
+  NSMenuItem* check = [app addItemWithTitle:@"Check for Updates…"
+                                     action:@selector(checkForUpdates:)
+                              keyEquivalent:@""];
+  check.target = _updater;
+  NSMenuItem* automatic = [app addItemWithTitle:@"Check for Updates Automatically"
+                                         action:@selector(toggleAutomaticUpdateChecks:)
+                                  keyEquivalent:@""];
+  automatic.target = self;
+#endif
+#if MV_APP_BUNDLE
+  NSMenuItem* makeDefault = [app addItemWithTitle:@"Make MediaViewer the Default Photo Viewer"
+                                           action:@selector(makeDefaultViewer)
+                                    keyEquivalent:@""];
+  makeDefault.target = self;
+#endif
   [app addItem:[NSMenuItem separatorItem]];
   [app addItemWithTitle:@"Hide MediaViewer" action:@selector(hide:) keyEquivalent:@"h"];
   [app addItem:[NSMenuItem separatorItem]];
@@ -1673,6 +1764,108 @@ enum MvMenuCmd : NSInteger {
 
   NSApp.mainMenu = bar;
 }
+
+// Finder: double-click, Open With, or a drop on the Dock icon (PR 20).
+// Same "first entry that exists wins" rule as argv and drag-in (plan/16).
+- (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
+  (void)application;
+  for (NSURL* url in urls) {
+    if (!url.isFileURL) continue;
+    const char* path = url.fileSystemRepresentation;
+    if (!path) continue;
+    if (!_launched) {
+      _options.open_path = path;
+      return;
+    }
+    if ([self openEntryPath:path]) {
+      [self.window makeKeyAndOrderFront:nil];
+      return;
+    }
+  }
+  NSBeep();
+}
+
+// plan/13: "Default photo viewer ... after the first successful still open",
+// once, in-app, never in the installer. A sheet, not a modal: the canvas keeps
+// presenting. "Not Now" is final; the app menu keeps the command for later.
+- (void)askDefaultViewerOnce {
+  _askedDefaultViewer = YES;
+  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"MVAskedDefaultViewer"];
+  if (!self.window || self.window.attachedSheet) return;
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Open photos with MediaViewer?";
+  alert.informativeText =
+      @"MediaViewer can be the app that opens JPEG, PNG, HEIC, RAW and the other photo "
+      @"formats it reads when you double-click them in Finder. You can change this later "
+      @"in the MediaViewer menu.";
+  [alert addButtonWithTitle:@"Make Default"];
+  [alert addButtonWithTitle:@"Not Now"];
+  [alert beginSheetModalForWindow:self.window
+                completionHandler:^(NSModalResponse response) {
+                  if (response == NSAlertFirstButtonReturn) [self makeDefaultViewer];
+                }];
+}
+
+// The type list is read back from our own Info.plist, so the prompt, Finder's
+// Open With list, and the Quick Look extension cannot disagree. macOS shows
+// its own confirmation per type; nothing is set without it.
+- (void)makeDefaultViewer {
+  NSArray* docTypes = NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"];
+  NSURL* app = NSBundle.mainBundle.bundleURL;
+  for (NSDictionary* docType in docTypes) {
+    for (NSString* identifier in docType[@"LSItemContentTypes"]) {
+      UTType* type = [UTType typeWithIdentifier:identifier];
+      if (!type) continue;
+      [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:app
+                                            toOpenContentType:type
+                                            completionHandler:^(NSError* error) {
+                                              if (error) MV_LOG_WARN("default viewer: a type was not set");
+                                            }];
+    }
+  }
+}
+
+- (BOOL)updateReady {
+#if MV_WITH_SPARKLE
+  return _installUpdateNow != nil;
+#else
+  return NO;
+#endif
+}
+
+- (void)restartToUpdate {
+#if MV_WITH_SPARKLE
+  if (!_installUpdateNow) return;
+  if (!_wantSelectedPath.empty()) {
+    [NSUserDefaults.standardUserDefaults
+        setObject:[NSString stringWithUTF8String:_wantSelectedPath.c_str()]
+           forKey:@"MVResumeAfterUpdate"];
+  }
+  void (^install)(void) = _installUpdateNow;
+  _installUpdateNow = nil;
+  install();  // Sparkle quits, installs, and relaunches
+#endif
+}
+
+#if MV_WITH_SPARKLE
+// Sparkle has a verified update staged. YES = we own the timing: nothing
+// installs until the user clicks "Update ready — restart", or quits normally
+// (then it installs on the way out, without a relaunch). Never a modal, never
+// a forced restart (plan/13 "Never interrupt").
+- (BOOL)updater:(SPUUpdater*)updater
+    willInstallUpdateOnQuit:(SUAppcastItem*)item
+    immediateInstallationBlock:(void (^)(void))immediateInstallHandler {
+  (void)updater;
+  (void)item;
+  _installUpdateNow = [immediateInstallHandler copy];
+  return YES;
+}
+
+- (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
+  (void)item;
+  _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
+}
+#endif
 
 - (void)navigateNext {
   if (_items.empty()) return;
@@ -1816,6 +2009,10 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
+    } else if (std::strncmp(arg, "-psn_", 5) == 0) {
+      // A Finder/LaunchServices launch of an older-style process serial
+      // number: not ours, and not an error (PR 20: MediaViewer.app starts
+      // from Finder).
     } else if (arg[0] != '-') {
       // A bare positional path: "the first entry that exists wins"
       // (plan/16-commands.md) -- MvLabApp resolves it (folder, or a file's

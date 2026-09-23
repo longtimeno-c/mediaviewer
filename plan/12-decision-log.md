@@ -952,6 +952,41 @@ an in-app accept modal.
 
 Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
 
+## 2026-09-23 — PR 20 starts before PR 19's verify fully holds; calls made starting it
+
+**Sequencing, the owner's call.** The 2026-09-17 entry keeps F's own order: each verify
+line holds before the next PR starts. PR 19's verify includes "an iPhone HLG clip looks
+correct", and only a synthetic HLG-tagged clip has been checked. The owner chose to start
+PR 20 anyway, stacked on the PR 19 branch. PR 19's HLG check is **still owed** and still
+gates calling PR 19 done. PR 20 does not touch the video path.
+
+**Calls:**
+
+| | |
+|---|---|
+| **Two executables** | `mediaviewer_lab` stays the bare instrument `frametime` drives. `MediaViewer` (inside MediaViewer.app) is the same sources with `MV_APP_BUNDLE`, plus Sparkle when a key is configured. |
+| **Bundle id** | `io.github.longtimeno-c.mediaviewer` (CMake cache, `MV_MAC_BUNDLE_ID`). Changing it after the first ship orphans preferences and breaks Sparkle's same-app check. Decide before shipping. |
+| **Registered types** | The D5 **still** set only, `LSHandlerRank` Alternate, role Viewer. Video is not registered, matching Windows PR 15's still-only `ProgId`s. `tools/mac/check_plists.py` ties the list to `codec/format.h`. |
+| **Default viewer** | Asked once, as a sheet, after the first still reaches the screen. The type list is read back from the app's own Info.plist. macOS confirms each type itself. |
+| **Quick Look** | A thumbnail `.appex`, sandboxed, running `image::make_thumb_jpeg`, the same pixels as the filmstrip. No cache of its own. |
+| **Sparkle** | 2.9.6, SHA-256 pinned, MIT. XPC services removed (the app is not sandboxed). Signed feed and verified archive required. Automatic checks on, with no Sparkle permission prompt (the app menu turns them off). No system profile. Updates are a zip of the stapled app, never the disk image. |
+| **Disk image** | dmgbuild 1.6.7, APFS + LZFSE, GPL as the image's licence agreement via `hdiutil udifrez`. |
+
+**Owed, not done in this change:**
+
+- **Nothing here has been built or run on a Mac.** It was written in a Linux container with
+  no Apple SDK. The plist policy and packaging helpers run on Linux (not yet wired into CI); the Objective-C++, the
+  CMake, and every step of `macpack.py` that runs a tool do not.
+- **Quick Look precedence.** Whether Finder uses our extension or its own generator for
+  types macOS already thumbnails (JPEG, HEIC, most RAW) is unmeasured. The corrupted-HEIC
+  verify must check which process actually decoded it.
+- **State across an update restart** is the folder and the selected file only. Zoom/pan
+  and clip position (plan/13 "Preserve state") are not carried yet.
+- **Rollback** after two failed starts has no Mac mechanism (open since the 2026-09-23 entry above).
+- **Crashpad on Mac is not in the tree.** The 2026-09-17 entry folded PR 7's Crashpad scope
+  into PR 17, and `plan/10` says PR 20 "does not add it", but `cmake/darwin.cmake` links
+  no Crashpad and no Mac scrub exists. Either PR 17 still owes it or PR 20 takes it. Owner's call.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

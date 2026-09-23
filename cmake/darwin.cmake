@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Darwin / Apple Silicon present lab (PR 16). Included from the root
+# Darwin / Apple Silicon host (PR 16–20). Included from the root
 # CMakeLists.txt and then returns, so none of the Windows targets are defined.
+# MediaViewer.app, the Quick Look extension, and Sparkle are in darwin-app.cmake.
 #
 # plan/15: AppKit + CAMetalLayer + CAMetalDisplayLink. No SwiftUI, no
 # VideoToolbox, no FFmpeg on this slice.
@@ -317,6 +318,9 @@ set(MV_SWIFT_CHROME_BUILD_DIR "${CMAKE_BINARY_DIR}/swift-chrome")
 set(MV_SWIFT_CHROME_HEADER "${MV_SWIFT_CHROME_BUILD_DIR}/MediaViewerChrome-Swift.h")
 set(MV_SWIFT_CHROME_LIB "${MV_SWIFT_CHROME_BUILD_DIR}/release/libMediaViewerChrome.a")
 set(MV_SWIFT_CHROME_COLLECT "${CMAKE_SOURCE_DIR}/cmake/collect-swift-chrome.sh")
+file(GLOB MV_SWIFT_CHROME_SOURCES CONFIGURE_DEPENDS
+  "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/*.swift"
+  "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include/*.h")
 
 add_custom_command(
   OUTPUT "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}"
@@ -328,16 +332,18 @@ add_custom_command(
           "${MV_SWIFT_CHROME_BUILD_DIR}" "${MV_SWIFT_CHROME_HEADER}" "${MV_SWIFT_CHROME_LIB}"
   DEPENDS
     "${MV_SWIFT_CHROME_DIR}/Package.swift"
-    "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/CommandBarView.swift"
-    "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/ChromeHost.swift"
-    "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include/mv_chrome_bridge.h"
+    ${MV_SWIFT_CHROME_SOURCES}
     "${MV_SWIFT_CHROME_COLLECT}"
   COMMENT "swift build: MediaViewerChrome (PR 18 command bar)"
   VERBATIM)
 add_custom_target(mv_swift_chrome_build
   DEPENDS "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}")
 
-add_executable(mediaviewer_lab
+# The AppKit host, built twice from the same sources: mediaviewer_lab (the
+# PR 16 instrument frametime drives, a bare binary) and MediaViewer (PR 20,
+# the executable inside MediaViewer.app, with MV_APP_BUNDLE and, given a key,
+# Sparkle).
+set(MV_MAC_HOST_SOURCES
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
@@ -346,35 +352,44 @@ add_executable(mediaviewer_lab
   src/shell/folder_model_mac.cpp
   src/shell/folder_model_mac.h
 )
-add_dependencies(mediaviewer_lab mv_swift_chrome_build)
-target_link_libraries(mediaviewer_lab PRIVATE
-  mv_gfx
-  mv_image
-  mv_canvas
-  mv_shell
-  mv_io
-  mv_player
-  imgui::imgui
-  "${MV_SWIFT_CHROME_LIB}"
-  "-framework Foundation"
-  "-framework AppKit"
-  "-framework Metal"
-  "-framework QuartzCore"
-  "-framework CoreServices"
-  "-framework SwiftUI"
-  "-framework Combine")
-target_include_directories(mediaviewer_lab PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
-  "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
 set_source_files_properties(
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+function(mv_mac_host target)
+  add_executable(${target} ${MV_MAC_HOST_SOURCES})
+  add_dependencies(${target} mv_swift_chrome_build)
+  target_link_libraries(${target} PRIVATE
+    mv_gfx
+    mv_image
+    mv_canvas
+    mv_shell
+    mv_io
+    mv_player
+    imgui::imgui
+    "${MV_SWIFT_CHROME_LIB}"
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework Metal"
+    "-framework QuartzCore"
+    "-framework CoreServices"
+    "-framework UniformTypeIdentifiers"
+    "-framework SwiftUI"
+    "-framework Combine")
+  target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
+    "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
+endfunction()
+
+mv_mac_host(mediaviewer_lab)
 
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
           "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
   COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+
+include("${CMAKE_CURRENT_LIST_DIR}/darwin-app.cmake")
 
 add_executable(mv_frametime
   tools/frametime/main_mac.cpp
@@ -440,4 +455,4 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_tests)
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin present lab (PR 16), GPL-2.0-or-later")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-2.0-or-later")

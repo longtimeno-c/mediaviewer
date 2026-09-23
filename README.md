@@ -20,7 +20,10 @@ on a real Mac with a display (2026-09-19): the 60 s present-loop gate passes wit
 screen, and the window, menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still
 unproven on Mac: drag-and-drop, copy/move/Trash and slideshow on real folders, animated
 GIF/APNG/WebP playback (they show frame 0 as a still), and the tonal step when a RAW's
-embedded preview is replaced by the full decode — see [macOS](#macos-pr-1618) below.** The Windows present lab still owns
+embedded preview is replaced by the full decode — see [macOS](#macos-pr-1618) below.
+PR 20 (MediaViewer.app: Finder open, Quick Look thumbnails, Sparkle updates, the notarized
+disk image) is written but **not yet built or run on a Mac** — see
+[MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-pr-20).** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -207,6 +210,54 @@ Windows DXGI JSON report over is a failed gate, not a pass.
 slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/gallery,
 `F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
 cursor off the window.
+
+### MediaViewer.app and a shippable Mac build (PR 20)
+
+`mediaviewer_lab` stays the bare instrument `frametime` drives. The same sources also
+build `MediaViewer`, the executable inside **MediaViewer.app**:
+
+```sh
+# a local, ad-hoc-signed bundle (no updater unless a key is given)
+cmake --build build-darwin --target mediaviewer_app
+open build-darwin/MediaViewer.app
+```
+
+The bundle holds the app, `MediaViewerThumbnails.appex` (Finder thumbnails for the D5
+still set, run by Quick Look in its own sandboxed process, never inside Finder), the LGPL
+dylibs in `Contents/Frameworks`, and, when configured, Sparkle. It registers the D5 still
+types at rank *Alternate*: MediaViewer shows up in Finder's **Open With** and never makes
+itself the default. After the first photo it opens, it asks once whether to become the
+default; the MediaViewer menu has the same command.
+
+A build that leaves your machine needs the updater, a Developer ID, and notarization
+([plan/13](plan/13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20)):
+
+```sh
+# once: Sparkle's key pair, with generate_keys from the Sparkle 2.9.6 release
+# tarball (the private half stays in your login keychain), and a notarytool profile
+./Sparkle-2.9.6/bin/generate_keys                # prints the public key
+xcrun notarytool store-credentials mediaviewer-notary ...
+python3 -m pip install -r tools/mac/requirements.txt
+
+cmake -S . -B build-darwin -G Ninja ... -DMV_SPARKLE_PUBLIC_ED_KEY=<public key> \
+      -DMV_MAC_BUILD_NUMBER=<raise every release>
+cmake --build build-darwin --target mediaviewer_app
+python3 tools/mac/macpack.py release --app build-darwin/MediaViewer.app \
+    --identity "Developer ID Application: …" --notary-profile mediaviewer-notary \
+    --sparkle-bin build-darwin/_deps/sparkle-2.9.6/bin \
+    --download-url-prefix https://github.com/longtimeno-c/mediaviewer/releases/download/v<version>/
+```
+
+`release` signs inside out with the hardened runtime, notarizes and staples the app, builds
+`MediaViewer-<version>.dmg` (drag to Applications, the GPL shown on mount), notarizes and
+staples that, and writes `updates/MediaViewer-<version>.zip` plus a signed
+`updates/appcast.xml`. The app only accepts a feed and an archive signed with the key it was
+built with. First install is the disk image; every later update is the zip, installed by
+Sparkle when the user clicks **Update ready — restart** or quits. Upload the `.dmg`, the
+zip, and `appcast.xml` to the GitHub release: the app's default feed is the latest
+release's `appcast.xml`.
+
+`python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
 ## Run
 

@@ -30,6 +30,11 @@ public struct CommandBarView: View {
         Label("\(store.markedCount) marked", systemImage: "checkmark.circle.fill")
           .foregroundStyle(Color.accentColor)
       }
+      // plan/13: a quiet affordance, never a modal. Clicking it is the only
+      // thing that restarts the app for an update.
+      if store.updateReady {
+        Button("Update ready — restart") { mv_chrome_restart_to_update() }
+      }
     }
     .padding(.horizontal, 12)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
