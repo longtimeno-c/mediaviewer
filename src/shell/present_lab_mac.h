@@ -82,6 +82,13 @@ class present_lab_mac {
     return s;
   }
 
+  // [any-thread] How many distinct stills have reached the screen (a
+  // preview -> full refinement of the same item counts once). PR 20's
+  // "after the first successful still open" default-viewer prompt polls it.
+  [[nodiscard]] std::uint32_t stills_shown() const noexcept {
+    return stills_shown_.load(std::memory_order_acquire);
+  }
+
   [[nodiscard]] bool finished() const noexcept {
     return finished_.load(std::memory_order_acquire);
   }
@@ -120,6 +127,7 @@ class present_lab_mac {
   // Bumped by every open_item(); stamped on the images that open produces.
   std::atomic<std::uint64_t> item_counter_{0};
   std::unique_ptr<image::gpu_image_mac> current_image_;
+  std::atomic<std::uint32_t> stills_shown_{0};
 
   // PR 19 video. The render thread owns `media_` and `video_frame_`; a worker
   // opens the clip and posts it here, the same one-way handoff as

@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SPDX-License-Identifier: GPL-2.0-or-later
+  MediaViewer.app (PR 20, plan/15). Configured by cmake/darwin.cmake.
+
+  Document types are the D5 still set only (plan/10 PR 20: "UTIs for the D5
+  still set"), at LSHandlerRank Alternate: MediaViewer appears in Finder's
+  "Open With" and never becomes the default on its own. Becoming the default
+  is an in-app prompt, once, after the first still opens (plan/13).
+  QuickLook-Info.plist.in lists the same types; tools/mac/check_plists.py
+  fails if the two lists drift or a D5 still format goes missing.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>MediaViewer</string>
+  <key>CFBundleIconFile</key>
+  <string>MediaViewer</string>
+  <key>CFBundleIdentifier</key>
+  <string>@MV_MAC_BUNDLE_ID@</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>MediaViewer</string>
+  <key>CFBundleDisplayName</key>
+  <string>MediaViewer</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@PROJECT_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@MV_MAC_BUILD_NUMBER@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSArchitecturePriority</key>
+  <array>
+    <string>arm64</string>
+  </array>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.photography</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>GPL-2.0-or-later. https://github.com/longtimeno-c/mediaviewer</string>
+
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.jpeg</string>
+        <string>public.png</string>
+        <string>com.microsoft.bmp</string>
+        <string>com.compuserve.gif</string>
+        <string>public.tiff</string>
+        <string>org.webmproject.webp</string>
+        <string>public.heic</string>
+        <string>public.heif</string>
+        <string>public.avif</string>
+        <string>com.microsoft.ico</string>
+        <string>public.camera-raw-image</string>
+      </array>
+    </dict>
+  </array>
+
+  <!-- macOS 14 declares every type above. AVIF is imported as well, so an
+       older type database never leaves a .avif without a type. An imported
+       declaration yields to the system's own. -->
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>public.avif</string>
+      <key>UTTypeDescription</key>
+      <string>AVIF image</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.image</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>avif</string>
+        </array>
+        <key>public.mime-type</key>
+        <array>
+          <string>image/avif</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
+@MV_SPARKLE_PLIST_KEYS@
+</dict>
+</plist>

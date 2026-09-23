@@ -102,6 +102,12 @@ bool mv_chrome_is_marked(int32_t index);
 // Values < 1 are clamped to 1. [main-thread]
 void mv_chrome_set_gallery_columns(int32_t columns);
 
+// PR 20 updates (plan/13). True once Sparkle has a verified update staged and
+// is waiting for the user; always false in the bare lab. Restart installs it
+// and relaunches onto the same folder and file. [main-thread]
+bool mv_chrome_update_ready(void);
+void mv_chrome_restart_to_update(void);
+
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.
 // [main-thread]
