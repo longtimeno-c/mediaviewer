@@ -172,12 +172,16 @@ hijack. Quick Look / thumbnail generation in a **separate process** — loading
 libheif / LibRaw / FFmpeg into Finder is how you crash the desktop, same landmine
 as in-process Explorer handlers. Notarized, stapled, Sparkle updates, Apple
 Silicon only. Crash reporting already exists from PR 7; the Mac minidump path
-scrubs the same (no paths, filenames, pixels, EXIF).
+scrubs the same (no paths, filenames, pixels, EXIF). First install is the Mac
+twin of the PR 8 wizard: a branded drag-install disk image with the GPL shown on
+mount, not a `.pkg` ([13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20)).
 
 **Verify:** double-clicking a HEIC in Finder opens the app; a deliberately
-corrupted HEIC in a browsed folder leaves Finder running; a clean Mac → install
-from the notarized image → open a real camera dump, with no Gatekeeper block and
-no codec dialog.
+corrupted HEIC in a browsed folder leaves Finder running; a clean Mac → mount the
+notarized image (GPL shown) → drag to Applications → open a real camera dump, with
+no Gatekeeper block and no codec dialog; Sparkle takes N → N+1 silently and refuses
+an appcast signed with any other key; dragging the app to the Trash removes the
+Quick Look extension.
 
 ## Windows v1 surface on Mac
 
@@ -203,7 +207,7 @@ forgotten because it was "not a Mac PR."
 | PR 13 two-path trim | remux/encode policy | Same two paths, labelled. Hardware encode is VideoToolbox, not NVENC/QSV/AMF |
 | PR 14 extract & remux | same | Same operations, SwiftUI job panel |
 | PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process** |
-| PR 8 Inno + Velopack, app identity | No | **PR 20** — notarized Sparkle, per-user `~/Applications` or dragged `.app` |
+| PR 8 Inno + Velopack, app identity | No | **PR 20** — branded drag-install `.dmg` (GPL on mount), notarized Sparkle, same mark as `.icns` |
 
 Keyboard: the Mac host writes its own default map. It does not import a XAML
 keymap and it does not put `VK_*` or Carbon key codes into `image/`, `player/`,
@@ -230,8 +234,10 @@ Neither Store (GPL — [11-licensing.md](11-licensing.md)).
 
 | | Windows (PR 8) | macOS (PR 20) |
 |---|---|---|
-| Install | Per-user `%LocalAppData%\MediaViewer` | Per-user `~/Applications` or a dragged `.app` |
-| Update | Velopack, signed manifest | Sparkle, notarized, stapled |
+| First install | Inno Setup wizard, once | Branded `.dmg`, drag to `/Applications` or `~/Applications`, GPL on mount |
+| Install | Per-user `%LocalAppData%\MediaViewer` | The dragged `.app`; no `.pkg`, no root, no helper |
+| Update | Velopack, signed manifest | Sparkle 2, EdDSA-signed appcast, notarized, stapled |
+| Uninstall | Inno uninstaller | Drag to Trash |
 | Signing | Azure Trusted Signing | Developer ID + notary |
 
 The privacy line does not change: nothing about a user's files leaves the machine
