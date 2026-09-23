@@ -352,11 +352,15 @@ photo → video → photo leaks no textures.
 
 ### PR 20 — Finder + notarized ship
 UTIs for the D5 still set, never a silent default-app hijack. Quick Look / thumbnails in a
-**separate process**. Notarized Sparkle, Apple Silicon only.
+**separate process**. Notarized Sparkle, Apple Silicon only. First install is a branded
+drag-install `.dmg` with the GPL on mount — the Mac twin of the PR 8 wizard, not a `.pkg`
+([13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20)).
 
 **Verify:** double-clicking a HEIC in Finder opens the app; a deliberately corrupted HEIC
-in a browsed folder leaves Finder running; a clean Mac → install from the notarized image
-→ open a real camera dump, with no Gatekeeper block and no codec dialog.
+in a browsed folder leaves Finder running; a clean Mac → mount the notarized image (GPL
+shown) → drag to Applications → open a real camera dump, with no Gatekeeper block and no
+codec dialog; Sparkle takes N → N+1 silently and refuses an appcast signed with any other
+key; dragging the app to the Trash removes the Quick Look extension.
 
 ---
 
