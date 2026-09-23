@@ -207,7 +207,7 @@ struct mv_session {
   // it is destroyed (and its thread joined) first. Each frame is colour
   // managed like a still and uploaded top level only: an animation is not
   // mip-mapped, so far below 100 % it can alias.
-  mv::abi::animation_session animation{
+  mv::abi::animation_session<mv::image::gpu_image> animation{
       [this](const mv::codec::canvas_frame& frame, const mv::codec::animation_info& info,
              std::uint32_t generation) -> std::unique_ptr<mv::image::gpu_image> {
         auto dev = copy_device();
@@ -1599,7 +1599,7 @@ bool take_animation_frame(mv_session_t session, std::uint32_t generation,
                           image::gpu_image*& texture, std::uint32_t& delay_ms,
                           std::uint32_t& index) noexcept {
   if (!session) return false;
-  animation_frame frame;
+  mv::abi::animation_frame<image::gpu_image> frame;
   if (!session->animation.take(generation, frame)) return false;
   texture = frame.texture;
   delay_ms = frame.delay_ms;

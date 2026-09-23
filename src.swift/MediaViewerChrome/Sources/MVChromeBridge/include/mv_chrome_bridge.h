@@ -16,6 +16,30 @@ extern "C" {
 // Bumps input_snapshot.fit_seq and wakes the render thread. [any-thread]
 void mv_chrome_fit(void);
 
+// Runs a menu-bar command by tag (the MvMenuCmd enum in main_mac.mm; the
+// in-window menus and the system menu bar share one dispatcher). [main-thread]
+void mv_chrome_menu(int32_t cmd);
+
+// Settings screen (plan/16 Settings). View flags use the bit layout of
+// view_settings::flags() (shell/settings.h): 1 filmstrip for a folder,
+// 2 filmstrip for an image, 4 wrap, 8 sticky zoom, bits 4-5 canvas background.
+// [main-thread]
+bool mv_chrome_settings_visible(void);
+int32_t mv_chrome_view_flags(void);
+void mv_chrome_set_view_flags(int32_t flags);
+// The live key table, one "id\tmodes\tname\tkeys\trunnable\trow" line per
+// binding this host can run. Returns the length needed; writes at most `size`
+// bytes, NUL-terminated.
+int32_t mv_chrome_command_table(char* buf, int32_t size);
+// Key remapping: begin waiting for the next key press for table row `row`
+// (Esc cancels). `mv_chrome_key_capture_row` is -1 when none is pending.
+// `mv_chrome_keys_generation` moves whenever the table, flags or capture change.
+void mv_chrome_key_capture_begin(int32_t row);
+void mv_chrome_key_capture_cancel(void);
+int32_t mv_chrome_key_capture_row(void);
+void mv_chrome_keys_reset(void);
+uint64_t mv_chrome_keys_generation(void);
+
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
 

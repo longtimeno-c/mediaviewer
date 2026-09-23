@@ -64,3 +64,17 @@ TEST_CASE("browse_index a single item never moves", "[shell][browse]") {
   REQUIRE(idx.first() == 0);
   REQUIRE(idx.last() == 0);
 }
+
+TEST_CASE("browse_index stops at the ends when wrap is off", "[shell][browse]") {
+  mv::shell::browse_index idx;
+  idx.reset(3, 2);
+  idx.set_wrap(false);
+  REQUIRE(idx.next() == 2);  // already last: stays
+  REQUIRE(idx.skip(10) == 2);
+  idx.reset(3, 0);
+  REQUIRE(idx.prev() == 0);  // already first: stays
+  REQUIRE(idx.skip(-10) == 0);
+  REQUIRE(idx.skip(1) == 1);
+  idx.set_wrap(true);
+  REQUIRE(idx.skip(-2) == 2);  // wraps again
+}

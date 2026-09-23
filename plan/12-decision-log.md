@@ -987,6 +987,23 @@ gates calling PR 19 done. PR 20 does not touch the video path.
   into PR 17, and `plan/10` says PR 20 "does not add it", but `cmake/darwin.cmake` links
   no Crashpad and no Mac scrub exists. Either PR 17 still owes it or PR 20 takes it. Owner's call.
 
+## 2026-09-23 — Mac host routes keys through the shared command table; Windows-style bar and Settings
+
+**Decision.** The Mac host translates `NSEvent` to `key` at the edge and runs every key through
+the same `command_table.cpp` / `key_router.cpp` as Windows (both are pure C++ and now build on
+Darwin). Command and Control map to `ctrl`, Option to `alt`, the Mac Delete key to `del` (Trash).
+The bar becomes Open / View / Settings / About with `?` at the right, and a Settings screen
+(`⌘,`) offers the view preferences, canvas background and key remapping, persisted in
+`NSUserDefaults`.
+
+**Why.** The hard-coded `keyDown:` could not support remapping, and the macOS-styled bar did not
+match the Windows chrome. **Consequences.** Commands the Mac lab cannot run yet (zoom steps and
+presets, clipping, loupe, pan, go-to, folder tree, Live Photo, RAW pairing) are hidden from the
+remap list rather than shown dead. Adds `mute` (Shift+M) and browse `wrap` as shared pieces.
+Plain-letter menu key equivalents were removed so a menu cannot shadow a remap. Backspace is no
+longer Previous on Mac (that key is Delete = Trash). Not a D1–D9 change: chrome stays SwiftUI,
+the canvas stays Metal.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

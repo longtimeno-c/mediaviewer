@@ -284,6 +284,13 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
+  # The one key router and command table, shared with Windows (plan/16): the
+  # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
+  # translates virtual keys. Pure C++, no platform header.
+  src/shell/command_table.cpp
+  src/shell/commands.h
+  src/shell/key_router.cpp
+  src/shell/key_router.h
 )
 target_link_libraries(mv_shell PUBLIC mv_core)
 add_library(mv::shell ALIAS mv_shell)
@@ -411,6 +418,8 @@ if(MV_BUILD_TESTS)
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
     tests/test_browse_index.cpp
+    tests/test_key_router.cpp
+    tests/test_key_router_review.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (plan/09: no RAW in git).
     tests/test_probe.cpp

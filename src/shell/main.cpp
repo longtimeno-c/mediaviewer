@@ -122,6 +122,7 @@ struct app_state {
   bool skim_shuttled = false;
   int  rate_index = 2;  // kRateLadder: 1.00x
   float volume = 1.0f;  // 0..1, Up / Down on a clip
+  bool muted = false;   // Shift+M; a fresh clip starts unmuted
   mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
@@ -744,6 +745,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
         apply_rate(app, kRateDefaultIndex);
         // Volume, unlike the rate, is the listener's and carries across clips.
         (void)mv_video_set_volume(app->session, app->volume);
+        app->muted = false;
       }
       apply_view_state(app);
       return;
@@ -1442,6 +1444,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     }
     case pause: (void)mv_video_pause(app->session); return true;
+    case mute:
+      if (!video_mode(app)) return false;
+      app->muted = !app->muted;
+      (void)mv_video_set_muted(app->session, app->muted ? 1 : 0);
+      return true;
     // plan/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
     case jump_back:
     case jump_forward:

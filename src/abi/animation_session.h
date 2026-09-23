@@ -17,6 +17,13 @@
 // selected (a 200 MB GIF sits in RAM while it plays) and released on
 // navigation — not on LRU eviction. Frames ahead are bounded by
 // animation_ring_depth; one canvas lives in the source.
+//
+// Templated on the GPU texture type (`Texture`) rather than hardcoded to
+// image::gpu_image: this file has no D3D11 in it at all (only
+// std::unique_ptr<Texture>/Texture* by pointer, never a member access), so
+// the Metal host (present_lab_mac.mm) instantiates the identical ring/
+// generation/epoch logic as image::gpu_image_mac rather than a hand-copied
+// twin drifting from this one (D9 — the point of a hostable core).
 #pragma once
 
 #include <algorithm>
@@ -30,13 +37,13 @@
 
 #include "codec/anim.h"
 #include "core/spsc_ring.h"
-#include "image/gpu_image.h"
 
 namespace mv::abi {
 
 // POD over the ring. `texture` is owned by whoever pops the message.
+template <typename Texture>
 struct animation_frame {
-  image::gpu_image* texture = nullptr;
+  Texture* texture = nullptr;
   std::uint32_t delay_ms = 0;
   std::uint32_t index = 0;
   std::uint32_t generation = 0;
@@ -54,9 +61,11 @@ struct animation_frame {
   return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(by_budget, 2, 6));
 }
 
+template <typename Texture>
 class animation_session {
  public:
-  using make_texture_fn = std::function<std::unique_ptr<image::gpu_image>(
+  using frame_type = animation_frame<Texture>;
+  using make_texture_fn = std::function<std::unique_ptr<Texture>(
       const codec::canvas_frame&, const codec::animation_info&, std::uint32_t generation)>;
 
   explicit animation_session(make_texture_fn make)
@@ -101,8 +110,8 @@ class animation_session {
   // A caller asking with a retired generation gets nothing; for the current
   // one, frames from an older generation or from before a seek are released
   // here as they are popped.
-  [[nodiscard]] bool take(std::uint32_t generation, animation_frame& out) noexcept {
-    animation_frame f;
+  [[nodiscard]] bool take(std::uint32_t generation, frame_type& out) noexcept {
+    frame_type f;
     // Retirement is authoritative. A frame can still be pushed after retire()
     // drained the ring — the decode thread may already be past its check, one
     // texture in flight — and that frame carries the retired generation. It
@@ -165,7 +174,7 @@ class animation_session {
 
   // Consumer side only (render thread, or the destructor after the join).
   void drain() noexcept {
-    animation_frame f;
+    frame_type f;
     while (ring_.try_pop(f)) delete f.texture;
   }
 
@@ -244,8 +253,7 @@ class animation_session {
         ++produced_this_play;
         loops_.store(current->info().loops, std::memory_order_relaxed);
         const auto t0 = std::chrono::steady_clock::now();
-        std::unique_ptr<image::gpu_image> texture =
-            make_ ? make_(frame, current->info(), gen) : nullptr;
+        std::unique_ptr<Texture> texture = make_ ? make_(frame, current->info(), gen) : nullptr;
         last_upload_us_.store(static_cast<std::uint32_t>(
                                   std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - t0)
@@ -255,7 +263,7 @@ class animation_session {
           end_feed();
           break;
         }
-        const animation_frame msg{texture.get(), frame.delay_ms, frame.index, gen, epoch};
+        const frame_type msg{texture.get(), frame.delay_ms, frame.index, gen, epoch};
         if (!ring_.try_push(msg)) break;  // full after all: the frame is dropped
         texture.release();
         frames_made_.fetch_add(1, std::memory_order_relaxed);
@@ -274,7 +282,7 @@ class animation_session {
   std::unique_ptr<codec::animation_source> pending_;
   std::uint32_t pending_gen_ = 0;
 
-  spsc_ring<animation_frame, 8> ring_;
+  spsc_ring<frame_type, 8> ring_;
   std::atomic<std::uint32_t> open_gen_{0};
   std::atomic<std::uint32_t> wanted_gen_{0};
   std::atomic<std::uint32_t> ended_gen_{0};

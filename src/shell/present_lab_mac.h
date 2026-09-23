@@ -19,6 +19,8 @@
 #include "gfx/metal_pacer.h"
 #include "gfx/present_policy.h"
 #include "gfx/video_blit_metal.h"
+#include "abi/animation_session.h"
+#include "codec/anim.h"
 #include "image/gpu_image_mac.h"
 #include "player/media_source.h"
 #include "shell/input_state.h"
@@ -72,6 +74,13 @@ class present_lab_mac {
     int rate_x100 = 100;
     float volume = 1.0f;
   };
+  // [any-thread] Whether an animated still (GIF/APNG/WebP) is open on the
+  // canvas right now -- read by main_mac.mm's keyDown: to route Space/,/.
+  // to it the way key_router.cpp's item_kind::animation does on Windows.
+  [[nodiscard]] bool anim_active() const noexcept {
+    return anim_active_.load(std::memory_order_acquire);
+  }
+
   [[nodiscard]] video_status video_status_snapshot() const noexcept {
     video_status s;
     s.active = vs_active_.load(std::memory_order_acquire);
@@ -105,7 +114,12 @@ class present_lab_mac {
   // [render-thread] Frees the current clip: releases its frames now, closes the
   // media_source (which joins its threads) on a worker, never here.
   void retire_media() noexcept;
-  bool apply_video_input(const input_snapshot& snapshot) noexcept;
+  // Latched transport from the UI thread: video AND animated-still playback
+  // share this (plan/16 "Video" -- Space/,/. mean the same thing on either;
+  // key_router.cpp maps both item_kind::clip and item_kind::animation to
+  // mode::video for exactly this reason). Returns true when it changed what
+  // should be on screen, so the caller redraws.
+  bool apply_playback_input(const input_snapshot& snapshot) noexcept;
   void update_video_status() noexcept;
   // The picture on the canvas, still or video frame. False when there is none.
   [[nodiscard]] bool picture_size(float* w, float* h) const noexcept;
@@ -160,6 +174,28 @@ class present_lab_mac {
   std::uint32_t seen_video_volume_set_ = 0;
   float video_volume_ = 1.0f;  // survives from clip to clip
   std::uint32_t seen_video_seek_ = 0;
+
+  // Animated GIF/APNG/WebP playback (plan/04, folded into PR 18's "animated
+  // GIF/APNG/WebP on the display-link frame clock", plan/15). Frame 0 already
+  // went through the still path (current_image_, rule 3); animation_session
+  // decodes and uploads frames 1.. on its own thread into a small ring, and
+  // anim_frame_ -- never current_image_ -- is what the draw call samples once
+  // it exists, so a still's own camera fit is not re-run per frame.
+  std::unique_ptr<mv::abi::animation_session<image::gpu_image_mac>> anim_session_;
+  std::unique_ptr<image::gpu_image_mac> anim_frame_;
+  // The live job_system generation this animation_session::publish() call was
+  // for; compared against options_.jobs->current_generation() each tick the
+  // same way Windows compares against mv_session_current_generation, so a
+  // navigation retires the old feed and its queued frames without this class
+  // needing its own separate "did the selection change" signal.
+  std::uint32_t anim_generation_ = 0;
+  codec::frame_schedule anim_schedule_;
+  bool anim_finished_ = false;
+  bool anim_seeking_ = false;
+  std::uint32_t anim_index_ = 0;
+  bool anim_live_ = false;  // presenting because it's actually animating, not paused/finished
+  std::atomic<bool> anim_active_{false};
+
   std::atomic<bool> vs_active_{false};
   std::atomic<bool> vs_playing_{false};
   std::atomic<bool> vs_muted_{false};

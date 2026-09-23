@@ -21,6 +21,11 @@ class browse_index {
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
   [[nodiscard]] bool empty() const noexcept { return count_ == 0; }
 
+  // "Wrap at the end of the folder" (plan/16, Settings). Off: next/prev/skip
+  // stop at the ends instead of going round. On by default.
+  void set_wrap(bool wrap) noexcept { wrap_ = wrap; }
+  [[nodiscard]] bool wrap() const noexcept { return wrap_; }
+
   // Each returns the new current index. No-op (index unchanged, still
   // returns current()) when empty().
   std::size_t next() noexcept;                      // -> / D / Space
@@ -33,6 +38,7 @@ class browse_index {
  private:
   std::size_t count_ = 0;
   std::size_t index_ = 0;
+  bool wrap_ = true;
 };
 
 }  // namespace mv::shell

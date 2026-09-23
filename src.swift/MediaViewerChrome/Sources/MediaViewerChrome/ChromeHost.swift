@@ -49,6 +49,10 @@ public final class MVChromeHost: NSObject {
     host(HelpView())
   }
 
+  @objc public static func makeSettingsView() -> NSView {
+    host(SettingsView())
+  }
+
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {

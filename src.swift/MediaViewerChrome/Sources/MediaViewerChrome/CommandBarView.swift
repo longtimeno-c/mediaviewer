@@ -1,43 +1,168 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// PR 18's command-bar chrome (plan/10-roadmap.md, plan/15-platforms.md):
-// "command bar and window chrome only — panes come with the same features
-// they have on Windows, not earlier." Filmstrip, gallery, and the
-// keyboard-complete-browse key router are a follow-up once this hosting
-// scaffold and the folder/dir-watch backend both exist; this view only
-// proves the SwiftUI-in-AppKit hosting path with the two commands PR 17's
-// lab already understands (`0` fit, `1` one-to-one).
+// The in-window command bar. Styled to match the Windows island bar
+// (IslandHost.cs): the canvas colour, CozetteVector 16 pt, flat text buttons
+// with a faint hover wash, dark flyouts with a hairline border, and a hairline
+// under the bar. The commands are the same ones the system menu bar runs
+// (mv_chrome_menu tags mirror MvMenuCmd in main_mac.mm).
+import AppKit
+import CoreText
 import SwiftUI
 import MVChromeBridge
+
+/// The Windows palette (IslandHost.cs): Canvas / Title / Body / Hairline.
+enum MVTheme {
+  static let canvas = Color(red: 33 / 255, green: 35 / 255, blue: 42 / 255)
+  static let title = Color(red: 220 / 255, green: 222 / 255, blue: 228 / 255)
+  static let body = Color(red: 150 / 255, green: 154 / 255, blue: 164 / 255)
+  static let hairline = Color(red: 58 / 255, green: 60 / 255, blue: 68 / 255)
+
+  private static let registered: Bool = {
+    // CMake copies the face beside the executable (cmake/darwin.cmake).
+    let dir = Bundle.main.executableURL?.deletingLastPathComponent()
+    guard let url = dir?.appendingPathComponent("CozetteVector.ttf") else { return false }
+    return CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+  }()
+
+  static func font(_ size: CGFloat = 16) -> Font {
+    _ = registered
+    return .custom("CozetteVector", size: size)
+  }
+}
+
+private struct FlatButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    FlatButtonBody(configuration: configuration)
+  }
+  private struct FlatButtonBody: View {
+    let configuration: Configuration
+    @State private var hover = false
+    @Environment(\.isEnabled) private var enabled
+    var body: some View {
+      configuration.label
+        .font(MVTheme.font())
+        .foregroundStyle(enabled ? MVTheme.title : MVTheme.body.opacity(0.5))
+        .padding(.horizontal, 14).padding(.vertical, 7)
+        .background(
+          RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(
+            configuration.isPressed ? 0.11 : (hover && enabled ? 0.06 : 0))))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+    }
+  }
+}
+
+private struct FlyoutItem: View {
+  let title: String
+  var shortcut: String? = nil
+  var enabled = true
+  let action: () -> Void
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 24) {
+        Text(title)
+        Spacer(minLength: 0)
+        if let shortcut { Text(shortcut).foregroundStyle(MVTheme.body) }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .buttonStyle(FlatButtonStyle())
+    .disabled(!enabled)
+  }
+}
+
+private struct FlyoutRule: View {
+  var body: some View {
+    Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, 4)
+  }
+}
+
+/// A bar button that opens a dark flyout beneath it.
+private struct BarFlyout<Content: View>: View {
+  let title: String
+  @ViewBuilder var content: (_ close: @escaping () -> Void) -> Content
+  @State private var shown = false
+  var body: some View {
+    Button(title) { shown.toggle() }
+      .buttonStyle(FlatButtonStyle())
+      .popover(isPresented: $shown, arrowEdge: .bottom) {
+        VStack(alignment: .leading, spacing: 0) { content { shown = false } }
+          .padding(4)
+          .frame(minWidth: 240)
+          .background(MVTheme.canvas)
+          .preferredColorScheme(.dark)
+      }
+  }
+}
 
 public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
 
   public init() {}
 
+  private func key(_ name: String) -> String? { SettingsStore.keyLabel(name) }
+
   public var body: some View {
-    // No .keyboardShortcut here: MvMetalView's keyDown: (main_mac.mm) already
-    // binds plain `0`/`1` globally for the window. Registering the same keys
-    // here too let a single keypress double-dispatch through both paths
-    // depending on AppKit's key-equivalent resolution; these buttons are
-    // click-only, matching their role as chrome, not a second key router.
-    HStack(spacing: 12) {
-      Button("Fit") { mv_chrome_fit() }
-      Button("1:1") { mv_chrome_one_to_one() }
-      Spacer()
-      // What F7 / F8 / Delete will act on (plan/16): the marks if any, else
-      // the current item.
-      if store.markedCount > 0 {
-        Label("\(store.markedCount) marked", systemImage: "checkmark.circle.fill")
-          .foregroundStyle(Color.accentColor)
+    let hasFolder = store.itemCount > 0
+    let current = (store.currentIndex >= 0 && store.currentIndex < store.names.count)
+      ? store.names[store.currentIndex] : nil
+    // No .keyboardShortcut here: the router (main_mac.mm) owns the keys; the
+    // shortcut column is only a label, read from the live table so a remap shows.
+    VStack(spacing: 0) {
+      HStack(spacing: 0) {
+        // Same order and labels as the Windows bar: Open, View, Settings, About;
+        // `?` at the far right.
+        BarFlyout(title: "Open") { close in
+          FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(1) }
+          FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(17) }
+          FlyoutItem(title: current.map { "Open: " + $0 } ?? "Open: (nothing open)",
+                     shortcut: key("Show in Explorer"), enabled: current != nil) {
+            close(); mv_chrome_menu(20)
+          }
+        }
+        BarFlyout(title: "View") { close in
+          FlyoutItem(title: "Zoom in", shortcut: key("Zoom in"), enabled: false) {}
+          FlyoutItem(title: "Zoom out", shortcut: key("Zoom out"), enabled: false) {}
+          FlyoutRule()
+          FlyoutItem(title: "Fit to window", shortcut: key("Fit")) { close(); mv_chrome_fit() }
+          FlyoutItem(title: "50 %", enabled: false) {}
+          FlyoutItem(title: "100 %", shortcut: key("Zoom 100 %")) { close(); mv_chrome_one_to_one() }
+          FlyoutItem(title: "200 %", enabled: false) {}
+          FlyoutItem(title: "400 %", enabled: false) {}
+          FlyoutRule()
+          FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(9) }
+          FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(10) }
+          FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(8) }
+          FlyoutRule()
+          FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping"), enabled: false) {}
+          FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(19) }
+          FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(16) }
+        }
+        Button("Settings") { mv_chrome_menu(18) }.buttonStyle(FlatButtonStyle())
+        BarFlyout(title: "About") { _ in
+          Text("MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing.")
+            .font(MVTheme.font())
+            .foregroundStyle(MVTheme.title)
+            .padding(12)
+            .frame(width: 300, alignment: .leading)
+        }
+        Spacer()
+        // What F7 / F8 / Delete will act on (plan/16): the marks if any, else
+        // the current item.
+        if store.markedCount > 0 {
+          Text("\(store.markedCount) marked")
+            .font(MVTheme.font())
+            .foregroundStyle(MVTheme.body)
+            .padding(.trailing, 6)
+        }
+        Button("?") { mv_chrome_menu(16) }
+          .buttonStyle(FlatButtonStyle())
+          .help("Keyboard shortcuts  ?")
       }
-      // plan/13: a quiet affordance, never a modal. Clicking it is the only
-      // thing that restarts the app for an update.
-      if store.updateReady {
-        Button("Update ready — restart") { mv_chrome_restart_to_update() }
-      }
+      .padding(.horizontal, 6)
+      .frame(maxHeight: .infinity)
+      Rectangle().fill(MVTheme.hairline).frame(height: 1)
     }
-    .padding(.horizontal, 12)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(.regularMaterial)
+    .background(MVTheme.canvas)
   }
 }
