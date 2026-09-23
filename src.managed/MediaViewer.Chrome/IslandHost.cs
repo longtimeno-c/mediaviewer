@@ -59,6 +59,7 @@ public static partial class IslandHost
         public const int Popup = 1000;
         public const int Rebind = 1001;
         public const int ResetKeys = 1002;
+        public const int UpdateRestart = 1003;  // PR 8: chrome, not a keyed command
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -75,6 +76,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
+                UpdateRestart,
             };
             unchecked
             {
@@ -106,9 +108,18 @@ public static partial class IslandHost
         public const int StickyZoom = 1 << 3;
         public const int BackgroundShift = 4;
         public const int BackgroundMask = 3 << 4;
+        // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
+        public const int UpdateAutoCheck = 1 << 8;
+        // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).
+        // Consent, default off. Asked records that the first-run screen has
+        // been answered - either way. Asked is not consent (plan/13 Part 3).
+        public const int Telemetry = 1 << 9;
+        public const int TelemetryAsked = 1 << 10;
     }
 
-    private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap;
+    // Telemetry is absent from this initial word on purpose: until native
+    // pushes the real settings in, the chrome assumes off (plan/13).
+    private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeCommand(IntPtr context, int command, float arg);
@@ -199,6 +210,7 @@ public static partial class IslandHost
             _source.Content = BuildChrome();
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
             EnsureFocusHook();
+            StartUpdater();
             return 0;
         }
         catch (Exception ex)
@@ -390,6 +402,11 @@ public static partial class IslandHost
             _settingFlags = args.Flags;
             RefreshSettingsMenu();
             RefreshSettingsScreen();
+            // PR 8: the telemetry first-run screen, once, when native reports
+            // the choice has never been made (IslandHost.Telemetry.cs). It
+            // rides this push rather than the bar build so a fresh profile
+            // sees it on the first launch, not the second.
+            if (_telemetryAnchor is not null) MaybeShowConsent(_telemetryAnchor);
             return 0;
         }
         catch (Exception ex)
@@ -1045,16 +1062,7 @@ public static partial class IslandHost
             ShouldConstrainToRootBounds = false,
             FlyoutPresenterStyle = FlyoutPresenterStyle(),
         };
-        aboutFlyout.Content = new TextBlock
-        {
-            Text = "MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing.",
-            Margin = new Thickness(12, 10, 12, 10),
-            MaxWidth = 400,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = Brush(Body),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-        };
+        aboutFlyout.Content = BuildAboutContent();  // IslandHost.About.cs (PR 8)
 
         var openFlyout = new MenuFlyout
         {
@@ -1087,6 +1095,9 @@ public static partial class IslandHost
             if (aboutBtn is not null) FlyoutBase.ShowAttachedFlyout(aboutBtn);
         });
         AttachBarFlyout(aboutBtn, aboutFlyout);
+        // The first-run telemetry screen hangs off About, which is where the
+        // privacy note and the licence already live.
+        _telemetryAnchor = aboutBtn;
 
         var row = new StackPanel
         {
@@ -1100,6 +1111,7 @@ public static partial class IslandHost
         row.Children.Add(viewBtn);
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
+        row.Children.Add(BuildUpdateButton());
 
         var speed = BuildSpeed();
         speed.HorizontalAlignment = HorizontalAlignment.Right;

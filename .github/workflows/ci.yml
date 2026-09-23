@@ -44,6 +44,17 @@ jobs:
       - name: Licence policy
         run: ./tools/licence-check.ps1
 
+  mac-packaging:
+    name: macOS bundle policy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/mac/check_plists.py
+      - run: python3 tools/mac/test_macpack.py -v
+
   # ---------------------------------------------------------------------------
   # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
   # it catches different bugs (plan/09).

@@ -116,8 +116,54 @@ if(MV_ASAN)
       _DISABLE_VECTOR_ANNOTATION
       _DISABLE_STRING_ANNOTATION
       _DISABLE_OPTIONAL_ANNOTATION)
+
+    # The ASan runtime is a DLL, and it ships beside cl.exe and nowhere else:
+    # "These files are never placed in C:\Windows\System32 ... These locations
+    # are on the path in debugging sessions and in Visual Studio developer
+    # command prompts."
+    # https://learn.microsoft.com/cpp/sanitizers/asan-known-issues
+    #
+    # Nothing copies it for us. vcpkg's applocal deploy only knows DLLs from the
+    # vcpkg tree, and CMake does not know about it at all. So an ASan build left
+    # to itself produces executables that run only inside a developer prompt.
+    #
+    # That is exactly how the msvc-asan CI leg failed from the day it was added.
+    # `catch_discover_tests` enumerates by running the test exe as an MSBuild
+    # POST_BUILD step, and MSBuild puts VC\Tools\MSVC\<ver>\bin\HostX64\x64
+    # first on PATH -- so discovery found all 426 tests in under a second. The
+    # `ctest` step is a bare shell with no developer environment, so every one
+    # of those 426 processes died in the loader instead. A loader failure is a
+    # hard error, not a message on stderr: the process sits on it until killed,
+    # which ctest reports as "***Timeout 300.02 sec" with no output at all --
+    # no stack, no exit code, nothing to read. Copying the DLL beside the
+    # binaries fixes it for ctest, for a double-click, and for anyone running
+    # the exe by hand, which is why it belongs here and not in a CI `env:` line.
+    get_filename_component(MV_MSVC_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    file(GLOB MV_ASAN_RUNTIME "${MV_MSVC_BIN}/clang_rt.asan*dynamic-*.dll")
+    if(NOT MV_ASAN_RUNTIME)
+      message(FATAL_ERROR
+        "MV_ASAN=ON but no ASan runtime DLL was found next to the compiler:\n"
+        "  ${MV_MSVC_BIN}\n"
+        "Install the \"C++ AddressSanitizer\" component "
+        "(Microsoft.VisualStudio.Component.VC.ASAN) in the Visual Studio "
+        "Installer. Configuring without it yields a build whose every test "
+        "hangs for the full timeout with nothing in the log.")
+    endif()
+    message(STATUS "ASan runtime: ${MV_ASAN_RUNTIME}")
   endif()
 endif()
+
+# Put the ASan runtime beside a target's executable. A no-op unless MV_ASAN.
+# Every executable needs it, including the ones that only load an instrumented
+# DLL, because the runtime is resolved by the loader per process.
+function(mv_asan_runtime_beside target)
+  foreach(dll IN LISTS MV_ASAN_RUNTIME)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${dll}" "$<TARGET_FILE_DIR:${target}>"
+      COMMENT "Copy the ASan runtime beside ${target}")
+  endforeach()
+endfunction()
 
 # ---------------------------------------------------------------------------
 # mv_core — arena, job system, result<T>, logging, ETW
@@ -409,6 +455,12 @@ add_executable(mediaviewer_lab WIN32
   src/shell/navigation.h
   src/shell/settings.cpp
   src/shell/settings.h
+  src/shell/settings_store.cpp
+  src/shell/settings_store.h
+  src/shell/update_guard.cpp
+  src/shell/update_guard.h
+  src/shell/telemetry.cpp
+  src/shell/telemetry.h
   src/shell/crash_reporter_win.cpp
   src/shell/crash_reporter_win.h
   src/shell/minidump_scrub.cpp
@@ -416,7 +468,13 @@ add_executable(mediaviewer_lab WIN32
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
+  src/shell/app_icon.h
+  src/shell/mediaviewer.rc
 )
+# PR 8 identity: icon resource + VERSIONINFO, numbers from project(VERSION).
+set_source_files_properties(src/shell/mediaviewer.rc PROPERTIES
+  COMPILE_DEFINITIONS "MV_VER_MAJOR=${PROJECT_VERSION_MAJOR};MV_VER_MINOR=${PROJECT_VERSION_MINOR};MV_VER_PATCH=${PROJECT_VERSION_PATCH};MV_APP_VERSION_STR=\"${PROJECT_VERSION}\";MV_ICON_FILE=\"${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico\""
+  OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico")
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
   mv_gfx
@@ -430,9 +488,11 @@ target_link_libraries(mediaviewer_lab PRIVATE
   ole32     # CoInitializeEx for the WinUI island STA
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
+  comctl32  # LoadIconWithScaleDown (PR 8 window icon)
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
 set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
 if(EXISTS "${MV_CRASHPAD_TOOLS}/crashpad_handler.exe")
@@ -457,12 +517,22 @@ add_executable(mv_minidump_scrub
 )
 target_link_libraries(mv_minidump_scrub PRIVATE mv_project_options)
 target_include_directories(mv_minidump_scrub PRIVATE src)
+mv_asan_runtime_beside(mv_minidump_scrub)
 target_include_directories(mediaviewer_lab PRIVATE src src/abi/include)
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
           "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
   COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+# PR 8 About: the mark, the licence and the third-party notices ship beside the
+# exe so the flyout opens local files, never a network fetch.
+add_custom_command(TARGET mediaviewer_lab POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer-256.png"
+          "${CMAKE_SOURCE_DIR}/LICENSE"
+          "${CMAKE_SOURCE_DIR}/THIRD-PARTY.md"
+          "$<TARGET_FILE_DIR:mediaviewer_lab>"
+  COMMENT "Copy About assets (icon PNG, LICENSE, THIRD-PARTY.md) beside mediaviewer_lab")
 
 # PR 3: publish the C# WinUI chrome beside the lab so hostfxr can load it.
 # The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
@@ -477,8 +547,17 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Gallery.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.About.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Update.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Telemetry.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateManifest.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/SignedManifestSource.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/TrialState.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateService.cs"
 )
 if(DOTNET_EXE)
   # Publish beside the lab on every lab link so `cmake --build --target
@@ -497,6 +576,43 @@ if(DOTNET_EXE)
   )
   set_property(TARGET mediaviewer_lab APPEND PROPERTY LINK_DEPENDS ${MV_CHROME_SOURCES})
   add_custom_target(mv_chrome DEPENDS mediaviewer_lab ${MV_CHROME_SOURCES})
+
+  # PR 8 clean-VM install: the Windows App SDK ships IN the payload
+  # (WindowsAppSDKSelfContained in MediaViewer.Chrome.csproj), because the
+  # wizard is per-user and takes no UAC and so cannot install a machine-wide
+  # framework package (plan/10 verify, plan/13).
+  #
+  # Self-contained WinUI activates its WinRT classes registration-free, and
+  # registration-free activation reads the manifest of the EXECUTABLE. Our
+  # executable is this native host, not the C# project the SDK generated the
+  # manifest for, so without this step every XAML activation fails with
+  # 0x80040111 CLASS_E_CLASSNOTAVAILABLE - the island silently does not attach
+  # and the command bar is missing. Measured.
+  #
+  # So: merge the SDK's generated activation manifest (980 classes, and it
+  # tracks the WindowsAppSDK package version - never hand-maintained) into the
+  # host's own manifest, after the publish that produces it.
+  find_program(MV_MT_EXE mt
+    HINTS "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin"
+    PATH_SUFFIXES "10.0.26100.0/x64" "10.0.22621.0/x64" "x64"
+    DOC "Windows SDK manifest tool, for the self-contained WinUI activation manifest")
+  set(MV_WINAPPSDK_MANIFEST
+      "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/obj/x64/$<IF:$<CONFIG:Debug>,Debug,Release>/net8.0-windows10.0.19041.0/win-x64/Manifests/WindowsAppSDK.manifest")
+  if(MV_MT_EXE)
+    add_custom_command(TARGET mediaviewer_lab POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E echo
+              "Merging the Windows App SDK activation manifest into mediaviewer_lab.exe"
+      COMMAND "${MV_MT_EXE}" -nologo
+              -manifest "${CMAKE_SOURCE_DIR}/src/shell/app.manifest" "${MV_WINAPPSDK_MANIFEST}"
+              "-outputresource:$<TARGET_FILE:mediaviewer_lab>$<SEMICOLON>#1"
+      COMMENT "Self-contained WinUI activation manifest -> host exe"
+      VERBATIM)
+  else()
+    message(WARNING
+      "mt.exe not found: the Windows App SDK activation manifest cannot be merged "
+      "into mediaviewer_lab.exe, so the WinUI island will fail to attach with "
+      "CLASS_E_CLASSNOTAVAILABLE. Install the Windows SDK, or set MV_MT_EXE.")
+  endif()
 else()
   message(STATUS "dotnet not found — lab will run without WinUI chrome (pass --no-chrome)")
 endif()
@@ -508,8 +624,11 @@ add_executable(mv_frametime
   tools/frametime/main.cpp
 )
 target_link_libraries(mv_frametime PRIVATE mv_core)
-target_include_directories(mv_frametime PRIVATE src)
+# `tools` so --no-pop shares tools/frametime/report.h with the unit tests
+# instead of growing a second copy of the gate.
+target_include_directories(mv_frametime PRIVATE src tools)
 set_target_properties(mv_frametime PROPERTIES OUTPUT_NAME "frametime")
+mv_asan_runtime_beside(mv_frametime)
 add_dependencies(mv_frametime mediaviewer_lab)
 if(TARGET mv_chrome)
   add_dependencies(mv_frametime mv_chrome)
@@ -556,6 +675,9 @@ if(MV_BUILD_TESTS)
     tests/test_collision_name.cpp
     tests/test_file_ops.cpp
     tests/test_file_jobs.cpp
+    tests/test_settings_store.cpp
+    tests/test_update_guard.cpp
+    tests/test_telemetry.cpp
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
@@ -563,6 +685,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_live_photo.cpp
     tests/test_raw.cpp
     tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
@@ -579,8 +702,21 @@ if(MV_BUILD_TESTS)
     src/shell/file_jobs.cpp
     src/shell/open_request.cpp
     src/shell/settings.cpp
+    src/shell/settings_store.cpp
+    src/shell/update_guard.cpp
+    src/shell/telemetry.cpp
     src/shell/app.manifest
   )
+  # PR 8 verify: update signature rejection (managed half of the updater).
+  if(DOTNET_EXE)
+    # No --nologo: `dotnet run` forwards it to the program, which answers with
+    # its usage and exit code 2 instead of running the suite.
+    add_test(NAME updater_manifest_verification
+      COMMAND ${DOTNET_EXE} run --project
+              "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater.Tests/MediaViewer.Updater.Tests.csproj"
+              -c Release)
+    set_tests_properties(updater_manifest_verification PROPERTIES TIMEOUT 300 LABELS updater)
+  endif()
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx
@@ -602,6 +738,9 @@ if(MV_BUILD_TESTS)
     uuid
     mv_io)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+  # Before catch_discover_tests below: discovery runs this exe, and it must not
+  # have to borrow MSBuild's PATH to start.
+  mv_asan_runtime_beside(mv_tests)
 
   # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
   # build while another session holds that file.
@@ -613,6 +752,7 @@ if(MV_BUILD_TESTS)
   )
   target_link_libraries(mv_pr16_tests PRIVATE mv_gfx Catch2::Catch2WithMain)
   target_include_directories(mv_pr16_tests PRIVATE src tools)
+  mv_asan_runtime_beside(mv_pr16_tests)
 
   include(Catch)
   # A Catch2 SKIP exits 0, so ctest counted every corpus-gated video test as
@@ -649,6 +789,8 @@ if(MV_BUILD_TESTS)
   add_executable(mv_swapchain_recovery tests/swapchain_recovery.cpp)
   target_link_libraries(mv_swapchain_recovery PRIVATE mv_gfx)
   target_link_libraries(mv_frametime_fixture PRIVATE mv_project_options)
+  mv_asan_runtime_beside(mv_frametime_fixture)
+  mv_asan_runtime_beside(mv_swapchain_recovery)
   add_test(NAME frametime_harness COMMAND powershell -NoProfile -ExecutionPolicy Bypass
     -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frametime.ps1"
     -Harness $<TARGET_FILE:mv_frametime> -Fixture $<TARGET_FILE:mv_frametime_fixture>
@@ -671,10 +813,26 @@ if(MV_BUILD_TESTS AND NOT MV_FUZZ)
   add_executable(mv_broken_tests tests/test_broken_corpus.cpp tests/crt_no_dialogs.cpp)
   target_link_libraries(mv_broken_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
   target_include_directories(mv_broken_tests PRIVATE src)
+  mv_asan_runtime_beside(mv_broken_tests)
   target_compile_definitions(mv_broken_tests PRIVATE
     MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   catch_discover_tests(mv_broken_tests TEST_PREFIX "broken_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 1800 LABELS broken)
+
+  # PR 7 verify, "iPhone HEIC opens on a clean VM with no Store packs". Also its
+  # own executable, and for a stronger reason than the broken corpus: the test
+  # asserts that NO Media Foundation / WIC-extension / Store module is mapped
+  # into the process while a HEIC decodes through libheif. Inside mv_tests any
+  # earlier video case would have loaded mfplat.dll and the assertion could
+  # never be made again. See tests/test_clean_vm_heic.cpp.
+  add_executable(mv_clean_vm_tests tests/test_clean_vm_heic.cpp tests/crt_no_dialogs.cpp)
+  target_link_libraries(mv_clean_vm_tests PRIVATE mv_codec mv_image Catch2::Catch2WithMain psapi)
+  target_include_directories(mv_clean_vm_tests PRIVATE src)
+  target_compile_definitions(mv_clean_vm_tests PRIVATE
+    MV_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    MV_TESTMEDIA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/testmedia")
+  catch_discover_tests(mv_clean_vm_tests TEST_PREFIX "cleanvm_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120 LABELS cleanvm)
 endif()
 
 # ---------------------------------------------------------------------------

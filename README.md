@@ -7,23 +7,30 @@ Windows integration follow in future updates. **v1 is Windows.** From PR 4 the n
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 7's slices are all merged and pass locally; its clean-VM HEIC, real
-Live Photo and on-screen no-pop checks are still open. PR 8 packages the Windows viewer
-for its first release. PRs 9–15 are future feature updates. The owner widened the
-2026-09-13 sequencing exception on 2026-09-17 ([plan/12-decision-log.md](plan/12-decision-log.md))
-so Mac work (PR 16–20) no longer waits on Windows PR 8 shipping; PR 16 (Metal present lab),
-PR 17 (decode + pan/zoom, folded in the PR 7 formats/Crashpad scope), and PR 18 (SwiftUI
-chrome, folded in the PR 4/PR 6 folder/filmstrip-backend/keyboard scope) are all in the tree.
-The Darwin target now configures, builds, and links with a real toolchain (`cmake`+`ninja`+
-`vcpkg`+`swift build`) and its Catch2 suite passes (210 assertions, 60 cases). It has been run
-on a real Mac with a display (2026-09-19): the 60 s present-loop gate passes with the chrome on
-screen, and the window, menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still
-unproven on Mac: drag-and-drop, copy/move/Trash and slideshow on real folders, animated
-GIF/APNG/WebP playback (they show frame 0 as a still), and the tonal step when a RAW's
-embedded preview is replaced by the full decode — see [macOS](#macos-pr-1618) below.
-PR 20 (MediaViewer.app: Finder open, Quick Look thumbnails, Sparkle updates, the notarized
-disk image) is written but **not yet built or run on a Mac** — see
-[MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-pr-20).** The Windows present lab still owns
+**Status: PR 7's slices are all merged and pass locally. Its clean-VM HEIC, real
+Live Photo and on-screen no-pop checks now have gates around them
+([Where this actually is](#where-this-actually-is)); what remains of those three
+is a clean VM, a phone and one look at a RAW opening. PR 8 — packaging — is in progress:
+the icon, About, the Inno wizard, the Velopack updater, opt-in telemetry and the bundled
+runtimes are in the tree and build, the wizard installs and uninstalls cleanly on this
+machine, and the signature-rejection suite passes. It has **not** been through the
+clean-VM run its verify line asks for, and no artefact is signed — see
+[Package and install](#package-and-install-pr-8). PRs 9–15 are future feature updates.
+The owner widened the 2026-09-13 sequencing exception on 2026-09-17
+([plan/12-decision-log.md](plan/12-decision-log.md)) so Mac work (PR 16–20) no longer waits
+on Windows PR 8 shipping; PR 16 (Metal present lab), PR 17 (decode + pan/zoom, folded in the
+PR 7 formats/Crashpad scope) and PR 18 (SwiftUI chrome, folded in the PR 4/PR 6
+folder/filmstrip-backend/keyboard scope) are all in the tree. The Darwin target configures,
+builds and links with a real toolchain (`cmake`+`ninja`+`vcpkg`+`swift build`) and its Catch2
+suite passes (210 assertions, 60 cases). It has been run on a real Mac with a display
+(2026-09-19): the 60 s present-loop gate passes with the chrome on screen, and the window,
+menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still unproven on Mac:
+drag-and-drop, copy/move/Trash and slideshow on real folders, animated GIF/APNG/WebP playback
+(they show frame 0 as a still), and the tonal step when a RAW's embedded preview is replaced
+by the full decode — see [macOS](#macos-pr-1618) below. PR 20 (MediaViewer.app: Finder open,
+Quick Look thumbnails, Sparkle updates, the notarized disk image) is written but **not yet
+built or run on a Mac** — see [MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-pr-20).**
+The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
 TIFF/ICO/HEIC/AVIF/camera RAW **or video**; the strip virtualizes, thumbs come from a SQLite + JPEG-512 disk
@@ -122,6 +129,14 @@ Other configurations:
 cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
 cmake -S . -B build-clang -A x64 -T ClangCL      # clang-cl, the CI second opinion
 ```
+
+`-DMV_ASAN=ON` needs the **C++ AddressSanitizer** component
+(`Microsoft.VisualStudio.Component.VC.ASAN`) in the Visual Studio Installer — the
+ASan runtime is a DLL that ships beside `cl.exe` and nowhere else. The build
+copies it next to every executable, so `ctest` and a double-click both work
+outside a developer prompt. Configure says so and stops if the component is
+missing, rather than producing a tree whose every test hangs for its full
+timeout with nothing in the log.
 
 ### macOS (PR 16–18)
 
@@ -418,8 +433,20 @@ cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
 
+# PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
+# loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or
+# \WindowsApps\ module. Its own executable, because once mfplat.dll is in a
+# process it never leaves and the assertion could not be made again.
+ctest --test-dir build -C Release -L cleanvm --output-on-failure
+
 # the frame-time gate — 60 seconds, needs a quiet machine
 .\build\bin\Release\frametime.exe --seconds 60
+
+# PR 7 no-pop gate: open a still that has a preview (a RAW, or any JPEG), soak,
+# and fail if the preview → full swap popped — a cross-fade cut short, a view
+# that jumped, or a frame dropped inside the fade. PR 1's cadence is judged on
+# the same run, so a short run is diagnostic only.
+.\build\bin\Release\frametime.exe --no-pop tools\testmedia\raw\canon_eos7dmk2.cr2 --seconds 62
 
 # PR 5b's A/V drift soak. Writes a CSV of position, error percentiles, the
 # least-squares drift slope and the present counters, one row a second.
@@ -471,6 +498,105 @@ overlay) and the slope is measuring the host clock against itself, so a large
 number there — tens of ms/min — is an artefact of the fallback, not a defect. Read
 the `audio_master` column in the CSV before reading the slope. That is the whole
 reason the corpus now carries an audio-bearing 31-minute clip.
+
+## Package and install (PR 8)
+
+The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, with **no
+UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
+for every update, which is how update mechanisms stop working
+([plan/13](plan/13-updates-and-telemetry.md)). There is no Microsoft Store channel — the
+app is GPL-2.0-or-later ([plan/11](plan/11-licensing.md)).
+
+First install is an Inno Setup wizard; every later update is Velopack, in the background,
+never re-opening the wizard.
+
+### Building the release artefacts
+
+Needs a built Release tree, plus two tools that are not in the repo:
+
+```powershell
+dotnet tool install -g vpk --version 1.2.0
+winget install JRSoftware.InnoSetup
+
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+.\tools\package\build-release.ps1 -BuildDir build
+```
+
+That writes `dist\releases\` (the Velopack release set and the update manifest) and
+`dist\MediaViewer-<version>-Setup.exe` (the wizard). It refuses to proceed if the app
+breaks plan/09's 250 MB cap, fails plan/11's licence gate, or contains the Windows App SDK
+AI / ONNX / DirectML / WebView2 files plan/13 forbids shipping.
+
+The first run downloads the pinned .NET runtime (31.7 MB) once and caches it in the build
+directory; its SHA-256 is verified every time. For an offline build, pass the same archive
+with `-DotnetRuntimeZip`.
+
+**No prerequisites on the target machine.** The payload carries both runtimes — the
+Windows App SDK and .NET — so a clean Windows 10 21H2 install runs it with nothing
+installed first. That is not a nicety: the wizard is per-user and takes no UAC, and a
+machine-wide runtime prerequisite needs admin. plan/09 made the same call for .NET — "a
+viewer whose whole pitch is 'point it at a folder and it works' cannot open with a runtime
+prerequisite dialog". The app is **208.6 MB**, inside plan/09's stated 200–250 MB band; a
+first install occupies **292.7 MB** on disk, because Velopack also keeps one full package
+so a bad update can be rolled back.
+
+**An artefact from that command is unsigned and not publishable.** It says so on its last
+line. Signing needs credentials the repo does not and must not hold:
+
+```powershell
+.\tools\package\build-release.ps1 -BuildDir build `
+  -SigningMetadata trusted-signing.json `     # Azure Trusted Signing
+  -ManifestKey C:\offline\release.key         # Ed25519, signs the update manifest
+```
+
+Without Authenticode every early user gets a SmartScreen block on first run. Without the
+manifest key, clients reject every update — the pinned public key in
+`src.managed/MediaViewer.Updater/UpdateKeys.cs` ships as an all-zero placeholder so an
+unconfigured build **fails closed** rather than trusting an unverified channel.
+`tools/package/update-signing.md` has the procedure and the one-off human steps.
+
+### Installing and uninstalling
+
+The wizard is six pages and no more: Welcome, Licence (GPL, scroll and accept), Location,
+Options (Start Menu **on**, Desktop **off**), Progress, Finish (Launch, GitHub, Licence).
+It does **not** ask to become your default photo viewer — that is a later update, prompted
+in the app after you have actually opened a photo — and it does **not** ask about
+telemetry, which is a first-run screen inside the app.
+
+Uninstall is from Apps & features, and removes the shortcuts, the registry entry and the
+whole install directory.
+
+```powershell
+# unattended, e.g. on a test VM
+.\dist\MediaViewer-0.1.0-Setup.exe /VERYSILENT /DIR="C:\path\to\install" /TASKS=startmenu
+```
+
+### Updates
+
+```powershell
+# the local end-to-end check: staging, signature rejection, and rollback
+.\tools\package\e2e-update.ps1 -Payload .\build\bin\Release
+```
+
+It packs three versions into a temp feed, installs one, proves a **tampered manifest
+stages nothing**, proves a signed one downloads in the background and applies on exit
+without showing the wizard, and proves a build that fails to start twice **rolls back** to
+its predecessor on the third try.
+
+### Telemetry
+
+**Off by default, and it stays off unless you turn it on.** One first-run screen, two
+buttons, neither preselected; dismissing it leaves telemetry off. Settings has the same
+switch, and turning it off deletes the random install id and anything not yet sent.
+
+Nothing about your files ever leaves the machine — no paths, filenames, folder names,
+thumbnails, pixels or EXIF. That is enforced by the shape of the payload rather than by
+care: an event is an id from a fixed table, a tag from a fixed vocabulary, and named
+integers. There is no free-text field to put a filename in.
+`tools/telemetry-schema-check.ps1` fails the build if that ever changes.
+
+There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
@@ -634,9 +760,42 @@ media is not in git: `tools/testmedia/fetch-raw.ps1` and `fetch-heif.ps1`
 download pinned, hash-checked samples, and the tests that need them skip
 visibly without them (`MV_REQUIRE_CORPUS=1` makes that a failure). Generated
 HEIC/AVIF fixtures live in `tests/data/`; `MV_OS_CODEC=0` forces the bundled HEIC
-decoder, as on a clean VM. Not yet demonstrated: an iPhone HEIC on a clean VM
-with no Store packs, a real iPhone Live Photo, and the no-pop preview→full swap
-on screen.
+decoder, as on a clean VM.
+
+The three clauses that used to be "a person must squint at it" are now measured
+as far as they can be without a clean VM and a phone:
+
+- **Clean VM.** `mv_clean_vm_tests` (`ctest -L cleanvm`) decodes a HEIC with
+  `MV_OS_CODEC=0` and then reads the process module list: `heif.dll` and
+  `libde265.dll` must be mapped, and Media Foundation, the WIC codec extensions
+  and anything under `\WindowsApps\` must not be. The disabled path is also
+  asserted to load *no* module at all, so the `MFTEnumEx` probe cannot creep
+  back in. It is a separate executable: inside `mv_tests` an earlier video case
+  has already loaded `mfplat.dll` and "absent" could never be shown again.
+  What is left for a person: open an iPhone HEIC on a genuinely clean VM.
+- **Live Photo.** `tests/test_live_photo.cpp` lists a *real* directory shaped
+  like a camera roll — `IMG_0001.HEIC` + `.MOV`, the "Most Compatible" JPG pair,
+  the `.AAE` sidecar, the `IMG_E####` edited copy, an iCloud `(1)` duplicate, a
+  still whose motion half never came down, a plain clip — with real HEIC bytes,
+  and checks the stops, their order and which half is primary. A *hidden* motion
+  half must not be attached to a still. With the corpus present, the pair's MOV
+  is a real playable clip and `;`'s own ABI calls are asserted to put motion on
+  the canvas. What is left for a person: confirm a file straight off a phone
+  carries these names, and that an iPhone's HEVC motion track plays.
+- **No pop.** The lab counts what a pop is made of — the worst corner shift of
+  the picture's on-screen rectangle across the swap, the worst step in its
+  on-screen size, whether every cross-fade reached alpha 1, and any frame
+  dropped inside a fade — in the `--json` report and on `F3`.
+  `frametime --no-pop <image>` gates them together with PR 1's cadence.
+  Measuring it found a real pop: a still refines twice (`full_top`, then `full`
+  with its mips) and the second publish used to restart the cross-fade, snapping
+  the outgoing preview out at alpha 0.6 — on a RAW, most of the
+  preview-to-render brightness difference in one frame. A same-size refinement
+  arriving mid-fade now swaps the incoming texture under the running fade. A
+  62 s soak on the Canon CR2 then passed both gates on the development box: one
+  fade, started and completed, 15 frames, no drops, 0.70 px of view shift. The
+  PR 1 caveat above still applies — this is a developer box, not the quiet GPU
+  runner. What is left for a person: look at a RAW opening, once.
 
 PR 5's verify lines are:
 
@@ -706,6 +865,57 @@ Known holes on this slice, recorded in [plan/03-rendering.md](plan/03-rendering.
 [plan/04-image-pipeline.md](plan/04-image-pipeline.md): an idle renderer must be woken
 when a decode completes; CPU mip sizes must match D3D11's floor chain; LittleCMS needs a
 per-job context on the pool.
+
+PR 8's verify line is:
+
+> clean VM → run the wizard (no UAC) → Start Menu shortcut shows the app icon → Launch
+> from the finish page → open a real camera dump → browse photos, play video with audio
+> and transport, pan/zoom, fullscreen, and slideshow using the PR 1–7 feature set, with no
+> SmartScreen block and **no missing-codec dialog anywhere**. […] An update downloads and
+> stages without showing the wizard. Uninstall from Apps & features removes the shortcuts
+> and install directory. […] Exercise update signature rejection and rollback, and confirm
+> telemetry stays off unless explicitly enabled.
+
+**None of the clean-VM half has been run.** What is demonstrated, on this development
+machine:
+
+- The wizard compiles, installs per-user with **no UAC**, and produces the layout plan/13
+  specifies (root stub, `Update.exe`, `current\`, `packages\`). One Start Menu shortcut,
+  no desktop shortcut, exactly one Apps & features entry. Uninstall exits 0 and leaves no
+  directory, no shortcut and no registry entry.
+- The app icon is a single `.ico` with all eight required sizes (16/20/24/32/40/48/64/256),
+  and all eight reach the Velopack stub, the payload exe and the wizard. The Start Menu
+  shortcut takes its icon from the stub.
+- The installed build launches and exits cleanly.
+- The updater's signature-rejection suite passes (46 cases: tampered and missing
+  signatures, the unconfigured placeholder key, wrong channel, downgrade, blocklist,
+  a version already rolled back on this machine, and package hash/size mismatch).
+- Telemetry is off, never-asked, and records nothing by default, asserted in tests.
+- The payload needs nothing pre-installed: it carries the Windows App SDK runtime and the
+  .NET runtime, and an installed copy provably loads `hostfxr`, `coreclr` and
+  `Microsoft.UI.Xaml` **from its own directory** rather than from Program Files or a
+  framework package.
+
+**Not yet demonstrated, and needed before the verify can be attempted:**
+
+- A clean VM. Everything above ran on a machine that already has the Windows App SDK
+  runtime, .NET, and every codec DLL in a build tree. "Provably prefers ours" on a machine
+  that has both is weaker evidence than "works on a machine that has neither", and only a
+  clean VM settles the "no missing-codec dialog anywhere" clause.
+- **No SmartScreen block** cannot be true of an unsigned artefact, and cannot be tested
+  without a signing credential. See [Package and install](#package-and-install-pr-8).
+- `tools/package/e2e-update.ps1` passes **16 of 16**. A tampered manifest stages nothing;
+  a signed one downloads while the viewer runs, keeps the previous package for rollback,
+  and applies on exit **without showing the wizard**; a good version clears its trial
+  record; and a build that never finishes starting is counted twice, rolled back on the
+  third start, recorded as failed, and not offered again. That covers the verify line's
+  "an update downloads and stages without showing the wizard" and "exercise update
+  signature rejection and rollback" — on this machine, not on a clean VM.
+- The browse/play/pan/fullscreen/slideshow pass over a real camera dump, on the installed
+  build rather than the build tree, and PR 1's present-loop verify against it.
+
+PR 8 creates no PR 15 file associations or handlers. The place they must be removed at
+uninstall is marked in `tools/package/mediaviewer.iss`.
 
 ## Layout
 

@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "frametime/report.h"  // shared parser + gates; --no-pop uses no_pop_gate
 #include "gfx/pacer.h"
 
 namespace {
@@ -193,11 +194,16 @@ void usage() {
       L"frametime — MediaViewer frame-time regression harness\n"
       L"\n"
       L"  frametime [--seconds N] [--baseline PATH] [--update-baseline] [--lab PATH]\n"
+      L"  frametime --no-pop IMAGE [--seconds N] [--lab PATH]\n"
       L"\n"
       L"  --seconds N         soak duration; default 60, which is PR 1's verify line\n"
       L"  --baseline PATH     rolling baseline JSON; default beside this executable\n"
       L"  --update-baseline   save this run only after both gates and regression checks pass\n"
       L"  --lab PATH          mediaviewer_lab.exe; default: beside this executable\n"
+      L"  --no-pop IMAGE      PR 7's preview -> full swap gate. Opens IMAGE (a RAW, or\n"
+      L"                      any JPEG: both show a preview first), soaks, and fails if\n"
+      L"                      the swap popped - a cut cross-fade, a jumped view, or a\n"
+      L"                      dropped frame inside the fade. Runs the animated soak only.\n"
       L"\n"
       L"Exit codes: 0 pass, 1 gate or regression, 2 could not measure.\n");
 }
@@ -208,6 +214,7 @@ int wmain(int argc, wchar_t** argv) {
   double seconds = 60.0;
   std::wstring baseline_path;
   std::wstring lab_path;
+  std::wstring no_pop_image;
   bool update_baseline = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -222,6 +229,7 @@ int wmain(int argc, wchar_t** argv) {
         return 2;
       }
     }
+    else if (arg == L"--no-pop") no_pop_image = next();
     else if (arg == L"--baseline") baseline_path = next();
     else if (arg == L"--lab") lab_path = next();
     else if (arg == L"--update-baseline") update_baseline = true;
@@ -238,6 +246,56 @@ int wmain(int argc, wchar_t** argv) {
   if (baseline_path.empty()) baseline_path = here + L"\\frametime-baseline.json";
   const std::wstring report_path = here + L"\\frametime-report.json";
   const std::wstring idle_path = here + L"\\frametime-idle-report.json";
+  if (!no_pop_image.empty()) {
+    // PR 7's no-pop gate. One soak, opening a still that has a preview, then
+    // the report's refinement block decides. PR 1's cadence is checked on the
+    // same run: "no dropped frame during the swap" is not separable from the
+    // present loop still holding.
+    const std::wstring path = here + L"\\frametime-nopop-report.json";
+    if (!::DeleteFileW(path.c_str()) && ::GetLastError() != ERROR_FILE_NOT_FOUND) {
+      std::fwprintf(stderr, L"frametime: cannot clear report %ls\n", path.c_str());
+      return 2;
+    }
+    wchar_t seconds_arg[32]{};
+    ::swprintf_s(seconds_arg, L"%.6f", seconds);
+    const std::wstring command = L"\"" + lab_path + L"\" --soak " + seconds_arg + L" --json \"" +
+                                 path + L"\" --gate --open \"" + no_pop_image + L"\"";
+    std::wprintf(L"frametime: no-pop soak on %ls, %.3f s...\n", no_pop_image.c_str(), seconds);
+    const int code = run(command, seconds);
+    const auto json = read_file(path);
+    const auto parsed = json ? mv::frametime::parse(*json) : std::nullopt;
+    if (!parsed || code < 0 || code > 1) {
+      std::fwprintf(stderr, L"frametime: measurement failed (lab exit %d): %ls\n", code,
+                    path.c_str());
+      return 2;
+    }
+    auto r = *parsed;
+    // As in measure(): a failing child exit cannot be argued away by the
+    // report it left behind. It bears on PR 1's gate, not on whether the swap
+    // popped — the counters are what they are either way.
+    if (code != 0) r.meets_gate = false;
+    std::wprintf(L"  refinements: %llu, fades %llu started / %llu completed / %llu cut\n",
+                 static_cast<unsigned long long>(r.refinements),
+                 static_cast<unsigned long long>(r.refine_fades_started),
+                 static_cast<unsigned long long>(r.refine_fades_completed),
+                 static_cast<unsigned long long>(r.refine_fades_cancelled));
+    std::wprintf(L"  fade frames: %llu, dropped in fade: %llu, view shift %.3f px, scale x%.5f\n",
+                 static_cast<unsigned long long>(r.refine_fade_frames),
+                 static_cast<unsigned long long>(r.refine_fade_dropped),
+                 r.refine_max_edge_shift_px, r.refine_max_scale_step);
+    int result = 0;
+    if (!mv::frametime::no_pop_gate(r)) {
+      std::fwprintf(stderr, L"FAIL: preview -> full swap popped, or no swap was measured\n");
+      result = 1;
+    }
+    if (!mv::frametime::passes(r, false, seconds)) {
+      std::fwprintf(stderr, L"FAIL: PR 1's present loop did not hold during the no-pop soak\n");
+      result = 1;
+    }
+    std::wprintf(result == 0 ? L"PASS\n" : L"FAILED\n");
+    return result;
+  }
+
   const std::wstring open_path = here + L"\\frametime-open.bmp";
   if (!write_pattern_bmp(open_path, 512, 512)) {
     std::fwprintf(stderr, L"frametime: cannot write %ls\n", open_path.c_str());

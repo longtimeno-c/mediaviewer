@@ -14,7 +14,35 @@
     <UseWinUI>true</UseWinUI>
     <EnableMsixTooling>false</EnableMsixTooling>
     <WindowsPackageType>None</WindowsPackageType>
-    <WindowsAppSdkBootstrapInitialize>true</WindowsAppSdkBootstrapInitialize>
+
+    <!-- PR 8, clean-VM install. The wizard is per-user and takes no UAC
+         (plan/10 verify, plan/13), so it cannot install a machine-wide
+         Windows App SDK runtime as a prerequisite - and a prerequisite it
+         neither installs nor detects drops the user straight into the failure
+         that verify line forbids. So the runtime ships in the payload.
+
+         SelfContained pulls the WinAppSDK runtime DLLs in beside the app and
+         removes the framework-package dependency; with it there is no
+         framework package to find, so the bootstrapper is off. plan/13's
+         "do not ship Windows App SDK AI / ONNX / DirectML / WebView2" is
+         about trimming exactly this payload, and build-release.ps1 strips
+         them and fails if they come back.
+
+         The audit override exists because this project is a class library -
+         the native host owns the window and loads this through hostfxr
+         (D1) - and the SDK's check assumes self-contained means an exe.
+         It is the audit that is inapplicable here, not the deployment mode. -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSDKSelfContainedAudit>false</WindowsAppSDKSelfContainedAudit>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+
+    <!-- NOT SelfContained (the .NET runtime). hostfxr cannot load a
+         self-contained COMPONENT: hostfxr_initialize_for_runtime_config
+         answers 0x80008093 HostApiUnsupportedScenario for a runtimeconfig
+         with includedFrameworks - measured, not assumed. The .NET runtime
+         therefore ships as a private shared-framework layout under
+         <install>\dotnet, which shell/chrome_host.cpp prefers over the
+         machine's. Keep this framework-dependent. -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -29,6 +57,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MediaViewer.Interop\MediaViewer.Interop.csproj" />
+    <ProjectReference Include="..\MediaViewer.Updater\MediaViewer.Updater.csproj" />
   </ItemGroup>
 
   <ItemGroup>

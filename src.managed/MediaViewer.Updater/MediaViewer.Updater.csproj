@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+  <!-- PR 8 in-app updater (plan/13 Part 1). No WinUI here: the verification
+       rules are testable from a console runner, and the chrome only renders
+       what this library decides. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>MediaViewer.Updater</RootNamespace>
+    <AssemblyName>MediaViewer.Updater</AssemblyName>
+  </PropertyGroup>
+
+  <!-- Dev feed override (MV_UPDATE_FEED_DIR / MV_UPDATE_DEV_PUBKEY) exists only
+       in a build made with -p:MvUpdaterDev=true. A normal Release or Debug
+       build compiles it out: the pinned key and the GitHub source are the only
+       inputs, and the signature check applies to every feed either way. -->
+  <PropertyGroup Condition="'$(MvUpdaterDev)' == 'true'">
+    <DefineConstants>$(DefineConstants);MV_UPDATER_DEV</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.0" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
+  </ItemGroup>
+
+</Project>

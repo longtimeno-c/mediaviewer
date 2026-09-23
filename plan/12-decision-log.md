@@ -657,6 +657,30 @@ cheat-sheet flyout keep the mode underneath; Esc still closes the flyout first v
 pair back; do not silently steal skip. Do not put command-bar focus back in island mode to
 "make Tab easier" — that is how the keys die.
 
+## 2026-09-14 — PR 8: settings writes leave the UI thread
+
+Closes the "Settings writes on the UI thread" open row (recorded 2026-09-13; the roadmap
+moved it to PR 8 release hardening).
+
+`settings.ini` is read once at startup into an in-memory document (`shell/settings_store`).
+Saves mutate it through read-copy-update and hand the newest immutable snapshot to a
+one-thread persist worker (`mv::job_system`, separate from `file_jobs`, so a long card-dump
+move neither delays nor drops a settings write, and `file_jobs.stop()` cannot discard it).
+Bursts coalesce; an unchanged document writes nothing. The worker writes temp →
+`FlushFileBuffers` → `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)`, so a crash mid-write
+leaves the old file. The exit path flushes with a bounded 1 s wait after the WM_CLOSE
+island teardown (order unchanged); the render loop never waits. A detector counts any
+settings write on the registered UI thread outside the exit scope, and tests assert it.
+
+The file is now UTF-16LE with a BOM (readable by the profile API); PR 4–7 ANSI files still
+load and unknown keys survive. New keys go through `app_settings().get/set/update`. Direct
+`*PrivateProfile*` calls on `settings.ini` are not allowed — the store rewrites the whole
+file and would lose them.
+
+**How it gets reversed.** It does not go back to the UI thread. If the worker proves
+unnecessary, the snapshot write can move to the existing I/O pool only once `file_jobs`
+stops dropping queued work at exit.
+
 ## Still open
 
 | Question | Blocks | Notes |
@@ -664,7 +688,7 @@ pair back; do not silently steal skip. Do not put command-bar focus back in isla
 | ~~**Do we need the Microsoft Store?**~~ | ~~PR 1~~ | **Closed 2026-09-06: no.** App is GPL-2.0-or-later, Exiv2 kept under the GPL, direct download only. See the PR 1 entry above. |
 | **A quiet machine for the D6 gate** | PR 1 verify (inherited) | Re-run 2026-09-07: one animated pass, one animated fail, idle contaminated by mouse. Still needs the self-hosted GPU runner [09](09-build-and-test.md). |
 | **PR 4's verify was never run** | PR 5 (inherited) | Three sessions held PR 4; the first hallucinated, the second committed `5eaa530` without reporting, the third confirmed it never owned the PR. Recorded state as of 2026-09-07: the 2000-JPEG scroll, the warm second-visit thumbnail check and the < 40 ms warm arrow-key number are **not run**; `tests/test_frametime.ps1` is **not run**; the plan edits in that commit to [10](10-roadmap.md) and [16](16-commands.md) are **unreviewed**. PR 5 is being built on top of this knowingly. |
-| **Settings writes on the UI thread** | PR 15 (settings) | `settings.ini` writes (filmstrip toggles since PR 4, F7 / F8 destinations since PR 6) run on the UI thread, against rule 1. They are small, and a destination is only written when it changes, but they belong on the I/O worker. Recorded 2026-09-13 so the rule does not erode quietly. |
+| ~~**Settings writes on the UI thread**~~ | ~~PR 8 (release hardening)~~ | **Closed 2026-09-14:** writes moved to a persist worker; see the PR 8 entry above. Original note: `settings.ini` writes (filmstrip toggles since PR 4, F7 / F8 destinations since PR 6) run on the UI thread, against rule 1. They are small, and a destination is only written when it changes, but they belong on the I/O worker. Recorded 2026-09-13 so the rule does not erode quietly. |
 | **Do WinUI 3 XAML islands hold up?** | PR 3 verify (inherited) | Command-bar island is in the tree. Filmstrip is a second island (PR 4). Present-loop + tab + flyout-over-canvas still unproven on a quiet GPU runner. Fallback unchanged: WinUI app with `SwapChainPanel` and an accepted composed frame. |
 
 ## Gallery keyboard controls (2026-09-13)
@@ -927,6 +951,166 @@ Store codec). Choices the plan left open for the Metal host:
 - **MPEG-2 has no VideoToolbox decode on this hardware**, so it runs in software and the F3
   overlay says `SOFTWARE`. D5 lists MPEG-2 as supported; it is, without hardware.
 
+## 2026-09-20 — PR 7's three human checks, turned into gates where they could be
+
+The PR 7 verify line has three clauses that read as "a person looks at it": an iPhone
+HEIC on a clean VM, a real Live Photo, and the preview → full swap not popping. None can
+be produced from this machine, and none is marked passed. What changed is how much of
+each is asserted by a test rather than resting on a look.
+
+**Clean VM (`tests/test_clean_vm_heic.cpp`, target `mv_clean_vm_tests`, label `cleanvm`).**
+`MV_OS_CODEC=0` was described as standing in for a clean VM, and was only ever checked to
+make `try_os_decode` decline. Nothing checked what did the decoding afterwards. The new
+test decodes a HEIC with the switch off and reads the process module list: libheif and
+libde265 must be mapped, and Media Foundation, the WIC codec extensions and anything under
+`\WindowsApps\` must not be. It also asserts the disabled path loads no module at all, so
+the `MFTEnumEx` probe cannot return unnoticed. Its own executable, because the assertion is
+one-way: inside `mv_tests` an earlier video case has already pulled in `mfplat.dll`.
+`codec/os_decode_win.cpp` is the only TU in the tree that touches WIC or Media Foundation,
+so that switch really is the whole OS-codec surface for stills.
+
+**Live Photo (`tests/test_live_photo.cpp`).** Pairing was tested on hand-made `dir_entry`
+structs and, at the ABI, on renamed BMPs. It is now also tested on a real directory shaped
+like a camera roll, through `list_still_files` + `pair_listing`, and — with the corpus
+present — with a real playable clip as the motion half, opened through the same ABI calls
+`;` makes. Two shapes worth naming: `IMG_E####` (iOS's edited copy) is correctly its own
+stop with the original's pair intact, and a *hidden* motion half is not attached to a
+still. Pairing stays name-only; the ContentIdentifier check is still PR 9's (row 7 of
+2026-09-14).
+
+**No pop — and a real defect found.** The lab now measures what a pop is made of: the worst
+corner displacement of the picture's on-screen rectangle across `camera_.refine`, the worst
+step in its on-screen size, whether every cross-fade reached alpha 1, and any dropped frame
+inside a fade window. They are in the `--json` report, on `F3`, and gated by
+`frametime --no-pop <image>` together with PR 1's cadence.
+
+Measuring it found that a still refines **twice** — `full_top` when the top level exists,
+then `full` with its mip chain, the same pixels both times — and the second publish
+restarted the cross-fade. On a Canon CR2 that snapped the outgoing embedded JPEG out at
+alpha 0.6 in a single frame, which on a RAW is most of the 7–41 luma levels between the
+preview and LibRaw's render. That is the pop the verify line forbids, and it had been there
+all along. **Call:** a same-size refinement arriving while a fade is running swaps the
+incoming texture under the running fade instead of starting a new one, so the preview fades
+out once, continuously. A 62 s soak on the CR2 then passed the no-pop gate and PR 1's
+cadence gate on the development box — not the quiet GPU runner, so PR 1's own caveat stands.
+
+**LibRaw's 0.8–1.7 s full decode (row 6 of 2026-09-14) — still open, options priced.**
+vcpkg's `libraw` 0.22.2 port does expose an `openmp` feature, so it is a one-line manifest
+change, but not a free one: it puts an OpenMP thread pool inside a decode worker that
+already runs on our job system (plan/02's five thread roles), adds the MSVC OpenMP runtime
+to what PR 8 has to ship, and does nothing about the cancel granularity of one LibRaw
+stage. Against that: PR 7's verify line asks for "preview time comparable to a JPEG", which
+is met at 11–69 ms; the 500 ms figure is plan/09's target for the full decode, which the
+preview already hides, and the swap out of it is now gated. The recommendation is to accept
+the miss for v1 and record it rather than take a threading change into a packaging PR.
+**Still the owner's call — not settled here.**
+
+## 2026-09-20 — PR 8: the wizard owns uninstall, not Velopack
+
+**Decision.** The Inno wizard owns the Apps & features entry, the shortcuts, and the
+install directory. Velopack is packed with `--shortcuts None`, and the duplicate uninstall
+entry it registers is deleted — by the wizard at install, and by the host after an update,
+which is the only other moment Velopack writes it.
+
+**Why this came up.** Velopack registers `HKCU\...\Uninstall\MediaViewer` →
+`Update.exe --uninstall` every time it applies a package. With the wizard also registering
+one, a user sees MediaViewer twice in Apps & features, and the Velopack entry removes the
+tree *without* the wizard's shortcuts — and, once PR 15 lands, without the `ProgId` and
+handler registrations. plan/10 is explicit that "an update that leaves a zombie association
+is a failed uninstall".
+
+**Why the wizard and not Velopack.** Velopack's entry is self-healing across updates, which
+argued for letting it win. Against that: it cannot know about anything the wizard or a
+later PR adds, and PR 15's handler removal needs one place to live. The wizard is that
+place, and the host's post-update sweep covers the self-healing gap. The sweep only ever
+deletes an entry whose `UninstallString` names *this* install's `Update.exe`, so the
+wizard's own entry and any unrelated product sharing the key name are untouched
+(`is_velopack_uninstall_string`, tested).
+
+**Also settled by measuring, rather than by reading docs.**
+
+- Velopack's `--installto` **clears its target directory**. The bundle therefore runs from
+  `[Code]` at `ssInstall`, before Inno writes anything; as a `[Run]` entry it deleted the
+  wizard's own `unins000.exe` and left an Apps & features entry pointing at nothing.
+- `Update.exe --silent uninstall` is **not** called at uninstall. It detaches a cleanup
+  process that races Inno's directory removal — the uninstaller logged "Failed to delete
+  directory (145)" and exited 1 while Velopack finished the job a second later. With
+  `--shortcuts None` and the registry entry already ours, it had nothing left to do.
+- `[UninstallDelete]` must name the Velopack layout explicitly. Inno removes only what it
+  installed, and it installed neither the stub nor `Update.exe`.
+
+**Rejected:** a per-machine MSI as the consumer channel (plan/13 already rejects it —
+elevation on every update), and letting both entries stand.
+
+## 2026-09-20 — PR 8: the AI and WebView2 payload is excluded at packaging
+
+plan/13 already says not to ship Windows App SDK AI / ONNX / DirectML / WebView2. They
+arrived anyway: `dotnet publish` of a Windows App SDK project copies the framework's whole
+projection set regardless of use. Measured at 43.4 MB of a 119.6 MB payload — 36 % of every
+download, for a viewer that does no inference and hosts no browser.
+
+`tools/package/build-release.ps1` filters them out and then **asserts** they are absent
+from the finished tree, because the recursive directory copy could reintroduce them.
+Payload is 72.7 MB.
+
+**Open.** The payload is still framework-dependent: the Windows App SDK runtime is an
+assumed prerequisite on the target machine. The wizard neither installs nor detects it,
+which is a hole sitting directly under PR 8's "no missing-codec dialog anywhere" clause,
+since that clause is about a machine with nothing installed. Either the wizard gains a
+runtime bootstrap or the publish becomes self-contained; not decided.
+
+## 2026-09-23 — PR 8: both runtimes ship in the payload; no prerequisite
+
+**Decision.** The payload carries the Windows App SDK runtime and the .NET
+runtime. A clean Windows 10 21H2 machine with nothing pre-installed runs the
+installed build.
+
+**Why it was not optional.** The wizard is per-user and takes no UAC (plan/10's
+verify line, plan/13). A machine-wide Windows App SDK runtime as a prerequisite
+needs admin, so it contradicts that directly; and a prerequisite the wizard
+neither installs nor detects lands the user in the failure the same verify line
+forbids. plan/09 had already made the matching call for .NET — "Take
+self-contained and publish the honest number. A viewer whose whole pitch is
+'point it at a folder and it works' cannot open with a runtime prerequisite
+dialog — that's the same mistake as a codec-pack prompt (D3)." — and budgeted
+~70 MB for it.
+
+**Mechanism, and why it is not simply `--self-contained`.**
+
+- **.NET.** `hostfxr_initialize_for_runtime_config` cannot load a self-contained
+  *component*: given a runtimeconfig with `includedFrameworks` it returns
+  0x80008093 `HostApiUnsupportedScenario`. Measured, not inferred. Since D1 the
+  chrome is a component the native host loads through hostfxr, so
+  `--self-contained` is unavailable to it. The deployment outcome plan/09 asked
+  for is reached instead by shipping the ordinary shared-framework layout
+  privately under `<install>\current\dotnet`; `find_hostfxr` prefers it over the
+  machine's install and stops at the first root that has one, so an installed
+  MediaViewer runs on the runtime it was tested against.
+- **Windows App SDK.** `WindowsAppSDKSelfContained` refuses a class library, and
+  the chrome is one for the same D1 reason; the refusal is an audit target with
+  an explicit override, and it is the audit that is inapplicable, not the
+  deployment mode. The part that does not announce itself: self-contained WinUI
+  activates registration-free, and registration-free activation reads the
+  manifest of the **executable**. Our executable is the native host, not the C#
+  project the SDK generated the manifest for — so without merging that manifest
+  into the host's, every XAML activation fails with 0x80040111
+  `CLASS_E_CLASSNOTAVAILABLE`, the island silently does not attach, and the app
+  comes up with no command bar. The build merges it with `mt.exe`.
+
+**Verified** on an installed copy: `hostfxr`, `coreclr` and `Microsoft.UI.Xaml`
+all load from the install directory rather than from Program Files or a
+framework package.
+
+**Size, published honestly rather than rounded.** The app is 208.6 MB — inside
+plan/09's stated 200–250 MB band and under its cap. On disk after a first
+install it is 292.7 MB, because Velopack also keeps one full package so a bad
+update can be rolled back (plan/13). That cache is a working set plan/13 prunes,
+not the application, so the gate checks the app and reports the total.
+
+**Open.** plan/09 suggests ".NET trimming to claw back part of it". Trimming is
+not applied: it is unsafe for a component resolved through hostfxr and for
+WinUI's reflection over XAML types. If the 250 MB cap ever needs real headroom,
+that is the thread to pull, and it needs measurement rather than a flag.
 ## 2026-09-23 — macOS first install mirrors the PR 8 wizard, as a disk image
 
 Not a D1–D9 reversal and not a sequencing change: it lands in **PR 20**, and PR 8 is
