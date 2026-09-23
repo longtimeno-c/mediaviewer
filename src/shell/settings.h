@@ -5,8 +5,12 @@
 // puts on screen. They live in shell/ because that is where the Win32 host
 // lives (D9) — a Mac host keeps its own defaults rather than reading this file.
 //
-// Storage is `%LocalAppData%\MediaViewer\settings.ini`. Nothing about the
-// user's files is written here (rule 6) — only the toggles below.
+// Storage is `%LocalAppData%\MediaViewer\settings.ini`, held in memory by
+// shell/settings_store.h. Every load_* below reads that in-memory document and
+// every save_* queues a coalesced write on the store's persist worker: none of
+// them touches the disk on the calling thread (rule 1). The overloads without a
+// store use app_settings(). Nothing about the user's files is written here
+// (rule 6) other than the F7 / F8 destination folders the user picked.
 #pragma once
 
 #include <cstddef>
@@ -15,6 +19,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "shell/settings_store.h"
 
 namespace mv::shell {
 
@@ -63,18 +69,23 @@ struct key_override {
   std::uint8_t mods = 0;
 };
 
+[[nodiscard]] std::vector<key_override> load_key_overrides(const settings_store& store) noexcept;
+void save_key_overrides(settings_store& store, std::span<const key_override> list) noexcept;
 [[nodiscard]] std::vector<key_override> load_key_overrides() noexcept;
 void save_key_overrides(std::span<const key_override> list) noexcept;
 
 // Never fails loudly: a missing or unreadable file is the defaults above.
+[[nodiscard]] view_settings load_view_settings(const settings_store& store) noexcept;
+void save_view_settings(settings_store& store, const view_settings& settings) noexcept;
 [[nodiscard]] view_settings load_view_settings() noexcept;
 void save_view_settings(const view_settings& settings) noexcept;
 
 // F7 / F8 destinations, most recent first, at most five (plan/16). UTF-8
 // folder paths the user picked; they stay in the local settings file.
 inline constexpr std::size_t kMaxDestinations = 5;
-// Read once at startup; the app keeps the list and writes it back when it
-// changes, so a keypress never reads the settings file.
+// Read once at startup; the app keeps the list and saves it when it changes.
+[[nodiscard]] std::vector<std::string> load_destinations(const settings_store& store) noexcept;
+void save_destinations(settings_store& store, const std::vector<std::string>& list) noexcept;
 [[nodiscard]] std::vector<std::string> load_destinations() noexcept;
 void save_destinations(const std::vector<std::string>& list) noexcept;
 
@@ -93,6 +104,8 @@ struct crash_settings {
   int consent = -1;
   std::string upload_url;
 };
+[[nodiscard]] crash_settings load_crash_settings(const settings_store& store) noexcept;
+void save_crash_consent(settings_store& store, bool accepted) noexcept;
 [[nodiscard]] crash_settings load_crash_settings() noexcept;
 void save_crash_consent(bool accepted) noexcept;
 

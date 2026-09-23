@@ -455,6 +455,12 @@ add_executable(mediaviewer_lab WIN32
   src/shell/navigation.h
   src/shell/settings.cpp
   src/shell/settings.h
+  src/shell/settings_store.cpp
+  src/shell/settings_store.h
+  src/shell/update_guard.cpp
+  src/shell/update_guard.h
+  src/shell/telemetry.cpp
+  src/shell/telemetry.h
   src/shell/crash_reporter_win.cpp
   src/shell/crash_reporter_win.h
   src/shell/minidump_scrub.cpp
@@ -462,7 +468,13 @@ add_executable(mediaviewer_lab WIN32
   src/shell/input_state.h
   src/shell/present_lab.h
   src/shell/app.manifest
+  src/shell/app_icon.h
+  src/shell/mediaviewer.rc
 )
+# PR 8 identity: icon resource + VERSIONINFO, numbers from project(VERSION).
+set_source_files_properties(src/shell/mediaviewer.rc PROPERTIES
+  COMPILE_DEFINITIONS "MV_VER_MAJOR=${PROJECT_VERSION_MAJOR};MV_VER_MINOR=${PROJECT_VERSION_MINOR};MV_VER_PATCH=${PROJECT_VERSION_PATCH};MV_APP_VERSION_STR=\"${PROJECT_VERSION}\";MV_ICON_FILE=\"${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico\""
+  OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico")
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
   mv_gfx
@@ -476,6 +488,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   ole32     # CoInitializeEx for the WinUI island STA
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
+  comctl32  # LoadIconWithScaleDown (PR 8 window icon)
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
@@ -511,6 +524,15 @@ add_custom_command(TARGET mediaviewer_lab POST_BUILD
           "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
           "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
   COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+# PR 8 About: the mark, the licence and the third-party notices ship beside the
+# exe so the flyout opens local files, never a network fetch.
+add_custom_command(TARGET mediaviewer_lab POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer-256.png"
+          "${CMAKE_SOURCE_DIR}/LICENSE"
+          "${CMAKE_SOURCE_DIR}/THIRD-PARTY.md"
+          "$<TARGET_FILE_DIR:mediaviewer_lab>"
+  COMMENT "Copy About assets (icon PNG, LICENSE, THIRD-PARTY.md) beside mediaviewer_lab")
 
 # PR 3: publish the C# WinUI chrome beside the lab so hostfxr can load it.
 # The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
@@ -525,8 +547,17 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Gallery.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.About.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Update.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Telemetry.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateManifest.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/SignedManifestSource.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/TrialState.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateService.cs"
 )
 if(DOTNET_EXE)
   # Publish beside the lab on every lab link so `cmake --build --target
@@ -545,6 +576,43 @@ if(DOTNET_EXE)
   )
   set_property(TARGET mediaviewer_lab APPEND PROPERTY LINK_DEPENDS ${MV_CHROME_SOURCES})
   add_custom_target(mv_chrome DEPENDS mediaviewer_lab ${MV_CHROME_SOURCES})
+
+  # PR 8 clean-VM install: the Windows App SDK ships IN the payload
+  # (WindowsAppSDKSelfContained in MediaViewer.Chrome.csproj), because the
+  # wizard is per-user and takes no UAC and so cannot install a machine-wide
+  # framework package (plan/10 verify, plan/13).
+  #
+  # Self-contained WinUI activates its WinRT classes registration-free, and
+  # registration-free activation reads the manifest of the EXECUTABLE. Our
+  # executable is this native host, not the C# project the SDK generated the
+  # manifest for, so without this step every XAML activation fails with
+  # 0x80040111 CLASS_E_CLASSNOTAVAILABLE - the island silently does not attach
+  # and the command bar is missing. Measured.
+  #
+  # So: merge the SDK's generated activation manifest (980 classes, and it
+  # tracks the WindowsAppSDK package version - never hand-maintained) into the
+  # host's own manifest, after the publish that produces it.
+  find_program(MV_MT_EXE mt
+    HINTS "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin"
+    PATH_SUFFIXES "10.0.26100.0/x64" "10.0.22621.0/x64" "x64"
+    DOC "Windows SDK manifest tool, for the self-contained WinUI activation manifest")
+  set(MV_WINAPPSDK_MANIFEST
+      "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/obj/x64/$<IF:$<CONFIG:Debug>,Debug,Release>/net8.0-windows10.0.19041.0/win-x64/Manifests/WindowsAppSDK.manifest")
+  if(MV_MT_EXE)
+    add_custom_command(TARGET mediaviewer_lab POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E echo
+              "Merging the Windows App SDK activation manifest into mediaviewer_lab.exe"
+      COMMAND "${MV_MT_EXE}" -nologo
+              -manifest "${CMAKE_SOURCE_DIR}/src/shell/app.manifest" "${MV_WINAPPSDK_MANIFEST}"
+              "-outputresource:$<TARGET_FILE:mediaviewer_lab>$<SEMICOLON>#1"
+      COMMENT "Self-contained WinUI activation manifest -> host exe"
+      VERBATIM)
+  else()
+    message(WARNING
+      "mt.exe not found: the Windows App SDK activation manifest cannot be merged "
+      "into mediaviewer_lab.exe, so the WinUI island will fail to attach with "
+      "CLASS_E_CLASSNOTAVAILABLE. Install the Windows SDK, or set MV_MT_EXE.")
+  endif()
 else()
   message(STATUS "dotnet not found — lab will run without WinUI chrome (pass --no-chrome)")
 endif()
@@ -607,6 +675,9 @@ if(MV_BUILD_TESTS)
     tests/test_collision_name.cpp
     tests/test_file_ops.cpp
     tests/test_file_jobs.cpp
+    tests/test_settings_store.cpp
+    tests/test_update_guard.cpp
+    tests/test_telemetry.cpp
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
@@ -631,8 +702,21 @@ if(MV_BUILD_TESTS)
     src/shell/file_jobs.cpp
     src/shell/open_request.cpp
     src/shell/settings.cpp
+    src/shell/settings_store.cpp
+    src/shell/update_guard.cpp
+    src/shell/telemetry.cpp
     src/shell/app.manifest
   )
+  # PR 8 verify: update signature rejection (managed half of the updater).
+  if(DOTNET_EXE)
+    # No --nologo: `dotnet run` forwards it to the program, which answers with
+    # its usage and exit code 2 instead of running the suite.
+    add_test(NAME updater_manifest_verification
+      COMMAND ${DOTNET_EXE} run --project
+              "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater.Tests/MediaViewer.Updater.Tests.csproj"
+              -c Release)
+    set_tests_properties(updater_manifest_verification PROPERTIES TIMEOUT 300 LABELS updater)
+  endif()
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx

@@ -58,6 +58,8 @@ public static partial class IslandHost
         view.Children.Add(_stripImage);
         view.Children.Add(_wrap);
         view.Children.Add(_sticky);
+        AddUpdateSettingsRow(view);     // PR 8 updater (IslandHost.Update.cs)
+        AddTelemetrySettingsRow(view);  // PR 8 telemetry (IslandHost.Telemetry.cs)
         view.Children.Add(Label("Canvas background"));
         _background = new ComboBox
         {
@@ -337,6 +339,8 @@ public static partial class IslandHost
             if (_stripImage is not null) _stripImage.IsOn = HasFlag(SettingFlag.FilmstripForImage);
             if (_wrap is not null) _wrap.IsOn = HasFlag(SettingFlag.Wrap);
             if (_sticky is not null) _sticky.IsOn = HasFlag(SettingFlag.StickyZoom);
+            RefreshUpdateSettingsRow();
+            RefreshTelemetrySettingsRow();
             if (_background is not null)
             {
                 _background.SelectedIndex =

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+  <!-- Updater verification tests (plan/10 PR 8: "Exercise update signature
+       rejection and rollback") plus the dev signing tool the local e2e uses.
+       Same console-runner shape as MediaViewer.AbiSmokeTest: exit 0 = pass. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MediaViewer.Updater\MediaViewer.Updater.csproj" />
+  </ItemGroup>
+
+</Project>
