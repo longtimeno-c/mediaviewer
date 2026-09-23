@@ -35,6 +35,18 @@ added by the PR that adds the dependency.
 | Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
 | [Cozette](https://github.com/the-moonwitch/Cozette) | 1.30.0 | MIT | Bundled TTF | Empty canvas and chrome labels. Bitmap terminal face (Proggy/Dina lineage); `CozetteVector.ttf` for WinUI. Licence: `assets/fonts/LICENSE-Cozette.txt`. |
 
+## macOS (MediaViewer.app, PR 20)
+
+The Mac app decodes with the same libraries as Windows. FFmpeg, libheif, libde265 and
+LibRaw ship as separate dylibs in `MediaViewer.app/Contents/Frameworks` and are never
+linked statically. `tools/mac/macpack.py` fails the bundle if any reference points outside it.
+This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions:
+
+| Component | Version | Licence | Linkage | Notes |
+|---|---|---|---|---|
+| [Sparkle](https://sparkle-project.org) | 2.9.6 | MIT | Dynamic framework (`Contents/Frameworks/Sparkle.framework`) | Updates (plan/13). Pinned by SHA-256 in `cmake/darwin-app.cmake`; linked only when the build has an EdDSA public key. |
+| [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
+
 ## Planned, with the PR that introduces each
 
 Nothing below is linked yet. The table exists so the licence position of a dependency

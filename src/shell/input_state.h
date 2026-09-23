@@ -80,6 +80,24 @@ struct input_snapshot {
   // An animated item: Space toggles play / pause, `,` `.` step (cumulative).
   std::uint32_t anim_toggle_seq = 0;
   std::int64_t anim_steps = 0;
+  // Clip transport beyond play/pause and frame step (plan/16 "Video"): skips in
+  // milliseconds (cumulative, so coalesced key-repeat loses none), speed-ladder
+  // rungs (cumulative), and a mute edge. Space and `,` `.` reuse the two fields
+  // above, exactly as an animation does.
+  std::int64_t video_skip_ms = 0;
+  std::int32_t video_speed_steps = 0;
+  std::uint32_t video_mute_seq = 0;
+  // Volume in 10 % steps (cumulative, like the speed rungs): Up / Down on a clip.
+  std::int32_t video_volume_steps = 0;
+  // Absolute volume from the transport strip's slider (plan/16 "More" panel).
+  // Edge-triggered like the seek pair: seq bumps, value is read alongside it.
+  std::uint32_t video_volume_set_seq = 0;
+  float video_volume_set_value = 1.0f;
+  // Absolute seek from the transport strip's scrubber. `exact` is false while the
+  // thumb is being dragged (nearest keyframe, instant) and true on release.
+  std::uint32_t video_seek_seq = 0;
+  std::int64_t video_seek_ms = 0;
+  bool video_seek_exact = true;
 
   bool window_visible = true;
   bool window_active = true;

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Darwin / Apple Silicon present lab (PR 16). Included from the root
+# Darwin / Apple Silicon host (PR 16–20). Included from the root
 # CMakeLists.txt and then returns, so none of the Windows targets are defined.
+# MediaViewer.app, the Quick Look extension, and Sparkle are in darwin-app.cmake.
 #
 # plan/15: AppKit + CAMetalLayer + CAMetalDisplayLink. No SwiftUI, no
 # VideoToolbox, no FFmpeg on this slice.
@@ -45,10 +46,14 @@ target_link_libraries(mv_core PRIVATE "-framework Foundation")
 add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
+  src/gfx/colour_desc.cpp
+  src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
   src/gfx/device_mac.mm
   src/gfx/metal_layer.mm
   src/gfx/blit_metal.mm
+  src/gfx/video_blit_metal.mm
+  src/gfx/video_blit_metal.h
   src/gfx/metal_pacer.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
@@ -201,6 +206,64 @@ target_link_libraries(mv_image PUBLIC mv_codec mv_gfx mv_io
 add_library(mv::image ALIAS mv_image)
 
 # ---------------------------------------------------------------------------
+# mv_player -- demux, decode, A/V clock, transport (PR 19, plan/05 + plan/15).
+# The same portable TUs as the Windows target; the D9 host files are the Metal /
+# VideoToolbox / Core Audio twins: hwdecode_mac.mm, frame_ring_mac.mm,
+# audio_mac.cpp. FFmpeg is LGPL and dynamic-link only (CLAUDE.md), so it comes
+# from the arm64-osx-dynamic triplet:
+#   vcpkg install --triplet arm64-osx-dynamic \
+#     "ffmpeg[core,avcodec,avformat,avfilter,swresample,swscale,dav1d]"
+# (add the `ffmpeg` feature if you want the CLI for tools/testmedia clips).
+# ---------------------------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH "${MV_VCPKG_DYNAMIC_PREFIX}/share/ffmpeg")
+set(ENV{PKG_CONFIG_PATH}
+    "${MV_VCPKG_DYNAMIC_PREFIX}/lib/pkgconfig:${MV_VCPKG_DYNAMIC_PREFIX}/debug/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+find_package(FFMPEG REQUIRED)
+
+add_library(mv_player STATIC
+  src/player/demux.cpp
+  src/player/video_decode.cpp
+  src/player/frame_ring.cpp
+  src/player/frame_ring_mac.mm
+  src/player/video_source.cpp
+  src/player/media_source.cpp
+  src/player/hwdecode_mac.mm       # D9: the only player/ file that names CoreVideo/Metal decode
+  src/player/audio_decode.cpp
+  src/player/av_clock.cpp
+  src/player/audio_mac.cpp         # D9: the only player/ file that names Core Audio
+  src/player/transport.cpp
+  src/player/presenter.cpp
+  src/player/container_probe.cpp
+  src/player/poster.cpp
+  src/player/media_source.h
+  src/player/video_source.h
+  src/player/audio_sink.h
+  src/player/audio_block.h
+  src/player/av_clock.h
+  src/player/presenter.h
+  src/player/transport.h
+  src/player/container_probe.h
+  src/player/poster.h
+  src/player/video_internal.h
+)
+# SYSTEM so FFmpeg's own headers do not trip -Werror; ours stay fully checked.
+target_include_directories(mv_player SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_player
+  PUBLIC mv_core mv_gfx
+  PRIVATE mv_codec mv_io ${FFMPEG_LIBRARIES}
+          "-framework Foundation" "-framework Metal" "-framework CoreVideo"
+          "-framework CoreMedia" "-framework VideoToolbox" "-framework AudioToolbox"
+          "-framework CoreAudio" "-framework CoreFoundation")
+add_library(mv::player ALIAS mv_player)
+
+# playprobe -- headless pipeline check (tools/playprobe): decoder actually used,
+# presenter counters, drift slope. Not shipped.
+add_executable(playprobe tools/playprobe/main_mac.mm)
+target_link_libraries(playprobe PRIVATE mv_player mv_core "-framework Foundation" "-framework Metal")
+target_include_directories(playprobe PRIVATE src)
+
+# ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom camera + springs (plan/03: omega=18, zeta=1). Zero
 # platform dependency; identical to the Windows target's source.
 # ---------------------------------------------------------------------------
@@ -221,6 +284,13 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
+  # The one key router and command table, shared with Windows (plan/16): the
+  # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
+  # translates virtual keys. Pure C++, no platform header.
+  src/shell/command_table.cpp
+  src/shell/commands.h
+  src/shell/key_router.cpp
+  src/shell/key_router.h
 )
 target_link_libraries(mv_shell PUBLIC mv_core)
 add_library(mv::shell ALIAS mv_shell)
@@ -255,6 +325,9 @@ set(MV_SWIFT_CHROME_BUILD_DIR "${CMAKE_BINARY_DIR}/swift-chrome")
 set(MV_SWIFT_CHROME_HEADER "${MV_SWIFT_CHROME_BUILD_DIR}/MediaViewerChrome-Swift.h")
 set(MV_SWIFT_CHROME_LIB "${MV_SWIFT_CHROME_BUILD_DIR}/release/libMediaViewerChrome.a")
 set(MV_SWIFT_CHROME_COLLECT "${CMAKE_SOURCE_DIR}/cmake/collect-swift-chrome.sh")
+file(GLOB MV_SWIFT_CHROME_SOURCES CONFIGURE_DEPENDS
+  "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/*.swift"
+  "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include/*.h")
 
 add_custom_command(
   OUTPUT "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}"
@@ -266,51 +339,64 @@ add_custom_command(
           "${MV_SWIFT_CHROME_BUILD_DIR}" "${MV_SWIFT_CHROME_HEADER}" "${MV_SWIFT_CHROME_LIB}"
   DEPENDS
     "${MV_SWIFT_CHROME_DIR}/Package.swift"
-    "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/CommandBarView.swift"
-    "${MV_SWIFT_CHROME_DIR}/Sources/MediaViewerChrome/ChromeHost.swift"
-    "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include/mv_chrome_bridge.h"
+    ${MV_SWIFT_CHROME_SOURCES}
     "${MV_SWIFT_CHROME_COLLECT}"
   COMMENT "swift build: MediaViewerChrome (PR 18 command bar)"
   VERBATIM)
 add_custom_target(mv_swift_chrome_build
   DEPENDS "${MV_SWIFT_CHROME_LIB}" "${MV_SWIFT_CHROME_HEADER}")
 
-add_executable(mediaviewer_lab
+# The AppKit host, built twice from the same sources: mediaviewer_lab (the
+# PR 16 instrument frametime drives, a bare binary) and MediaViewer (PR 20,
+# the executable inside MediaViewer.app, with MV_APP_BUNDLE and, given a key,
+# Sparkle).
+set(MV_MAC_HOST_SOURCES
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
+  src/shell/media_kind.h
   src/shell/input_state.h
   src/shell/folder_model_mac.cpp
   src/shell/folder_model_mac.h
 )
-add_dependencies(mediaviewer_lab mv_swift_chrome_build)
-target_link_libraries(mediaviewer_lab PRIVATE
-  mv_gfx
-  mv_image
-  mv_canvas
-  mv_shell
-  mv_io
-  imgui::imgui
-  "${MV_SWIFT_CHROME_LIB}"
-  "-framework Foundation"
-  "-framework AppKit"
-  "-framework Metal"
-  "-framework QuartzCore"
-  "-framework CoreServices"
-  "-framework SwiftUI"
-  "-framework Combine")
-target_include_directories(mediaviewer_lab PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
-  "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
 set_source_files_properties(
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+function(mv_mac_host target)
+  add_executable(${target} ${MV_MAC_HOST_SOURCES})
+  add_dependencies(${target} mv_swift_chrome_build)
+  target_link_libraries(${target} PRIVATE
+    mv_gfx
+    mv_image
+    mv_canvas
+    mv_shell
+    mv_io
+    mv_player
+    imgui::imgui
+    "${MV_SWIFT_CHROME_LIB}"
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework Metal"
+    "-framework QuartzCore"
+    "-framework CoreServices"
+    "-framework UniformTypeIdentifiers"
+    "-framework SwiftUI"
+    "-framework Combine")
+  target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
+    "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
+endfunction()
+
+mv_mac_host(mediaviewer_lab)
 
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
           "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
   COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+
+include("${CMAKE_CURRENT_LIST_DIR}/darwin-app.cmake")
 
 add_executable(mv_frametime
   tools/frametime/main_mac.cpp
@@ -332,6 +418,8 @@ if(MV_BUILD_TESTS)
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
     tests/test_browse_index.cpp
+    tests/test_key_router.cpp
+    tests/test_key_router_review.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (plan/09: no RAW in git).
     tests/test_probe.cpp
@@ -342,6 +430,15 @@ if(MV_BUILD_TESTS)
     tests/test_raw.cpp
     tests/test_anim.cpp
     tests/test_colour.cpp
+    # PR 19: the portable player logic (clock, drift, presenter, transport, probe,
+    # the audio-sink contract). test_video_ring / test_video_colour build D3D11
+    # textures and test_video_transport goes through the Windows ABI header, so
+    # they stay Windows-only; playprobe covers the Metal ring for real.
+    tests/test_av_clock.cpp
+    tests/test_audio_sink.cpp
+    tests/test_presenter.cpp
+    tests/test_transport.cpp
+    tests/test_container_probe.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -349,6 +446,7 @@ if(MV_BUILD_TESTS)
     mv_shell
     mv_codec
     mv_image
+    mv_player
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF
@@ -366,4 +464,4 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_tests)
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin present lab (PR 16), GPL-2.0-or-later")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-2.0-or-later")

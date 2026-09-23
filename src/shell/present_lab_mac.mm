@@ -2,6 +2,9 @@
 #include "shell/present_lab_mac.h"
 
 #include "image/pipeline.h"
+#include "shell/media_kind.h"
+#include "image/colour.h"
+#include "codec/decode.h"
 
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
@@ -88,10 +91,16 @@ void try_load_font() noexcept {
   char* slash = std::strrchr(resolved, '/');
   if (!slash) return;
   *slash = '\0';
-  char font_path[PATH_MAX]{};
-  if (std::snprintf(font_path, sizeof(font_path), "%s/CozetteVector.ttf", resolved) <= 0) return;
-  if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16.0f)) {
-    ImGui::GetIO().FontDefault = font;
+  // MediaViewer.app keeps the font in Contents/Resources (codesign refuses
+  // data files in Contents/MacOS); the bare lab keeps it beside the binary.
+  for (const char* rel : {"/../Resources/CozetteVector.ttf", "/CozetteVector.ttf"}) {
+    char font_path[PATH_MAX]{};
+    if (std::snprintf(font_path, sizeof(font_path), "%s%s", resolved, rel) <= 0) continue;
+    if (::access(font_path, R_OK) != 0) continue;
+    if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16.0f)) {
+      ImGui::GetIO().FontDefault = font;
+    }
+    return;
   }
 }
 
@@ -216,8 +225,267 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         image::gpu_image_mac* old = pending->exchange(img);
         delete old;  // a load superseded before the render thread took it over
         wake();
+
+        // Animated GIF/APNG/WebP (plan/04, folded into PR 18): frame 0 is
+        // already up via the still path above (rule 3); if the file turns out
+        // to have more frames, start the feed for frame 1 onward. `bytes` is
+        // free to move now -- nothing above referenced it after decode_bytes_mac.
+        // A still (one-frame WebP, PNG without acTL) is refused by
+        // open_animation; a one-frame GIF is found out by the feed itself.
+        const auto family = codec::probe(bytes);
+        if (this->anim_session_ &&
+            (family == codec::format_family::gif || family == codec::format_family::webp ||
+             family == codec::format_family::png)) {
+          auto shared = std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+          if (auto opened = codec::open_animation(std::move(shared))) {
+            this->anim_session_->publish(std::move(opened).value(), ctx.gen());
+            wake();
+          }
+        }
         return status::ok;
       });
+}
+
+// PR 19. open_media() blocks on I/O and probing, so it runs here on a worker;
+// the render thread only ever sees the finished media_source. A clip the user
+// navigated away from before it opened is closed here, never posted.
+void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept {
+  if (path_utf8.empty() || !options_.jobs) return;
+  void* mtl_device = device_.native_device();
+  video_opening_.store(item_id, std::memory_order_release);
+  wake();  // present at vblank while it loads (present_request::video_loading)
+
+  options_.jobs->submit(
+      [this, path = std::move(path_utf8), mtl_device, item_id](const job_context& ctx) -> status {
+        const double t0 = monotonic_seconds();
+        auto opened = player::open_media(path.c_str(), mtl_device);
+        std::uint64_t expected = item_id;
+        video_opening_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+        if (!opened) {
+          MV_LOG_WARN("open: video open failed (%s)", status_name(opened.error()));
+          wake();
+          return opened.error();
+        }
+        if (ctx.cancelled()) {
+          player::close_media(opened.value());
+          return status::cancelled;
+        }
+        MV_LOG_INFO("open: video ready in %.0f ms", (monotonic_seconds() - t0) * 1000.0);
+        auto* pm = new pending_media{opened.value(), item_id};
+        if (pending_media* old = pending_media_.exchange(pm)) {
+          player::close_media(old->source);  // a clip superseded before it was shown
+          delete old;
+        }
+        wake();
+        return status::ok;
+      });
+}
+
+void present_lab_mac::update_video_status() noexcept {
+  if (!media_) {
+    vs_active_.store(false, std::memory_order_release);
+    return;
+  }
+  static constexpr int kRateX100[] = {25, 50, 100, 150, 200, 400};
+  vs_pos_ms_.store(media_->position_ns() / 1'000'000, std::memory_order_relaxed);
+  vs_dur_ms_.store(media_->info().duration_ns / 1'000'000, std::memory_order_relaxed);
+  vs_playing_.store(media_->state() == player::play_state::playing, std::memory_order_relaxed);
+  vs_muted_.store(video_muted_, std::memory_order_relaxed);
+  vs_rate_x100_.store(kRateX100[std::clamp(speed_rung_, 0, 5)], std::memory_order_relaxed);
+  vs_volume_.store(video_volume_, std::memory_order_relaxed);
+  vs_active_.store(true, std::memory_order_release);
+}
+
+bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
+  if (video_frame_) {
+    *w = static_cast<float>(video_frame_->width);
+    *h = static_cast<float>(video_frame_->height);
+    return true;
+  }
+  if (current_image_) {
+    *w = static_cast<float>(current_image_->width);
+    *h = static_cast<float>(current_image_->height);
+    return true;
+  }
+  return false;
+}
+
+void present_lab_mac::retire_media() noexcept {
+  player::media_source* m = media_;
+  if (m) {
+    for (auto*& f : retired_frames_) {
+      if (f) m->release_frame(f);
+      f = nullptr;
+    }
+    if (video_frame_) m->release_frame(video_frame_);
+  }
+  video_frame_ = nullptr;
+  media_ = nullptr;
+  media_item_ = 0;
+  media_fitted_ = false;
+  if (!m) return;
+  // close_media() stops and joins the demux/decode/audio threads: never on the
+  // render thread (rule 1). The shared_ptr's deleter is what guarantees the
+  // close runs exactly once even if the job is dropped by a shutdown.
+  auto holder = std::shared_ptr<player::media_source>(
+      m, [](player::media_source* p) { player::close_media(p); });
+  if (!options_.jobs ||
+      options_.jobs->submit_at(background_generation,
+                               [holder](const job_context&) -> status { return status::ok; }) ==
+          invalid_job) {
+    holder.reset();  // pool gone (shutting down): close here, we are exiting
+  }
+}
+
+// Latched transport from the UI thread (plan/16 "Video"). Space/,/. are
+// shared between a real clip and an animated still (key_router.cpp maps both
+// item_kind::clip and item_kind::animation to mode::video on Windows for the
+// same reason); everything else here only ever applies to a clip. Returns
+// true when it changed what should be on screen, so the caller redraws.
+bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
+  static constexpr double kLadder[] = {0.25, 0.5, 1.0, 1.5, 2.0, 4.0};
+  constexpr int kRungs = 6;
+
+  // Navigation retires the previous item's animation feed exactly the way it
+  // already retires a superseded still/clip load: compare against the live
+  // job_system generation, same signal open_item()'s bump_generation() drives
+  // everywhere else (plan/02).
+  const std::uint32_t live_gen =
+      options_.jobs ? options_.jobs->current_generation() : anim_generation_;
+  if (live_gen != anim_generation_) {
+    if (anim_session_) anim_session_->retire(live_gen);
+    anim_generation_ = live_gen;
+    anim_frame_.reset();
+    anim_schedule_.reset();
+    anim_finished_ = false;
+    anim_seeking_ = false;
+  }
+  const bool anim_open = current_image_ && !video_frame_ && anim_session_ &&
+                         anim_session_->open(anim_generation_);
+  const auto now_ms = static_cast<std::uint64_t>(monotonic_seconds() * 1000.0);
+  // A frame more than two refreshes late restarts the cadence (and counts as
+  // late), the same slack the D3D11 lab gives itself.
+  const auto slack_ms =
+      static_cast<std::uint32_t>(layer_.refresh_interval_seconds() * 2000.0) + 1;
+
+  bool changed = false;
+  if (s.anim_toggle_seq != seen_anim_toggle_) {
+    seen_anim_toggle_ = s.anim_toggle_seq;
+    if (anim_open) {
+      if (anim_finished_) {
+        // Space on a played-out animation plays it again from the start.
+        anim_session_->seek(0);
+        anim_schedule_.reset();
+        anim_finished_ = false;
+      } else if (anim_schedule_.paused()) {
+        anim_schedule_.resume(now_ms);
+      } else {
+        anim_schedule_.pause(now_ms);
+      }
+      changed = true;
+    } else if (media_) {
+      if (media_->state() == player::play_state::playing) media_->pause();
+      else media_->play();
+      changed = true;
+    }
+  }
+  if (s.anim_steps != seen_anim_steps_) {
+    const std::int64_t d = s.anim_steps - seen_anim_steps_;
+    seen_anim_steps_ = s.anim_steps;
+    if (anim_open) {
+      anim_schedule_.pause(now_ms);
+      if (d < 0) {
+        anim_session_->seek(anim_index_ > 0 ? anim_index_ - 1 : 0);
+      } else if (anim_finished_) {
+        anim_session_->seek(0);
+      }
+      anim_finished_ = false;
+      anim_seeking_ = true;
+      changed = true;
+    } else if (media_) {
+      const int n = static_cast<int>(std::min<std::int64_t>(std::llabs(d), 8));
+      for (int i = 0; i < n; ++i) media_->step(d > 0 ? 1 : -1);
+      changed = true;
+    }
+  }
+
+  // A ready frame, if one is due. Checked every tick regardless of whether
+  // toggle/step just fired, the same as the D3D11 lab: cadence is timer-driven,
+  // not input-driven.
+  if (anim_open && (anim_seeking_ || anim_schedule_.due(now_ms))) {
+    mv::abi::animation_frame<image::gpu_image_mac> frame;
+    if (anim_session_->take(anim_generation_, frame)) {
+      anim_frame_.reset(frame.texture);
+      anim_index_ = frame.index;
+      if (anim_seeking_) {
+        anim_schedule_.stepped(frame.delay_ms);
+        anim_seeking_ = false;
+      } else {
+        anim_schedule_.shown(frame.delay_ms, now_ms, slack_ms);
+      }
+      changed = true;
+    }
+  }
+  if (anim_open && !anim_seeking_) anim_finished_ = anim_session_->finished(anim_generation_);
+  // Presents while it plays (or while a step is on its way); paused or played
+  // out, the canvas idles like any still (plan/03 rule 4).
+  anim_live_ = anim_open && (anim_seeking_ || (!anim_schedule_.paused() && !anim_finished_));
+  anim_active_.store(anim_open, std::memory_order_release);
+
+  if (!media_) {
+    // No clip open: consume the video-only edges anyway, so a key pressed
+    // before one opens is not replayed onto it later.
+    seen_video_skip_ = s.video_skip_ms;
+    seen_video_speed_ = s.video_speed_steps;
+    seen_video_mute_ = s.video_mute_seq;
+    seen_video_volume_ = s.video_volume_steps;
+    seen_video_volume_set_ = s.video_volume_set_seq;
+    seen_video_seek_ = s.video_seek_seq;
+    return changed;
+  }
+  if (s.video_skip_ms != seen_video_skip_) {
+    const std::int64_t d = s.video_skip_ms - seen_video_skip_;
+    seen_video_skip_ = s.video_skip_ms;
+    const player::time_ns duration = media_->info().duration_ns;
+    player::time_ns target = media_->position_ns() + d * 1'000'000;
+    target = std::max<player::time_ns>(0, duration > 0 ? std::min(target, duration - 1) : target);
+    media_->seek(target, /*exact=*/true);
+    changed = true;
+  }
+  if (s.video_speed_steps != seen_video_speed_) {
+    const int d = s.video_speed_steps - seen_video_speed_;
+    seen_video_speed_ = s.video_speed_steps;
+    speed_rung_ = std::clamp(speed_rung_ + d, 0, kRungs - 1);
+    media_->set_rate(kLadder[speed_rung_]);
+    changed = true;
+  }
+  if (s.video_seek_seq != seen_video_seek_) {
+    seen_video_seek_ = s.video_seek_seq;
+    const player::time_ns duration = media_->info().duration_ns;
+    player::time_ns target = s.video_seek_ms * 1'000'000;
+    target = std::max<player::time_ns>(0, duration > 0 ? std::min(target, duration - 1) : target);
+    media_->seek(target, s.video_seek_exact);
+    changed = true;
+  }
+  if (s.video_mute_seq != seen_video_mute_) {
+    if ((s.video_mute_seq - seen_video_mute_) & 1u) {
+      video_muted_ = !video_muted_;
+      media_->set_muted(video_muted_);
+    }
+    seen_video_mute_ = s.video_mute_seq;
+  }
+  if (s.video_volume_steps != seen_video_volume_) {
+    const int d = s.video_volume_steps - seen_video_volume_;
+    seen_video_volume_ = s.video_volume_steps;
+    video_volume_ = std::clamp(video_volume_ + 0.1f * static_cast<float>(d), 0.0f, 1.0f);
+    media_->set_volume(video_volume_);
+  }
+  if (s.video_volume_set_seq != seen_video_volume_set_) {
+    seen_video_volume_set_ = s.video_volume_set_seq;
+    video_volume_ = std::clamp(s.video_volume_set_value, 0.0f, 1.0f);
+    media_->set_volume(video_volume_);
+  }
+  return changed;
 }
 
 void present_lab_mac::open_item(std::string path_utf8) noexcept {
@@ -227,7 +495,12 @@ void present_lab_mac::open_item(std::string path_utf8) noexcept {
   // relist/thumb jobs, which stay pinned to background_generation and are
   // never cancelled by this.
   options_.jobs->bump_generation();
-  submit_image_load(std::move(path_utf8), ++item_counter_);
+  const std::uint64_t item = ++item_counter_;
+  if (is_video_name(path_utf8)) {
+    submit_video_open(std::move(path_utf8), item);
+  } else {
+    submit_image_load(std::move(path_utf8), item);
+  }
 }
 
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
@@ -316,6 +589,45 @@ void present_lab_mac::render_thread_main() noexcept {
       running_.store(false, std::memory_order_release);
       return;
     }
+    if (auto built = video_blitter_.create(device_.native_device(),
+                                           static_cast<std::uint64_t>(MTLPixelFormatBGRA8Unorm_sRGB));
+        !built) {
+      // Not fatal: stills still work; a clip then shows nothing rather than the app dying.
+      MV_LOG_ERROR("present_lab_mac: video blitter create failed (%s)", status_name(built.error()));
+    }
+
+    // Animated GIF/APNG/WebP feed (plan/04). Each frame is colour managed like
+    // a still and uploaded top level only (an animation is never mip-mapped),
+    // the same recipe abi.cpp's Windows instantiation uses -- this is the same
+    // template, just image::gpu_image_mac instead of image::gpu_image.
+    {
+      void* mtl_device = device_.native_device();
+      anim_session_ = std::make_unique<mv::abi::animation_session<image::gpu_image_mac>>(
+          [mtl_device](const codec::canvas_frame& frame, const codec::animation_info& info,
+                      std::uint32_t generation) -> std::unique_ptr<image::gpu_image_mac> {
+            (void)generation;
+            codec::raster raster;
+            raster.width = info.width;
+            raster.height = info.height;
+            raster.format = info.format;
+            raster.intent = codec::transfer_intent::display_referred;
+            raster.rgba = frame.rgba;
+            raster.tagged_srgb = info.tagged_srgb;
+            result<image::display_image> display = err(status::internal);
+            if (info.icc.empty()) {
+              display = image::to_display(std::move(raster));
+            } else {
+              const std::span<const std::uint8_t> icc(info.icc.data(), info.icc.size());
+              auto transform = image::display_transform::create(icc);
+              if (!transform) return nullptr;  // D6: a broken profile is not untagged sRGB
+              display = transform.value()->apply(std::move(raster));
+            }
+            if (!display) return nullptr;
+            auto uploaded = image::upload(mtl_device, display.value());
+            if (!uploaded) return nullptr;
+            return std::make_unique<image::gpu_image_mac>(std::move(uploaded).value());
+          });
+    }
     // No longer auto-loads options_.open_path here: MvLabApp now resolves
     // --open (and a bare argv path, and a drop) through folder_model_mac --
     // "a file opens its folder with that file selected" (plan/16-commands.md)
@@ -402,11 +714,9 @@ void present_lab_mac::render_thread_main() noexcept {
             measurement_valid_ = false;
           }
           pacer_.set_refresh(layer_.refresh_interval_seconds());
-          if (current_image_ && camera_.fit_mode()) {
-            camera_.fit(static_cast<float>(current_image_->width),
-                       static_cast<float>(current_image_->height),
-                       static_cast<float>(snapshot.width), usable_window_h(snapshot),
-                       /*immediate=*/false);
+          if (float pw = 0, ph = 0; picture_size(&pw, &ph) && camera_.fit_mode()) {
+            camera_.fit(pw, ph, static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                        /*immediate=*/false);
           }
           redraw = true;
         }
@@ -417,6 +727,8 @@ void present_lab_mac::render_thread_main() noexcept {
           // Same item, better pixels (preview -> full): keep the view as a
           // fraction of the image so nothing pops, refits or snaps. A new
           // item resets and fits.
+          // A still for a newer item ends the clip on screen.
+          if (media_ && media_item_ != loaded->item_id) retire_media();
           const bool refinement = current_image_ && loaded->item_id != 0 &&
                                   current_image_->item_id == loaded->item_id;
           const auto old_w = current_image_ ? static_cast<float>(current_image_->width) : 0.0f;
@@ -427,11 +739,22 @@ void present_lab_mac::render_thread_main() noexcept {
                            static_cast<float>(current_image_->height),
                            static_cast<float>(snapshot.width), usable_window_h(snapshot));
           } else {
-            camera_.reset();
-            camera_.fit(static_cast<float>(current_image_->width),
-                        static_cast<float>(current_image_->height),
-                        static_cast<float>(snapshot.width), usable_window_h(snapshot),
-                        /*immediate=*/true);
+            stills_shown_.fetch_add(1, std::memory_order_acq_rel);
+            // plan/16 sticky zoom: off (default) fits every item; on keeps the
+            // mode, or the zoom and pan fraction (same as the Windows lab).
+            const auto new_w = static_cast<float>(current_image_->width);
+            const auto new_h = static_cast<float>(current_image_->height);
+            const auto win_w = static_cast<float>(snapshot.width);
+            const float win_h = usable_window_h(snapshot);
+            const bool had_media = old_w > 0.0f;
+            if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
+              camera_.fill(new_w, new_h, win_w, win_h, /*immediate=*/true);
+            } else if (snapshot.sticky_zoom && had_media && !camera_.fit_mode()) {
+              camera_.carry(old_w, old_h, new_w, new_h, win_w, win_h);
+            } else {
+              camera_.reset();
+              camera_.fit(new_w, new_h, win_w, win_h, /*immediate=*/true);
+            }
           }
           redraw = true;
           // A still popping in mid-measurement changes what's on screen just
@@ -440,12 +763,55 @@ void present_lab_mac::render_thread_main() noexcept {
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
 
+        // PR 19: a clip finished opening on a worker. The previous picture stays
+        // up until the clip's first frame is ready.
+        if (pending_media* pm = pending_media_.exchange(nullptr)) {
+          retire_media();
+          media_ = pm->source;
+          media_item_ = pm->item;
+          delete pm;
+          speed_rung_ = 2;
+          video_muted_ = false;
+          media_->set_volume(video_volume_);
+          media_->play();
+          redraw = true;
+          if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
+        }
+        if (apply_playback_input(snapshot)) redraw = true;
+        update_video_status();
+        if (media_ && media_->needs_present()) {
+          const auto vblank_ns =
+              static_cast<player::time_ns>(layer_.refresh_interval_seconds() * 1e9);
+          if (player::video_frame* frame = media_->acquire_frame(1, vblank_ns)) {
+            // The frame we are replacing may still be read by a command buffer
+            // in flight, and the decode thread reuses a released slot at once,
+            // so it is held back kRetiredFrames presents before release.
+            if (video_frame_) {
+              if (retired_frames_[kRetiredFrames - 1]) {
+                media_->release_frame(retired_frames_[kRetiredFrames - 1]);
+              }
+              for (std::size_t i = kRetiredFrames - 1; i > 0; --i) {
+                retired_frames_[i] = retired_frames_[i - 1];
+              }
+              retired_frames_[0] = video_frame_;
+            }
+            video_frame_ = frame;
+            if (!media_fitted_) {
+              current_image_.reset();
+              camera_.reset();
+              camera_.fit(static_cast<float>(frame->width), static_cast<float>(frame->height),
+                          static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                          /*immediate=*/true);
+              media_fitted_ = true;
+            }
+            redraw = true;
+          }
+        }
+
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
 
-        if (current_image_) {
-          const auto image_w = static_cast<float>(current_image_->width);
-          const auto image_h = static_cast<float>(current_image_->height);
+        if (float image_w = 0, image_h = 0; picture_size(&image_w, &image_h)) {
           const auto window_w = static_cast<float>(snapshot.width);
           // PR 18: the SwiftUI command bar covers the top chrome_height_px of
           // the canvas, the same "swapchain spans the client area, chrome is
@@ -495,8 +861,14 @@ void present_lab_mac::render_thread_main() noexcept {
         req.occluded = occluded_;
         req.soak = options_.soak_seconds > 0.0;
         req.animating = animating_;
-        req.camera_moving = current_image_ && camera_.moving();
-        req.has_still = current_image_ != nullptr;
+        {
+          float pw = 0, ph = 0;
+          const bool has_picture = picture_size(&pw, &ph);
+          req.camera_moving = has_picture && camera_.moving();
+          req.has_still = has_picture;
+        }
+        req.video_active = (media_ && media_->needs_present()) || anim_live_;
+        req.video_loading = video_opening_.load(std::memory_order_acquire) != 0;
         req.redraw = redraw;
         req.painted_static = painted_static_;
         req.elapsed_seconds = elapsed;
@@ -547,7 +919,7 @@ void present_lab_mac::render_thread_main() noexcept {
         const double now = monotonic_seconds();
         const float delta = static_cast<float>(now - last_frame);
         last_frame = now;
-        if (current_image_) camera_.step(delta);
+        if (float pw = 0, ph = 0; picture_size(&pw, &ph)) camera_.step(delta);
 
         id<CAMetalDrawable> drawable = update.drawable;
         if (!drawable) continue;
@@ -560,7 +932,14 @@ void present_lab_mac::render_thread_main() noexcept {
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        pass.colorAttachments[0].clearColor = MTLClearColorMake(0.016, 0.018, 0.024, 1.0);
+        // Settings' canvas background (0 dark, 1 gray, 2 white, 3 checkerboard,
+        // which clears to its mid tone under the pattern), as on Windows.
+        {
+          const double lvl = gfx::background_clear_mac(snapshot.background & 3);
+          pass.colorAttachments[0].clearColor =
+              (snapshot.background & 3) == 0 ? MTLClearColorMake(0.016, 0.018, 0.024, 1.0)
+                                             : MTLClearColorMake(lvl, lvl, lvl, 1.0);
+        }
 
         ImGui_ImplMetal_NewFrame(pass);
         feed_imgui(snapshot, delta, wheel);
@@ -569,7 +948,8 @@ void present_lab_mac::render_thread_main() noexcept {
         // The lab sweep/idle text is the PR 16 instrument; once --open has
         // loaded a still, the image (drawn below, same render pass) replaces
         // it rather than drawing both.
-        if (!current_image_ && animating_) {
+        const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
+        if (!have_picture && animating_) {
           const auto w = static_cast<float>(snapshot.width);
           const auto h = static_cast<float>(snapshot.height);
           animation_phase_ = std::fmod(elapsed * 0.35, 1.0);
@@ -578,7 +958,7 @@ void present_lab_mac::render_thread_main() noexcept {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           bg->AddRectFilled(ImVec2(x, 0.0f), ImVec2(x + bar_width, h),
                             IM_COL32(230, 230, 235, 255));
-        } else if (!current_image_ && overlay_visible_) {
+        } else if (!have_picture && overlay_visible_) {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           const float w = static_cast<float>(snapshot.width);
           const float h = static_cast<float>(snapshot.height);
@@ -605,6 +985,29 @@ void present_lab_mac::render_thread_main() noexcept {
                       static_cast<unsigned long long>(stats.missed_refreshes));
           ImGui::Text("source    %s", gfx::metal_drop_source_label(stats.source));
           ImGui::Text("%s", animating_ ? "animating (lab sweep)" : "idle-capable");
+          if (media_) {
+            const auto ms = media_->stats();
+            const auto mi = media_->info();
+            const char* decoder = ms.decoder == player::decoder_kind::videotoolbox ? "VideoToolbox"
+                                  : ms.decoder == player::decoder_kind::software   ? "SOFTWARE"
+                                                                                   : "none";
+            ImGui::Separator();
+            ImGui::Text("video     %s  %ux%u %s  %s %.2fx", decoder, mi.video.width, mi.video.height,
+                        mi.video.ten_bit ? "10-bit" : "8-bit", mi.video.codec_name,
+                        ms.playback_rate);
+            ImGui::Text("position  %.2f / %.2f s  %s", media_->position_ns() / 1e9,
+                        mi.duration_ns / 1e9,
+                        media_->state() == player::play_state::playing ? "playing"
+                        : media_->state() == player::play_state::ended ? "ended" : "paused");
+            ImGui::Text("clock     %s   err p50/p99 %.1f / %.1f ms   slope %.2f ms/min",
+                        ms.audio_master ? "audio" : "HOST (no audio)", ms.err_ms_p50, ms.err_ms_p99,
+                        ms.drift_slope_ms_per_min);
+            ImGui::Text("frames    shown %llu  late %llu  starved %llu  silence %llu",
+                        static_cast<unsigned long long>(ms.counters.presented),
+                        static_cast<unsigned long long>(ms.counters.dropped_late),
+                        static_cast<unsigned long long>(ms.counters.held_starved),
+                        static_cast<unsigned long long>(ms.counters.silence_fills));
+          }
           ImGui::End();
         }
 
@@ -613,7 +1016,22 @@ void present_lab_mac::render_thread_main() noexcept {
         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device_.native_queue();
         id<MTLCommandBuffer> cb = [queue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
-        if (current_image_) {
+        if (video_frame_) {
+          gfx::video_blit_params_mac vp;
+          vp.pan_x = camera_.pan_x();
+          vp.pan_y = camera_.pan_y();
+          vp.zoom = camera_.zoom();
+          vp.window_w = static_cast<float>(snapshot.width);
+          vp.window_h = usable_window_h(snapshot);
+          vp.origin_y = static_cast<float>(snapshot.chrome_height_px);
+          vp.image_w = static_cast<float>(video_frame_->width);
+          vp.image_h = static_cast<float>(video_frame_->height);
+          id<MTLTexture> luma_tex = (__bridge id<MTLTexture>)video_frame_->luma;
+          vp.texture_w = static_cast<float>(luma_tex.width);
+          vp.texture_h = static_cast<float>(luma_tex.height);
+          video_blitter_.draw((__bridge void*)enc, video_frame_->luma, video_frame_->chroma,
+                              video_frame_->colour, vp);
+        } else if (current_image_) {
           gfx::blit_params_mac bp;
           bp.pan_x = camera_.pan_x();
           bp.pan_y = camera_.pan_y();
@@ -623,8 +1041,10 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.origin_y = static_cast<float>(snapshot.chrome_height_px);
           bp.image_w = static_cast<float>(current_image_->width);
           bp.image_h = static_cast<float>(current_image_->height);
+          bp.background = snapshot.background & 3;
           bp.time_seconds = static_cast<float>(elapsed);
-          blitter_.draw((__bridge void*)enc, current_image_->texture, bp);
+          blitter_.draw((__bridge void*)enc,
+                        anim_frame_ ? anim_frame_->texture : current_image_->texture, bp);
         }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
@@ -684,6 +1104,19 @@ void present_lab_mac::render_thread_main() noexcept {
     }
     current_image_.reset();
     delete pending_image_.exchange(nullptr);
+    // Joins the animation decode thread before device_.destroy() below, the
+    // same ordering reason submit_image_load's job must finish first: its
+    // make_texture_fn closure holds the raw MTLDevice pointer.
+    anim_session_.reset();
+    anim_frame_.reset();
+    // Clips: the pool is already shut down here, so retire_media() closes on
+    // this thread (we are exiting; there is no render loop left to protect).
+    retire_media();
+    if (pending_media* pm = pending_media_.exchange(nullptr)) {
+      player::close_media(pm->source);
+      delete pm;
+    }
+    video_blitter_.destroy();
     blitter_.destroy();
     layer_.destroy();
     device_.destroy();

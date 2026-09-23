@@ -111,6 +111,65 @@ the running version, the GPL, a link to the GitHub repo, `THIRD-PARTY.md`, and t
 **LGPL source offer for this build** — not a frozen snapshot from v1.0
 ([11-licensing.md](11-licensing.md)).
 
+## macOS first install — a branded disk image (PR 20)
+
+Same idea as the Windows wizard, in the Mac idiom: a short, branded first meeting, once,
+then silent updates. It lands with **PR 20** (Milestone F, **D9**), not in PR 8, and
+nothing here changes what PR 8 ships. Recorded in [12](12-decision-log.md) 2026-09-23.
+
+| | First install | Every later update |
+|---|---|---|
+| Tool | Developer ID–signed, notarized, stapled **`.dmg`** | **Sparkle 2** |
+| What the user sees | A branded window: drag the app to Applications | Nothing until "Update ready — restart" |
+| What it writes | `MediaViewer.app` wherever they drop it | The bundle, replaced in place |
+
+**A disk image, not a `.pkg`.** A package runs scripts as root, cannot be undone by
+dragging to the Trash, and its "install for me only" (`~/Applications`) path is
+unreliable. A drag install needs no admin rights and uninstalls the way Mac users expect.
+Do not add a custom installer app, a privileged helper, or a login item.
+
+What the disk image holds. Do not add more.
+
+1. **Window.** App icon, an Applications alias, a background with the name and the same
+   one line as the Windows welcome page: a viewer for a camera dump — photos and video in
+   one folder.
+2. **Licence.** GPL-2.0-or-later as the image's licence agreement, shown on mount with
+   Agree / Disagree — the equivalent of the wizard's required licence page. If our build
+   tooling cannot make macOS 14 show it reliably, fall back to a `Licence` file in the
+   window plus About. Never an in-app accept modal before the first photo.
+3. **Location.** Wherever the user drags it: `/Applications` or `~/Applications`.
+4. **Finish.** First launch *is* the finish page. Notarization means Gatekeeper shows only
+   its standard "downloaded from the internet" prompt, never a block. GitHub
+   (`https://github.com/longtimeno-c/mediaviewer`) and the licence live in About. Do not
+   auto-open the repo.
+
+**Not in the install** — same rule as Windows, in-app and once, later:
+
+- "Open with" / default viewer (PR 20: after the first successful still open).
+- Telemetry (first-run screen in the app, default off, no pre-ticked box).
+
+**Icon.** The same mark as the Windows `.ico`, as one `.icns` (16–1024, @1x and @2x): app,
+disk-image volume icon, Dock, and document icons for the UTIs. Not a second logo.
+
+**Updates.** Sparkle 2 follows every rule under Mechanics below: background check, never
+interrupt, restart when the user chooses, preserve state, staged rollout, minimum version /
+kill switch. The appcast is **EdDSA-signed** and checked against a key pinned in the app,
+like the Velopack manifest. Sparkle keeps no previous version, so "fails to start twice
+→ roll back" has no Mac mechanism yet. **Open for PR 20:** build it, or accept
+kill-switch-only on Mac and log that call.
+
+**What Sparkle installs** is a zip of the stapled app, never the disk image: the licence
+agreement is a first-install page, like Inno's. The feed and the zip are both checked
+against the pinned key (`SURequireSignedFeed`, `SUVerifyUpdateBeforeExtraction`). No
+system profile is sent.
+
+**Uninstall** is dragging the app to the Trash. The Quick Look extension lives inside the
+bundle, so it goes with it. What stays behind is the thumbnail cache
+(`~/Library/Caches/MediaViewer`) and preferences (`~/Library/Preferences/<bundle id>.plist`).
+A removal command is not needed.
+
+No per-machine / enterprise variant in PR 20.
+
 ## Mechanics
 
 ### Versioned folders, not in-place overwrite

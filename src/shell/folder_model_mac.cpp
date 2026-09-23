@@ -5,6 +5,8 @@
 
 #include "io/file.h"
 #include "io/paths.h"
+#include "player/poster.h"
+#include "shell/media_kind.h"
 
 namespace mv::shell {
 
@@ -135,12 +137,27 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                        return status::ok;
                      }
 
-                     auto bytes = io::read_all(path);
-                     if (!bytes) {
-                       if (on_ready) on_ready(path, {});
-                       return bytes.error();
+                     // A clip has no still to decode: take one software-decoded frame
+                     // near its head (player/poster.h, a one-shot on this pool thread,
+                     // deliberately not the playback pipeline) through the same
+                     // downscale-and-encode every photo takes.
+                     result<std::vector<std::uint8_t>> jpeg = err(status::internal);
+                     if (is_video_name(path)) {
+                       auto poster = player::poster_frame(path.c_str(), image::kThumbLongEdge, &ctx);
+                       if (!poster) {
+                         if (on_ready) on_ready(path, {});
+                         return poster.error();
+                       }
+                       jpeg = image::encode_thumb_rgba(poster.value().rgba, poster.value().width,
+                                                       poster.value().height);
+                     } else {
+                       auto bytes = io::read_all(path);
+                       if (!bytes) {
+                         if (on_ready) on_ready(path, {});
+                         return bytes.error();
+                       }
+                       jpeg = image::make_thumb_jpeg(bytes.value(), &ctx);
                      }
-                     auto jpeg = image::make_thumb_jpeg(bytes.value(), &ctx);
                      if (!jpeg) {
                        if (on_ready) on_ready(path, {});
                        return jpeg.error();

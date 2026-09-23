@@ -16,6 +16,30 @@ extern "C" {
 // Bumps input_snapshot.fit_seq and wakes the render thread. [any-thread]
 void mv_chrome_fit(void);
 
+// Runs a menu-bar command by tag (the MvMenuCmd enum in main_mac.mm; the
+// in-window menus and the system menu bar share one dispatcher). [main-thread]
+void mv_chrome_menu(int32_t cmd);
+
+// Settings screen (plan/16 Settings). View flags use the bit layout of
+// view_settings::flags() (shell/settings.h): 1 filmstrip for a folder,
+// 2 filmstrip for an image, 4 wrap, 8 sticky zoom, bits 4-5 canvas background.
+// [main-thread]
+bool mv_chrome_settings_visible(void);
+int32_t mv_chrome_view_flags(void);
+void mv_chrome_set_view_flags(int32_t flags);
+// The live key table, one "id\tmodes\tname\tkeys\trunnable\trow" line per
+// binding this host can run. Returns the length needed; writes at most `size`
+// bytes, NUL-terminated.
+int32_t mv_chrome_command_table(char* buf, int32_t size);
+// Key remapping: begin waiting for the next key press for table row `row`
+// (Esc cancels). `mv_chrome_key_capture_row` is -1 when none is pending.
+// `mv_chrome_keys_generation` moves whenever the table, flags or capture change.
+void mv_chrome_key_capture_begin(int32_t row);
+void mv_chrome_key_capture_cancel(void);
+int32_t mv_chrome_key_capture_row(void);
+void mv_chrome_keys_reset(void);
+uint64_t mv_chrome_keys_generation(void);
+
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
 
@@ -101,6 +125,34 @@ bool mv_chrome_is_marked(int32_t index);
 // host can move the selection by row for Up/Down/W/S (plan/16 `G` row).
 // Values < 1 are clamped to 1. [main-thread]
 void mv_chrome_set_gallery_columns(int32_t columns);
+
+// PR 20 updates (plan/13). True once Sparkle has a verified update staged and
+// is waiting for the user; always false in the bare lab. Restart installs it
+// and relaunches onto the same folder and file. [main-thread]
+bool mv_chrome_update_ready(void);
+void mv_chrome_restart_to_update(void);
+
+// Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
+// these read the status it publishes and post commands back as latched counters.
+// [main-thread]
+//
+// Fills the out-params and returns true while a clip is on screen; false (out
+// params untouched) otherwise. `rate_x100` is the playback rate times 100.
+bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_ms, bool* playing,
+                            int32_t* rate_x100, bool* muted, float* volume);
+void mv_chrome_video_toggle(void);
+// Relative skip, exact.
+void mv_chrome_video_skip(int64_t delta_ms);
+// Absolute seek. exact=false is the scrubber drag (nearest keyframe, instant);
+// exact=true is the release (decode forward to the frame).
+void mv_chrome_video_seek(int64_t position_ms, bool exact);
+// One rung down (-1) / up (+1) the 0.25 / 0.5 / 1 / 1.5 / 2 / 4 ladder.
+void mv_chrome_video_speed_step(int32_t direction);
+void mv_chrome_video_toggle_mute(void);
+// Absolute volume 0..1, from the transport strip's "More" panel slider.
+void mv_chrome_video_set_volume(float volume);
+// Frame step, paused only: -1 back, +1 forward (plan/16 "More" panel buttons).
+void mv_chrome_video_step(int32_t frames);
 
 #ifdef __cplusplus
 }

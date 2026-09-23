@@ -9,6 +9,14 @@
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
+// Sparkle 2 (PR 20, plan/13): only MediaViewer.app links it, and only when the
+// build was given the EdDSA public key (cmake/darwin-app.cmake). The bare
+// mediaviewer_lab never checks for updates.
+#if MV_WITH_SPARKLE
+#import <Sparkle/Sparkle.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -26,7 +34,10 @@
 #include "io/collision_name.h"
 #include "io/dir.h"
 #include "shell/browse_index.h"
+#include "shell/commands.h"
 #include "shell/folder_model_mac.h"
+#include "shell/key_router.h"
+#include "shell/settings.h"
 #include "shell/input_state.h"
 #include "shell/present_lab_mac.h"
 
@@ -42,6 +53,7 @@
 // compiler catches a signature drift here instead of it only surfacing as a
 // link error against the Swift side.
 #include "mv_chrome_bridge.h"
+#include "shell/media_kind.h"
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -56,6 +68,25 @@ namespace {
 // lifetime as the window; the lab and its snapshot outlive the app delegate
 // only because both are ivars of the single MvLabApp instance that owns this
 // process's only window (plan/14-abi.md's shape, scoped to the lab).
+static bool MvCommandSupported(mv::shell::command_id c) {
+  using enum mv::shell::command_id;
+  switch (c) {
+    case open: case open_folder: case fit: case one_to_one: case overlay: case prev: case next:
+    case first: case last: case skip_back: case skip_forward: case back: case toggle_gallery:
+    case toggle_filmstrip: case gallery_up: case gallery_down: case gallery_open_selected:
+    case gallery_larger: case gallery_smaller: case fullscreen: case reset_view: case play_pause:
+    case pause: case jump_back: case jump_forward: case frame_back: case frame_forward:
+    case rate_down: case rate_up: case skim_back: case skim_forward: case skim_settle: case mute:
+    case toggle_mark: case mark_all: case unmark_all: case copy_to: case copy_to_pick:
+    case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
+    case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
+    case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
+    case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
+      return true;
+    default:
+      return false;
+  }
+}
 mv::shell::input_snapshot* g_chrome_snap = nullptr;
 mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 // Filmstrip/gallery bridge target (plan/12 2026-09-17): same lifetime and
@@ -97,7 +128,7 @@ extern "C" void mv_chrome_one_to_one(void) {
 // window's backingScaleFactor before it reaches input_snapshot.chrome_height_px
 // — that field, and every canvas-rect field alongside it, is already in
 // physical pixels, matching Windows' PerMonitorV2 convention).
-constexpr CGFloat kChromeBarHeightPoints = 44.0;
+constexpr CGFloat kChromeBarHeightPoints = 48.0;  // Windows bar height
 // Filmstrip strip height, in points -- same conversion-to-backing-pixels
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
@@ -108,13 +139,20 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 // responds to. The @implementation stays further down, after MvMetalView's,
 // so the file still reads outside-in (canvas, then chrome/app).
 @class MvMetalView;
-@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate
+#if MV_WITH_SPARKLE
+                                 , SPUUpdaterDelegate
+#endif
+                                 >
 @property(nonatomic, strong) NSWindow* window;
 @property(nonatomic, strong) MvMetalView* view;
 @property(nonatomic, strong) NSView* commandBar;
 @property(nonatomic, strong) NSView* filmstripHost;
 @property(nonatomic, strong) NSView* galleryHost;
 @property(nonatomic, strong) NSView* helpHost;
+@property(nonatomic, strong) NSView* settingsHost;
+@property(nonatomic, strong) NSView* transportHost;
+@property(nonatomic, strong) NSLayoutConstraint* transportBottom;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -172,8 +210,28 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 - (void)requestThumbAtIndex:(NSInteger)index;
 - (BOOL)filmstripVisible;
 - (BOOL)galleryVisible;
+- (void)runMenuCmd:(NSInteger)cmd;
+
+// One key router, one command table (plan/16), shared with Windows. Keys are
+// translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
+// route's command runs here. -handleKeyEvent: returns whether the key was ours.
+- (BOOL)handleKeyEvent:(NSEvent*)event;
+- (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)back;
+- (void)cancelKeyHolds;
+// Settings screen (plan/16 Settings): view preferences, persisted in
+// NSUserDefaults, and the remappable key table.
+- (BOOL)settingsVisible;
+- (void)setSettingsVisible:(BOOL)visible;
+- (int32_t)viewFlags;
+- (void)setViewFlags:(int32_t)flags;
+- (void)beginKeyCaptureForRow:(int)row;
+- (void)cancelKeyCapture;
+- (int)captureRow;
+- (void)resetKeys;
+- (uint64_t)keysGeneration;
 - (void)setGalleryVisible:(BOOL)visible;
 - (void)toggleFilmstrip;
+- (void)setFilmstripVisible:(BOOL)visible;
 - (void)toggleGallery;
 // Gallery keyboard navigation (plan/16 `G` row): Up/Down/W/S move by row, `+`/`-`
 // resize the cells. Enter just closes the gallery -- the selection is already
@@ -185,9 +243,16 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 - (void)setHelpVisible:(BOOL)visible;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
+- (BOOL)currentItemIsVideo;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
+
+// PR 20 updates (plan/13): an update Sparkle has downloaded and staged waits
+// for the user. The command bar shows "Update ready — restart"; nothing
+// restarts the app on its own.
+- (BOOL)updateReady;
+- (void)restartToUpdate;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -216,6 +281,55 @@ extern "C" void mv_chrome_request_thumb(int32_t index) {
   if (!g_chrome_app || index < 0) return;
   [g_chrome_app requestThumbAtIndex:index];
 }
+extern "C" void mv_chrome_menu(int32_t cmd) {
+  if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
+}
+extern "C" bool mv_chrome_settings_visible(void) {
+  return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
+}
+extern "C" int32_t mv_chrome_view_flags(void) {
+  return g_chrome_app ? [g_chrome_app viewFlags] : 0;
+}
+extern "C" void mv_chrome_set_view_flags(int32_t flags) {
+  if (g_chrome_app) [g_chrome_app setViewFlags:flags];
+}
+// The live command table, one "id\tmodes\tname\tkeys\trunnable\trow" line per
+// binding (commands.h describe_commands), limited to commands this host runs.
+// Returns the byte length needed; writes at most `size` bytes (NUL-terminated).
+extern "C" int32_t mv_chrome_command_table(char* buf, int32_t size) {
+  std::string out;
+  const std::string all = mv::shell::describe_commands();
+  std::size_t pos = 0;
+  while (pos < all.size()) {
+    std::size_t end = all.find('\n', pos);
+    if (end == std::string::npos) end = all.size();
+    const std::string line = all.substr(pos, end - pos);
+    const int id = std::atoi(line.c_str());
+    if (MvCommandSupported(static_cast<mv::shell::command_id>(id))) out += line + "\n";
+    pos = end + 1;
+  }
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(out.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, out.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(out.size());
+}
+extern "C" void mv_chrome_key_capture_begin(int32_t row) {
+  if (g_chrome_app) [g_chrome_app beginKeyCaptureForRow:row];
+}
+extern "C" void mv_chrome_key_capture_cancel(void) {
+  if (g_chrome_app) [g_chrome_app cancelKeyCapture];
+}
+extern "C" int32_t mv_chrome_key_capture_row(void) {
+  return g_chrome_app ? [g_chrome_app captureRow] : -1;
+}
+extern "C" void mv_chrome_keys_reset(void) {
+  if (g_chrome_app) [g_chrome_app resetKeys];
+}
+extern "C" uint64_t mv_chrome_keys_generation(void) {
+  return g_chrome_app ? [g_chrome_app keysGeneration] : 0;
+}
 extern "C" bool mv_chrome_filmstrip_visible(void) {
   return g_chrome_app ? [g_chrome_app filmstripVisible] == YES : false;
 }
@@ -239,8 +353,134 @@ extern "C" int32_t mv_chrome_marked_count(void) {
 extern "C" bool mv_chrome_is_marked(int32_t index) {
   return g_chrome_app && [g_chrome_app isIndexMarked:index] == YES;
 }
+// --- Video transport (PR 19). Commands are the same latched counters the keys
+// bump; the render thread consumes them. Status is what the render thread
+// published. [main-thread]
+static void MvPublishVideoInput() {
+  if (!g_chrome_snap) return;
+  ++g_chrome_snap->activity_seq;
+  if (g_chrome_lab) {
+    g_chrome_lab->publish(*g_chrome_snap);
+    g_chrome_lab->wake();
+  }
+}
+extern "C" bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_ms, bool* playing,
+                                       int32_t* rate_x100, bool* muted, float* volume) {
+  if (!g_chrome_lab) return false;
+  const auto s = g_chrome_lab->video_status_snapshot();
+  if (!s.active) return false;
+  if (position_ms) *position_ms = s.position_ms;
+  if (duration_ms) *duration_ms = s.duration_ms;
+  if (playing) *playing = s.playing;
+  if (rate_x100) *rate_x100 = s.rate_x100;
+  if (muted) *muted = s.muted;
+  if (volume) *volume = s.volume;
+  return true;
+}
+extern "C" void mv_chrome_video_toggle(void) {
+  if (!g_chrome_snap) return;
+  ++g_chrome_snap->anim_toggle_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_skip(int64_t delta_ms) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_skip_ms += delta_ms;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_seek(int64_t position_ms, bool exact) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_seek_ms = position_ms;
+  g_chrome_snap->video_seek_exact = exact;
+  ++g_chrome_snap->video_seek_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_speed_step(int32_t direction) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_speed_steps += direction;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_toggle_mute(void) {
+  if (!g_chrome_snap) return;
+  ++g_chrome_snap->video_mute_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_set_volume(float volume) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_volume_set_value = volume;
+  ++g_chrome_snap->video_volume_set_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_step(int32_t frames) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->anim_steps += frames;
+  MvPublishVideoInput();
+}
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   g_gallery_columns = columns < 1 ? 1 : columns;
+}
+extern "C" bool mv_chrome_update_ready(void) {
+  return g_chrome_app && [g_chrome_app updateReady];
+}
+extern "C" void mv_chrome_restart_to_update(void) {
+  if (g_chrome_app) [g_chrome_app restartToUpdate];
+}
+
+// NSEvent -> host key + modifiers, at the edge (commands.h): letters are
+// upper-case, a symbol is the character the layout produced with no Shift, and
+// named keys are the `key` enumerators. Command and Control both map to `ctrl`
+// (Cmd+O is the Mac's Ctrl+O), Option to `alt`. The Mac's Delete key is `del`
+// (Trash), where a PC's Backspace is `backspace`.
+static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
+  using mv::shell::key;
+  const NSEventModifierFlags flags =
+      event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  std::uint8_t mods = mv::shell::mod_none;
+  if (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) mods |= mv::shell::mod_ctrl;
+  if (flags & NSEventModifierFlagShift) mods |= mv::shell::mod_shift;
+  if (flags & NSEventModifierFlagOption) mods |= mv::shell::mod_alt;
+  if (mods_out) *mods_out = mods;
+
+  NSString* base = event.charactersIgnoringModifiers;
+  const unichar c = base.length > 0 ? [base characterAtIndex:0] : 0;
+  if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
+    return static_cast<key>(static_cast<int>(key::f1) + static_cast<int>(c - NSF1FunctionKey));
+  }
+  switch (c) {
+    case ' ': return key::space;
+    case 0x08: return key::backspace;
+    case 0x7F: case NSDeleteFunctionKey: return key::del;
+    case '\r': case 0x03: return key::enter;
+    case 0x1b: return key::escape;
+    case '\t': return key::tab;
+    case NSInsertFunctionKey: return key::insert;
+    case NSHomeFunctionKey: return key::home;
+    case NSEndFunctionKey: return key::end;
+    case NSPageUpFunctionKey: return key::page_up;
+    case NSPageDownFunctionKey: return key::page_down;
+    case NSLeftArrowFunctionKey: return key::left;
+    case NSRightArrowFunctionKey: return key::right;
+    case NSUpArrowFunctionKey: return key::up;
+    case NSDownArrowFunctionKey: return key::down;
+    default: break;
+  }
+  if (c >= 'a' && c <= 'z') return static_cast<key>(c - 'a' + 'A');
+  if (c >= 'A' && c <= 'Z') return static_cast<key>(c);
+  // Digits and symbols: the character the layout produced with Shift applied
+  // (so `?` is '?' with no Shift, `+` is '+'). Control / Command give control
+  // codes or ignore Shift, so those use the base character.
+  unichar out = c;
+  if (!(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl))) {
+    NSString* shifted = event.characters;
+    if (shifted.length > 0) {
+      const unichar sc = [shifted characterAtIndex:0];
+      if (sc >= 0x21 && sc <= 0x7E) {
+        if (sc != c && mods_out) *mods_out = static_cast<std::uint8_t>(mods & ~mv::shell::mod_shift);
+        out = sc;
+      }
+    }
+  }
+  if (out >= 0x21 && out <= 0x7E) return mv::shell::char_key(static_cast<char>(out));
+  return key::none;
 }
 
 @interface MvMetalView : NSView <NSDraggingSource>
@@ -423,194 +663,12 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   if (self.lab) self.lab->wake();
 }
 - (void)keyDown:(NSEvent*)event {
-  const NSString* chars = event.charactersIgnoringModifiers;
-  const unichar c = chars.length > 0 ? [chars characterAtIndex:0] : 0;
-  // Computed up front: charactersIgnoringModifiers still yields plain 'a'/'d'
-  // with Control held (it only accounts for Shift), so the A/D
-  // previous/next checks just below must not shadow Ctrl+A/Ctrl+D
-  // (mark-all/unmark-all, further down this function) the way they did
-  // before this existed -- Ctrl+A/Ctrl+D never reached their own handlers.
-  const NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-
-  // plan/16-commands.md Browse table: <-/-> or A/D previous/next in every
-  // mode; Home/End first/last; PageUp/PageDown skip ~10. These go through
-  // MvLabApp (folder_model_mac + browse_index), not an input_snapshot seq --
-  // navigation is "load this specific path next," a one-shot command, not
-  // per-frame render-thread state the way pan/zoom/mouse are.
-  // plan/16 `G` row: with the gallery open, Up/Down/W/S move by row, Enter
-  // opens the selection (closes the gallery), +/-/= resize the cells. Left/
-  // Right and A/D fall through to the by-item navigation just below.
-  if (self.app && [self.app galleryVisible]) {
-    if (c == NSUpArrowFunctionKey || ((c == 'w' || c == 'W') && mods != NSEventModifierFlagControl)) {
-      [self.app galleryMoveRows:-1];
-      return;
-    }
-    if (c == NSDownArrowFunctionKey || ((c == 's' || c == 'S') && mods != NSEventModifierFlagControl)) {
-      [self.app galleryMoveRows:1];
-      return;
-    }
-    if (c == '\r' || c == 0x03) {
-      [self.app setGalleryVisible:NO];
-      return;
-    }
-    if (c == '+' || c == '=') {
-      [self.app adjustGalleryCellSize:1];
-      return;
-    }
-    if (c == '-') {
-      [self.app adjustGalleryCellSize:-1];
-      return;
-    }
-  }
-  if (c == NSLeftArrowFunctionKey || ((c == 'a' || c == 'A') && mods != NSEventModifierFlagControl)) {
-    [self.app navigatePrev];
-    return;
-  }
-  if (c == NSRightArrowFunctionKey || ((c == 'd' || c == 'D') && mods != NSEventModifierFlagControl)) {
-    [self.app navigateNext];
-    return;
-  }
-  if (c == NSHomeFunctionKey) {
-    [self.app navigateFirst];
-    return;
-  }
-  if (c == NSEndFunctionKey) {
-    [self.app navigateLast];
-    return;
-  }
-  if (c == NSPageUpFunctionKey) {
-    [self.app navigateSkip:-10];
-    return;
-  }
-  if (c == NSPageDownFunctionKey) {
-    [self.app navigateSkip:10];
-    return;
-  }
-  // plan/16-commands.md "Marks, copy, move" -- Insert or Shift+Space toggles
-  // a mark; Ctrl+A / Ctrl+D mark-all / unmark-all. NSInsertFunctionKey exists
-  // for the external/PC keyboards that have a physical Insert key; laptop
-  // keyboards have none, which is exactly why plan/16 pairs it with
-  // Shift+Space as an always-available alternative.
-  if (self.app && [self.app hasFolder]) {
-    if (c == NSInsertFunctionKey || (c == ' ' && (mods & NSEventModifierFlagShift))) {
-      [self.app toggleMarkCurrent];
-      return;
-    }
-    if (c == 'a' && mods == NSEventModifierFlagControl) {
-      [self.app markAll];
-      return;
-    }
-    if (c == 'd' && mods == NSEventModifierFlagControl) {
-      [self.app unmarkAll];
-      return;
-    }
-    // F7 copies marked (or current) to the last-used destination; Shift+F7
-    // prompts for one first. F8/Shift+F8 are the same for move -- plan/16
-    // only spells out Shift+F7 explicitly, but the symmetric Shift+F8 for
-    // move's destination picker follows the same shape and there is no
-    // other binding that would want it.
-    if (c == NSF7FunctionKey) {
-      [self.app copyMarkedPickDestination:(mods & NSEventModifierFlagShift) != 0];
-      return;
-    }
-    if (c == NSF8FunctionKey) {
-      [self.app moveMarkedPickDestination:(mods & NSEventModifierFlagShift) != 0];
-      return;
-    }
-  }
-  // The physical key labelled "delete" on a Mac keyboard sends 0x7F (what
-  // AppKit calls NSDeleteCharacter) and sits where a PC's Backspace does.
-  // plan/16's `Delete` command is Trash, with confirm, marks if any else
-  // current -- never a silent permanent delete.
-  if (c == NSDeleteCharacter && self.app && [self.app hasFolder]) {
-    [self.app deleteMarkedToTrash];
-    return;
-  }
-
-  if ([self.app isSlideshowActive]) {
-    // Slideshow mode reinterprets a few keys already bound above it
-    // (plan/16's Slideshow table): Space pauses instead of advancing to the
-    // next item, +/- change the interval instead of zoom, Esc leaves instead
-    // of closing the window. Checked after Insert/marks/Delete (slideshow
-    // doesn't suspend those) but before the plain view/window bindings below.
-    if (c == ' ') {
-      [self.app toggleSlideshowPause];
-      return;
-    }
-    if (c == '+' || c == '=') {
-      [self.app adjustSlideshowInterval:1.0];
-      return;
-    }
-    if (c == '-') {
-      [self.app adjustSlideshowInterval:-1.0];
-      return;
-    }
-    if (c == 0x1b) {
-      [self.app leaveSlideshow];
-      return;
-    }
-  }
-
-  // plan/16-commands.md: "Esc walks out... The gallery covers the canvas
-  // like an overlay, so it closes before the window-level states." Checked
-  // ahead of the fallback Esc-closes-window case below, so a gallery open
-  // over the canvas absorbs one Esc instead of the window vanishing under it.
-  if (c == '?' && self.app) {
-    [self.app toggleHelp];
-    return;
-  }
-  if (c == 0x1b && self.app && [self.app helpVisible]) {
-    [self.app setHelpVisible:NO];
-    return;
-  }
-  if (c == 0x1b && self.app && [self.app galleryVisible]) {
-    [self.app setGalleryVisible:NO];
-    return;
-  }
-  // T / G (plan/16 View table): filmstrip show/hide, gallery open/close.
-  if (c == 't' || c == 'T') {
-    if (self.app) [self.app toggleFilmstrip];
-    return;
-  }
-  if (c == 'g' || c == 'G') {
-    if (self.app) [self.app toggleGallery];
-    return;
-  }
-
-  if (c == NSF3FunctionKey) {
-    ++self.snap->toggle_overlay_seq;
-  } else if (c == NSF11FunctionKey || c == 'f' || c == 'F') {
-    // plan/16 Browse table: "F11 / F: Fullscreen... F3 stays the frame-time
-    // overlay" -- F3 keeps its own dedicated binding above; plain f/F moves
-    // here from the lab's original overlay-toggle binding now that a second,
-    // more specific command wants it and the plan is explicit F3 is the
-    // overlay's only key.
-    if (self.app) [self.app toggleFullscreen];
-  } else if (c == NSF5FunctionKey && self.app && [self.app hasFolder]) {
-    [self.app startSlideshow];
-  } else if (c == ' ') {
-    // Space is the lab's own sweep-bar toggle only when no folder is open
-    // (plain `mediaviewer_lab --soak N`, the PR 16 present-loop instrument).
-    // Once a folder is open, plan/16 is explicit: "Space is not the lab
-    // sweep after PR 6" -- it becomes next.
-    if (self.app && [self.app hasFolder]) {
-      [self.app navigateNext];
-      return;
-    }
-    ++self.snap->toggle_animation_seq;
-  } else if (c == 'r' || c == 'R') {
-    ++self.snap->reset_stats_seq;
-  } else if (c == '0') {
-    ++self.snap->fit_seq;
-  } else if (c == '1') {
-    ++self.snap->one_to_one_seq;
-  } else if (c == 0x1b) {
-    [self.window close];
-    return;
-  }
-  ++self.snap->activity_seq;
-  [self publish];
-  if (self.lab) self.lab->wake();
+  // Every key goes through the shared router (plan/16); MvLabApp runs the
+  // command. An unhandled key is simply ignored -- no system beep per stray key.
+  if (self.app) (void)[self.app handleKeyEvent:event];
+}
+- (void)keyUp:(NSEvent*)event {
+  if (self.app) (void)[self.app handleKeyEvent:event];
 }
 @end
 
@@ -661,6 +719,16 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   std::uint64_t _marksGeneration;
   BOOL _helpVisible;
 
+  // Settings screen + the router. _viewFlags uses the same bit layout as
+  // Windows' view_settings::flags() (settings.h); the key overrides are the
+  // rows of the live table that differ from the defaults.
+  mv::shell::key_router _router;
+  BOOL _settingsVisible;
+  int32_t _viewFlags;
+  int _captureRow;
+  id _captureMonitor;
+  uint64_t _keysGeneration;
+
   // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
   // index -- plan/16: "Marks clear only for items that succeeded," which only
   // means something if a mark identifies a specific file rather than a slot
@@ -688,6 +756,18 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   // hidden: it is an explicit `G`, not something a folder open should show.
   BOOL _filmstripVisible;
   BOOL _galleryVisible;
+
+  // PR 20. _launched: -applicationDidFinishLaunching: has started the lab, so
+  // a Finder open can go straight to -openEntryPath:. Before that, Finder's
+  // open arrives between will- and did-finish-launching and is stashed in
+  // _options.open_path, the same slot argv uses.
+  BOOL _launched;
+  BOOL _askedDefaultViewer;
+#if MV_WITH_SPARKLE
+  SPUStandardUpdaterController* _updater;
+  // Sparkle's "install now and relaunch" block, held while an update waits.
+  void (^_installUpdateNow)(void);
+#endif
 }
 - (instancetype)initWithOptions:(const mv::shell::mac_lab_options&)options {
   self = [super init];
@@ -695,11 +775,13 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     _options = options;
     _slideshowIntervalSeconds = 4.0;  // plan/16 Slideshow table's default
     _filmstripVisible = YES;
+    _captureRow = -1;
   }
   return self;
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   (void)notification;
+  [self loadSettings];
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
       initWithContentRect:rect
@@ -707,7 +789,11 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
                           NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
+#if MV_APP_BUNDLE
+  self.window.title = @"MediaViewer";
+#else
   self.window.title = @"MediaViewer present lab";
+#endif
   // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;
@@ -827,6 +913,30 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     [self.filmstripHost.heightAnchor constraintEqualToConstant:kFilmstripHeightPoints],
   ]];
 
+  // Clip transport (PR 19): bottom-centre, floating above the filmstrip. Hidden
+  // until a clip is on screen (-refreshFolderIfChanged flips it).
+  self.transportHost = [MVChromeHost makeTransportView];
+  self.transportHost.hidden = YES;
+  self.transportHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.transportHost];
+  self.transportBottom = [self.transportHost.bottomAnchor
+      constraintEqualToAnchor:container.bottomAnchor
+                     constant:-(kFilmstripHeightPoints + 10.0)];
+  NSLayoutConstraint* preferredWidth =
+      [self.transportHost.widthAnchor constraintEqualToConstant:720.0];
+  preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+  [NSLayoutConstraint activateConstraints:@[
+    [self.transportHost.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+    [self.transportHost.widthAnchor constraintLessThanOrEqualToConstant:720.0],
+    [self.transportHost.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor
+                                                                  constant:16.0],
+    [self.transportHost.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor
+                                                                constant:-16.0],
+    [self.transportHost.heightAnchor constraintEqualToConstant:44.0],
+    self.transportBottom,
+    preferredWidth,
+  ]];
+
   // Gallery: a full-container overlay (plan/16: "covers the canvas like an
   // overlay"), hidden by default -- `G` shows it, a click or Esc hides it
   // again. The canvas keeps rendering underneath; hiding this view is enough,
@@ -857,6 +967,28 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     [self.helpHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
+#if MV_WITH_SPARKLE
+  // Started here, not at init: the updater's first check must not race the
+  // window and lab coming up. Checks and downloads run in the background
+  // (Info.plist: SUEnableAutomaticChecks, SUAutomaticallyUpdate); the
+  // delegate below holds a staged update until the user restarts.
+  _updater = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
+                                                            updaterDelegate:self
+                                                         userDriverDelegate:nil];
+#endif
+  // Settings screen: a full-container overlay like the help sheet, hidden until
+  // opened (Settings button, Cmd+,).
+  self.settingsHost = [MVChromeHost makeSettingsView];
+  self.settingsHost.hidden = YES;
+  self.settingsHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.settingsHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.settingsHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.settingsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.settingsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.settingsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+  ]];
+
   [self installMainMenu];
 
   g_chrome_snap = &_snap;
@@ -883,6 +1015,20 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   // parsed into the same options_.open_path below) resolves through the same
   // folder+select rule a drop does, now that folder_model_mac exists to
   // resolve it -- not a direct one-off open_item() with no folder context.
+#if MV_APP_BUNDLE
+  // An update restart puts the user back where they were (plan/13 "Preserve
+  // state across the restart"): the folder and the selected file. Only an
+  // explicit open (argv, Finder) outranks it.
+  NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+  if (NSString* resume = [defaults stringForKey:@"MVResumeAfterUpdate"]) {
+    [defaults removeObjectForKey:@"MVResumeAfterUpdate"];
+    if (_options.open_path.empty()) _options.open_path = resume.fileSystemRepresentation;
+  }
+  _askedDefaultViewer = [defaults boolForKey:@"MVAskedDefaultViewer"];
+#else
+  _askedDefaultViewer = YES;  // the lab never asks
+#endif
+  _launched = YES;
   if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
     NSBeep();
   }
@@ -926,6 +1072,13 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     if (!containing) return NO;
     dir = containing.value();
     select_path = path;
+  }
+  // Settings: a folder open earns the filmstrip; opening one image is a viewing
+  // intent and keeps it off until asked (plan/16, same as Windows).
+  {
+    const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
+    const BOOL want = is_dir.value() ? prefs.filmstrip_for_folder : prefs.filmstrip_for_image;
+    if (want != _filmstripVisible) [self setFilmstripVisible:want];
   }
 
   // The listing itself is already async (folder_model_mac::relist_async
@@ -973,6 +1126,16 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 }
 
 - (void)refreshFolderIfChanged {
+  if (!_askedDefaultViewer && _options.soak_seconds <= 0.0 && _lab.stills_shown() > 0) {
+    [self askDefaultViewerOnce];
+  }
+  // The transport strip belongs to a clip: shown while one is on screen (the
+  // render thread publishes that), hidden otherwise so it never blocks the
+  // canvas's mouse. Polled here, on the 0.2 s timer that already exists.
+  if (self.transportHost) {
+    const bool active = g_chrome_lab && g_chrome_lab->video_status_snapshot().active;
+    if (self.transportHost.hidden == active) self.transportHost.hidden = !active;
+  }
   if (!_folder.consume_changed()) return;
   _items = _folder.items();
   ++_listingGeneration;
@@ -1366,8 +1529,12 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   self.galleryHost.hidden = !visible;
 }
 - (void)toggleFilmstrip {
-  _filmstripVisible = !_filmstripVisible;
+  [self setFilmstripVisible:!_filmstripVisible];
+}
+- (void)setFilmstripVisible:(BOOL)visible {
+  _filmstripVisible = visible;
   self.filmstripHost.hidden = !_filmstripVisible;
+  self.transportBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints + 10.0 : 10.0);
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same
@@ -1379,6 +1546,11 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 }
 - (uint64_t)listingGeneration {
   return _listingGeneration;
+}
+- (BOOL)currentItemIsVideo {
+  if (_items.empty()) return NO;
+  const std::size_t i = _index.current();
+  return i < _items.size() && mv::shell::is_video_name(_items[i].name_utf8);
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
@@ -1433,12 +1605,19 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
 enum MvMenuCmd : NSInteger {
   kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
   kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
-  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp,
+  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
 };
 
 - (void)menuAction:(NSMenuItem*)item {
-  switch (static_cast<MvMenuCmd>(item.tag)) {
-    case kMenuOpen: [self openFolderPanel]; break;
+  [self runMenuCmd:item.tag];
+}
+
+// Shared by the menu bar and the in-window menu buttons (CommandBarView), so
+// the two cannot disagree.
+- (void)runMenuCmd:(NSInteger)cmd {
+  switch (static_cast<MvMenuCmd>(cmd)) {
+    case kMenuOpen: [self openFolderPanel:NO]; break;
+    case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
     case kMenuCopyTo: [self copyMarkedPickDestination:YES]; break;
     case kMenuMoveTo: [self moveMarkedPickDestination:YES]; break;
@@ -1454,23 +1633,33 @@ enum MvMenuCmd : NSInteger {
     case kMenuFirst: [self navigateFirst]; break;
     case kMenuLast: [self navigateLast]; break;
     case kMenuHelp: [self toggleHelp]; break;
+    case kMenuSettings: [self setSettingsVisible:!_settingsVisible]; break;
+    case kMenuOverlay: [self runCommand:mv::shell::command_id::overlay back:mv::shell::back_target::none]; break;
+    case kMenuReveal: [self runCommand:mv::shell::command_id::reveal_in_explorer back:mv::shell::back_target::none]; break;
   }
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
+#if MV_WITH_SPARKLE
+  if (item.action == @selector(toggleAutomaticUpdateChecks:)) {
+    item.state = _updater.updater.automaticallyChecksForUpdates ? NSControlStateValueOn
+                                                               : NSControlStateValueOff;
+    return YES;
+  }
+#endif
   if (item.action != @selector(menuAction:)) return YES;
   switch (static_cast<MvMenuCmd>(item.tag)) {
-    case kMenuOpen: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp:
+    case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
       return YES;
     default:
       return [self hasFolder];
   }
 }
 
-- (void)openFolderPanel {
+- (void)openFolderPanel:(BOOL)foldersOnly {
   NSOpenPanel* panel = [NSOpenPanel openPanel];
   panel.canChooseDirectories = YES;
-  panel.canChooseFiles = YES;
+  panel.canChooseFiles = !foldersOnly;
   panel.allowsMultipleSelection = NO;
   if ([panel runModal] != NSModalResponseOK || panel.URL == nil) return;
   if (![self openEntryPath:panel.URL.fileSystemRepresentation]) NSBeep();
@@ -1502,6 +1691,26 @@ enum MvMenuCmd : NSInteger {
                  action:@selector(orderFrontStandardAboutPanel:)
           keyEquivalent:@""];
   [app addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"," mods:NSEventModifierFlagCommand toMenu:app];
+#if MV_WITH_SPARKLE
+  // The update check is a network call even with nothing else ever sent
+  // (plan/13): it can be turned off here and stays off.
+  NSMenuItem* check = [app addItemWithTitle:@"Check for Updates…"
+                                     action:@selector(checkForUpdates:)
+                              keyEquivalent:@""];
+  check.target = _updater;
+  NSMenuItem* automatic = [app addItemWithTitle:@"Check for Updates Automatically"
+                                         action:@selector(toggleAutomaticUpdateChecks:)
+                                  keyEquivalent:@""];
+  automatic.target = self;
+#endif
+#if MV_APP_BUNDLE
+  NSMenuItem* makeDefault = [app addItemWithTitle:@"Make MediaViewer the Default Photo Viewer"
+                                           action:@selector(makeDefaultViewer)
+                                    keyEquivalent:@""];
+  makeDefault.target = self;
+#endif
+  [app addItem:[NSMenuItem separatorItem]];
   [app addItemWithTitle:@"Hide MediaViewer" action:@selector(hide:) keyEquivalent:@"h"];
   [app addItem:[NSMenuItem separatorItem]];
   [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
@@ -1522,16 +1731,16 @@ enum MvMenuCmd : NSInteger {
 
   // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
   NSMenu* view = submenu(@"View");
-  [self addMenuItem:@"Fit to Window" cmd:kMenuFit key:@"0" mods:0 toMenu:view];
-  [self addMenuItem:@"Actual Size" cmd:kMenuOneToOne key:@"1" mods:0 toMenu:view];
+  [self addMenuItem:@"Fit to Window" cmd:kMenuFit key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Actual Size" cmd:kMenuOneToOne key:@"" mods:0 toMenu:view];
   [view addItem:[NSMenuItem separatorItem]];
-  [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"t" mods:0 toMenu:view];
-  [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"g" mods:0 toMenu:view];
+  [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
   [view addItem:[NSMenuItem separatorItem]];
   // The standard action (nil target -> the window via the responder chain):
   // AppKit titles it Enter/Exit Full Screen itself, and doesn't inject a
   // second copy of its own into this menu when one already exists.
-  [view addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"]
+  [view addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@""]
       .keyEquivalentModifierMask = 0;
   [self addMenuItem:@"Start Slideshow" cmd:kMenuSlideshow key:@"" mods:0 toMenu:view];
 
@@ -1551,6 +1760,388 @@ enum MvMenuCmd : NSInteger {
   NSApp.helpMenu = help;
 
   NSApp.mainMenu = bar;
+}
+
+// Finder: double-click, Open With, or a drop on the Dock icon (PR 20).
+// Same "first entry that exists wins" rule as argv and drag-in (plan/16).
+- (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
+  (void)application;
+  for (NSURL* url in urls) {
+    if (!url.isFileURL) continue;
+    const char* path = url.fileSystemRepresentation;
+    if (!path) continue;
+    if (!_launched) {
+      _options.open_path = path;
+      return;
+    }
+    if ([self openEntryPath:path]) {
+      [self.window makeKeyAndOrderFront:nil];
+      return;
+    }
+  }
+  NSBeep();
+}
+
+// plan/13: "Default photo viewer ... after the first successful still open",
+// once, in-app, never in the installer. A sheet, not a modal: the canvas keeps
+// presenting. "Not Now" is final; the app menu keeps the command for later.
+- (void)askDefaultViewerOnce {
+  _askedDefaultViewer = YES;
+  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"MVAskedDefaultViewer"];
+  if (!self.window || self.window.attachedSheet) return;
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Open photos with MediaViewer?";
+  alert.informativeText =
+      @"MediaViewer can be the app that opens JPEG, PNG, HEIC, RAW and the other photo "
+      @"formats it reads when you double-click them in Finder. You can change this later "
+      @"in the MediaViewer menu.";
+  [alert addButtonWithTitle:@"Make Default"];
+  [alert addButtonWithTitle:@"Not Now"];
+  [alert beginSheetModalForWindow:self.window
+                completionHandler:^(NSModalResponse response) {
+                  if (response == NSAlertFirstButtonReturn) [self makeDefaultViewer];
+                }];
+}
+
+// The type list is read back from our own Info.plist, so the prompt, Finder's
+// Open With list, and the Quick Look extension cannot disagree. macOS shows
+// its own confirmation per type; nothing is set without it.
+- (void)makeDefaultViewer {
+  NSArray* docTypes = NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"];
+  NSURL* app = NSBundle.mainBundle.bundleURL;
+  for (NSDictionary* docType in docTypes) {
+    for (NSString* identifier in docType[@"LSItemContentTypes"]) {
+      UTType* type = [UTType typeWithIdentifier:identifier];
+      if (!type) continue;
+      [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:app
+                                            toOpenContentType:type
+                                            completionHandler:^(NSError* error) {
+                                              if (error) MV_LOG_WARN("default viewer: a type was not set");
+                                            }];
+    }
+  }
+}
+
+- (BOOL)updateReady {
+#if MV_WITH_SPARKLE
+  return _installUpdateNow != nil;
+#else
+  return NO;
+#endif
+}
+
+- (void)restartToUpdate {
+#if MV_WITH_SPARKLE
+  if (!_installUpdateNow) return;
+  if (!_wantSelectedPath.empty()) {
+    [NSUserDefaults.standardUserDefaults
+        setObject:[NSString stringWithUTF8String:_wantSelectedPath.c_str()]
+           forKey:@"MVResumeAfterUpdate"];
+  }
+  void (^install)(void) = _installUpdateNow;
+  _installUpdateNow = nil;
+  install();  // Sparkle quits, installs, and relaunches
+#endif
+}
+
+#if MV_WITH_SPARKLE
+// Sparkle has a verified update staged. YES = we own the timing: nothing
+// installs until the user clicks "Update ready — restart", or quits normally
+// (then it installs on the way out, without a relaunch). Never a modal, never
+// a forced restart (plan/13 "Never interrupt").
+- (BOOL)updater:(SPUUpdater*)updater
+    willInstallUpdateOnQuit:(SUAppcastItem*)item
+    immediateInstallationBlock:(void (^)(void))immediateInstallHandler {
+  (void)updater;
+  (void)item;
+  _installUpdateNow = [immediateInstallHandler copy];
+  return YES;
+}
+
+- (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
+  (void)item;
+  _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
+}
+#endif
+
+// ---- Keys, commands, settings -----------------------------------------------
+
+- (void)pokeSnapshot {
+  ++_snap.activity_seq;
+  [self.view publish];
+  _lab.wake();
+}
+
+- (mv::shell::view_state)currentViewState {
+  mv::shell::view_state s;
+  s.focus = mv::shell::focus_kind::canvas;
+  if (_items.empty()) s.item = mv::shell::item_kind::none;
+  else if ([self currentItemIsVideo]) s.item = mv::shell::item_kind::clip;
+  else if (_lab.anim_active()) s.item = mv::shell::item_kind::animation;
+  else s.item = mv::shell::item_kind::still;
+  s.gallery_open = _galleryVisible;
+  s.slideshow = _slideshowActive;
+  s.fullscreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+  s.popup_open = _helpVisible;
+  s.settings_open = _settingsVisible;
+  return s;
+}
+
+- (BOOL)handleKeyEvent:(NSEvent*)event {
+  using namespace mv::shell;
+  const bool up = event.type == NSEventTypeKeyUp;
+  std::uint8_t mods = 0;
+  const key k = MvKeyFromEvent(event, &mods);
+  if (k == key::none) return NO;
+  // Settings owns the keyboard (the router agrees: settings_open routes
+  // nothing); Esc closes it when no capture is pending.
+  if (_settingsVisible) {
+    if (!up && k == key::escape && mods == mod_none && _captureRow < 0) {
+      [self setSettingsVisible:NO];
+      return YES;
+    }
+    return NO;
+  }
+  key_event e;
+  e.k = k;
+  e.mods = mods;
+  e.repeat = !up && event.isARepeat;
+  e.up = up;
+  const route r = _router.on_key(e, [self currentViewState]);
+  if (r.command == command_id::none) return r.handled;
+  return [self runCommand:r.command back:r.back];
+}
+
+- (void)cancelKeyHolds {
+  mv::shell::command_id released[mv::shell::key_router::kHeldSlots];
+  const std::size_t n = _router.cancel_holds(released);
+  for (std::size_t i = 0; i < n; ++i) {
+    [self runCommand:released[i] back:mv::shell::back_target::none];
+  }
+}
+
+- (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
+  using enum mv::shell::command_id;
+  const bool clip = [self currentItemIsVideo];
+  const bool anim = !clip && _lab.anim_active();
+  switch (command) {
+    case open: [self openFolderPanel:NO]; return YES;
+    case open_folder: [self openFolderPanel:YES]; return YES;
+    case fit: case reset_view: ++_snap.fit_seq; [self pokeSnapshot]; return YES;
+    case one_to_one: ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case overlay: ++_snap.toggle_overlay_seq; [self pokeSnapshot]; return YES;
+    case reset_stats: ++_snap.reset_stats_seq; [self pokeSnapshot]; return YES;
+    case prev:
+      if (_items.empty()) return NO;
+      [self navigatePrev];
+      return YES;
+    case next:
+      // Space with no folder open is the present lab's own sweep toggle.
+      if (_items.empty()) { ++_snap.toggle_animation_seq; [self pokeSnapshot]; return YES; }
+      [self navigateNext];
+      return YES;
+    case first: [self navigateFirst]; return YES;
+    case last: [self navigateLast]; return YES;
+    case skip_back: [self navigateSkip:-10]; return YES;
+    case skip_forward: [self navigateSkip:10]; return YES;
+    case back:
+      switch (target) {
+        case mv::shell::back_target::popup: [self setHelpVisible:NO]; break;
+        case mv::shell::back_target::settings: [self setSettingsVisible:NO]; break;
+        case mv::shell::back_target::gallery: [self setGalleryVisible:NO]; break;
+        case mv::shell::back_target::slideshow: [self leaveSlideshow]; break;
+        case mv::shell::back_target::fullscreen: [self toggleFullscreen]; break;
+        default: break;
+      }
+      return YES;
+    case toggle_gallery: [self toggleGallery]; return YES;
+    case toggle_filmstrip: [self toggleFilmstrip]; return YES;
+    case gallery_up: [self galleryMoveRows:-1]; return YES;
+    case gallery_down: [self galleryMoveRows:1]; return YES;
+    case gallery_open_selected: [self setGalleryVisible:NO]; return YES;
+    case gallery_larger: [self adjustGalleryCellSize:1]; return YES;
+    case gallery_smaller: [self adjustGalleryCellSize:-1]; return YES;
+    case fullscreen: [self toggleFullscreen]; return YES;
+    case close_window: [self.window performClose:nil]; return YES;
+    case always_on_top:
+      self.window.level = self.window.level == NSFloatingWindowLevel ? NSNormalWindowLevel
+                                                                      : NSFloatingWindowLevel;
+      return YES;
+    case help: [self toggleHelp]; return YES;
+    case open_settings: [self setSettingsVisible:!_settingsVisible]; return YES;
+    case reveal_in_explorer: {
+      NSString* path = [self currentItemPathForDrag];
+      if (!path) return NO;
+      [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
+      return YES;
+    }
+    case cycle_background:
+      [self setViewFlags:(_viewFlags & ~mv::shell::kSettingBackgroundMask) |
+                         ((((_viewFlags & mv::shell::kSettingBackgroundMask) >>
+                            mv::shell::kSettingBackgroundShift) + 1) & 3)
+                             << mv::shell::kSettingBackgroundShift];
+      return YES;
+    case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
+    // Clip / animation transport. Space, K and `,` `.` reach the render thread as
+    // latched counters (input_snapshot), like pan and zoom.
+    case play_pause: case pause:
+      if (!clip && !anim) return NO;
+      ++_snap.anim_toggle_seq; [self pokeSnapshot]; return YES;
+    case frame_back: case frame_forward:
+      if (!clip && !anim) return NO;
+      _snap.anim_steps += command == frame_forward ? 1 : -1; [self pokeSnapshot]; return YES;
+    case jump_back: case jump_forward:
+      if (!clip) return NO;
+      _snap.video_skip_ms += command == jump_forward ? 10000 : -10000; [self pokeSnapshot]; return YES;
+    case skim_back: case skim_forward:
+      if (!clip) return NO;
+      _snap.video_skip_ms += command == skim_forward ? 2000 : -2000; [self pokeSnapshot]; return YES;
+    case skim_settle: return YES;
+    case rate_down: case rate_up:
+      if (!clip) return NO;
+      _snap.video_speed_steps += command == rate_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    case mute:
+      if (!clip) return NO;
+      ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
+    // ↑ ↓ on a clip are its volume (the Mac view has no arrow-key pan).
+    case pan_up: case pan_down:
+      if (!clip) return NO;
+      _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    case toggle_mark: [self toggleMarkCurrent]; return YES;
+    case mark_all: [self markAll]; return YES;
+    case unmark_all: [self unmarkAll]; return YES;
+    case copy_to: [self copyMarkedPickDestination:NO]; return YES;
+    case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
+    case move_to: [self moveMarkedPickDestination:NO]; return YES;
+    case move_to_pick: [self moveMarkedPickDestination:YES]; return YES;
+    case delete_to_recycle_bin:
+      if (_items.empty()) return NO;
+      [self deleteMarkedToTrash];
+      return YES;
+    case slideshow_start:
+      if (_items.empty()) return NO;
+      [self startSlideshow];
+      return YES;
+    case slideshow_pause: [self toggleSlideshowPause]; return YES;
+    case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
+    case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    default: return NO;
+  }
+}
+
+// ---- Settings -----------------------------------------------------------------
+static NSString* const kDefaultsViewFlags = @"mv.viewFlags";
+static NSString* const kDefaultsKeys = @"mv.keys";
+
+- (BOOL)settingsVisible { return _settingsVisible; }
+- (void)setSettingsVisible:(BOOL)visible {
+  if (visible == _settingsVisible) return;
+  if (!visible) [self cancelKeyCapture];
+  _settingsVisible = visible;
+  self.settingsHost.hidden = !visible;
+  if (visible) [self cancelKeyHolds];
+  if (!visible) [self.window makeFirstResponder:self.view];
+}
+- (int32_t)viewFlags { return _viewFlags; }
+
+// The view settings that reach native state: wrap (browse_index), background
+// and sticky zoom (input_snapshot, read by the render thread). The two filmstrip
+// preferences are applied when something is opened.
+- (void)applyViewFlags {
+  const auto s = mv::shell::view_settings::from_flags(_viewFlags);
+  _index.set_wrap(s.wrap);
+  _snap.background = s.background;
+  _snap.sticky_zoom = s.sticky_zoom;
+  [self pokeSnapshot];
+}
+- (void)setViewFlags:(int32_t)flags {
+  _viewFlags = flags;
+  [[NSUserDefaults standardUserDefaults] setInteger:flags forKey:kDefaultsViewFlags];
+  [self applyViewFlags];
+  ++_keysGeneration;  // the Settings screen re-reads flags and keys on this
+}
+
+- (void)persistKeys {
+  const auto live = mv::shell::live_bindings();
+  const auto def = mv::shell::default_bindings();
+  NSMutableArray<NSString*>* rows = [NSMutableArray array];
+  for (std::size_t i = 0; i < live.size() && i < def.size(); ++i) {
+    if (live[i].k != def[i].k || live[i].mods != def[i].mods) {
+      [rows addObject:[NSString stringWithFormat:@"%zu,%d,%d", i, static_cast<int>(live[i].k),
+                                                  static_cast<int>(live[i].mods)]];
+    }
+  }
+  [[NSUserDefaults standardUserDefaults] setObject:rows forKey:kDefaultsKeys];
+}
+
+- (void)loadSettings {
+  NSUserDefaults* d = [NSUserDefaults standardUserDefaults];
+  _viewFlags = [d objectForKey:kDefaultsViewFlags] != nil
+                   ? static_cast<int32_t>([d integerForKey:kDefaultsViewFlags])
+                   : mv::shell::view_settings{}.flags();
+  mv::shell::reset_live_bindings();
+  for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
+    int idx = 0, k = 0, m = 0;
+    if (sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3) {
+      (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
+    }
+  }
+  _router.rebuild(mv::shell::live_bindings());
+  // Straight into the state (no publish: the render thread is not up yet at
+  // launch, and the next input publishes the snapshot anyway).
+  const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
+  _index.set_wrap(prefs.wrap);
+  _snap.background = prefs.background;
+  _snap.sticky_zoom = prefs.sticky_zoom;
+}
+
+- (void)resetKeys {
+  [self cancelKeyCapture];
+  mv::shell::reset_live_bindings();
+  _router.rebuild(mv::shell::live_bindings());
+  [self persistKeys];
+  ++_keysGeneration;
+}
+
+- (int)captureRow { return _captureRow; }
+- (uint64_t)keysGeneration { return _keysGeneration; }
+
+- (void)cancelKeyCapture {
+  if (_captureMonitor) [NSEvent removeMonitor:_captureMonitor];
+  _captureMonitor = nil;
+  if (_captureRow >= 0) ++_keysGeneration;
+  _captureRow = -1;
+}
+
+// "Choose a shortcut, then press its replacement. Esc cancels." A local monitor
+// sees the key before anything else, so it can take chords the menu bar would
+// otherwise claim (Cmd+something) and never lets the key reach a command.
+- (void)beginKeyCaptureForRow:(int)row {
+  [self cancelKeyCapture];
+  _captureRow = row;
+  ++_keysGeneration;
+  __weak MvLabApp* weakSelf = self;
+  _captureMonitor = [NSEvent
+      addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                   handler:^NSEvent*(NSEvent* event) {
+                                     MvLabApp* strong = weakSelf;
+                                     if (!strong || strong->_captureRow < 0) return event;
+                                     std::uint8_t mods = 0;
+                                     const mv::shell::key k = MvKeyFromEvent(event, &mods);
+                                     if (k == mv::shell::key::escape && mods == mv::shell::mod_none) {
+                                       [strong cancelKeyCapture];
+                                       return nil;
+                                     }
+                                     if (k == mv::shell::key::none) return nil;
+                                     const int row = strong->_captureRow;
+                                     [strong cancelKeyCapture];
+                                     if (mv::shell::rebind_live(row, k, mods)) {
+                                       strong->_router.rebuild(mv::shell::live_bindings());
+                                       [strong persistKeys];
+                                       ++strong->_keysGeneration;
+                                     }
+                                     return nil;
+                                   }];
 }
 
 - (void)navigateNext {
@@ -1652,6 +2243,8 @@ enum MvMenuCmd : NSInteger {
   (void)notification;
   _snap.window_active = false;
   [self.view publish];
+  // No key-up is coming for a key held as the window lost focus.
+  [self cancelKeyHolds];
 }
 - (int)exitCode {
   return _lab.exit_code();
@@ -1695,6 +2288,10 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
+    } else if (std::strncmp(arg, "-psn_", 5) == 0) {
+      // A Finder/LaunchServices launch of an older-style process serial
+      // number: not ours, and not an error (PR 20: MediaViewer.app starts
+      // from Finder).
     } else if (arg[0] != '-') {
       // A bare positional path: "the first entry that exists wins"
       // (plan/16-commands.md) -- MvLabApp resolves it (folder, or a file's

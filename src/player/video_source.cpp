@@ -61,8 +61,12 @@ class ffmpeg_video_source final : public video_source {
 
   [[nodiscard]] expected open(const char* utf8_path, void* device) {
     if (!utf8_path || !device) return err(status::invalid_arg);
+#if defined(MV_DARWIN)
+    pipe_.device = device;  // id<MTLDevice>, borrowed
+#else
     pipe_.device = static_cast<ID3D11Device*>(device);
     pipe_.device_owner = pipe_.device;
+#endif
 
     AVFormatContext* format = nullptr;
     if (avformat_open_input(&format, utf8_path, nullptr, nullptr) < 0) return err(status::io);

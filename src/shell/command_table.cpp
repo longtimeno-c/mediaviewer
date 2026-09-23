@@ -148,6 +148,8 @@ constexpr binding kBindings[] = {
     // and plan/16 gives no key, so they are listed in Settings, unbound.
     row(key::none, mod_none, kBrowse | kVideo, edge, open_raw),
     row(key::none, mod_none, kBrowse | kVideo, edge, open_jpeg),
+    // plan/16 Video: Shift+M is mute (M itself stays free for a Move preset).
+    row(C('M'), mod_shift, kVideo, edge, mute),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -239,6 +241,7 @@ constexpr command_info kCommands[] = {
     {open_settings, "Settings"},
     {play_motion, "Play Live Photo motion"},
     {open_raw, "Open RAW of pair"},
+    {mute, "Mute"},
     {open_jpeg, "Open JPEG of pair"},
 };
 

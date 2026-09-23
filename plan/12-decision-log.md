@@ -903,6 +903,107 @@ D3D11's `SetMaximumFrameLatency(1)`. On real hardware `CAMetalLayer` throws
 `MvMetalView`). The intent — one frame of latency, wait on the display link before encoding —
 is unchanged, and the 60 s gate passes with it (3600 frames, 0 dropped, p99 16.9 ms, 2026-09-19).
 
+## 2026-09-20 — PR 19 host choices: VideoToolbox through a texture cache and a copy, Core Audio position anchoring
+
+**Not a D1–D9 reversal** — D2 and D9 hold (FFmpeg, our own presentation ring, no `AVPlayer`, no
+Store codec). Choices the plan left open for the Metal host:
+
+- **"On *your* `MTLDevice`" means the texture cache and the blit, not the decoder.** VideoToolbox
+  owns its decode sessions and takes no device; the device is used for the `CVMetalTextureCache`
+  that wraps the decoder's IOSurface-backed pixel buffers, and the blit that copies them *out* of
+  the decoder pool into the ring runs on a queue of that device. The blit is waited for on the
+  decode thread (~1 ms for 4K): that thread is neither UI nor render, and it makes the slot
+  complete before it is published and the pixel buffer returned, so there is no ordering hazard to
+  reason about (Windows needs the immediate-context ordering argument in plan/12 2026-09-07; Metal
+  does not).
+- **A slot is two textures (R + RG), not one planar texture with two views** — Metal has no
+  planar NV12/P010 texture to view. Same R8/RG8, R16/RG16 pair plan/05 specifies, shared storage.
+- **A presented frame is held two more presents before release** (Darwin ring is 6 slots, not 4):
+  the GPU may still sample it and the decode thread reuses a released slot at once.
+- **Played position is anchored to each render callback's host time with a *signed* offset.**
+  `mHostTime` is always in the future by the output latency, so an "only if now > host" extrapolation
+  never engages and the clock steps by one callback (~11 ms); a 60 Hz presenter sampling that
+  staircase dropped a third of a 30 fps clip as "late". Found with `tools/playprobe`.
+- **MPEG-2 has no VideoToolbox decode on this hardware**, so it runs in software and the F3
+  overlay says `SOFTWARE`. D5 lists MPEG-2 as supported; it is, without hardware.
+
+## 2026-09-23 — macOS first install mirrors the PR 8 wizard, as a disk image
+
+Not a D1–D9 reversal and not a sequencing change: it lands in **PR 20**, and PR 8 is
+untouched. The owner asked for the Windows first-install idea (2026-09-13 above) to have
+a Mac counterpart. `plan/15` only said "notarized Sparkle, `~/Applications` or a dragged
+`.app`", with no first-run UX, licence, icon, or uninstall story.
+
+**Call:**
+
+| | |
+|---|---|
+| **First install** | Developer ID–signed, notarized, stapled `.dmg`: branded window, app + Applications alias, GPL shown on mount (Agree / Disagree). |
+| **Not a `.pkg`** | Root scripts, no Trash uninstall, unreliable per-user domain. No custom installer app, helper, or login item. |
+| **Updates** | Sparkle 2, silent, EdDSA-signed appcast against a pinned key. Same staging / never-interrupt rules as Velopack. |
+| **Not in the install** | "Open with" (after first successful still), telemetry (in-app, default off) — same as Windows. |
+| **Icon** | Same mark, one `.icns`. |
+| **Uninstall** | Drag to Trash; the Quick Look extension is in the bundle. |
+
+**Open for PR 20:** Sparkle has no "failed to start twice → previous version" rollback.
+Build one or accept kill-switch-only on Mac, and log it. If the on-mount licence agreement
+proves unreliable on macOS 14, fall back to a `Licence` file in the window + About, never
+an in-app accept modal.
+
+Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
+
+## 2026-09-23 — PR 20 starts before PR 19's verify fully holds; calls made starting it
+
+**Sequencing, the owner's call.** The 2026-09-17 entry keeps F's own order: each verify
+line holds before the next PR starts. PR 19's verify includes "an iPhone HLG clip looks
+correct", and only a synthetic HLG-tagged clip has been checked. The owner chose to start
+PR 20 anyway, stacked on the PR 19 branch. PR 19's HLG check is **still owed** and still
+gates calling PR 19 done. PR 20 does not touch the video path.
+
+**Calls:**
+
+| | |
+|---|---|
+| **Two executables** | `mediaviewer_lab` stays the bare instrument `frametime` drives. `MediaViewer` (inside MediaViewer.app) is the same sources with `MV_APP_BUNDLE`, plus Sparkle when a key is configured. |
+| **Bundle id** | `io.github.longtimeno-c.mediaviewer` (CMake cache, `MV_MAC_BUNDLE_ID`). Changing it after the first ship orphans preferences and breaks Sparkle's same-app check. Decide before shipping. |
+| **Registered types** | The D5 **still** set only, `LSHandlerRank` Alternate, role Viewer. Video is not registered, matching Windows PR 15's still-only `ProgId`s. `tools/mac/check_plists.py` ties the list to `codec/format.h`. |
+| **Default viewer** | Asked once, as a sheet, after the first still reaches the screen. The type list is read back from the app's own Info.plist. macOS confirms each type itself. |
+| **Quick Look** | A thumbnail `.appex`, sandboxed, running `image::make_thumb_jpeg`, the same pixels as the filmstrip. No cache of its own. |
+| **Sparkle** | 2.9.6, SHA-256 pinned, MIT. XPC services removed (the app is not sandboxed). Signed feed and verified archive required. Automatic checks on, with no Sparkle permission prompt (the app menu turns them off). No system profile. Updates are a zip of the stapled app, never the disk image. |
+| **Disk image** | dmgbuild 1.6.7, APFS + LZFSE, GPL as the image's licence agreement via `hdiutil udifrez`. |
+
+**Owed, not done in this change:**
+
+- **Nothing here has been built or run on a Mac.** It was written in a Linux container with
+  no Apple SDK. The plist policy and packaging helpers run on Linux (not yet wired into CI); the Objective-C++, the
+  CMake, and every step of `macpack.py` that runs a tool do not.
+- **Quick Look precedence.** Whether Finder uses our extension or its own generator for
+  types macOS already thumbnails (JPEG, HEIC, most RAW) is unmeasured. The corrupted-HEIC
+  verify must check which process actually decoded it.
+- **State across an update restart** is the folder and the selected file only. Zoom/pan
+  and clip position (plan/13 "Preserve state") are not carried yet.
+- **Rollback** after two failed starts has no Mac mechanism (open since the 2026-09-23 entry above).
+- **Crashpad on Mac is not in the tree.** The 2026-09-17 entry folded PR 7's Crashpad scope
+  into PR 17, and `plan/10` says PR 20 "does not add it", but `cmake/darwin.cmake` links
+  no Crashpad and no Mac scrub exists. Either PR 17 still owes it or PR 20 takes it. Owner's call.
+
+## 2026-09-23 — Mac host routes keys through the shared command table; Windows-style bar and Settings
+
+**Decision.** The Mac host translates `NSEvent` to `key` at the edge and runs every key through
+the same `command_table.cpp` / `key_router.cpp` as Windows (both are pure C++ and now build on
+Darwin). Command and Control map to `ctrl`, Option to `alt`, the Mac Delete key to `del` (Trash).
+The bar becomes Open / View / Settings / About with `?` at the right, and a Settings screen
+(`⌘,`) offers the view preferences, canvas background and key remapping, persisted in
+`NSUserDefaults`.
+
+**Why.** The hard-coded `keyDown:` could not support remapping, and the macOS-styled bar did not
+match the Windows chrome. **Consequences.** Commands the Mac lab cannot run yet (zoom steps and
+presets, clipping, loupe, pan, go-to, folder tree, Live Photo, RAW pairing) are hidden from the
+remap list rather than shown dead. Adds `mute` (Shift+M) and browse `wrap` as shared pieces.
+Plain-letter menu key equivalents were removed so a menu cannot shadow a remap. Backspace is no
+longer Previous on Mac (that key is Delete = Trash). Not a D1–D9 change: chrome stays SwiftUI,
+the canvas stays Metal.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

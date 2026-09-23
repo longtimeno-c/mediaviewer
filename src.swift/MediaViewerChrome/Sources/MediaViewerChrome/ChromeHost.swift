@@ -41,8 +41,16 @@ public final class MVChromeHost: NSObject {
     host(GalleryView())
   }
 
+  @objc public static func makeTransportView() -> NSView {
+    host(TransportView())
+  }
+
   @objc public static func makeHelpView() -> NSView {
     host(HelpView())
+  }
+
+  @objc public static func makeSettingsView() -> NSView {
+    host(SettingsView())
   }
 
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
