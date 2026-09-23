@@ -927,6 +927,31 @@ Store codec). Choices the plan left open for the Metal host:
 - **MPEG-2 has no VideoToolbox decode on this hardware**, so it runs in software and the F3
   overlay says `SOFTWARE`. D5 lists MPEG-2 as supported; it is, without hardware.
 
+## 2026-09-23 — macOS first install mirrors the PR 8 wizard, as a disk image
+
+Not a D1–D9 reversal and not a sequencing change: it lands in **PR 20**, and PR 8 is
+untouched. The owner asked for the Windows first-install idea (2026-09-13 above) to have
+a Mac counterpart. `plan/15` only said "notarized Sparkle, `~/Applications` or a dragged
+`.app`", with no first-run UX, licence, icon, or uninstall story.
+
+**Call:**
+
+| | |
+|---|---|
+| **First install** | Developer ID–signed, notarized, stapled `.dmg`: branded window, app + Applications alias, GPL shown on mount (Agree / Disagree). |
+| **Not a `.pkg`** | Root scripts, no Trash uninstall, unreliable per-user domain. No custom installer app, helper, or login item. |
+| **Updates** | Sparkle 2, silent, EdDSA-signed appcast against a pinned key. Same staging / never-interrupt rules as Velopack. |
+| **Not in the install** | "Open with" (after first successful still), telemetry (in-app, default off) — same as Windows. |
+| **Icon** | Same mark, one `.icns`. |
+| **Uninstall** | Drag to Trash; the Quick Look extension is in the bundle. |
+
+**Open for PR 20:** Sparkle has no "failed to start twice → previous version" rollback.
+Build one or accept kill-switch-only on Mac, and log it. If the on-mount licence agreement
+proves unreliable on macOS 14, fall back to a `Licence` file in the window + About, never
+an in-app accept modal.
+
+Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
