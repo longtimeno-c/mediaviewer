@@ -122,10 +122,11 @@ jobs:
       - name: Stamp the version into CMakeLists.txt
         run: |
           $v = '${{ steps.v.outputs.version }}'
-          $t = Get-Content -Raw CMakeLists.txt
+          $p = Join-Path (Get-Location) 'CMakeLists.txt'
+          $t = [System.IO.File]::ReadAllText($p)
           $t = [regex]::Replace($t, '(project\(\s*mediaviewer\s+VERSION\s+)[0-9]+\.[0-9]+\.[0-9]+', "`${1}$v", 1)
-          Set-Content -NoNewline CMakeLists.txt $t
-          if ((Get-Content -Raw CMakeLists.txt) -notmatch "VERSION\s+$([regex]::Escape($v))") { throw "Version stamp failed" }
+          [System.IO.File]::WriteAllText($p, $t)
+          if ([System.IO.File]::ReadAllText($p) -notmatch "VERSION\s+$([regex]::Escape($v))") { throw "Version stamp failed" }
           Write-Host "stamped $v"
 
       - name: Configure
