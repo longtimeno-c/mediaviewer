@@ -2,29 +2,30 @@
 #
 # PR 8 release pipeline (plan/13 Part 1, plan/11).
 #
-#   push to main    -> release v<major>.<minor>.<run_number>   every push ships
-#   push tag v*     -> release v<version>, must match CMakeLists.txt
-#   workflow_dispatch -> dry run, artefacts only, no GitHub Release
+#   push tag v*       -> packages both hosts, uploads workflow artefacts
+#   workflow_dispatch -> the same, on demand
+#
+# CI does NOT create GitHub Releases. Releases are cut locally and uploaded by
+# hand (RELEASING.md), because the signing keys live on the release machine and
+# not here. This workflow exists to prove the packaging still builds.
 #
 # One packaging implementation: tools/package/build-release.ps1 does payload ->
 # vpk pack -> signed manifest -> ISCC wizard. This file builds, tests, gates the
-# licence, then calls it and publishes what it produced.
+# licence, then calls it and keeps the result as a workflow artefact.
 #
 # Secrets (none needed for a dry run):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET    Trusted Signing service principal
 #   TRUSTED_SIGNING_ENDPOINT, TRUSTED_SIGNING_ACCOUNT, TRUSTED_SIGNING_PROFILE
 #   MV_MANIFEST_SIGNING_KEY   Ed25519 private key, hex (tools/package/update-signing.md)
 #
-# A tag build FAILS without both signing paths. A main build warns and publishes
-# anyway, so the pipeline is testable before the secrets exist -- but an unsigned
-# manifest is rejected by the client on purpose, so until MV_MANIFEST_SIGNING_KEY
-# is set these builds prove packaging, not updating.
+# A tag build FAILS without both signing paths, so a tag can never produce an
+# artefact users could not verify. A manual dispatch warns and continues, which
+# is what makes the packaging testable before the secrets exist.
 
 name: Release
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -53,12 +54,11 @@ env:
 
 jobs:
   release:
-    name: Windows — build, package, sign, publish
+    name: Windows — build, package, sign
     runs-on: windows-latest
     timeout-minutes: 240
     outputs:
       version: ${{ steps.v.outputs.version }}
-      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
 
@@ -87,17 +87,11 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
 
       # Versions stay strict x.y.z, because that is all ReleaseVersion parses
-      # and the signed manifest compares (UpdateManifest.cs). A prerelease
-      # suffix would make the updater go inert, so there is none.
-      #
-      #   tag v<x.y.z>  -> exactly that, and it must match CMakeLists.txt
-      #   push to main  -> x.y.<run_number>: every push is a new version, unique
-      #                    and monotonic without CI ever committing back to main
-      #
-      # Because the patch comes from CI, keep the MAJOR.MINOR in CMakeLists.txt
-      # ahead of any tag you intend to cut, or a tagged v0.1.0 will sort below
-      # the 0.1.<run> builds that preceded it.
-      - name: Version and channel
+      # and the signed manifest compares (UpdateManifest.cs). A suffixed version
+      # would make the updater go inert rather than fail loudly, so there is none.
+      # A tag must agree with CMakeLists.txt; a dispatch build is only ever an
+      # artefact, so the run number keeps its name unique.
+      - name: Version
         id: v
         run: |
           $cmake = Get-Content -Raw CMakeLists.txt
@@ -107,14 +101,12 @@ jobs:
             if ('${{ github.ref_name }}' -ne "v$base") {
               throw "Tag ${{ github.ref_name }} does not match CMake project VERSION $base (expected v$base)."
             }
-            $version = $base; $publish = 'true'
+            $version = $base
           } else {
             $version = "$($Matches[1]).$($Matches[2]).${{ github.run_number }}"
-            $publish = ('${{ github.event_name }}' -eq 'push').ToString().ToLower()
           }
           "version=$version" >> $env:GITHUB_OUTPUT
-          "publish=$publish" >> $env:GITHUB_OUTPUT
-          Write-Host "MediaViewer $version (publish=$publish)"
+          Write-Host "MediaViewer $version"
 
       # Stamp it before configuring, so the exe's VERSIONINFO, MV_APP_VERSION,
       # the Velopack package and the manifest all say the same thing. The edit
@@ -215,26 +207,6 @@ jobs:
           path: ${{ steps.assets.outputs.dir }}
           retention-days: 30
 
-      # Published as a normal release, not a prerelease: the wizard and the
-      # updater both read /releases/latest/download/, and GitHub excludes
-      # prereleases from "latest" - so a prerelease would be invisible to both.
-      # Every push to main is therefore the release users get.
-      - name: Publish GitHub Release
-        if: ${{ steps.v.outputs.publish == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $v = '${{ steps.v.outputs.version }}'
-          $tag = "v$v"
-          $notes = "MediaViewer $v for Windows (x64). Per-user install, no administrator rights.`n`n" +
-                   "- Download and run ``MediaViewer-$v-Setup.exe``.`n" +
-                   "- Updates arrive in-app; the wizard is not needed again.`n" +
-                   "- LGPL source offer for this build (FFmpeg, libheif, libde265, LibRaw) is in the assets below.`n`n" +
-                   "Built from ${{ github.sha }}."
-          $a = @('release', 'create', $tag, '--title', "MediaViewer $v", '--notes', $notes)
-          if ('${{ github.ref_type }}' -eq 'tag') { $a += '--verify-tag' }
-          $a += (Get-ChildItem '${{ steps.assets.outputs.dir }}' -File | ForEach-Object FullName)
-          & gh @a
 
   # macOS is a second host of the same core (plan/15, D9), so it gets the same
   # treatment: every push to main proves the .app and the disk image still
@@ -337,16 +309,3 @@ jobs:
           path: build/release/
           retention-days: 30
 
-      # Only a notarized image is worth attaching to a release people install
-      # from. An ad-hoc one stays a workflow artefact.
-      - name: Attach to the GitHub Release
-        if: ${{ needs.release.outputs.publish == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MV_SIGN_IDENTITY: ${{ secrets.MV_SIGN_IDENTITY }}
-        run: |
-          if [ -z "${MV_SIGN_IDENTITY:-}" ]; then
-            echo "::warning::Disk image not attached to the release: it is ad-hoc signed."
-            exit 0
-          fi
-          gh release upload "v${{ needs.release.outputs.version }}" build/release/*.dmg --clobber
