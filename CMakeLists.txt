@@ -528,6 +528,43 @@ if(DOTNET_EXE)
   )
   set_property(TARGET mediaviewer_lab APPEND PROPERTY LINK_DEPENDS ${MV_CHROME_SOURCES})
   add_custom_target(mv_chrome DEPENDS mediaviewer_lab ${MV_CHROME_SOURCES})
+
+  # PR 8 clean-VM install: the Windows App SDK ships IN the payload
+  # (WindowsAppSDKSelfContained in MediaViewer.Chrome.csproj), because the
+  # wizard is per-user and takes no UAC and so cannot install a machine-wide
+  # framework package (plan/10 verify, plan/13).
+  #
+  # Self-contained WinUI activates its WinRT classes registration-free, and
+  # registration-free activation reads the manifest of the EXECUTABLE. Our
+  # executable is this native host, not the C# project the SDK generated the
+  # manifest for, so without this step every XAML activation fails with
+  # 0x80040111 CLASS_E_CLASSNOTAVAILABLE - the island silently does not attach
+  # and the command bar is missing. Measured.
+  #
+  # So: merge the SDK's generated activation manifest (980 classes, and it
+  # tracks the WindowsAppSDK package version - never hand-maintained) into the
+  # host's own manifest, after the publish that produces it.
+  find_program(MV_MT_EXE mt
+    HINTS "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin"
+    PATH_SUFFIXES "10.0.26100.0/x64" "10.0.22621.0/x64" "x64"
+    DOC "Windows SDK manifest tool, for the self-contained WinUI activation manifest")
+  set(MV_WINAPPSDK_MANIFEST
+      "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/obj/x64/$<IF:$<CONFIG:Debug>,Debug,Release>/net8.0-windows10.0.19041.0/win-x64/Manifests/WindowsAppSDK.manifest")
+  if(MV_MT_EXE)
+    add_custom_command(TARGET mediaviewer_lab POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E echo
+              "Merging the Windows App SDK activation manifest into mediaviewer_lab.exe"
+      COMMAND "${MV_MT_EXE}" -nologo
+              -manifest "${CMAKE_SOURCE_DIR}/src/shell/app.manifest" "${MV_WINAPPSDK_MANIFEST}"
+              "-outputresource:$<TARGET_FILE:mediaviewer_lab>$<SEMICOLON>#1"
+      COMMENT "Self-contained WinUI activation manifest -> host exe"
+      VERBATIM)
+  else()
+    message(WARNING
+      "mt.exe not found: the Windows App SDK activation manifest cannot be merged "
+      "into mediaviewer_lab.exe, so the WinUI island will fail to attach with "
+      "CLASS_E_CLASSNOTAVAILABLE. Install the Windows SDK, or set MV_MT_EXE.")
+  endif()
 else()
   message(STATUS "dotnet not found — lab will run without WinUI chrome (pass --no-chrome)")
 endif()

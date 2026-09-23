@@ -67,23 +67,40 @@ int cmp_dotnet_version(const wchar_t* a, const wchar_t* b) noexcept {
 }
 
 // hostfxr_initialize_for_runtime_config cannot load a self-contained
-// component. Chrome is framework-dependent; hostfxr comes from the machine's
-// .NET install (beside the exe is tried first for a copied hostfxr).
+// COMPONENT: handed a runtimeconfig with includedFrameworks it answers
+// 0x80008093 HostApiUnsupportedScenario. Measured, not assumed - which is why
+// the chrome stays framework-dependent and PR 8 ships the .NET runtime as a
+// private shared-framework layout rather than publishing self-contained.
+//
+// Search order, most specific first:
+//   1. <exe dir>\dotnet          - the runtime we shipped (PR 8 install)
+//   2. %DOTNET_ROOT%              - a developer pointing at their own
+//   3. %ProgramW6432%\dotnet      - the machine's install, for a dev build
+//   4. hostfxr.dll beside the exe - a flat copied layout
+//
+// Ours comes first deliberately: an installed MediaViewer must run on the
+// runtime it was tested against, not on whatever the machine happens to have
+// - or, on a clean VM, does not have at all.
 bool find_hostfxr(const wchar_t* exe_dir, wchar_t* out, std::size_t cap,
                   wchar_t* dotnet_root, std::size_t root_cap) noexcept {
-  wchar_t roots[2][MAX_PATH]{};
-  if (::GetEnvironmentVariableW(L"DOTNET_ROOT", roots[0], MAX_PATH) == 0) roots[0][0] = L'\0';
-  if (::GetEnvironmentVariableW(L"ProgramW6432", roots[1], MAX_PATH) == 0) {
-    wcsncpy_s(roots[1], L"C:\\Program Files", _TRUNCATE);
+  wchar_t roots[3][MAX_PATH]{};
+  if (!join_path(roots[0], MAX_PATH, exe_dir, L"dotnet")) roots[0][0] = L'\0';
+  if (::GetEnvironmentVariableW(L"DOTNET_ROOT", roots[1], MAX_PATH) == 0) roots[1][0] = L'\0';
+  if (::GetEnvironmentVariableW(L"ProgramW6432", roots[2], MAX_PATH) == 0) {
+    wcsncpy_s(roots[2], L"C:\\Program Files", _TRUNCATE);
   }
   wchar_t program_files_dotnet[MAX_PATH]{};
-  if (!join_path(program_files_dotnet, MAX_PATH, roots[1], L"dotnet")) return false;
-  wcsncpy_s(roots[1], program_files_dotnet, _TRUNCATE);
+  if (!join_path(program_files_dotnet, MAX_PATH, roots[2], L"dotnet")) return false;
+  wcsncpy_s(roots[2], program_files_dotnet, _TRUNCATE);
 
   wchar_t best_dll[MAX_PATH]{};
   wchar_t best_ver[64]{};
   wchar_t best_root[MAX_PATH]{};
   for (const auto& root : roots) {
+    // First root that has one wins; within a root, the newest version
+    // wins. Without this break, a machine with a newer .NET would
+    // override the runtime we shipped and tested against.
+    if (best_dll[0] != 0) break;
     if (root[0] == L'\0') continue;
     wchar_t fxr[MAX_PATH]{};
     if (!join_path(fxr, MAX_PATH, root, L"host\\fxr")) continue;
