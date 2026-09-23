@@ -911,6 +911,59 @@ which is a hole sitting directly under PR 8's "no missing-codec dialog anywhere"
 since that clause is about a machine with nothing installed. Either the wizard gains a
 runtime bootstrap or the publish becomes self-contained; not decided.
 
+## 2026-09-23 — PR 8: both runtimes ship in the payload; no prerequisite
+
+**Decision.** The payload carries the Windows App SDK runtime and the .NET
+runtime. A clean Windows 10 21H2 machine with nothing pre-installed runs the
+installed build.
+
+**Why it was not optional.** The wizard is per-user and takes no UAC (plan/10's
+verify line, plan/13). A machine-wide Windows App SDK runtime as a prerequisite
+needs admin, so it contradicts that directly; and a prerequisite the wizard
+neither installs nor detects lands the user in the failure the same verify line
+forbids. plan/09 had already made the matching call for .NET — "Take
+self-contained and publish the honest number. A viewer whose whole pitch is
+'point it at a folder and it works' cannot open with a runtime prerequisite
+dialog — that's the same mistake as a codec-pack prompt (D3)." — and budgeted
+~70 MB for it.
+
+**Mechanism, and why it is not simply `--self-contained`.**
+
+- **.NET.** `hostfxr_initialize_for_runtime_config` cannot load a self-contained
+  *component*: given a runtimeconfig with `includedFrameworks` it returns
+  0x80008093 `HostApiUnsupportedScenario`. Measured, not inferred. Since D1 the
+  chrome is a component the native host loads through hostfxr, so
+  `--self-contained` is unavailable to it. The deployment outcome plan/09 asked
+  for is reached instead by shipping the ordinary shared-framework layout
+  privately under `<install>\current\dotnet`; `find_hostfxr` prefers it over the
+  machine's install and stops at the first root that has one, so an installed
+  MediaViewer runs on the runtime it was tested against.
+- **Windows App SDK.** `WindowsAppSDKSelfContained` refuses a class library, and
+  the chrome is one for the same D1 reason; the refusal is an audit target with
+  an explicit override, and it is the audit that is inapplicable, not the
+  deployment mode. The part that does not announce itself: self-contained WinUI
+  activates registration-free, and registration-free activation reads the
+  manifest of the **executable**. Our executable is the native host, not the C#
+  project the SDK generated the manifest for — so without merging that manifest
+  into the host's, every XAML activation fails with 0x80040111
+  `CLASS_E_CLASSNOTAVAILABLE`, the island silently does not attach, and the app
+  comes up with no command bar. The build merges it with `mt.exe`.
+
+**Verified** on an installed copy: `hostfxr`, `coreclr` and `Microsoft.UI.Xaml`
+all load from the install directory rather than from Program Files or a
+framework package.
+
+**Size, published honestly rather than rounded.** The app is 208.6 MB — inside
+plan/09's stated 200–250 MB band and under its cap. On disk after a first
+install it is 292.7 MB, because Velopack also keeps one full package so a bad
+update can be rolled back (plan/13). That cache is a working set plan/13 prunes,
+not the application, so the gate checks the app and reports the total.
+
+**Open.** plan/09 suggests ".NET trimming to claw back part of it". Trimming is
+not applied: it is unsafe for a component resolved through hostfxr and for
+WinUI's reflection over XAML types. If the 250 MB cap ever needs real headroom,
+that is the thread to pull, and it needs measurement rather than a flag.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

@@ -363,9 +363,22 @@ cmake --build build --config Release
 ```
 
 That writes `dist\releases\` (the Velopack release set and the update manifest) and
-`dist\MediaViewer-<version>-Setup.exe` (the wizard). It refuses to proceed if the payload
+`dist\MediaViewer-<version>-Setup.exe` (the wizard). It refuses to proceed if the app
 breaks plan/09's 250 MB cap, fails plan/11's licence gate, or contains the Windows App SDK
 AI / ONNX / DirectML / WebView2 files plan/13 forbids shipping.
+
+The first run downloads the pinned .NET runtime (31.7 MB) once and caches it in the build
+directory; its SHA-256 is verified every time. For an offline build, pass the same archive
+with `-DotnetRuntimeZip`.
+
+**No prerequisites on the target machine.** The payload carries both runtimes — the
+Windows App SDK and .NET — so a clean Windows 10 21H2 install runs it with nothing
+installed first. That is not a nicety: the wizard is per-user and takes no UAC, and a
+machine-wide runtime prerequisite needs admin. plan/09 made the same call for .NET — "a
+viewer whose whole pitch is 'point it at a folder and it works' cannot open with a runtime
+prerequisite dialog". The app is **208.6 MB**, inside plan/09's stated 200–250 MB band; a
+first install occupies **292.7 MB** on disk, because Velopack also keeps one full package
+so a bad update can be rolled back.
 
 **An artefact from that command is unsigned and not publishable.** It says so on its last
 line. Signing needs credentials the repo does not and must not hold:
@@ -684,14 +697,17 @@ machine:
   signatures, the unconfigured placeholder key, wrong channel, downgrade, blocklist,
   a version already rolled back on this machine, and package hash/size mismatch).
 - Telemetry is off, never-asked, and records nothing by default, asserted in tests.
+- The payload needs nothing pre-installed: it carries the Windows App SDK runtime and the
+  .NET runtime, and an installed copy provably loads `hostfxr`, `coreclr` and
+  `Microsoft.UI.Xaml` **from its own directory** rather than from Program Files or a
+  framework package.
 
 **Not yet demonstrated, and needed before the verify can be attempted:**
 
 - A clean VM. Everything above ran on a machine that already has the Windows App SDK
-  runtime, .NET, and every codec DLL in a build tree. The "no missing-codec dialog
-  anywhere" clause is specifically about a machine that has none of that, and the payload
-  is framework-dependent — the Windows App SDK runtime is still an assumed prerequisite,
-  which is a hole the wizard does not yet fill.
+  runtime, .NET, and every codec DLL in a build tree. "Provably prefers ours" on a machine
+  that has both is weaker evidence than "works on a machine that has neither", and only a
+  clean VM settles the "no missing-codec dialog anywhere" clause.
 - **No SmartScreen block** cannot be true of an unsigned artefact, and cannot be tested
   without a signing credential. See [Package and install](#package-and-install-pr-8).
 - `tools/package/e2e-update.ps1` passes **16 of 16**. A tampered manifest stages nothing;
