@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab.h"
+#include "shell/dino_draw.h"
+#include "shell/welcome_screen.h"
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
@@ -143,6 +145,7 @@ expected present_lab::start(HWND window, const lab_options& options) noexcept {
   options_ = options;
   overlay_visible_ = options.overlay_visible;
   animating_ = options.start_animating;
+  sweep_mode_ = options.soak_seconds > 0.0;
 
   wake_event_ = ::CreateEventW(nullptr, FALSE /*auto-reset*/, FALSE, nullptr);
   if (!wake_event_) return err(status::internal);
@@ -348,8 +351,22 @@ void present_lab::render_thread_main() noexcept {
       seen_overlay_seq_ = snapshot.toggle_overlay_seq;
       redraw = true;
     }
+    if (snapshot.game_exit_seq != seen_game_exit_seq_) {
+      seen_game_exit_seq_ = snapshot.game_exit_seq;
+      if (!sweep_mode_ && game_.active()) {
+        game_.leave();
+        animating_ = false;
+        redraw = true;
+      }
+    }
     if (snapshot.toggle_animation_seq != seen_animation_seq_) {
-      if ((snapshot.toggle_animation_seq - seen_animation_seq_) & 1u) animating_ = !animating_;
+      const std::uint32_t presses = snapshot.toggle_animation_seq - seen_animation_seq_;
+      if (sweep_mode_) {
+        if (presses & 1u) animating_ = !animating_;
+      } else {
+        for (std::uint32_t i = 0; i < presses && i < 4u; ++i) game_.press();
+        animating_ = game_.state() == dino_game::phase::intro || game_.state() == dino_game::phase::playing;
+      }
       seen_animation_seq_ = snapshot.toggle_animation_seq;
       redraw = true;
       if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
@@ -1190,7 +1207,13 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   // video_open_ and no texture is a clip still opening, not an empty window.
   // Painting "drop a photo here" over it is the bug that made an open clip
   // look like it had not opened at all.
-  if (current_image_ || current_video_.texture || video_open_) return;
+  if (current_image_ || current_video_.texture || video_open_) {
+    if (!sweep_mode_ && game_.active()) {  // a file opened over the runner
+      game_.leave();
+      animating_ = false;
+    }
+    return;
+  }
 
   const auto w = static_cast<float>(snapshot.width);
   const auto h = static_cast<float>(snapshot.height);
@@ -1200,7 +1223,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   const float chrome = static_cast<float>(snapshot.chrome_height_px);
   const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
 
-  if (animating_) {
+  if (sweep_mode_ && animating_) {
     // Present-lab judder instrument. Space turns it on; the default empty
     // view is the welcome below, not this sweep.
     animation_phase_ = std::fmod(elapsed_seconds * 0.35, 1.0);
@@ -1216,28 +1239,22 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
     return;
   }
 
-  const float cx = w * 0.5f;
-  const float cy = chrome + (h - chrome) * 0.5f;
-  const ImU32 title = IM_COL32(220, 222, 228, 255);
-  const ImU32 body = IM_COL32(150, 154, 164, 255);
-  const ImU32 mute = IM_COL32(110, 114, 124, 255);
-
-  const char* heading = "Drop a photo or a clip here";
-  const char* sub = "JPEG, PNG, BMP, MP4, MOV, MKV, WebM, AVI, TS. Open a folder from the bar, or Ctrl+O";
-  const char* keys = "0  fit     1  100%     + / -  zoom     space  play/pause     q / e  skim     F  overlay";
-
-  ImFont* font = ImGui::GetFont();
-  const float title_fs = 22.0f * scale;
-  const float body_fs = 16.0f * scale;  // matches the chrome bar
-  const auto measure = [&](const char* s, float fs) {
-    return font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
-  };
-  const ImVec2 hs = measure(heading, title_fs);
-  const ImVec2 ss = measure(sub, body_fs);
-  const ImVec2 ks = measure(keys, body_fs);
-  bg->AddText(font, title_fs, ImVec2(cx - hs.x * 0.5f, cy - 48.0f * scale), title, heading);
-  bg->AddText(font, body_fs, ImVec2(cx - ss.x * 0.5f, cy - 10.0f * scale), body, sub);
-  bg->AddText(font, body_fs, ImVec2(cx - ks.x * 0.5f, cy + 26.0f * scale), mute, keys);
+  const welcome_text text{
+      .open_hint = "or press Ctrl+O to choose a file, Ctrl+Shift+O for a folder",
+      .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    F3  frame-time"};
+  if (!sweep_mode_ && game_.active()) {
+    const float dt =
+        last_game_elapsed_ > 0.0 ? static_cast<float>(elapsed_seconds - last_game_elapsed_) : 0.0f;
+    last_game_elapsed_ = elapsed_seconds;
+    game_.set_view_width(w / (3.0f * scale));
+    game_.update(dt);
+    if (game_.state() == dino_game::phase::over) animating_ = false;  // idle again: nothing moves
+    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, welcome_alpha(game_));
+    draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale);
+    return;
+  }
+  last_game_elapsed_ = 0.0;
+  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text);
 }
 
 void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {

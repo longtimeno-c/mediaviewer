@@ -772,3 +772,29 @@ TEST_CASE("remapping a key updates the live table the router and ? share", "[she
   r.rebuild(live_bindings());
   REQUIRE(r.on_key(down(char_key('A')), still()).command == command_id::prev);
 }
+
+TEST_CASE("Esc leaves the empty-window runner, before it moves focus", "[keys][dino]") {
+  view_state s;  // empty canvas, runner up
+  s.game = true;
+  CHECK(resolve_back(s) == back_target::game);
+  const auto r = key_router().on_key(down(key::escape), s);
+  CHECK(r.handled);
+  CHECK(r.command == command_id::back);
+  CHECK(r.back == back_target::game);
+
+  // Focus in a strip does not eat the press; the runner still goes first.
+  s.focus = focus_kind::filmstrip;
+  CHECK(resolve_back(s) == back_target::game);
+
+  // Overlays above the canvas close first, as in plan/16 "Esc walks out".
+  s.popup_open = true;
+  CHECK(resolve_back(s) == back_target::popup);
+  s.popup_open = false;
+  s.fullscreen = true;
+  CHECK(resolve_back(s) == back_target::fullscreen);
+
+  // No runner, nothing to leave: still not handled, never a quit.
+  view_state idle;
+  CHECK(resolve_back(idle) == back_target::none);
+  CHECK_FALSE(key_router().on_key(down(key::escape), idle).handled);
+}

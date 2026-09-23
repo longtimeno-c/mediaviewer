@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab_mac.h"
+#include "shell/dino_draw.h"
+#include "shell/welcome_screen.h"
 
 #include "image/pipeline.h"
 #include "shell/media_kind.h"
@@ -509,6 +511,7 @@ expected present_lab_mac::start(void* nsview, const mac_lab_options& options) no
   options_ = options;
   overlay_visible_ = options.overlay_visible;
   animating_ = options.start_animating;
+  sweep_mode_ = options.soak_seconds > 0.0;
 
   running_.store(true, std::memory_order_release);
   render_thread_ = std::thread([this] { render_thread_main(); });
@@ -682,9 +685,23 @@ void present_lab_mac::render_thread_main() noexcept {
           seen_overlay_seq_ = snapshot.toggle_overlay_seq;
           redraw = true;
         }
+        if (snapshot.game_exit_seq != seen_game_exit_seq_) {
+          seen_game_exit_seq_ = snapshot.game_exit_seq;
+          if (!sweep_mode_ && game_.active()) {
+            game_.leave();
+            animating_ = false;
+            redraw = true;
+          }
+        }
         if (snapshot.toggle_animation_seq != seen_animation_seq_) {
-          if ((snapshot.toggle_animation_seq - seen_animation_seq_) & 1u)
-            animating_ = !animating_;
+          const std::uint32_t presses = snapshot.toggle_animation_seq - seen_animation_seq_;
+          if (sweep_mode_) {
+            if (presses & 1u) animating_ = !animating_;
+          } else {
+            for (std::uint32_t i = 0; i < presses && i < 4u; ++i) game_.press();
+            animating_ = game_.state() == dino_game::phase::intro ||
+                         game_.state() == dino_game::phase::playing;
+          }
           seen_animation_seq_ = snapshot.toggle_animation_seq;
           redraw = true;
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
@@ -949,7 +966,11 @@ void present_lab_mac::render_thread_main() noexcept {
         // loaded a still, the image (drawn below, same render pass) replaces
         // it rather than drawing both.
         const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
-        if (!have_picture && animating_) {
+        if (have_picture && !sweep_mode_ && game_.active()) {  // a file opened over the runner
+          game_.leave();
+          animating_ = false;
+        }
+        if (!have_picture && sweep_mode_ && animating_) {
           const auto w = static_cast<float>(snapshot.width);
           const auto h = static_cast<float>(snapshot.height);
           animation_phase_ = std::fmod(elapsed * 0.35, 1.0);
@@ -958,12 +979,29 @@ void present_lab_mac::render_thread_main() noexcept {
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           bg->AddRectFilled(ImVec2(x, 0.0f), ImVec2(x + bar_width, h),
                             IM_COL32(230, 230, 235, 255));
-        } else if (!have_picture && overlay_visible_) {
-          ImDrawList* bg = ImGui::GetBackgroundDrawList();
+        } else if (!have_picture) {
+          const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
           const float w = static_cast<float>(snapshot.width);
           const float h = static_cast<float>(snapshot.height);
-          bg->AddText(ImVec2(w * 0.5f - 80.0f, h * 0.5f), IM_COL32(220, 222, 228, 255),
-                      "MediaViewer present lab");
+          const float chrome = static_cast<float>(snapshot.chrome_height_px);
+          const welcome_text text{
+              .open_hint = "or press Cmd+O to choose a file or a folder",
+              .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    ?  shortcuts"};
+          ImDrawList* bg = ImGui::GetBackgroundDrawList();
+          if (!sweep_mode_ && game_.active()) {
+            const float dt = last_game_elapsed_ > 0.0
+                                 ? static_cast<float>(elapsed - last_game_elapsed_)
+                                 : 0.0f;
+            last_game_elapsed_ = elapsed;
+            game_.set_view_width(w / (3.0f * scale));
+            game_.update(dt);
+            if (game_.state() == dino_game::phase::over) animating_ = false;  // idle: nothing moves
+            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, welcome_alpha(game_));
+            draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale);
+          } else {
+            last_game_elapsed_ = 0.0;
+            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text);
+          }
         }
 
         if (overlay_visible_) {

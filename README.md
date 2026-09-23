@@ -244,33 +244,126 @@ types at rank *Alternate*: MediaViewer shows up in Finder's **Open With** and ne
 itself the default. After the first photo it opens, it asks once whether to become the
 default; the MediaViewer menu has the same command.
 
-A build that leaves your machine needs the updater, a Developer ID, and notarization
-([plan/13](plan/13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20)):
+#### Runbook: build, sign, release, update (macOS)
+
+Everything below was run end to end on Apple Silicon except notarization and Sparkle,
+which need your Apple credentials — those steps say so. `plan/13` is the design; this is
+the procedure.
+
+**0. Prerequisites (once per machine)**
+
+| Need | Notes |
+|---|---|
+| Full Xcode, macOS 14+ | Command Line Tools alone are not enough (Swift/SwiftUI, `xcrun metal`, `notarytool`) |
+| CMake ≥ 3.28 | `python3 -m pip install --user cmake` puts it in `~/Library/Python/3.x/bin` — add that to `PATH` |
+| Ninja | vcpkg downloads one under `$VCPKG_ROOT/downloads/tools`; or `brew install ninja` |
+| vcpkg, bootstrapped | `export VCPKG_ROOT=…`. The baseline is pinned in `vcpkg.json`; do not float it |
+| Python 3.10+ | for `dmgbuild==1.6.7` (`pip install -r tools/mac/requirements.txt`). On 3.9, `dmgbuild==1.6.5` works for a local dry run only |
+| Apple Developer Program | needed for Developer ID signing and notarization; without it you can only build the ad-hoc bundle |
+
+**1. Build the app**
 
 ```sh
-# once: Sparkle's key pair, with generate_keys from the Sparkle 2.9.6 release
-# tarball (the private half stays in your login keychain), and a notarytool profile
-./Sparkle-2.9.6/bin/generate_keys                # prints the public key
-xcrun notarytool store-credentials mediaviewer-notary ...
-python3 -m pip install -r tools/mac/requirements.txt
+export VCPKG_ROOT=/path/to/vcpkg
+# libraries: the two install lines from "macOS (PR 16–18)" and "Video on Mac" above
 
-cmake -S . -B build-darwin -G Ninja ... -DMV_SPARKLE_PUBLIC_ED_KEY=<public key> \
-      -DMV_MAC_BUILD_NUMBER=<raise every release>
+cmake -S . -B build-darwin -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_TARGET_TRIPLET=arm64-osx \
+  -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_INSTALLED_DIR="$VCPKG_ROOT/installed" \
+  -DMV_VCPKG_DYNAMIC_PREFIX="$VCPKG_ROOT/installed/arm64-osx-dynamic"
 cmake --build build-darwin --target mediaviewer_app
+open build-darwin/MediaViewer.app
+```
+
+That is an ad-hoc-signed bundle: fine on this Mac, but **it will not launch once
+re-signed ad hoc with the hardened runtime** (dyld rejects the bundled dylibs with
+"different Team IDs"). Only a real Developer ID signature, which gives every binary in the
+bundle the same Team ID, satisfies that check. `python3 tools/mac/check_plists.py` and
+`python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
+
+**2. One-time signing and update setup**
+
+1. *Developer ID Application certificate.* In Xcode: Settings → Accounts → your team →
+   Manage Certificates → **+** → *Developer ID Application*. (By hand: create a CSR in
+   Keychain Access, upload it at developer.apple.com → Certificates choosing **Developer ID
+   Application** and the **G2 Sub-CA**, then double-click the downloaded `.cer`.) Keep the
+   private key on this Mac. Never commit `.cer`, `.p12` or CSR files (they are gitignored).
+2. *Apple's G2 intermediate.* If `security find-identity -v -p codesigning` shows "0 valid
+   identities" although the certificate is installed, the chain is missing:
+   `curl -LO https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer` and
+   `security import DeveloperIDG2CA.cer -k ~/Library/Keychains/login.keychain-db`.
+   The identity string it then prints — `Developer ID Application: <Team name> (<TEAMID>)` —
+   is what `--identity` takes.
+3. *Notarization profile.* Create an app-specific password at appleid.apple.com, then
+   `xcrun notarytool store-credentials mediaviewer-notary --apple-id <id> --team-id <TEAMID>`
+   (it prompts for the password, so it never lands in shell history).
+4. *Sparkle keys.* Download the Sparkle 2.9.6 release tarball, run
+   `./Sparkle-2.9.6/bin/generate_keys`, and keep the printed **public key**. The private key
+   lives in your login keychain: **back it up** (`generate_keys -x file`). Lose it and no
+   installed copy can ever accept another update.
+
+**3. Cut a release build**
+
+Reconfigure with the updater's key, and raise the build number every release — Sparkle
+compares `CFBundleVersion` (`MV_MAC_BUILD_NUMBER`, default = the project version), so a
+build that does not increase is never offered:
+
+```sh
+cmake -S . -B build-darwin -DMV_SPARKLE_PUBLIC_ED_KEY=<public key> -DMV_MAC_BUILD_NUMBER=<n>
+cmake --build build-darwin --target mediaviewer_app     # fetches Sparkle into the bundle
+
+# safe local rehearsal: signs and builds the .dmg/.zip, sends nothing to Apple
 python3 tools/mac/macpack.py release --app build-darwin/MediaViewer.app \
-    --identity "Developer ID Application: …" --notary-profile mediaviewer-notary \
+    --identity "Developer ID Application: … (TEAMID)" --skip-notarize --allow-no-updater \
+    --out-dir /tmp/mv-rehearsal
+
+# the real thing: notarizes and staples the app and the image, and signs the appcast
+cmake --build build-darwin --target mediaviewer_app     # release re-signs the app in place: rebuild first
+python3 tools/mac/macpack.py release --app build-darwin/MediaViewer.app \
+    --identity "Developer ID Application: … (TEAMID)" --notary-profile mediaviewer-notary \
     --sparkle-bin build-darwin/_deps/sparkle-2.9.6/bin \
     --download-url-prefix https://github.com/longtimeno-c/mediaviewer/releases/download/v<version>/
 ```
 
-`release` signs inside out with the hardened runtime, notarizes and staples the app, builds
-`MediaViewer-<version>.dmg` (drag to Applications, the GPL shown on mount), notarizes and
-staples that, and writes `updates/MediaViewer-<version>.zip` plus a signed
-`updates/appcast.xml`. The app only accepts a feed and an archive signed with the key it was
-built with. First install is the disk image; every later update is the zip, installed by
-Sparkle when the user clicks **Update ready — restart** or quits. Upload the `.dmg`, the
-zip, and `appcast.xml` to the GitHub release: the app's default feed is the latest
-release's `appcast.xml`.
+Output in `build/release` (or `--out-dir`): `MediaViewer-<version>.dmg` (drag to
+Applications, the GPL shown on mount; opening the app straight from the image offers to
+move it to Applications, relaunch it and eject the image), `updates/MediaViewer-<version>.zip` and
+`updates/appcast.xml`. `--phased-rollout-seconds` spreads an update over time.
+Notarization uploads the app and image to Apple and takes a few minutes; without a
+`--sparkle-bin` no appcast is written.
+
+**4. Verify the artefacts**
+
+```sh
+codesign --verify --deep --strict --verbose=2 build-darwin/MediaViewer.app
+spctl --assess --type execute --verbose=2 build-darwin/MediaViewer.app     # "Notarized Developer ID"
+xcrun stapler validate build/release/MediaViewer-<version>.dmg
+# the image has a licence page, so a headless mount must accept it:
+mkdir /tmp/mvdmg && yes | hdiutil attach -nobrowse -readonly -mountpoint /tmp/mvdmg build/release/*.dmg
+ls /tmp/mvdmg            # MediaViewer.app  Applications
+hdiutil detach /tmp/mvdmg
+```
+
+Copy the app out with `ditto --norsrc --noextattr`, not `cp`/`ditto` defaults; Finder
+metadata copied along invalidates the signature. Then open a photo and a clip from the
+copy, and check Finder's **Open With** and a Quick Look thumbnail.
+
+**5. Publish, and later update**
+
+1. Tag and create a GitHub release `v<version>` and mark it **latest**: the app's feed is
+   `…/releases/latest/download/appcast.xml`. Upload the `.dmg`, the `.zip` and
+   `appcast.xml`.
+2. To ship a new version: bump `project(… VERSION x.y.z)` in `CMakeLists.txt` (the marketing
+   version), raise `MV_MAC_BUILD_NUMBER`, rebuild `mediaviewer_app`, rerun step 3 with the
+   new `v<version>` in `--download-url-prefix`, and upload the new files to a new release.
+   Keep earlier zips in `updates/` so `generate_appcast` keeps them in the feed.
+3. Test the update path before announcing: install the *previous* release from its `.dmg`,
+   publish the new one, and confirm the old build offers **Update ready — restart**.
+   Installed copies accept only a feed and archive signed with the key baked in at build
+   time.
+4. First install is the disk image; every update after that is the zip, applied by Sparkle
+   on **Update ready — restart** or on quit.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
@@ -285,7 +378,7 @@ release's `appcast.xml`.
 | Key | |
 |---|---|
 | `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
-| `F3` | frame-time overlay (off at launch with chrome) |
+| `F3` | frame-time overlay — off at launch on Windows and macOS unless a soak is running |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
@@ -373,8 +466,10 @@ The filmstrip along
 the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. Clips get a
 thumbnail too — a poster frame from about 10 % into the clip, in that same cache — so a
 camera dump does not show blanks where the video is. With no
-folder open the canvas is a drop target reading *Drop a photo or a clip here*, not the
-present-lab sweep. The gallery and filmstrip accept the same drop, and you can drag a
+folder open the canvas shows a welcome card (drop target, open shortcut, formats, key legend) reading *Drop photos, videos or a folder here*, not the
+present-lab sweep. **Space** on that empty view starts a small runner game (an intro animation, then
+Space to jump, `Esc` to leave); it stops presenting the moment you leave it. The frame-time
+soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The gallery and filmstrip accept the same drop, and you can drag a
 thumbnail or the fitted image out to Explorer.
 
 The playback transport is a **third island**: a bottom-centre strip that appears with a

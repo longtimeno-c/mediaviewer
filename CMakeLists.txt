@@ -457,6 +457,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/settings.h
   src/shell/settings_store.cpp
   src/shell/settings_store.h
+  src/shell/welcome_screen.h
   src/shell/update_guard.cpp
   src/shell/update_guard.h
   src/shell/telemetry.cpp
@@ -694,6 +695,7 @@ if(MV_BUILD_TESTS)
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
     tests/test_minidump_scrub.cpp
+    tests/test_dino_game.cpp
     src/shell/minidump_scrub.cpp
     tests/test_tiff_ico.cpp
     src/shell/chrome_host.cpp

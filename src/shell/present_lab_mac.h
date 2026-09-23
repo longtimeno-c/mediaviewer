@@ -23,6 +23,7 @@
 #include "codec/anim.h"
 #include "image/gpu_image_mac.h"
 #include "player/media_source.h"
+#include "shell/dino_game.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -229,6 +230,12 @@ class present_lab_mac {
   double idle_start_cpu_seconds_ = -1.0;
   std::uint32_t seen_overlay_seq_ = 0;
   std::uint32_t seen_animation_seq_ = 0;
+  // Space on an empty window runs the runner (dino_game.h); a soak keeps the
+  // judder sweep, which the frame-time gate depends on.
+  bool sweep_mode_ = false;
+  dino_game game_;
+  std::uint32_t seen_game_exit_seq_ = 0;
+  double last_game_elapsed_ = 0.0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;

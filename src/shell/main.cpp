@@ -152,6 +152,7 @@ struct app_state {
   bool topmost = false;  // Ctrl+Shift+A
   bool popup_open = false;       // a `?` / go-to / find flyout is up
   bool settings_open = false;    // settings screen covering the canvas
+  bool game_on = false;          // Space on an empty window started the runner
   bool file_drag_armed = false;
   int file_drag_x = 0;
   int file_drag_y = 0;
@@ -984,6 +985,8 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.popup_open = app->popup_open;
   s.settings_open = app->settings_open;
   s.motion_playing = app->motion_playing;
+  if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
+  s.game = app->game_on;
   return s;
 }
 
@@ -1196,6 +1199,11 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::fullscreen:
       set_fullscreen(app, false);
+      return;
+    case back_target::game:
+      app->game_on = false;
+      ++app->input.game_exit_seq;
+      app->lab.publish(app->input);
       return;
     // Slideshow, pane and crop land with their slices (6d, PR 8, PR 9);
     // resolve_back cannot name them until their state exists.
@@ -1485,7 +1493,14 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
     case prev: folder_step(app, -1); return true;
-    case next: folder_step(app, 1); return true;
+    case next:
+      // Nothing open: Space starts the empty-window runner (dino_game.h).
+      if (folder_count(app) == 0 && app->mode == open_mode::none && !video_mode(app)) {
+        app->game_on = true;
+        return bump(app->input.toggle_animation_seq);
+      }
+      folder_step(app, 1);
+      return true;
     case first: folder_jump(app, -(1LL << 32)); return true;
     case last: folder_jump(app, 1LL << 32); return true;
     case skip_back: folder_jump(app, -10); return true;

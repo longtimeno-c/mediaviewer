@@ -36,6 +36,7 @@ struct view_state {
   bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 9
+  bool game = false;       // the empty-window runner is up (Space on an empty view)
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
@@ -54,6 +55,7 @@ enum class back_target : std::uint8_t {
   slideshow,
   fullscreen,
   canvas_focus,
+  game,  // leave the empty-window runner (dino_game.h)
 };
 
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;

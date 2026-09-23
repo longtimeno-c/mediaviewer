@@ -417,6 +417,7 @@ if(MV_BUILD_TESTS)
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
+    tests/test_dino_game.cpp
     tests/test_browse_index.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp

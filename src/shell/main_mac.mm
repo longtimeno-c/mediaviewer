@@ -743,6 +743,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // it" (plan/16: "starts from the canvas in browse (fullscreen if the
   // window is not; leaving puts it back)").
   BOOL _slideshowActive;
+  BOOL _gameOn;  // Space on an empty window started the runner (the lab owns its state)
   BOOL _slideshowPaused;
   BOOL _enteredFullscreenForSlideshow;
   double _slideshowIntervalSeconds;
@@ -1883,6 +1884,8 @@ enum MvMenuCmd : NSInteger {
   s.slideshow = _slideshowActive;
   s.fullscreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
   s.popup_open = _helpVisible;
+  if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
+  s.game = _gameOn;
   s.settings_open = _settingsVisible;
   return s;
 }
@@ -1936,8 +1939,14 @@ enum MvMenuCmd : NSInteger {
       [self navigatePrev];
       return YES;
     case next:
-      // Space with no folder open is the present lab's own sweep toggle.
-      if (_items.empty()) { ++_snap.toggle_animation_seq; [self pokeSnapshot]; return YES; }
+      // Space with no folder open starts the empty-window runner (a soak
+      // keeps the lab's sweep).
+      if (_items.empty()) {
+        _gameOn = YES;
+        ++_snap.toggle_animation_seq;
+        [self pokeSnapshot];
+        return YES;
+      }
       [self navigateNext];
       return YES;
     case first: [self navigateFirst]; return YES;
@@ -1951,6 +1960,11 @@ enum MvMenuCmd : NSInteger {
         case mv::shell::back_target::gallery: [self setGalleryVisible:NO]; break;
         case mv::shell::back_target::slideshow: [self leaveSlideshow]; break;
         case mv::shell::back_target::fullscreen: [self toggleFullscreen]; break;
+        case mv::shell::back_target::game:
+          _gameOn = NO;
+          ++_snap.game_exit_seq;
+          [self pokeSnapshot];
+          break;
         default: break;
       }
       return YES;
@@ -2305,6 +2319,9 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
+  // The F3 overlay is an instrument: off until asked, so a launch shows the
+  // welcome rather than a stats panel. A soak keeps it (Windows does the same).
+  if (options.soak_seconds <= 0.0) options.overlay_visible = false;
   if (options.soak_seconds > 0.0) {
     bool saw_static = false;
     for (int i = 1; i < argc; ++i) {

@@ -92,3 +92,8 @@ soak.json
 PR5UInotes.txt
 
 .claude/
+
+# Apple signing material
+*.cer
+*.certSigningRequest
+*.p12

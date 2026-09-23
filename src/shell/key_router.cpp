@@ -47,6 +47,9 @@ back_target resolve_back(const view_state& s) noexcept {
   if (s.gallery_open) return back_target::gallery;
   if (s.slideshow) return back_target::slideshow;
   if (s.fullscreen) return back_target::fullscreen;
+  // The runner sits on an empty canvas, under every overlay above; Esc leaves
+  // it before it moves focus, so one press is enough wherever focus is.
+  if (s.game) return back_target::game;
   if (s.focus != focus_kind::canvas) return back_target::canvas_focus;
   return back_target::none;
 }

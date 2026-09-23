@@ -43,6 +43,7 @@ struct input_snapshot {
   // can never be double-counted.
   std::uint32_t toggle_overlay_seq = 0;   // F / F3
   std::uint32_t toggle_animation_seq = 0; // Space
+  std::uint32_t game_exit_seq = 0;        // Esc with nothing to close: leave the empty-window runner
   std::uint32_t reset_stats_seq = 0;      // R
   std::uint32_t fit_seq = 0;              // 0
   std::uint32_t one_to_one_seq = 0;       // 1
