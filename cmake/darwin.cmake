@@ -354,6 +354,8 @@ set(MV_MAC_HOST_SOURCES
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
+  src/shell/install_from_dmg_mac.mm
+  src/shell/install_from_dmg_mac.h
   src/shell/media_kind.h
   src/shell/input_state.h
   src/shell/folder_model_mac.cpp
@@ -362,6 +364,7 @@ set(MV_MAC_HOST_SOURCES
 set_source_files_properties(
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
+  src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 function(mv_mac_host target)
@@ -381,6 +384,7 @@ function(mv_mac_host target)
     "-framework Metal"
     "-framework QuartzCore"
     "-framework CoreServices"
+    "-framework DiskArbitration"
     "-framework UniformTypeIdentifiers"
     "-framework SwiftUI"
     "-framework Combine")
