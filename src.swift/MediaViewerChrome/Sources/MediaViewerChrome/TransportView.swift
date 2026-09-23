@@ -4,6 +4,27 @@
 // model and the canvas are native; this posts commands over the bridge.
 import SwiftUI
 
+private struct VolumeSliderRow: View {
+  @ObservedObject private var store = VideoStore.shared
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "speaker.fill").font(.caption)
+      Slider(
+        value: Binding(
+          get: { Double(store.draggingVolume ?? store.volume) },
+          set: { store.setVolume(Float($0)) }),
+        in: 0...1,
+        onEditingChanged: { editing in if !editing { store.endVolumeDrag() } }
+      )
+      .frame(width: 120)
+      Image(systemName: "speaker.wave.3.fill").font(.caption)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 4)
+  }
+}
+
 struct TransportView: View {
   @ObservedObject private var store = VideoStore.shared
 
@@ -47,6 +68,18 @@ struct TransportView: View {
       Button(action: { store.toggleMute() }) {
         Image(systemName: store.muted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 18)
       }
+
+      // Windows parity (IslandHost.Video.cs "More" panel): frame step and volume
+      // are not one-tap-frequent enough to earn main-bar space, same call Windows made.
+      Menu {
+        Button(action: { store.step(-1) }) { Text("Previous frame") }
+        Button(action: { store.step(1) }) { Text("Next frame") }
+        Divider()
+        VolumeSliderRow()
+      } label: {
+        Image(systemName: "ellipsis.circle").frame(width: 18)
+      }
+      .menuStyle(.borderlessButton).fixedSize()
     }
     .buttonStyle(.plain)
     .padding(.horizontal, 14)

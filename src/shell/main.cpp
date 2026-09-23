@@ -9,6 +9,7 @@
 // Under the D1 amendment this window is the app, not a scaffold. PR 3 hosts
 // WinUI 3 chrome inside it as XAML content islands.
 
+#include <algorithm>
 #include <windows.h>
 #include <objbase.h>
 #include <shellapi.h>
@@ -120,6 +121,7 @@ struct app_state {
   // edge decides.
   bool skim_shuttled = false;
   int  rate_index = 2;  // kRateLadder: 1.00x
+  float volume = 1.0f;  // 0..1, Up / Down on a clip
   mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
@@ -738,7 +740,11 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->video_on = on;
       // A freshly opened media_source starts at 1.00x, so the ladder and the
       // dropdown have to start there too rather than inheriting the last clip.
-      if (on) apply_rate(app, kRateDefaultIndex);
+      if (on) {
+        apply_rate(app, kRateDefaultIndex);
+        // Volume, unlike the rate, is the listener's and carries across clips.
+        (void)mv_video_set_volume(app->session, app->volume);
+      }
       apply_view_state(app);
       return;
     }
@@ -1501,6 +1507,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         // keyboard user gets them (and a clip's transport) back.
         if (command == pan_down && app->fullscreen) {
           set_fullscreen_reveal(app, true);
+          return true;
+        }
+        // A fitted clip has nothing to pan: ↑ ↓ are its volume.
+        if ((command == pan_up || command == pan_down) && video_mode(app)) {
+          app->volume = std::clamp(app->volume + (command == pan_up ? 0.1f : -0.1f), 0.0f, 1.0f);
+          (void)mv_video_set_volume(app->session, app->volume);
           return true;
         }
         return false;

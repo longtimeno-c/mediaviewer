@@ -267,6 +267,7 @@ void present_lab_mac::update_video_status() noexcept {
   vs_playing_.store(media_->state() == player::play_state::playing, std::memory_order_relaxed);
   vs_muted_.store(video_muted_, std::memory_order_relaxed);
   vs_rate_x100_.store(kRateX100[std::clamp(speed_rung_, 0, 5)], std::memory_order_relaxed);
+  vs_volume_.store(video_volume_, std::memory_order_relaxed);
   vs_active_.store(true, std::memory_order_release);
 }
 
@@ -324,6 +325,8 @@ bool present_lab_mac::apply_video_input(const input_snapshot& s) noexcept {
     seen_video_skip_ = s.video_skip_ms;
     seen_video_speed_ = s.video_speed_steps;
     seen_video_mute_ = s.video_mute_seq;
+    seen_video_volume_ = s.video_volume_steps;
+    seen_video_volume_set_ = s.video_volume_set_seq;
     seen_video_seek_ = s.video_seek_seq;
     return false;
   }
@@ -373,6 +376,17 @@ bool present_lab_mac::apply_video_input(const input_snapshot& s) noexcept {
       media_->set_muted(video_muted_);
     }
     seen_video_mute_ = s.video_mute_seq;
+  }
+  if (s.video_volume_steps != seen_video_volume_) {
+    const int d = s.video_volume_steps - seen_video_volume_;
+    seen_video_volume_ = s.video_volume_steps;
+    video_volume_ = std::clamp(video_volume_ + 0.1f * static_cast<float>(d), 0.0f, 1.0f);
+    media_->set_volume(video_volume_);
+  }
+  if (s.video_volume_set_seq != seen_video_volume_set_) {
+    seen_video_volume_set_ = s.video_volume_set_seq;
+    video_volume_ = std::clamp(s.video_volume_set_value, 0.0f, 1.0f);
+    media_->set_volume(video_volume_);
   }
   return changed;
 }
@@ -617,6 +631,7 @@ void present_lab_mac::render_thread_main() noexcept {
           delete pm;
           speed_rung_ = 2;
           video_muted_ = false;
+          media_->set_volume(video_volume_);
           media_->play();
           redraw = true;
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;

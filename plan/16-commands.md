@@ -194,6 +194,7 @@ next one slides into its place (the previous one at the end).
 | `Shift+Q` `Shift+E` | **Playback speed** one rung down / up the ladder 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a *view* of this: native owns the rate, pushes it to the island, and the dropdown posts back — one router, never two owners |
 | `J` `K` `L` | −10 s / pause / +10 s |
 | `,` `.` | Frame step (already in [05-video-pipeline.md](05-video-pipeline.md)) |
+| `↑` `↓` | Volume +/− 10 % on a clip (fitted view; when zoomed they pan). Volume carries across clips |
 | `Shift+M` | Mute (`M` is not mute — reserved so a FastStone-layout preset can put Move on `M` in v1.1) |
 | `[` `]` | In / out markers when trim is armed (PR 13). In browse they rotate; trim mode takes them |
 | `Ctrl+←` `Ctrl+→` | Previous / next keyframe |

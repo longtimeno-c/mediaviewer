@@ -255,7 +255,7 @@ static void MvPublishVideoInput() {
   }
 }
 extern "C" bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_ms, bool* playing,
-                                       int32_t* rate_x100, bool* muted) {
+                                       int32_t* rate_x100, bool* muted, float* volume) {
   if (!g_chrome_lab) return false;
   const auto s = g_chrome_lab->video_status_snapshot();
   if (!s.active) return false;
@@ -264,6 +264,7 @@ extern "C" bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_m
   if (playing) *playing = s.playing;
   if (rate_x100) *rate_x100 = s.rate_x100;
   if (muted) *muted = s.muted;
+  if (volume) *volume = s.volume;
   return true;
 }
 extern "C" void mv_chrome_video_toggle(void) {
@@ -291,6 +292,17 @@ extern "C" void mv_chrome_video_speed_step(int32_t direction) {
 extern "C" void mv_chrome_video_toggle_mute(void) {
   if (!g_chrome_snap) return;
   ++g_chrome_snap->video_mute_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_set_volume(float volume) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->video_volume_set_value = volume;
+  ++g_chrome_snap->video_volume_set_seq;
+  MvPublishVideoInput();
+}
+extern "C" void mv_chrome_video_step(int32_t frames) {
+  if (!g_chrome_snap) return;
+  g_chrome_snap->anim_steps += frames;
   MvPublishVideoInput();
 }
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
@@ -538,6 +550,8 @@ extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
     else if (lc == 'q') self.snap->video_skip_ms -= 2000;                 // -2 s
     else if (lc == 'e') self.snap->video_skip_ms += 2000;                 // +2 s
     else if (lc == 'm' && shift) ++self.snap->video_mute_seq;             // mute
+    else if (c == NSUpArrowFunctionKey) self.snap->video_volume_steps += 1;    // volume up
+    else if (c == NSDownArrowFunctionKey) self.snap->video_volume_steps -= 1;  // volume down
     else handled = false;
     if (handled) {
       ++self.snap->activity_seq;

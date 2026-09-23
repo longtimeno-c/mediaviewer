@@ -109,7 +109,7 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 // Fills the out-params and returns true while a clip is on screen; false (out
 // params untouched) otherwise. `rate_x100` is the playback rate times 100.
 bool mv_chrome_video_status(int64_t* position_ms, int64_t* duration_ms, bool* playing,
-                            int32_t* rate_x100, bool* muted);
+                            int32_t* rate_x100, bool* muted, float* volume);
 void mv_chrome_video_toggle(void);
 // Relative skip, exact.
 void mv_chrome_video_skip(int64_t delta_ms);
@@ -119,6 +119,10 @@ void mv_chrome_video_seek(int64_t position_ms, bool exact);
 // One rung down (-1) / up (+1) the 0.25 / 0.5 / 1 / 1.5 / 2 / 4 ladder.
 void mv_chrome_video_speed_step(int32_t direction);
 void mv_chrome_video_toggle_mute(void);
+// Absolute volume 0..1, from the transport strip's "More" panel slider.
+void mv_chrome_video_set_volume(float volume);
+// Frame step, paused only: -1 back, +1 forward (plan/16 "More" panel buttons).
+void mv_chrome_video_step(int32_t frames);
 
 #ifdef __cplusplus
 }

@@ -19,6 +19,11 @@ final class VideoStore: ObservableObject {
   @Published private(set) var positionMs: Int64 = 0
   @Published private(set) var durationMs: Int64 = 0
   @Published private(set) var rateX100: Int32 = 100
+  @Published private(set) var volume: Float = 1.0
+  /// While the slider is held, show (and apply) this rather than the polled value --
+  /// the same "local wins over polled" shape scrubMs uses, so a drag does not jitter
+  /// against the render thread's own echo of what it just set.
+  @Published var draggingVolume: Float?
   /// While the thumb is held, the strip shows (and seeks to) this, not the clip.
   @Published var scrubMs: Int64?
 
@@ -33,7 +38,8 @@ final class VideoStore: ObservableObject {
   private func poll() {
     var pos: Int64 = 0, dur: Int64 = 0, rate: Int32 = 100
     var isPlaying = false, isMuted = false
-    let on = mv_chrome_video_status(&pos, &dur, &isPlaying, &rate, &isMuted)
+    var vol: Float = 1.0
+    let on = mv_chrome_video_status(&pos, &dur, &isPlaying, &rate, &isMuted, &vol)
     if on != active { active = on }
     guard on else { return }
     if scrubMs == nil, pos != positionMs { positionMs = pos }
@@ -41,11 +47,21 @@ final class VideoStore: ObservableObject {
     if isPlaying != playing { playing = isPlaying }
     if isMuted != muted { muted = isMuted }
     if rate != rateX100 { rateX100 = rate }
+    if draggingVolume == nil, vol != volume { volume = vol }
   }
 
   func toggle() { mv_chrome_video_toggle() }
   func skip(_ ms: Int64) { mv_chrome_video_skip(ms) }
   func toggleMute() { mv_chrome_video_toggle_mute() }
+
+  func setVolume(_ v: Float) {
+    draggingVolume = v
+    volume = v
+    mv_chrome_video_set_volume(v)
+  }
+  func endVolumeDrag() { draggingVolume = nil }
+
+  func step(_ frames: Int32) { mv_chrome_video_step(frames) }
 
   /// Drag: nearest keyframe, instant. Release: decode forward to the frame.
   func scrub(to ms: Int64) {

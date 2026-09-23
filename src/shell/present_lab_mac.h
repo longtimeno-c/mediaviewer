@@ -70,6 +70,7 @@ class present_lab_mac {
     std::int64_t position_ms = 0;
     std::int64_t duration_ms = 0;
     int rate_x100 = 100;
+    float volume = 1.0f;
   };
   [[nodiscard]] video_status video_status_snapshot() const noexcept {
     video_status s;
@@ -79,6 +80,7 @@ class present_lab_mac {
     s.position_ms = vs_pos_ms_.load(std::memory_order_relaxed);
     s.duration_ms = vs_dur_ms_.load(std::memory_order_relaxed);
     s.rate_x100 = vs_rate_x100_.load(std::memory_order_relaxed);
+    s.volume = vs_volume_.load(std::memory_order_relaxed);
     return s;
   }
 
@@ -146,6 +148,9 @@ class present_lab_mac {
   std::int32_t seen_video_speed_ = 0;
   std::uint32_t seen_video_mute_ = 0;
   bool video_muted_ = false;
+  std::int32_t seen_video_volume_ = 0;
+  std::uint32_t seen_video_volume_set_ = 0;
+  float video_volume_ = 1.0f;  // survives from clip to clip
   std::uint32_t seen_video_seek_ = 0;
   std::atomic<bool> vs_active_{false};
   std::atomic<bool> vs_playing_{false};
@@ -153,6 +158,7 @@ class present_lab_mac {
   std::atomic<std::int64_t> vs_pos_ms_{0};
   std::atomic<std::int64_t> vs_dur_ms_{0};
   std::atomic<int> vs_rate_x100_{100};
+  std::atomic<float> vs_volume_{1.0f};
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;
