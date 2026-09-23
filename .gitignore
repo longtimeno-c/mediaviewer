@@ -8,6 +8,13 @@ dist/
 out/
 [Bb]in/
 [Oo]bj/
+.DS_Store
+
+# SwiftPM's own build output (src.swift/MediaViewerChrome), separate from
+# cmake/darwin.cmake's build-*/ tree above -- `swift build` writes here when
+# run directly against the package rather than through cmake's own
+# --build-path (build-darwin/swift-chrome, already covered by build-*/).
+.build/
 
 # vcpkg manifest-mode install tree
 vcpkg_installed/

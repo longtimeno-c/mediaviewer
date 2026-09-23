@@ -13,7 +13,9 @@
 
 #include "core/status.h"
 #include "gfx/colour_desc.h"
+#if !defined(MV_DARWIN)
 #include "gfx/device.h"
+#endif
 
 namespace mv::player {
 
@@ -27,9 +29,19 @@ using time_ns = std::int64_t;
 // array slice) pair, and holding one removes it from the pool until the
 // decoder stalls. We CopySubresourceRegion out and release the AVFrame at once.
 struct video_frame {
+#if defined(MV_DARWIN)
+  // Metal host (PR 19, D9). Two independent textures we own -- Metal has no
+  // planar NV12 texture to make views of -- each an id<MTLTexture> held as a
+  // __bridge_retained void* by the ring (frame_ring_mac / hwdecode_mac.mm).
+  // The render thread borrows them until release().
+  void*                                  texture = nullptr;  // unused on Metal
+  void*                                  luma    = nullptr;  // R8Unorm  / R16Unorm
+  void*                                  chroma  = nullptr;  // RG8Unorm / RG16Unorm
+#else
   gfx::com_ptr<ID3D11Texture2D>          texture;  // ours, from the ring
   gfx::com_ptr<ID3D11ShaderResourceView> luma;     // R8_UNORM  / R16_UNORM
   gfx::com_ptr<ID3D11ShaderResourceView> chroma;   // R8G8_UNORM / R16G16_UNORM
+#endif
   time_ns          pts_ns     = 0;   // stream-relative: start_time already subtracted
   std::uint32_t    width      = 0;
   std::uint32_t    height     = 0;
@@ -47,6 +59,7 @@ enum class decoder_kind : std::uint8_t {
   none = 0,
   d3d11va,   // hardware, on OUR ID3D11Device
   software,  // avcodec CPU path
+  videotoolbox,  // hardware, Apple VideoToolbox (Metal host)
 };
 
 struct video_stream_info {

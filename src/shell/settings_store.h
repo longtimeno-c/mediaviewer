@@ -44,6 +44,34 @@
 
 namespace mv::shell {
 
+#if defined(__APPLE__)
+// Apple's libc++ has no std::atomic<std::shared_ptr<T>> (P0718). Same subset of
+// the API the store uses, over the shared_ptr atomic free functions.
+template <class T>
+class atomic_shared_ptr {
+ public:
+  std::shared_ptr<T> load() const { return std::atomic_load(&p_); }
+  void store(std::shared_ptr<T> v) { std::atomic_store(&p_, std::move(v)); }
+  std::shared_ptr<T> exchange(std::shared_ptr<T> v) {
+    return std::atomic_exchange(&p_, std::move(v));
+  }
+  bool compare_exchange_strong(std::shared_ptr<T>& expected, std::shared_ptr<T> desired) {
+    return std::atomic_compare_exchange_strong(&p_, &expected, std::move(desired));
+  }
+  bool compare_exchange_weak(std::shared_ptr<T>& expected, std::shared_ptr<T> desired) {
+    return std::atomic_compare_exchange_weak(&p_, &expected, std::move(desired));
+  }
+
+ private:
+  std::shared_ptr<T> p_;
+};
+template <class T>
+using atomic_sp = atomic_shared_ptr<T>;
+#else
+template <class T>
+using atomic_sp = std::atomic<std::shared_ptr<T>>;
+#endif
+
 // Ordered sections of ordered key = value lines. Section and key names match
 // ASCII-case-insensitively, as the Win32 profile API always did. Values are
 // UTF-8. Unknown sections and keys survive a load/persist round trip.
@@ -137,8 +165,8 @@ class settings_store {
   void persist_pending() noexcept;  // worker body
 
   std::wstring path_;
-  std::atomic<std::shared_ptr<const version>> current_;
-  std::atomic<std::shared_ptr<const version>> pending_;
+  atomic_sp<const version> current_;
+  atomic_sp<const version> pending_;
   std::atomic<bool> job_queued_{false};
   std::atomic<bool> running_{false};
   std::atomic<std::uint64_t> settled_seq_{0};      // newest seq the worker attempted

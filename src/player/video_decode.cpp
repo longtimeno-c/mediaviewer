@@ -18,11 +18,12 @@ namespace {
 AVPixelFormat pick_hw_format(AVCodecContext* ctx, const AVPixelFormat* formats) {
   (void)ctx;
   for (const AVPixelFormat* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
-    if (*p == AV_PIX_FMT_D3D11) return *p;
+    if (*p == kHwPixFmt) return *p;
   }
   // plan/05: "Fall back to software decode (with a visible indicator in the
   // debug overlay) when the GPU lacks a profile. Never silently."
-  MV_LOG_WARN("player: no D3D11VA surface format offered; falling back to software decode");
+  MV_LOG_WARN("player: no %s surface format offered; falling back to software decode",
+              kHwDecoderName);
   return formats[0];
 }
 
@@ -112,7 +113,7 @@ struct sw_convert {
     for (int i = 0;; ++i) {
       const AVCodecHWConfig* config = avcodec_get_hw_config(candidate, i);
       if (!config) break;
-      if (config->device_type == AV_HWDEVICE_TYPE_D3D11VA &&
+      if (config->device_type == kHwDeviceType &&
           (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
         return candidate;
       }
@@ -125,7 +126,7 @@ struct sw_convert {
 // not be placed and should be dropped.
 [[nodiscard]] bool publish_frame(video_pipeline& pipe, AVFrame* frame, sw_convert& sw,
                                  std::uint32_t generation, video_frame* slot) noexcept {
-  const bool hardware = frame->format == AV_PIX_FMT_D3D11;
+  const bool hardware = frame->format == kHwPixFmt;
 
   std::uint32_t texture_w = 0;
   std::uint32_t texture_h = 0;
@@ -171,9 +172,13 @@ struct sw_convert {
   }
 
   if (hardware) {
+#if defined(MV_DARWIN)
+    if (copy_hw_surface(pipe.hw_device.get(), frame, slot) != status::ok) return false;
+#else
     if (copy_hw_surface(pipe.hw_device.get(), frame, slot->texture.Get()) != status::ok) {
       return false;
     }
+#endif
   } else {
     const int pitch = sw.width * (ten_bit ? 2 : 1);
     if (create_texture_from_planes(pipe.device, texture_w, texture_h, ten_bit, sw.luma.data(),
@@ -184,7 +189,7 @@ struct sw_convert {
 
   // What the decoder ACTUALLY produced, not what we asked for.
   pipe.observed_decoder.store(
-      static_cast<std::uint8_t>(hardware ? decoder_kind::d3d11va : decoder_kind::software),
+      static_cast<std::uint8_t>(hardware ? kHwDecoderKind : decoder_kind::software),
       std::memory_order_release);
 
   slot->pts_ns = pts_to_ns(frame->best_effort_timestamp, pipe.time_base, pipe.start_time_ns,
@@ -228,7 +233,7 @@ expected open_video_codec(video_pipeline& pipe, AVStream* stream) {
     // late render thread can never starve the DPB.
     pipe.codec->extra_hw_frames = static_cast<int>(frame_ring_slots) + 4;
   } else {
-    MV_LOG_WARN("player: D3D11VA unavailable (%s); software decode",
+    MV_LOG_WARN("player: %s unavailable (%s); software decode", kHwDecoderName,
                 status_name(hw.error()));
   }
 
@@ -243,13 +248,13 @@ expected open_video_codec(video_pipeline& pipe, AVStream* stream) {
   // What was ACTUALLY opened. hw_device_ctx surviving avcodec_open2 is the
   // honest test: asking for hardware and getting it are different things.
   pipe.info.decoder =
-      pipe.codec->hw_device_ctx ? decoder_kind::d3d11va : decoder_kind::software;
+      pipe.codec->hw_device_ctx ? kHwDecoderKind : decoder_kind::software;
 
   const char* name = codec->name ? codec->name : "?";
   std::snprintf(pipe.info.codec_name, sizeof(pipe.info.codec_name), "%s", name);
 
   MV_LOG_INFO("player: %s decode via %s", name,
-              pipe.info.decoder == decoder_kind::d3d11va ? "D3D11VA" : "software");
+              pipe.info.decoder == kHwDecoderKind ? kHwDecoderName : "software");
   return {};
 }
 

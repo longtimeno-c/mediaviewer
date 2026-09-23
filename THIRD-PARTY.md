@@ -44,6 +44,18 @@ added by the PR that adds the dependency.
 | [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (plan/13 Part 1). |
 | [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | 2.7.0 | MIT (Bouncy Castle) | Managed assembly | Ed25519 verification of the signed update manifest (PR 8). The signature check runs before anything from the channel is trusted. |
 
+## macOS (MediaViewer.app, PR 20)
+
+The Mac app decodes with the same libraries as Windows. FFmpeg, libheif, libde265 and
+LibRaw ship as separate dylibs in `MediaViewer.app/Contents/Frameworks` and are never
+linked statically. `tools/mac/macpack.py` fails the bundle if any reference points outside it.
+This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions:
+
+| Component | Version | Licence | Linkage | Notes |
+|---|---|---|---|---|
+| [Sparkle](https://sparkle-project.org) | 2.9.6 | MIT | Dynamic framework (`Contents/Frameworks/Sparkle.framework`) | Updates (plan/13). Pinned by SHA-256 in `cmake/darwin-app.cmake`; linked only when the build has an EdDSA public key. |
+| [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
+
 ## Planned, with the PR that introduces each
 
 Nothing below is linked yet. The table exists so the licence position of a dependency

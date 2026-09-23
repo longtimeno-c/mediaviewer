@@ -857,6 +857,100 @@ ask-only-with-an-endpoint check exist, but no endpoint exists yet, so there is n
 to ask. It lands with the upload path in PR 8 and must not stack with other first-run
 prompts. Crashes inside the OS-codec probe (before the bundled dispatch) are not annotated.
 
+## 2026-09-17 — Owner reopens the PR 16 sequencing exception: PRs 17–20 may proceed alongside Windows v1
+
+**Why.** The 2026-09-13 exception (see above, and `plan/10-roadmap.md`, `plan/15-platforms.md`)
+allowed only PR 16 (the Metal present lab, no SwiftUI) to run in parallel with Windows PRs 1–8,
+because Mac chrome and Windows chrome are "two present labs, two chromes, two ship pipelines" if
+built in lockstep, and D9's product call — Mac is a host, not a UI port — was not meant to be
+reopened by convenience. The owner is now working from a Mac day to day and asked, directly, for
+PR 17 (Metal decode + pan/zoom) and PR 18 (SwiftUI chrome) to proceed now rather than waiting on
+Windows PR 8 (package & ship), which has not shipped yet as of this entry. The two efforts touch
+disjoint files (`*_mac.*`, `src/shell` Mac targets, a new Swift target, vs. Windows' `src.managed`
+and Inno/Velopack packaging) and a separate agent's Windows PR 8 branch (`pr8-package-and-ship`)
+is unaffected by Mac-only additions.
+
+**Call.** PRs 17–20 are authorized to proceed in parallel with Windows v1, same as PR 16. This is
+a scope decision, not a technical one — D9 itself (Mac is a host of the shared core, not a
+SwiftUI skin on the Windows present path; native chrome per OS; one present path per OS) is
+**unchanged and still binding**. The internal PR sequence inside Milestone F is also unchanged:
+PR 17 before PR 18 before PR 19 before PR 20, each verify line holding before the next starts, the
+same discipline `10-roadmap.md` applies to PRs 1–8. Windows PRs 9–15 continue to wait for nothing
+Mac-side; the hostable-core rules (`plan/15-platforms.md`) keep applying to any further Windows
+native-code changes regardless of what Mac is doing.
+
+**Residual risk, taken deliberately.** Milestone F was sequenced after PR 8 so a present-loop
+regression on one OS would not hide behind schedule pressure on the other. Running both now means
+that discipline has to hold by attention, not by calendar — PR 1's Windows present-loop verify
+still gates every Windows PR, and PR 16's Mac present-loop verify gates every Mac PR, independently.
+
+**Build-verification note.** The environment this decision was implemented in has no Xcode (only
+Command Line Tools — no `metal` shader compiler), no `cmake`, and no `vcpkg` install, so PR 17/18
+code landed here could not be compiled, run, or soak-tested on-device. Treat it as reviewed, not
+verified, until it is built on a real Apple Silicon Mac with the full toolchain from
+`plan/09-build-and-test.md` / `plan/15-platforms.md`.
+
+## 2026-09-17 — PR 4/6/7 parity gap folded into PR 17/18, not new PR numbers
+
+**Why.** An audit found that `plan/15-platforms.md`'s Windows-to-Mac mapping table left three
+already-shipped Windows PRs with no PR 16–20 slot at all: PR 4 (folder, filmstrip, gallery,
+thumbnails, dir watch), PR 6 (keyboard-complete browse, slideshow, Trash, drag-drop, argv), and
+PR 7 (HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzzing, Crashpad) — the table said "after PR 18" or
+"same decoders" with no PR number. As scoped, PR 16–20 would have shipped a Mac app that could
+open one JPEG/PNG/BMP or one video file and pan/zoom/play it, with chrome — not Windows parity.
+
+**Call.** Given the choice between (a) inserting new numbered PR slices, mirroring how PR 5 was
+split into 5a/5b/5c when it outgrew one verify line, (b) folding the missing scope into the
+existing PR 17/18/20 slots, or (c) deliberately deferring PR 4/6/7 parity to a post-F Mac update
+stream, the owner chose **(b)**: fold in. PR 7's format/fuzzing/crashpad scope moved into PR 17
+(same reasoning Windows used — crash reporting lands with the format long tail, because that is
+when hostile real-world files first meet decoders). PR 4 and PR 6's folder/filmstrip/gallery/
+keyboard-complete-browse scope moved into PR 18 (they are chrome-hosted, so they need PR 18's
+SwiftUI shell to exist first, same as Windows needed PR 3's chrome before PR 4/6 could land).
+PR 19 and PR 20 were already at Windows parity for their slice (PR 5abc and PR 8/15
+respectively) and did not change.
+
+**Consequence, taken deliberately.** PR 17 and PR 18 are each now wider than their Windows
+twins (PR 2 alone, PR 3 alone) and carry a correspondingly longer verify line. This is the exact
+trade-off PR 5's split was designed to avoid on Windows; the owner chose it anyway for Mac,
+preferring fewer PR numbers over a clean one-slice-one-verify-line split. If either PR 17 or
+PR 18 turns out too large to land and verify as one slice in practice, splitting them the way PR
+5 was split remains available — this entry is not a bar against that, only a record that it
+wasn't the first choice.
+
+## 2026-09-19 — Metal `maximumDrawableCount` is 2, not 1
+
+**Not a D1–D9 reversal.** plan/15 and the PR 16 spec say "max drawable 1", carried over from
+D3D11's `SetMaximumFrameLatency(1)`. On real hardware `CAMetalLayer` throws
+`CAMetalLayerInvalidMaximumDrawableCount` for anything outside [2, 3], so 1 cannot be expressed.
+2 is the lowest-latency setting Metal allows and is what ships (`gfx/metal_layer.mm`,
+`MvMetalView`). The intent — one frame of latency, wait on the display link before encoding —
+is unchanged, and the 60 s gate passes with it (3600 frames, 0 dropped, p99 16.9 ms, 2026-09-19).
+
+## 2026-09-20 — PR 19 host choices: VideoToolbox through a texture cache and a copy, Core Audio position anchoring
+
+**Not a D1–D9 reversal** — D2 and D9 hold (FFmpeg, our own presentation ring, no `AVPlayer`, no
+Store codec). Choices the plan left open for the Metal host:
+
+- **"On *your* `MTLDevice`" means the texture cache and the blit, not the decoder.** VideoToolbox
+  owns its decode sessions and takes no device; the device is used for the `CVMetalTextureCache`
+  that wraps the decoder's IOSurface-backed pixel buffers, and the blit that copies them *out* of
+  the decoder pool into the ring runs on a queue of that device. The blit is waited for on the
+  decode thread (~1 ms for 4K): that thread is neither UI nor render, and it makes the slot
+  complete before it is published and the pixel buffer returned, so there is no ordering hazard to
+  reason about (Windows needs the immediate-context ordering argument in plan/12 2026-09-07; Metal
+  does not).
+- **A slot is two textures (R + RG), not one planar texture with two views** — Metal has no
+  planar NV12/P010 texture to view. Same R8/RG8, R16/RG16 pair plan/05 specifies, shared storage.
+- **A presented frame is held two more presents before release** (Darwin ring is 6 slots, not 4):
+  the GPU may still sample it and the decode thread reuses a released slot at once.
+- **Played position is anchored to each render callback's host time with a *signed* offset.**
+  `mHostTime` is always in the future by the output latency, so an "only if now > host" extrapolation
+  never engages and the clock steps by one callback (~11 ms); a 60 Hz presenter sampling that
+  staircase dropped a third of a 30 fps clip as "late". Found with `tools/playprobe`.
+- **MPEG-2 has no VideoToolbox decode on this hardware**, so it runs in software and the F3
+  overlay says `SOFTWARE`. D5 lists MPEG-2 as supported; it is, without hardware.
+
 ## 2026-09-20 — PR 7's three human checks, turned into gates where they could be
 
 The PR 7 verify line has three clauses that read as "a person looks at it": an iPhone
@@ -1042,6 +1136,57 @@ an in-app accept modal.
 
 Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
 
+## 2026-09-23 — PR 20 starts before PR 19's verify fully holds; calls made starting it
+
+**Sequencing, the owner's call.** The 2026-09-17 entry keeps F's own order: each verify
+line holds before the next PR starts. PR 19's verify includes "an iPhone HLG clip looks
+correct", and only a synthetic HLG-tagged clip has been checked. The owner chose to start
+PR 20 anyway, stacked on the PR 19 branch. PR 19's HLG check is **still owed** and still
+gates calling PR 19 done. PR 20 does not touch the video path.
+
+**Calls:**
+
+| | |
+|---|---|
+| **Two executables** | `mediaviewer_lab` stays the bare instrument `frametime` drives. `MediaViewer` (inside MediaViewer.app) is the same sources with `MV_APP_BUNDLE`, plus Sparkle when a key is configured. |
+| **Bundle id** | `io.github.longtimeno-c.mediaviewer` (CMake cache, `MV_MAC_BUNDLE_ID`). Changing it after the first ship orphans preferences and breaks Sparkle's same-app check. Decide before shipping. |
+| **Registered types** | The D5 **still** set only, `LSHandlerRank` Alternate, role Viewer. Video is not registered, matching Windows PR 15's still-only `ProgId`s. `tools/mac/check_plists.py` ties the list to `codec/format.h`. |
+| **Default viewer** | Asked once, as a sheet, after the first still reaches the screen. The type list is read back from the app's own Info.plist. macOS confirms each type itself. |
+| **Quick Look** | A thumbnail `.appex`, sandboxed, running `image::make_thumb_jpeg`, the same pixels as the filmstrip. No cache of its own. |
+| **Sparkle** | 2.9.6, SHA-256 pinned, MIT. XPC services removed (the app is not sandboxed). Signed feed and verified archive required. Automatic checks on, with no Sparkle permission prompt (the app menu turns them off). No system profile. Updates are a zip of the stapled app, never the disk image. |
+| **Disk image** | dmgbuild 1.6.7, APFS + LZFSE, GPL as the image's licence agreement via `hdiutil udifrez`. |
+
+**Owed, not done in this change:**
+
+- **Nothing here has been built or run on a Mac.** It was written in a Linux container with
+  no Apple SDK. The plist policy and packaging helpers run on Linux (not yet wired into CI); the Objective-C++, the
+  CMake, and every step of `macpack.py` that runs a tool do not.
+- **Quick Look precedence.** Whether Finder uses our extension or its own generator for
+  types macOS already thumbnails (JPEG, HEIC, most RAW) is unmeasured. The corrupted-HEIC
+  verify must check which process actually decoded it.
+- **State across an update restart** is the folder and the selected file only. Zoom/pan
+  and clip position (plan/13 "Preserve state") are not carried yet.
+- **Rollback** after two failed starts has no Mac mechanism (open since the 2026-09-23 entry above).
+- **Crashpad on Mac is not in the tree.** The 2026-09-17 entry folded PR 7's Crashpad scope
+  into PR 17, and `plan/10` says PR 20 "does not add it", but `cmake/darwin.cmake` links
+  no Crashpad and no Mac scrub exists. Either PR 17 still owes it or PR 20 takes it. Owner's call.
+
+## 2026-09-23 — Mac host routes keys through the shared command table; Windows-style bar and Settings
+
+**Decision.** The Mac host translates `NSEvent` to `key` at the edge and runs every key through
+the same `command_table.cpp` / `key_router.cpp` as Windows (both are pure C++ and now build on
+Darwin). Command and Control map to `ctrl`, Option to `alt`, the Mac Delete key to `del` (Trash).
+The bar becomes Open / View / Settings / About with `?` at the right, and a Settings screen
+(`⌘,`) offers the view preferences, canvas background and key remapping, persisted in
+`NSUserDefaults`.
+
+**Why.** The hard-coded `keyDown:` could not support remapping, and the macOS-styled bar did not
+match the Windows chrome. **Consequences.** Commands the Mac lab cannot run yet (zoom steps and
+presets, clipping, loupe, pan, go-to, folder tree, Live Photo, RAW pairing) are hidden from the
+remap list rather than shown dead. Adds `mute` (Shift+M) and browse `wrap` as shared pieces.
+Plain-letter menu key equivalents were removed so a menu cannot shadow a remap. Backspace is no
+longer Previous on Mac (that key is Delete = Trash). Not a D1–D9 change: chrome stays SwiftUI,
+the canvas stays Metal.
 ## 2026-09-23 — GitHub Releases is the channel; every push to main is a version
 
 **Reverses part of [13](13-updates-and-telemetry.md) Part 1.** The owner asked for

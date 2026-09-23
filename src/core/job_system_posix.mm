@@ -2,6 +2,10 @@
 // POSIX job pool. Same queues and cancellation as job_system_win.cpp; the
 // Windows file is thread-description / priority, this file is pthread name
 // and QoS. plan/15: the Mac file arrives with Milestone F as a real impl.
+//
+// .mm rather than .cpp: job bodies may call Metal/AppKit APIs (image upload,
+// decode) that autorelease temporaries. A worker thread with no pool in
+// place doesn't crash, it just leaks every one of them silently.
 #include "core/job_system.h"
 
 #include <pthread.h>
@@ -15,6 +19,7 @@
 
 #if defined(__APPLE__)
 #include <pthread/qos.h>
+#include <Foundation/Foundation.h>
 #endif
 
 #include "core/trace.h"
@@ -31,11 +36,18 @@ struct job_record {
 
 void notify_done(const job_record& job, status result) noexcept {
   if (!job.on_done) return;
-  try {
-    job.on_done(job.id, job.gen, result);
-  } catch (...) {
-    MV_LOG_ERROR("job_system: completion callback threw for job %llu",
-                 static_cast<unsigned long long>(job.id));
+  // Same reasoning as the job-body pool below: on_done may be a callback
+  // that touches Metal/AppKit/Foundation APIs, and this runs on a worker
+  // thread with no pool of its own otherwise — every autoreleased temporary
+  // would silently leak rather than crash. One pool here covers all three
+  // call sites (post-run, pre-run cancellation, and shutdown drain).
+  @autoreleasepool {
+    try {
+      job.on_done(job.id, job.gen, result);
+    } catch (...) {
+      MV_LOG_ERROR("job_system: completion callback threw for job %llu",
+                   static_cast<unsigned long long>(job.id));
+    }
   }
 }
 }  // namespace
@@ -105,12 +117,14 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         trace::job_begin(job.id, i);
         const job_context ctx(job.id, job.gen, &generation_, i);
         status result = status::invalid_arg;
-        try {
-          if (job.fn) result = job.fn(ctx);
-        } catch (const std::bad_alloc&) {
-          result = status::out_of_memory;
-        } catch (...) {
-          result = status::internal;
+        @autoreleasepool {
+          try {
+            if (job.fn) result = job.fn(ctx);
+          } catch (const std::bad_alloc&) {
+            result = status::out_of_memory;
+          } catch (...) {
+            result = status::internal;
+          }
         }
         trace::job_end(job.id, static_cast<std::int32_t>(result));
 

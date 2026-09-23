@@ -193,6 +193,7 @@ enum class command_id : std::uint16_t {
   play_motion,  // `;`: play a Live Photo's motion once, back to the still
   open_raw,     // show the RAW half of a RAW+JPEG stop (unbound by default)
   open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
+  mute,         // Shift+M (plan/16 Video): toggle the clip's audio
   count
 };
 
