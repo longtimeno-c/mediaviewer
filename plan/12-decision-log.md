@@ -1042,6 +1042,41 @@ an in-app accept modal.
 
 Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
 
+## 2026-09-23 — GitHub Releases is the channel; every push to main is a version
+
+**Reverses part of [13](13-updates-and-telemetry.md) Part 1.** The owner asked for
+continuous delivery: every commit to `main` builds a release, the wizard installs the
+newest one from GitHub, and the in-app updater checks the same place.
+
+**Call.** `.github/workflows/release.yml` runs on every push to `main` and on `v*` tags.
+The Velopack set, the signed manifest and the Inno wizard are published as a normal
+GitHub Release, and both the wizard and `GithubManifestFetcher` read
+`/releases/latest/download/`.
+
+**Versions stay strict `x.y.z`.** The first plan was `0.1.0-build.<run>`, which does not
+survive contact with `ReleaseVersion` in `UpdateManifest.cs` — it parses three numeric
+parts and nothing else, on purpose ("prerelease tags are not a v1 channel"). A suffixed
+version fails `TryParse` in `UpdateService.TryInitialize`, and the updater answers by
+going **inert**: a build that silently never updates. So the patch component is the CI run
+number — `x.y.<run_number>` — unique and monotonic without CI committing back to `main`.
+The version is stamped into `CMakeLists.txt` on the runner before configure, so
+`VERSIONINFO`, `MV_APP_VERSION`, the payload and the manifest cannot disagree.
+**Consequence to keep in mind:** bump `major.minor` in `CMakeLists.txt` before cutting a
+tag, or `v0.1.0` sorts below the `0.1.<run>` builds that came before it.
+
+**What this gives up.** plan/13's staged rollout (5 % → 25 % → 100 %, gated on crash-free
+sessions) is not implemented and is incompatible with "every push ships": there is one
+channel and it goes to everyone at once. The kill switch survives — the manifest still
+carries `min_version` and a blocklist, so a bad build can be pulled. Revisit staged
+rollout when there are enough users for a percentage to mean anything.
+
+**Unchanged, and still blocking a usable channel:** the manifest is rejected unless signed
+(`MV_MANIFEST_SIGNING_KEY`), and `UpdateKeys.ProductionPublicKeyHex` is still the all-zero
+placeholder, so every build fails closed until the owner pins the real public key
+([update-signing.md](../tools/package/update-signing.md)). A tagged release refuses to
+publish without both signing paths; a `main` build warns and publishes anyway, so the
+pipeline can be exercised before the secrets exist.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

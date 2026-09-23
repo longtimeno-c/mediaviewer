@@ -1,0 +1,233 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# PR 8 release pipeline (plan/13 Part 1, plan/11).
+#
+#   push to main    -> release v<major>.<minor>.<run_number>   every push ships
+#   push tag v*     -> release v<version>, must match CMakeLists.txt
+#   workflow_dispatch -> dry run, artefacts only, no GitHub Release
+#
+# One packaging implementation: tools/package/build-release.ps1 does payload ->
+# vpk pack -> signed manifest -> ISCC wizard. This file builds, tests, gates the
+# licence, then calls it and publishes what it produced.
+#
+# Secrets (none needed for a dry run):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET    Trusted Signing service principal
+#   TRUSTED_SIGNING_ENDPOINT, TRUSTED_SIGNING_ACCOUNT, TRUSTED_SIGNING_PROFILE
+#   MV_MANIFEST_SIGNING_KEY   Ed25519 private key, hex (tools/package/update-signing.md)
+#
+# A tag build FAILS without both signing paths. A main build warns and publishes
+# anyway, so the pipeline is testable before the secrets exist -- but an unsigned
+# manifest is rejected by the client on purpose, so until MV_MANIFEST_SIGNING_KEY
+# is set these builds prove packaging, not updating.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      min_version:
+        description: 'Manifest min_version (kill switch floor)'
+        required: false
+        default: '0.0.0'
+      blocklist:
+        description: 'Comma-separated versions to blocklist in the manifest'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: pwsh
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VCPKG_COMMIT: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+jobs:
+  release:
+    name: Build, package, sign, publish
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+      # Same key as ci.yml's MSVC legs: identical ports and triplet.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
+
+      # Versions stay strict x.y.z, because that is all ReleaseVersion parses
+      # and the signed manifest compares (UpdateManifest.cs). A prerelease
+      # suffix would make the updater go inert, so there is none.
+      #
+      #   tag v<x.y.z>  -> exactly that, and it must match CMakeLists.txt
+      #   push to main  -> x.y.<run_number>: every push is a new version, unique
+      #                    and monotonic without CI ever committing back to main
+      #
+      # Because the patch comes from CI, keep the MAJOR.MINOR in CMakeLists.txt
+      # ahead of any tag you intend to cut, or a tagged v0.1.0 will sort below
+      # the 0.1.<run> builds that preceded it.
+      - name: Version and channel
+        id: v
+        run: |
+          $cmake = Get-Content -Raw CMakeLists.txt
+          if ($cmake -notmatch 'project\(\s*mediaviewer\s+VERSION\s+([0-9]+)\.([0-9]+)\.([0-9]+)') { throw 'No project VERSION in CMakeLists.txt' }
+          $base = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            if ('${{ github.ref_name }}' -ne "v$base") {
+              throw "Tag ${{ github.ref_name }} does not match CMake project VERSION $base (expected v$base)."
+            }
+            $version = $base; $publish = 'true'
+          } else {
+            $version = "$($Matches[1]).$($Matches[2]).${{ github.run_number }}"
+            $publish = ('${{ github.event_name }}' -eq 'push').ToString().ToLower()
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "publish=$publish" >> $env:GITHUB_OUTPUT
+          Write-Host "MediaViewer $version (publish=$publish)"
+
+      # Stamp it before configuring, so the exe's VERSIONINFO, MV_APP_VERSION,
+      # the Velopack package and the manifest all say the same thing. The edit
+      # is to the runner's working copy only; nothing is committed back.
+      - name: Stamp the version into CMakeLists.txt
+        run: |
+          $v = '${{ steps.v.outputs.version }}'
+          $t = Get-Content -Raw CMakeLists.txt
+          $t = [regex]::Replace($t, '(project\(\s*mediaviewer\s+VERSION\s+)[0-9]+\.[0-9]+\.[0-9]+', "`${1}$v", 1)
+          Set-Content -NoNewline CMakeLists.txt $t
+          if ((Get-Content -Raw CMakeLists.txt) -notmatch "VERSION\s+$([regex]::Escape($v))") { throw "Version stamp failed" }
+          Write-Host "stamped $v"
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build (Release)
+        run: cmake --build build --config Release
+
+      # The framework-dependent dev build the tests load needs this; the shipped
+      # payload carries its own runtimes and does not.
+      - name: Install Windows App SDK runtime (tests only)
+        run: ./tools/install-windows-app-runtime.ps1
+
+      - name: Unit tests
+        timeout-minutes: 20
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Licence policy (manifest + vcpkg tree)
+        run: ./tools/licence-check.ps1 -VcpkgInstalledRoot build/vcpkg_installed
+
+      - name: Velopack CLI
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      # Secrets become files here and nowhere else. Both are written under
+      # RUNNER_TEMP, never the workspace, so neither can be picked up by a
+      # packaging glob or committed by a later step.
+      - name: Signing material
+        id: sign
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          MV_MANIFEST_SIGNING_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+        run: |
+          $meta = ''; $key = ''
+          if ($env:AZURE_TENANT_ID -and $env:TRUSTED_SIGNING_ENDPOINT) {
+            $meta = Join-Path $env:RUNNER_TEMP 'trusted-signing.json'
+            @{
+              Endpoint = $env:TRUSTED_SIGNING_ENDPOINT
+              CodeSigningAccountName = $env:TRUSTED_SIGNING_ACCOUNT
+              CertificateProfileName = $env:TRUSTED_SIGNING_PROFILE
+            } | ConvertTo-Json | Set-Content -Encoding utf8 $meta
+          }
+          if ($env:MV_MANIFEST_SIGNING_KEY) {
+            $key = Join-Path $env:RUNNER_TEMP 'release.key'
+            Set-Content -Encoding ascii -NoNewline $key $env:MV_MANIFEST_SIGNING_KEY
+          }
+          if ($env:IS_TAG -eq 'true' -and (-not $meta -or -not $key)) {
+            throw 'A tagged release requires both Trusted Signing secrets and MV_MANIFEST_SIGNING_KEY. Refusing to publish a stable release that users cannot verify.'
+          }
+          if (-not $meta) { Write-Host '::warning::No code-signing secrets. Binaries and wizard will be UNSIGNED.' }
+          if (-not $key)  { Write-Host '::warning::No MV_MANIFEST_SIGNING_KEY. The manifest is unsigned and clients will reject it by design.' }
+          "meta=$meta" >> $env:GITHUB_OUTPUT
+          "key=$key" >> $env:GITHUB_OUTPUT
+
+      - name: Package (payload, Velopack set, manifest, wizard)
+        run: |
+          $a = @{ BuildDir = 'build'; Version = '${{ steps.v.outputs.version }}' }
+          if ('${{ steps.sign.outputs.meta }}') { $a.SigningMetadata = '${{ steps.sign.outputs.meta }}' }
+          if ('${{ steps.sign.outputs.key }}')  { $a.ManifestKey     = '${{ steps.sign.outputs.key }}' }
+          $min = '${{ github.event.inputs.min_version }}'; if ($min) { $a.MinVersion = $min }
+          $bl  = '${{ github.event.inputs.blocklist }}';   if ($bl)  { $a.Blocklist  = $bl }
+          ./tools/package/build-release.ps1 @a
+
+      - name: Collect release assets
+        id: assets
+        run: |
+          $v = '${{ steps.v.outputs.version }}'
+          $out = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'upload')
+          $files = @(Get-ChildItem dist/releases -File | ForEach-Object FullName)
+          $wizard = "dist/MediaViewer-$v-Setup.exe"
+          if (-not (Test-Path $wizard)) { throw "Missing wizard $wizard" }
+          $files += (Resolve-Path $wizard).Path
+          foreach ($f in $files) { Copy-Item $f $out }
+          Get-ChildItem $out | Select-Object Name, Length | Format-Table -AutoSize
+          "dir=$out" >> $env:GITHUB_OUTPUT
+
+      - name: Upload assets (workflow artefact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.v.outputs.version }}
+          path: ${{ steps.assets.outputs.dir }}
+          retention-days: 30
+
+      # Published as a normal release, not a prerelease: the wizard and the
+      # updater both read /releases/latest/download/, and GitHub excludes
+      # prereleases from "latest" - so a prerelease would be invisible to both.
+      # Every push to main is therefore the release users get.
+      - name: Publish GitHub Release
+        if: ${{ steps.v.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = '${{ steps.v.outputs.version }}'
+          $tag = "v$v"
+          $notes = "MediaViewer $v for Windows (x64). Per-user install, no administrator rights.`n`n" +
+                   "- Download and run ``MediaViewer-$v-Setup.exe``.`n" +
+                   "- Updates arrive in-app; the wizard is not needed again.`n" +
+                   "- LGPL source offer for this build (FFmpeg, libheif, libde265, LibRaw) is in the assets below.`n`n" +
+                   "Built from ${{ github.sha }}."
+          $a = @('release', 'create', $tag, '--title', "MediaViewer $v", '--notes', $notes)
+          if ('${{ github.ref_type }}' -eq 'tag') { $a += '--verify-tag' }
+          $a += (Get-ChildItem '${{ steps.assets.outputs.dir }}' -File | ForEach-Object FullName)
+          & gh @a

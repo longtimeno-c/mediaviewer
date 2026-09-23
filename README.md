@@ -417,6 +417,38 @@ manifest key, clients reject every update — the pinned public key in
 unconfigured build **fails closed** rather than trusting an unverified channel.
 `tools/package/update-signing.md` has the procedure and the one-off human steps.
 
+### Releasing from CI
+
+`.github/workflows/release.yml` runs the same script on every push to `main` and on every
+`v*` tag, and publishes the result as a GitHub Release. The wizard and the in-app updater
+both read `/releases/latest/download/`, so the newest push to `main` is what a new install
+gets and what an existing install updates to.
+
+| Trigger | Version | Publishes |
+|---|---|---|
+| push to `main` | `<major>.<minor>.<run_number>` | release, signed if the secrets exist |
+| push tag `v<x.y.z>` | exactly that; must match `CMakeLists.txt` | release; **fails** unless signed |
+| `workflow_dispatch` | `<major>.<minor>.<run_number>` | nothing — artefacts only, for a dry run |
+
+Versions are strict `x.y.z` because that is all `ReleaseVersion` parses; a `-build.N`
+suffix makes the updater go inert rather than fail loudly, so the run number is the patch
+component instead. CI stamps it into `CMakeLists.txt` before configuring — nothing is
+committed back — so `VERSIONINFO`, `MV_APP_VERSION`, the payload and the manifest agree.
+**Bump `major.minor` in `CMakeLists.txt` before cutting a tag**, or `v0.1.0` sorts below
+the `0.1.<run>` builds that preceded it.
+
+Repository secrets, none needed for a dry run: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+`AZURE_CLIENT_SECRET`, `TRUSTED_SIGNING_ENDPOINT`, `TRUSTED_SIGNING_ACCOUNT`,
+`TRUSTED_SIGNING_PROFILE` for Authenticode, and `MV_MANIFEST_SIGNING_KEY` (Ed25519, hex)
+for the update manifest. A `main` build without them warns and publishes anyway so the
+pipeline is testable; a tagged release refuses. Until the real public key replaces the
+placeholder in `UpdateKeys.cs`, every client rejects every update by design.
+
+There is **one channel and it reaches everyone at once**: plan/13's staged rollout
+(5 % → 25 % → 100 %) is not implemented, which is the trade "every push ships" makes. The
+kill switch survives — the manifest still carries `min_version` and a blocklist
+([plan/12](plan/12-decision-log.md), 2026-09-23).
+
 ### Installing and uninstalling
 
 The wizard is six pages and no more: Welcome, Licence (GPL, scroll and accept), Location,
