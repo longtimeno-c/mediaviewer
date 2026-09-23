@@ -53,9 +53,12 @@ env:
 
 jobs:
   release:
-    name: Build, package, sign, publish
+    name: Windows — build, package, sign, publish
     runs-on: windows-latest
     timeout-minutes: 240
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
 
@@ -231,3 +234,118 @@ jobs:
           if ('${{ github.ref_type }}' -eq 'tag') { $a += '--verify-tag' }
           $a += (Get-ChildItem '${{ steps.assets.outputs.dir }}' -File | ForEach-Object FullName)
           & gh @a
+
+  # macOS is a second host of the same core (plan/15, D9), so it gets the same
+  # treatment: every push to main proves the .app and the disk image still
+  # build. It runs after the Windows job because that job creates the GitHub
+  # Release this one uploads into.
+  #
+  # Notarization needs an Apple Developer ID and a notarytool profile. Without
+  # them macpack.py can still assemble and ad-hoc sign, which is what proves the
+  # packaging works; the artefact is then NOT distributable and says so. A
+  # tagged release refuses to produce one, the same way the Windows job does.
+  macos:
+    name: macOS — app bundle and disk image
+    needs: release
+    runs-on: macos-14
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-arm64-osx
+
+      # The same version the Windows job resolved, so one push produces one
+      # version across both hosts rather than two that merely look alike.
+      - name: Stamp the version into CMakeLists.txt
+        run: |
+          v='${{ needs.release.outputs.version }}'
+          python3 - "$v" <<'PY'
+          import re, sys, pathlib
+          v = sys.argv[1]
+          p = pathlib.Path("CMakeLists.txt")
+          t = p.read_text()
+          t, n = re.subn(r'(project\(\s*mediaviewer\s+VERSION\s+)[0-9]+\.[0-9]+\.[0-9]+', r'\g<1>' + v, t, count=1)
+          if n != 1:
+              raise SystemExit("version stamp failed")
+          p.write_text(t)
+          print("stamped", v)
+          PY
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build MediaViewer.app
+        run: cmake --build build --config Release --target mediaviewer_app
+
+      - name: Unit tests
+        timeout-minutes: 20
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Bundle policy
+        run: |
+          python3 tools/mac/check_plists.py
+          python3 tools/mac/test_macpack.py -v
+
+      - name: dmgbuild
+        run: python3 -m pip install --break-system-packages -r tools/mac/requirements.txt
+
+      - name: Disk image
+        env:
+          MV_SIGN_IDENTITY: ${{ secrets.MV_SIGN_IDENTITY }}
+          MV_NOTARY_PROFILE: ${{ secrets.MV_NOTARY_PROFILE }}
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+        run: |
+          set -euo pipefail
+          args=(--app build/MediaViewer.app --out-dir build/release)
+          if [ -n "${MV_SIGN_IDENTITY:-}" ] && [ -n "${MV_NOTARY_PROFILE:-}" ]; then
+            args+=(--identity "$MV_SIGN_IDENTITY" --notary-profile "$MV_NOTARY_PROFILE")
+          elif [ "$IS_TAG" = "true" ]; then
+            echo "A tagged release needs MV_SIGN_IDENTITY and MV_NOTARY_PROFILE. Refusing to publish a disk image Gatekeeper will block." >&2
+            exit 1
+          else
+            echo "::warning::No Apple signing secrets. Ad-hoc signed, not notarized, NOT distributable."
+            args+=(--identity - --skip-notarize --allow-no-updater)
+          fi
+          python3 tools/mac/macpack.py release "${args[@]}"
+          ls -la build/release
+
+      - name: Upload disk image (workflow artefact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ needs.release.outputs.version }}
+          path: build/release/
+          retention-days: 30
+
+      # Only a notarized image is worth attaching to a release people install
+      # from. An ad-hoc one stays a workflow artefact.
+      - name: Attach to the GitHub Release
+        if: ${{ needs.release.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MV_SIGN_IDENTITY: ${{ secrets.MV_SIGN_IDENTITY }}
+        run: |
+          if [ -z "${MV_SIGN_IDENTITY:-}" ]; then
+            echo "::warning::Disk image not attached to the release: it is ad-hoc signed."
+            exit 0
+          fi
+          gh release upload "v${{ needs.release.outputs.version }}" build/release/*.dmg --clobber

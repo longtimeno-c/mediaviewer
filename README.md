@@ -569,6 +569,14 @@ gets and what an existing install updates to.
 | push tag `v<x.y.z>` | exactly that; must match `CMakeLists.txt` | release; **fails** unless signed |
 | `workflow_dispatch` | `<major>.<minor>.<run_number>` | nothing — artefacts only, for a dry run |
 
+A second job builds the **macOS** side on `macos-14` at the same version, so every push
+proves `MediaViewer.app` and the disk image still build (`tools/mac/macpack.py`). It runs
+after the Windows job because that job creates the release it uploads into. Notarization
+needs `MV_SIGN_IDENTITY` and `MV_NOTARY_PROFILE`; without them the job still assembles and
+ad-hoc signs — which is what proves the packaging — but the image is **not distributable**,
+stays a workflow artefact, and is never attached to the release. A tagged release refuses
+to build one unsigned, the same way the Windows job refuses.
+
 Versions are strict `x.y.z` because that is all `ReleaseVersion` parses; a `-build.N`
 suffix makes the updater go inert rather than fail loudly, so the run number is the patch
 component instead. CI stamps it into `CMakeLists.txt` before configuring — nothing is
