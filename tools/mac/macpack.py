@@ -336,7 +336,7 @@ def notarize(path: Path, profile: str) -> None:
     """`notarytool --wait` exits 0 for a rejected submission too; read the status."""
     out = run(["xcrun", "notarytool", "submit", str(path), "--keychain-profile", profile,
                "--wait", "--output-format", "json"], capture=True)
-    status = json.loads(out.strip().splitlines()[-1]).get("status")
+    status = json.loads(out).get("status")
     if status != "Accepted":
         raise SystemExit(f"macpack: notarization {status!r} for {path.name}; "
                          "`xcrun notarytool log <id>` has the reasons")

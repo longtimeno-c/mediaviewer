@@ -45,7 +45,7 @@ jobs:
         run: ./tools/licence-check.ps1
 
   mac-packaging:
-    name: macOS bundle policy
+    name: Release tooling and macOS bundle policy
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -54,6 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 tools/mac/check_plists.py
       - run: python3 tools/mac/test_macpack.py -v
+      - run: python3 tools/package/test_github_release.py -v
 
   # ---------------------------------------------------------------------------
   # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because

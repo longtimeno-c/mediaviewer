@@ -9,6 +9,7 @@ out/
 [Bb]in/
 [Oo]bj/
 .DS_Store
+__pycache__/
 
 # SwiftPM's own build output (src.swift/MediaViewerChrome), separate from
 # cmake/darwin.cmake's build-*/ tree above -- `swift build` writes here when

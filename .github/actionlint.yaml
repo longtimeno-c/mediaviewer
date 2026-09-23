@@ -1,0 +1,3 @@
+# The performance gate uses an explicitly provisioned interactive GPU host.
+self-hosted-runner:
+  labels: [gpu]

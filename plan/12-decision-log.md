@@ -1251,3 +1251,17 @@ links) initialises twice, and what `fuzz_animation` pulls in that `fuzz_gif` and
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
 revisited and *upheld*, add that too; knowing an option was reconsidered and rejected again is worth
 as much as the original call.
+
+## 2026-09-23 — Deliberate two-platform GitHub releases
+
+The owner requested simpler Windows/macOS downloads on GitHub Releases while signing
+setup is incomplete. Replace automatic publish-on-push and local-only CI packaging
+with a manual workflow: artifacts for rehearsal, explicitly unsigned prereleases for
+testing, and stable releases with both authenticated update feeds. Windows Authenticode
+is optional; stable macOS still requires Developer ID, notarization and Sparkle signing.
+Unsigned Mac previews omit the updater and require a later manual stable installation.
+This is a testing exception to the normal first-distributed-build updater requirement.
+
+Both hosts use CMake's strict x.y.z version. Builds run independently; publication waits
+for both and uploads to a draft before making it visible. Never publish a partial latest
+release or replace published assets under an existing version. RELEASING.md is the runbook.

@@ -1,61 +1,82 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-#
-# PR 8 release pipeline (plan/13 Part 1, plan/11).
-#
-#   workflow_dispatch -> packages both hosts, uploads workflow artefacts
-#
-# CI does NOT create GitHub Releases. Releases are cut locally and uploaded by
-# hand (RELEASING.md), because the signing keys live on the release machine and
-# not here. This workflow exists to prove the packaging still builds.
-#
-# One packaging implementation: tools/package/build-release.ps1 does payload ->
-# vpk pack -> signed manifest -> ISCC wizard. This file builds, tests, gates the
-# licence, then calls it and keeps the result as a workflow artefact.
-#
-# Secrets (none needed for a dry run):
-#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET    Trusted Signing service principal
-#   TRUSTED_SIGNING_ENDPOINT, TRUSTED_SIGNING_ACCOUNT, TRUSTED_SIGNING_PROFILE
-#   MV_MANIFEST_SIGNING_KEY   Ed25519 private key, hex (tools/package/update-signing.md)
-#
-# Nothing here runs on a push. Tagging a release must not start a four-hour
-# two-platform build that cannot sign anything anyway; the tag is cut locally
-# with the artefacts already in hand.
-
+# Deliberate releases only. CI validates pushes/PRs; this builds both installers.
+# See RELEASING.md for the three modes and credentials.
 name: Release
+run-name: Release ${{ inputs.mode }} from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'artifacts: test packaging; preview: unsigned prerelease; stable: signed update feeds'
+        type: choice
+        options: [artifacts, preview, stable]
+        default: artifacts
       min_version:
-        description: 'Manifest min_version (kill switch floor)'
-        required: false
+        description: 'Windows minimum supported version (normally leave at 0.0.0)'
+        type: string
         default: '0.0.0'
       blocklist:
-        description: 'Comma-separated versions to blocklist in the manifest'
-        required: false
+        description: 'Windows versions to withdraw, comma separated (normally empty)'
+        type: string
         default: ''
 
 permissions:
-  contents: write
+  contents: read
+
+# Serialise publication across refs, so an older run cannot overtake a newer one.
+concurrency:
+  group: mediaviewer-release
+  cancel-in-progress: false
 
 defaults:
   run:
     shell: pwsh
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
   VCPKG_COMMIT: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+  MV_SPARKLE_PUBLIC_ED_KEY: WlC8RKaTk3OI92qe+0nQOCQwGDuVrJA9IuZZYkRyGCM=
+  MV_MAC_SIGN_IDENTITY: 'Developer ID Application: Oakforge Studios LTD (23FQ4A4Q35)'
 
 jobs:
-  release:
-    name: Windows — build, package, sign
+  prepare:
+    name: Check version and release credentials
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      tag: ${{ steps.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight (before either expensive build)
+        id: prepare
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          MIN_VERSION: ${{ inputs.min_version }}
+          BLOCKLIST: ${{ inputs.blocklist }}
+          MV_MANIFEST_SIGNING_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
+          MV_MAC_CERT_P12_BASE64: ${{ secrets.MV_MAC_CERT_P12_BASE64 }}
+          MV_MAC_CERT_PASSWORD: ${{ secrets.MV_MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          MV_SPARKLE_PRIVATE_KEY: ${{ secrets.MV_SPARKLE_PRIVATE_KEY }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+        run: python3 tools/package/github-release.py prepare
+
+  windows:
+    name: Windows x64 installer
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 240
-    outputs:
-      version: ${{ steps.v.outputs.version }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      MODE: ${{ inputs.mode }}
     steps:
       - uses: actions/checkout@v4
 
@@ -83,41 +104,6 @@ jobs:
           path: build/vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
 
-      # Versions stay strict x.y.z, because that is all ReleaseVersion parses
-      # and the signed manifest compares (UpdateManifest.cs). A suffixed version
-      # would make the updater go inert rather than fail loudly, so there is none.
-      # A tag must agree with CMakeLists.txt; a dispatch build is only ever an
-      # artefact, so the run number keeps its name unique.
-      - name: Version
-        id: v
-        run: |
-          $cmake = Get-Content -Raw CMakeLists.txt
-          if ($cmake -notmatch 'project\(\s*mediaviewer\s+VERSION\s+([0-9]+)\.([0-9]+)\.([0-9]+)') { throw 'No project VERSION in CMakeLists.txt' }
-          $base = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
-          if ('${{ github.ref_type }}' -eq 'tag') {
-            if ('${{ github.ref_name }}' -ne "v$base") {
-              throw "Tag ${{ github.ref_name }} does not match CMake project VERSION $base (expected v$base)."
-            }
-            $version = $base
-          } else {
-            $version = "$($Matches[1]).$($Matches[2]).${{ github.run_number }}"
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-          Write-Host "MediaViewer $version"
-
-      # Stamp it before configuring, so the exe's VERSIONINFO, MV_APP_VERSION,
-      # the Velopack package and the manifest all say the same thing. The edit
-      # is to the runner's working copy only; nothing is committed back.
-      - name: Stamp the version into CMakeLists.txt
-        run: |
-          $v = '${{ steps.v.outputs.version }}'
-          $p = Join-Path (Get-Location) 'CMakeLists.txt'
-          $t = [System.IO.File]::ReadAllText($p)
-          $t = [regex]::Replace($t, '(project\(\s*mediaviewer\s+VERSION\s+)[0-9]+\.[0-9]+\.[0-9]+', "`${1}$v", 1)
-          [System.IO.File]::WriteAllText($p, $t)
-          if ([System.IO.File]::ReadAllText($p) -notmatch "VERSION\s+$([regex]::Escape($v))") { throw "Version stamp failed" }
-          Write-Host "stamped $v"
-
       - name: Configure
         run: cmake -S . -B build -A x64
 
@@ -139,89 +125,110 @@ jobs:
       - name: Velopack CLI
         run: dotnet tool install -g vpk --version 1.2.0
 
-      # Secrets become files here and nowhere else. Both are written under
-      # RUNNER_TEMP, never the workspace, so neither can be picked up by a
-      # packaging glob or committed by a later step.
+      - name: Ensure Inno Setup 6 is available
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe")) {
+            choco install innosetup --version=6.5.4 --yes --no-progress
+            if ($LASTEXITCODE) { throw 'Inno Setup installation failed' }
+          }
+
       - name: Signing material
         id: sign
+        if: inputs.mode == 'stable'
         env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          MV_MANIFEST_SIGNING_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
           TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
           TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
           TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
-          MV_MANIFEST_SIGNING_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
-          IS_TAG: ${{ github.ref_type == 'tag' }}
         run: |
-          $meta = ''; $key = ''
-          if ($env:AZURE_TENANT_ID -and $env:TRUSTED_SIGNING_ENDPOINT) {
+          $key = Join-Path $env:RUNNER_TEMP 'release.key'
+          Set-Content -Encoding ascii -NoNewline $key $env:MV_MANIFEST_SIGNING_KEY
+          "key=$key" >> $env:GITHUB_OUTPUT
+          if ($env:TRUSTED_SIGNING_ENDPOINT) {
             $meta = Join-Path $env:RUNNER_TEMP 'trusted-signing.json'
             @{
               Endpoint = $env:TRUSTED_SIGNING_ENDPOINT
               CodeSigningAccountName = $env:TRUSTED_SIGNING_ACCOUNT
               CertificateProfileName = $env:TRUSTED_SIGNING_PROFILE
             } | ConvertTo-Json | Set-Content -Encoding utf8 $meta
+            "meta=$meta" >> $env:GITHUB_OUTPUT
           }
-          if ($env:MV_MANIFEST_SIGNING_KEY) {
-            $key = Join-Path $env:RUNNER_TEMP 'release.key'
-            Set-Content -Encoding ascii -NoNewline $key $env:MV_MANIFEST_SIGNING_KEY
-          }
-          if ($env:IS_TAG -eq 'true' -and (-not $meta -or -not $key)) {
-            throw 'A tagged release requires both Trusted Signing secrets and MV_MANIFEST_SIGNING_KEY. Refusing to publish a stable release that users cannot verify.'
-          }
-          if (-not $meta) { Write-Host '::warning::No code-signing secrets. Binaries and wizard will be UNSIGNED.' }
-          if (-not $key)  { Write-Host '::warning::No MV_MANIFEST_SIGNING_KEY. The manifest is unsigned and clients will reject it by design.' }
-          "meta=$meta" >> $env:GITHUB_OUTPUT
-          "key=$key" >> $env:GITHUB_OUTPUT
 
       - name: Package (payload, Velopack set, manifest, wizard)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SIGNING_METADATA: ${{ steps.sign.outputs.meta }}
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          MIN_VERSION: ${{ inputs.min_version }}
+          BLOCKLIST: ${{ inputs.blocklist }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: |
-          $a = @{ BuildDir = 'build'; Version = '${{ steps.v.outputs.version }}' }
-          if ('${{ steps.sign.outputs.meta }}') { $a.SigningMetadata = '${{ steps.sign.outputs.meta }}' }
-          if ('${{ steps.sign.outputs.key }}')  { $a.ManifestKey     = '${{ steps.sign.outputs.key }}' }
-          $min = '${{ github.event.inputs.min_version }}'; if ($min) { $a.MinVersion = $min }
-          $bl  = '${{ github.event.inputs.blocklist }}';   if ($bl)  { $a.Blocklist  = $bl }
+          $a = @{ BuildDir = 'build'; Version = $env:VERSION; MinVersion = $env:MIN_VERSION; Blocklist = $env:BLOCKLIST }
+          if ($env:SIGNING_METADATA) { $a.SigningMetadata = $env:SIGNING_METADATA }
+          if ($env:MANIFEST_KEY) { $a.ManifestKey = $env:MANIFEST_KEY }
           ./tools/package/build-release.ps1 @a
 
-      - name: Collect release assets
-        id: assets
-        run: |
-          $v = '${{ steps.v.outputs.version }}'
-          $out = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'upload')
-          $files = @(Get-ChildItem dist/releases -File | ForEach-Object FullName)
-          $wizard = "dist/MediaViewer-$v-Setup.exe"
-          if (-not (Test-Path $wizard)) { throw "Missing wizard $wizard" }
-          $files += (Resolve-Path $wizard).Path
-          foreach ($f in $files) { Copy-Item $f $out }
-          Get-ChildItem $out | Select-Object Name, Length | Format-Table -AutoSize
-          "dir=$out" >> $env:GITHUB_OUTPUT
-
-      - name: Upload assets (workflow artefact)
-        uses: actions/upload-artifact@v4
+      # Velopack signs the payload and its setup bundle; ISCC's outer wizard
+      # needs its own signature after packaging.
+      - name: Sign installer wizard
+        if: steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
         with:
-          name: release-${{ steps.v.outputs.version }}
-          path: ${{ steps.assets.outputs.dir }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/dist
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signed update feed
+        if: inputs.mode == 'stable'
+        run: dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- verify-release dist/releases
+
+      - name: Collect release assets
+        run: |
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item "dist/MediaViewer-$env:VERSION-Setup.exe" upload
+          if ($env:MODE -eq 'stable') {
+            Copy-Item dist/releases/*.nupkg upload
+            Copy-Item dist/releases/RELEASES, dist/releases/releases.win.json, dist/releases/assets.win.json upload
+            Copy-Item dist/releases/mediaviewer-manifest.json, dist/releases/mediaviewer-manifest.json.sig upload
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ needs.prepare.outputs.version }}
+          path: upload/
+          if-no-files-found: error
           retention-days: 30
 
+      - name: Remove signing material
+        if: always()
+        run: |
+          foreach ($name in 'release.key', 'trusted-signing.json') {
+            Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $name) -Force -ErrorAction SilentlyContinue
+          }
 
-  # macOS is a second host of the same core (plan/15, D9), so it gets the same
-  # treatment: every push to main proves the .app and the disk image still
-  # build. It runs after the Windows job because that job creates the GitHub
-  # Release this one uploads into.
-  #
-  # Notarization needs an Apple Developer ID and a notarytool profile. Without
-  # them macpack.py can still assemble and ad-hoc sign, which is what proves the
-  # packaging works; the artefact is then NOT distributable and says so. A
-  # tagged release refuses to produce one, the same way the Windows job does.
   macos:
-    name: macOS — app bundle and disk image
-    needs: release
+    name: macOS Apple Silicon disk image
+    needs: prepare
     runs-on: macos-14
     timeout-minutes: 240
     defaults:
       run:
         shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      MODE: ${{ inputs.mode }}
     steps:
       - uses: actions/checkout@v4
 
@@ -244,32 +251,64 @@ jobs:
           path: build/vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-arm64-osx
 
-      # The same version the Windows job resolved, so one push produces one
-      # version across both hosts rather than two that merely look alike.
-      - name: Stamp the version into CMakeLists.txt
+      - name: Signing keychain
+        if: inputs.mode == 'stable'
+        env:
+          CERT_P12: ${{ secrets.MV_MAC_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MV_MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          SPARKLE_KEY: ${{ secrets.MV_SPARKLE_PRIVATE_KEY }}
         run: |
-          v='${{ needs.release.outputs.version }}'
-          python3 - "$v" <<'PY'
-          import re, sys, pathlib
-          v = sys.argv[1]
-          p = pathlib.Path("CMakeLists.txt")
-          t = p.read_text()
-          t, n = re.subn(r'(project\(\s*mediaviewer\s+VERSION\s+)[0-9]+\.[0-9]+\.[0-9]+', r'\g<1>' + v, t, count=1)
-          if n != 1:
-              raise SystemExit("version stamp failed")
-          p.write_text(t)
-          print("stamped", v)
-          PY
+          set -euo pipefail
+          umask 077
+          kc="$RUNNER_TEMP/mv-signing.keychain-db"
+          kcpw="$(openssl rand -hex 16)"
+          echo "::add-mask::$kcpw"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" login.keychain-db
+          security default-keychain -d user -s "$kc"
+          xcrun notarytool store-credentials mediaviewer-notary \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$kc"
+          # Sparkle's generate_appcast reads its signing key from the keychain.
+          keyfile="$RUNNER_TEMP/sparkle.key"
+          printf '%s' "$SPARKLE_KEY" > "$keyfile"
+          # Sparkle is fetched, hash-pinned, by the configure step below; the
+          # tool is needed now, so take the same archive.
+          curl -sfL -o "$RUNNER_TEMP/Sparkle.tar.xz" https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
+          echo "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192  $RUNNER_TEMP/Sparkle.tar.xz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/sparkle" && tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+          "$RUNNER_TEMP/sparkle/bin/generate_keys" -f "$keyfile"
+          actual_key="$("$RUNNER_TEMP/sparkle/bin/generate_keys" -p)"
+          if [ "$actual_key" != "$MV_SPARKLE_PUBLIC_ED_KEY" ]; then
+            echo "Sparkle private key does not match the pinned public key." >&2
+            exit 1
+          fi
+          rm -f "$keyfile"
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: |
+          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION")
+          if [ "$MODE" = "stable" ]; then
+            args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
+          fi
+          cmake -S . -B build "${args[@]}"
 
-      - name: Build MediaViewer.app
-        run: cmake --build build --config Release --target mediaviewer_app
+      - name: Build app and test executables
+        run: |
+          cmake --build build --config Release
+          cmake --build build --config Release --target mediaviewer_app
 
       - name: Unit tests
         timeout-minutes: 20
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
 
       - name: Bundle policy
         run: |
@@ -280,29 +319,54 @@ jobs:
         run: python3 -m pip install --break-system-packages -r tools/mac/requirements.txt
 
       - name: Disk image
-        env:
-          MV_SIGN_IDENTITY: ${{ secrets.MV_SIGN_IDENTITY }}
-          MV_NOTARY_PROFILE: ${{ secrets.MV_NOTARY_PROFILE }}
-          IS_TAG: ${{ github.ref_type == 'tag' }}
         run: |
-          set -euo pipefail
           args=(--app build/MediaViewer.app --out-dir build/release)
-          if [ -n "${MV_SIGN_IDENTITY:-}" ] && [ -n "${MV_NOTARY_PROFILE:-}" ]; then
-            args+=(--identity "$MV_SIGN_IDENTITY" --notary-profile "$MV_NOTARY_PROFILE")
-          elif [ "$IS_TAG" = "true" ]; then
-            echo "A tagged release needs MV_SIGN_IDENTITY and MV_NOTARY_PROFILE. Refusing to publish a disk image Gatekeeper will block." >&2
-            exit 1
+          if [ "$MODE" = "stable" ]; then
+            args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+                   --sparkle-bin build/_deps/sparkle-2.9.6/bin
+                   --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/")
           else
-            echo "::warning::No Apple signing secrets. Ad-hoc signed, not notarized, NOT distributable."
             args+=(--identity - --skip-notarize --allow-no-updater)
           fi
           python3 tools/mac/macpack.py release "${args[@]}"
-          ls -la build/release
+          mkdir -p upload
+          cp "build/release/MediaViewer-$VERSION.dmg" upload/
+          if [ "$MODE" = "stable" ]; then
+            cp "build/release/updates/MediaViewer-$VERSION.zip" build/release/updates/appcast.xml upload/
+          fi
 
-      - name: Upload disk image (workflow artefact)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ needs.release.outputs.version }}
-          path: build/release/
+          name: macos-${{ needs.prepare.outputs.version }}
+          path: upload/
+          if-no-files-found: error
           retention-days: 30
 
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/mv-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/id.p12" "$RUNNER_TEMP/sparkle.key"
+
+  publish:
+    name: Publish both installers together
+    needs: [prepare, windows, macos]
+    if: inputs.mode != 'artifacts'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-${{ needs.prepare.outputs.version }}'
+          path: release-assets
+          merge-multiple: true
+      - name: Validate, upload to draft, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: python3 tools/package/github-release.py publish release-assets

@@ -649,51 +649,28 @@ line. Signing needs credentials the repo does not and must not hold:
   -ManifestKey C:\offline\release.key         # Ed25519, signs the update manifest
 ```
 
-Without Authenticode every early user gets a SmartScreen block on first run. Without the
-manifest key, clients reject every update — the pinned public key in
-`src.managed/MediaViewer.Updater/UpdateKeys.cs` ships as an all-zero placeholder so an
-unconfigured build **fails closed** rather than trusting an unverified channel.
-`tools/package/update-signing.md` has the procedure and the one-off human steps.
+Without Authenticode, Windows SmartScreen may warn. Without a correctly signed update
+manifest, clients reject updates. The production public key is already pinned in
+`src.managed/MediaViewer.Updater/UpdateKeys.cs`; preserve its matching private key.
 
 ### Releasing from CI
 
-`.github/workflows/release.yml` runs the same script on every push to `main` and on every
-`v*` tag, and publishes the result as a GitHub Release. The wizard and the in-app updater
-both read `/releases/latest/download/`, so the newest push to `main` is what a new install
-gets and what an existing install updates to.
+Use **Actions → Release → Run workflow**. Pushes and tags do not start release packaging.
+Both platforms use the exact `x.y.z` from `CMakeLists.txt`.
 
-| Trigger | Version | Publishes |
-|---|---|---|
-| push to `main` | `<major>.<minor>.<run_number>` | release, signed if the secrets exist |
-| push tag `v<x.y.z>` | exactly that; must match `CMakeLists.txt` | release; **fails** unless signed |
-| `workflow_dispatch` | `<major>.<minor>.<run_number>` | nothing — artefacts only, for a dry run |
+| Mode | Result |
+|---|---|
+| `artifacts` | Unsigned installers in Actions artifacts; no GitHub Release |
+| `preview` | Both unsigned test installers on GitHub Releases as a prerelease |
+| `stable` | Windows installer, notarized Mac image, both signed update feeds and checksums on Latest |
 
-A second job builds the **macOS** side on `macos-14` at the same version, so every push
-proves `MediaViewer.app` and the disk image still build (`tools/mac/macpack.py`). It runs
-after the Windows job because that job creates the release it uploads into. Notarization
-needs `MV_SIGN_IDENTITY` and `MV_NOTARY_PROFILE`; without them the job still assembles and
-ad-hoc signs — which is what proves the packaging — but the image is **not distributable**,
-stays a workflow artefact, and is never attached to the release. A tagged release refuses
-to build one unsigned, the same way the Windows job refuses.
+Windows and macOS build independently; a final job publishes only after both succeed.
+Stable needs the Windows manifest key and six Mac signing/notarization secrets.
+Windows Authenticode remains optional. Preview needs no signing secrets; its Mac app
+must be replaced manually with a stable build later.
 
-Versions are strict `x.y.z` because that is all `ReleaseVersion` parses; a `-build.N`
-suffix makes the updater go inert rather than fail loudly, so the run number is the patch
-component instead. CI stamps it into `CMakeLists.txt` before configuring — nothing is
-committed back — so `VERSIONINFO`, `MV_APP_VERSION`, the payload and the manifest agree.
-**Bump `major.minor` in `CMakeLists.txt` before cutting a tag**, or `v0.1.0` sorts below
-the `0.1.<run>` builds that preceded it.
-
-Repository secrets, none needed for a dry run: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
-`AZURE_CLIENT_SECRET`, `TRUSTED_SIGNING_ENDPOINT`, `TRUSTED_SIGNING_ACCOUNT`,
-`TRUSTED_SIGNING_PROFILE` for Authenticode, and `MV_MANIFEST_SIGNING_KEY` (Ed25519, hex)
-for the update manifest. A `main` build without them warns and publishes anyway so the
-pipeline is testable; a tagged release refuses. Until the real public key replaces the
-placeholder in `UpdateKeys.cs`, every client rejects every update by design.
-
-There is **one channel and it reaches everyone at once**: plan/13's staged rollout
-(5 % → 25 % → 100 %) is not implemented, which is the trade "every push ships" makes. The
-kill switch survives — the manifest still carries `min_version` and a blocklist
-([plan/12](plan/12-decision-log.md), 2026-09-23).
+See **[RELEASING.md](RELEASING.md)** for commands, credentials, assets, version rules and
+recovery steps. There is no automatic publishing on push or run-number version stamping.
 
 ### Installing and uninstalling
 

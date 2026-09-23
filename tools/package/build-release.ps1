@@ -7,8 +7,9 @@
 #   manifest -> mediaviewer-manifest.json, signed with the release Ed25519 key
 #   ISCC     -> MediaViewer-<version>-Setup.exe, the first-install wizard
 #
-# Signing is a seam, not a fake. Every artefact is signed when -SigningMetadata
-# (Azure Trusted Signing) or -SignParams (signtool) is given, and the script
+# Velopack signs its payload when -SigningMetadata (Azure Trusted Signing)
+# or -SignParams (signtool) is given. Sign the outer Inno wizard afterwards.
+# The script
 # says loudly that it produced an UNSIGNED build when neither is. It never
 # invents a certificate and never silently skips.
 #
@@ -26,7 +27,7 @@ param(
     # Where the release set and the wizard land.
     [string]$OutputDir,
     # Azure Trusted Signing metadata.json (plan/13 "Signing"). Signs the
-    # payload binaries, the Velopack bundle and the wizard.
+    # payload binaries and Velopack bundle. Sign the Inno wizard afterwards.
     [string]$SigningMetadata,
     # Alternative: raw signtool.exe parameters, for an EV cert or a test cert.
     [string]$SignParams,
@@ -226,7 +227,7 @@ if ($forbidden) { Fail ("forbidden encoder in the payload: " + ($forbidden.Name 
 
 # ---- signing ---------------------------------------------------------------
 # vpk signs the payload binaries and its own bundle with whichever of these it
-# is given; ISCC signs the wizard through the same parameters.
+# is given; the workflow signs the outer ISCC wizard afterwards.
 $signArgs = @()
 $signedBuild = $false
 if ($SigningMetadata) {
@@ -238,8 +239,8 @@ if ($SigningMetadata) {
     $signedBuild = $true
 } else {
     Write-Warning "UNSIGNED BUILD. No -SigningMetadata and no -SignParams."
-    Write-Warning "Every user of this artefact gets a SmartScreen block on first run."
-    Write-Warning "This is a local build only. See tools/package/update-signing.md."
+    Write-Warning "Windows SmartScreen may warn on first installation."
+    Write-Warning "Code signing is optional; stable updates still need a signed manifest. See RELEASING.md."
 }
 
 # ---- velopack release set --------------------------------------------------
@@ -297,7 +298,10 @@ if ($fullPkg) {
 # (SignedManifestSource). No key here means the release set is not publishable;
 # say so rather than shipping an unverifiable channel.
 $tool = Join-Path $repo "src.managed\MediaViewer.Updater.Tests"
-& dotnet run --project $tool -c Release -- manifest $releases $Version $MinVersion $Blocklist $channel
+# "-" for an empty blocklist: Windows PowerShell 5.1 drops an empty string
+# argument to a native command, which shifted $channel into the blocklist slot.
+$blockArg = if ($Blocklist) { $Blocklist } else { '-' }
+& dotnet run --project $tool -c Release -- manifest $releases $Version $MinVersion $blockArg $channel
 if ($LASTEXITCODE) { Fail "manifest generation failed" }
 $manifest = Join-Path $releases "mediaviewer-manifest.json"
 if ($ManifestKey) {
@@ -331,4 +335,4 @@ if (-not $NoWizard) {
 Write-Host ""
 Write-Host "release set: $releases"
 if (-not $NoWizard) { Write-Host "wizard:      $OutputDir\$packId-$Version-Setup.exe" }
-if (-not $signedBuild) { Write-Host "NOT SIGNED - do not publish this build." }
+if (-not $signedBuild) { Write-Host "No Authenticode signature. SmartScreen may warn; see RELEASING.md." }

@@ -24,11 +24,11 @@ newest good version as an "Important update"; it is never force-restarted.
 ## The pinned key
 
 `src.managed/MediaViewer.Updater/UpdateKeys.cs`, constant
-`ProductionPublicKeyHex` (32 bytes, lowercase hex). **It ships as an all-zero
-placeholder**, which makes every manifest fail with `KeyNotConfigured` — an
-unconfigured build fails closed.
+`ProductionPublicKeyHex` (32 bytes, lowercase hex). The production public key is
+already pinned. Use its matching existing private key; do not regenerate it for CI.
+An all-zero placeholder would fail closed with `KeyNotConfigured`.
 
-Before the first external build, the owner:
+For a new installation of this signing scheme only, the owner:
 
 1. Generates the release keypair on a trusted machine (not CI):
    `dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- keygen <offline-dir>`
@@ -64,11 +64,11 @@ unsigned bypass.
 
 The Ed25519 key above signs the update *manifest*. It says nothing about
 whether Windows trusts the executables. That is Authenticode, it is a separate
-credential, and without it every early user gets a SmartScreen block on first
-run — which PR 8's verify line calls out by name.
+credential. Without it Windows SmartScreen may warn on first installation.
+Authenticode is optional for GitHub publishing and does not replace manifest signing.
 
-**Use Azure Trusted Signing** (plan/13 "Signing"): far cheaper than a
-traditional EV certificate, and it builds SmartScreen reputation the same way.
+The workflow supports Azure Artifact Signing (formerly Trusted Signing). See
+[RELEASING.md](../../RELEASING.md) for optional credentials and publication modes.
 
 ## What must be signed
 
@@ -126,16 +126,14 @@ certificate and installers already in the wild start failing.
 
 ## What a human still has to do once
 
-1. Create the Azure Trusted Signing account, certificate profile, and an
-   identity the release pipeline can use. This needs a verified organisation or
-   individual; it is not a same-day step.
-2. Generate the Ed25519 release keypair (above) and paste the public half into
-   `UpdateKeys.cs`.
-3. Store the Ed25519 private key and the Azure identity in the release secret
-   store.
+1. Store the existing Ed25519 private key in the release secret store and keep
+   an offline backup. The matching public half is already pinned in `UpdateKeys.cs`.
+2. Optionally enrol an Azure signing account and certificate profile, and grant
+   a release identity signing permission. Store all six Azure credentials from
+   the runbook when enabling this path.
 
-Until (1) and (2) are done, `build-release.ps1` produces an artefact that is
-useful for testing the wizard and the update mechanics on a VM, and is not
-publishable: the binaries trip SmartScreen, and the manifest is rejected by
-every client because the pinned key is still the all-zero placeholder. That is
-the intended failure mode — fail closed, loudly.
+The production public key is already configured. Stable CI requires its matching private
+key as `MV_MANIFEST_SIGNING_KEY` and verifies the generated feed before publication.
+Azure is optional: the update feed can still be trusted without a publisher signature on
+executables. Preview publishes test installers without replacing the stable update feed.
+See [RELEASING.md](../../RELEASING.md).

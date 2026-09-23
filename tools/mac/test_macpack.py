@@ -10,6 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import macpack  # noqa: E402
+from unittest.mock import patch
+import posixpath
 
 OTOOL_L_EXE = """/build/MediaViewer:
 \t@rpath/libheif.1.dylib (compatibility version 1.0.0, current version 1.19.5)
@@ -38,6 +40,17 @@ Load command 19
 """
 
 
+class NotarizationTests(unittest.TestCase):
+    def test_accepts_multiline_notarytool_json(self):
+        with patch.object(macpack, "run", return_value='{\n  "id": "submission",\n  "status": "Accepted"\n}\n'):
+            macpack.notarize(Path("app.zip"), "profile")
+
+    def test_rejected_submission_fails_even_with_zero_exit_code(self):
+        with patch.object(macpack, "run", return_value='{\n  "status": "Invalid"\n}\n'):
+            with self.assertRaisesRegex(SystemExit, "Invalid"):
+                macpack.notarize(Path("app.zip"), "profile")
+
+
 class ParseTests(unittest.TestCase):
     def test_exe_deps(self):
         self.assertEqual(macpack.parse_otool_deps(OTOOL_L_EXE), [
@@ -64,6 +77,12 @@ class ParseTests(unittest.TestCase):
 
 
 class ResolveTests(unittest.TestCase):
+    def setUp(self):
+        # These fixtures model dyld's POSIX paths even when run on Windows.
+        self.paths = patch.object(macpack.os, "path", posixpath)
+        self.paths.start()
+        self.addCleanup(self.paths.stop)
+
     def test_rpath_in_order(self):
         present = {"/vcpkg/lib/libheif.1.dylib"}
         got = macpack.resolve_dep("@rpath/libheif.1.dylib", "/build", "/build",

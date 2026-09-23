@@ -16,18 +16,20 @@ using Velopack.Sources;
 //   manifest <releasesDir> <version> <minVersion> [blocklist,csv] [channel]
 //                                                write <releasesDir>\mediaviewer-manifest.json from its *.nupkg
 //   sign <file> <privateKeyHexFile>              write <file>.sig (Ed25519, detached, exact bytes)
+//   verify-release <releasesDir>                 verify with the production key and check payload hashes
 return args.Length switch
 {
     0 => Tests.Run(),
     _ when args[0] == "keygen" && args.Length == 2 => Tool.Keygen(args[1]),
     _ when args[0] == "manifest" && args.Length >= 4 => Tool.Manifest(args),
     _ when args[0] == "sign" && args.Length == 3 => Tool.Sign(args[1], args[2]),
+    _ when args[0] == "verify-release" && args.Length == 2 => Tool.VerifyRelease(args[1]),
     _ => Usage(),
 };
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: (no args) | keygen <dir> | manifest <dir> <ver> <min> [blocklist] [channel] | sign <file> <keyfile>");
+    Console.Error.WriteLine("usage: (no args) | keygen <dir> | manifest <dir> <ver> <min> [blocklist] [channel] | sign <file> <keyfile> | verify-release <dir>");
     return 2;
 }
 
@@ -51,15 +53,17 @@ internal static class Dev
     }
 
     public static string ManifestJson(string version, string min, string[] blocklist, string channel,
-        IEnumerable<(string File, string Sha, long Size, string Kind)> packages, int schema = 1)
+        IEnumerable<(string File, string Sha, long Size, string Kind)> packages, int schema = 1,
+        string? releasedAt = null)
     {
+        releasedAt ??= DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
         var sb = new StringBuilder();
         sb.Append("{\n  \"schema\": ").Append(schema).Append(",\n");
         sb.Append("  \"channel\": \"").Append(channel).Append("\",\n");
         sb.Append("  \"version\": \"").Append(version).Append("\",\n");
         sb.Append("  \"min_version\": \"").Append(min).Append("\",\n");
         sb.Append("  \"blocklist\": [").Append(string.Join(", ", blocklist.Select(b => $"\"{b}\""))).Append("],\n");
-        sb.Append("  \"released_at\": \"2026-09-14T12:00:00Z\",\n");
+        sb.Append("  \"released_at\": \"").Append(releasedAt).Append("\",\n");
         sb.Append("  \"packages\": [\n");
         sb.Append(string.Join(",\n", packages.Select(p =>
             $"    {{\"file\": \"{p.File}\", \"sha256\": \"{p.Sha}\", \"size\": {p.Size}, \"kind\": \"{p.Kind}\"}}")));
@@ -83,7 +87,12 @@ internal static class Tool
     public static int Manifest(string[] a)
     {
         string dir = a[1], version = a[2], min = a[3];
-        string[] block = a.Length > 4 && a[4].Length > 0 ? a[4].Split(',') : Array.Empty<string>();
+        // "-" means no blocklist. Windows PowerShell 5.1 drops an empty string
+        // argument to a native command entirely, which silently shifted the
+        // channel into this slot and produced blocklist ["win"] -- a manifest
+        // every client rejects, because a blocklist entry must parse as x.y.z.
+        string blockArg = a.Length > 4 && a[4] != "-" ? a[4] : "";
+        string[] block = blockArg.Length > 0 ? blockArg.Split(',') : Array.Empty<string>();
         string channel = a.Length > 5 ? a[5] : "win";
         var packages = Directory.EnumerateFiles(dir, $"*-{version}-*.nupkg").Select(f =>
         {
@@ -102,6 +111,29 @@ internal static class Tool
     {
         byte[] key = Convert.FromHexString(File.ReadAllText(keyFile).Trim());
         File.WriteAllBytes(file + ".sig", Dev.Sign(File.ReadAllBytes(file), key));
+        return 0;
+    }
+
+    public static int VerifyRelease(string dir)
+    {
+        byte[] manifest = File.ReadAllBytes(Path.Combine(dir, UpdateKeys.ManifestAssetName));
+        byte[] signature = File.ReadAllBytes(Path.Combine(dir, UpdateKeys.SignatureAssetName));
+        var decision = ManifestVerifier.Evaluate(manifest, signature, UpdateKeys.ProductionPublicKey,
+            UpdateKeys.Channel, new ReleaseVersion(0, 0, 0));
+        if (!decision.Trusted)
+        {
+            Console.Error.WriteLine("Release manifest rejected: " + decision.Rejection);
+            return 1;
+        }
+        foreach (var package in decision.Manifest!.Packages)
+        {
+            if (!ManifestVerifier.VerifyPackageFile(Path.Combine(dir, package.File), package))
+            {
+                Console.Error.WriteLine("Release package hash/size mismatch: " + package.File);
+                return 1;
+            }
+        }
+        Console.WriteLine("Release manifest and packages verified with the pinned production key.");
         return 0;
     }
 }
