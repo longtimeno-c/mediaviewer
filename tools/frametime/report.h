@@ -33,6 +33,20 @@ struct report {
   bool static_run = false;
   bool complete = false;
   bool meets_gate = false;
+
+  // PR 7's no-pop instrument. Only the Windows lab writes these (the Metal lab
+  // decodes nothing yet), so they are optional at parse time and default to
+  // values that cannot pass no_pop_gate: a report without them proves nothing
+  // about a preview → full swap and must not read as if it did.
+  bool has_refine = false;
+  std::uint64_t refinements = 0;
+  std::uint64_t refine_fades_started = 0;
+  std::uint64_t refine_fades_completed = 0;
+  std::uint64_t refine_fades_cancelled = 0;
+  std::uint64_t refine_fade_frames = 0;
+  std::uint64_t refine_fade_dropped = 0;
+  double refine_max_edge_shift_px = 0.0;
+  double refine_max_scale_step = 1.0;
 };
 
 inline std::optional<std::string> field(const std::string& json, const char* key) {
@@ -101,6 +115,25 @@ inline std::optional<report> parse(const std::string& json) {
   const auto source = field(json, "drop_source");
   if (!source || !known_drop_source(*source)) return std::nullopt;
   r.drop_source = source->substr(1, source->size() - 2);
+  // All of the no-pop block, or none of it. A half-written block is a malformed
+  // report, not a partial pass.
+  const bool any_refine = field(json, "still_refinements").has_value() ||
+                          field(json, "refine_fades_started").has_value() ||
+                          field(json, "refine_max_edge_shift_px").has_value();
+  if (any_refine) {
+    if (!count(json, "still_refinements", r.refinements) ||
+        !count(json, "refine_fades_started", r.refine_fades_started) ||
+        !count(json, "refine_fades_completed", r.refine_fades_completed) ||
+        !count(json, "refine_fades_cancelled", r.refine_fades_cancelled) ||
+        !count(json, "refine_fade_frames", r.refine_fade_frames) ||
+        !count(json, "refine_fade_dropped", r.refine_fade_dropped) ||
+        !scalar(json, "refine_max_edge_shift_px", r.refine_max_edge_shift_px) ||
+        !scalar(json, "refine_max_scale_step", r.refine_max_scale_step) ||
+        r.refine_max_edge_shift_px < 0.0 || r.refine_max_scale_step < 1.0) {
+      return std::nullopt;
+    }
+    r.has_refine = true;
+  }
   return r;
 }
 
@@ -130,6 +163,26 @@ inline bool passes(const report& r, bool static_run, double seconds) {
   return r.complete && r.meets_gate && r.static_run == static_run &&
          (static_run ? r.idle_elapsed_seconds : r.elapsed_seconds) >= seconds &&
          (static_run ? idle_gate(r) : cadence_gate(r, "DXGI frame statistics"));
+}
+
+// PR 7: "the full decode replaces it without a visible pop". The measurable
+// half, over a soak that opened a still with a preview (a RAW's embedded JPEG,
+// a JPEG's DCT 1/4). Asserting, in order:
+//   * a preview → full swap actually happened — a run that never refined
+//     cannot pass by having nothing to measure;
+//   * every fade reached alpha 1 and none was cut short (a cut fade IS a pop);
+//   * the fade was drawn over more than one frame, so it is a fade and not a
+//     one-frame dissolve that happens to satisfy the counters;
+//   * no frame was dropped inside a fade window;
+//   * the view did not jump: a corner of the picture moved under a pixel, and
+//     its on-screen size changed by under 1 % (the preview and the full decode
+//     differ by a pixel or two of aspect on some RAWs, which is not a pop).
+inline bool no_pop_gate(const report& r) {
+  return r.has_refine && r.refinements >= 1 && r.refine_fades_started >= 1 &&
+         r.refine_fades_completed == r.refine_fades_started && r.refine_fades_cancelled == 0 &&
+         r.refine_fade_frames >= r.refine_fades_started * 2 && r.refine_fade_dropped == 0 &&
+         std::isfinite(r.refine_max_edge_shift_px) && r.refine_max_edge_shift_px <= 1.0 &&
+         std::isfinite(r.refine_max_scale_step) && r.refine_max_scale_step <= 1.01;
 }
 
 inline bool passes_pr16(const report& r, bool static_run, double seconds) {

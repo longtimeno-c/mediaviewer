@@ -7,8 +7,10 @@ Windows integration follow in future updates. **v1 is Windows.** From PR 4 the n
 kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
 
-**Status: PR 7's slices are all merged and pass locally; its clean-VM HEIC, real
-Live Photo and on-screen no-pop checks are still open. PR 8 packages the Windows viewer
+**Status: PR 7's slices are all merged and pass locally. Its clean-VM HEIC, real
+Live Photo and on-screen no-pop checks now have gates around them
+([Where this actually is](#where-this-actually-is)); what remains of those three
+is a clean VM, a phone and one look at a RAW opening. PR 8 packages the Windows viewer
 for its first release. PRs 9–15 are future feature updates. PR 16 Metal present lab is in
 the tree and unverified on Apple Silicon.** The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
@@ -279,8 +281,20 @@ cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
 
+# PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
+# loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or
+# \WindowsApps\ module. Its own executable, because once mfplat.dll is in a
+# process it never leaves and the assertion could not be made again.
+ctest --test-dir build -C Release -L cleanvm --output-on-failure
+
 # the frame-time gate — 60 seconds, needs a quiet machine
 .\build\bin\Release\frametime.exe --seconds 60
+
+# PR 7 no-pop gate: open a still that has a preview (a RAW, or any JPEG), soak,
+# and fail if the preview → full swap popped — a cross-fade cut short, a view
+# that jumped, or a frame dropped inside the fade. PR 1's cadence is judged on
+# the same run, so a short run is diagnostic only.
+.\build\bin\Release\frametime.exe --no-pop tools\testmedia\raw\canon_eos7dmk2.cr2 --seconds 62
 
 # PR 5b's A/V drift soak. Writes a CSV of position, error percentiles, the
 # least-squares drift slope and the present counters, one row a second.
@@ -495,9 +509,42 @@ media is not in git: `tools/testmedia/fetch-raw.ps1` and `fetch-heif.ps1`
 download pinned, hash-checked samples, and the tests that need them skip
 visibly without them (`MV_REQUIRE_CORPUS=1` makes that a failure). Generated
 HEIC/AVIF fixtures live in `tests/data/`; `MV_OS_CODEC=0` forces the bundled HEIC
-decoder, as on a clean VM. Not yet demonstrated: an iPhone HEIC on a clean VM
-with no Store packs, a real iPhone Live Photo, and the no-pop preview→full swap
-on screen.
+decoder, as on a clean VM.
+
+The three clauses that used to be "a person must squint at it" are now measured
+as far as they can be without a clean VM and a phone:
+
+- **Clean VM.** `mv_clean_vm_tests` (`ctest -L cleanvm`) decodes a HEIC with
+  `MV_OS_CODEC=0` and then reads the process module list: `heif.dll` and
+  `libde265.dll` must be mapped, and Media Foundation, the WIC codec extensions
+  and anything under `\WindowsApps\` must not be. The disabled path is also
+  asserted to load *no* module at all, so the `MFTEnumEx` probe cannot creep
+  back in. It is a separate executable: inside `mv_tests` an earlier video case
+  has already loaded `mfplat.dll` and "absent" could never be shown again.
+  What is left for a person: open an iPhone HEIC on a genuinely clean VM.
+- **Live Photo.** `tests/test_live_photo.cpp` lists a *real* directory shaped
+  like a camera roll — `IMG_0001.HEIC` + `.MOV`, the "Most Compatible" JPG pair,
+  the `.AAE` sidecar, the `IMG_E####` edited copy, an iCloud `(1)` duplicate, a
+  still whose motion half never came down, a plain clip — with real HEIC bytes,
+  and checks the stops, their order and which half is primary. A *hidden* motion
+  half must not be attached to a still. With the corpus present, the pair's MOV
+  is a real playable clip and `;`'s own ABI calls are asserted to put motion on
+  the canvas. What is left for a person: confirm a file straight off a phone
+  carries these names, and that an iPhone's HEVC motion track plays.
+- **No pop.** The lab counts what a pop is made of — the worst corner shift of
+  the picture's on-screen rectangle across the swap, the worst step in its
+  on-screen size, whether every cross-fade reached alpha 1, and any frame
+  dropped inside a fade — in the `--json` report and on `F3`.
+  `frametime --no-pop <image>` gates them together with PR 1's cadence.
+  Measuring it found a real pop: a still refines twice (`full_top`, then `full`
+  with its mips) and the second publish used to restart the cross-fade, snapping
+  the outgoing preview out at alpha 0.6 — on a RAW, most of the
+  preview-to-render brightness difference in one frame. A same-size refinement
+  arriving mid-fade now swaps the incoming texture under the running fade. A
+  62 s soak on the Canon CR2 then passed both gates on the development box: one
+  fade, started and completed, 15 frames, no drops, 0.70 px of view shift. The
+  PR 1 caveat above still applies — this is a developer box, not the quiet GPU
+  runner. What is left for a person: look at a RAW opening, once.
 
 PR 5's verify lines are:
 

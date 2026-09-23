@@ -833,6 +833,60 @@ ask-only-with-an-endpoint check exist, but no endpoint exists yet, so there is n
 to ask. It lands with the upload path in PR 8 and must not stack with other first-run
 prompts. Crashes inside the OS-codec probe (before the bundled dispatch) are not annotated.
 
+## 2026-09-20 — PR 7's three human checks, turned into gates where they could be
+
+The PR 7 verify line has three clauses that read as "a person looks at it": an iPhone
+HEIC on a clean VM, a real Live Photo, and the preview → full swap not popping. None can
+be produced from this machine, and none is marked passed. What changed is how much of
+each is asserted by a test rather than resting on a look.
+
+**Clean VM (`tests/test_clean_vm_heic.cpp`, target `mv_clean_vm_tests`, label `cleanvm`).**
+`MV_OS_CODEC=0` was described as standing in for a clean VM, and was only ever checked to
+make `try_os_decode` decline. Nothing checked what did the decoding afterwards. The new
+test decodes a HEIC with the switch off and reads the process module list: libheif and
+libde265 must be mapped, and Media Foundation, the WIC codec extensions and anything under
+`\WindowsApps\` must not be. It also asserts the disabled path loads no module at all, so
+the `MFTEnumEx` probe cannot return unnoticed. Its own executable, because the assertion is
+one-way: inside `mv_tests` an earlier video case has already pulled in `mfplat.dll`.
+`codec/os_decode_win.cpp` is the only TU in the tree that touches WIC or Media Foundation,
+so that switch really is the whole OS-codec surface for stills.
+
+**Live Photo (`tests/test_live_photo.cpp`).** Pairing was tested on hand-made `dir_entry`
+structs and, at the ABI, on renamed BMPs. It is now also tested on a real directory shaped
+like a camera roll, through `list_still_files` + `pair_listing`, and — with the corpus
+present — with a real playable clip as the motion half, opened through the same ABI calls
+`;` makes. Two shapes worth naming: `IMG_E####` (iOS's edited copy) is correctly its own
+stop with the original's pair intact, and a *hidden* motion half is not attached to a
+still. Pairing stays name-only; the ContentIdentifier check is still PR 9's (row 7 of
+2026-09-14).
+
+**No pop — and a real defect found.** The lab now measures what a pop is made of: the worst
+corner displacement of the picture's on-screen rectangle across `camera_.refine`, the worst
+step in its on-screen size, whether every cross-fade reached alpha 1, and any dropped frame
+inside a fade window. They are in the `--json` report, on `F3`, and gated by
+`frametime --no-pop <image>` together with PR 1's cadence.
+
+Measuring it found that a still refines **twice** — `full_top` when the top level exists,
+then `full` with its mip chain, the same pixels both times — and the second publish
+restarted the cross-fade. On a Canon CR2 that snapped the outgoing embedded JPEG out at
+alpha 0.6 in a single frame, which on a RAW is most of the 7–41 luma levels between the
+preview and LibRaw's render. That is the pop the verify line forbids, and it had been there
+all along. **Call:** a same-size refinement arriving while a fade is running swaps the
+incoming texture under the running fade instead of starting a new one, so the preview fades
+out once, continuously. A 62 s soak on the CR2 then passed the no-pop gate and PR 1's
+cadence gate on the development box — not the quiet GPU runner, so PR 1's own caveat stands.
+
+**LibRaw's 0.8–1.7 s full decode (row 6 of 2026-09-14) — still open, options priced.**
+vcpkg's `libraw` 0.22.2 port does expose an `openmp` feature, so it is a one-line manifest
+change, but not a free one: it puts an OpenMP thread pool inside a decode worker that
+already runs on our job system (plan/02's five thread roles), adds the MSVC OpenMP runtime
+to what PR 8 has to ship, and does nothing about the cancel granularity of one LibRaw
+stage. Against that: PR 7's verify line asks for "preview time comparable to a JPEG", which
+is met at 11–69 ms; the 500 ms figure is plan/09's target for the full decode, which the
+preview already hides, and the swap out of it is now gated. The recommendation is to accept
+the miss for v1 and record it rather than take a threading change into a packaging PR.
+**Still the owner's call — not settled here.**
+
 ## 2026-09-23 — macOS first install mirrors the PR 8 wizard, as a disk image
 
 Not a D1–D9 reversal and not a sequencing change: it lands in **PR 20**, and PR 8 is

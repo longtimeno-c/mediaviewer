@@ -135,6 +135,11 @@ class pacer {
 
   [[nodiscard]] pace_stats stats() const noexcept;
 
+  // The drop counter on its own. stats() walks a 1201-bucket histogram to build
+  // percentiles; a per-frame caller (PR 7's no-pop instrument, which attributes
+  // drops to cross-fade windows) needs only this.
+  [[nodiscard]] std::uint64_t dropped_frames_so_far() const noexcept { return dropped_frames_; }
+
   // Rolling history for the overlay graph, oldest to newest, in milliseconds.
   static constexpr std::size_t history_size = 240;
   [[nodiscard]] const std::array<float, history_size>& history() const noexcept {
