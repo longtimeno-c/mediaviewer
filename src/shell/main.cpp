@@ -21,6 +21,7 @@
 #include "io/dir.h"
 
 #include <cmath>
+#include <atomic>
 #include <iterator>
 #include <map>
 #include <cwchar>
@@ -174,7 +175,15 @@ struct app_state {
 
 // PR 8 updater (shell/update_guard.h). Set once at startup on the UI thread.
 mv::shell::update::install_layout g_install;
+// Set on the UI thread when the confirm is STARTED. The worker below may not
+// have finished when the process exits, which is why the exit path watches the
+// atomic rather than this.
 bool g_start_confirmed = false;
+// Set by the confirm worker once trial.ini has actually been written. That
+// worker is detached, so without this a process that exits soon after the 10 s
+// timer leaves the record armed - and a perfectly good version started and
+// closed quickly three times is rolled back for nothing.
+std::atomic<bool> g_start_confirm_done{false};
 // What an update restart asked us to put back (--restore-*). Applied once.
 struct pending_restore {
   unsigned zoom_percent = 0;
@@ -191,6 +200,7 @@ void confirm_update_start_async() noexcept {
     // after an update at which Velopack has finished writing its own entry.
     std::thread([layout = g_install] {
       mv::shell::update::confirm_started(layout);
+      g_start_confirm_done.store(true, std::memory_order_release);
       (void)mv::shell::update::remove_velopack_uninstall_entry(layout);
     }).detach();
   } catch (...) {
@@ -2479,9 +2489,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // PR 8 updater, exit path (the window is gone): an orderly exit of a version
   // whose chrome attached is a successful start; then any staged update is
   // handed to Update.exe to apply after this process exits (no restart).
-  if (g_install.installed() && !g_start_confirmed && (!app.chrome_enabled || app.chrome.loaded())) {
+  // Not `!g_start_confirmed`: that flag only says the confirm was STARTED, and
+  // the worker that does the write is detached. Re-running it here when the
+  // worker has not reported done is one small file write and is idempotent -
+  // confirm_started returns early unless [trial] still names this version.
+  if (g_install.installed() && !g_start_confirm_done.load(std::memory_order_acquire) &&
+      (!app.chrome_enabled || app.chrome.loaded())) {
     g_start_confirmed = true;
     mv::shell::update::confirm_started(g_install);
+    g_start_confirm_done.store(true, std::memory_order_release);
   }
   app.chrome.updater_exit();
   if (!mv::shell::app_settings().flush(1000)) {

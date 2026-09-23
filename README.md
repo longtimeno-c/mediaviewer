@@ -694,11 +694,28 @@ machine:
   which is a hole the wizard does not yet fill.
 - **No SmartScreen block** cannot be true of an unsigned artefact, and cannot be tested
   without a signing credential. See [Package and install](#package-and-install-pr-8).
-- The update staging and rollback end-to-end script (`tools/package/e2e-update.ps1`) has
-  had two bugs fixed but has not been run to completion here; it needs a Release build and
-  several minutes of process launches.
+- `tools/package/e2e-update.ps1` now runs to completion: **15 of 16 steps pass**. A
+  tampered manifest stages nothing; a signed one downloads while the viewer runs, keeps
+  the previous package for rollback, and applies on exit **without showing the wizard**; a
+  build that never finishes starting is counted twice and rolled back on the third start,
+  recorded as failed, and not offered again. The one failure is "0.1.1 start confirmed
+  (trial cleared)" — see below.
 - The browse/play/pan/fullscreen/slideshow pass over a real camera dump, on the installed
   build rather than the build tree, and PR 1's present-loop verify against it.
+
+**Known defect — the start confirmation.** A version that starts properly should clear its
+`[trial]` record after ten seconds, so that a *good* version is never counted toward the
+two-failed-starts rollback. In the e2e run that step fails. The consequence is not
+theoretical: a healthy version that is opened and closed quickly three times would be
+rolled back for nothing.
+
+One cause is fixed — the confirm ran on a detached thread whose completion nothing waited
+for, so a process exiting shortly after the timer left the record armed; the exit path now
+re-runs the confirm unless the worker reported done, which is idempotent and cheap. Whether
+that was the *only* cause is unconfirmed: the e2e publishes a dev chrome build over the
+payload, and both confirm paths are gated on the chrome island having attached, so an
+island that does not attach in that environment would produce the same symptom. Re-run the
+script after a rebuild before believing it is closed.
 
 PR 8 creates no PR 15 file associations or handlers. The place they must be removed at
 uninstall is marked in `tools/package/mediaviewer.iss`.
