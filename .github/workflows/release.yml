@@ -2,8 +2,7 @@
 #
 # PR 8 release pipeline (plan/13 Part 1, plan/11).
 #
-#   push tag v*       -> packages both hosts, uploads workflow artefacts
-#   workflow_dispatch -> the same, on demand
+#   workflow_dispatch -> packages both hosts, uploads workflow artefacts
 #
 # CI does NOT create GitHub Releases. Releases are cut locally and uploaded by
 # hand (RELEASING.md), because the signing keys live on the release machine and
@@ -18,15 +17,13 @@
 #   TRUSTED_SIGNING_ENDPOINT, TRUSTED_SIGNING_ACCOUNT, TRUSTED_SIGNING_PROFILE
 #   MV_MANIFEST_SIGNING_KEY   Ed25519 private key, hex (tools/package/update-signing.md)
 #
-# A tag build FAILS without both signing paths, so a tag can never produce an
-# artefact users could not verify. A manual dispatch warns and continues, which
-# is what makes the packaging testable before the secrets exist.
+# Nothing here runs on a push. Tagging a release must not start a four-hour
+# two-platform build that cannot sign anything anyway; the tag is cut locally
+# with the artefacts already in hand.
 
 name: Release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       min_version:

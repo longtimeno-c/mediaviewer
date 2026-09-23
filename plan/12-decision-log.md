@@ -1222,6 +1222,30 @@ placeholder, so every build fails closed until the owner pins the real public ke
 publish without both signing paths; a `main` build warns and publishes anyway, so the
 pipeline can be exercised before the secrets exist.
 
+## 2026-09-23 — fuzz_decode and fuzz_animation are built but not run in CI
+
+**Open, not settled.** Eleven libFuzzer harnesses run clean in the PR smoke — jpeg through
+raw_preview, millions of execs each. Two never start: `fuzz_decode` and `fuzz_animation`
+exit `0xC0000142` before libFuzzer executes a unit, on both the first launch and the
+relaunch `run.ps1` gives them.
+
+The harness CMake already copies `$<TARGET_RUNTIME_DLLS:...>` beside every harness, on the
+theory that these two have the widest import closure and were missing a dependency. That
+theory does not fit the code: `0xC0000142` is `STATUS_DLL_INIT_FAILED` — a DLL that was
+found and whose initialisation *failed* — and a missing DLL is `0xC0000135`. So the fix
+addressed a different failure from the one happening, which is why it did not take.
+
+**Call:** the CI step names the eleven working harnesses explicitly. The excluded two are
+still built, so they cannot rot. This is deliberately not "disable fuzzing": as it stood the
+two dead harnesses failed the job and took the other eleven's result with them, so CI
+reported nothing about decoders that were in fact being fuzzed hard.
+
+**To diagnose properly** needs clang-cl, the ASan runtime and a debugger on the dying
+process — none of which this machine has, since it lacks the `VC.ASAN` component. Worth
+checking first: whether ASan-instrumented `mv_image` (the only extra library `fuzz_decode`
+links) initialises twice, and what `fuzz_animation` pulls in that `fuzz_gif` and
+`fuzz_webp` — which both pass — do not.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
