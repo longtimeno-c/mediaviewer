@@ -175,7 +175,22 @@ class broken_corpus_listener final : public Catch::EventListenerBase {
   using Catch::EventListenerBase::EventListenerBase;
 
   void testRunStarting(const Catch::TestRunInfo&) override {
-    ::AddVectoredExceptionHandler(1, &on_fatal_seh);
+    // Not under ASan. On x64 the ASan shadow region is several terabytes of
+    // reserved-but-uncommitted address space, and ASan commits it on demand:
+    // "When a shadow page is accessed for the first time, a first-chance page
+    // fault exception occurs and is handled by ASan, which commits the page."
+    // https://learn.microsoft.com/cpp/sanitizers/asan-known-issues
+    //
+    // Those faults are EXCEPTION_ACCESS_VIOLATION, which is the first code
+    // on_fatal_seh matches, and `1` here means "ahead of everyone else in the
+    // chain", including ASan's own handler. So under ASan this reports a fatal
+    // SEH for routine housekeeping, names whichever file happened to be in
+    // g_current_name, and writes a reproducer for a crash that never happened
+    // -- and it does its fprintf and WriteFile from inside a handler that can
+    // fire while ASan holds its allocator lock, which is a deadlock waiting to
+    // be scheduled. ASan reports a real decoder crash itself, with a better
+    // stack than this can produce, so there is nothing to give up.
+    if (!kAsan) ::AddVectoredExceptionHandler(1, &on_fatal_seh);
     if (const char* dir = std::getenv("MV_BROKEN_DUMP"); dir && *dir) {
       std::error_code ec;
       fs::create_directories(dir, ec);
