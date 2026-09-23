@@ -42,6 +42,8 @@ final class FolderStore: ObservableObject {
   @Published private(set) var markedCount: Int = 0
   /// Gallery cell edge in points (plan/16 `+`/`-`: 24 pt steps, 80-344, start 152).
   @Published private(set) var galleryCellSize: CGFloat = 152
+  /// A staged update is waiting for the user (plan/13 "Update ready — restart").
+  @Published private(set) var updateReady = false
 
   private var slots: [String: ThumbSlot] = [:]
   // Names asked for and not yet failed/evicted, so scrolling back and forth
@@ -90,6 +92,8 @@ final class FolderStore: ObservableObject {
       reloadMarks()
     }
     if count != itemCount { itemCount = count }
+    let ready = mv_chrome_update_ready()
+    if ready != updateReady { updateReady = ready }
     if index != currentIndex {
       currentIndex = index
       prefetch(around: index)

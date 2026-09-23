@@ -89,10 +89,16 @@ void try_load_font() noexcept {
   char* slash = std::strrchr(resolved, '/');
   if (!slash) return;
   *slash = '\0';
-  char font_path[PATH_MAX]{};
-  if (std::snprintf(font_path, sizeof(font_path), "%s/CozetteVector.ttf", resolved) <= 0) return;
-  if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16.0f)) {
-    ImGui::GetIO().FontDefault = font;
+  // MediaViewer.app keeps the font in Contents/Resources (codesign refuses
+  // data files in Contents/MacOS); the bare lab keeps it beside the binary.
+  for (const char* rel : {"/../Resources/CozetteVector.ttf", "/CozetteVector.ttf"}) {
+    char font_path[PATH_MAX]{};
+    if (std::snprintf(font_path, sizeof(font_path), "%s%s", resolved, rel) <= 0) continue;
+    if (::access(font_path, R_OK) != 0) continue;
+    if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16.0f)) {
+      ImGui::GetIO().FontDefault = font;
+    }
+    return;
   }
 }
 
@@ -609,6 +615,7 @@ void present_lab_mac::render_thread_main() noexcept {
                            static_cast<float>(current_image_->height),
                            static_cast<float>(snapshot.width), usable_window_h(snapshot));
           } else {
+            stills_shown_.fetch_add(1, std::memory_order_acq_rel);
             camera_.reset();
             camera_.fit(static_cast<float>(current_image_->width),
                         static_cast<float>(current_image_->height),
