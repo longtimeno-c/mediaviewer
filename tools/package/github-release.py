@@ -111,6 +111,34 @@ def api_optional(endpoint):
         raise
 
 
+def release_by_tag(repo, tag):
+    # The /releases/tags endpoint can return 404 for an unpublished draft.
+    # Authenticated release listings include drafts; paginate to support retries
+    # even when the desired draft is not on the first page.
+    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100'))
+    return next((release for page in pages for release in page if release['tag_name'] == tag), None)
+
+
+def release_notes(version, mode, repo, tag, sha):
+    base = f'https://github.com/{repo}/releases/download/{tag}'
+    text = ('## Downloads\n\n'
+            f'- **[Download for Windows (x64)]({base}/MediaViewer-{version}-Setup.exe)** '
+            '- run the installer.\n'
+            f'- **[Download for Mac (Apple Silicon, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
+            '- open the disk image and drag MediaViewer to Applications.\n\n')
+    if mode == 'preview':
+        text += ('Other assets below provide download checksums and source code.\n\n'
+                 'Unsigned test build. Windows SmartScreen may warn; macOS Gatekeeper may block '
+                 'the unnotarized app. The Mac preview has no automatic updater; install the '
+                 'stable version manually later. This prerelease does not change the stable update feed.\n')
+    else:
+        text += ('You only need the installer for your platform. Other assets below support '
+                 'automatic updates, download verification, and source-code access.\n\n'
+                 'Windows Authenticode signing is optional; if unavailable, SmartScreen '
+                 'may warn on first installation.\n')
+    return text + f'\nSource commit: {sha}\n'
+
+
 def publish(folder):
     mode, version, tag, repo, sha = (os.environ[name] for name in
                                    ('MODE', 'VERSION', 'TAG', 'GITHUB_REPOSITORY', 'GITHUB_SHA'))
@@ -118,7 +146,7 @@ def publish(folder):
         raise ValueError('Only preview or stable may publish')
     version_tuple(version)
     assets = validate_assets(folder, version, mode, repo, tag)
-    existing = api_optional(f'repos/{repo}/releases/tags/{tag}')
+    existing = release_by_tag(repo, tag)
     if existing and (not existing['draft'] or existing['target_commitish'] != sha):
         raise ValueError('Refusing to overwrite a published release or a draft from another commit')
     ref = api_optional(f'repos/{repo}/git/ref/tags/{tag}')
@@ -135,23 +163,15 @@ def publish(folder):
                                  for p in sorted(assets)), encoding='utf-8')
     assets.append(checksums)
     notes = folder / 'release-notes.md'
-    text = ('Windows x64: download the Setup.exe installer.\n\n'
-            'macOS 14+ on Apple Silicon: download the .dmg and drag MediaViewer to Applications.\n\n')
-    if mode == 'preview':
-        text += ('Unsigned test build. Windows SmartScreen may warn; macOS Gatekeeper may block '
-                 'the unnotarized app. The Mac preview has no automatic updater; install the '
-                 'stable version manually later. This prerelease does not change the stable update feed.\n')
-    else:
-        text += ('Includes the Windows and macOS update feeds. Windows Authenticode signing is '
-                 'optional; if unavailable, SmartScreen may warn on first installation.\n')
-    text += f'\nSource commit: {sha}\n'
-    notes.write_text(text, encoding='utf-8')
+    notes.write_text(release_notes(version, mode, repo, tag, sha), encoding='utf-8')
     if not existing:
         gh('release', 'create', tag, '--repo', repo, '--target', sha, '--draft',
            '--title', f'MediaViewer {version}' + (' (unsigned preview)' if mode == 'preview' else ''),
            '--notes-file', str(notes))
     gh('release', 'upload', tag, '--repo', repo, '--clobber', *(str(p) for p in assets))
-    uploaded = json.loads(gh('api', f'repos/{repo}/releases/tags/{tag}'))
+    uploaded = release_by_tag(repo, tag)
+    if not uploaded or not uploaded['draft'] or uploaded['target_commitish'] != sha:
+        raise ValueError('Expected draft from this source commit; refusing publication')
     actual = {a['name']: a['size'] for a in uploaded['assets']}
     if actual != {p.name: p.stat().st_size for p in assets}:
         raise ValueError('Draft assets differ from the validated set; leaving draft unpublished')
@@ -173,5 +193,7 @@ if __name__ == '__main__':
             publish(Path(sys.argv[2]))
         else:
             raise ValueError('usage: github-release.py prepare | publish <assets-directory>')
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    except subprocess.CalledProcessError as error:
+        sys.exit(f'{error}\n{(error.stderr or "").strip()}')
+    except (ValueError, KeyError, OSError) as error:
         sys.exit(str(error))

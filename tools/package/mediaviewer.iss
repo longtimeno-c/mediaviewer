@@ -18,11 +18,11 @@
 ;
 ; NOT in this wizard, deliberately:
 ;   * silently becoming the default app - Windows does not allow it. The wizard
-;     registers the associations ([Registry]) and offers, unticked, to open
+;     registers the associations ([Registry]) and offers, pre-ticked, to open
 ;     Settings > Default apps on the Finish page. The in-app ask (plan/09) stays.
 ;   * telemetry - the first-run screen inside the app (plan/13 Part 3).
 ;   * "install for all users" - see above.
-;   * anything pre-ticked beyond the Start Menu shortcut.
+;   * pre-ticked promotional links or telemetry.
 ;
 ; Build it through tools/package/build-release.ps1, which passes every
 ; /D below. Compiling this file by hand will fail on the first #error.
@@ -110,13 +110,13 @@ Source: "{#MvPayloadSetup}"; Flags: dontcopy
 
 [Run]
 ; Finish page. "Launch" is the primary checkbox; GitHub and Licence are the two
-; secondary links. Nothing here is pre-ticked except Launch, and nothing opens
+; secondary links. Launch and the default-app setup are pre-ticked. Nothing opens
 ; a browser unless the user asks for it (plan/13: do not auto-open the repo).
 Filename: "{app}\MediaViewer.exe"; Description: "Launch {#MvAppName}"; \
   Flags: nowait postinstall skipifsilent
-; Opens Settings > Default apps on MediaViewer. Unticked: Windows makes the user
+; Opens Settings > Default apps on MediaViewer. Pre-ticked: Windows makes the user
 ; confirm the choice there, and nothing is taken silently.
-Filename: "ms-settings:defaultapps?registeredAppUser=MediaViewer";   Description: "Choose MediaViewer as the default for photos and video";   Flags: nowait postinstall skipifsilent shellexec unchecked
+Filename: "ms-settings:defaultapps?registeredAppUser=MediaViewer";   Description: "Choose MediaViewer as the default for all supported photos and videos (opens Settings)";   Flags: nowait postinstall skipifsilent shellexec
 Filename: "{#MvRepoUrl}"; Description: "Visit the project on GitHub"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
 Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-2.0-or-later)"; \

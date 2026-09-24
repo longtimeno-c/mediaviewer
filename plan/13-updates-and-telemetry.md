@@ -75,15 +75,16 @@ Pages, in order. Do not add more.
 6. **Finish.** Primary button: **Launch MediaViewer**. Secondary links: **GitHub**
    (`https://github.com/longtimeno-c/mediaviewer`) and **Licence**. Do not auto-open the
    repo, and do not pre-tick "Star us" / "Open GitHub".
+   The default-app setup checkbox is **on** (user request, 2026-09-24). It opens Windows
+   Default Apps for the user to confirm associations for supported photos and videos;
+   unticking it skips that step. Silent installs do not open Settings.
 
 **Not in the wizard** — these are in-app, once, later:
 
-- Default photo viewer (PR 15: after the first successful still open).
 - Telemetry (first-run screen in the app, default off, no pre-ticked box).
 
-A "set as default" checkbox on page 4 would silently fight `UserChoice` and would ask
-before the user has seen a single photo. A telemetry checkbox in setup is the same dark
-pattern the first-run screen exists to avoid. Do not stack either with the licence page.
+The default-app option never writes `UserChoice`; Windows owns the confirmation.
+Telemetry remains separate from setup and the licence page.
 
 Uninstall is Inno's uninstaller, registered under Apps & features. It removes the Start Menu and desktop
 shortcuts and the install directory (including leftover `app-*` folders). PR 8 ships
@@ -111,10 +112,10 @@ the running version, the GPL, a link to the GitHub repo, `THIRD-PARTY.md`, and t
 **LGPL source offer for this build** — not a frozen snapshot from v1.0
 ([11-licensing.md](11-licensing.md)).
 
-## macOS first install — a branded disk image (PR 20)
+## macOS first install — a branded disk image (Mac PR 8)
 
 Same idea as the Windows wizard, in the Mac idiom: a short, branded first meeting, once,
-then silent updates. It lands with **PR 20** (Milestone F, **D9**), not in PR 8, and
+then silent updates. It is the **Mac half of PR 8** (built as old PR 20, **D9**), and
 nothing here changes what PR 8 ships. Recorded in [12](12-decision-log.md) 2026-09-23.
 
 | | First install | Every later update |
@@ -143,9 +144,13 @@ What the disk image holds. Do not add more.
    (`https://github.com/longtimeno-c/mediaviewer`) and the licence live in About. Do not
    auto-open the repo.
 
-**Not in the install** — same rule as Windows, in-app and once, later:
+First launch shows the default-viewer setup sheet with **Use MediaViewer for all supported
+photos and videos** checked (user request, 2026-09-24). Continue applies the selected
+choice through macOS; unticking it or Not Now leaves existing defaults alone. The choice
+is not shown again on updates, and the app menu keeps the command available later.
 
-- "Open with" / default viewer (PR 20: after the first successful still open).
+**Not in the install** — in-app and once, separately:
+
 - Telemetry (first-run screen in the app, default off, no pre-ticked box).
 
 **Icon.** The same mark as the Windows `.ico`, as one `.icns` (16–1024, @1x and @2x): app,
@@ -155,7 +160,7 @@ disk-image volume icon, Dock, and document icons for the UTIs. Not a second logo
 interrupt, restart when the user chooses, preserve state, staged rollout, minimum version /
 kill switch. The appcast is **EdDSA-signed** and checked against a key pinned in the app,
 like the Velopack manifest. Sparkle keeps no previous version, so "fails to start twice
-→ roll back" has no Mac mechanism yet. **Open for PR 20:** build it, or accept
+→ roll back" has no Mac mechanism yet. **Open for Mac PR 8:** build it, or accept
 kill-switch-only on Mac and log that call.
 
 **What Sparkle installs** is a zip of the stapled app, never the disk image: the licence
@@ -168,7 +173,7 @@ bundle, so it goes with it. What stays behind is the thumbnail cache
 (`~/Library/Caches/MediaViewer`) and preferences (`~/Library/Preferences/<bundle id>.plist`).
 A removal command is not needed.
 
-No per-machine / enterprise variant in PR 20.
+No per-machine / enterprise variant in Mac PR 8.
 
 ## Mechanics
 
@@ -197,6 +202,10 @@ and FFmpeg DLLs that change rarely. A typical app-only update is a few MB agains
 payload. Without deltas, every bug fix is a full download and users disable updates.
 Do not ship Windows App SDK AI / ONNX / DirectML / WebView2: they are not a dependency,
 and they are currently the largest files in a framework-dependent publish.
+The one planned exception is the **optional local-search pack**
+([17-local-ai-search.md](17-local-ai-search.md)): a separate download installed from Settings
+on explicit opt-in, verified against the signed manifest, never part of the base installer or
+its updates. The packaging assert on the base tree stays.
 
 ### Staging and restart
 
@@ -251,6 +260,11 @@ dying and writes the minidump regardless.
 
 Given that decoders parse hostile input ([09-build-and-test.md](09-build-and-test.md)), this is not
 a nicety. It is how you find out which camera's RAW variant crashes.
+
+**macOS:** the same Crashpad handler and the same scrub, landing in the **Mac half of PR 11**
+(owner, 2026-09-24). It was planned for old PR 17 and never landed. The second capture path on
+Mac is Swift/AppKit (an uncaught `NSException`, a Swift runtime trap) instead of .NET, tied to
+the native report by the same correlation id.
 
 ## Two capture paths, because D1 gave you two languages
 
@@ -315,8 +329,8 @@ One screen on first run, a real choice, no dark pattern, no pre-ticked box, and 
 turns it off later and actually does. For an app whose whole job is looking at people's private
 photos, anything else is a betrayal of the use case — and it will be the thing people write about.
 
-Do not follow it with a second modal. The default-photo-viewer prompt in
-[09](09-build-and-test.md) waits until after this choice, on the next successful still open.
+Keep telemetry separate from the default-viewer setup described above; do not stack
+their prompts. Telemetry remains off unless the user explicitly enables it.
 
 **Be honest that the update check itself is a network call.** It reveals IP, version, and rough
 timing even with telemetry off. Say so in the privacy note, and offer a setting to disable

@@ -26,7 +26,9 @@ per key-repeat is a bug, not a feature. The present-loop gate from PR 1 still ho
 | `?` overlay listing the **current mode's** bindings | |
 | Focus model that crosses canvas + XAML islands | |
 
-The Mac host (Milestone F) writes chrome twice (**D9**). Bindings live in the host; the
+The Mac host (Milestone F) writes chrome twice (**D9**). From PR 9 each row this table
+adds lands with a Mac default binding in the same PR (`⌘` for `Ctrl`; a chord wherever
+Windows assumes a numpad, e.g. rating is `⌘⇧0`–`5`). Bindings live in the host; the
 core exposes command *effects* through the existing ABI. Do not put Win32 virtual-key codes
 in `image/`, `player/`, `edit/`, or `meta/`.
 
@@ -354,12 +356,12 @@ Standard-viewer ideas that fail the speed bar, D4/D5, or "this is not a library"
 | Side-by-side compare workspace | v1.1. Hold-previous is the cheap cousin |
 | Burst-stack as one filmstrip item | Heuristic, can hide files. Live Photo / RAW+JPEG pairing is exact; burst grouping waits |
 | Print / contact sheet | v1.1. Not the hot path, but it is a week of print UI |
-| Card ingest with verify | v1.1. Adjacent product (Photo Mechanic). Watcher already sees files appear |
+| ~~Card ingest with verify~~ | **Moved to the Import add-on, PRs 16–19 (2026-09-24)** ([18-import.md](18-import.md)) |
 | GPS map, keywords, colour labels | v1.1 metadata |
 | Quick-export presets on one key | After PR 10 export exists and has been used |
 | PiP / compact overlay | v1.1. Second window is a second present path unless it is DWM-only |
 | Focus peaking, zebras, RGB channels | v1.1 shaders |
-| Face detect, AI cull, cloud albums | Rule 6; also not a viewer |
+| Cloud albums, AI cull | Rule 6; also not a viewer. Local search and faces are planned separately in [17](17-local-ai-search.md) (post-v1, opt-in) |
 | Duplicate finder, catalog, albums | Library product |
 | Slideshow crossfade / music | Drops frames / movie player |
 | Plugins, scripting, hex view, WIA capture, PDF, Cast | Out of scope |
@@ -382,6 +384,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]` |
 | 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
+| 16–19 | Import add-on commands, present only while it is installed ([18-import.md](18-import.md#commands)). Base app, PR 16: `F8` across volumes deletes the source only after verify |
 
 **Verify (PR 6, additive with the existing line):** keyboard-only browse of a real folder —
 open, next/prev, zoom/fit/100 %, mark, copy-to a destination, delete to Recycle Bin,
