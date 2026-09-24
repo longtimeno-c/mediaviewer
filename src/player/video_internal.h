@@ -213,8 +213,9 @@ class frame_ring {
   // [render-thread] Discard the oldest queued frame without presenting it.
   void drop_oldest() noexcept;
 
-  // [any-thread] PTS of the oldest queued frame. False when the queue is empty.
-  [[nodiscard]] bool peek_next_pts(time_ns* out_pts_ns) const noexcept;
+  // [render-thread] PTS at offset from the oldest queued frame. Only this
+  // consumer may peek: another consumer could recycle the slot under it.
+  [[nodiscard]] bool peek_next_pts(time_ns* out_pts_ns, std::uint32_t offset = 0) const noexcept;
 
   [[nodiscard]] std::uint32_t queued() const noexcept;
 

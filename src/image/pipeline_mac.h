@@ -12,7 +12,10 @@
 
 namespace mv::image {
 
+// `raw_thread_limit` 0 uses the on-screen budget. Thumbnail fallback passes 1
+// so a folder of RAWs does not fan out a full demosaic per file.
 [[nodiscard]] result<display_image> decode_bytes_mac(std::span<const std::uint8_t> bytes,
-                                                      const job_context* ctx = nullptr);
+                                                      const job_context* ctx = nullptr,
+                                                      unsigned raw_thread_limit = 0);
 
 }  // namespace mv::image

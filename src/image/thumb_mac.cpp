@@ -261,7 +261,7 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
     }
   }
   if (!decoded) {
-    decoded = decode_bytes_mac(src_bytes, ctx);
+    decoded = decode_bytes_mac(src_bytes, ctx, 1);
     if (!decoded) return err(decoded.error());
   }
   if (ctx && ctx->cancelled()) return err(status::cancelled);

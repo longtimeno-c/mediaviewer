@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// PR 5b — the A/V drift soak, as a CSV-producing mode of the present lab.
+// PR 5b — headless A/V clock/selection diagnostic. No swapchain, draw, or
+// display present occurs here. Its counters cannot certify video smoothness.
 //
 // A CSV rather than a screenshot because the verify line is "drift flat over 30
 // minutes, with the overlay to prove it": a graph someone can re-plot is proof,

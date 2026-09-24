@@ -10,7 +10,8 @@
 //
 // Shared storage: on Apple Silicon that is unified memory (no copy), and it lets
 // the software fallback fill a slot with replaceRegion. The hardware path fills
-// it with a blit on the decode thread.
+// it with a blit on the decode thread. Intel Macs have no unified memory and
+// reject Shared textures, so they get Managed (same fill paths).
 #import <Metal/Metal.h>
 
 #include "core/trace.h"
@@ -32,7 +33,7 @@ expected frame_ring::create_slot(video_frame& slot) {
                                                            height:h
                                                         mipmapped:NO];
     desc.usage = MTLTextureUsageShaderRead;
-    desc.storageMode = MTLStorageModeShared;
+    desc.storageMode = device.hasUnifiedMemory ? MTLStorageModeShared : MTLStorageModeManaged;
     id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
     return (__bridge_retained void*)texture;  // nil -> nullptr
   };

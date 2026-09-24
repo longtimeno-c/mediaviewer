@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "canvas/camera.h"
+#include "canvas/refinement.h"
 #include "core/job_system.h"
 #include "core/result.h"
 #include "core/spsc_ring.h"
@@ -211,6 +212,8 @@ class present_lab_mac {
   // Bumped by every open_item(); stamped on the images that open produces.
   std::atomic<std::uint64_t> item_counter_{0};
   std::unique_ptr<image::gpu_image_mac> current_image_;
+  std::unique_ptr<image::gpu_image_mac> fade_from_;
+  canvas::crossfade fade_;
   std::atomic<std::uint32_t> stills_shown_{0};
 
   // PR 19 video. The render thread owns `media_` and `video_frame_`; a worker

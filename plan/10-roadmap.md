@@ -317,7 +317,7 @@ photo → video → photo leaks no textures.
 
 ### Mac PR 8 — Notarized disk image, Sparkle, and early Finder integration (was PR 20)
 UTIs for the D5 still set, never a silent default-app hijack. Quick Look / thumbnails in a
-**separate process**. Notarized Sparkle, Apple Silicon only. Crash reporting already exists
+**separate process**. Notarized Sparkle. Apple Silicon only when this PR landed; Intel added 2026-09-24 as a universal app (plan/12). Crash reporting already exists
 from Mac PR 7 (folded in 2026-09-17, mirroring Windows PR 7) — this PR does not add it.
 First install is a branded drag-install `.dmg` with the GPL on mount — the Mac twin of the
 PR 8 wizard, not a `.pkg`
@@ -703,7 +703,7 @@ feature slices; that label does not promise everything in one release.
 | Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim); **theme**: colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Per-machine MSI for enterprise (Store MSIX remains excluded by the licence decision) |
-| Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS landed as the Mac halves of PRs 1–8; it is not v1.1.** |
+| Platform | Windows ARM64. **Apple Silicon macOS landed as the Mac halves of PRs 1–8; it is not v1.1.** Intel Macs shipped 2026-09-24 as a universal app (pacing unverified on Intel). |
 
 ## Sequencing advice
 

@@ -7,7 +7,8 @@
 
 namespace mv::codec {
 
-result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                      unsigned raw_thread_limit) {
   // D3 (policy in codec/os_decode.h): the OS codec is offered HEIC stills only —
   // the one camera-dump format where the OS path can be hardware-backed and
   // still match the bundled colour and orientation. Every other format goes
@@ -30,14 +31,14 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
     case format_family::tiff:
       // CR2/NEF/ARW/DNG share the TIFF magic. LibRaw wins so a camera file is
       // never walked as a generic TIFF (and never rewritten).
-      if (looks_like_raw(bytes)) return decode_raw(bytes, ctx);
+      if (looks_like_raw(bytes)) return decode_raw(bytes, ctx, raw_thread_limit);
       return decode_tiff(bytes, ctx);
     case format_family::ico:  return decode_ico(bytes, ctx);
     case format_family::heic: return decode_heic(bytes, ctx);
     case format_family::avif: return decode_avif(bytes, ctx);
-    case format_family::raw:  return decode_raw(bytes, ctx);
+    case format_family::raw:  return decode_raw(bytes, ctx, raw_thread_limit);
     case format_family::unknown:
-      if (looks_like_raw(bytes)) return decode_raw(bytes, ctx);
+      if (looks_like_raw(bytes)) return decode_raw(bytes, ctx, raw_thread_limit);
       return err(status::unsupported_format);
   }
   return err(status::unsupported_format);

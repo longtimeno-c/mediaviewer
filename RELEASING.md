@@ -1,8 +1,8 @@
 # Releasing MediaViewer
 
 Downloads belong on [GitHub Releases](https://github.com/longtimeno-c/mediaviewer/releases):
-a Windows x64 installer wizard (`Setup.exe`) and a macOS 14+ Apple Silicon disk image
-(`.dmg`, drag to Applications). Intel Macs are not currently supported.
+a Windows x64 installer wizard (`Setup.exe`) and a macOS 14+ universal (Apple Silicon and
+Intel) disk image (`.dmg`, drag to Applications).
 
 **You can publish test installers without buying signing certificates.** Use `preview`.
 For a stable Mac release, configure Developer ID, Apple notarization and Sparkle signing.
@@ -171,7 +171,7 @@ each platform and an upgrade from the previous stable before announcing a releas
 - Windows `release.key` missing: create it with explicit PowerShell parameters,
   `Set-Content -LiteralPath $key -Value $env:MV_MANIFEST_SIGNING_KEY -Encoding ascii -NoNewline`.
   Do not use positional arguments here. Packaging checks that the file exists up front.
-- `arm64-osx-dynamic prefix not found`: the dynamic codec install is missing, not
+- `<arch>-osx-dynamic prefix not found`: the dynamic codec install is missing, not
   an Apple credential problem. The workflow installs the manifest below before CMake.
 - Build/upload failed: rerun failed jobs while the successful jobs' artifacts still exist.
   An interrupted upload leaves a draft the same source commit can resume. Review/remove
@@ -201,14 +201,20 @@ wizard-signing step ([update-signing.md](tools/package/update-signing.md)). See 
 
 ### macOS dependencies (local and Actions)
 
-GitHub's Apple Silicon runner can build the Mac release; no local Mac is needed for
-the Actions build. It uses two pinned vcpkg manifests with separate install trees:
+No local Mac is needed for the Actions build. The Mac release is one universal app:
+`macos-build` builds it natively twice (arm64 on `macos-14`, x86_64 on `macos-15-intel`, each
+with its own unit tests), then `macos` runs `tools/mac/lipo_merge.py` to join the two `.app`
+trees, signs and notarizes once, and produces the `.dmg`, the Sparkle `.zip` and the signed
+appcast. Each build uses two pinned vcpkg manifests with separate install trees:
 
-- Root `vcpkg.json`: static permissive libraries, installed by CMake as `arm64-osx`.
+- Root `vcpkg.json`: static permissive libraries, installed by CMake as `arm64-osx` /
+  `x64-osx`.
 - [`tools/mac/dependencies/vcpkg.json`](tools/mac/dependencies/vcpkg.json): dynamic
-  FFmpeg, libheif/libde265, LibRaw and Exiv2, installed as `arm64-osx-dynamic` before CMake.
+  FFmpeg, libheif/libde265, LibRaw and Exiv2, installed as `arm64-osx-dynamic` /
+  `x64-osx-dynamic` before CMake.
 
-On an Apple Silicon Mac with Xcode and vcpkg, run from the repository root:
+On a Mac with Xcode and vcpkg, run from the repository root (Apple Silicon shown; on an Intel
+Mac use `x64-osx` and `x64-osx-dynamic`):
 
 ```sh
 "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \

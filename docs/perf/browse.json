@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "dwell_s": 3.0,
+  "count": 6,
+  "error": null,
+  "steps": [
+    {"name": "nikon_d7500.nef", "index": 3, "kind": "cold", "cached": 0, "timed_out": 0, "ready_ms": 82.938, "present_ms": 99.827, "refresh_ms": 16.680},
+    {"name": "pentax_k50.dng", "index": 4, "kind": "cold", "cached": 0, "timed_out": 0, "ready_ms": 50.689, "present_ms": 67.325, "refresh_ms": 16.680},
+    {"name": "sony_ilce7rm3.arw", "index": 5, "kind": "cold", "cached": 0, "timed_out": 0, "ready_ms": 34.241, "present_ms": 50.951, "refresh_ms": 16.680},
+    {"name": "canon_eosr6.cr3", "index": 1, "kind": "warm", "cached": 1, "timed_out": 0, "ready_ms": 0.053, "present_ms": 0.204, "refresh_ms": 16.680},
+    {"name": "libheif-example.heic", "index": 2, "kind": "warm", "cached": 1, "timed_out": 0, "ready_ms": 0.029, "present_ms": 0.169, "refresh_ms": 16.680},
+    {"name": "nikon_d7500.nef", "index": 3, "kind": "warm", "cached": 1, "timed_out": 0, "ready_ms": 0.027, "present_ms": 0.180, "refresh_ms": 16.680},
+    {"name": "pentax_k50.dng", "index": 4, "kind": "warm", "cached": 1, "timed_out": 0, "ready_ms": 0.023, "present_ms": 0.186, "refresh_ms": 16.680},
+    {"name": "sony_ilce7rm3.arw", "index": 5, "kind": "warm", "cached": 1, "timed_out": 0, "ready_ms": 0.045, "present_ms": 0.227, "refresh_ms": 16.680}
+  ]
+}

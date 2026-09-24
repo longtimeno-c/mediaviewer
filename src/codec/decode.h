@@ -17,7 +17,8 @@ namespace mv::codec {
 // `ctx` may be null (tests). When present, cancelled() is checked between
 // scanline blocks so a generation bump abandons a large decode.
 [[nodiscard]] result<raster> decode(std::span<const std::uint8_t> bytes,
-                                    const job_context* ctx = nullptr);
+                                    const job_context* ctx = nullptr,
+                                    unsigned raw_thread_limit = 4);
 
 // `scale_denom` is libjpeg-turbo's DCT scale: 1, 2, 4, or 8. Other values
 // decode at 1:1. Preview uploads use 4; the full decode is always 1.
@@ -51,8 +52,16 @@ struct jpeg_size {
                                          const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_avif(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
+// How many LibRaw threads the image on screen may use. Leaves processors for
+// the present loop; prefetch passes 1 instead. Output pixels do not depend on it.
+[[nodiscard]] unsigned raw_foreground_threads() noexcept;
+// Upper bound a benchmark may request. One decode never exceeds this, so a
+// RAW job cannot occupy every logical processor the present thread needs.
+[[nodiscard]] unsigned raw_thread_ceiling() noexcept;
+
 [[nodiscard]] result<raster> decode_raw(std::span<const std::uint8_t> bytes,
-                                        const job_context* ctx = nullptr);
+                                        const job_context* ctx = nullptr,
+                                        unsigned thread_limit = 4);
 
 // PR 11: the same develop as decode_raw, at 16 bits with a linear curve — the
 // adjust pane's working data and the export bake's source (plan/07: the

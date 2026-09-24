@@ -1885,3 +1885,28 @@ record. The Swift runtime's "Index out of range" text is not in the dump — Rep
 stays off, and Crashpad did not capture a crash-info string. No "Failed to read report metadata"
 on relaunch; each dump kept its `org.chromium.crashpad.database.uuid` attribute. The adjust-pane
 verify and the Windows half were not run.
+## 2026-09-24 — D9 amended: Intel Macs ship, as one universal app
+
+**Owner's call.** D9 said "Apple Silicon + macOS 14 only" and deferred Intel Macs as "a second
+GPU story for a dying install base." The owner reversed that: the Mac release now runs on Intel
+Macs (macOS 14+) as well. This is an amendment to D9's floor, not to its shape — the Mac is
+still the Mac halves of the same PRs, one core, no second present path.
+
+**What changed.**
+- One **universal** `MediaViewer.app` (arm64 + x86_64): one `.dmg`, one Sparkle `.zip`, one signed
+  `appcast.xml`. No per-arch feeds. The appcast no longer carries `hardwareRequirements arm64`.
+- Each arch is built **natively** (arm64 on `macos-14`, x86_64 on `macos-15-intel`) with its own
+  vcpkg triplet (`arm64-osx` / `x64-osx`, and the `-dynamic` pair for the LGPL dylibs), so the
+  Intel unit tests run on Intel. `tools/mac/lipo_merge.py` joins the two `.app` trees; then
+  `macpack release` signs, notarizes and packages once.
+- **Metal storage mode.** Textures were `MTLStorageModeShared`, which is unified-memory only.
+  They are `Shared` when `device.hasUnifiedMemory` and `Managed` otherwise
+  (`image/upload_mac.mm`, `player/frame_ring_mac.mm`).
+
+**What is not decided, and is not claimed.** The Rule 4 pacing gate and the PR 1 present-loop
+verify were measured on Apple Silicon. **Nothing here says they hold on Intel.** Until they are
+run on a real Intel Mac (discrete AMD, Intel iGPU, and the display-link cadence), Intel is
+"builds and should launch," not "verified." Video on Intel (VideoToolbox, HEVC/HLG software
+fallback speed) is likewise unmeasured. Do not describe Intel as verified before that run.
+
+Windows ARM64 remains deferred.

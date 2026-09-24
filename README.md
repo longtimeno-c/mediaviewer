@@ -1,29 +1,16 @@
 # MediaViewer
 
-A Windows viewer for a real camera dump — photos and video in one folder. Opens everything
-instantly and pans without a dropped frame. The first release ships the viewer through
-PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
-Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
-kept hostable; macOS is Milestone F (the Mac halves of PRs 1–8), a host of the same core, not a UI-only
-port — see [plan/15-platforms.md](plan/15-platforms.md).
+**Open a camera dump the moment you double-click it. Pan a 42-megapixel RAW without dropping a frame.**
 
-**One PR number per feature, on both platforms (2026-09-24).** The Mac host, first built as
-PRs 16–20, is now filed as the Mac halves of PRs 1–8, so **Windows and Mac are both at PR 9**.
-From here every PR lands on both, with one shared core change, a WinUI half and a SwiftUI half,
-and a verify line on each platform (D9, amended). The order is:
+MediaViewer is a fast, keyboard-first viewer for the folder that comes off your camera: photos, RAW and
+video side by side in one window. It draws on its own Direct3D 11 surface instead of a stock image or
+media-player control, so decoding never stands between you and the screen.
 
-| PR | What | State |
-|---|---|---|
-| 9 | Metadata read: pane, overlays, AF points, eyedropper, folder tree, date-taken sort | **In progress** (Mac ahead; Windows owes the XAML pane, tree island, sort menu) |
-| 10 | Geometry edits + export, lossless JPEG rotate | Mac half started on a branch |
-| 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | Planned |
-| 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
-| 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](plan/18-import.md)) | Planned, optional download |
-| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](plan/17-local-ai-search.md)) | Proposed |
-| 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](plan/19-voice.md)) | Proposed |
+![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
-See [plan/10-roadmap.md](plan/10-roadmap.md). Old Mac numbers in the history below map as
-PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
+## Download
+
+**[MediaViewer 0.1.2](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2)** is the current public release.
 
 **Status: PR 7's slices are all merged and pass locally. Its clean-VM HEIC, real
 Live Photo and on-screen no-pop checks now have gates around them
@@ -108,45 +95,154 @@ that apply to what you are doing.
 ---
 
 ## What is here today
+| | |
+|---|---|
+| **Windows 10/11, x64** | [MediaViewer-0.1.2-Setup.exe](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2-Setup.exe) |
+| **Mac, Apple Silicon, macOS 14+** | [MediaViewer-0.1.2.dmg](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2.dmg) |
+
+Windows may show a SmartScreen warning the first time. This installer is not Authenticode-signed. Checksums are on the [release page](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2).
+
+---
+
+## Speed you can measure
+
+Every number below comes from the app's own harnesses, and the raw reports are in [`docs/perf/`](docs/perf/).
+Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not a lab matrix.
 
 | | |
 |---|---|
-| **`mediaviewer_lab.exe`** | A Win32 + DirectComposition window with a flip-model D3D11 swapchain. Open a folder, drop a JPEG/PNG/BMP/GIF/WebP or a clip, or pass a path on the command line. Animated GIF, APNG and WebP play on the render thread's frame clock, frame 0 first. Wheel-zoom toward the cursor, drag-pan, `0` fits, `1` is 100 %, `+`/`-` zoom, Left/Right browse. Video plays on the same swapchain as photos — never a `MediaPlayerElement`. Decode and ICC convert run on the worker pool; pan never re-decodes. `F` / `F3` toggles the frame-time overlay, which grows codec, decoder, A/V drift and present-counter lines while a clip is up. WinUI command bar (top) and filmstrip (bottom) are `DesktopWindowXamlSource` islands; the canvas is not a `SwapChainPanel`. |
-| **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
-| **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
-| **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
-| **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
+| **0 dropped frames** | 60 s of animated panning on a 42 MP Sony RAW: 3,597 frames, p99 16.95 ms on a 16.68 ms refresh |
+| **44-125 ms** | Time for a camera RAW's preview to appear; the full-resolution decode then cross-fades in without moving your view |
+| **0.08 % CPU, 0 presents** | Cost of a still image sitting on screen. Idle means idle |
+| **0.2 ms, then the next refresh** | Arrow to the next photo once it has been decoded ahead. The frame is ready in 0.2 ms; a 60 Hz monitor shows it within 16.7 ms |
+| **51–100 ms** | Jump to a RAW that was not next to the current one: its embedded preview, about the same as opening that file |
+| **0 dropped video frames** | 60 s of 1080p HEVC on screen: 3,597 presents, p99 17.10 ms. Audio/video error over that minute stays at p99 7.2 ms |
 
-## Build
+### Stills
 
-You need **Visual Studio 2022** (or Build Tools) with the C++ workload, the **Windows 10/11
-SDK**, **CMake ≥ 3.28**, **vcpkg**, the **.NET 8 SDK**, and the **Windows App SDK 2.4
-runtime** (the command-bar island is unpackaged). The native core still builds and tests
-with no .NET present; without `dotnet` on `PATH` the lab runs as it did in PR 2
-(`--no-chrome`).
+**Panning.** Two 60 s soaks, including a 42 MP Sony RAW. The line at 16.68 ms is one refresh of this display.
+
+![Frame pacing over two 60 second soaks](docs/img/perf-pacing.svg)
+
+**First pixel.** Embedded preview first. The grey bar is the full decode that replaces it.
+
+![Time to first pixel for five camera RAW formats and HEIC](docs/img/perf-first-pixel.svg)
+
+**Next photo.** Arrow after the neighbours have been decoded, and a jump to a photo that has not.
+
+![Time to move from one photo to the next](docs/img/perf-browse.svg)
+
+### Video
+
+**On screen.** 60 s of 1080p HEVC. Frame time sits on the refresh. No present was dropped, and no video frame was skipped.
+
+![Video frame pacing over 60 seconds of playback](docs/img/perf-video.svg)
+
+**Audio against video.** 120 s of the same kind of clip. The error stays under one frame of a 30 fps video (33.3 ms). The selector discarded 2 of 3,597 frames; that is not a dropped screen present.
+
+![Audio/video error over 120 seconds of playback](docs/img/perf-av-sync.svg)
+
+What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. Playback has been measured for one to two minutes, not yet a half hour. The folder chart is stills only.
+
+### Against Windows Photos and Media Player
+
+Same machine, same sample files, timed from the screen (a grab is about 17 ms). These are cold launches: the clock starts when the app is opened, so they are not the 44–125 ms in-app preview times above.
+
+**Opening.** Two launches each. RAW is a tie. Photos is faster on the HEIC (810 ms vs 964 ms).
+
+![Launch to a settled picture, MediaViewer and Windows Photos](docs/img/compare-open.svg)
+
+**Panning.** With the mouse, MediaViewer updates the picture about every refresh (p50 16.7 ms). The slowest updates were 49–84 ms. The same wheel-and-drag did not move the picture in Photos, so Photos has no pan number here.
+
+![Mouse-drag pan, MediaViewer and Windows Photos](docs/img/compare-pan.svg)
+
+**Video.** On a 30 fps test clip both apps ran at 29 fps. Media Player's slow gaps were shorter (p99 44 ms, MediaViewer 66 ms). On a 4K HEVC clip MediaViewer averaged 24 fps; Media Player stayed on a single frame for the whole sample, so it has no playback number for that file.
+
+![Video playback gaps, MediaViewer and Media Player](docs/img/compare-video.svg)
+
+Charts are drawn by [`tools/perf/make-charts.py`](tools/perf/make-charts.py) from the reports in [`docs/perf/`](docs/perf/).
+
+---
+
+## Built for browsing a real dump
+
+- **Everything in one folder.** JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC, AVIF, ICO, camera RAW (CR2, CR3, NEF, ARW, DNG)
+  and MP4, MOV, MKV, WebM, AVI, TS video open in the same window on the same canvas.
+- **RAW+JPEG and Live Photo pairs are one entry**, one arrow-key stop, badged RAW or LIVE. Copy, move and delete act on both files.
+- **Filmstrip and gallery.** A virtualised filmstrip on a persistent thumbnail cache; `G` opens a full grid.
+- **Nested folders as tiles.** Child folders show with covers and counts, a path bar stays on screen, and
+  `Ctrl+Up` goes up and returns to the folder you left. `Ctrl+Left` / `Ctrl+Right` hop to the neighbouring folder.
+- **Folder tree** (`Ctrl+Shift+E`) and sort by name, date modified, size, type or EXIF date taken.
+- **Fit, fill, 100 %, or any zoom.** Wheel zoom toward the cursor with springy, physical-feeling pan and zoom.
+- **Animated GIF, APNG and WebP** play on the same frame clock.
+
+| Gallery | Frame-time overlay (`F3`) |
+|---|---|
+| ![Gallery of RAW, HEIC and video thumbnails](docs/img/gallery.png) | ![Live frame-time overlay over a Nikon RAW](docs/img/frametime-overlay.png) |
+
+## Keyboard-complete
+
+Every action has a key, and `?` shows the full list, generated from the same command table the app runs.
+Arrow keys or `A`/`D` browse, `Space` advances, `Insert` marks, `F7`/`F8` copy or move marked files to a folder,
+`Delete` sends to the Recycle Bin, `F11` goes fullscreen, `F5` starts a slideshow. Every key can be remapped in Settings (`Ctrl+,`).
+
+## Video that lives with your photos
+
+FFmpeg decode with D3D11 hardware acceleration on the same swapchain as photos. H.264, HEVC, VP9, AV1 and MPEG-2,
+including 10-bit HDR clips mapped to SDR. Audio is the master clock. Seek, frame step (`,` `.`), speed
+0.25x-4x, A-B loop, resume where you left off, and media keys. `;` plays a Live Photo's motion and returns to the still.
+
+## Know your shot
+
+`I` opens a metadata pane: a summary card, a searchable tree of every EXIF, IPTC and XMP tag, and a per-stream inspector
+for clips. `O` overlays camera, exposure and date on the image, `Shift+O` draws autofocus points, and `Shift+I` is a
+one-pixel colour eyedropper (`Ctrl+C` copies the value).
+
+## Colour done right
+
+Images are converted from their embedded ICC profile through a linear working space to sRGB. A tagged image is
+never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is mapped to SDR.
+
+## Trustworthy by design
+
+- **Your originals are never modified.** Browsing is read-only; edits write new files or an XMP sidecar.
+- **Nothing about your files leaves the machine.** Telemetry is opt-in and off by default. Crash reports are captured
+  locally, scrubbed of paths, filenames and your username, and never sent without asking.
+- **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
+- **Installs per user**, with a public installer and a background updater. The 0.1.2 installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
+- **Hardened decoding.** A corpus of broken files and per-decoder fuzzers run in CI.
+
+---
+
+## Coming next
+
+| Soon | |
+|---|---|
+| **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
+| **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
+| **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
+| **Video trim** | Cut clips losslessly at keyframes, or re-encode with hardware encoders; extract a frame or the audio |
+| **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
+| **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume |
+| **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
+| **Voice search** (optional add-on) | Speak the query; speech runs on-device |
+| **macOS** | The same core with a native Metal and SwiftUI app; it already builds, browses and plays video, and is being brought to parity |
+
+## From source
+
+Building needs Visual Studio 2022, CMake 3.28+, vcpkg and the .NET 8 SDK. The first configure builds FFmpeg and takes a while. Commands, tests and the macOS recipe are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```powershell
-# once
-git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
-& $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
-$env:VCPKG_ROOT = "$env:USERPROFILE\vcpkg"
-./tools/install-windows-app-runtime.ps1   # unpackaged WinUI 2.4 runtime
-
-# configure and build
+git clone https://github.com/longtimeno-c/mediaviewer
+cd mediaviewer
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
+.\build\bin\Release\mediaviewer_lab.exe C:\path\to\photos
 ```
 
-CMake finds vcpkg from `VCPKG_ROOT`, or from `%USERPROFILE%\vcpkg`, or from an explicit
-`-DCMAKE_TOOLCHAIN_FILE`. Through PR 5 the manifest pulls `imgui`, `catch2`,
-`libjpeg-turbo`, `libspng`, `lcms`, `sqlite3` and `ffmpeg` (LGPL only —
-`avcodec`, `avformat`, `avfilter`, `swresample`, `swscale`, `dav1d`; no
-`--enable-gpl`, no x264/x265, enforced by `tools/licence-check.ps1`). The rest of
-the v1 set arrives with the PR that needs it, listed in [`vcpkg.json`](vcpkg.json).
-The first configure after PR 5 builds FFmpeg, which is not quick.
+Reproduce the charts with `.\build\bin\Release\frametime.exe --seconds 60`, then `python tools/perf/make-charts.py`. The folder chart is `mediaviewer_lab.exe --browse-soak --json docs\perf\browse.json path\to\folder`.
 
-Other configurations:
+## Licence
 
 ```powershell
 cmake -S . -B build-asan -A x64 -DMV_ASAN=ON     # AddressSanitizer
@@ -1181,3 +1277,5 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
+GPL-2.0-or-later, see [LICENSE](LICENSE). Bundled libraries and their licences are listed in
+[THIRD-PARTY.md](THIRD-PARTY.md). Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.

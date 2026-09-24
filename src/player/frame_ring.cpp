@@ -251,15 +251,16 @@ void frame_ring::release(video_frame* frame) noexcept {
   free_head_.store(next, std::memory_order_release);
 }
 
-bool frame_ring::peek_next_pts(time_ns* out_pts_ns) const noexcept {
+bool frame_ring::peek_next_pts(time_ns* out_pts_ns, std::uint32_t offset) const noexcept {
   if (!out_pts_ns) return false;
   const std::uint32_t tail = ready_tail_.load(std::memory_order_acquire);
-  if (tail == ready_head_.load(std::memory_order_acquire)) return false;
+  const auto head = ready_head_.load(std::memory_order_acquire);
+  if (offset >= (head + index_capacity - tail) % index_capacity) return false;
   // Safe to read without dequeuing: a slot only enters the ready ring after
   // commit() publishes it, and only leaves via the render thread, which is the
   // thread that would be asking. The decode thread never writes a slot that is
   // in the ready ring.
-  *out_pts_ns = slots_[ready_slots_[tail]].pts_ns;
+  *out_pts_ns = slots_[ready_slots_[(tail + offset) % index_capacity]].pts_ns;
   return true;
 }
 

@@ -3,14 +3,14 @@
   "name": "mediaviewer-macos-dynamic",
   "version": "0.1.0",
   "license": "GPL-2.0-or-later",
-  "$comment": "Install with arm64-osx-dynamic into a separate install root. Keep the baseline in sync with the root manifest and release workflow. LGPL codecs must remain dynamically linked.",
+  "$comment": "Install with arm64-osx-dynamic (Apple Silicon) or x64-osx-dynamic (Intel) into a separate install root. Keep the baseline in sync with the root manifest and release workflow. LGPL codecs must remain dynamically linked.",
   "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
   "dependencies": [
     {
       "name": "libheif",
       "default-features": false
     },
-    "libraw",
+    { "name": "libraw", "features": ["openmp"] },
     {
       "name": "ffmpeg",
       "default-features": false,

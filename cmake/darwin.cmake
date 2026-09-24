@@ -9,11 +9,20 @@
 
 enable_language(OBJCXX)
 
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+# Apple Silicon and Intel (D9 amended 2026-09-24). The release ships one
+# universal app: each arch is built natively, then tools/mac/lipo_merge.py
+# joins the two .app trees before signing.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+  set(MV_MAC_VCPKG_ARCH "arm64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+  set(MV_MAC_VCPKG_ARCH "x64")
+else()
   message(FATAL_ERROR
-    "MediaViewer on macOS is Apple Silicon only (plan/15, D9). "
+    "MediaViewer on macOS needs arm64 or x86_64 (plan/15, D9). "
     "CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}")
 endif()
+set(MV_MAC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx")
+set(MV_MAC_DYNAMIC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx-dynamic")
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
 set(CMAKE_OBJCXX_STANDARD 20)
@@ -86,17 +95,17 @@ add_library(mv::gfx ALIAS mv_gfx)
 # port's `hevc` feature is x265 encode, which is forbidden.
 # ---------------------------------------------------------------------------
 if(DEFINED _VCPKG_INSTALLED_DIR)
-  set(MV_DYNAMIC_PREFIX_DEFAULT "${_VCPKG_INSTALLED_DIR}/arm64-osx-dynamic")
+  set(MV_DYNAMIC_PREFIX_DEFAULT "${_VCPKG_INSTALLED_DIR}/${MV_MAC_DYNAMIC_TRIPLET}")
 else()
   set(MV_DYNAMIC_PREFIX_DEFAULT "")
 endif()
 set(MV_VCPKG_DYNAMIC_PREFIX "${MV_DYNAMIC_PREFIX_DEFAULT}" CACHE PATH
-  "vcpkg arm64-osx-dynamic install prefix (libheif, libde265, LibRaw, FFmpeg)")
+  "vcpkg ${MV_MAC_DYNAMIC_TRIPLET} install prefix (libheif, libde265, LibRaw, FFmpeg)")
 if(NOT MV_VCPKG_DYNAMIC_PREFIX OR NOT IS_DIRECTORY "${MV_VCPKG_DYNAMIC_PREFIX}")
   message(FATAL_ERROR
-    "arm64-osx-dynamic prefix not found (${MV_VCPKG_DYNAMIC_PREFIX}); install "
-    "tools/mac/dependencies/vcpkg.json with triplet arm64-osx-dynamic into a separate "
-    "install root, then set MV_VCPKG_DYNAMIC_PREFIX to its arm64-osx-dynamic directory. "
+    "${MV_MAC_DYNAMIC_TRIPLET} prefix not found (${MV_VCPKG_DYNAMIC_PREFIX}); install "
+    "tools/mac/dependencies/vcpkg.json with triplet ${MV_MAC_DYNAMIC_TRIPLET} into a separate "
+    "install root, then set MV_VCPKG_DYNAMIC_PREFIX to its ${MV_MAC_DYNAMIC_TRIPLET} directory. "
     "See RELEASING.md (macOS dependencies).")
 endif()
 list(APPEND CMAKE_PREFIX_PATH "${MV_VCPKG_DYNAMIC_PREFIX}")
@@ -130,6 +139,7 @@ else()
   message(FATAL_ERROR "libavif imported target not found")
 endif()
 # LibRaw's thread-safe raw_r target: decode runs on the job pool.
+include(${CMAKE_CURRENT_LIST_DIR}/raw-openmp.cmake)
 find_package(libraw CONFIG REQUIRED)
 
 add_library(mv_codec STATIC
@@ -168,6 +178,7 @@ target_link_libraries(mv_codec
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r)
 add_library(mv::codec ALIAS mv_codec)
+target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
 # ---------------------------------------------------------------------------
 # mv_io — portable io/dir.h + io/file.h (PR 18, folded-in PR 4 — plan/12

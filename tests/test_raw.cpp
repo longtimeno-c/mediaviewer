@@ -746,6 +746,29 @@ TEST_CASE("camera RAW: preview first, full decode replaces it in place, bytes un
   CHECK(dir_listing(fs_path.parent_path()) == before_list);
 }
 
+TEST_CASE("camera RAW: parallel decode preserves pixels", "[codec][raw][corpus]") {
+  const char* name = GENERATE(from_range(std::begin(kSamples), std::end(kSamples)));
+  MV_REQUIRE_RAW_SAMPLE(path, name);
+  CAPTURE(name);
+  auto bytes = mv::io::read_all(path);
+  REQUIRE(bytes);
+  auto opt = mv::codec::raw_detail::default_options();
+  mv::codec::raw_detail::raw_timings timings;
+  opt.timings = &timings;
+  opt.thread_limit = 1;
+  auto serial = mv::codec::raw_detail::decode_raw_with(bytes.value(), nullptr, opt);
+  REQUIRE(serial);
+  opt.thread_limit = mv::codec::raw_foreground_threads();
+  auto parallel = mv::codec::raw_detail::decode_raw_with(bytes.value(), nullptr, opt);
+  REQUIRE(parallel);
+  CHECK(serial->width == parallel->width);
+  CHECK(serial->height == parallel->height);
+  CHECK(serial->rgba == parallel->rgba);
+  std::printf("[raw-stages] %s threads %u open %.1f unpack %.1f process %.1f mem %.1f pack %.1f ms\n",
+      name, timings.threads, timings.open_ms, timings.unpack_ms, timings.process_ms,
+      timings.mem_ms, timings.pack_ms);
+}
+
 TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw][corpus]") {
   const char* name = GENERATE(from_range(std::begin(kSamples), std::end(kSamples)));
   MV_REQUIRE_RAW_SAMPLE(path, name);
@@ -799,6 +822,56 @@ TEST_CASE("camera RAW: truncated files are errors, not crashes or hangs", "[code
                 elapsed);
     CHECK(elapsed < 10000.0);
     CHECK_FALSE(f);
+  }
+}
+
+// Not part of the normal run: `mv_tests "[.raw-threads]"`.
+// Sweeps LibRaw's team size. Unpack is serial inside LibRaw; PPG and the
+// raw-to-image copy are the OpenMP regions. Pixels must match the serial decode.
+TEST_CASE("RAW thread sweep", "[.raw-threads]") {
+  const unsigned ceiling = mv::codec::raw_thread_ceiling();
+  const unsigned counts[] = {1u, 4u, 6u, 8u, ceiling};
+  for (const char* name : kSamples) {
+    const std::string path = ::corpus::path_of((std::string("raw/") + name).c_str());
+    if (path.empty()) {
+      std::printf("[threads] %s missing\n", name);
+      continue;
+    }
+    auto bytes = mv::io::read_all(path);
+    REQUIRE(bytes);
+    mv::codec::raster serial_pixels;
+    bool have_serial = false;
+    for (unsigned limit : counts) {
+      if (limit == 0) continue;
+      auto opt = mv::codec::raw_detail::default_options();
+      mv::codec::raw_detail::raw_timings timings;
+      opt.timings = &timings;
+      opt.thread_limit = limit;
+      const auto t0 = std::chrono::steady_clock::now();
+      auto decoded = mv::codec::raw_detail::decode_raw_with(bytes.value(), nullptr, opt);
+      const double wall = ms_since(t0);
+      if (!decoded) {
+        std::printf("[threads] %s limit %u -> %s\n", name, limit,
+                    mv::status_name(decoded.error()));
+        continue;
+      }
+      std::uint64_t hash = 14695981039346656037ull;
+      for (std::uint8_t b : decoded->rgba) {
+        hash ^= b;
+        hash *= 1099511628211ull;
+      }
+      if (!have_serial) {
+        serial_pixels = decoded.value();
+        have_serial = true;
+      } else {
+        CHECK(decoded->rgba == serial_pixels.rgba);
+      }
+      std::printf("[threads] %-20s limit %2u team %2u wall %7.1f  hash %016llx open %5.1f unpack %6.1f "
+                  "process %6.1f mem %6.1f pack %5.1f\n",
+                  name, limit, timings.threads, wall, static_cast<unsigned long long>(hash),
+                  timings.open_ms, timings.unpack_ms,
+                  timings.process_ms, timings.mem_ms, timings.pack_ms);
+    }
   }
 }
 

@@ -33,13 +33,12 @@ present_decision choose(const presenter_input& in) noexcept {
     return out;
   }
 
-  // Both delta and interval are STREAM time. At 4x, one display interval
-  // covers four times as much stream time; dividing here drops on-time frames.
-
-  if (-delta > interval) {
-    // plan/05: "if the next frame is already late by more than a frame
-    // interval, drop it." Caller discards and re-evaluates against the frame
-    // behind it, so a long stall unwinds in one pass rather than one per vblank.
+  // A 30p frame remains useful for 33 ms, not one 60 Hz refresh (16 ms).
+  // Dropping on display-interval lateness made timer jitter throw away the
+  // only due frame and hold an even older one. Only discard when a queued
+  // replacement is due, using its actual PTS so VFR and playback rate work.
+  if (in.has_following && in.following_pts_ns >= in.next_pts_ns &&
+      in.following_pts_ns <= target) {
     out.action = present_action::drop;
     return out;
   }

@@ -1,0 +1,9 @@
+{
+  "measurement": "native render loop frame selection",
+  "selected": 1801,
+  "dropped": 0,
+  "cadence": 1801,
+  "starved": 0,
+  "error_p99_ms": 7.24279,
+  "audio_master": true
+}

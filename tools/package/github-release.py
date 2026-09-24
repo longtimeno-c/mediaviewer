@@ -124,7 +124,7 @@ def release_notes(version, mode, repo, tag, sha):
     text = ('## Downloads\n\n'
             f'- **[Download for Windows (x64)]({base}/MediaViewer-{version}-Setup.exe)** '
             '- run the installer.\n'
-            f'- **[Download for Mac (Apple Silicon, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
+            f'- **[Download for Mac (Apple Silicon and Intel, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
             '- open the disk image and drag MediaViewer to Applications.\n\n')
     if mode == 'preview':
         text += ('Other assets below provide download checksums and source code.\n\n'

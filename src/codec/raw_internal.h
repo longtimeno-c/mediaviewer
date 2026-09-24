@@ -24,7 +24,15 @@ enum class demosaic : int {
   ahd = 3,
 };
 
+struct raw_timings {
+  double open_ms = 0, unpack_ms = 0, process_ms = 0, mem_ms = 0, pack_ms = 0;
+  unsigned threads = 0;
+};
+
 struct raw_options {
+  // Benchmark seam; production shares three extra workers across decodes.
+  unsigned thread_limit = 4;
+  raw_timings* timings = nullptr; // optional, caller-owned decode diagnostics
   demosaic quality = demosaic::ahd;
   // LibRaw's histogram auto-bright (dcraw default: 1 % of pixels clip).
   // false = fixed white point from the camera's white level.

@@ -354,8 +354,9 @@ What this costs, stated honestly:
 - A **narrow** gfx/io/audio/hwdecode/encode port — a header plus a real `*_win.cpp` and
   `*_mac.cpp`. Not a general RHI, not empty stubs, not Vulkan. The Mac files arrive with
   Milestone F, as implementations, not as v1 placeholders.
-- **Apple Silicon + macOS 14 only.** Intel Macs are a second GPU story for a dying install
-  base. Windows floor stays 10 21H2 x64; Windows ARM64 waits.
+- **macOS 14+, Apple Silicon and Intel** (Intel added 2026-09-24, one universal app; the pacing
+  gate is not yet verified on Intel — see the decision log). Windows floor stays 10 21H2 x64;
+  Windows ARM64 waits.
 
 D1, per OS: native chrome + C++ core. Windows remains C# WinUI 3 hosted in the native window.
 macOS is SwiftUI hosted in an AppKit window that owns a `CAMetalLayer`. ImGui is the present
