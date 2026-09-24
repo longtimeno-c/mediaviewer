@@ -4,13 +4,19 @@ $ErrorActionPreference = 'Stop'
 $testDir = Join-Path $OutputRoot ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Copy-Item -LiteralPath $Harness -Destination (Join-Path $testDir 'frametime.exe')
+# The harness is copied away from its build directory. An ASan build only
+# starts when clang_rt.asan_dynamic sits beside the exe; the ctest shell does
+# not have that DLL on PATH. Non-ASan builds have no such neighbour.
+$harnessDir = Split-Path -Parent $Harness
+Get-ChildItem -LiteralPath $harnessDir -Filter 'clang_rt.asan*.dll' -ErrorAction SilentlyContinue |
+    Copy-Item -Destination $testDir
 $exe = Join-Path $testDir 'frametime.exe'
 $baseline = Join-Path $testDir 'baseline.json'
 $previousMode = $env:MV_FRAMETIME_FIXTURE_MODE
 try {
     $env:MV_FRAMETIME_FIXTURE_MODE = 'pass'
     & $exe --lab $Fixture --baseline $baseline --update-baseline
-    if ($LASTEXITCODE -ne 0) { throw 'Valid pair of reports did not pass' }
+    if ($LASTEXITCODE -ne 0) { throw "Valid pair of reports did not pass (exit $LASTEXITCODE)" }
     $saved = Get-Content -Raw -LiteralPath $baseline
     $report = Get-Content -Raw -LiteralPath (Join-Path $testDir 'frametime-report.json')
     if ($saved -cne $report) { throw 'Baseline differs from the gated report' }

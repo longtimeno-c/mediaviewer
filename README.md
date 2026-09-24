@@ -691,6 +691,10 @@ Without Authenticode, Windows SmartScreen may warn. Without a correctly signed u
 manifest, clients reject updates. The production public key is already pinned in
 `src.managed/MediaViewer.Updater/UpdateKeys.cs`; preserve its matching private key.
 
+### Continuous integration
+
+Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
+
 ### Releasing from CI
 
 Use **Actions → Release → Run workflow**. Pushes and tags do not start release packaging.

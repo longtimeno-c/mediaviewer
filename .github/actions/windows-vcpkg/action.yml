@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Pin vcpkg to vcpkg.json's builtin-baseline and restore the one installed tree
+# shared by every Windows job. Callers that miss the cache must install and
+# save it themselves; this action never writes the cache, so a failing test
+# cannot throw a 45-minute install away and parallel jobs cannot race to
+# reserve the same key.
+
+name: Windows vcpkg
+description: Check out the pinned vcpkg, bootstrap it, and restore the shared installed-tree cache.
+
+outputs:
+  cache-hit:
+    description: 'true when build/vcpkg_installed was restored'
+    value: ${{ steps.cache.outputs.cache-hit }}
+  cache-primary-key:
+    description: Cache key to pass to actions/cache/save after a miss
+    value: ${{ steps.cache.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check out vcpkg at the manifest baseline
+      uses: actions/checkout@v4
+      with:
+        repository: microsoft/vcpkg
+        ref: ${{ env.VCPKG_COMMIT }}
+        path: vcpkg
+        # Full history, not shallow. Manifest mode resolves the baseline
+        # through git, and vcpkg has been known to refuse a shallow clone.
+        fetch-depth: 0
+
+    - name: Bootstrap vcpkg
+      shell: pwsh
+      run: |
+        ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+        "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+
+    # One key for every Windows toolchain. The manifest builds the x64-windows
+    # triplet with the image's MSVC; clang-cl and ASan compile our code, not
+    # these ports. The -msvc suffix is the entry CI already filled — keep it so
+    # a run does not discard that tree and rebuild FFmpeg.
+    - name: Restore installed packages
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: build/vcpkg_installed
+        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc

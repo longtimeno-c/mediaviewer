@@ -113,6 +113,7 @@ if(MV_ASAN)
     # match the vcpkg ABI. Heap, stack, and global ASan checks still run.
     # https://learn.microsoft.com/cpp/sanitizers/error-container-overflow
     target_compile_definitions(mv_project_options INTERFACE
+      MV_ASAN=1
       _DISABLE_VECTOR_ANNOTATION
       _DISABLE_STRING_ANNOTATION
       _DISABLE_OPTIONAL_ANNOTATION)

@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 # Serialise publication across refs, so an older run cannot overtake a newer one.
 concurrency:
@@ -84,36 +85,23 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Check out vcpkg at the manifest baseline
-        uses: actions/checkout@v4
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ env.VCPKG_COMMIT }}
-          path: vcpkg
-          fetch-depth: 0
-
-      - name: Bootstrap vcpkg
-        run: |
-          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
-
-      # Same key as ci.yml's MSVC legs: identical ports and triplet.
-      - name: Cache vcpkg packages
-        id: vcpkg-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: build/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
+      # Same installed tree as CI. A release that starts after CI has saved it
+      # configures in about a minute. A miss still installs, then saves, so the
+      # next CI run does not rebuild FFmpeg.
+      - name: vcpkg
+        id: vcpkg
+        uses: ./.github/actions/windows-vcpkg
 
       - name: Configure
         run: cmake -S . -B build -A x64
 
       - name: Save dependencies before packaging can fail
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: build/vcpkg_installed
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+          key: ${{ steps.vcpkg.outputs.cache-primary-key }}
 
       - name: Build (Release)
         run: cmake --build build --config Release
