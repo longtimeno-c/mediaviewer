@@ -145,6 +145,8 @@ public struct CommandBarView: View {
             .padding(12)
             .frame(width: 300, alignment: .leading)
         }
+        // Milestone G: the one-time Import hint and a running import's line.
+        AddonBarItems()
         Spacer()
         // What F7 / F8 / Delete will act on (plan/16): the marks if any, else
         // the current item.

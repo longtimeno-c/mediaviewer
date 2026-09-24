@@ -1,0 +1,4 @@
+module CImportApi {
+  header "cimport.h"
+  export *
+}

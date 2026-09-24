@@ -123,3 +123,14 @@ add_dependencies(mv_import_tests mv_import)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")
+
+# The packing tool's cross-check (tools/package/test_addon_pack.py).
+add_executable(mv_addon_verify "${MV_ROOT}/tools/addon-verify/main.cpp")
+target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+  add_test(NAME addon_pack COMMAND Python3::Interpreter
+           "${MV_ROOT}/tools/package/test_addon_pack.py" -v)
+  set_tests_properties(addon_pack PROPERTIES
+    ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
+endif()

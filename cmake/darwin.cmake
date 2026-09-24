@@ -450,10 +450,15 @@ set(MV_MAC_HOST_SOURCES
   src/shell/input_state.h
   src/shell/folder_model_mac.cpp
   src/shell/folder_model_mac.h
+  # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
+  src/shell/addons_mac.mm
+  src/shell/addons_mac.h
+  src/shell/present_busy.h
 )
 set_source_files_properties(
   src/shell/main_mac.mm
   src/shell/present_lab_mac.mm
+  src/shell/addons_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
@@ -483,6 +488,33 @@ function(mv_mac_host target)
 endfunction()
 
 mv_mac_host(mediaviewer_lab)
+
+# ---------------------------------------------------------------------------
+# Milestone G: Import.bundle, the Import add-on's SwiftUI chrome. Built beside
+# libmv_import.dylib in build/addons/import and packed (signed, notarized) by
+# tools/package/addon-pack.py -- never copied into MediaViewer.app.
+# ---------------------------------------------------------------------------
+set(MV_IMPORT_CHROME_DIR "${CMAKE_SOURCE_DIR}/src.swift/ImportChrome")
+set(MV_IMPORT_CHROME_BUILD "${CMAKE_BINARY_DIR}/swift-import-chrome")
+set(MV_IMPORT_BUNDLE "${CMAKE_BINARY_DIR}/addons/import/Import.bundle")
+file(GLOB MV_IMPORT_CHROME_SOURCES CONFIGURE_DEPENDS
+  "${MV_IMPORT_CHROME_DIR}/Sources/ImportChrome/*.swift"
+  "${MV_IMPORT_CHROME_DIR}/Sources/CImportApi/include/*.h")
+add_custom_command(
+  OUTPUT "${MV_IMPORT_BUNDLE}/Contents/MacOS/Import"
+  COMMAND swift build -c release
+          --package-path "${MV_IMPORT_CHROME_DIR}"
+          --build-path "${MV_IMPORT_CHROME_BUILD}"
+  COMMAND /bin/sh "${CMAKE_SOURCE_DIR}/cmake/make-import-bundle.sh"
+          "${MV_IMPORT_CHROME_BUILD}" "${MV_IMPORT_BUNDLE}" "${MV_IMPORT_VERSION}"
+  DEPENDS
+    "${MV_IMPORT_CHROME_DIR}/Package.swift"
+    ${MV_IMPORT_CHROME_SOURCES}
+    "${CMAKE_SOURCE_DIR}/src/abi/include/mediaviewer/mediaviewer_import.h"
+    "${CMAKE_SOURCE_DIR}/cmake/make-import-bundle.sh"
+  COMMENT "swift build: Import.bundle (Milestone G add-on chrome)"
+  VERBATIM)
+add_custom_target(mv_import_chrome ALL DEPENDS "${MV_IMPORT_BUNDLE}/Contents/MacOS/Import" mv_import)
 
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different

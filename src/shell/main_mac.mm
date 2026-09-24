@@ -37,6 +37,7 @@
 #include "io/dir.h"
 #include "io/file_port.h"
 #include "io/verified_copy.h"
+#include "shell/addons_mac.h"
 #include "shell/browse_index.h"
 #include "shell/commands.h"
 #include "shell/edit_session.h"
@@ -111,6 +112,9 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
       return true;
+    // Milestone G: only while the Import add-on is loaded (plan/18).
+    case open_import: case import_now:
+      return mv::shell::addon_commands_available();
     default:
       return false;
   }
@@ -1002,6 +1006,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   (void)notification;
   [self loadSettings];
+  // Milestone G: an installed Import add-on is verified and loaded off the
+  // main thread; with none installed this only watches for the card hint.
+  MvLabApp* __weak weakApp = self;
+  static MvLabApp* __weak g_addon_app = nil;
+  g_addon_app = weakApp;
+  MvAddonsStart(
+      [](void*, const char* path) {
+        MvLabApp* app = g_addon_app;
+        if (app && path) (void)[app openEntryPath:path];
+      },
+      nullptr);
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
       initWithContentRect:rect
@@ -2339,6 +2354,20 @@ enum MvMenuCmd : NSInteger {
       return YES;
     case help: [self toggleHelp]; return YES;
     case open_settings: [self setSettingsVisible:!_settingsVisible]; return YES;
+    // Milestone G (plan/18 "Commands"): ⌘⇧I and ⌘⇧F7, while Import is loaded.
+    case open_import: {
+      if (!mv::shell::addon_commands_available()) return NO;
+      std::vector<std::string> marks(_marks.begin(), _marks.end());
+      MvAddonsOpenImport(marks);
+      return YES;
+    }
+    case import_now: {
+      if (!mv::shell::addon_commands_available()) return NO;
+      std::vector<std::string> paths;
+      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
+      MvAddonsImportNow(paths);
+      return !paths.empty();
+    }
     case reveal_in_explorer: {
       NSString* path = [self currentItemPathForDrag];
       if (!path) return NO;

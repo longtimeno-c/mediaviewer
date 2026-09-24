@@ -106,7 +106,8 @@ bool safe_relative_path(std::string_view path) noexcept {
 }
 
 decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std::uint8_t> signature,
-                        std::span<const std::uint8_t> public_key, std::uint32_t host_api) {
+                        std::span<const std::uint8_t> public_key, std::uint32_t host_api,
+                        std::string_view expected_platform) {
   decision d;
   // 1. Signature first. Nothing below runs on unauthenticated bytes.
   if (public_key.size() != 32 ||
@@ -204,7 +205,7 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
     d.why = rejection::unsupported_schema;
     return d;
   }
-  if (m.platform != kPlatform) {
+  if (m.platform != expected_platform) {
     d.why = rejection::wrong_platform;
     return d;
   }

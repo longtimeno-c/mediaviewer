@@ -79,10 +79,13 @@ struct decision {
 
 // Signature, then shape, then platform, then the host API range.
 // `host_api` is the running host's MV_ADDON_HOST_API.
+// `platform` is this build's (kPlatform) except in the packing tool's
+// cross-check (tools/addon-verify), which verifies other platforms' packages.
 [[nodiscard]] decision check_manifest(std::span<const std::uint8_t> manifest_bytes,
                                       std::span<const std::uint8_t> signature,
                                       std::span<const std::uint8_t> public_key,
-                                      std::uint32_t host_api);
+                                      std::uint32_t host_api,
+                                      std::string_view platform = kPlatform);
 
 // A relative path that stays inside its folder on every OS.
 [[nodiscard]] bool safe_relative_path(std::string_view path) noexcept;
