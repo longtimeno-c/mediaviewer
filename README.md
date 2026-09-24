@@ -4,8 +4,24 @@ A Windows viewer for a real camera dump — photos and video in one folder. Open
 instantly and pans without a dropped frame. The first release ships the viewer through
 PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
 Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
-kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
+kept hostable; macOS is Milestone F (the Mac halves of PRs 1–8), a host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
+
+**One PR number per feature, on both platforms (2026-09-24).** The Mac host, first built as
+PRs 16–20, is now filed as the Mac halves of PRs 1–8, so **Windows and Mac are both at PR 9**.
+From here every PR lands on both, with one shared core change, a WinUI half and a SwiftUI half,
+and a verify line on each platform (D9, amended). The order is:
+
+| PR | What | State |
+|---|---|---|
+| 9 | Metadata read: pane, overlays, AF points, eyedropper, folder tree, date-taken sort | **In progress** (Mac ahead; Windows owes the XAML pane, tree island, sort menu) |
+| 10 | Geometry edits + export, lossless JPEG rotate | Mac half started on a branch |
+| 11–15 | Colour adjusts · metadata write · two-path trim · extract & remux · OS integration | Planned |
+| 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](plan/18-import.md)) | Planned, optional download |
+| 20–24 | Local AI search add-on ([plan/17-local-ai-search.md](plan/17-local-ai-search.md)) | Proposed |
+
+See [plan/10-roadmap.md](plan/10-roadmap.md). Old Mac numbers in the history below map as
+PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
 
 **Status: PR 7's slices are all merged and pass locally. Its clean-VM HEIC, real
 Live Photo and on-screen no-pop checks now have gates around them
@@ -15,11 +31,11 @@ the icon, About, the Inno wizard, the Velopack updater, opt-in telemetry and the
 runtimes are in the tree and build, the wizard installs and uninstalls cleanly on this
 machine, and the signature-rejection suite passes. It has **not** been through the
 clean-VM run its verify line asks for, and no artefact is signed — see
-[Package and install](#package-and-install-pr-8). PRs 9–15 are future feature updates.
+[Package and install](#package-and-install-pr-8). PRs 9–15 are next, on both platforms at once.
 The owner widened the 2026-09-13 sequencing exception on 2026-09-17
-([plan/12-decision-log.md](plan/12-decision-log.md)) so Mac work (PR 16–20) no longer waits
-on Windows PR 8 shipping; PR 16 (Metal present lab), PR 17 (decode + pan/zoom, folded in the
-PR 7 formats/Crashpad scope) and PR 18 (SwiftUI chrome, folded in the PR 4/PR 6
+([plan/12-decision-log.md](plan/12-decision-log.md)) so Mac work (the Mac halves of PRs 1–8) no longer waits
+on Windows PR 8 shipping; Mac PR 1 (Metal present lab), Mac PR 2 (decode + pan/zoom, folded in the
+PR 7 formats/Crashpad scope) and Mac PR 3 (SwiftUI chrome, folded in the PR 4/PR 6
 folder/filmstrip-backend/keyboard scope) are all in the tree. The Darwin target configures,
 builds and links with a real toolchain (`cmake`+`ninja`+`vcpkg`+`swift build`) and its Catch2
 suite passes (210 assertions, 60 cases). It has been run on a real Mac with a display
@@ -27,9 +43,9 @@ suite passes (210 assertions, 60 cases). It has been run on a real Mac with a di
 menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still unproven on Mac:
 drag-and-drop, copy/move/Trash and slideshow on real folders, animated GIF/APNG/WebP playback
 (they show frame 0 as a still), and the tonal step when a RAW's embedded preview is replaced
-by the full decode — see [macOS](#macos-pr-1618) below. PR 20 (MediaViewer.app: Finder open,
+by the full decode — see [macOS](#macos-mac-prs-16) below. Mac PR 8 (MediaViewer.app: Finder open,
 Quick Look thumbnails, Sparkle updates, the notarized disk image) is written but **not yet
-built or run on a Mac** — see [MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-pr-20).**
+built or run on a Mac** — see [MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-mac-pr-8).**
 The Windows present lab still owns
 the Win32 window and D3D11 swapchain. WinUI 3 chrome is XAML islands on that
 window: command bar (top) and filmstrip (bottom). Open a folder of JPEG/PNG/BMP/GIF/WebP,
@@ -56,19 +72,19 @@ harnesses (`-DMV_FUZZ=ON` under clang-cl, `tools/fuzz/run.ps1`) run briefly on
 pull requests and for longer nightly.
 
 macOS is Milestone F ([plan/15-platforms.md](plan/15-platforms.md)), a later
-host of the same core — not a UI-only port. PR 16 is the Metal present lab
-(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). PR 17 adds JPEG/PNG/BMP decode,
+host of the same core — not a UI-only port. Mac PR 1 is the Metal present lab
+(AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). Mac PR 2 adds JPEG/PNG/BMP decode,
 immutable Metal texture upload, fit / wheel-zoom-toward-cursor / drag-pan, and an MSL
 twin of the blit shader, plus (folded in from Windows PR 7) the rest of the D5 still
 formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump scrub.
-PR 18 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
+Mac PR 3 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
 ported): a command bar, a bottom filmstrip, and a full-grid gallery overlay, all driven
 by an FSEvents-backed folder model and a JPEG-512 SQLite thumbnail cache sharing
 Windows' `jpg512.1` spec, lazy-loading thumbnails so a large folder doesn't stall the
 scroll. Real folder navigation (argv, drag-and-drop-in, arrow keys and the rest of
 plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscreen,
 a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
-It does **not** yet play video (PR 19) or handle rating/metadata/RAW-pairing UI. A
+It does **not** yet play video (Mac PR 5) or handle rating/metadata/RAW-pairing UI. A
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -92,7 +108,7 @@ that apply to what you are doing.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | PR 16–18 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). **Video (PR 19):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. No rating/metadata/RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
+| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. No rating/metadata/RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -138,7 +154,7 @@ outside a developer prompt. Configure says so and stops if the component is
 missing, rather than producing a tree whose every test hangs for its full
 timeout with nothing in the log.
 
-### macOS (PR 16–18)
+### macOS (Mac PRs 1–6)
 
 Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, a full Xcode install (Command Line
 Tools alone are not enough — `swift build`'s SwiftUI target and `xcrun metal` both
@@ -191,7 +207,7 @@ The Mac has a real menu bar (File / View / Go / Window / Help), `?` opens a shor
 and in the gallery `↑`/`↓`/`W`/`S` move by row, `Enter` opens the selection and `+`/`-` resize the
 thumbnails.
 
-**Video on Mac (PR 19).** FFmpeg is LGPL and dynamic-link only. The dynamic manifest
+**Video on Mac (Mac PR 5).** FFmpeg is LGPL and dynamic-link only. The dynamic manifest
 installed above includes it alongside libheif/LibRaw; no extra install is needed.
 
 Open a folder with clips in it. `Space`/`K` play/pause, `,` `.` frame step, `Q`/`E` ±2 s,
@@ -224,7 +240,7 @@ slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/
 `F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
 cursor off the window.
 
-### MediaViewer.app and a shippable Mac build (PR 20)
+### MediaViewer.app and a shippable Mac build (Mac PR 8)
 
 `mediaviewer_lab` stays the bare instrument `frametime` drives. The same sources also
 build `MediaViewer`, the executable inside **MediaViewer.app**:
@@ -1077,9 +1093,12 @@ and nothing may depend on `shell`. That is what keeps the core testable with no 
 
 The parts worth knowing before touching anything:
 
-- **[plan/10-roadmap.md](plan/10-roadmap.md)** — Windows release at PR 8, future updates in PRs 9–15, and Milestone F
-  (Mac, PR 16–20), each with a verify line. Work is one slice; PR N+1 does not start until
-  N's verify holds *and* PR 1's still does.
+- **[plan/10-roadmap.md](plan/10-roadmap.md)** — one PR number per feature on both platforms: PRs 1–8
+  (Windows v1 and their Mac halves), 9–15 updates, 16–19 the Import add-on, 20–24 AI search. Each
+  has a verify line per platform. Work is one slice; PR N+1 does not merge until N holds on both
+  platforms *and* both present-loop gates still do.
+- **[plan/18-import.md](plan/18-import.md)** — the Import add-on: what it does better than an
+  Explorer/Finder copy, its window, settings, engine and how add-ons install.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](plan/12-decision-log.md)** — why a call was reversed, so it
