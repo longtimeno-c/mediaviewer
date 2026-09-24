@@ -1204,6 +1204,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       app->game_on = false;
       ++app->input.game_exit_seq;
       app->lab.publish(app->input);
+      // At game over the render thread sits in an INFINITE idle wait; without
+      // a wake the welcome card only returns on the next mouse move.
+      app->lab.wake();
       return;
     // Slideshow, pane and crop land with their slices (6d, PR 8, PR 9);
     // resolve_back cannot name them until their state exists.
