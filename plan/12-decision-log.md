@@ -1261,6 +1261,16 @@ checking first: whether ASan-instrumented `mv_image` (the only extra library `fu
 links) initialises twice, and what `fuzz_animation` pulls in that `fuzz_gif` and
 `fuzz_webp` — which both pass — do not.
 
+## 2026-09-24 — fuzz_decode and fuzz_animation re-enabled in CI (provisional)
+
+Built with clang-cl + static ASan on a local machine, both harnesses start and fuzz clean
+through `run.ps1` (20 s each: decode 9,742 execs, animation 3,976, exit 0, no artefacts). The
+0xC0000142 seen in CI is therefore not intrinsic to the harnesses; the DLL-copy step may have
+been the fix after all, or the cause is specific to the CI image (the earlier log noted it hit
+the *last* harnesses of a long run, which also fits resource exhaustion). **Not confirmed on
+CI.** Call: both are back in the CI harness list. If they die again, re-exclude and diagnose
+on the runner; do not treat the local pass as settling it.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

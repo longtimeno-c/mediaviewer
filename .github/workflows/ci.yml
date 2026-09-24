@@ -307,22 +307,14 @@ jobs:
       - name: Build harnesses
         run: cmake --build build-fuzz --config Release --target mv_fuzzers
 
-      # fuzz_decode and fuzz_animation are built, but not run: on this image both
-      # die at 0xC0000142 (STATUS_DLL_INIT_FAILED) before libFuzzer executes a
-      # single unit, so they have never fuzzed anything -- they only turned the
-      # job red and took the other eleven harnesses' result down with them.
-      #
-      # 0xC0000142 is a DLL that failed to INITIALISE, not one that was missing
-      # (that is 0xC0000135), so copying imports beside the exe -- which the
-      # harness CMake already does -- was always addressing the wrong failure.
-      # Diagnosing it needs clang-cl + the ASan runtime on a machine that can
-      # attach a debugger to the dying process. Recorded in plan/12; until then
-      # this excludes exactly two harnesses and keeps the eleven that work as a
-      # real gate, rather than disabling fuzzing altogether.
+      # fuzz_decode and fuzz_animation were excluded here after dying at 0xC0000142
+      # on this image (plan/12, 2026-09-23). They start and fuzz cleanly locally
+      # (2026-09-24), so they are back in. If they die again on CI, re-exclude
+      # them and read plan/12 before guessing at the cause.
       - name: Fuzz
         run: |
           $seconds = if ('${{ github.event_name }}' -eq 'schedule') { 1200 } else { 60 }
-          $harnesses = 'jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw','raw_preview'
+          $harnesses = 'jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw','raw_preview','decode','animation'
           ./tools/fuzz/run.ps1 -BuildDir build-fuzz -Seconds $seconds -Harness $harnesses
 
       - name: Upload fuzz artefacts
