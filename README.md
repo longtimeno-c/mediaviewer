@@ -25,8 +25,10 @@ builds and links with a real toolchain (`cmake`+`ninja`+`vcpkg`+`swift build`) a
 suite passes (210 assertions, 60 cases). It has been run on a real Mac with a display
 (2026-09-19): the 60 s present-loop gate passes with the chrome on screen, and the window,
 menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still unproven on Mac:
-drag-and-drop, copy/move/Trash and slideshow on real folders, animated GIF/APNG/WebP playback
-(they show frame 0 as a still), and the tonal step when a RAW's embedded preview is replaced
+drag-and-drop, copy/move/Trash and slideshow on real folders, a *by-eye* check of animated
+GIF/APNG/WebP playback (the render loop is traced cycling a 4-frame GIF at its 500 ms delays,
+looping forever, but a screen capture of the Metal layer is not a reliable instrument, so
+nobody has yet watched it), and the tonal step when a RAW's embedded preview is replaced
 by the full decode — see [macOS](#macos-pr-1618) below. PR 20 (MediaViewer.app: Finder open,
 Quick Look thumbnails, Sparkle updates, the notarized disk image) is written but **not yet
 built or run on a Mac** — see [MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-pr-20).**
