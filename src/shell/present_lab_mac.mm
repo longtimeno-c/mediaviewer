@@ -564,6 +564,20 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
                   origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
   };
 
+  // A toggle that draws nothing looks broken, so say why there is nothing to see.
+  float note_y = origin_y + pad;
+  const auto note = [&](const char* text_line) {
+    label(pad, note_y, text_line);
+    note_y += fs * 1.35f;
+  };
+  if (snapshot.af_points && snapshot.meta.af_count == 0) {
+    note("AF points: none recorded in this file");
+  }
+  if (snapshot.eyedropper) {
+    if (video_frame_) note("Eyedropper: stills only");
+    else if (!snapshot.mouse_in_client) note("Eyedropper: move the cursor over the image");
+  }
+
   if (snapshot.af_points) {
     for (int i = 0; i < snapshot.meta.af_count && i < meta_overlay::kMaxAf; ++i) {
       const float* q = snapshot.meta.af[i];
