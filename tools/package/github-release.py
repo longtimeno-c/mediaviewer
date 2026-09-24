@@ -111,6 +111,14 @@ def api_optional(endpoint):
         raise
 
 
+def release_by_tag(repo, tag):
+    # The /releases/tags endpoint can return 404 for an unpublished draft.
+    # Authenticated release listings include drafts; paginate to support retries
+    # even when the desired draft is not on the first page.
+    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100'))
+    return next((release for page in pages for release in page if release['tag_name'] == tag), None)
+
+
 def publish(folder):
     mode, version, tag, repo, sha = (os.environ[name] for name in
                                    ('MODE', 'VERSION', 'TAG', 'GITHUB_REPOSITORY', 'GITHUB_SHA'))
@@ -118,7 +126,7 @@ def publish(folder):
         raise ValueError('Only preview or stable may publish')
     version_tuple(version)
     assets = validate_assets(folder, version, mode, repo, tag)
-    existing = api_optional(f'repos/{repo}/releases/tags/{tag}')
+    existing = release_by_tag(repo, tag)
     if existing and (not existing['draft'] or existing['target_commitish'] != sha):
         raise ValueError('Refusing to overwrite a published release or a draft from another commit')
     ref = api_optional(f'repos/{repo}/git/ref/tags/{tag}')
@@ -151,7 +159,9 @@ def publish(folder):
            '--title', f'MediaViewer {version}' + (' (unsigned preview)' if mode == 'preview' else ''),
            '--notes-file', str(notes))
     gh('release', 'upload', tag, '--repo', repo, '--clobber', *(str(p) for p in assets))
-    uploaded = json.loads(gh('api', f'repos/{repo}/releases/tags/{tag}'))
+    uploaded = release_by_tag(repo, tag)
+    if not uploaded or not uploaded['draft'] or uploaded['target_commitish'] != sha:
+        raise ValueError('Expected draft from this source commit; refusing publication')
     actual = {a['name']: a['size'] for a in uploaded['assets']}
     if actual != {p.name: p.stat().st_size for p in assets}:
         raise ValueError('Draft assets differ from the validated set; leaving draft unpublished')
@@ -173,5 +183,7 @@ if __name__ == '__main__':
             publish(Path(sys.argv[2]))
         else:
             raise ValueError('usage: github-release.py prepare | publish <assets-directory>')
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    except subprocess.CalledProcessError as error:
+        sys.exit(f'{error}\n{(error.stderr or "").strip()}')
+    except (ValueError, KeyError, OSError) as error:
         sys.exit(str(error))
