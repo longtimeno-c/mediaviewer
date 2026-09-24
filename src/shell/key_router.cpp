@@ -23,6 +23,7 @@ mode resolve_mode(const view_state& s) noexcept {
   if (s.focus == focus_kind::filmstrip || s.focus == focus_kind::gallery) {
     return mode::island;
   }
+  if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
   if (s.item == item_kind::clip || s.item == item_kind::animation) return mode::video;

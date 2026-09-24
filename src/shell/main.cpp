@@ -1550,6 +1550,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->input.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
       app->zoom_intent_tick = ::GetTickCount64();
       return bump(app->input.zoom_preset_seq);
+    case game_toggle_3d:
+      if (app->mode != open_mode::none || !app->game_on) return false;
+      return bump(app->input.game_view_seq);
     case overlay: return bump(app->input.toggle_overlay_seq);
     case reset_stats: return bump(app->input.reset_stats_seq);
 

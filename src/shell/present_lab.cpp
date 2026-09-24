@@ -374,6 +374,11 @@ void present_lab::render_thread_main() noexcept {
       // as a stall.
       if (options_.soak_seconds == 0.0) pacer_.reset_window();
     }
+    if (snapshot.game_view_seq != seen_game_view_seq_) {
+      if (!sweep_mode_ && ((snapshot.game_view_seq - seen_game_view_seq_) & 1u)) game_.toggle_3d();
+      seen_game_view_seq_ = snapshot.game_view_seq;
+      redraw = true;  // switching at game over must also repaint the idle canvas
+    }
     if (snapshot.reset_stats_seq != seen_reset_seq_) {
       seen_reset_seq_ = snapshot.reset_stats_seq;
       redraw = true;

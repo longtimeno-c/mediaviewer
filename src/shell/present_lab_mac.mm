@@ -707,6 +707,11 @@ void present_lab_mac::render_thread_main() noexcept {
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
           if (options_.soak_seconds == 0.0) pacer_.reset_window();
         }
+        if (snapshot.game_view_seq != seen_game_view_seq_) {
+          if (!sweep_mode_ && ((snapshot.game_view_seq - seen_game_view_seq_) & 1u)) game_.toggle_3d();
+          seen_game_view_seq_ = snapshot.game_view_seq;
+          redraw = true;
+        }
         if (snapshot.reset_stats_seq != seen_reset_seq_) {
           seen_reset_seq_ = snapshot.reset_stats_seq;
           redraw = true;

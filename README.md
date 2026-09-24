@@ -379,6 +379,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 |---|---|
 | `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
 | `F3` | frame-time overlay — off at launch on Windows and macOS unless a soak is running |
+| Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves. Switching views keeps your run and score |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |

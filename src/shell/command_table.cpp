@@ -150,6 +150,9 @@ constexpr binding kBindings[] = {
     row(key::none, mod_none, kBrowse | kVideo, edge, open_jpeg),
     // plan/16 Video: Shift+M is mute (M itself stays free for a Move preset).
     row(C('M'), mod_shift, kVideo, edge, mute),
+    // Append: Settings persists the existing row indices.
+    row(key::space, mod_none, kRunner, edge, next),
+    row(C('3'), mod_none, kRunner, edge, game_toggle_3d),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -243,6 +246,7 @@ constexpr command_info kCommands[] = {
     {open_raw, "Open RAW of pair"},
     {mute, "Mute"},
     {open_jpeg, "Open JPEG of pair"},
+    {game_toggle_3d, "Runner: toggle 3D view"},
 };
 
 const char* named_key(key k) noexcept {

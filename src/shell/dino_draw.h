@@ -11,6 +11,7 @@
 
 #include "imgui.h"
 #include "shell/dino_game.h"
+#include "shell/dino_draw_3d.h"
 
 namespace mv::shell {
 
@@ -96,88 +97,97 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
   const float cx = w * 0.5f;
   const float p = g.intro_progress();
   const bool intro = g.state() == dino_game::phase::intro;
-
-  // Ground line: in the intro it grows outwards from the centre.
-  const float reveal = intro ? ease_out((p - 0.12f) / 0.5f) : 1.0f;
-  const float half = (w * 0.5f) * reveal;
-  if (half > 0.0f) dl->AddLine(ImVec2(cx - half, ground), ImVec2(cx + half, ground), ink, 2.0f * scale);
-
-  // Pebbles and dashes on the ground, scrolling with the distance run.
-  if (half > 0.0f) {
-    const float cell = 11.0f;
-    const auto first = static_cast<std::int64_t>(std::floor(g.distance() / cell));
-    const int cols = static_cast<int>(w / (cell * u)) + 3;
-    for (int i = 0; i < cols; ++i) {
-      const std::int64_t id = first + i;
-      const std::uint32_t hv = hash_cell(id);
-      if ((hv & 3u) == 0u) continue;
-      const float wx = (static_cast<float>(id) * cell - g.distance()) * u + static_cast<float>(hv % 7u) * u;
-      if (wx < cx - half || wx > cx + half) continue;
-      const float len = (1.0f + static_cast<float>((hv >> 4) % 3u)) * u;
-      const float dy = (5.0f + static_cast<float>((hv >> 8) % 3u) * 3.0f) * u;
-      dl->AddRectFilled(ImVec2(wx, ground + dy), ImVec2(wx + len, ground + dy + 1.4f * scale), soft);
-    }
-  }
-
-  // Clouds drift slower than the ground (parallax), fading in with the intro.
-  {
-    const float fade = intro ? ease_out((p - 0.3f) / 0.5f) : 1.0f;
-    const float span = w + 240.0f * scale;
-    for (int k = 0; k < 4; ++k) {
-      const float base = static_cast<float>(k) * (span / 4.0f);
-      const float x = std::fmod(base - g.distance() * 0.12f * u, span);
-      const float px = (x < 0.0f ? x + span : x) - 120.0f * scale;
-      const float py = ground - (64.0f + static_cast<float>((k * 37) % 41)) * u * 0.9f;
-      const ImU32 c = with_alpha(cloud, fade);
-      dl->AddRectFilled(ImVec2(px, py), ImVec2(px + 22.0f * u, py + 3.0f * u), c, 1.5f * u);
-      dl->AddRectFilled(ImVec2(px + 5.0f * u, py - 2.5f * u), ImVec2(px + 14.0f * u, py + 1.0f * u), c,
-                        1.5f * u);
-    }
-  }
-
-  // Obstacles: a trunk and two little arms.
-  for (int i = 0; i < g.obstacle_count(); ++i) {
-    const auto& o = g.obstacle_at(i);
-    const float x0 = cx - (w * 0.5f) + o.x * u;
-    dl->AddRectFilled(ImVec2(x0, ground - o.h * u), ImVec2(x0 + o.w * u, ground), ink, 1.5f * u);
-    const float army = ground - o.h * 0.62f * u;
-    dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army), ImVec2(x0 + 1.0f * u, army + 2.0f * u), ink);
-    dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army - 4.0f * u), ImVec2(x0 - 1.0f * u, army + 2.0f * u), ink);
-    dl->AddRectFilled(ImVec2(x0 + o.w * u - 1.0f * u, army - 1.0f * u),
-                      ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), ink);
-    dl->AddRectFilled(ImVec2(x0 + o.w * u + 1.0f * u, army - 5.0f * u),
-                      ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), ink);
-  }
-
-  // The runner. In the intro it sprints in from the left edge and lands with a hop.
-  float dx = g.dino_x();
-  float dy = g.dino_y();
-  const float left_edge = cx - w * 0.5f;
-  if (intro) {
-    const float q = ease_out((p - 0.35f) / 0.6f);
-    dx = -dino_game::kDinoW - 6.0f + (g.dino_x() + dino_game::kDinoW + 6.0f) * q;
-    if (q > 0.85f && q < 1.0f) dy = std::sin((q - 0.85f) / 0.15f * 3.14159f) * 5.0f;
-  }
   const bool dead = g.state() == dino_game::phase::over;
-  const bool legs_a = std::fmod(g.run_clock(), 2.0f) < 1.0f;
-  const float sx = left_edge + dx * u;
-  const float sy = ground - (dy + dino_game::kDinoH) * u;
-  const ImU32 body = dead ? IM_COL32(200, 120, 120, 255) : ink;
-  draw_rows(dl, kBody, 17, sx, sy, u, body);
-  const bool frozen = dead || g.airborne();
-  draw_rows(dl, (frozen || legs_a) ? kLegsA : kLegsB, 4, sx, sy + 17.0f * u, u, body);
-  if (dead) {  // an X where the eye was
-    const float ex = sx + 11.0f * u, ey = sy + 2.0f * u;
-    dl->AddLine(ImVec2(ex - u, ey - u), ImVec2(ex + 1.6f * u, ey + 1.6f * u), IM_COL32(24, 26, 32, 255),
-                1.5f * scale);
-    dl->AddLine(ImVec2(ex + 1.6f * u, ey - u), ImVec2(ex - u, ey + 1.6f * u), IM_COL32(24, 26, 32, 255),
-                1.5f * scale);
+
+  if (g.view_3d()) {
+    dino_3d::draw(dl, g, w, h, chrome, scale);
+  } else {
+
+    // Ground line: in the intro it grows outwards from the centre.
+    const float reveal = intro ? ease_out((p - 0.12f) / 0.5f) : 1.0f;
+    const float half = (w * 0.5f) * reveal;
+    if (half > 0.0f) dl->AddLine(ImVec2(cx - half, ground), ImVec2(cx + half, ground), ink, 2.0f * scale);
+
+    // Pebbles and dashes on the ground, scrolling with the distance run.
+    if (half > 0.0f) {
+      const float cell = 11.0f;
+      const auto first = static_cast<std::int64_t>(std::floor(g.distance() / cell));
+      const int cols = static_cast<int>(w / (cell * u)) + 3;
+      for (int i = 0; i < cols; ++i) {
+        const std::int64_t id = first + i;
+        const std::uint32_t hv = hash_cell(id);
+        if ((hv & 3u) == 0u) continue;
+        const float wx = (static_cast<float>(id) * cell - g.distance()) * u + static_cast<float>(hv % 7u) * u;
+        if (wx < cx - half || wx > cx + half) continue;
+        const float len = (1.0f + static_cast<float>((hv >> 4) % 3u)) * u;
+        const float dy = (5.0f + static_cast<float>((hv >> 8) % 3u) * 3.0f) * u;
+        dl->AddRectFilled(ImVec2(wx, ground + dy), ImVec2(wx + len, ground + dy + 1.4f * scale), soft);
+      }
+    }
+
+    // Clouds drift slower than the ground (parallax), fading in with the intro.
+    {
+      const float fade = intro ? ease_out((p - 0.3f) / 0.5f) : 1.0f;
+      const float span = w + 240.0f * scale;
+      for (int k = 0; k < 4; ++k) {
+        const float base = static_cast<float>(k) * (span / 4.0f);
+        const float x = std::fmod(base - g.distance() * 0.12f * u, span);
+        const float px = (x < 0.0f ? x + span : x) - 120.0f * scale;
+        const float py = ground - (64.0f + static_cast<float>((k * 37) % 41)) * u * 0.9f;
+        const ImU32 c = with_alpha(cloud, fade);
+        dl->AddRectFilled(ImVec2(px, py), ImVec2(px + 22.0f * u, py + 3.0f * u), c, 1.5f * u);
+        dl->AddRectFilled(ImVec2(px + 5.0f * u, py - 2.5f * u), ImVec2(px + 14.0f * u, py + 1.0f * u), c,
+                          1.5f * u);
+      }
+    }
+
+    // Obstacles: a trunk and two little arms.
+    for (int i = 0; i < g.obstacle_count(); ++i) {
+      const auto& o = g.obstacle_at(i);
+      const float x0 = cx - (w * 0.5f) + o.x * u;
+      dl->AddRectFilled(ImVec2(x0, ground - o.h * u), ImVec2(x0 + o.w * u, ground), ink, 1.5f * u);
+      const float army = ground - o.h * 0.62f * u;
+      dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army), ImVec2(x0 + 1.0f * u, army + 2.0f * u), ink);
+      dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army - 4.0f * u), ImVec2(x0 - 1.0f * u, army + 2.0f * u), ink);
+      dl->AddRectFilled(ImVec2(x0 + o.w * u - 1.0f * u, army - 1.0f * u),
+                        ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), ink);
+      dl->AddRectFilled(ImVec2(x0 + o.w * u + 1.0f * u, army - 5.0f * u),
+                        ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), ink);
+    }
+
+    // The runner. In the intro it sprints in from the left edge and lands with a hop.
+    float dx = g.dino_x();
+    float dy = g.dino_y();
+    const float left_edge = cx - w * 0.5f;
+    if (intro) {
+      const float q = ease_out((p - 0.35f) / 0.6f);
+      dx = -dino_game::kDinoW - 6.0f + (g.dino_x() + dino_game::kDinoW + 6.0f) * q;
+      if (q > 0.85f && q < 1.0f) dy = std::sin((q - 0.85f) / 0.15f * 3.14159f) * 5.0f;
+    }
+    const bool legs_a = std::fmod(g.run_clock(), 2.0f) < 1.0f;
+    const float sx = left_edge + dx * u;
+    const float sy = ground - (dy + dino_game::kDinoH) * u;
+    const ImU32 body = dead ? IM_COL32(200, 120, 120, 255) : ink;
+    draw_rows(dl, kBody, 17, sx, sy, u, body);
+    const bool frozen = dead || g.airborne();
+    draw_rows(dl, (frozen || legs_a) ? kLegsA : kLegsB, 4, sx, sy + 17.0f * u, u, body);
+    if (dead) {  // an X where the eye was
+      const float ex = sx + 11.0f * u, ey = sy + 2.0f * u;
+      dl->AddLine(ImVec2(ex - u, ey - u), ImVec2(ex + 1.6f * u, ey + 1.6f * u), IM_COL32(24, 26, 32, 255),
+                  1.5f * scale);
+      dl->AddLine(ImVec2(ex + 1.6f * u, ey - u), ImVec2(ex - u, ey + 1.6f * u), IM_COL32(24, 26, 32, 255),
+                  1.5f * scale);
+    }
   }
 
   auto centred = [&](const char* s, float fs, float y, ImU32 col) {
     const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
     dl->AddText(font, fs, ImVec2(cx - sz.x * 0.5f, y), col, s);
   };
+
+  // Always discoverable, including once the jump tutorial has faded.
+  dl->AddText(font, 14.0f * scale, ImVec2(24.0f * scale, chrome + 24.0f * scale), soft,
+              g.view_3d() ? "3D   [3] switch to 2D" : "2D   [3] switch to 3D");
 
   // Score, top right of the canvas (below the command bar).
   if (g.state() != dino_game::phase::intro) {
@@ -194,11 +204,13 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
 
   if (g.state() == dino_game::phase::playing && g.seconds_in_phase() < 4.0f) {
     const float a = 1.0f - std::clamp((g.seconds_in_phase() - 2.5f) / 1.5f, 0.0f, 1.0f);
-    centred("Space  jump        Esc  leave", 15.0f * scale, ground + 46.0f * scale, with_alpha(soft, a));
+    const float hint_y = g.view_3d() ? h - 42.0f * scale : ground + 46.0f * scale;
+    centred("Space  jump        Esc  leave", 15.0f * scale, hint_y, with_alpha(soft, a));
   }
   if (dead) {
-    centred("G A M E   O V E R", 26.0f * scale, ground - 150.0f * scale, ink);
-    centred("Space  run again        Esc  leave", 15.0f * scale, ground - 108.0f * scale, soft);
+    const float title_y = g.view_3d() ? chrome + (h - chrome) * 0.23f : ground - 150.0f * scale;
+    centred("G A M E   O V E R", 26.0f * scale, title_y, ink);
+    centred("Space  run again        Esc  leave", 15.0f * scale, title_y + 42.0f * scale, soft);
   }
 }
 

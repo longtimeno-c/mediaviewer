@@ -235,6 +235,7 @@ class present_lab_mac {
   bool sweep_mode_ = false;
   dino_game game_;
   std::uint32_t seen_game_exit_seq_ = 0;
+  std::uint32_t seen_game_view_seq_ = 0;
   double last_game_elapsed_ = 0.0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;

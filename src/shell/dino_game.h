@@ -45,7 +45,12 @@ class dino_game {
   void leave() noexcept {
     phase_ = phase::idle;
     count_ = 0;
+    view_3d_ = false;
   }
+
+  // Presentation only: switching cameras never resets the run or changes physics.
+  void toggle_3d() noexcept { if (active()) view_3d_ = !view_3d_; }
+  bool view_3d() const noexcept { return view_3d_; }
 
   void update(float dt) noexcept {
     dt = std::clamp(dt, 0.0f, 0.05f);  // a stalled frame must not teleport the dino
@@ -188,6 +193,7 @@ class dino_game {
   }
 
   phase phase_ = phase::idle;
+  bool view_3d_ = false;
   std::uint32_t rng_;
   float t_ = 0.0f;
   float run_clock_ = 0.0f;

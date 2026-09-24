@@ -95,6 +95,12 @@ FastStone / IrfanView muscle memory, not vim. Vim is a v1.1 preset.
 
 Number-row `0`–`4` is **zoom**, matching the lab today. Ratings do not steal those keys.
 
+On an empty window, Space starts the T-Rex runner. While the game is active,
+`3` toggles its 2D/3D view, Space jumps/retries, and Esc leaves. Switching the view
+preserves the current jump, obstacles and score. A retry keeps the chosen view;
+leaving the game restores the default 2D view. The runner binding uses the same
+command table as image zoom, in its own mode, and does not intercept text input.
+
 ### Browse
 
 | Key | Command |

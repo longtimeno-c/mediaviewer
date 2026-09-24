@@ -798,3 +798,25 @@ TEST_CASE("Esc leaves the empty-window runner, before it moves focus", "[keys][d
   CHECK(resolve_back(idle) == back_target::none);
   CHECK_FALSE(key_router().on_key(down(key::escape), idle).handled);
 }
+
+TEST_CASE("3 toggles the runner view on the down edge without stealing image zoom", "[keys][dino]") {
+  key_router router;
+  view_state s;
+  s.game = true;
+  CHECK(resolve_mode(s) == mode::runner);
+  CHECK(router.on_key(down(char_key('3')), s).command == command_id::game_toggle_3d);
+  CHECK(router.on_key({char_key('3'), mod_none, true, false}, s).command == command_id::none);
+  CHECK(router.on_key({char_key('3'), mod_none, false, true}, s).command == command_id::none);
+  CHECK(router.on_key(down(key::space), s).command == command_id::next);
+  CHECK(router.on_key(down(key::escape), s).back == back_target::game);
+  s.focus = focus_kind::text;
+  CHECK_FALSE(router.on_key(down(char_key('3')), s).handled);
+  s.focus = focus_kind::canvas;
+  s.settings_open = true;
+  CHECK_FALSE(router.on_key(down(char_key('3')), s).handled);
+  s.settings_open = false;
+  s.item = item_kind::still;  // stale game flag cannot take over an opened file
+  CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
+  s.game = false;
+  CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
+}

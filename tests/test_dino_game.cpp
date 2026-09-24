@@ -115,6 +115,50 @@ TEST_CASE("a stalled frame does not teleport the runner", "[dino]") {
   CHECK(g.distance() - before < 20.0f);
 }
 
+TEST_CASE("switching 3D mid-jump preserves the run and collision outcome", "[dino]") {
+  dino_game flat = running();
+  dino_game spatial = flat;
+  flat.debug_clear_obstacles();
+  spatial.debug_clear_obstacles();
+  flat.debug_add_obstacle(flat.dino_x() + 60.0f, 8.0f, 18.0f);
+  spatial.debug_add_obstacle(spatial.dino_x() + 60.0f, 8.0f, 18.0f);
+  flat.press();
+  spatial.press();
+  for (int frame = 0; frame < 120; ++frame) {
+    if (frame % 9 == 0) spatial.toggle_3d();
+    flat.update(1.0f / 60.0f);
+    spatial.update(1.0f / 60.0f);
+    CHECK(flat.state() == spatial.state());
+    CHECK(flat.dino_y() == spatial.dino_y());
+    CHECK(flat.distance() == spatial.distance());
+    CHECK(flat.obstacle_count() == spatial.obstacle_count());
+    CHECK(flat.score() == spatial.score());
+    CHECK(flat.best() == spatial.best());
+  }
+}
+
+TEST_CASE("3D persists across retries but leaving restores the default 2D view", "[dino]") {
+  dino_game g;
+  g.toggle_3d();
+  CHECK_FALSE(g.view_3d());  // the welcome screen is not a game
+  g.press();
+  g.toggle_3d();
+  CHECK(g.view_3d());
+  run_for(g, dino_game::kIntroSeconds + 0.1f);
+  g.debug_add_obstacle(g.dino_x() + 5.0f, 10.0f, 22.0f);
+  g.update(0.01f);
+  REQUIRE(g.state() == phase::over);
+  g.toggle_3d();
+  CHECK_FALSE(g.view_3d());
+  g.toggle_3d();
+  g.press();
+  CHECK(g.view_3d());
+  CHECK(g.state() == phase::intro);
+  g.leave();
+  g.press();
+  CHECK_FALSE(g.view_3d());
+}
+
 TEST_CASE("the same seed plays the same obstacles", "[dino]") {
   auto layout = [](std::uint32_t seed) {
     dino_game g(seed);

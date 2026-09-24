@@ -1935,6 +1935,9 @@ enum MvMenuCmd : NSInteger {
     case one_to_one: ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
     case overlay: ++_snap.toggle_overlay_seq; [self pokeSnapshot]; return YES;
     case reset_stats: ++_snap.reset_stats_seq; [self pokeSnapshot]; return YES;
+    case game_toggle_3d:
+      if (!_items.empty() || !_gameOn) return NO;
+      ++_snap.game_view_seq; [self pokeSnapshot]; return YES;
     case prev:
       if (_items.empty()) return NO;
       [self navigatePrev];

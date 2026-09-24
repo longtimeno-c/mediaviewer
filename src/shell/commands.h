@@ -69,6 +69,7 @@ enum class mode : std::uint8_t {
   island = 3,     // focused thumbnail island; visible gallery takes precedence
   loupe = 4,      // Z held on the canvas: arrows nudge the loupe point
   gallery = 5,    // visible gallery owns navigation, even with canvas focus
+  runner = 6,     // empty-window game; number keys do not change image zoom
   count
 };
 
@@ -81,7 +82,8 @@ inline constexpr mode_mask kSlideshow = 1 << 2;
 inline constexpr mode_mask kIsland = 1 << 3;
 inline constexpr mode_mask kLoupe = 1 << 4;
 inline constexpr mode_mask kGallery = 1 << 5;
-inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery;
+inline constexpr mode_mask kRunner = 1 << 6;
+inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -194,6 +196,7 @@ enum class command_id : std::uint16_t {
   open_raw,     // show the RAW half of a RAW+JPEG stop (unbound by default)
   open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
   mute,         // Shift+M (plan/16 Video): toggle the clip's audio
+  game_toggle_3d,  // 3 in the empty-window runner only
   count
 };
 
