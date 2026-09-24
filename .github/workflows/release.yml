@@ -266,7 +266,7 @@ jobs:
       # a subsequent manifest install otherwise removes the other triplet.
       - name: Install macOS dynamic codec libraries
         run: |
-          brew install libomp nasm
+          brew install libomp nasm ninja
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
@@ -275,6 +275,7 @@ jobs:
       - name: Configure
         run: |
           args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION"
+                -G Ninja
                 -DVCPKG_TARGET_TRIPLET="$TRIPLET"
                 -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
           if [ "$MODE" = "stable" ]; then
