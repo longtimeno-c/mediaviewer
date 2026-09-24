@@ -349,8 +349,8 @@ add_library(mv_shell STATIC
   src/shell/key_router.cpp
   src/shell/key_router.h
   # PR 9: date-taken sort and the metadata cache (both portable).
-  src/shell/sort_order.cpp
-  src/shell/sort_order.h
+  src/io/sort_order.cpp
+  src/io/sort_order.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.

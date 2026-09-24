@@ -54,7 +54,9 @@ write the same three-field path. Number-row `0`/`1` stay fit/100 % — do not st
 Editing metadata is where you can lose someone's photos. Rules:
 
 - **Atomic writes only**: write to `name.ext.tmp` in the same directory, `FlushFileBuffers`, then
-  `ReplaceFileW` (preserves ACLs, attributes, and the original on failure).
+  `ReplaceFileW` (preserves ACLs, attributes, and the original on failure). On macOS (the
+  PR 12 Mac half, 2026-09-24): same-directory temp file, `F_FULLFSYNC`, then `rename(2)`,
+  behind the same `io` replace port. Never an in-place rewrite on either OS.
 - **Preserve everything you didn't touch** — including maker notes and unknown tags. Exiv2 does
   this if you modify its parsed structure rather than rebuilding it.
 - **Never rewrite RAW files in place.** Write an **XMP sidecar** (`IMG_1234.xmp`) instead. This is

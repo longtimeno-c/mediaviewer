@@ -11,7 +11,7 @@
 
 #include "core/job_system.h"
 #include "shell/meta_store.h"
-#include "shell/sort_order.h"
+#include "io/sort_order.h"
 
 namespace {
 
@@ -163,9 +163,9 @@ TEST_CASE("date keys are read once per file and dateless files are remembered", 
 }
 
 TEST_CASE("sort orders", "[sort]") {
-  using mv::shell::sort_entries;
-  using mv::shell::sort_key;
-  using mv::shell::sort_order;
+  using mv::io::sort_entries;
+  using mv::io::sort_key;
+  using mv::io::sort_order;
   const auto names = [](const std::vector<io::dir_entry>& v) {
     std::string s;
     for (const auto& e : v) s += e.name_utf8 + " ";
@@ -186,23 +186,23 @@ TEST_CASE("sort orders", "[sort]") {
 }
 
 TEST_CASE("date taken sorts by the stamp and falls back to mtime", "[sort]") {
-  using mv::shell::sort_key;
+  using mv::io::sort_key;
   std::vector<io::dir_entry> v{entry("late.jpg", 5), entry("early.jpg", 9), entry("nodate.jpg", 7)};
   const auto lookup = [](const io::dir_entry& e) -> std::optional<std::int64_t> {
     if (e.name_utf8 == "late.jpg") return 900;
     if (e.name_utf8 == "early.jpg") return 100;
     return std::nullopt;  // no stamp: sorts by its mtime, 7
   };
-  mv::shell::sort_entries(v, {sort_key::date_taken, false}, lookup);
+  mv::io::sort_entries(v, {sort_key::date_taken, false}, lookup);
   CHECK(v[0].name_utf8 == "nodate.jpg");  // 7 < 100 < 900
   CHECK(v[1].name_utf8 == "early.jpg");
   CHECK(v[2].name_utf8 == "late.jpg");
-  mv::shell::sort_entries(v, {sort_key::date_taken, true}, lookup);
+  mv::io::sort_entries(v, {sort_key::date_taken, true}, lookup);
   CHECK(v[0].name_utf8 == "late.jpg");
 }
 
 TEST_CASE("sort order round-trips through settings", "[sort]") {
-  using namespace mv::shell;
+  using namespace mv::io;
   for (int k = 0; k < static_cast<int>(sort_key::count); ++k) {
     for (bool d : {false, true}) {
       const sort_order o{static_cast<sort_key>(k), d};

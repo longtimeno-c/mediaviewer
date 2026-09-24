@@ -25,6 +25,7 @@ extern "C" {
 #include "fixtures.h"
 #include "meta/af.h"
 #include "meta/meta.h"
+#include "meta/tables.h"
 
 namespace {
 
@@ -506,4 +507,46 @@ TEST_CASE("AF quads follow the orientation the decoder applied", "[meta][af]") {
     CHECK(q[0].w == Catch::Approx(0.1f));
     CHECK(q[0].h == Catch::Approx(0.2f));
   }
+}
+
+// PR 9: the pane's three tables. One line per record, tabs between fields, and a
+// value can never smuggle a separator in.
+TEST_CASE("the pane tables are one record per line with flattened values", "[meta][tables]") {
+  mv::meta::metadata m;
+  m.s.camera = "Canon EOS R5";
+  m.s.width = 6000;
+  m.s.height = 4000;
+  mv::meta::property p;
+  p.space = mv::meta::origin::xmp;
+  p.group = "Xmp.dc";
+  p.label = "Description";
+  p.value = "line one\nline\ttwo";  // a tab and a newline inside a value
+  p.raw_tag = "Xmp.dc.description";
+  m.properties.push_back(p);
+  mv::meta::stream_info st;
+  st.index = 1;
+  st.kind = mv::meta::stream_kind::audio;
+  st.codec = "aac";
+  st.fields.push_back({"Channels", "2"});
+  m.streams.push_back(st);
+  m.chapters.push_back({61000, 90000, "Second\tact"});
+
+  const std::string props = mv::meta::properties_table(m);
+  CHECK(props == "xmp\tXmp.dc\tDescription\tline one line two\tXmp.dc.description\n");
+
+  const std::string streams = mv::meta::streams_table(m);
+  CHECK(streams == "S\t1\taudio\taac\nF\tChannels\t2\nC\t61000\tSecond act\n");
+
+  // The summary always lists every row for the kind, so a gap shows as an empty
+  // value rather than a missing line; a missing camera is not an error.
+  const std::string summary = mv::meta::summary_table(m);
+  CHECK(summary.find("Canon EOS R5") != std::string::npos);
+  std::size_t lines = 0;
+  for (char c : summary) lines += c == '\n';
+  CHECK(lines == mv::meta::summary_rows(m).size());
+
+  const mv::meta::metadata empty;
+  CHECK(mv::meta::properties_table(empty).empty());
+  CHECK(mv::meta::streams_table(empty).empty());
+  CHECK_FALSE(mv::meta::summary_table(empty).empty());  // every row, all blank
 }

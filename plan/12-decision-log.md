@@ -1149,7 +1149,7 @@ Build one or accept kill-switch-only on Mac, and log it. If the on-mount licence
 proves unreliable on macOS 14, fall back to a `Licence` file in the window + About, never
 an in-app accept modal.
 
-Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
+Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-mac-pr-8).
 
 ## 2026-09-23 — PR 20 starts before PR 19's verify fully holds; calls made starting it
 
@@ -1316,6 +1316,156 @@ Both hosts use CMake's strict x.y.z version. Builds run independently; publicati
 for both and uploads to a draft before making it visible. Never publish a partial latest
 release or replace published assets under an existing version. RELEASING.md is the runbook.
 
+## 2026-09-24 — Default-viewer setup selected initially
+
+The owner requested that both platforms offer all supported media as defaults with
+the option already checked. Windows checks its Finish-page Default Apps link; the
+user still confirms associations in Settings. Mac presents a first-launch setup
+sheet with the checkbox on and applies it only on Continue. Unticking it or choosing
+Not Now preserves existing defaults, and an answered Mac prompt stays answered on
+updates. This replaces the earlier delayed-after-first-photo prompt policy; telemetry
+and promotional links remain unchanged.
+
+## 2026-09-24 — Local AI search planned (post-v1, proposed)
+
+The owner asked for local inference so a folder of video can be searched by keyframe/moment.
+[17-local-ai-search.md](17-local-ai-search.md) plans it as Milestone G (PRs 21–24), opt-in and
+post-v1; PR 8 is untouched. It narrows two earlier calls rather than reversing them:
+plan/16's "Face detect, AI cull, cloud albums" stays out (faces, culling and cloud are still
+excluded; local text/image-to-frame retrieval is what is added), and the 2026-09-20 / plan/13
+"do not ship ONNX/DirectML" stands for the **base installer** — inference ships only as a
+separate opt-in AI pack. **Open:** DirectML runs on D3D12, which CLAUDE.md says not to introduce;
+the owner must choose compute-only DML, CPU-only, or vendor EPs before PR 21
+(plan/17, *Open decisions*). Not implemented; no code lands until that is answered.
+
+**Amended 2026-09-24 (same day):** the owner wants face detection (as in iOS Photos), so plan/16's
+"Face detect" exclusion is lifted for a local-only, opt-in, deletable people index — PR 25 in
+plan/17, with stricter biometric handling than the frame index. AI culling and the
+DirectML/D3D12 question are still unanswered.
+
+**Settled 2026-09-24 (owner answers):** GPU inference uses **vendor providers** (OpenVINO,
+CUDA/TensorRT) as optional sub-packs with CPU always the fallback and a Settings toggle
+(Auto / provider / CPU-only) — **no DirectML, so no D3D12 and no CLAUDE.md change.** The whole
+feature is a downloadable extra installed from Settings, never in the base installer. AI
+culling was not requested and stays out. Recorded in plan/17 only, not as a numbered D-decision.
+Known gap: AMD GPUs run CPU until a provider exists.
+
+## 2026-09-24 — D9 amended: PRs 9–15 are dual-track, Windows and macOS in the same PR
+
+**Owner's call.** Windows PRs 1–8 are in the tree and signed off (entry above). The owner
+reports the basic Mac setup (PRs 16–20) complete, and is now working on PR 9 onward for both
+platforms at the same time. **Reverses** D9's "Milestone F is five PRs, not a dual-track of
+4–15" and plan/10's "Mac … not a dual-track requirement for those updates" for PRs 9–15.
+Everything else in D9 stands: Mac is a host, not a UI port. One present path per OS. No
+Vulkan, MoltenVK, wgpu or SPIR-V. No `AVPlayer`. The ports stay narrow.
+
+**Why.** The column D9 rejected ("Windows and macOS in v1") was rejected because it would
+have delayed Windows v1 behind a Metal lab the Windows user did not need. That reason is
+gone: v1 is packaged and the Metal lab exists. Keeping a PR 9–15 Mac catch-up would leave
+the Mac a permanent release behind. It would also let `meta/` and `edit/` grow
+Windows-shaped before anyone built them on Darwin, the leak D9 exists to prevent.
+
+**Rules.** One PR number, one shared core change, a WinUI half and a SwiftUI half, HLSL and
+MSL twins in the same PR, a verify line on each platform, and both present-loop gates
+(PR 1 Windows, PR 16 Mac). A PR is done only when both halves hold, and PR N+1 does not start
+on either platform before that. PR 15's Mac half is only the twins PR 20 did not already land.
+
+**Carried, not closed by this entry:** the PR 19 real-iPhone HLG check; PR 20's Quick Look
+precedence, state across an update restart, and rollback; and Crashpad on Mac (still the
+owner's call: PR 17 or PR 20). None blocks PR 9 from starting. Crashpad must be settled
+before the first stable Mac release that carries PR 9's new decoders. **Still open:** whether
+Milestone G (AI search) follows the dual-track rule. It was proposed Windows-first, and a Mac
+half needs an ORT Core ML provider that plan/17 does not specify.
+
+Edited: plan/01 (D9), plan/10 (PR 9–15 rewritten with host halves), plan/15, plan/16,
+plan/06 (Mac atomic replace), plan/README, CLAUDE.md, README.
+
+## 2026-09-24 — Ingest with hash dedupe and verify: PR 26, out of the backlog
+
+**Owner's call.** "Card ingest with verify" was a v1.1 backlog row (plan/10, plan/16:
+"adjacent product"). The owner asked for duplicate skipping by content hash, not by name,
+and for faster sorting of a camera dump. It becomes **PR 26**, dual-track. It may start once
+PR 9 holds on both platforms and runs beside PRs 10–15 as its own lane, because it touches
+`io/` and the copy path, not `edit/` or `player/`.
+
+**What it is not.** It is not a faster copy engine: throughput is bounded by the card, bus
+and disk, and the OS copy is already close to that. The gains are: copying less (a
+size-then-BLAKE3-256 duplicate skip, with a cached destination hash index); no second pass
+for verification (hash on read, uncached read-back of the destination); overlapping the
+card read with the SSD write; parallel work only across different physical devices; and
+sorting on the way in (a fixed `YYYY/YYYY-MM-DD` layout from date taken).
+
+**Safety calls.** A name match is never a duplicate, and a name clash with different bytes
+is copied under a collision-safe name. `F8` across volumes deletes the source only after
+verify. Ingest never deletes from or erases a card. A volume arriving offers the pane and
+never starts a copy. RAW+JPEG and Live Photo pairs move as one unit. BLAKE3 is taken under
+CC0 (Apache-2.0 alone does not combine with GPL-2.0).
+
+**Still out:** filename templating (v1.1), a catalogue, library-wide duplicate finding,
+near-duplicate or burst grouping, backup to a second destination.
+
+## 2026-09-24 (later) — One PR number per feature: Mac 16–20 become the Mac halves of 1–8; Import is an add-on at 16–19; AI moves to 20–24
+
+**Owner's call.** The owner asked for the plan to show Mac and Windows in sync, as they now are,
+by renumbering into the order work actually happens. The state was checked in the repo, not
+assumed: `pr9-metadata-read-mac` carries PR 9 on both platforms (Mac ahead; Windows owes the
+XAML pane, tree island and sort menu), and `claude/compassionate-davinci-5fiwyz` has started
+the Mac half of PR 10.
+
+**Renumbering.** Old PR 16 → Mac PR 1. Old 17 → Mac PR 2 + 7. Old 18 → Mac PR 3 + 4 + 6.
+Old 19 → Mac PR 5. Old 20 → Mac PR 8 (plus the early Finder part of PR 15). Milestone F is
+therefore complete as the Mac halves of PRs 1–8, and both platforms are at PR 9. PRs 9–15 keep
+their numbers because 9 and 10 are in flight. The Import add-on takes 16–19 (Milestone G),
+superseding this morning's "PR 26 Ingest". Local AI search moves from 21–25 to 20–24 and becomes
+Milestone H. **Entries above this one, and branches and commits, keep the numbers they were
+written with.**
+
+**Sequencing wording changed to match practice.** From PR 9, PR N+1 does not *merge* until N
+holds on both platforms and both present-loop gates hold. A host half may start ahead on a
+branch, which the Mac half of PR 10 already has.
+
+**Import becomes an installable add-on** (owner request), like the AI pack: Settings →
+Add-ons, a signed manifest, verify before load, a per-user versioned folder, silent updates
+with the app, and sideloading. It has a native shared library behind a host function table,
+plus a chrome assembly (Windows) or `NSBundle` (Mac). It is absent from the base tree when not
+installed. Import builds this mechanism in PR 16. The AI pack (PR 20) reuses it instead of
+building its own. The base app keeps one safety fix regardless: `F8` across volumes deletes
+the source only after the copy is verified. The feature set widened at the owner's request
+("more features, better GUI"):
+- the Import window;
+- new-since-last-import;
+- presets, including per-card presets and opt-in auto-import;
+- a second destination from one read;
+- layouts and rename-on-import templates;
+- camera sidecars kept with their files;
+- library tools, including verify-a-folder.
+
+The backlog's "filename templating" is narrowed to renaming files already in a library. Full
+design: plan/18. Never offered: deleting from or formatting cards, overwriting destination
+files, uploading.
+
+## 2026-09-24 (later) — AI search is dual-track; Mac crash reporting goes in PR 11
+
+**Owner's calls, answering the two open questions from the renumbering entry above.**
+
+**AI search (PRs 20–24) is built on both platforms**, like every PR from 9. Mac runs the same
+ONNX model through ONNX Runtime's **Core ML provider** (Apple GPU / Neural Engine), with the
+CPU provider underneath. The Mac Compute toggle is Auto / Core ML / CPU only. Core ML is part of
+macOS, so there is no vendor sub-pack. The pack installs through PR 16's add-on mechanism,
+signed and notarized. Frame sampling on Mac uses a separate VideoToolbox decoder instance,
+never the playback one. Both present-loop gates hold while indexing. Indexes are local to one
+machine and never synced between platforms, because embeddings differ slightly per backend.
+The PR 20 spike measures how many of the model's operators Core ML covers; the rest fall back
+to CPU inside ORT.
+
+**Mac crash reporting goes in the Mac half of PR 11.** This settles the open question from the
+2026-09-23 PR 20 entry and the 2026-09-17 fold-in: the fold-in put Crashpad in old PR 17, and it
+never landed. The Mac half of PR 11 adds Crashpad out-of-process, the same scrub as Windows (no
+path, filename, username, pixels or EXIF), and a Swift/AppKit capture path tied to the native
+report by the correlation id. Its verify is a Mac canary scan. Until PR 11 lands, the Mac has
+no crash capture. A stable Mac release carrying PR 9's new parsers before then must say so in
+its notes.
+
 ## 2026-09-24 — PR 9 (metadata read) starts on macOS before Windows PR 8 is verified
 
 **Sequencing, the owner's call.** PR 9 is a Milestone D update and plan/10 says PR N+1 waits
@@ -1386,15 +1536,41 @@ selection changes debounce 90 ms; completions post a window message.
   drop with it off. The frametime harness and full ctest still pass; the PR 1 60 s soak was not re-run.
 - **Still owed on Windows:** XAML metadata pane (`I`), folder-tree island, sort menu.
 
-## 2026-09-24 — Default-viewer setup selected initially
+## 2026-09-24 — PR 9 Windows half completed (pane, tree, sort, ABI 0.6)
 
-The owner requested that both platforms offer all supported media as defaults with
-the option already checked. Windows checks its Finish-page Default Apps link; the
-user still confirms associations in Settings. Mac presents a first-launch setup
-sheet with the checkbox on and applies it only on Continue. Unticking it or choosing
-Not Now preserves existing defaults, and an answered Mac prompt stays answered on
-updates. This replaces the earlier delayed-after-first-photo prompt policy; telemetry
-and promotional links remain unchanged.
+This closes the "still owed on Windows" lists above. What was built and the calls made:
+
+- **Panes float, on Windows too.** The metadata pane (right, 340 DIP) and folder tree (left,
+  280 DIP) are two more islands over the canvas, between the command bar and the bottom
+  strips. `usable_canvas` has a left inset (`chrome_left_px`) but no right one, and an inset would
+  change the blit and camera, i.e. the present path; the macOS host made the same call. So
+  `chrome_left_px` stays 0 and opening a pane never refits the photo. Both hide under the gallery,
+  Settings and chrome-off fullscreen and come back with them. Revisit only with a present-loop soak.
+- **No `TextBox`, no `TreeView`.** Both fail-fast (`0xC000027B`, `Microsoft.UI.Xaml.dll`) in these
+  islands: `TextBox` was already known, `TreeView` crashed on first show and was found the hard way.
+  The tag search reuses `FakeInput`; the tree is StackPanels and Buttons with its own expand. The
+  tag list is a `ListView` of plain elements and did not crash.
+- **Sort lives in the ABI session, not the shell.** The Windows listing is owned by
+  `mv_session`, so filmstrip, gallery and arrow keys all read one order. `io/sort_order` moved
+  from `src/shell` to `src/io` (namespace `mv::io`; the macOS host, tests and `darwin.cmake` were
+  updated to match) so `abi -> io` stays legal. New calls, **ABI 0.6**: `mv_folder_set_sort`,
+  `mv_folder_get_sort`, `mv_list_subdirectories` ([14](14-abi.md)). The session keeps the scanned
+  listing so a new order or a batch of date-taken stamps re-applies without a disk scan; date
+  stamps come from `meta::read_date_taken` on one background job, checked per (mtime, size).
+  Persisted as `[view] sort`; an unknown key normalises to name.
+- **Pane data is three text tables** (`meta/tables.h`, the same formats the Mac bridge documents),
+  pushed to the chrome when the record changes. The chrome never reads a file. The tree lists a
+  folder on a pool task through `mv_list_subdirectories`, never on the UI thread.
+- **Tree open crosses as a pull.** The command callback carries a float, so the island parks the
+  chosen path and native pulls it (`chrome_cmd_tree_open` then `TakeTreePath`).
+- **Checked live:** an EXIF-stamped JPEG populates Summary and All tags (missing fields show a dash);
+  the tree lists subfolders, and invoking one opens it; View ▸ Sort by ▸ Size wrote `sort=2` and the
+  ABI test shows the listing re-sorted with the current stop kept. Full `ctest`: 517 pass.
+- **Not verified:** PR 1's 60 s present-loop soak (the open D6 gate; only the frametime harness
+  ran); PNG, HEIC and MP4 through the Windows pane by hand; the Windows Streams tab on a real clip
+  (the table format is unit-tested); the Canon AF sign (unchanged from above); a clean-VM run.
+  The macOS build was not rebuilt after the `sort_order` move (no Mac available); the edit is
+  mechanical (include path and namespace) but unproven there.
 
 ## 2026-09-24 — PR 10 (geometry edits + export) on macOS, on PR 9's base
 
@@ -1474,27 +1650,3 @@ Objective-C++ host code, the MSL/HLSL blit change and the CMake targets were not
 - **Metadata on re-encoded exports from HEIC / RAW / TIFF / WebP**: only JPEG (APP1) and PNG
   (eXIf, iTXt XMP) sources carry EXIF/XMP across; the others need an Exiv2 extraction path.
 - Tiled (> 64 MP) images: the D3D11 tile path ignores the map. Mac has no tiling yet.
-
-## 2026-09-24 — Local AI search planned (post-v1, proposed)
-
-The owner asked for local inference so a folder of video can be searched by keyframe/moment.
-[17-local-ai-search.md](17-local-ai-search.md) plans it as Milestone G (PRs 21–24), opt-in and
-post-v1; PR 8 is untouched. It narrows two earlier calls rather than reversing them:
-plan/16's "Face detect, AI cull, cloud albums" stays out (faces, culling and cloud are still
-excluded; local text/image-to-frame retrieval is what is added), and the 2026-09-20 / plan/13
-"do not ship ONNX/DirectML" stands for the **base installer** — inference ships only as a
-separate opt-in AI pack. **Open:** DirectML runs on D3D12, which CLAUDE.md says not to introduce;
-the owner must choose compute-only DML, CPU-only, or vendor EPs before PR 21
-(plan/17, *Open decisions*). Not implemented; no code lands until that is answered.
-
-**Amended 2026-09-24 (same day):** the owner wants face detection (as in iOS Photos), so plan/16's
-"Face detect" exclusion is lifted for a local-only, opt-in, deletable people index — PR 25 in
-plan/17, with stricter biometric handling than the frame index. AI culling and the
-DirectML/D3D12 question are still unanswered.
-
-**Settled 2026-09-24 (owner answers):** GPU inference uses **vendor providers** (OpenVINO,
-CUDA/TensorRT) as optional sub-packs with CPU always the fallback and a Settings toggle
-(Auto / provider / CPU-only) — **no DirectML, so no D3D12 and no CLAUDE.md change.** The whole
-feature is a downloadable extra installed from Settings, never in the base installer. AI
-culling was not requested and stays out. Recorded in plan/17 only, not as a numbered D-decision.
-Known gap: AMD GPUs run CPU until a provider exists.

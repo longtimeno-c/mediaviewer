@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 5
+#define MV_ABI_VERSION_MINOR 6
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -311,6 +311,27 @@ MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t
                                                   uint32_t count);
 
 MV_API mv_status MV_CALL mv_folder_close(mv_session_t session);
+
+/* 0.6 (PR 9). Sort order, packed: key in bits 0-2 (0 name, 1 modified, 2 size,
+ * 3 type, 4 date taken), descending in bit 3. `set` re-sorts the current
+ * listing on a worker and keeps the current stop selected; it pushes
+ * MV_COMPLETION_FOLDER_CHANGED when the new order is in place. Date taken is
+ * read once per file (bounded prefix, worker thread); until a file's stamp is
+ * known it sorts by its mtime, and the listing re-sorts when the stamps land.
+ * The order applies to every later mv_folder_open. Unknown key bits mean name.
+ * [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_set_sort(mv_session_t session, int32_t packed);
+MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_packed);
+
+/* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
+ * hidden, system and dot directories skipped, sorted case-insensitively. One
+ * directory read, so call it from a worker, never the UI thread. Writes
+ * "name	path
+" lines (tabs and newlines in a name are flattened to spaces);
+ * buffer rules as mv_folder_item_name. MV_ERR_IO if the directory cannot be
+ * read. */
+MV_API mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap,
+                                                uint32_t* out_bytes);
 
 /* -------------------------------------------------------------------------
  * PR 5 — video. plan/05-video-pipeline.md, plan/14-abi.md.

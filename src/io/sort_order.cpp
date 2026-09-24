@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "shell/sort_order.h"
+#include "io/sort_order.h"
 
 #include <algorithm>
 #include <tuple>
 
-namespace mv::shell {
+namespace mv::io {
 namespace {
 
 char fold(char c) noexcept { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
@@ -83,4 +83,4 @@ sort_order unpack_sort(std::int32_t v) noexcept {
   return o;
 }
 
-}  // namespace mv::shell
+}  // namespace mv::io

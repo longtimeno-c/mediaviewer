@@ -141,6 +141,12 @@ internal static partial class NativeMethods
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_close(MvSessionHandle session);
+
+    // ABI 0.6 (PR 9): the folder tree's one directory read. Worker threads only.
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_list_subdirectories(string utf8Dir, IntPtr utf8, uint cap,
+                                                            out uint outBytes);
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_video_play(MvSessionHandle session);
