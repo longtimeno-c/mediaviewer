@@ -1315,3 +1315,13 @@ This is a testing exception to the normal first-distributed-build updater requir
 Both hosts use CMake's strict x.y.z version. Builds run independently; publication waits
 for both and uploads to a draft before making it visible. Never publish a partial latest
 release or replace published assets under an existing version. RELEASING.md is the runbook.
+
+## 2026-09-24 — Default-viewer setup selected initially
+
+The owner requested that both platforms offer all supported media as defaults with
+the option already checked. Windows checks its Finish-page Default Apps link; the
+user still confirms associations in Settings. Mac presents a first-launch setup
+sheet with the checkbox on and applies it only on Continue. Unticking it or choosing
+Not Now preserves existing defaults, and an answered Mac prompt stays answered on
+updates. This replaces the earlier delayed-after-first-photo prompt policy; telemetry
+and promotional links remain unchanged.

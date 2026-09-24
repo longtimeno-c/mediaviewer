@@ -239,9 +239,10 @@ The bundle holds the app, `MediaViewerThumbnails.appex` (Finder thumbnails for t
 still set, run by Quick Look in its own sandboxed process, never inside Finder), the LGPL
 dylibs in `Contents/Frameworks`, and, when configured, Sparkle. It registers the D5 still
 and video types at rank *Alternate*: MediaViewer shows up in Finder's **Open With** and never
-makes itself the default. After the first photo it opens, it asks once whether to become the
-default for photos and video (macOS confirms each type); the MediaViewer menu has the same
-command.
+makes itself the default merely by being installed. First launch shows a setup sheet with
+*Use MediaViewer for all supported photos and videos* checked. Continue applies that choice
+through macOS; untick it or choose Not Now to keep current defaults. The MediaViewer menu
+has the same command for later, and updates preserve the previous setup choice.
 
 #### Runbook: build, sign, release, update (macOS)
 
@@ -678,11 +679,11 @@ recovery steps. There is no automatic publishing on push or run-number version s
 
 The wizard is six pages and no more: Welcome, Licence (GPL, scroll and accept), Location,
 Options (Start Menu **on**, Desktop **off**), Progress, Finish (Launch, GitHub, Licence, and
-an unticked *Choose MediaViewer as the default for photos and video*).
+a checked *Choose MediaViewer as the default for all supported photos and videos*).
 It registers MediaViewer for the D5 photo and video types (per-user, removed on uninstall),
 so it appears in **Open with** and in Settings > Default apps. Windows does not let an
-installer set the default itself: tick the Finish-page box to open Default apps on
-MediaViewer and confirm there. It does **not** ask about telemetry, which is a first-run
+installer set the default itself: leave the Finish-page box checked to open Default apps on
+MediaViewer and confirm there, or untick it to skip. It does **not** ask about telemetry, which is a first-run
 screen inside the app.
 
 Uninstall is from Apps & features, and removes the shortcuts, the registry entry and the
