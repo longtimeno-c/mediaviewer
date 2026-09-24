@@ -86,7 +86,7 @@ scroll. Real folder navigation (argv, drag-and-drop-in, arrow keys and the rest 
 plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscreen,
 a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
 It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane with a summary card, a searchable tree of every EXIF/IPTC/XMP tag and, for clips, a per-stream inspector; `O` adds camera, exposure and date lines to the on-canvas info; `Shift+O` draws AF points; `Shift+I` is a one-pixel eyedropper; `⌘⇧E` shows a folder tree; View ▸ Sort By adds date taken. It does **not** yet handle rating/metadata *writes* (PR 12) or RAW-pairing UI. On Windows the same features are in: `I` (or View ▸ Metadata pane) opens the pane on the right, `Ctrl+Shift+E` (or View ▸ Folder tree) the folder tree on the left rooted at the open folder, `O` adds the camera/exposure/date lines, `Shift+O` draws AF points, `Shift+I` is the eyedropper, and `Ctrl+C` copies the eyedropper colour (or, with it off, the marked/current file(s) as a file drop). View ▸ Sort by and Settings offer name, date modified, size, type and EXIF date taken, ascending or descending; the choice is saved. Both panes float over the photo, so opening one never refits it.
-On top of that, the **PR 10 geometry edits** (macOS first, same split): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `⌘Z` / `⌘R` undo / reset, and `⌘S` exports the edits to `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. The Windows host does not drive any of this yet, and the Mac side was written without a Mac to compile it on — see [plan/12](plan/12-decision-log.md) 2026-09-24. A
+On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. Neither host half has been compiled yet — see [plan/12](plan/12-decision-log.md) 2026-09-24.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -458,7 +458,7 @@ first; turn that off under Settings.
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
 
-**Editing (PR 10, macOS today).** Edits are kept per file for the session; the
+**Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
 original is only ever rewritten by a lossless JPEG rotate / flip.
 
 | Key | Does |
@@ -467,7 +467,7 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `H` / `V` | flip horizontal / vertical (same lossless rule) |
 | `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
-| `Ctrl+S` | export to `<name>-edit.jpg` beside the original (JPEG q92, all metadata, full size); never overwrites |
+| `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
 
 Keys go through one router and one table (`src/shell/commands.h`,
 [plan/16](plan/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
@@ -1075,7 +1075,8 @@ uninstall is marked in `tools/package/mediaviewer.iss`.
 ```
 src/core        job system, result<T>, lock-free rings, ETW
 src/io          whole-file reads, directory listing + watcher, copy/move that never
-                overwrites, Recycle Bin (Windows impl)
+                overwrites, Recycle Bin (Windows impl), the replace port for edited
+                pixels (replace_win / replace_mac: never-overwrite export, atomic swap)
 src/codec       JPEG / PNG / BMP / GIF / WebP / TIFF / ICO / HEIC / AVIF / RAW,
                 APNG walker, frame-at-a-time animation sources, magic-byte probe,
                 HEIC-only OS-codec probe (WIC, os_decode_win.cpp)

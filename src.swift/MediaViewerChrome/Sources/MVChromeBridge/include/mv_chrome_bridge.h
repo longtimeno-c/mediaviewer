@@ -193,6 +193,19 @@ void mv_chrome_open_folder(const char* dir_utf8);
 int32_t mv_chrome_sort_order(void);
 void mv_chrome_set_sort_order(int32_t packed);
 
+// ---- PR 10: export sheet (plan/10 "SwiftUI crop mode and export sheet") -------
+//
+// The sheet's choice is one integer, packed exactly as the Windows export
+// dialog packs it (shell/edit_session.h pack_export): quality in bits 0-6, PNG
+// in bit 7, metadata policy (0 all, 1 minus GPS, 2 none) in bits 8-9, and the
+// long-edge index (full, 3840, 2560, 2048, 1600, 1080) in bits 10-12.
+// [main-thread]
+int32_t mv_chrome_export_last_choice(void);
+// Runs the export on the pool (beside the original, never over anything) and
+// closes the sheet.
+void mv_chrome_export_confirm(int32_t packed);
+void mv_chrome_export_cancel(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -62,6 +62,11 @@ public final class MVChromeHost: NSObject {
     host(FolderTreeView())
   }
 
+  /// PR 10: the export sheet, a full-container overlay built fresh per open.
+  @objc public static func makeExportView() -> NSView {
+    host(ExportView())
+  }
+
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {

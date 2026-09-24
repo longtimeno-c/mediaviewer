@@ -84,55 +84,6 @@ expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> byt
   return {};
 }
 
-namespace {
-
-bool write_fd(int fd, std::span<const std::uint8_t> bytes) noexcept {
-  std::size_t filled = 0;
-  while (filled < bytes.size()) {
-    const ssize_t n = ::write(fd, bytes.data() + filled, bytes.size() - filled);
-    if (n <= 0) return false;
-    filled += static_cast<std::size_t>(n);
-  }
-  return ::fsync(fd) == 0;
-}
-
-}  // namespace
-
-expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
-  if (utf8_path.empty()) return err(status::invalid_arg);
-  const std::string path(utf8_path);
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
-  if (fd < 0) return err(status::io);
-  const bool ok = write_fd(fd, bytes);
-  if (::close(fd) != 0 || !ok) {
-    ::unlink(path.c_str());
-    return err(status::io);
-  }
-  return {};
-}
-
-expected replace_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
-  if (utf8_path.empty()) return err(status::invalid_arg);
-  const std::string path(utf8_path);
-  struct stat st{};
-  if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return err(status::io);
-
-  // Same directory, so the rename never crosses a volume.
-  std::string temp;
-  int fd = -1;
-  for (int attempt = 0; attempt < 100 && fd < 0; ++attempt) {
-    temp = path + ".mvtmp" + std::to_string(::getpid()) + "-" + std::to_string(attempt);
-    fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL, st.st_mode & 07777);
-  }
-  if (fd < 0) return err(status::io);
-  const bool ok = write_fd(fd, bytes) && ::fchmod(fd, st.st_mode & 07777) == 0;
-  if (::close(fd) != 0 || !ok || ::rename(temp.c_str(), path.c_str()) != 0) {
-    ::unlink(temp.c_str());
-    return err(status::io);
-  }
-  return {};
-}
-
 bool file_exists(std::string_view utf8_path) noexcept {
   if (utf8_path.empty()) return false;
   struct stat st{};

@@ -1384,6 +1384,17 @@ mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint3
   }));
 }
 
+mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path) {
+  return static_cast<mv_status>(guard("mv_folder_forget", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr && utf8_path[0] != '\0', "utf8_path must not be empty");
+    const std::string path(utf8_path);
+    std::lock_guard lock(session->lru_mutex);
+    std::erase_if(session->lru, [&](const mv_session::lru_slot& s) { return s.path == path; });
+    return status::ok;
+  }));
+}
+
 mv_status MV_CALL mv_folder_count(mv_session_t session, uint32_t* out_count) {
   return static_cast<mv_status>(guard("mv_folder_count", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");

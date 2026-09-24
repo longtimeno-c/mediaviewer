@@ -25,6 +25,7 @@
 #include "edit/geometry.h"
 #include "edit/lossless_jpeg.h"
 #include "io/file.h"
+#include "io/replace.h"
 
 namespace {
 
@@ -732,4 +733,45 @@ TEST_CASE("keyboard rotate of a JPEG writes that file", "[edit][io]") {
   auto back = edit::rotate_in_viewer(read_file(p), mv::codec::kRotateCw);
   REQUIRE(back);
   CHECK(decode_plain(*back).rgba == decode_plain(original).rgba);
+}
+
+TEST_CASE("the export dialog's long edge sizes the output", "[edit][export]") {
+  const auto src = make_jpeg(pattern(96, 64));
+  edit::export_options opt;
+  opt.long_edge = 48;
+  auto r = edit::export_image(src, {}, opt);
+  REQUIRE(r);
+  CHECK_FALSE(r->lossless);  // a resize is pixels
+  CHECK(r->width == 48);
+  CHECK(r->height == 32);
+}
+
+TEST_CASE("an export is deterministic: same source and stack, same bytes", "[edit][export]") {
+  // plan/10 PR 10 (both platforms): the same crop on the same JPEG exports
+  // byte-identical on Windows and Mac. The op graph and the encoders are shared;
+  // this pins the half a single machine can prove. Nothing time-, thread- or
+  // address-dependent may reach the bytes.
+  edit::metadata_blobs meta;
+  meta.exif = camera_exif(6, 96, 64);
+  const auto src = make_jpeg(pattern(96, 64), meta);
+  for (const bool png : {false, true}) {
+    edit::geometry g;
+    g.crop = {0.1f, 0.2f, 0.5f, 0.25f};
+    g.straighten = 3.0f;
+    edit::export_options opt;
+    opt.encode.format = png ? edit::image_format::png : edit::image_format::jpeg;
+    auto a = edit::export_image(src, g, opt);
+    auto b = edit::export_image(src, g, opt);
+    REQUIRE(a);
+    REQUIRE(b);
+    CHECK(a->bytes == b->bytes);
+  }
+  edit::geometry lossless;
+  lossless.orient = mv::codec::kRotateCw;
+  auto a = edit::export_image(src, lossless, {});
+  auto b = edit::export_image(src, lossless, {});
+  REQUIRE(a);
+  REQUIRE(b);
+  CHECK(a->lossless);
+  CHECK(a->bytes == b->bytes);
 }

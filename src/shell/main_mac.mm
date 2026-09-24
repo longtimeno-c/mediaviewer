@@ -38,6 +38,7 @@
 #include "shell/browse_index.h"
 #include "shell/commands.h"
 #include "shell/edit_session.h"
+#include "shell/edit_view.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
@@ -168,6 +169,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* galleryHost;
 @property(nonatomic, strong) NSView* helpHost;
 @property(nonatomic, strong) NSView* settingsHost;
+// PR 10: the export sheet, built fresh each time it opens so it starts from
+// the last choice.
+@property(nonatomic, strong) NSView* exportHost;
 @property(nonatomic, strong) NSView* transportHost;
 @property(nonatomic, strong) NSLayoutConstraint* transportBottom;
 // PR 9: the metadata pane (right) and folder tree (left) float over the canvas like the
@@ -245,6 +249,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
 - (void)setSettingsVisible:(BOOL)visible;
+// PR 10 export sheet (ExportView.swift).
+- (int32_t)exportChoice;
+- (void)setExportVisible:(BOOL)visible;
+- (void)confirmExport:(int32_t)packed;
 - (int32_t)viewFlags;
 - (void)setViewFlags:(int32_t)flags;
 - (void)beginKeyCaptureForRow:(int)row;
@@ -559,6 +567,16 @@ extern "C" int32_t mv_chrome_sort_order(void) {
 }
 extern "C" void mv_chrome_set_sort_order(int32_t packed) {
   if (g_chrome_app) [g_chrome_app setSortOrder:packed];
+}
+
+extern "C" int32_t mv_chrome_export_last_choice(void) {
+  return g_chrome_app ? [g_chrome_app exportChoice] : 0;
+}
+extern "C" void mv_chrome_export_confirm(int32_t packed) {
+  if (g_chrome_app) [g_chrome_app confirmExport:packed];
+}
+extern "C" void mv_chrome_export_cancel(void) {
+  if (g_chrome_app) [g_chrome_app setExportVisible:NO];
 }
 
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
@@ -949,6 +967,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   mv::shell::edit_session _edits;
   std::uint64_t _itemId;
   NSTimer* _rotateDebounce;
+  BOOL _exportVisible;
+  int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
   mv::io::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
@@ -2190,6 +2210,15 @@ enum MvMenuCmd : NSInteger {
     }
     return NO;
   }
+  // PR 10: the export sheet owns the keyboard while it is up (it is first
+  // responder; this only catches a key that still reached the canvas).
+  if (_exportVisible) {
+    if (!up && k == key::escape && mods == mod_none) {
+      [self setExportVisible:NO];
+      return YES;
+    }
+    return NO;
+  }
   key_event e;
   e.k = k;
   e.mods = mods;
@@ -2408,28 +2437,7 @@ enum MvMenuCmd : NSInteger {
 }
 
 - (void)publishEdit {
-  mv::shell::edit_view v;
-  if (_edits.has_item() && _itemId != 0) {
-    const mv::edit::geometry g = _edits.preview();
-    v.item = _itemId;
-    v.d4[0] = g.orient.a;
-    v.d4[1] = g.orient.b;
-    v.d4[2] = g.orient.c;
-    v.d4[3] = g.orient.d;
-    v.straighten = g.straighten;
-    v.crop[0] = g.crop.x;
-    v.crop[1] = g.crop.y;
-    v.crop[2] = g.crop.w;
-    v.crop[3] = g.crop.h;
-    v.keep_frame = _edits.preview_keeps_frame();
-    v.crop_overlay = _edits.crop_active();
-    const mv::edit::rect r = _edits.crop_overlay();
-    v.overlay[0] = r.x;
-    v.overlay[1] = r.y;
-    v.overlay[2] = r.w;
-    v.overlay[3] = r.h;
-  }
-  _snap.edit[0] = v;
+  _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
 }
 
 - (BOOL)runEditCommand:(mv::shell::command_id)command {
@@ -2455,7 +2463,7 @@ enum MvMenuCmd : NSInteger {
       [self scheduleRotationWrite];
       return YES;
     case mv::shell::edit_effect::export_image:
-      [self exportCurrentItem];
+      [self setExportVisible:YES];
       return YES;
   }
   return YES;
@@ -2516,16 +2524,48 @@ enum MvMenuCmd : NSInteger {
   }
 }
 
-// Ctrl+S: the stack baked into "<name>-edit.jpg" beside the original (never
-// over it, never over an earlier export). JPEG q92, all metadata, full size;
-// an export sheet choosing format / quality / resize / metadata is owed
-// (plan/12 2026-09-24).
-- (void)exportCurrentItem {
+- (int32_t)exportChoice {
+  return _exportChoice != 0 ? _exportChoice : mv::shell::pack_export(mv::edit::export_options{});
+}
+
+- (void)setExportVisible:(BOOL)visible {
+  if (visible == _exportVisible) return;
+  _exportVisible = visible;
+  if (visible) {
+    [self cancelKeyHolds];
+    NSView* container = self.window.contentView;
+    self.exportHost = [MVChromeHost makeExportView];
+    self.exportHost.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.exportHost];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.exportHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+      [self.exportHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+      [self.exportHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+      [self.exportHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    ]];
+    [self.window makeFirstResponder:self.exportHost];
+  } else {
+    [self.exportHost removeFromSuperview];
+    self.exportHost = nil;
+    [self.window makeFirstResponder:self.view];
+  }
+}
+
+- (void)confirmExport:(int32_t)packed {
+  _exportChoice = packed;
+  [self setExportVisible:NO];
+  [self exportCurrentItem:mv::shell::unpack_export(packed)];
+}
+
+// Cmd+S opens the sheet (ExportView.swift); its choice lands here as options:
+// the stack baked into "<name>-edit.jpg" (or .png) beside the original, never
+// over it and never over an earlier export.
+- (void)exportCurrentItem:(const mv::edit::export_options&)options {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
   const mv::edit::geometry g = _edits.export_geometry();
-  _jobs.submit_at(mv::background_generation, [path, g](const mv::job_context&) -> mv::status {
-    mv::edit::export_options opt;
+  const mv::edit::export_options opt = options;
+  _jobs.submit_at(mv::background_generation, [path, g, opt](const mv::job_context&) -> mv::status {
     const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
     const bool ok = static_cast<bool>(out);
     dispatch_async(dispatch_get_main_queue(), ^{

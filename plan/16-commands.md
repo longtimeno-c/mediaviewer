@@ -395,7 +395,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop. Landed: `;` play motion, unbound Open RAW / Open JPEG rows, `Esc` ends motion first, RAW / LIVE tile badges. Filter: RAW is **not** in this slice |
 | 8 | Package the existing viewer; About and release setup, no new feature commands |
 | 9 | Folder tree, `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
-| 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops). Landed on macOS 2026-09-24 with `Shift+C`, `Ctrl+S`, `Ctrl+Z`, `Ctrl+R`; Windows host owed |
+| 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops). Written for Windows and macOS 2026-09-24 with `Shift+C`, `Ctrl+S`, `Ctrl+Z`, `Ctrl+R` ([12](12-decision-log.md)) |
 | 11 | `E` pane, accurate RAW clipping, histogram |
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]` |

@@ -176,6 +176,8 @@ add_library(mv::codec ALIAS mv_codec)
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
   src/io/file_mac.cpp
+  src/io/replace_mac.cpp
+  src/io/replace.h
   src/io/paths_mac.cpp
   src/io/dir.h
   src/io/file.h
@@ -356,6 +358,7 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/edit_view.h
 )
 target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit)
 add_library(mv::shell ALIAS mv_shell)

@@ -54,6 +54,9 @@ enum chrome_command : int {
   // packed sort order (io/sort_order.h pack_sort).
   chrome_cmd_tree_open = 1004,
   chrome_cmd_set_sort = 1005,
+  // PR 10. The export dialog was confirmed; arg is the packed choice
+  // (edit_session.h pack_export). Cancel sends nothing.
+  chrome_cmd_export = 1006,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -66,6 +69,7 @@ enum class chrome_popup : std::int32_t {
   go_to = 3,
   find = 4,
   settings = 5,
+  export_image = 6,  // PR 10; mode_mask carries the last packed choice to preselect
 };
 
 struct chrome_popup_args {
@@ -104,6 +108,7 @@ static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle
 static_assert(static_cast<int>(command_id::folder_tree) == 78);
 static_assert(static_cast<int>(command_id::metadata_pane) == 92);
 static_assert(chrome_cmd_tree_open >= kCommandCount && chrome_cmd_set_sort >= kCommandCount);
+static_assert(chrome_cmd_export >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -122,7 +127,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
       chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
       chrome_cmd_reset_keys, chrome_cmd_update_restart, chrome_cmd_tree_open,
-      chrome_cmd_set_sort};
+      chrome_cmd_set_sort, chrome_cmd_export};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -373,6 +378,11 @@ class chrome_host {
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
+  // PR 10 export dialog (a flyout like `?`), preselecting `last_choice`
+  // (pack_export). Confirming posts chrome_cmd_export.
+  void show_export_dialog(std::int32_t last_choice) noexcept {
+    show_popup(chrome_popup::export_image, last_choice);
+  }
   void navigate_gallery(std::int32_t direction, std::int32_t index) noexcept;
   void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
 

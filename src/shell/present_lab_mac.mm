@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab_mac.h"
+#include "shell/edit_view.h"
 #include "shell/dino_draw.h"
 #include "shell/welcome_screen.h"
 
@@ -68,28 +69,6 @@ double process_cpu_seconds() noexcept {
 float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
   return std::max(1.0f, static_cast<float>(s.height) - static_cast<float>(s.chrome_height_px) -
                             static_cast<float>(s.chrome_bottom_px));
-}
-
-// PR 10: an edit_view as the geometry edit::place() takes.
-mv::edit::geometry geometry_of(const mv::shell::edit_view& v) noexcept {
-  mv::edit::geometry g;
-  g.orient = mv::codec::d4{v.d4[0], v.d4[1], v.d4[2], v.d4[3]};
-  g.straighten = v.straighten;
-  g.crop = mv::edit::rect{v.crop[0], v.crop[1], v.crop[2], v.crop[3]};
-  return g;
-}
-
-bool same_geometry(const mv::shell::edit_view& a, const mv::shell::edit_view& b) noexcept {
-  return a.item == b.item && a.d4[0] == b.d4[0] && a.d4[1] == b.d4[1] && a.d4[2] == b.d4[2] &&
-         a.d4[3] == b.d4[3] && a.straighten == b.straighten && a.crop[0] == b.crop[0] &&
-         a.crop[1] == b.crop[1] && a.crop[2] == b.crop[2] && a.crop[3] == b.crop[3] &&
-         a.keep_frame == b.keep_frame;
-}
-
-bool same_overlay(const mv::shell::edit_view& a, const mv::shell::edit_view& b) noexcept {
-  return a.crop_overlay == b.crop_overlay && a.overlay[0] == b.overlay[0] &&
-         a.overlay[1] == b.overlay[1] && a.overlay[2] == b.overlay[2] &&
-         a.overlay[3] == b.overlay[3];
 }
 
 void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
@@ -338,17 +317,11 @@ bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
 }
 
 const edit_view* present_lab_mac::edit_for(std::uint64_t item) const noexcept {
-  if (item == 0) return nullptr;
-  for (const edit_view& v : edit_slots_) {
-    if (v.item == item) return &v;
-  }
-  return nullptr;
+  return match_edit(edit_slots_, item, 0);
 }
 
 edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) const noexcept {
-  const edit_view* v = edit_for(img.item_id);
-  const edit::geometry g = v ? geometry_of(*v) : edit::geometry{};
-  return edit::place(g, edit::size2{img.width, img.height}, {}, v && v->keep_frame);
+  return place_through(edit_for(img.item_id), img.width, img.height);
 }
 
 // Crop mode (plan/16): the frame outside the draft rect is dimmed, the rect

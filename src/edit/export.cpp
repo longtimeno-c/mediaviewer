@@ -91,8 +91,10 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
   return m;
 }
 
-result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& g,
+result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
                                    const export_options& opt, const job_context* ctx) {
+  geometry g = stack;
+  if (opt.long_edge != 0) g.resize = resize_spec{resize_mode::long_edge, opt.long_edge, 0, 100.0f};
   const bool is_jpeg = codec::probe(source) == codec::format_family::jpeg;
 
   // Lossless: JPEG → JPEG with no straighten and no resize.

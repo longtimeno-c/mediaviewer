@@ -48,7 +48,7 @@ struct HelpView: View {
       Row(keys: "H  V", action: "Flip horizontal / vertical"),
       Row(keys: "⇧C", action: "Crop / straighten"),
       Row(keys: "⌘Z  ⌘R", action: "Undo edit / reset to the original"),
-      Row(keys: "⌘S", action: "Export as <name>-edit.jpg"),
+      Row(keys: "⌘S", action: "Export a copy (format, quality, size, metadata)"),
     ]),
     Section(title: "Crop", rows: [
       Row(keys: "← → ↑ ↓", action: "Move the crop"),

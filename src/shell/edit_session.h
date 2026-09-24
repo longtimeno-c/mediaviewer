@@ -59,7 +59,8 @@ struct rotation_write {
 class edit_session {
  public:
   // The item on the canvas changed (or was reloaded after a write). Leaves
-  // crop mode. Returns true when a carried rotation still needs a write.
+  // crop mode unless it is the same bytes reopened (a folder relist). Returns
+  // true when a carried rotation still needs a write.
   bool set_item(const edit_item& item);
   // The decoded size became known (or refined). Keeps everything else.
   void set_size(std::uint32_t width, std::uint32_t height) noexcept {
@@ -140,6 +141,20 @@ class edit_session {
   std::unordered_map<std::string, std::uint32_t> epochs_;
   void land(std::uint64_t old_key, codec::d4 applied);
 };
+
+// ---- The export dialog's answer (plan/10 PR 10: WinUI dialog, SwiftUI sheet) --
+
+// Both chromes post the choice back as one small integer (the island's
+// command callback carries a float; every value here is exact in one):
+//   bits 0-6  JPEG quality 1..100      bit 7   PNG (else JPEG)
+//   bits 8-9  metadata_policy           bits 10-12 long-edge index
+//                                        (kExportLongEdges; 0 = full size)
+inline constexpr std::uint32_t kExportLongEdges[] = {0, 3840, 2560, 2048, 1600, 1080};
+inline constexpr int kExportLongEdgeCount =
+    static_cast<int>(sizeof(kExportLongEdges) / sizeof(kExportLongEdges[0]));
+
+[[nodiscard]] std::int32_t pack_export(const edit::export_options& opt) noexcept;
+[[nodiscard]] edit::export_options unpack_export(std::int32_t packed) noexcept;
 
 // ---- Jobs the host runs on its I/O pool (worker threads only) ---------------
 

@@ -222,6 +222,8 @@ add_library(mv::gfx ALIAS mv_gfx)
 add_library(mv_io STATIC
   src/io/file.cpp
   src/io/file.h
+  src/io/replace.h
+  src/io/replace_win.cpp
   src/io/dir_win.cpp
   src/io/dir.h
   src/io/paths_win.cpp
@@ -512,6 +514,9 @@ add_executable(mediaviewer_lab WIN32
   src/shell/marks.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
+  src/shell/edit_session.cpp
+  src/shell/edit_session.h
+  src/shell/edit_view.h
   src/shell/open_request.cpp
   src/shell/open_request.h
   src/shell/slideshow.h
@@ -542,6 +547,7 @@ set_source_files_properties(src/shell/mediaviewer.rc PROPERTIES
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
   mv_meta
+  mv_edit
   mv_gfx
   mv_canvas
   mv_io

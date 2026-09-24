@@ -7,6 +7,7 @@
 #include "edit/lossless_jpeg.h"
 #include "io/collision_name.h"
 #include "io/file.h"
+#include "io/replace.h"
 
 namespace mv::shell {
 namespace {
@@ -108,9 +109,17 @@ bool edit_session::wants_write() const {
 
 bool edit_session::set_item(const edit_item& item) {
   const bool same_path = has_item_ && item.path == item_.path;
-  crop_ = false;
+  // A relist that reopens the same bytes is not a new item: crop mode and a
+  // failed-write latch stay. Anything else leaves crop mode.
+  const bool same_file = same_path && item.size == item_.size && item.mtime == item_.mtime;
+  if (!same_file) crop_ = false;
   if (!same_path) write_failed_ = false;
+  const std::uint32_t keep_w = item_.width, keep_h = item_.height;
   item_ = item;
+  if (same_file && item_.width == 0) {  // the host may not know the size yet
+    item_.width = keep_w;
+    item_.height = keep_h;
+  }
   has_item_ = true;
   const std::uint64_t k = key();  // before any landing bumps the epoch
 
@@ -328,6 +337,32 @@ void edit_session::write_finished(bool ok) {
     write_failed_ = true;
   }
   in_flight_.reset();
+}
+
+// ---- export dialog ------------------------------------------------------------
+
+std::int32_t pack_export(const edit::export_options& opt) noexcept {
+  const int quality = std::clamp(opt.encode.quality, 1, 100);
+  int edge = 0;
+  if (opt.long_edge != 0) {
+    for (int i = 1; i < kExportLongEdgeCount; ++i) {
+      if (kExportLongEdges[i] == opt.long_edge) edge = i;
+    }
+  }
+  return quality | (opt.encode.format == edit::image_format::png ? 1 << 7 : 0) |
+         (static_cast<int>(opt.policy) & 3) << 8 | edge << 10;
+}
+
+edit::export_options unpack_export(std::int32_t packed) noexcept {
+  edit::export_options opt;
+  const int quality = packed & 0x7F;
+  opt.encode.quality = quality >= 1 && quality <= 100 ? quality : 92;
+  opt.encode.format = (packed >> 7) & 1 ? edit::image_format::png : edit::image_format::jpeg;
+  const int policy = (packed >> 8) & 3;
+  opt.policy = policy <= 2 ? static_cast<edit::metadata_policy>(policy) : edit::metadata_policy::all;
+  const int edge = (packed >> 10) & 7;
+  opt.long_edge = edge < kExportLongEdgeCount ? kExportLongEdges[edge] : 0;
+  return opt;
 }
 
 // ---- jobs --------------------------------------------------------------------

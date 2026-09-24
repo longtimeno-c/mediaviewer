@@ -34,6 +34,7 @@
 #include "image/tiles.h"
 #include "mediaviewer/mediaviewer.h"
 #include "shell/dino_game.h"
+#include "shell/edit_view.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -114,6 +115,16 @@ class present_lab {
     return status_zoom_pct_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] PR 10: the full-resolution size of the still on the
+  // canvas, if it is the item whose path hashes to `item_key`. What the edit
+  // session constrains a crop against (it needs the aspect, before any edit).
+  [[nodiscard]] bool still_size(std::uint64_t item_key, std::uint32_t* w, std::uint32_t* h) const noexcept {
+    if (item_key == 0 || shown_key_.load(std::memory_order_acquire) != item_key) return false;
+    *w = shown_w_.load(std::memory_order_relaxed);
+    *h = shown_h_.load(std::memory_order_relaxed);
+    return *w > 0 && *h > 0;
+  }
+
   // [any-thread][no-block] The animated item's state, as of the last frame.
   [[nodiscard]] animation_state animation() const noexcept {
     return static_cast<animation_state>(anim_state_.load(std::memory_order_relaxed));
@@ -174,14 +185,33 @@ class present_lab {
   // 0 when nothing is open. These used to dereference current_image_ whenever
   // no video texture was live and relied on every caller checking first — the
   // same shape as the F3 crash, one guard away from being the same bug.
+  // PR 10: a still's size is its *edited* size (a quarter turn swaps it, a
+  // crop shrinks it): the camera frames what the edit shows.
   float media_width() const {
     if (current_video_.texture) return static_cast<float>(current_video_.width);
-    return current_image_ ? static_cast<float>(current_image_->width) : 0.0f;
+    return current_image_ ? static_cast<float>(place_image(*current_image_).cropped.w) : 0.0f;
   }
   float media_height() const {
     if (current_video_.texture) return static_cast<float>(current_video_.height);
-    return current_image_ ? static_cast<float>(current_image_->height) : 0.0f;
+    return current_image_ ? static_cast<float>(place_image(*current_image_).cropped.h) : 0.0f;
   }
+  // PR 10 edit geometry (shell/edit_view.h). The snapshot's slot for `img`, or
+  // null; `img` placed through it (identity when there is none).
+  [[nodiscard]] const edit_view* edit_for(const image::gpu_image& img) const noexcept {
+    return match_edit(edit_slots_, img.item_key, img.view_generation);
+  }
+  [[nodiscard]] edit::placement place_image(const image::gpu_image& img) const noexcept {
+    return place_through(edit_for(img), img.width, img.height);
+  }
+  void draw_crop_overlay(const input_snapshot& snapshot) noexcept;
+  // Records the still that just became current: its slot, and its size for
+  // still_size(). Called wherever current_image_ takes a published image.
+  void note_still_landed() noexcept;
+  edit_view edit_slots_[2];   // copied from the snapshot each iteration
+  edit_view applied_edit_{};  // what the current still was last fitted with
+  std::atomic<std::uint64_t> shown_key_{0};
+  std::atomic<std::uint32_t> shown_w_{0};
+  std::atomic<std::uint32_t> shown_h_{0};
   canvas::camera camera_;
   mv::abi::gpu_image_ptr current_image_;
   // plan/04 step 4, preview → full: the texture a refinement replaced, drawn

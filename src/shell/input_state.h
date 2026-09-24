@@ -36,10 +36,14 @@ struct meta_overlay {
 // PR 10: the edit geometry for one opened item, as the render thread needs it
 // (edit::geometry flattened to POD). The render thread places it against the
 // texture it actually holds, so the UI never needs the decoded size to turn a
-// picture. `item` is the id present_lab_mac::open_item returned: geometry is
-// only applied to the image of that item.
+// picture. `item` names the image the geometry belongs to: the id
+// present_lab_mac::open_item returned on Mac, the path's item_key on Windows,
+// where `generation` (the session's view generation after the select) tells a
+// rewritten file's new pixels from the old texture still on screen.
+// shell/edit_view.h matches a texture to a slot.
 struct edit_view {
   std::uint64_t item = 0;  // 0 = no geometry
+  std::uint32_t generation = 0;
   std::int8_t d4[4] = {1, 0, 0, 1};
   float straighten = 0.0f;
   float crop[4] = {0.0f, 0.0f, 1.0f, 1.0f};  // x, y, w, h in the straightened frame

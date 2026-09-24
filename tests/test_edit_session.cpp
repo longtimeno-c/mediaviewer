@@ -12,6 +12,7 @@
 
 #include "edit/encode.h"
 #include "edit/lossless_jpeg.h"
+#include "io/replace.h"
 #include "shell/edit_session.h"
 
 namespace {
@@ -214,6 +215,20 @@ TEST_CASE("crop and export wait for a write in flight", "[shell][edit]") {
   CHECK(s.export_geometry().identity());
 }
 
+TEST_CASE("a relist that reopens the same bytes keeps crop mode", "[shell][edit]") {
+  edit_session s;
+  (void)s.set_item(jpeg_item());
+  REQUIRE(s.run(command_id::crop_mode) == edit_effect::redraw);
+  edit_item again = jpeg_item();
+  again.width = 0;  // the host has not seen the pixels of the reopen yet
+  again.height = 0;
+  (void)s.set_item(again);
+  CHECK(s.crop_active());
+  CHECK(s.preview_placement().cropped == mv::edit::size2{600, 400});
+  (void)s.set_item(jpeg_item(2000, 5));  // the file changed: a new item
+  CHECK_FALSE(s.crop_active());
+}
+
 TEST_CASE("stacks are kept per file for the session", "[shell][edit]") {
   edit_session s;
   (void)s.set_item(jpeg_item());
@@ -258,4 +273,34 @@ TEST_CASE("the I/O jobs rotate in place and export beside the original", "[shell
   REQUIRE(lo);
   CHECK(lo->width == 24);
   CHECK(lo->height == 32);
+}
+
+TEST_CASE("the export dialog's choice round-trips through one small integer", "[shell][edit]") {
+  for (auto format : {mv::edit::image_format::jpeg, mv::edit::image_format::png}) {
+    for (auto policy : {mv::edit::metadata_policy::all, mv::edit::metadata_policy::minus_gps,
+                        mv::edit::metadata_policy::none}) {
+      for (int edge = 0; edge < mv::shell::kExportLongEdgeCount; ++edge) {
+        for (int quality : {1, 75, 92, 100}) {
+          mv::edit::export_options opt;
+          opt.encode.format = format;
+          opt.encode.quality = quality;
+          opt.policy = policy;
+          opt.long_edge = mv::shell::kExportLongEdges[edge];
+          const std::int32_t packed = mv::shell::pack_export(opt);
+          // The island's callback carries a float: every packed value is exact.
+          CHECK(static_cast<std::int32_t>(static_cast<float>(packed)) == packed);
+          const auto back = mv::shell::unpack_export(packed);
+          CHECK(back.encode.format == format);
+          CHECK(back.encode.quality == quality);
+          CHECK(back.policy == policy);
+          CHECK(back.long_edge == opt.long_edge);
+        }
+      }
+    }
+  }
+  // Garbage never yields an out-of-range option.
+  const auto junk = mv::shell::unpack_export(-1);
+  CHECK(junk.encode.quality >= 1);
+  CHECK(junk.encode.quality <= 100);
+  CHECK(static_cast<int>(junk.policy) <= 2);
 }

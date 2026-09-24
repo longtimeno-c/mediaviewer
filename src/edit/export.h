@@ -35,6 +35,9 @@ struct export_options {
   // Take the lossless path whenever it applies (plan/07: "Offer this whenever
   // the requested edit stack contains only those ops"). Off forces a re-encode.
   bool prefer_lossless = true;
+  // The export dialog's size: the long edge in pixels, applied on top of the
+  // stack (it replaces a resize op). 0 = the stack's own size.
+  std::uint32_t long_edge = 0;
 };
 
 struct export_result {

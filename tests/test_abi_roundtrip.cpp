@@ -365,3 +365,11 @@ TEST_CASE("declared video completions are pushed, not just declared",
 
   mv::abi::detach_device(session.handle);
 }
+
+TEST_CASE("mv_folder_forget validates and tolerates an uncached path (ABI 0.7)", "[abi][folder]") {
+  REQUIRE(mv_folder_forget(nullptr, "x.jpg") == MV_ERR_INVALID_ARG);
+  session_guard session;
+  REQUIRE(mv_folder_forget(session.handle, nullptr) == MV_ERR_INVALID_ARG);
+  REQUIRE(mv_folder_forget(session.handle, "") == MV_ERR_INVALID_ARG);
+  REQUIRE(mv_folder_forget(session.handle, "C:/not/cached.jpg") == MV_OK);
+}
