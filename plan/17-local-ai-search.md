@@ -1,6 +1,6 @@
 # 17 — Local AI search (video moments and photos)
 
-**Status: proposed 2026-09-24, post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19).**
+**Status: proposed 2026-09-24, post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
 Nothing here changes the PR 1–8 viewer. It is an opt-in add-on that arrives as a separate
 component, after the viewer ships.
 
@@ -70,7 +70,7 @@ shared vector space; search is a dot product. This is the only class of model th
 ```
 src/infer   IEmbedder { load(pack), embed_image(span<u8 rgb>, w, h), embed_text(string_view) }
             Backends: ort_openvino, ort_cuda (optional sub-packs), ort_cpu (fallback, always present),
-            later coreml (Mac half, if H goes dual-track)
+            coreml (macOS: ORT's Core ML provider, GPU / Neural Engine; CPU underneath)
 ```
 
 - `infer/` headers include **no `d3d11.h`/`d3d12.h`/DirectML** — same rule as `gfx/` consumers.
@@ -91,12 +91,22 @@ src/infer   IEmbedder { load(pack), embed_image(span<u8 rgb>, w, h), embed_text(
   instead). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
   until a provider exists. That is a known gap, not a hidden one. Adding DirectML later as one
   more provider would need the CLAUDE.md D3D12 rule reworded and is not planned.
-- ORT owns whatever device the provider creates. It never shares our render `ID3D11Device`,
+- ORT owns whatever device the provider creates. It never shares our render `ID3D11Device` (or `MTLDevice` on Mac),
   and never touches the swapchain. Not Windows App SDK AI / Windows ML — ORT directly, so the
   payload is ours and the base-installer exclusion (log 2026-09-20) stays intact.
-- The macOS path is the same model through the CoreML EP or a direct Core ML port. Embeddings
-  from different backends differ slightly, so **the index records `model_id` + `spec` and a
-  query only ever compares vectors from the same model** — never mix.
+- **macOS (dual-track, owner 2026-09-24):** the same ONNX model through **ONNX Runtime's
+  Core ML provider** on Apple Silicon (GPU / Neural Engine), with ORT's CPU provider
+  underneath. Not a hand port to Core ML, not `Vision`/`NaturalLanguage` embeddings: one
+  model, one ORT, two providers per OS. Settings → Local search → *Compute* on Mac is
+  **Auto / Core ML / CPU only**, with the same self-test fallback as Windows. Core ML ships
+  inside the Mac Core pack (it is part of the OS, so there is no vendor sub-pack to download).
+  Whether the official macOS ORT package's Core ML provider covers every operator in the chosen
+  model is measured in the PR 20 spike. Unsupported operators fall back to CPU inside ORT,
+  and the spike records the speed cost.
+- Embeddings from different backends differ slightly, so **the index records `model_id` +
+  `spec` + backend precision, and a query only ever compares vectors from the same model**:
+  never mix. An index is local to one machine. It is never synced between a user's Windows PC
+  and Mac, and each one indexes its own folders.
 
 ## The AI pack (delivery)
 
@@ -119,8 +129,12 @@ installer.
   auto-installed.
 - Verify signature + hashes before load. The request carries **no identifier, no path, no
   telemetry** — a plain GET of a fixed URL. Ask before the first download, no pre-ticked box.
-- Installed to `%LocalAppData%\MediaViewer\ai-pack\<version>`, per-user, removed by uninstall
-  (with a separate "also delete search index" choice).
+- Installed to `%LocalAppData%\MediaViewer\addons\ai\<version>` on Windows and
+  `~/Library/Application Support/MediaViewer/Add-ons/AI/<version>` on Mac, per-user, removed
+  by uninstall (with a separate "also delete search index" choice). The Mac pack
+  (`libonnxruntime.dylib`, the add-on library, models) is Developer ID-signed and notarized,
+  and loads only under library validation, like the Import add-on
+  ([18](18-import.md#add-ons-how-import-is-installed)).
 - Offline / sideload: the pack can be dropped into that folder by hand; the app verifies it the
   same way.
 
@@ -139,7 +153,7 @@ the playback decoder**.
 3. **Dedupe by embedding.** After embedding, drop a frame whose cosine similarity to the last
    *kept* frame is above a threshold (start ~0.97, tune on the eval set). A static interview
    shot collapses to a few rows; an action scene keeps many.
-4. **Frame → tensor.** Decode (D3D11VA where our device allows, else software), resize on the
+4. **Frame → tensor.** Decode (D3D11VA on Windows / VideoToolbox on Mac where the device allows, else software), resize on the
    GPU or `swscale` to the model's input, normalise with the model's mean/std. Colour: HDR/PQ/HLG
    sources go through the **existing SDR tone-map** first — the model was trained on SDR sRGB
    ([05-video-pipeline.md](05-video-pipeline.md), D6).
@@ -152,7 +166,7 @@ the playback decoder**.
 
 ## Index store
 
-New SQLite file `%LocalAppData%\MediaViewer\ai\index.db`, separate from the thumbnail DB so
+New SQLite file `%LocalAppData%\MediaViewer\ai\index.db` (Mac: `~/Library/Application Support/MediaViewer/ai/index.db`), separate from the thumbnail DB so
 "clear the index" cannot corrupt thumbnails, and vice versa.
 
 ```
@@ -190,7 +204,7 @@ meta(model_id, dim, spec, ...)
 
 Reuse, do not grow a router or a second present path ([16-commands.md](16-commands.md)):
 
-- Results are the **gallery** (`G`) island's grid over a result set instead of a folder listing:
+- Results are the **gallery** (`G`) grid (the XAML island on Windows, the SwiftUI gallery on Mac) over a result set instead of a folder listing:
   same thumbnail cache, same selection, same keyboard model. A tile shows the frame thumb and
   `mm:ss`.
 - **Enter** on a video tile opens the clip and seeks to that PTS, paused on the frame, with the
@@ -237,9 +251,12 @@ C# wraps each in a `SafeHandle`/`IDisposable`; C++ never calls the dispatcher.
 ## Roadmap slices
 
 Each is independent with a verify line, and each inherits PR 1's present-loop verify. Numbers
-follow the Import add-on (PRs 16–19). **Windows first, as proposed.** Whether H follows the
-dual-track rule that PRs 9–19 follow is an open owner decision
-([10](10-roadmap.md), 2026-09-24). A Mac half would need a Core ML provider.
+follow the Import add-on (PRs 16–19). **Every slice is dual-track** (owner, 2026-09-24):
+shared `infer/`, sampler, index and search in the core, a WinUI half and a SwiftUI half,
+and each verify line run on **both** platforms. Windows uses CPU + vendor providers; Mac uses
+CPU + Core ML. The frame sampler uses the platform's own hardware decoder in a separate
+instance (D3D11VA on Windows, VideoToolbox on Mac), never the playback decoder. Both
+present-loop gates (Windows PR 1, Mac PR 1) hold **while indexing**.
 
 ### PR 20 — Inference host and the AI pack
 `src/infer` (`IEmbedder`), ORT CPU + first vendor provider (OpenVINO or CUDA, by what the dev box has), pack manifest/verify/download/install as **per-piece Install/Remove in Settings**, the Auto/provider/CPU-only toggle, opt-in
@@ -247,12 +264,12 @@ flow, settings page. **No indexing, no UI beyond the opt-in.** A short spike fir
 image-tower throughput on CPU and the available vendor provider on the dev box and record it here; those numbers, not the
 guesses in this doc, size everything after.
 
-**Verify:** a fixed set of test images embeds to vectors within tolerance of the reference
-(PyTorch/ORT-Python) outputs on CPU and the vendor provider; a text query ranks a small labelled image set
+**Verify (both platforms):** a fixed set of test images embeds to vectors within tolerance of the reference
+(PyTorch/ORT-Python) outputs on CPU and on each platform's accelerated provider (the vendor
+provider on Windows, Core ML on Mac); the Mac base app bundle is unchanged with the pack absent; a text query ranks a small labelled image set
 correctly; **base installer and base install tree are byte-identical to PR 8's with the pack
 absent** and the packaging assert still fails if ORT or provider DLLs land in the base tree; tampering with a
-pack file or manifest is refused; the download request contains no identifier; PR 1's
-present-loop holds with the pack installed and idle.
+pack file or manifest is refused; the download request contains no identifier; both present-loop gates hold with the pack installed and idle.
 
 ### PR 21 — Video sampler and index
 Keyframe sampler with min/max gap, HDR tone-map, embedding dedupe, `index.db`, background queue,
@@ -267,7 +284,7 @@ wrong (tone-mapped, not washed out); minidump from a forced crash mid-index cont
 filename, embedding or pixel data.
 
 ### PR 22 — Search and results
-Query box, brute-force scan, per-clip grouping, results in the gallery island, jump-to-moment,
+Query box, brute-force scan, per-clip grouping, results in the gallery (both hosts), jump-to-moment,
 match markers on the scrub bar, folder/kind scope, min-score cutoff. Photos indexed too. The
 16-commands rows land here.
 

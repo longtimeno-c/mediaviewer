@@ -42,7 +42,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/14-abi.md` | C ABI between host and core |
 | `plan/15-platforms.md` | Windows v1, hostable core from PR 4, macOS as Milestone F, dual-track from PR 9 — **D9**. Read before any new Win32/D3D11 or Cocoa/Metal leak out of the hosts / `gfx/` |
 | `plan/16-commands.md` | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. Read before adding a key, overlay, or chrome command |
-| `plan/17-local-ai-search.md` | AI search add-on (PRs 20–24), proposed |
+| `plan/17-local-ai-search.md` | AI search add-on (PRs 20–24), both platforms, proposed |
 | `plan/18-import.md` | Import add-on (PRs 16–19): card copy with hash dedupe + verify; the add-on mechanism |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”

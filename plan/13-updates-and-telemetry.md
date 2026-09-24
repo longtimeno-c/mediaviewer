@@ -261,6 +261,11 @@ dying and writes the minidump regardless.
 Given that decoders parse hostile input ([09-build-and-test.md](09-build-and-test.md)), this is not
 a nicety. It is how you find out which camera's RAW variant crashes.
 
+**macOS:** the same Crashpad handler and the same scrub, landing in the **Mac half of PR 11**
+(owner, 2026-09-24). It was planned for old PR 17 and never landed. The second capture path on
+Mac is Swift/AppKit (an uncaught `NSException`, a Swift runtime trap) instead of .NET, tied to
+the native report by the same correlation id.
+
 ## Two capture paths, because D1 gave you two languages
 
 The C#/C++ split means **native crashes and managed exceptions are different capture mechanisms**,
