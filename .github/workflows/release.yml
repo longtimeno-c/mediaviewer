@@ -257,14 +257,16 @@ jobs:
           path: |
             build/vcpkg_installed
             build/vcpkg_dynamic
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json') }}-${{ matrix.triplet }}-mixed-v1
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake') }}-${{ matrix.triplet }}-mixed-v1
 
       # CMake installs the static, permissive dependencies from the root
       # manifest. Keep the LGPL dylibs in a separate manifest/install tree:
       # a subsequent manifest install otherwise removes the other triplet.
       - name: Install macOS dynamic codec libraries
         run: |
+          brew install libomp
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
+            --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
             --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
 

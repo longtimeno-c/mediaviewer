@@ -3,6 +3,7 @@
 #include "gfx/device.h"
 #include "player/media_source.h"
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -18,31 +19,46 @@ int run_av_soak(const av_soak_options& options) {
   std::unique_ptr<player::media_source, decltype(&player::close_media)> source(opened.value(), player::close_media);
   std::ofstream csv(std::filesystem::path(reinterpret_cast<const char8_t*>(options.csv_out_utf8)));
   if (!csv) return 2;
-  csv << "elapsed_s,position_ns,audio_master,error_p50_ms,error_p99_ms,slope_ms_min,presented,dropped,cadence,starved,rebuilds,discontinuities,host_gaps,surface_waits\n";
+  // This harness selects/releases textures; it never presents to a display.
+  // Keep the original column names for existing plots, but expose timer and
+  // decoder health so selection losses cannot masquerade as display drops.
+  csv << "elapsed_s,position_ns,audio_master,error_p50_ms,error_p99_ms,slope_ms_min,presented,dropped,cadence,starved,rebuilds,discontinuities,host_gaps,surface_waits,poll_gap_max_ms,decode_errors,ring_backpressure\n";
+  source->seek(0, true); // repeatable, independent of the interactive resume file
   source->play();
   const auto start = std::chrono::steady_clock::now();
   auto deadline = start;
+  auto last_poll = start;
+  double poll_gap_max_ms = 0;
   unsigned next_sample = 0;
   std::uint64_t frames = 0;
   player::clock_stats stats;
   while (true) {
     const auto now = std::chrono::steady_clock::now();
     const double elapsed = std::chrono::duration<double>(now - start).count();
-    if (elapsed >= options.seconds) break;
-    if (auto* frame = source->acquire_frame(1, 16'666'667)) { ++frames; source->release_frame(frame); }
+    const bool finished = elapsed >= options.seconds;
+    if (!finished) {
+      poll_gap_max_ms = std::max(poll_gap_max_ms,
+          std::chrono::duration<double, std::milli>(now - last_poll).count());
+      last_poll = now;
+      if (auto* frame = source->acquire_frame(1, 16'666'667)) { ++frames; source->release_frame(frame); }
+    }
     stats = source->stats();
-    if (elapsed >= next_sample) {
+    if (elapsed >= next_sample || finished) {
       ++next_sample;
       csv << elapsed << ',' << source->position_ns() << ',' << stats.audio_master << ','
           << stats.err_ms_p50 << ',' << stats.err_ms_p99 << ',' << stats.drift_slope_ms_per_min << ','
           << frames << ',' << stats.counters.dropped_late << ',' << stats.counters.held_cadence << ','
           << stats.counters.held_starved << ',' << stats.counters.device_rebuilds << ','
           << stats.position_discontinuities << ',' << stats.host_clock_gaps << ','
-          << stats.surface_waits << '\n';
+          << stats.surface_waits << ',' << poll_gap_max_ms << ',' << stats.decode_errors << ','
+          << stats.ring_backpressure << '\n';
       csv.flush();
     }
+    if (finished) break;
     if (source->state() == player::play_state::ended) return 3; // A short clip cannot prove a long soak.
     deadline += std::chrono::nanoseconds(16'666'667);
+    // A missed polling deadline is not followed by a burst of fake vblanks.
+    if (deadline <= now) deadline = now + std::chrono::nanoseconds(16'666'667);
     std::this_thread::sleep_until(deadline); // Harness worker, never the canvas present loop.
   }
   if (frames == 0 || stats.position_discontinuities || stats.host_clock_gaps) return 1;

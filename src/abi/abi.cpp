@@ -729,6 +729,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
 
         // First pixel is the DCT 1/4 preview, and only for the image actually
         // on screen — a prefetched neighbour has nothing to show it on.
+        bool raw_preview_ready = false;
         if (path_is_selected(session, path)) {
           if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
             if (ctx.cancelled()) return status::cancelled;
@@ -740,6 +741,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
                 if (path_is_selected(session, path)) {
                   publish_ready(session, key_for(path), info_from(preview.value()), nullptr,
                                 std::move(gpu));
+                  raw_preview_ready = preview->format == mv::codec::format_family::raw;
                   push_image_opened(session, correlation, ctx.gen(), status::ok);
                 }
               } else if (uploaded.error() == status::cancelled) {
@@ -751,7 +753,8 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
           }
         }
 
-        auto decoded = mv::image::decode_bytes(bytes.value(), &ctx);
+        auto decoded = mv::image::decode_bytes(bytes.value(), &ctx,
+                                               path_is_selected(session, path) ? 4u : 1u);
         if (!decoded) return decoded.error();
         if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
@@ -790,7 +793,9 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         // such stage: its overview is small and its tiles come on demand.
         const bool large = !tiled &&
             static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
-        if (large && path_is_selected(session, path)) {
+        // A RAW already has a usable preview. Publish its full texture once,
+        // with mips, avoiding a second large upload during the cross-fade.
+        if (large && !raw_preview_ready && path_is_selected(session, path)) {
           const status first = upload_and_publish(1);
           if (first != status::ok) return first;
           if (ctx.cancelled()) return status::cancelled;
@@ -1342,6 +1347,7 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
           // First pixel: JPEG DCT 1/4. Fit-to-window of the preview fills the
           // same rect as the full image; 100 % during load is briefly small.
+          bool raw_preview_ready = false;
           if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
             if (ctx.cancelled()) return status::cancelled;
             std::unique_ptr<mv::image::gpu_image> gpu;
@@ -1355,8 +1361,9 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
               }
             }
             if (gpu) {
-              (void)publish_view(session, ctx, key_for(path), info_from(preview.value()), nullptr,
-                                 std::move(gpu));
+              raw_preview_ready = publish_view(session, ctx, key_for(path),
+                  info_from(preview.value()), nullptr, std::move(gpu)) &&
+                  preview->format == mv::codec::format_family::raw;
             }
           } else if (preview.error() == status::cancelled) {
             return status::cancelled;
@@ -1390,7 +1397,7 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
             return status::ok;
           };
 
-          if (large) {
+          if (large && !raw_preview_ready) {
             const status first = upload_and_publish(1);
             if (first != status::ok) return first;
             if (ctx.cancelled()) return status::cancelled;

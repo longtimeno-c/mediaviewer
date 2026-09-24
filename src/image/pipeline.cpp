@@ -6,8 +6,9 @@
 
 namespace mv::image {
 
-result<display_image> decode_bytes(std::span<const std::uint8_t> bytes, const job_context* ctx) {
-  auto raster = codec::decode(bytes, ctx);
+result<display_image> decode_bytes(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                                    unsigned raw_thread_limit) {
+  auto raster = codec::decode(bytes, ctx, raw_thread_limit);
   if (!raster) return err(raster.error());
   if (ctx && ctx->cancelled()) return err(status::cancelled);
   return to_display(std::move(raster).value(), ctx);

@@ -164,6 +164,7 @@ class ffmpeg_media_source final : public media_source {
     in.playback_rate = pipe_->rate.load();
     for (unsigned i = 0; i <= frame_ring_slots; ++i) {
       in.has_next = video_->peek_next_pts(&in.next_pts_ns);
+      in.has_following = pipe_->ring.peek_next_pts(&in.following_pts_ns, 1);
       if (!in.has_next && pipe_->video_done.load() &&
           (info_.duration_ns <= 0 || in.master_clock_ns >= info_.duration_ns)) {
         pipe_->clock.set_paused(true); state_ = play_state::ended; return nullptr;

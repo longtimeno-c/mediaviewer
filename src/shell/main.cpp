@@ -116,6 +116,13 @@ constexpr ULONGLONG kMotionOpenGiveUpMs = 10000;
 // it stayed up this long (or exited in order). Until then trial.ini counts it.
 constexpr UINT_PTR kUpdateConfirmTimerId = 0x7301;
 constexpr UINT kUpdateConfirmMs = 10000;
+// --browse-soak: time the arrow from one still to the next. A UI-thread tick
+// only chooses the next index; the render thread records the present.
+constexpr UINT_PTR kBrowseTimerId = 0x7701;
+constexpr UINT kBrowseTickMs = 50;
+constexpr ULONGLONG kBrowseDwellMs = 3000;
+constexpr ULONGLONG kBrowseStepTimeoutMs = 20000;
+constexpr ULONGLONG kBrowseOpenTimeoutMs = 60000;
 
 struct app_state {
   present_lab lab;
@@ -251,6 +258,45 @@ struct pending_restore {
   bool fullscreen = false;
   bool gallery = false;
 } g_restore;
+
+// --browse-soak. Neighbours of the open photo are decoded ahead (±1, ±2, no
+// wrap). Cold jumps are the photos past that window, taken before the walk
+// visits them. Warm steps are Right after a dwell, so the next photo has had
+// time to be decoded. The clock is the render thread's, not this tick.
+struct browse_row {
+  char name[200]{};
+  int index = 0;
+  int cold = 0;
+  int cached = 0;
+  int timed_out = 0;
+  double ready_ms = -1.0;
+  double present_ms = -1.0;
+  double refresh_ms = 0.0;
+};
+enum class browse_phase {
+  wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm, finish
+};
+struct browse_run {
+  bool enabled = false;
+  std::wstring json_path;
+  browse_phase step = browse_phase::wait_media;
+  browse_phase after_dwell = browse_phase::cold;
+  bool started = false;
+  ULONGLONG tick0 = 0;
+  ULONGLONG phase_tick = 0;
+  std::uint32_t count = 0;
+  int cold_targets[6]{};
+  int cold_n = 0;
+  int cold_i = 0;
+  int warm_left = 0;
+  std::uint64_t seq = 0;
+  bool record = false;
+  int pending_index = 0;
+  int pending_cold = 0;
+  char pending_name[200]{};
+  browse_row rows[24]{};
+  int nrows = 0;
+} g_browse;
 
 void confirm_update_start_async() noexcept {
   if (g_start_confirmed || !g_install.installed()) return;
@@ -1944,6 +1990,225 @@ void slideshow_tick(app_state* app) noexcept {
   folder_select(app, *next);
 }
 
+void browse_trace(const char* msg) noexcept {
+  MV_LOG_INFO("browse: %s", msg);
+  wchar_t dir[MAX_PATH]{};
+  if (::GetTempPathW(MAX_PATH, dir) == 0) return;
+  std::wstring path = dir;
+  path += L"mv-browse.log";
+  FILE* f = nullptr;
+  if (::_wfopen_s(&f, path.c_str(), L"ab") != 0 || f == nullptr) return;
+  std::fprintf(f, "%s\n", msg);
+  std::fclose(f);
+}
+
+void browse_json_string(FILE* f, const char* s) noexcept {
+  std::fputc('"', f);
+  for (const auto* p = reinterpret_cast<const unsigned char*>(s); *p; ++p) {
+    if (*p == '"' || *p == '\\') {
+      std::fputc('\\', f);
+      std::fputc(static_cast<int>(*p), f);
+    } else if (*p < 0x20) {
+      std::fprintf(f, "\\u%04x", *p);
+    } else {
+      std::fputc(static_cast<int>(*p), f);
+    }
+  }
+  std::fputc('"', f);
+}
+
+bool browse_select(app_state* app, std::uint32_t index, bool record, bool cold) noexcept {
+  char name[200]{};
+  std::uint32_t bytes = 0;
+  if (mv_folder_item_name(app->session, index, name, sizeof name, &bytes) != MV_OK)
+    std::snprintf(name, sizeof name, "#%u", index);
+  name[sizeof name - 1] = '\0';
+  const std::uint64_t seq = app->lab.mark_navigation();
+  if (seq == 0) return false;
+  g_browse.seq = seq;
+  g_browse.record = record;
+  g_browse.pending_index = static_cast<int>(index);
+  g_browse.pending_cold = cold ? 1 : 0;
+  std::snprintf(g_browse.pending_name, sizeof g_browse.pending_name, "%s", name);
+  g_browse.phase_tick = ::GetTickCount64();
+  folder_select(app, index);
+  char line[320];
+  std::snprintf(line, sizeof line, "select %u %s seq %llu %s", index, name,
+                static_cast<unsigned long long>(seq), record ? "record" : "return");
+  browse_trace(line);
+  return true;
+}
+
+void browse_take(app_state* app, bool timed_out) noexcept {
+  if (!g_browse.record || g_browse.nrows >= static_cast<int>(std::size(g_browse.rows))) return;
+  auto& row = g_browse.rows[g_browse.nrows++];
+  std::snprintf(row.name, sizeof row.name, "%s", g_browse.pending_name);
+  row.index = g_browse.pending_index;
+  row.cold = g_browse.pending_cold;
+  row.timed_out = timed_out ? 1 : 0;
+  if (!timed_out) {
+    const auto sample = app->lab.navigation_sample(g_browse.seq);
+    row.cached = sample.cached;
+    row.ready_ms = sample.ready_ms;
+    row.present_ms = sample.present_ms;
+    row.refresh_ms = sample.refresh_ms;
+  }
+  char line[400];
+  std::snprintf(line, sizeof line,
+                "done %s cold %d cached %d present %.2f ready %.2f timeout %d",
+                row.name, row.cold, row.cached, row.present_ms, row.ready_ms, row.timed_out);
+  browse_trace(line);
+}
+
+bool browse_step_finished(app_state* app) noexcept {
+  if (app->lab.navigation_done(g_browse.seq)) {
+    browse_take(app, false);
+    return true;
+  }
+  if (::GetTickCount64() - g_browse.phase_tick > kBrowseStepTimeoutMs) {
+    browse_take(app, true);
+    return true;
+  }
+  return false;
+}
+
+void browse_finish(app_state* app, const char* error) noexcept {
+  if (g_browse.step == browse_phase::finish) return;
+  g_browse.step = browse_phase::finish;
+  if (app->window) ::KillTimer(app->window, kBrowseTimerId);
+  FILE* f = nullptr;
+  if (!g_browse.json_path.empty() &&
+      ::_wfopen_s(&f, g_browse.json_path.c_str(), L"wb") == 0 && f != nullptr) {
+    std::fprintf(f,
+                 "{\n  \"schema\": 1,\n  \"dwell_s\": %.1f,\n  \"count\": %u,\n  \"error\": ",
+                 static_cast<double>(kBrowseDwellMs) / 1000.0, g_browse.count);
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fputs(",\n  \"steps\": [\n", f);
+    for (int i = 0; i < g_browse.nrows; ++i) {
+      const auto& row = g_browse.rows[i];
+      std::fputs("    {\"name\": ", f);
+      browse_json_string(f, row.name);
+      std::fprintf(f,
+                   ", \"index\": %d, \"kind\": \"%s\", \"cached\": %d, \"timed_out\": %d, "
+                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f}%s\n",
+                   row.index, row.cold ? "cold" : "warm", row.cached, row.timed_out,
+                   row.ready_ms, row.present_ms, row.refresh_ms,
+                   i + 1 < g_browse.nrows ? "," : "");
+    }
+    std::fputs("  ]\n}\n", f);
+    std::fclose(f);
+  }
+  browse_trace(error ? error : "wrote report");
+  if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+}
+
+void browse_tick(app_state* app) noexcept {
+  if (!g_browse.enabled || !app || !app->session) return;
+  if (!g_browse.started) {
+    g_browse.started = true;
+    g_browse.tick0 = ::GetTickCount64();
+    g_browse.phase_tick = g_browse.tick0;
+    browse_trace("start");
+  }
+  switch (g_browse.step) {
+    case browse_phase::wait_media:
+      if (app->lab.showing_still() || app->lab.status_width() > 0) {
+        g_browse.count = folder_count(app);
+        if (g_browse.count < 2) {
+          browse_finish(app, "fewer than 2 items");
+          return;
+        }
+        g_browse.cold_n = 0;
+        for (std::uint32_t i = 3; i < g_browse.count && g_browse.cold_n < 6; ++i)
+          g_browse.cold_targets[g_browse.cold_n++] = static_cast<int>(i);
+        g_browse.warm_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
+        g_browse.step = browse_phase::dwell;
+        g_browse.after_dwell = g_browse.cold_n > 0 ? browse_phase::cold : browse_phase::warm;
+        g_browse.phase_tick = ::GetTickCount64();
+        browse_trace("first photo up");
+      } else if (::GetTickCount64() - g_browse.tick0 > kBrowseOpenTimeoutMs) {
+        browse_finish(app, "no photo appeared");
+      }
+      return;
+    case browse_phase::dwell:
+      if (::GetTickCount64() - g_browse.phase_tick < kBrowseDwellMs) return;
+      g_browse.step = g_browse.after_dwell;
+      browse_tick(app);
+      return;
+    case browse_phase::cold:
+      if (g_browse.cold_i >= g_browse.cold_n) {
+        g_browse.step = browse_phase::warm;
+        browse_tick(app);
+        return;
+      }
+      if (!browse_select(app, static_cast<std::uint32_t>(g_browse.cold_targets[g_browse.cold_i++]),
+                         true, true)) {
+        browse_finish(app, "could not mark a jump");
+        return;
+      }
+      g_browse.step = browse_phase::wait_away;
+      return;
+    case browse_phase::wait_away:
+      if (!browse_step_finished(app)) return;
+      g_browse.step = browse_phase::go_home;
+      browse_tick(app);
+      return;
+    case browse_phase::go_home: {
+      std::uint32_t selected = 0;
+      if (mv_folder_selected(app->session, &selected) == MV_OK && selected == 0) {
+        g_browse.step = browse_phase::dwell;
+        g_browse.after_dwell = browse_phase::cold;
+        g_browse.phase_tick = ::GetTickCount64();
+        return;
+      }
+      if (!browse_select(app, 0, false, false)) {
+        browse_finish(app, "could not return to the first photo");
+        return;
+      }
+      g_browse.step = browse_phase::wait_home;
+      return;
+    }
+    case browse_phase::wait_home:
+      if (!app->lab.navigation_done(g_browse.seq) &&
+          ::GetTickCount64() - g_browse.phase_tick <= kBrowseStepTimeoutMs) return;
+      g_browse.step = browse_phase::dwell;
+      g_browse.after_dwell = browse_phase::cold;
+      g_browse.phase_tick = ::GetTickCount64();
+      return;
+    case browse_phase::warm: {
+      if (g_browse.warm_left <= 0) {
+        browse_finish(app, nullptr);
+        return;
+      }
+      std::uint32_t selected = 0;
+      if (mv_folder_selected(app->session, &selected) != MV_OK || selected + 1 >= g_browse.count) {
+        browse_finish(app, nullptr);
+        return;
+      }
+      --g_browse.warm_left;
+      if (!browse_select(app, selected + 1, true, false)) {
+        browse_finish(app, "could not mark a step");
+        return;
+      }
+      g_browse.step = browse_phase::wait_warm;
+      return;
+    }
+    case browse_phase::wait_warm:
+      if (!browse_step_finished(app)) return;
+      if (g_browse.warm_left <= 0) {
+        browse_finish(app, nullptr);
+        return;
+      }
+      g_browse.step = browse_phase::dwell;
+      g_browse.after_dwell = browse_phase::warm;
+      g_browse.phase_tick = ::GetTickCount64();
+      return;
+    case browse_phase::finish:
+      return;
+  }
+}
+
 void persist_live_keys() noexcept {
   std::vector<mv::shell::key_override> out;
   const auto live = mv::shell::live_bindings();
@@ -3187,6 +3452,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         slideshow_tick(app);
         return 0;
       }
+      if (wparam == kBrowseTimerId) {
+        browse_tick(app);
+        return 0;
+      }
       if (wparam == kMotionTimerId) {
         motion_tick(app);
         return 0;
@@ -3299,6 +3568,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       static_requested = true;
     } else if (arg == L"--pan-soak") {
       options.scripted_pan = true;
+    } else if (arg == L"--browse-soak") {
+      g_browse.enabled = true;
     } else if (arg == L"--open") {
       std::wstring value;
       next(value);
@@ -3327,6 +3598,17 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
     }
   }
   ::LocalFree(argv);
+  if (ok && g_browse.enabled) {
+    if (options.soak_seconds > 0.0) {
+      error = L"--browse-soak cannot be combined with --soak";
+      ok = false;
+    } else if (options.json_report_path.empty()) {
+      error = L"--browse-soak needs --json PATH";
+      ok = false;
+    } else {
+      g_browse.json_path = options.json_report_path;
+    }
+  }
   // Interactive: drop-target empty view. Soak: the PR 1 sweep unless --static.
   options.start_animating = options.soak_seconds > 0.0 && !static_requested;
   return ok;
@@ -3456,6 +3738,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // unless --static). Interactive empty view is the drop target, not the sweep.
   if (options.soak_seconds == 0.0) options.overlay_visible = false;
 
+  if (g_browse.enabled) options.present_when_inactive = true;
   if (auto started = app.lab.start(hwnd, options); !started) {
     ::MessageBoxA(nullptr, "render thread failed to start", "MediaViewer", MB_ICONERROR | MB_OK);
     mv_session_release(app.session);
@@ -3474,6 +3757,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     publish(&app);
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
+  if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
   if (g_restore.fullscreen) set_fullscreen(&app, true);
   // Chrome attached (or was not asked for) and the window is up: start the
   // clock on "this version starts". A crash before it fires counts.

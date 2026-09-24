@@ -39,6 +39,7 @@ added by the PR that adds the dependency.
 | **[libde265](https://github.com/strukturag/libde265)** | 1.1.1 | **LGPL-3** | **Dynamic (DLL)** | HEVC **decode** for libheif. A hard dependency of the port, not a feature, so HEIC decode does not pull x265. |
 | [libavif](https://github.com/AOMediaCodec/libavif) | 1.4.2 | BSD-2 | Dynamic (vcpkg x64-windows) | AVIF still and animated (PR 7), on dav1d. |
 | **[LibRaw](https://www.libraw.org/)** | 0.22.2 | **LGPL-2.1** | **Dynamic (DLL)** | Camera RAW (PR 7): embedded preview first, then the full decode. No GPL demosaic pack. |
+| Microsoft OpenMP runtime | MSVC toolset redist | Microsoft redistributable terms | Dynamic, Windows | `vcomp140.dll` is copied from the Visual C++ redist alongside LibRaw; parallel RAW decoding does not require a separate runtime install. |
 | [libyuv](https://chromium.googlesource.com/libyuv/libyuv/) | 1916 | BSD-3 | Dynamic (vcpkg x64-windows) | Transitive, via libheif/libavif. |
 | [liblzma (xz)](https://tukaani.org/xz/) | 5.8.3 | 0BSD | Dynamic (vcpkg x64-windows) | Transitive, via libtiff. |
 | [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (plan/13 Part 1). |
@@ -55,6 +56,7 @@ This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions
 |---|---|---|---|---|
 | [Sparkle](https://sparkle-project.org) | 2.9.6 | MIT | Dynamic framework (`Contents/Frameworks/Sparkle.framework`) | Updates (plan/13). Pinned by SHA-256 in `cmake/darwin-app.cmake`; linked only when the build has an EdDSA public key. |
 | [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
+| [LLVM OpenMP runtime](https://openmp.llvm.org/) | Build machine's Homebrew libomp | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
 
 ## Planned, with the PR that introduces each
 

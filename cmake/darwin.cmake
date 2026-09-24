@@ -138,6 +138,7 @@ else()
   message(FATAL_ERROR "libavif imported target not found")
 endif()
 # LibRaw's thread-safe raw_r target: decode runs on the job pool.
+include(${CMAKE_CURRENT_LIST_DIR}/raw-openmp.cmake)
 find_package(libraw CONFIG REQUIRED)
 
 add_library(mv_codec STATIC
@@ -176,6 +177,7 @@ target_link_libraries(mv_codec
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r)
 add_library(mv::codec ALIAS mv_codec)
+target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
 # ---------------------------------------------------------------------------
 # mv_io — portable io/dir.h + io/file.h (PR 18, folded-in PR 4 — plan/12

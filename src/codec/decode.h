@@ -17,7 +17,8 @@ namespace mv::codec {
 // `ctx` may be null (tests). When present, cancelled() is checked between
 // scanline blocks so a generation bump abandons a large decode.
 [[nodiscard]] result<raster> decode(std::span<const std::uint8_t> bytes,
-                                    const job_context* ctx = nullptr);
+                                    const job_context* ctx = nullptr,
+                                    unsigned raw_thread_limit = 4);
 
 // `scale_denom` is libjpeg-turbo's DCT scale: 1, 2, 4, or 8. Other values
 // decode at 1:1. Preview uploads use 4; the full decode is always 1.
@@ -52,7 +53,8 @@ struct jpeg_size {
 [[nodiscard]] result<raster> decode_avif(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_raw(std::span<const std::uint8_t> bytes,
-                                        const job_context* ctx = nullptr);
+                                        const job_context* ctx = nullptr,
+                                        unsigned thread_limit = 4);
 
 // Embedded JPEG/preview inside a RAW, if any. `unsupported_format` when the
 // file is not RAW or has no usable preview. First pixel for CR2/NEF/ARW

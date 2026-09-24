@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab.h"
+#include "shell/video_report.h"
 #include "shell/dino_draw.h"
 #include "shell/welcome_screen.h"
 
@@ -518,7 +519,8 @@ void present_lab::render_thread_main() noexcept {
                 fade_from_.reset();
                 fade_.cancel();
                 refine_fade_abandoned();
-              } else if (fade_.active(elapsed) && fade_from_ &&
+              } else if (current_image_->quality == image::gpu_quality::full_top &&
+                         ready->quality == image::gpu_quality::full &&
                          current_image_->width == ready->width &&
                          current_image_->height == ready->height) {
                 // A still refines twice: full_top (the top level, as soon as it
@@ -566,6 +568,7 @@ void present_lab::render_thread_main() noexcept {
             // animation block (review note 35).
             current_image_.reset(ready);
             note_still_landed();
+            note_nav_image(*current_image_);
             {
               const auto view = usable_canvas(snapshot);
               // plan/16 sticky zoom: off (default) fits every item; on keeps the
@@ -907,7 +910,8 @@ void present_lab::render_thread_main() noexcept {
                       pan_tail || blinkies || anim_live_ || fading;
     live_presenting_ = live;
     const bool allowed = snapshot.window_visible && !occluded_ &&
-                         (options_.soak_seconds > 0.0 || snapshot.window_active);
+                         (options_.soak_seconds > 0.0 || options_.present_when_inactive ||
+                          snapshot.window_active);
     bool wants_frame = false;
     if (allowed) {
       if (live) {
@@ -1160,6 +1164,7 @@ void present_lab::render_thread_main() noexcept {
       ++total_presents_;
       pacer_.frame_end(swapchain_.dxgi());
       if (!live) painted_static_ = true;
+      commit_nav_present();
     }
     else measurement_valid_ = false;
 
@@ -1227,6 +1232,51 @@ void present_lab::render_thread_main() noexcept {
   finished_.store(true, std::memory_order_release);
   running_.store(false, std::memory_order_release);
   ::PostMessageW(window_, WM_CLOSE, 0, 0);
+}
+
+std::uint64_t present_lab::mark_navigation() noexcept {
+  const std::uint64_t seq = nav_seq_.load(std::memory_order_relaxed) + 1;
+  if (seq > 64) return 0;
+  nav_qpc_.store(qpc_now(), std::memory_order_relaxed);
+  nav_seq_.store(seq, std::memory_order_release);
+  return seq;
+}
+
+bool present_lab::navigation_done(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64) return false;
+  if (nav_done_seq_.load(std::memory_order_acquire) < seq) return false;
+  return nav_samples_[seq - 1].valid != 0;
+}
+
+present_lab::nav_sample present_lab::navigation_sample(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64) return {};
+  return nav_samples_[seq - 1];
+}
+
+void present_lab::note_nav_image(const image::gpu_image& ready) noexcept {
+  const std::uint64_t seq = nav_seq_.load(std::memory_order_acquire);
+  if (seq == 0 || seq > 64) return;
+  if (nav_done_seq_.load(std::memory_order_relaxed) >= seq && nav_latched_seq_ == seq) return;
+  if (nav_latched_seq_ == seq && nav_have_ready_) return;
+  nav_latched_seq_ = seq;
+  nav_latch_qpc_ = nav_qpc_.load(std::memory_order_acquire);
+  nav_ready_ms_ = qpc_seconds(qpc_now() - nav_latch_qpc_) * 1000.0;
+  nav_cached_ = ready.quality == image::gpu_quality::full ? 1 : 0;
+  nav_key_ = ready.item_key;
+  nav_have_ready_ = true;
+}
+
+void present_lab::commit_nav_present() noexcept {
+  if (!nav_have_ready_ || nav_latched_seq_ == 0 || nav_latched_seq_ > 64) return;
+  if (!current_image_ || current_image_->item_key != nav_key_) return;
+  auto& sample = nav_samples_[nav_latched_seq_ - 1];
+  sample.ready_ms = nav_ready_ms_;
+  sample.present_ms = qpc_seconds(qpc_now() - nav_latch_qpc_) * 1000.0;
+  sample.refresh_ms = swapchain_.refresh_interval_seconds() * 1000.0;
+  sample.cached = nav_cached_;
+  sample.valid = 1;
+  nav_have_ready_ = false;
+  nav_done_seq_.store(nav_latched_seq_, std::memory_order_release);
 }
 
 void present_lab::note_still_landed() noexcept {
@@ -1792,7 +1842,14 @@ bool present_lab::write_json_report() const noexcept {
                soak_complete_ && measurement_valid_ && exit_code_ == 0 &&
                    (options_.start_animating ? s.meets_pr1_gate() : idle_stats_.meets_pr1_gate())
                    ? "true" : "false");
-  const bool written = std::ferror(f) == 0;
+  bool written = std::ferror(f) == 0;
+  if (video_open_) {
+    mv_video_stats v{};
+    (void)mv_video_get_stats(session_, &v);
+    written = write_video_report(options_.json_report_path,
+        {v.frames_presented, v.frames_dropped_late, v.holds_cadence, v.holds_starved,
+         v.err_ms_p99, v.audio_master != 0}) && written;
+  }
   return std::fclose(f) == 0 && written;
 }
 

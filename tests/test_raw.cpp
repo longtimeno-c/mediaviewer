@@ -719,6 +719,28 @@ TEST_CASE("camera RAW: preview first, full decode replaces it in place, bytes un
   CHECK(dir_listing(fs_path.parent_path()) == before_list);
 }
 
+TEST_CASE("camera RAW: parallel decode preserves pixels", "[codec][raw][corpus]") {
+  const char* name = GENERATE(from_range(std::begin(kSamples), std::end(kSamples)));
+  MV_REQUIRE_RAW_SAMPLE(path, name);
+  CAPTURE(name);
+  auto bytes = mv::io::read_all(path);
+  REQUIRE(bytes);
+  auto opt = mv::codec::raw_detail::default_options();
+  mv::codec::raw_detail::raw_timings timings;
+  opt.timings = &timings;
+  opt.thread_limit = 1;
+  auto serial = mv::codec::raw_detail::decode_raw_with(bytes.value(), nullptr, opt);
+  REQUIRE(serial);
+  opt.thread_limit = 4;
+  auto parallel = mv::codec::raw_detail::decode_raw_with(bytes.value(), nullptr, opt);
+  REQUIRE(parallel);
+  CHECK(serial->width == parallel->width);
+  CHECK(serial->height == parallel->height);
+  CHECK(serial->rgba == parallel->rgba);
+  std::printf("[raw-stages] %s open %.1f unpack %.1f process %.1f pack %.1f ms\n",
+      name, timings.open_ms, timings.unpack_ms, timings.process_ms, timings.pack_ms);
+}
+
 TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw][corpus]") {
   const char* name = GENERATE(from_range(std::begin(kSamples), std::end(kSamples)));
   MV_REQUIRE_RAW_SAMPLE(path, name);

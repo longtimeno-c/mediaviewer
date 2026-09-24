@@ -90,7 +90,7 @@ class video_source {
                                              time_ns deadline_ns) noexcept = 0;
   virtual void release(video_frame* frame) noexcept = 0;
 
-  // [any-thread][no-block] PTS of the next queued frame without dequeuing it.
+  // [render-thread][no-block] PTS of the next queued frame without dequeuing it.
   // Required by the clock: drop-vs-hold is undecidable without the peek.
   // Returns false when the queue is empty (starved -> hold current frame).
   [[nodiscard]] virtual bool peek_next_pts(time_ns* out_pts_ns) const noexcept = 0;

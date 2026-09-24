@@ -53,6 +53,9 @@ struct lab_options {
   // Soak only: once a still is up, pan it at 100 % across the whole image on
   // a fixed path (tiled pyramid / cached-image pan measurement). `--pan-soak`.
   bool scripted_pan = false;
+  // Keep presenting while the window is in the background. `--browse-soak`
+  // drives itself and must not stall if it is not the foreground window.
+  bool present_when_inactive = false;
   bool overlay_visible = true;
 };
 
@@ -129,6 +132,21 @@ class present_lab {
   [[nodiscard]] animation_state animation() const noexcept {
     return static_cast<animation_state>(anim_state_.load(std::memory_order_relaxed));
   }
+
+  // Time from mark_navigation() (call it immediately before mv_folder_select)
+  // to the present that first draws the new still. `cached` means that texture
+  // was already the full-resolution image, not a preview. Seq 0 means the
+  // 64-sample log is full. UI thread marks; the render thread fills the sample.
+  struct nav_sample {
+    double ready_ms = -1.0;
+    double present_ms = -1.0;
+    double refresh_ms = 0.0;
+    int cached = 0;
+    int valid = 0;
+  };
+  [[nodiscard]] std::uint64_t mark_navigation() noexcept;
+  [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
+  [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
 
  private:
   void render_thread_main() noexcept;
@@ -207,6 +225,18 @@ class present_lab {
   // Records the still that just became current: its slot, and its size for
   // still_size(). Called wherever current_image_ takes a published image.
   void note_still_landed() noexcept;
+  void note_nav_image(const image::gpu_image& ready) noexcept;
+  void commit_nav_present() noexcept;
+  std::atomic<std::uint64_t> nav_seq_{0};
+  std::atomic<std::int64_t> nav_qpc_{0};
+  std::atomic<std::uint64_t> nav_done_seq_{0};
+  nav_sample nav_samples_[64]{};
+  std::uint64_t nav_latched_seq_ = 0;
+  std::int64_t nav_latch_qpc_ = 0;
+  double nav_ready_ms_ = -1.0;
+  std::uint64_t nav_key_ = 0;
+  int nav_cached_ = 0;
+  bool nav_have_ready_ = false;
   edit_view edit_slots_[2];   // copied from the snapshot each iteration
   edit_view applied_edit_{};  // what the current still was last fitted with
   std::atomic<std::uint64_t> shown_key_{0};

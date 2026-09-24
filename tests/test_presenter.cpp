@@ -19,6 +19,8 @@ presenter_input at(time_ns clock, time_ns next, bool has_next = true, double rat
   in.next_pts_ns = next;
   in.has_next = has_next;
   in.playback_rate = rate;
+  in.following_pts_ns = next + 2 * vblank_60hz;
+  in.has_following = has_next;
   return in;
 }
 
@@ -55,7 +57,9 @@ TEST_CASE("cadence holds are never counted as late", "[presenter]") {
   int shown = 0, held = 0;
 
   for (int i = 0; i < 600; ++i) {
-    const auto d = choose(at(clock, next_pts));
+    auto in = at(clock, next_pts);
+    in.following_pts_ns = next_pts + frame_24p;
+    const auto d = choose(in);
     REQUIRE(d.action != present_action::drop);
     REQUIRE(d.action != present_action::hold_starved);
     if (d.action == present_action::show) {
@@ -98,4 +102,39 @@ TEST_CASE("reported error is signed and in milliseconds", "[presenter]") {
   REQUIRE(ahead.err_ms > 9.0);
   const auto behind = choose(at(clock, clock + vblank_60hz - ms(10)));
   REQUIRE(behind.err_ms < -9.0);
+}
+
+TEST_CASE("30p tolerates a late wake while its successor is still in the future", "[presenter]") {
+  auto in = at(ms(1), 0);
+  in.following_pts_ns = ms(33.333);
+  REQUIRE(choose(in).action == present_action::show);
+  in.master_clock_ns = ms(20);
+  REQUIRE(choose(in).action == present_action::drop);
+}
+
+TEST_CASE("VFR uses adjacent timestamps and keeps the last available frame", "[presenter]") {
+  auto in = at(ms(180), 0);
+  in.following_pts_ns = ms(200);
+  REQUIRE(choose(in).action == present_action::show);
+  in.master_clock_ns = ms(190);
+  REQUIRE(choose(in).action == present_action::drop);
+  in.has_following = false;
+  REQUIRE(choose(in).action == present_action::show);
+}
+
+TEST_CASE("jittered 30p polling neither loses frames nor stops catching up", "[presenter]") {
+  time_ns next = 0;
+  int dropped = 0, shown = 0;
+  for (int i = 0; i < 7200; ++i) {
+    // Alternating late wakes cross the old display-interval drop boundary.
+    auto in = at(i * vblank_60hz + (i % 2 ? ms(3) : 0), next);
+    in.following_pts_ns = next + 2 * vblank_60hz;
+    const auto d = choose(in);
+    if (d.action == present_action::drop) ++dropped;
+    if (d.action == present_action::show) { ++shown; next = in.following_pts_ns; }
+  }
+  CHECK(dropped == 0);
+  CHECK(shown == 3601); // inclusive PTS zero, plus the one-vblank lookahead
+  auto stalled = at(ms(130000), next);
+  REQUIRE(choose(stalled).action == present_action::drop);
 }

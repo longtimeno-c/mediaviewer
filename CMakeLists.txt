@@ -270,6 +270,7 @@ elseif(TARGET libavif::avif)
 else()
   message(FATAL_ERROR "libavif imported target not found")
 endif()
+include(cmake/raw-openmp.cmake)
 find_package(libraw CONFIG REQUIRED)
 find_package(spng CONFIG REQUIRED)
 if(TARGET spng::spng)
@@ -317,6 +318,7 @@ target_link_libraries(mv_codec
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
           windowscodecs ole32)
 add_library(mv::codec ALIAS mv_codec)
+target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + immutable GPU upload

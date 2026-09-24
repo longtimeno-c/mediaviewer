@@ -283,6 +283,8 @@ def cmd_assemble(args: argparse.Namespace) -> None:
     # The licence and third-party notices ship with the binary they describe.
     shutil.copyfile(REPO_ROOT / "LICENSE", contents / "Resources" / "LICENSE.txt")
     shutil.copyfile(REPO_ROOT / "THIRD-PARTY.md", contents / "Resources" / "THIRD-PARTY.md")
+    shutil.copyfile(REPO_ROOT / "assets" / "licenses" / "llvm-openmp.txt",
+                    contents / "Resources" / "llvm-openmp.txt")
 
     appex = contents / "PlugIns" / f"{APPEX_NAME}.appex" / "Contents"
     (appex / "MacOS").mkdir(parents=True)

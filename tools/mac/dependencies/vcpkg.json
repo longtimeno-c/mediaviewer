@@ -10,7 +10,7 @@
       "name": "libheif",
       "default-features": false
     },
-    "libraw",
+    { "name": "libraw", "features": ["openmp"] },
     {
       "name": "ffmpeg",
       "default-features": false,

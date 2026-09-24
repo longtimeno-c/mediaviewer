@@ -21,10 +21,21 @@
 #include "codec/raw_internal.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <new>
+#include <thread>
+
+#if defined(_WIN32)
+// vcpkg's LibRaw uses MSVC's runtime, including in our clang-cl build.
+extern "C" __declspec(dllimport) int __cdecl omp_get_max_threads(void);
+extern "C" __declspec(dllimport) void __cdecl omp_set_num_threads(int);
+#else
+#include <omp.h>
+#endif
 
 #include "codec/decode.h"
 
@@ -38,6 +49,30 @@ constexpr std::uint64_t kMaxPixels = 256ull * 1000ull * 1000ull;
 // LibRaw refuses (LIBRAW_TOO_BIG) a raw buffer over this. 2 GB covers a
 // 150 MP 16-bit frame with its 4-channel working image.
 constexpr unsigned kMaxRawMemoryMb = 2048;
+
+// Share three extra workers across concurrent RAW jobs instead of letting
+// every prefetch fan out to all CPUs. No worker-held lock reaches the canvas.
+class raw_threads {
+ public:
+  explicit raw_threads(unsigned limit) : previous_(omp_get_max_threads()) {
+    const unsigned cores = std::thread::hardware_concurrency();
+    const unsigned wanted = std::min({limit > 0 ? limit - 1 : 0, 3u,
+                                     cores > 2 ? cores - 2 : 0u});
+    unsigned available = extras_.load(std::memory_order_relaxed);
+    do { taken_ = std::min(wanted, available); }
+    while (!extras_.compare_exchange_weak(available, available - taken_,
+                                          std::memory_order_relaxed));
+    omp_set_num_threads(static_cast<int>(taken_ + 1));
+  }
+  ~raw_threads() {
+    omp_set_num_threads(previous_);
+    extras_.fetch_add(taken_, std::memory_order_relaxed);
+  }
+ private:
+  inline static std::atomic<unsigned> extras_{3};
+  unsigned taken_ = 0;
+  int previous_;
+};
 
 // ---------------------------------------------------------------------------
 // TIFF-container sniffing. Bounds-checked, allocation-free, noexcept.
@@ -459,6 +494,15 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
                          const raw_detail::raw_options& opt) {
   if (ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
   if (!looks_like_raw(bytes)) return err(status::unsupported_format);
+  const raw_threads threads(opt.thread_limit);
+  auto stage = std::chrono::steady_clock::now();
+  const auto elapsed_ms = [&stage] {
+    const auto now = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(now - stage).count();
+    stage = now;
+    return ms;
+  };
+  if (opt.timings) *opt.timings = {};
 
   auto opened = open_raw(bytes, ctx);
   if (!opened) return err(opened.error());
@@ -492,7 +536,11 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
     }
   }
 
+  const double open_ms = elapsed_ms();
+  if (opt.timings) opt.timings->open_ms = open_ms;
   int ec = lr.unpack();
+  const double unpack_ms = elapsed_ms();
+  if (opt.timings) opt.timings->unpack_ms = unpack_ms;
   if (ec != LIBRAW_SUCCESS) return err(map_libraw(ec));
   if (ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
   // Several vendor decoders (Sony ARW among them) zero-fill past the end of a
@@ -502,6 +550,8 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   // before the seconds-long dcraw_process.
   if (lr.error_count() > 0) return err(status::corrupt);
   ec = lr.dcraw_process();
+  const double process_ms = elapsed_ms();
+  if (opt.timings) opt.timings->process_ms = process_ms;
   if (ec != LIBRAW_SUCCESS) return err(map_libraw(ec));
   if (ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
 
@@ -551,6 +601,7 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   out.format = format_family::raw;
   out.intent = transfer_intent::display_referred;
   out.tagged_srgb = true;
+  if (opt.timings) opt.timings->pack_ms = elapsed_ms();
   return out;
 }
 
@@ -571,7 +622,7 @@ bool looks_like_raw(std::span<const std::uint8_t> bytes) noexcept {
 
 namespace raw_detail {
 
-// Measured with `mv_tests "[.raw-bench]"` (Release, single-threaded LibRaw
+// Historical baseline, measured with `mv_tests "[.raw-bench]"` (Release, single-threaded LibRaw
 // 0.22.2 — the vcpkg build has no OpenMP), 2026-09-14:
 //
 //   file (MP)          linear   VNG     PPG     AHD    | preview 1:1 -> scaled
@@ -591,6 +642,9 @@ namespace raw_detail {
 //
 // Preview: DCT 1/2 while the long side stays >= 2048 px keeps first pixel
 // under plan/09's 60 ms; the full decode refines it (rule 3).
+// 2026-09-24: enable LibRaw OpenMP with bounded teams, keeping these pixel
+// settings. Stage timings and byte-equivalence tests are in test_raw.cpp;
+// docs/perf/investigation documents the remaining serial costs.
 raw_options default_options() noexcept {
   raw_options o;
   o.quality = demosaic::ppg;
@@ -629,8 +683,11 @@ result<raster> decode_raw_preview(std::span<const std::uint8_t> bytes, const job
   return raw_detail::decode_raw_preview_with(bytes, ctx, raw_detail::default_options());
 }
 
-result<raster> decode_raw(std::span<const std::uint8_t> bytes, const job_context* ctx) {
-  return raw_detail::decode_raw_with(bytes, ctx, raw_detail::default_options());
+result<raster> decode_raw(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                         unsigned thread_limit) {
+  auto opt = raw_detail::default_options();
+  opt.thread_limit = thread_limit;
+  return raw_detail::decode_raw_with(bytes, ctx, opt);
 }
 
 }  // namespace mv::codec

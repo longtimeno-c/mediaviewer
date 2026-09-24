@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab_mac.h"
+#include "shell/video_report.h"
 #include "shell/edit_view.h"
 #include "shell/dino_draw.h"
 #include "shell/welcome_screen.h"
@@ -967,6 +968,14 @@ void present_lab_mac::render_thread_main() noexcept {
           // PR 10: sizes through each image's own edit geometry.
           float old_w = 0.0f, old_h = 0.0f;
           if (current_image_ && !video_frame_) (void)picture_size(&old_w, &old_h);
+          if (refinement && current_image_->preview && !loaded->preview) {
+            fade_.begin(elapsed, canvas::refine_fade_seconds(current_image_->mean_luma,
+                                                            loaded->mean_luma));
+            fade_from_ = std::move(current_image_);
+          } else {
+            fade_from_.reset();
+            fade_.cancel();
+          }
           current_image_.reset(loaded);
           {
             const edit_view* ev = edit_for(current_image_->item_id);
@@ -1070,6 +1079,8 @@ void present_lab_mac::render_thread_main() noexcept {
             video_frame_ = frame;
             if (!media_fitted_) {
               current_image_.reset();
+              fade_from_.reset();
+              fade_.cancel();
               camera_.reset();
               camera_.fit(static_cast<float>(frame->width), static_cast<float>(frame->height),
                           static_cast<float>(snapshot.width), usable_window_h(snapshot),
@@ -1126,6 +1137,11 @@ void present_lab_mac::render_thread_main() noexcept {
           }
         }
         if (redraw) last_input_time_ = elapsed;
+        if (fade_from_ && !fade_.active(elapsed)) {
+          fade_from_.reset();
+          fade_.cancel();
+          redraw = true; // final fully opaque frame, then return to idle
+        }
 
         gfx::present_request req;
         req.window_visible = snapshot.window_visible;
@@ -1141,7 +1157,7 @@ void present_lab_mac::render_thread_main() noexcept {
         }
         req.video_active = (media_ && media_->needs_present()) || anim_live_;
         req.video_loading = video_opening_.load(std::memory_order_acquire) != 0;
-        req.redraw = redraw;
+        req.redraw = redraw || fade_.active(elapsed);
         req.painted_static = painted_static_;
         req.elapsed_seconds = elapsed;
         req.last_input_time = last_input_time_;
@@ -1349,6 +1365,15 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.clip_to_source = ev && ev->keep_frame;
           bp.background = snapshot.background & 3;
           bp.time_seconds = static_cast<float>(elapsed);
+          if (fade_from_ && !anim_frame_) {
+            auto base = bp;
+            // The preview covers the full image's output rectangle and uses
+            // the same normalized edit map, even if its raster size differs.
+            base.texture_w = static_cast<float>(fade_from_->width);
+            base.texture_h = static_cast<float>(fade_from_->height);
+            blitter_.draw((__bridge void*)enc, fade_from_->texture, base);
+            bp.opacity = fade_.alpha(elapsed);
+          }
           blitter_.draw((__bridge void*)enc,
                         anim_frame_ ? anim_frame_->texture : current_image_->texture, bp);
         }
@@ -1409,6 +1434,8 @@ void present_lab_mac::render_thread_main() noexcept {
       imgui_ready_ = false;
     }
     current_image_.reset();
+    fade_from_.reset();
+    fade_.cancel();
     delete pending_image_.exchange(nullptr);
     // Joins the animation decode thread before device_.destroy() below, the
     // same ordering reason submit_image_load's job must finish first: its
@@ -1468,7 +1495,13 @@ bool present_lab_mac::write_json_report() const noexcept {
   r.measurement_complete = soak_complete_ && measurement_valid_ && exit_code_ == 0;
   r.meets_gate = r.measurement_complete &&
                  (options_.start_animating ? r.pace.meets_pr16_gate() : r.idle.meets_pr16_gate());
-  const bool ok = gfx::write_pace_json(f, r);
+  bool ok = gfx::write_pace_json(f, r);
+  if (media_) {
+    const auto v = media_->stats();
+    ok = write_video_report(options_.json_report_path,
+        {v.counters.presented, v.counters.dropped_late, v.counters.held_cadence,
+         v.counters.held_starved, v.err_ms_p99, v.audio_master}) && ok;
+  }
   return std::fclose(f) == 0 && ok;
 }
 

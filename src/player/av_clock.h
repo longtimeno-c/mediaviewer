@@ -29,7 +29,7 @@ namespace mv::player {
 // permanently broken, so they are separate numbers and always will be.
 struct present_counters {
   std::uint64_t presented     = 0;
-  std::uint64_t dropped_late  = 0;  // fault: frame missed its deadline by > 1 interval
+  std::uint64_t dropped_late  = 0;  // skipped: a newer queued frame was already due
   std::uint64_t held_cadence  = 0;  // normal: source fps < refresh
   std::uint64_t held_starved  = 0;  // fault: queue empty, held previous frame
   std::uint64_t silence_fills = 0;  // fault: audio underrun, wrote silence
