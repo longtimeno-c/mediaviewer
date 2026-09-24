@@ -1271,6 +1271,31 @@ the *last* harnesses of a long run, which also fits resource exhaustion). **Not 
 CI.** Call: both are back in the CI harness list. If they die again, re-exclude and diagnose
 on the runner; do not treat the local pass as settling it.
 
+## 2026-09-24 — Windows v1 gate sweep: what closed, what did not
+
+Run on the dev machine (Release build, `ctest`). **Closed:** `test_frametime.ps1`
+(`frametime_harness`) passes — success, report identity, all eleven failure gates and
+baseline protection; folder/browse/gallery unit tests pass. `fuzz_decode` and
+`fuzz_animation` are already re-enabled in CI (entry above, provisional).
+
+**Owner sign-off (2026-09-24):** the owner confirmed the items below are all good and asked
+for them to be marked done. This was the owner's own verification, not something the
+agent measured; no numbers were recorded, so the soaks and timings have no artefact behind
+them.
+
+**Closed on owner sign-off:**
+- D6 60 s animated/idle soaks: need a dedicated quiet GPU runner.
+- PR 4 verify by hand: 2000-JPEG filmstrip scroll, warm second-visit thumbnails, < 40 ms
+  warm arrow-key browse. No headless harness exists for these; they are eyes-and-stopwatch
+  checks on a real folder. The plan edits to docs 10 and 16 still need a human review.
+- XAML-islands go/no-go (flyout over canvas, tab traversal, present loop on a quiet GPU).
+- PR 7: clean-VM HEIC, a real phone Live Photo, RAW open without a visible pop; LibRaw
+  full decode of 0.8–1.7 s remains.
+- PR 8: clean-VM wizard through to video, signed artifacts (nothing is signed), update
+  rollback on a real machine.
+- Fuzz CI confirmation that the two re-enabled harnesses no longer die at 0xC0000142.
+  (Included in the sign-off; the CI harness list stays as is.)
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is

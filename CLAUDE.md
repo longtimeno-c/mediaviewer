@@ -78,9 +78,8 @@ Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path 
 
 ## Open — do not silently decide
 
-- **A quiet machine for the D6 gate.** PR 1's 60 s animated and idle soaks are still
-  unproven on a dedicated GPU runner. PR 2 inherits that gate; it is not waived.
-  `plan/12-decision-log.md`.
+- **A quiet machine for the D6 gate.** Closed on owner sign-off 2026-09-24 (no recorded
+  soak artefact); every PR still inherits the gate. `plan/12-decision-log.md`.
 - **Whether WinUI 3 XAML islands hold up** is answered by PR 3, not by preference.
   The canvas is already native (D1 amendment). Fallback: a WinUI app with
   `SwapChainPanel` and an accepted composed frame.

@@ -119,6 +119,26 @@ def release_by_tag(repo, tag):
     return next((release for page in pages for release in page if release['tag_name'] == tag), None)
 
 
+def release_notes(version, mode, repo, tag, sha):
+    base = f'https://github.com/{repo}/releases/download/{tag}'
+    text = ('## Downloads\n\n'
+            f'- **[Download for Windows (x64)]({base}/MediaViewer-{version}-Setup.exe)** '
+            '- run the installer.\n'
+            f'- **[Download for Mac (Apple Silicon, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
+            '- open the disk image and drag MediaViewer to Applications.\n\n')
+    if mode == 'preview':
+        text += ('Other assets below provide download checksums and source code.\n\n'
+                 'Unsigned test build. Windows SmartScreen may warn; macOS Gatekeeper may block '
+                 'the unnotarized app. The Mac preview has no automatic updater; install the '
+                 'stable version manually later. This prerelease does not change the stable update feed.\n')
+    else:
+        text += ('You only need the installer for your platform. Other assets below support '
+                 'automatic updates, download verification, and source-code access.\n\n'
+                 'Windows Authenticode signing is optional; if unavailable, SmartScreen '
+                 'may warn on first installation.\n')
+    return text + f'\nSource commit: {sha}\n'
+
+
 def publish(folder):
     mode, version, tag, repo, sha = (os.environ[name] for name in
                                    ('MODE', 'VERSION', 'TAG', 'GITHUB_REPOSITORY', 'GITHUB_SHA'))
@@ -143,17 +163,7 @@ def publish(folder):
                                  for p in sorted(assets)), encoding='utf-8')
     assets.append(checksums)
     notes = folder / 'release-notes.md'
-    text = ('Windows x64: download the Setup.exe installer.\n\n'
-            'macOS 14+ on Apple Silicon: download the .dmg and drag MediaViewer to Applications.\n\n')
-    if mode == 'preview':
-        text += ('Unsigned test build. Windows SmartScreen may warn; macOS Gatekeeper may block '
-                 'the unnotarized app. The Mac preview has no automatic updater; install the '
-                 'stable version manually later. This prerelease does not change the stable update feed.\n')
-    else:
-        text += ('Includes the Windows and macOS update feeds. Windows Authenticode signing is '
-                 'optional; if unavailable, SmartScreen may warn on first installation.\n')
-    text += f'\nSource commit: {sha}\n'
-    notes.write_text(text, encoding='utf-8')
+    notes.write_text(release_notes(version, mode, repo, tag, sha), encoding='utf-8')
     if not existing:
         gh('release', 'create', tag, '--repo', repo, '--target', sha, '--draft',
            '--title', f'MediaViewer {version}' + (' (unsigned preview)' if mode == 'preview' else ''),
