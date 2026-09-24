@@ -126,11 +126,16 @@ def check_bundle_refs(refs: dict[str, list[str]], frameworks: set[str]) -> list[
 # macOS tool wrappers
 # ---------------------------------------------------------------------------
 
-def run(cmd: list[str], *, capture: bool = False, check: bool = True, stdin: str | None = None) -> str:
+def run(cmd: list[str], *, capture: bool = False, check: bool = True, stdin: str | None = None,
+        timeout: float | None = None) -> str:
     print("+", " ".join(cmd), flush=True)
-    proc = subprocess.run(cmd, check=False, text=True, input=stdin,
-                          stdout=subprocess.PIPE if capture else None,
-                          stderr=subprocess.STDOUT if capture else None)
+    try:
+        proc = subprocess.run(cmd, check=False, text=True, input=stdin, timeout=timeout,
+                              stdout=subprocess.PIPE if capture else None,
+                              stderr=subprocess.STDOUT if capture else None)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"macpack: {cmd[0]} timed out after {timeout}s; "
+                         "check for an interactive keychain prompt (use --sparkle-key-file in CI)") from None
     if check and proc.returncode != 0:
         if capture and proc.stdout:
             print(proc.stdout, file=sys.stderr)
@@ -352,6 +357,8 @@ def make_dmg(app: Path, out: Path, volume_name: str) -> None:
 
 
 def cmd_release(args: argparse.Namespace) -> None:
+    if args.sparkle_key_file and not Path(args.sparkle_key_file).is_file():
+        raise SystemExit("macpack: Sparkle key file not found")
     app = Path(args.app)
     if not app.exists():
         raise SystemExit(f"macpack: {app} not found; build the mediaviewer_app target first")
@@ -404,16 +411,18 @@ def cmd_release(args: argparse.Namespace) -> None:
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)])
 
     # 5. The signed appcast. generate_appcast signs the enclosure and embeds a
-    #    feed signature with the private key from the login keychain;
+    #    feed signature with the private key from a file (CI) or keychain (local);
     #    SURequireSignedFeed makes the app refuse anything else.
     if has_sparkle and args.sparkle_bin:
-        cmd = [str(Path(args.sparkle_bin) / "generate_appcast")]
+        cmd = [str(Path(args.sparkle_bin) / "generate_appcast"), "--verbose"]
+        if args.sparkle_key_file:
+            cmd += ["--ed-key-file", args.sparkle_key_file]
         if args.download_url_prefix:
             cmd += ["--download-url-prefix", args.download_url_prefix]
         if args.phased_rollout_seconds:
             cmd += ["--phased-rollout-interval", str(args.phased_rollout_seconds)]
         cmd.append(str(updates))
-        run(cmd)
+        run(cmd, timeout=300)
         feed = (updates / "appcast.xml").read_text()
         if "sparkle-signatures" not in feed:
             raise SystemExit("macpack: appcast.xml carries no feed signature; "
@@ -448,6 +457,7 @@ def main(argv: list[str]) -> None:
     r.add_argument("--skip-notarize", action="store_true", help="local dry run only")
     r.add_argument("--allow-no-updater", action="store_true")
     r.add_argument("--sparkle-bin", help="Sparkle's bin/ directory (generate_appcast)")
+    r.add_argument("--sparkle-key-file", help="private Sparkle key file; avoids keychain prompts in CI")
     r.add_argument("--download-url-prefix",
                    help="where the update zips are served, e.g. a GitHub release URL")
     r.add_argument("--phased-rollout-seconds", type=int, default=0,

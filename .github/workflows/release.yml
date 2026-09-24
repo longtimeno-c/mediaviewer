@@ -99,13 +99,21 @@ jobs:
 
       # Same key as ci.yml's MSVC legs: identical ports and triplet.
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: build/vcpkg_installed
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
 
       - name: Configure
         run: cmake -S . -B build -A x64
+
+      - name: Save dependencies before packaging can fail
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/vcpkg_installed
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build (Release)
         run: cmake --build build --config Release
@@ -142,7 +150,8 @@ jobs:
           TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
         run: |
           $key = Join-Path $env:RUNNER_TEMP 'release.key'
-          Set-Content -Encoding ascii -NoNewline $key $env:MV_MANIFEST_SIGNING_KEY
+          Set-Content -LiteralPath $key -Value $env:MV_MANIFEST_SIGNING_KEY -Encoding ascii -NoNewline
+          if (-not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'Manifest key file was not created' }
           "key=$key" >> $env:GITHUB_OUTPUT
           if ($env:TRUSTED_SIGNING_ENDPOINT) {
             $meta = Join-Path $env:RUNNER_TEMP 'trusted-signing.json'
@@ -150,7 +159,7 @@ jobs:
               Endpoint = $env:TRUSTED_SIGNING_ENDPOINT
               CodeSigningAccountName = $env:TRUSTED_SIGNING_ACCOUNT
               CertificateProfileName = $env:TRUSTED_SIGNING_PROFILE
-            } | ConvertTo-Json | Set-Content -Encoding utf8 $meta
+            } | ConvertTo-Json | Set-Content -LiteralPath $meta -Encoding utf8
             "meta=$meta" >> $env:GITHUB_OUTPUT
           }
 
@@ -246,7 +255,8 @@ jobs:
           echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             build/vcpkg_installed
@@ -288,7 +298,8 @@ jobs:
           security default-keychain -d user -s "$kc"
           xcrun notarytool store-credentials mediaviewer-notary \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$kc"
-          # Sparkle's generate_appcast reads its signing key from the keychain.
+          # Keep a private file for generate_appcast: accessing generate_keys'
+          # keychain item from another executable can prompt on a headless runner.
           keyfile="$RUNNER_TEMP/sparkle.key"
           printf '%s' "$SPARKLE_KEY" > "$keyfile"
           # Sparkle is fetched, hash-pinned, by the configure step below; the
@@ -302,7 +313,6 @@ jobs:
             echo "Sparkle private key does not match the pinned public key." >&2
             exit 1
           fi
-          rm -f "$keyfile"
 
       - name: Configure
         run: |
@@ -313,6 +323,15 @@ jobs:
             args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
           fi
           cmake -S . -B build "${args[@]}"
+
+      - name: Save dependencies before packaging can fail
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build app and test executables
         run: |
@@ -332,11 +351,13 @@ jobs:
         run: python3 -m pip install --break-system-packages -r tools/mac/requirements.txt
 
       - name: Disk image
+        timeout-minutes: 30
         run: |
           args=(--app build/MediaViewer.app --out-dir build/release)
           if [ "$MODE" = "stable" ]; then
             args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
                    --sparkle-bin build/_deps/sparkle-2.9.6/bin
+                   --sparkle-key-file "$RUNNER_TEMP/sparkle.key"
                    --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/")
           else
             args+=(--identity - --skip-notarize --allow-no-updater)

@@ -81,6 +81,11 @@ $dotnetZipSha256 = "b712d3ca4462a04a7d2f81e57232135f63ac2202624b8cb7a9654d245199
 
 function Fail($message) { Write-Error $message; exit 1 }
 
+# Fail before copying payloads or invoking vpk if the supplied key is missing.
+if ($ManifestKey -and -not (Test-Path -LiteralPath $ManifestKey -PathType Leaf)) {
+    Fail "Manifest key file not found: $ManifestKey"
+}
+
 # ---- version ---------------------------------------------------------------
 if (-not $Version) {
     $m = [regex]::Match((Get-Content (Join-Path $repo "CMakeLists.txt") -Raw), '(?ms)^project\(mediaviewer\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)')

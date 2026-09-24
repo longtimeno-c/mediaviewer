@@ -122,7 +122,10 @@ gh secret set MV_SPARKLE_PRIVATE_KEY --repo longtimeno-c/mediaviewer < ~/.mediav
 
 Commands without input values prompt privately. Back up the identity and Sparkle key;
 remove temporary unprotected exports after setup. CI imports a temporary runner keychain
-and removes its signing material afterwards. Follow Sparkle's key-rotation procedure
+and removes its signing material afterwards. Sparkle appcast generation uses a private
+temporary key file (`--sparkle-key-file`), avoiding interactive keychain access on the
+runner; the key is still checked against the pinned public key before building.
+Follow Sparkle's key-rotation procedure
 before replacing its pinned public key.
 
 ### Optional Windows publisher signing
@@ -160,6 +163,12 @@ each platform and an upgrade from the previous stable before announcing a releas
 - Missing secrets: use `preview` now, or configure the named secrets for `stable`.
 - Mac signing failed: inspect Apple's submission log; check the private key, identity,
   Team ID and app-specific password.
+- Mac stopped at `generate_appcast`: app and DMG notarization may already have passed.
+  In CI, use `--sparkle-key-file` to avoid a keychain permission prompt. Appcast generation
+  times out after five minutes; the complete disk-image step is limited to 30 minutes.
+- Windows `release.key` missing: create it with explicit PowerShell parameters,
+  `Set-Content -LiteralPath $key -Value $env:MV_MANIFEST_SIGNING_KEY -Encoding ascii -NoNewline`.
+  Do not use positional arguments here. Packaging checks that the file exists up front.
 - `arm64-osx-dynamic prefix not found`: the dynamic codec install is missing, not
   an Apple credential problem. The workflow installs the manifest below before CMake.
 - Build/upload failed: rerun failed jobs while the successful jobs' artifacts still exist.
@@ -210,6 +219,8 @@ ctest --test-dir build -C Release --output-on-failure --no-tests=error
 Keep both manifests' baselines and the workflow's `VCPKG_COMMIT` aligned. Do not install
 both manifests into the same directory: manifest mode reconciles the install tree and
 can remove packages needed by the other manifest. Actions caches both directories.
+Dependency caches are saved immediately after configuration succeeds, so a later
+packaging or signing failure does not force another full dependency build.
 
 For manual uploads, attach both complete platform asset sets to a draft before publishing Latest.
 

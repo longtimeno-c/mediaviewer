@@ -5,6 +5,8 @@ on Linux). The otool samples are the formats Apple's cctools print."""
 from __future__ import annotations
 
 import sys
+import argparse
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -49,6 +51,55 @@ class NotarizationTests(unittest.TestCase):
         with patch.object(macpack, "run", return_value='{\n  "status": "Invalid"\n}\n'):
             with self.assertRaisesRegex(SystemExit, "Invalid"):
                 macpack.notarize(Path("app.zip"), "profile")
+
+
+class ReleaseSigningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        app = root / "MediaViewer.app"
+        (app / "Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
+        key = root / "sparkle.key"
+        key.write_text("test-key", encoding="utf-8")
+        self.args = argparse.Namespace(
+            app=str(app), out_dir=str(root / "release"), sparkle_key_file=str(key),
+            sparkle_bin=str(root / "sparkle/bin"), identity="test-identity",
+            allow_no_updater=False, skip_notarize=True, notary_profile=None,
+            download_url_prefix="https://example.test/v0.1.1/", phased_rollout_seconds=0)
+
+    def release_with_feed(self, feed):
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "/usr/libexec/PlistBuddy":
+                return "0.1.1"
+            if Path(cmd[0]).name == "generate_appcast":
+                self.assertIn("--ed-key-file", cmd)
+                self.assertEqual(cmd[cmd.index("--ed-key-file") + 1], self.args.sparkle_key_file)
+                self.assertNotIn("test-key", cmd)
+                self.assertEqual(kwargs["timeout"], 300)
+                (Path(cmd[-1]) / "appcast.xml").write_text(feed, encoding="utf-8")
+            return ""
+        with patch.object(macpack, "run", side_effect=fake_run), \
+             patch.object(macpack, "sign_app"), patch.object(macpack, "make_dmg"), \
+             patch.object(macpack, "codesign"):
+            macpack.cmd_release(self.args)
+
+    def test_ci_key_file_signs_feed_without_keychain(self):
+        self.release_with_feed("<!-- sparkle-signatures -->\n<rss/>")
+
+    def test_unsigned_feed_is_still_rejected(self):
+        with self.assertRaisesRegex(SystemExit, "no feed signature"):
+            self.release_with_feed("<rss/>")
+
+    def test_missing_key_fails_before_signing_or_notarizing(self):
+        Path(self.args.sparkle_key_file).unlink()
+        with patch.object(macpack, "run") as runner, self.assertRaisesRegex(SystemExit, "key file not found"):
+            macpack.cmd_release(self.args)
+        runner.assert_not_called()
+
+    def test_stalled_command_has_bounded_wait(self):
+        with self.assertRaisesRegex(SystemExit, "timed out"):
+            macpack.run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.1)
 
 
 class ParseTests(unittest.TestCase):
