@@ -515,6 +515,8 @@ if(EXISTS "${MV_CRASHPAD_HANDLER}")
   add_custom_command(TARGET mediaviewer_lab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${MV_CRASHPAD_HANDLER}" "$<TARGET_FILE_DIR:mediaviewer_lab>/crashpad_handler"
+    # vcpkg installs the handler without +x; crash_reporter_mac.mm requires X_OK.
+    COMMAND chmod 755 "$<TARGET_FILE_DIR:mediaviewer_lab>/crashpad_handler"
     COMMENT "Copy crashpad_handler beside mediaviewer_lab")
 else()
   message(WARNING "crashpad_handler not found at ${MV_CRASHPAD_HANDLER}; "
