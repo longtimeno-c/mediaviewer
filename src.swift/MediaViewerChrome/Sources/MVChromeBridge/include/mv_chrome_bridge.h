@@ -146,9 +146,12 @@ void mv_chrome_open_subfolder(int32_t index);
 void mv_chrome_request_folder_summary(int32_t index);
 // `ok` is false on failure or when the host moved to another folder first;
 // `cover_thumb_path_utf8` is NULL when the folder has no media to cover it.
+// `flags` bit 0: the cover is a descendant (photos were found further down, this
+// folder's own listing has none). Bit 1: the bounded look stopped early and
+// found no photo, so the tile must not say the branch is only folders.
 typedef void (*mv_chrome_folder_summary_fn)(const char* folder_path_utf8, bool ok,
                                             int32_t media_count, int32_t subfolder_count,
-                                            const char* cover_thumb_path_utf8);
+                                            int32_t flags, const char* cover_thumb_path_utf8);
 void mv_chrome_set_folder_summary_callback(mv_chrome_folder_summary_fn callback);
 // Breadcrumb: root … current. `mv_chrome_crumb_path` copies the full path
 // (the last component is the label); false if out of range.
@@ -159,6 +162,9 @@ bool mv_chrome_can_go_up(void);
 void mv_chrome_navigate_up(void);
 // The gallery's keyboard position while on a folder tile; -1 when on images.
 int32_t mv_chrome_folder_cursor(void);
+// The in-progress folder-name query (`/`, folder row active). False when idle;
+// an empty string means the query is open and nothing has been typed yet.
+bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
 
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.

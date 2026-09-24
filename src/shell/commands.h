@@ -55,6 +55,24 @@ enum mod : std::uint8_t {
   mod_alt = 1 << 2,
 };
 
+// A symbol from the active layout. `base` is the key with Shift not applied,
+// `ignored` is the platform's "modifiers ignored" character (on macOS that
+// string still includes Shift, so Shift+/ is '?' there too), and `produced`
+// is the glyph the event actually inserted. Letters are the caller's job:
+// they keep Shift (Shift+O). A digit keeps `base` and Shift, matching the
+// Windows virtual key. Any other ASCII glyph is the shifted character with
+// Shift cleared, because the table binds `?` and `+` with no Shift.
+[[nodiscard]] inline key resolve_layout_symbol(char32_t base, char32_t ignored, char32_t produced,
+                                               bool command_or_control,
+                                               std::uint8_t* mods) noexcept {
+  if (base >= '0' && base <= '9') return char_key(static_cast<char>(base));
+  const char32_t glyph = (!command_or_control && produced >= 0x21 && produced <= 0x7E) ? produced
+                                                                                        : ignored;
+  if (mods != nullptr) *mods = static_cast<std::uint8_t>(*mods & ~mod_shift);
+  if (glyph >= 0x21 && glyph <= 0x7E) return char_key(static_cast<char>(glyph));
+  return key::none;
+}
+
 inline constexpr int kModCombos = 8;
 
 // plan/16 "Modes". Derived from state at keydown (key_router.h), never kept on
@@ -226,6 +244,8 @@ enum class command_id : std::uint16_t {
   undo_edit,        // Ctrl+Z: pop the edit stack
   reset_edits,      // Ctrl+R: clear it — the original, exactly
   folder_up,        // Ctrl/Cmd+Up, open the enclosing folder. Appended so the ids above keep their values.
+  folder_prev,      // Ctrl/Cmd+Left, open the previous sibling folder
+  folder_next,      // Ctrl/Cmd+Right, open the next sibling folder
   count
 };
 

@@ -34,6 +34,10 @@ final class ThumbSlot: ObservableObject {
 final class FolderCard: ObservableObject {
   @Published fileprivate(set) var mediaCount: Int = 0
   @Published fileprivate(set) var subfolderCount: Int = 0
+  /// A photo was found in a descendant, not in this folder itself.
+  @Published fileprivate(set) var photosInside = false
+  /// The bounded look stopped before it could say the branch has no photos.
+  @Published fileprivate(set) var searchStopped = false
   @Published fileprivate(set) var cover: CGImage?
   @Published fileprivate(set) var loaded = false
 }
@@ -65,6 +69,9 @@ final class FolderStore: ObservableObject {
   @Published private(set) var canGoUp = false
   /// The gallery's keyboard position while on a folder tile; -1 = on the images.
   @Published private(set) var folderCursor: Int = -1
+  /// `/` on the folder row. Nil when idle; empty while the query is open and
+  /// nothing has been typed.
+  @Published private(set) var folderQuery: String?
   /// A staged update is waiting for the user (plan/13 "Update ready — restart").
   @Published private(set) var updateReady = false
 
@@ -115,6 +122,13 @@ final class FolderStore: ObservableObject {
     }
     let cursor = Int(mv_chrome_folder_cursor())
     if cursor != folderCursor { folderCursor = cursor }
+    var queryBuf = [CChar](repeating: 0, count: 512)
+    let querying = queryBuf.withUnsafeMutableBufferPointer { ptr -> Bool in
+      guard let base = ptr.baseAddress else { return false }
+      return mv_chrome_folder_query(base, Int32(ptr.count))
+    }
+    let query: String? = querying ? String(cString: queryBuf) : nil
+    if query != folderQuery { folderQuery = query }
     let marks = mv_chrome_marks_generation()
     if listingChanged || marks != marksGeneration {
       marksGeneration = marks
@@ -212,7 +226,7 @@ final class FolderStore: ObservableObject {
   }
 
   fileprivate func folderSummaryReady(
-    path: String, ok: Bool, media: Int, subfolders: Int, coverThumbPath: String?
+    path: String, ok: Bool, media: Int, subfolders: Int, flags: Int, coverThumbPath: String?
   ) {
     guard ok else {
       // Failed or superseded: allow a later request rather than pinning a blank tile.
@@ -222,6 +236,8 @@ final class FolderStore: ObservableObject {
     guard let card = cards[path] else { return }
     card.mediaCount = media
     card.subfolderCount = subfolders
+    card.photosInside = (flags & 1) != 0
+    card.searchStopped = (flags & 2) != 0
     card.loaded = true
     guard let coverThumbPath else { return }
     Self.decodeQueue.async {
@@ -354,13 +370,14 @@ private func thumbReadyTrampoline(
 // asserts the main actor, valid because main_mac.mm hops to the main queue first.
 private func folderSummaryTrampoline(
   _ folderPathUTF8: UnsafePointer<CChar>?, _ ok: Bool, _ media: Int32, _ subfolders: Int32,
-  _ coverThumbUTF8: UnsafePointer<CChar>?
+  _ flags: Int32, _ coverThumbUTF8: UnsafePointer<CChar>?
 ) {
   guard let folderPathUTF8 else { return }
   let path = String(cString: folderPathUTF8)
   let cover = coverThumbUTF8.map { String(cString: $0) }
   MainActor.assumeIsolated {
     FolderStore.shared.folderSummaryReady(
-      path: path, ok: ok, media: Int(media), subfolders: Int(subfolders), coverThumbPath: cover)
+      path: path, ok: ok, media: Int(media), subfolders: Int(subfolders), flags: Int(flags),
+      coverThumbPath: cover)
   }
 }

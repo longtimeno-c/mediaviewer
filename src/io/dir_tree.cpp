@@ -22,23 +22,31 @@ bool iequals(std::string_view a, std::string_view b) noexcept {
   return true;
 }
 
-// Walks `dir` for a first media file, preferring the folder's own, then each
-// child in natural order. `visits` is shared across the whole walk.
-bool find_cover(std::string_view dir, int depth_left, int& visits, dir_entry& out) {
-  if (visits <= 0) return false;
+struct cover_walk {
+  bool found = false;
+  bool stopped_early = false;
+};
+
+// Walks `dir` for a first media file, then each child in natural order.
+// `visits` is shared across the whole walk. `stopped_early` means a child
+// existed that this budget did not open, so "no photo" is not a finished answer.
+cover_walk find_cover(std::string_view dir, int depth_left, int& visits, dir_entry& out) {
+  if (visits <= 0) return {false, true};
   --visits;
-  if (auto files = list_still_files(dir); files && !files.value().empty()) {
+  if (auto files = list_still_files(dir); !files) return {false, true};
+  else if (!files.value().empty()) {
     out = std::move(files.value().front());
-    return true;
+    return {true, false};
   }
-  if (depth_left <= 0) return false;
   auto subs = list_subfolders(dir);
-  if (!subs) return false;
+  if (!subs) return {false, true};
+  if (subs.value().empty()) return {false, false};
+  if (depth_left <= 0) return {false, true};
   for (const subdir_entry& sub : subs.value()) {
-    if (find_cover(sub.path_utf8, depth_left - 1, visits, out)) return true;
-    if (visits <= 0) break;
+    const cover_walk step = find_cover(sub.path_utf8, depth_left - 1, visits, out);
+    if (step.found || step.stopped_early) return step;
   }
-  return false;
+  return {false, false};
 }
 
 }  // namespace
@@ -110,11 +118,16 @@ result<folder_summary> summarize_dir(std::string_view utf8_dir, int max_depth, i
   }
   int visits = max_visits;
   for (const subdir_entry& sub : subs.value()) {
-    if (find_cover(sub.path_utf8, max_depth - 1, visits, out.cover)) {
+    const cover_walk step = find_cover(sub.path_utf8, max_depth - 1, visits, out.cover);
+    if (step.found) {
       out.has_cover = true;
-      break;
+      out.photos_inside = true;
+      return out;
     }
-    if (visits <= 0) break;
+    if (step.stopped_early) {
+      out.search_incomplete = true;
+      return out;
+    }
   }
   return out;
 }

@@ -623,12 +623,16 @@ half and a verify line on each, and both present-loop gates hold **while indexin
 ### PR 26 — Folder tiles, breadcrumb, up
 A camera dump is one folder; a NAS or an organised library is a tree (`2024/06/…`). Opening
 the root used to list only its direct files, so a root of year folders looked empty. Now the
-gallery shows the open folder's **child folders as tiles** above its images: a cover
-(first photo of the folder, or of the first descendant that has one — bounded to depth 3 /
-48 directories so a NAS root never turns into a crawl), name, and an item/folder count.
-Click or `Enter` opens a tile; a **breadcrumb** runs from the highest folder reached to the
-one on screen; **`Ctrl/Cmd+Up`** goes up. A folder that holds only folders opens the gallery
-on its own. Synology `@eaDir`, `#recycle`, `$RECYCLE.BIN` and dot-folders are never tiles;
+gallery shows the open folder's **child folders as tiles**. A folder of only folders uses
+big tiles; a folder that also holds photos keeps one short row of folders above them. A
+cover is the folder's own first photo, or one borrowed from a descendant (bounded to depth
+3 / 48 directories so a deep tree never turns into a crawl). The tile says when that photo
+was found further down, when the level is only more folders, and when the look stopped
+early. Click or `Enter` opens a tile. The **path** stays on screen while a photo is open;
+a long middle collapses until asked for. **`Ctrl/Cmd+Up`** goes up and selects the folder
+you left. **`Ctrl/Cmd+Left/Right`** opens the previous or next folder beside the one open.
+`/` on the folder row finds a tile by the start of its name. A folder that holds only
+folders opens the gallery on its own. Synology `@eaDir`, `#recycle`, `$RECYCLE.BIN` and dot-folders are never tiles;
 names sort naturally (`Trip 2` < `Trip 10`).
 
 Shared native core first: `io::list_subfolders` / `summarize_dir` (portable, `dir_tree.cpp`,

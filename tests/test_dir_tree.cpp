@@ -102,6 +102,8 @@ TEST_CASE("summarize_dir: a year folder borrows a cover from its months", "[dir_
   CHECK(s.value().media_count == 0);
   CHECK(s.value().subdir_count == 3);
   REQUIRE(s.value().has_cover);
+  CHECK(s.value().photos_inside);
+  CHECK_FALSE(s.value().search_incomplete);
   CHECK(s.value().cover.name_utf8 == "x.jpg");
 }
 
@@ -112,10 +114,13 @@ TEST_CASE("summarize_dir: depth and visit budgets bound the walk", "[dir_tree]")
   auto shallow = summarize_dir(t.str(), /*max_depth=*/2);
   REQUIRE(shallow);
   CHECK_FALSE(shallow.value().has_cover);
+  CHECK(shallow.value().search_incomplete);
 
   auto deep = summarize_dir(t.str(), /*max_depth=*/8);
   REQUIRE(deep);
   CHECK(deep.value().has_cover);
+  CHECK(deep.value().photos_inside);
+  CHECK_FALSE(deep.value().search_incomplete);
 
   temp_tree wide;
   for (int i = 0; i < 10; ++i) wide.dir(("d" + std::to_string(100 + i)).c_str());
@@ -123,6 +128,19 @@ TEST_CASE("summarize_dir: depth and visit budgets bound the walk", "[dir_tree]")
   auto capped = summarize_dir(wide.str(), 3, /*max_visits=*/4);
   REQUIRE(capped);
   CHECK_FALSE(capped.value().has_cover);
+  CHECK(capped.value().search_incomplete);
+}
+
+TEST_CASE("summarize_dir: a folder of folders with no media is complete", "[dir_tree]") {
+  temp_tree t;
+  t.dir("a");
+  t.dir("a/b");
+  auto s = summarize_dir(t.str());
+  REQUIRE(s);
+  CHECK_FALSE(s.value().has_cover);
+  CHECK_FALSE(s.value().photos_inside);
+  CHECK_FALSE(s.value().search_incomplete);
+  CHECK(s.value().subdir_count == 1);
 }
 
 TEST_CASE("summarize_dir: empty folder", "[dir_tree]") {

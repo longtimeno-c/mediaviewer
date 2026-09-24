@@ -160,9 +160,101 @@ public struct CommandBarView: View {
       }
       .padding(.horizontal, 6)
       .frame(maxHeight: .infinity)
+      if !store.crumbs.isEmpty {
+        PathBar()
+          .frame(height: 27)
+      }
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(MVTheme.canvas)
   }
+}
+
+/// The trail from the highest folder reached to the one on screen. The current
+/// name stays pinned; a long middle collapses to "…" until it is asked for.
+/// Visible whenever a folder is open, including while a photo is on the canvas.
+struct PathBar: View {
+  @ObservedObject private var store = FolderStore.shared
+  @State private var expanded = false
+
+  var body: some View {
+    let crumbs = store.crumbs
+    let shown = display(crumbs)
+    HStack(spacing: 4) {
+      Button { store.navigateUp() } label: {
+        Image(systemName: "chevron.up")
+          .font(.system(size: 11, weight: .semibold))
+      }
+      .buttonStyle(.borderless)
+      .disabled(!store.canGoUp)
+      .help("Up one folder (\u{2318}\u{2191})")
+      .foregroundStyle(store.canGoUp ? MVTheme.title : MVTheme.body.opacity(0.4))
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 4) {
+          ForEach(shown.dropLast()) { crumb in
+            if crumb.id != shown.first?.id {
+              Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(MVTheme.body)
+            }
+            if crumb.isEllipsis {
+              Button("…") { expanded = true }
+                .buttonStyle(.borderless)
+                .foregroundStyle(MVTheme.title)
+                .help("Show the whole path")
+            } else {
+              Button(crumb.name) { store.openCrumb(crumb.index) }
+                .buttonStyle(.borderless)
+                .foregroundStyle(MVTheme.title)
+                .lineLimit(1)
+            }
+          }
+        }
+      }
+      if let current = shown.last {
+        if shown.count > 1 {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(MVTheme.body)
+        }
+        Text(current.name)
+          .font(MVTheme.font(14))
+          .fontWeight(.semibold)
+          .foregroundStyle(MVTheme.title)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .layoutPriority(1)
+      }
+      Spacer(minLength: 0)
+    }
+    .font(MVTheme.font(14))
+    .padding(.horizontal, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(MVTheme.canvas)
+    .onChange(of: store.crumbs) { _, _ in expanded = false }
+  }
+
+  private func display(_ crumbs: [Crumb]) -> [PathPiece] {
+    if expanded || crumbs.count <= 4 {
+      return crumbs.map {
+        PathPiece(id: $0.index, index: $0.index, name: $0.name, isEllipsis: false)
+      }
+    }
+    let n = crumbs.count
+    return [
+      PathPiece(id: crumbs[0].index, index: crumbs[0].index, name: crumbs[0].name, isEllipsis: false),
+      PathPiece(id: -1, index: -1, name: "…", isEllipsis: true),
+      PathPiece(id: crumbs[n - 2].index, index: crumbs[n - 2].index, name: crumbs[n - 2].name, isEllipsis: false),
+      PathPiece(id: crumbs[n - 1].index, index: crumbs[n - 1].index, name: crumbs[n - 1].name, isEllipsis: false),
+    ]
+  }
+}
+
+private struct PathPiece: Identifiable {
+  let id: Int
+  let index: Int
+  let name: String
+  let isEllipsis: Bool
 }

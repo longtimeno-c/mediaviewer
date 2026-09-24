@@ -16,33 +16,42 @@ struct GalleryView: View {
   private let inset: CGFloat = 12
 
   var body: some View {
-    VStack(spacing: 0) {
-      if !store.crumbs.isEmpty { BreadcrumbBar() }
-      grid
-    }
-    // A folder of folders has no image to show through the material, and the
-    // canvas behind may still hold the previous folder's last photo.
-    .background(store.names.isEmpty ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-                                    : AnyShapeStyle(.regularMaterial))
+    grid
+      // A folder of folders has no image to show through the material, and the
+      // canvas behind may still hold the previous folder's last photo.
+      .background(store.names.isEmpty ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
+                                      : AnyShapeStyle(.regularMaterial))
   }
 
   private var grid: some View {
     GeometryReader { geo in
       let cell = store.galleryCellSize
       let columns = max(1, Int((geo.size.width - 2 * inset + spacing) / (cell + spacing)))
-      let both = !store.folders.isEmpty && !store.names.isEmpty
-      ScrollViewReader { proxy in
-        ScrollView {
-          // LazyVGrid: same "don't build 2000 cells up front" reasoning as
-          // FilmstripView's LazyHStack. A fixed column count (not .adaptive)
-          // so the host knows exactly how many cells are in a row; folder tiles
-          // and images share it, so Up/Down land in the same column.
-          LazyVGrid(
-            columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
-            spacing: spacing
-          ) {
-            if !store.folders.isEmpty {
-              Section {
+      let mixed = !store.folders.isEmpty && !store.names.isEmpty
+      let foldersOnly = !store.folders.isEmpty && store.names.isEmpty
+      VStack(spacing: 0) {
+        if !store.crumbs.isEmpty {
+          PathBar()
+        }
+        if (mixed || foldersOnly), let query = store.folderQuery {
+          Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
+            .font(.callout.weight(.medium))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, inset)
+            .padding(.top, 8)
+        }
+        if mixed {
+          FolderStrip(cell: 44)
+            .padding(.horizontal, inset)
+            .padding(.vertical, 8)
+        }
+        ScrollViewReader { proxy in
+          ScrollView {
+            LazyVGrid(
+              columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
+              spacing: spacing
+            ) {
+              if foldersOnly {
                 ForEach(store.folders.indices, id: \.self) { index in
                   FolderTile(
                     index: index, path: store.folders[index], size: cell,
@@ -52,12 +61,8 @@ struct GalleryView: View {
                   .id("folder-\(index)")
                   .onTapGesture { store.openFolder(at: index) }
                 }
-              } header: {
-                if both { SectionLabel(title: "Folders", count: store.folders.count) }
               }
-            }
-            if !store.names.isEmpty {
-              Section {
+              if !store.names.isEmpty {
                 ForEach(store.names.indices, id: \.self) { index in
                   GalleryCell(
                     index: index, name: store.names[index], size: cell,
@@ -68,38 +73,33 @@ struct GalleryView: View {
                   .id(index)
                   .onTapGesture { store.selectAndCloseGallery(index) }
                 }
-              } header: {
-                if both { SectionLabel(title: "Photos and videos", count: store.names.count) }
               }
             }
-          }
-          .padding(inset)
-          .frame(maxWidth: .infinity)
+            .padding(inset)
+            .frame(maxWidth: .infinity)
 
-          if store.folders.isEmpty && store.names.isEmpty {
-            Text("No supported photos or videos in this folder")
-              .foregroundStyle(.secondary)
-              .frame(maxWidth: .infinity)
-              .padding(.top, 60)
+            if store.folders.isEmpty && store.names.isEmpty {
+              Text("No supported photos or videos in this folder")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 60)
+            }
           }
-        }
-        // Row-wise keyboard movement must keep the selection on screen.
-        .onChange(of: store.currentIndex) { _, newIndex in
-          guard newIndex >= 0, store.folderCursor < 0 else { return }
-          proxy.scrollTo(newIndex)
-        }
-        .onChange(of: store.folderCursor) { _, cursor in
-          if cursor >= 0 {
-            proxy.scrollTo("folder-\(cursor)")
-          } else if store.currentIndex >= 0 {
-            proxy.scrollTo(store.currentIndex)
+          .onChange(of: store.currentIndex) { _, newIndex in
+            guard newIndex >= 0, store.folderCursor < 0 else { return }
+            proxy.scrollTo(newIndex)
           }
-        }
-        .onChange(of: store.galleryCellSize) { _, _ in
-          if store.folderCursor >= 0 {
-            proxy.scrollTo("folder-\(store.folderCursor)", anchor: .center)
-          } else if store.currentIndex >= 0 {
-            proxy.scrollTo(store.currentIndex, anchor: .center)
+          .onChange(of: store.folderCursor) { _, cursor in
+            if foldersOnly && cursor >= 0 {
+              proxy.scrollTo("folder-\(cursor)", anchor: .center)
+            } else if cursor < 0, store.currentIndex >= 0 {
+              proxy.scrollTo(store.currentIndex)
+            }
+          }
+          .onAppear {
+            if foldersOnly && store.folderCursor >= 0 {
+              proxy.scrollTo("folder-\(store.folderCursor)", anchor: .center)
+            }
           }
         }
       }
@@ -109,59 +109,54 @@ struct GalleryView: View {
   }
 }
 
-/// Up button and the trail from the highest folder reached to the one on
-/// screen. Every crumb but the last is a button.
-private struct BreadcrumbBar: View {
+/// One row of folders above the photos. Big tiles stay for a folder that holds
+/// only folders; a mixed folder keeps the pictures in the grid and the folders
+/// in this strip.
+private struct FolderStrip: View {
   @ObservedObject private var store = FolderStore.shared
+  let cell: CGFloat
 
   var body: some View {
-    HStack(spacing: 6) {
-      Button { store.navigateUp() } label: {
-        Image(systemName: "chevron.up")
-      }
-      .buttonStyle(.borderless)
-      .disabled(!store.canGoUp)
-      .help("Up one folder (\u{2318}\u{2191})")
-
+    ScrollViewReader { proxy in
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 4) {
-          ForEach(store.crumbs) { crumb in
-            if crumb.index > 0 {
-              Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-            }
-            if crumb.index == store.crumbs.count - 1 {
-              Text(crumb.name).fontWeight(.semibold).lineLimit(1)
-            } else {
-              Button(crumb.name) { store.openCrumb(crumb.index) }
-                .buttonStyle(.borderless)
-                .lineLimit(1)
-            }
+        HStack(spacing: 8) {
+          ForEach(store.folders.indices, id: \.self) { index in
+            FolderChip(
+              index: index, path: store.folders[index],
+              isCursor: index == store.folderCursor,
+              card: store.card(for: store.folders[index])
+            )
+            .id("chip-\(index)")
+            .onTapGesture { store.openFolder(at: index) }
           }
         }
       }
-      Spacer(minLength: 0)
+      .onChange(of: store.folderCursor) { _, cursor in
+        guard cursor >= 0 else { return }
+        proxy.scrollTo("chip-\(cursor)", anchor: .center)
+      }
+      .onAppear {
+        if store.folderCursor >= 0 {
+          proxy.scrollTo("chip-\(store.folderCursor)", anchor: .center)
+        }
+      }
     }
-    .font(.callout)
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(.bar)
+    .frame(height: cell + 36)
   }
 }
 
-private struct SectionLabel: View {
-  let title: String
-  let count: Int
-
-  var body: some View {
-    HStack {
-      Text("\(title)  \(count)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-      Spacer()
-    }
-    .padding(.top, 6)
-    .padding(.horizontal, 2)
-    .frame(maxWidth: .infinity)
-    .background(.clear)
+private func folderStatus(_ card: FolderCard) -> String {
+  if !card.loaded { return "" }
+  if card.searchStopped { return "Search stopped" }
+  if card.mediaCount > 0 {
+    let items = card.mediaCount == 1 ? "1 item" : "\(card.mediaCount) items"
+    if card.subfolderCount == 0 { return items }
+    let folders = card.subfolderCount == 1 ? "1 folder" : "\(card.subfolderCount) folders"
+    return "\(items), \(folders)"
   }
+  if card.photosInside { return "Photos inside" }
+  if card.subfolderCount > 0 { return "Folders only" }
+  return "Empty"
 }
 
 /// A child folder: its first photo as a cover (from the folder itself or, for a
@@ -194,7 +189,7 @@ private struct FolderTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .bottomLeading) {
           if card.loaded {
-            Text(countLabel)
+            Text(folderStatus(card))
               .font(.caption2.weight(.medium))
               .padding(.horizontal, 6)
               .padding(.vertical, 2)
@@ -217,14 +212,51 @@ private struct FolderTile: View {
     }
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
+}
 
-  private var countLabel: String {
-    switch (card.mediaCount, card.subfolderCount) {
-    case (0, 0): return "Empty"
-    case (let m, 0): return m == 1 ? "1 item" : "\(m) items"
-    case (0, let f): return f == 1 ? "1 folder" : "\(f) folders"
-    case (let m, let f): return "\(m) items, \(f) folders"
+/// A folder in the mixed-folder strip: a small cover, the name, and whether
+/// photos were found further down.
+private struct FolderChip: View {
+  let index: Int
+  let path: String
+  let isCursor: Bool
+  @ObservedObject var card: FolderCard
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Color.clear
+        .frame(width: 36, height: 36)
+        .overlay {
+          if let cover = card.cover {
+            Image(decorative: cover, scale: 1).resizable().aspectRatio(contentMode: .fill)
+          } else {
+            Image(systemName: "folder.fill").foregroundStyle(.secondary)
+          }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+      VStack(alignment: .leading, spacing: 1) {
+        Text(FolderStore.shared.folderName(path))
+          .font(.caption)
+          .lineLimit(1)
+        if card.loaded {
+          Text(folderStatus(card))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+      }
+      .frame(width: 120, alignment: .leading)
     }
+    .padding(4)
+    .background(
+      RoundedRectangle(cornerRadius: 6)
+        .fill(isCursor ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.04))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 6)
+        .strokeBorder(isCursor ? Color.accentColor : .clear, lineWidth: 2)
+    )
+    .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
 }
 

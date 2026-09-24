@@ -2282,6 +2282,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       set_folder_tree(app, !app->tree_visible);
       return true;
     case folder_up:
+    case folder_prev:
+    case folder_next:
       return false;
     case metadata_pane:
       set_meta_pane(app, !app->meta_pane_visible);

@@ -57,6 +57,13 @@ struct folder_summary {
   std::uint32_t media_count = 0;    // media files directly in the folder
   std::uint32_t subdir_count = 0;   // direct child folders
   bool has_cover = false;
+  // True when `cover` came from a descendant: this folder's own listing has no
+  // media, but a photo was found further down. A tile uses it to say "photos
+  // inside" without claiming a total.
+  bool photos_inside = false;
+  // The bounded walk stopped before it could decide. No cover in that case
+  // means "not fully looked", not "folders only".
+  bool search_incomplete = false;
   dir_entry cover;                  // first media file, here or in a descendant
 };
 [[nodiscard]] result<folder_summary> summarize_dir(std::string_view utf8_dir, int max_depth = 3,
