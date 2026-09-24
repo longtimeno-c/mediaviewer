@@ -54,6 +54,13 @@ struct jpeg_size {
 [[nodiscard]] result<raster> decode_raw(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
 
+// PR 11: the same develop as decode_raw, at 16 bits with a linear curve — the
+// adjust pane's working data and the export bake's source (plan/07: the
+// pane waits for this, never for the embedded preview). Same size and
+// orientation as decode_raw.
+[[nodiscard]] result<raster16> decode_raw_linear(std::span<const std::uint8_t> bytes,
+                                                 const job_context* ctx = nullptr);
+
 // Embedded JPEG/preview inside a RAW, if any. `unsupported_format` when the
 // file is not RAW or has no usable preview. First pixel for CR2/NEF/ARW
 // (plan/04). Does not write the original bytes.

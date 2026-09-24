@@ -42,6 +42,13 @@ struct blit_params {
   // (edit::placement::map). Single-texture draws only; tiles ignore it.
   float uv_map[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
   bool clip_to_source = false;
+  // PR 11 colour adjust, twin of blit_params_mac: gfx/adjust_kernel.h's
+  // MV_ADJUST_KERNEL on every sample, tiles included, before the background
+  // blend and the clipping blinkies (so `C` blinks what the edit clips).
+  // The uniforms are edit::adjust_uniforms' a0 / a1.
+  bool adjust = false;
+  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
 };
 
 // One tile of a tiled pyramid (image/tiles.h), as the render thread draws it.

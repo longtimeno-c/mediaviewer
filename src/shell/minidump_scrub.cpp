@@ -57,7 +57,14 @@ class byte_guard {
 // --- text rules --------------------------------------------------------------
 
 constexpr std::string_view kModuleExt[] = {"dll", "exe", "sys", "drv", "ocx", "cpl",
-                                           "winmd", "pdb", "mui", "node", "efi"};
+                                           "winmd", "pdb", "mui", "node", "efi",
+                                           // PR 11, macOS: shared libraries, plug-ins, symbols
+                                           "dylib", "so", "bundle", "appex", "dsym"};
+// PR 11, macOS: the roots under which a POSIX absolute path can name a user's
+// files. /System/Library, /usr/lib and /Applications hold none and are left
+// alone (a module list full of them is what symbolication needs).
+constexpr std::string_view kPosixRoots[] = {"Users", "Volumes", "private", "var", "tmp",
+                                            "home", "Network", "mnt", "media"};
 // D5 camera-dump set, RAW variants, companions, and the video containers.
 constexpr std::string_view kMediaExt[] = {
     "jpg", "jpeg", "jpe", "jfif", "png", "apng", "bmp", "dib", "gif", "tif", "tiff", "webp",
@@ -183,23 +190,65 @@ bool component_is_identity(const units& u, std::size_t b, std::size_t e,
   return false;
 }
 
-// Returns end of path run starting at k, or k when there is no path here.
-std::size_t path_at(const units& u, std::size_t k) noexcept {
+// A rooted path starting at k: `end` is past its last unit, or k when there
+// is none. `keep` is where masking starts for a data path (the drive or share
+// prefix, or a POSIX path's first component, "/Users/"); `walk` is where a
+// module path's components start ("C:\", "/").
+struct rooted_path {
+  std::size_t end = 0;
+  std::size_t keep = 0;
+  std::size_t walk = 0;
+  bool posix = false;
+};
+
+rooted_path path_at(const units& u, std::size_t k) noexcept {
   const std::size_t n = u.size();
-  if (k > 0 && is_alnum(u.at(k - 1))) return k;
+  rooted_path p{k, k, k, false};
+  if (k > 0 && is_alnum(u.at(k - 1))) return p;
   std::size_t root = 0;
   if (k + 3 < n && is_alpha(u.at(k)) && u.at(k + 1) == ':' && is_sep(u.at(k + 2))) {
     root = 3;
   } else if (k + 3 < n && u.at(k) == '\\' && u.at(k + 1) == '\\' &&
              (filename_unit(u.at(k + 2)) || u.at(k + 2) == '?' || u.at(k + 2) == '.')) {
     root = 2;
+  } else if (u.at(k) == '/' && (k == 0 || (!path_unit(u.at(k - 1)) || u.at(k - 1) == ' ' ||
+                                           u.at(k - 1) == '=' || u.at(k - 1) == '(' ||
+                                           u.at(k - 1) == '\'' || u.at(k - 1) == ','))) {
+    // PR 11, macOS: "/Users/<name>/...", "/Volumes/<card>/...", "/private/var/...".
+    // Not "//" (a URL's authority) and not a relative "a/b".
+    for (const auto r : kPosixRoots) {
+      if (k + 2 + r.size() < n && u.equals_ci(k + 1, r) && u.at(k + 1 + r.size()) == '/' &&
+          path_unit(u.at(k + 2 + r.size())) && !is_sep(u.at(k + 2 + r.size()))) {
+        root = 2 + r.size();
+        p.posix = true;
+        break;
+      }
+    }
+    if (root == 0) return p;
   } else {
-    return k;
+    return p;
   }
   std::size_t e = k + root;
-  if (root == 2 && e < n && u.at(e) == '?') ++e;  // \\?\ prefix
+  if (!p.posix && root == 2 && e < n && u.at(e) == '?') ++e;  // \\?\ prefix
   while (e < n && path_unit(u.at(e))) ++e;
-  return e > k + root ? e : k;
+  if (e <= k + root) return p;
+  p.end = e;
+  p.keep = k + root;
+  p.walk = p.posix ? k + 1 : k + root;
+  return p;
+}
+
+// A macOS module has no extension of its own inside a bundle:
+// "…/MediaViewer.app/Contents/MacOS/MediaViewer", "…/Sparkle.framework/Versions/B/Sparkle".
+bool posix_bundle_module(const units& u, std::size_t b, std::size_t e) noexcept {
+  for (std::size_t i = b; i + 1 < e; ++i) {
+    if (u.at(i) != '.') continue;
+    if (u.equals_ci(i, ".app/contents/") || u.equals_ci(i, ".framework/") ||
+        u.equals_ci(i, ".appex/contents/") || u.equals_ci(i, ".bundle/contents/")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
@@ -209,9 +258,10 @@ void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
   while (k < n) {
     const std::uint32_t c = u.at(k);
 
-    // 1. Rooted paths.
-    if (c == '\\' || c == ':' || is_alpha(c)) {
-      std::size_t e = path_at(u, k);
+    // 1. Rooted paths (Windows drive / UNC; PR 11: POSIX under a user root).
+    if (c == '\\' || c == ':' || c == '/' || is_alpha(c)) {
+      const rooted_path rp = path_at(u, k);
+      std::size_t e = rp.end;
       if (e > k) {
         std::size_t last = k;
         for (std::size_t i = k; i < e; ++i) {
@@ -229,11 +279,13 @@ void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
         for (std::size_t i = e; i > last; --i) {
           if (u.at(i - 1) == '.') { dot = i - 1; break; }
         }
-        const bool module = dot < e && ext_in(u, dot + 1, e, kModuleExt);
-        const std::size_t root_end = (u.at(k + 1) == ':') ? k + 3 : k + 2;
+        const bool module = (dot < e && ext_in(u, dot + 1, e, kModuleExt)) ||
+                            (rp.posix && posix_bundle_module(u, k, e));
+        const std::size_t root_end = module ? rp.walk : rp.keep;
         if (module) {
           // Keep the layout for symbolication; drop the profile name and any
-          // identity token standing as a component.
+          // identity token standing as a component. ("Users" is a component
+          // on both systems: C:\Users\name, /Users/name.)
           std::size_t b = root_end;
           bool after_users = false;
           for (std::size_t i = root_end; i <= e; ++i) {

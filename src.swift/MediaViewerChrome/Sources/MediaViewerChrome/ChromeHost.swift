@@ -62,9 +62,28 @@ public final class MVChromeHost: NSObject {
     host(FolderTreeView())
   }
 
+  /// PR 11: the adjust pane, on the metadata pane's edge.
+  @objc public static func makeAdjustView() -> NSView {
+    host(AdjustView())
+  }
+
   /// PR 10: the export sheet, a full-container overlay built fresh per open.
   @objc public static func makeExportView() -> NSView {
     host(ExportView())
+  }
+
+  /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
+  /// NSException raised from the chrome, inside AppKit's event handling.
+  @objc public static func crashTestException() {
+    NSException(name: .internalInconsistencyException, reason: "MV_CRASH_TEST nsexception",
+                userInfo: nil).raise()
+  }
+
+  /// PR 11 verify only (MV_CRASH_TEST=swift_trap): a Swift runtime trap in the
+  /// chrome. The index is not a constant, so the compiler cannot fold it away.
+  @objc public static func crashTestSwiftTrap() {
+    let empty: [Int] = []
+    _ = empty[Int.random(in: 1...2)]
   }
 
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the

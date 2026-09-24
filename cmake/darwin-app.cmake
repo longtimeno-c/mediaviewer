@@ -126,6 +126,10 @@ set(MV_ASSEMBLE_ARGS
 if(MV_SPARKLE_PUBLIC_ED_KEY)
   list(APPEND MV_ASSEMBLE_ARGS --sparkle "${MV_SPARKLE_DIR}/Sparkle.framework")
 endif()
+# PR 11: Crashpad's out-of-process handler, to Contents/Helpers.
+if(EXISTS "${MV_CRASHPAD_HANDLER}")
+  list(APPEND MV_ASSEMBLE_ARGS --crashpad-handler "${MV_CRASHPAD_HANDLER}")
+endif()
 add_custom_target(mediaviewer_app
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/mac/macpack.py" ${MV_ASSEMBLE_ARGS}
   DEPENDS MediaViewer MediaViewerThumbnails

@@ -4,11 +4,17 @@
 #include <d3dcompiler.h>
 
 #include <cstring>
+#include <string>
+
+#include "gfx/adjust_kernel.h"
 
 namespace mv::gfx {
 namespace {
 
-constexpr const char kHlsl[] = R"(
+// The shader is kHlslHead, then the PR 11 colour kernel (the same tokens the
+// MSL twin and the CPU export bake compile — gfx/adjust_kernel.h), then
+// kHlsl. Assembled once per create().
+constexpr const char kHlslHead[] = R"(
 cbuffer Camera : register(b0) {
   float2 pan;
   float zoom;
@@ -25,8 +31,14 @@ cbuffer Camera : register(b0) {
   // 0.5 shows the background outside the source. Identity = unchanged.
   float4 map0;
   float4 map1;
+  // PR 11 colour adjust (edit::adjust_uniforms a0 / a1). adj1.w > 0.5 runs
+  // mv_adjust on every sample; the kernel itself never reads adj1.w.
+  float4 adj0;
+  float4 adj1;
 };
+)";
 
+constexpr const char kHlsl[] = R"(
 cbuffer Tile : register(b1) {
   float2 tile_origin;
   float2 tile_scale;
@@ -119,12 +131,16 @@ float2 image_px_at(float2 screen) {
 }
 
 float4 finish(float4 c, float2 screen, float2 image_px) {
+  // PR 11: the edit's colour, in linear light, before anything is composited.
+  if (adj1.w > 0.5) c.rgb = mv_adjust(c.rgb, adj0, adj1);
   float3 bg = background_at(screen);
   float3 rgb = lerp(bg, c.rgb, saturate(c.a));
 
   // Display-referred blinkies (plan/16 `C`): a channel at sRGB 254+ is a
   // clipped highlight, every channel at sRGB 1 or below is a crushed shadow.
-  // The accurate RAW version is PR 10's.
+  // Same thresholds as edit::kClipHighLinear / kClipLowLinear (the adjust
+  // pane's readout). They test the adjusted colour, so on an edited RAW they
+  // read LibRaw's linear develop through the working texture (PR 11).
   if (clipping > 0.5 && frac(time * 2.0) < 0.5) {
     float hi = max(c.r, max(c.g, c.b));
     if (hi >= 0.9911) rgb = float3(1.0, 0.0, 0.0);
@@ -173,9 +189,11 @@ struct alignas(16) blit_cb {
   float background, clipping, time, grid;
   float map0[4];
   float map1[4];
+  float adj0[4];
+  float adj1[4];
 };
 
-static_assert(sizeof(blit_cb) == 96, "keep in sync with cbuffer Camera");
+static_assert(sizeof(blit_cb) == 128, "keep in sync with cbuffer Camera");
 
 struct alignas(16) tile_cb {
   float origin_x, origin_y;
@@ -186,10 +204,17 @@ struct alignas(16) tile_cb {
 
 static_assert(sizeof(tile_cb) == 32, "keep in sync with cbuffer Tile");
 
+const std::string& shader_source() {
+  static const std::string source =
+      std::string(kHlslHead) + kernel::kAdjustKernelText + "\n" + kHlsl;
+  return source;
+}
+
 expected compile(const char* entry, const char* target, com_ptr<ID3DBlob>& blob) {
   com_ptr<ID3DBlob> errors;
+  const std::string& src = shader_source();
   const HRESULT hr =
-      D3DCompile(kHlsl, sizeof(kHlsl) - 1, "blit.hlsl", nullptr, nullptr, entry, target,
+      D3DCompile(src.data(), src.size(), "blit.hlsl", nullptr, nullptr, entry, target,
                  D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, blob.GetAddressOf(), errors.GetAddressOf());
   if (FAILED(hr)) return err(status::internal);
   return {};
@@ -326,6 +351,11 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   cb.map1[1] = p.uv_map[4];
   cb.map1[2] = p.uv_map[5];
   cb.map1[3] = 0.0f;
+  for (int i = 0; i < 4; ++i) {
+    cb.adj0[i] = p.adjust0[i];
+    cb.adj1[i] = p.adjust1[i];
+  }
+  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
   (void)upload_cb(ctx, cb_.Get(), &cb, sizeof(cb));
 
   ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

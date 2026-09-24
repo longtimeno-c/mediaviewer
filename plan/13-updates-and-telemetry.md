@@ -319,6 +319,30 @@ filter.
   `tools/minidump-scan.ps1` (procedure in README).
 - **Upload (PR 8).** Must read scrubbed dumps from the database. Never give the handler a URL.
 
+### As built in PR 11 (macOS)
+
+Written 2026-09-24; not yet built or verified on a Mac ([12](12-decision-log.md), PR 11).
+
+- **Capture.** `crashpad_handler` in `MediaViewer.app/Contents/Helpers` (signed inside-out by
+  `tools/mac/macpack.py`), or beside `mediaviewer_lab`. Started synchronously at the top of
+  `main()` (Crashpad has no asynchronous start on macOS), restartable. Database:
+  `~/Library/Application Support/MediaViewer/Crashes`. No URL, uploads disabled, indirect memory
+  off, forwarding to ReportCrash off.
+- **Annotations.** The same eight `mv_decode_N` slots and `mv_last_call_cid`, read straight from
+  `core/crash_context` (no ABI DLL on Mac). Every routed command and every mutating chrome bridge
+  call stamps a fresh correlation id; a still's decode job carries the id of the call that opened it.
+- **Scrub.** The Windows scrub, unchanged in structure, now also masks POSIX paths under `/Users`,
+  `/Volumes`, `/private`, `/var`, `/tmp`, `/home`, … while keeping module layout (`.dylib`,
+  `.app/Contents/…`, `.framework/…`) with only the user component masked. Identities: short and
+  full user name, the Sharing computer name, the host name.
+- **Chrome path.** `NSApplicationCrashOnExceptions` is on, so AppKit does not swallow an exception
+  raised in event handling. The uncaught-exception handler writes a scrubbed text report to
+  `Crashes/chrome/<ms>-cid<id>-nsexception.txt` and sets an `mv_exception` annotation, then lets the
+  runtime abort so Crashpad writes the dump with the same `mv_last_call_cid`. A Swift trap is a Mach
+  exception: Crashpad records it, the runtime's message in the scrubbed crash-info stream.
+- **Verify.** `tools/mac/crash_canary.py make` / `scan` (the twins of `make-crash-raw.ps1` and
+  `minidump-scan.ps1`); `MV_CRASH_TEST=decode | nsexception | swift_trap`. README has the steps.
+
 ---
 
 # Part 3 — Telemetry

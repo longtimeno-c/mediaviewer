@@ -1662,3 +1662,99 @@ open has its own id). Export sheet: `ExportView.swift`, the twin of the Windows 
   carry EXIF / XMP across; the others need an Exiv2 extraction path.
 - Tiled (> 64 MP) images: an edited tiled image draws its overview through the map (tiles are
   sampled in the unedited frame); the Mac has no tiling yet.
+
+## 2026-09-24 — PR 11 (colour adjusts + Mac crash reporting), Windows and macOS
+
+Built on the PR 10 branch against the dual-track PR 11 in [10](10-roadmap.md). What was built, the
+calls made, and where it departs from the plan text.
+
+**Shared (core, both hosts).**
+- **The D6 working space arrives** (`image/linear.h`, `image/half.h`): linear Rec.709 light stored
+  as IEEE FP16, straight alpha, bit-identical on both hosts (portable half conversion, round to
+  nearest even, tested over all 65 536 values). A RAW's working image is a new
+  `codec::decode_raw_linear` — the *same* LibRaw develop as the viewer's full decode (camera WB,
+  matrix, PPG, auto-bright, highlight clip, flip) at 16 bits with a linear curve; a synthetic DNG
+  test holds it to the 8-bit decode within 2 codes. Everything else is the viewer's own display
+  image (decode → ICC → sRGB) run back through the sRGB curve, so with every slider at 0 the working
+  image bakes back to the viewer's pixels *exactly* (tested). **Call:** tagged wide-gamut sources
+  are adjusted after conversion to sRGB, and a colour export is written as sRGB with no ICC
+  profile — the working primaries are Rec.709 while the swapchain is 8-bit sRGB (D6); a wide-gamut
+  working space is a later change to this one module.
+- **Plan/07's pipeline cache is the working texture**: decode + linearise once (seconds for a RAW),
+  downscale to a ≤ 3072 px preview on the worker, upload once as an immutable FP16 texture.
+  Geometry stays PR 10's uv map; colour is uniforms. A slider drag re-uploads 32 bytes; nothing
+  re-decodes (the verify's "shader-only").
+- **One kernel source, not three twins** (`gfx/adjust_kernel.h`). **Departs from "HLSL and MSL
+  twins"**: the colour maths is one token sequence in the subset HLSL, MSL and C++ share; C++
+  compiles it (export bake, histogram, tests) and both blits paste the preprocessor-stringified
+  text into their shader source. The twins cannot disagree because they are the same text; a test
+  pins the subset (no swizzles, no splat constructors, no `lerp`/`mix`/`saturate`). It lives in
+  `gfx/` because `gfx/` may not include `edit/`. Order is plan/07's: WB → exposure (one per-channel
+  gain, WB normalised to keep a grey's luminance) → contrast (a power about 18 % grey in linear
+  light, i.e. a slope in log exposure, ±100 → ×1.5 / ÷1.5) → saturation (towards Rec.709 luma).
+  Temperature is ±100 mireds from D65 on the CIE daylight locus; tint scales green by 2^∓0.5.
+- **Bake** (`edit/bake.h`): export with any colour op decodes the full-resolution working image,
+  applies PR 10's geometry (exact copy, or its supersampled bilinear, now reading FP16) and the
+  kernel, encodes sRGB. Never lossless. Tested against a double-precision write-out of the chain
+  (≤ 1 code), against the preview path (≤ 1 code), and byte-identical across two runs.
+- **Histogram** (`edit/histogram.h`). **Departs from "a compute reduction"**: a CPU reduction on a
+  worker over the preview working image *after* the kernel and display encode (≤ 1 M samples),
+  debounced 120 ms after the sliders settle. A compute shader would have been a fourth copy of the
+  kernel per platform for a readout that updates at settle, not per frame. Clipping uses the
+  blinkies' thresholds (`kClipHighLinear` / `kClipLowLinear`), so the percentages count what `C`
+  blinks; `C` itself now tests the *adjusted* colour in both shaders.
+- **Stack.** `op_kind::adjust` sets one parameter; `param == count` resets all colour (one undo
+  step). A slider drag coalesces into one op; a drag back to the start leaves none. **A stack with
+  any colour op is never written back to the file**: `[` `]` on such a JPEG stay in the stack and
+  bake on export (rule 5 — PR 10 only rewrites a pure rotate/flip stack). Colour set while a
+  lossless write is in flight is carried to the rewritten file.
+- `shell/adjust_pane`: the pane's shared state — readiness (none / preparing / ready / failed),
+  tokens so a result for an item the user has left is dropped, histogram requests, and one POD
+  (`adjust_view`) both chromes draw. The working image is wanted while the pane is open **or** the
+  item has colour ops; until it lands the blit runs the kernel on the 8-bit texture, so an adjusted
+  photo never flashes unadjusted. **The sliders stay disabled until the working image exists**
+  (plan/07's RAW call, on the verify line).
+
+**Windows half.** `present_lab` takes the FP16 texture through a mutex hand-off it only ever
+`try_lock`s (the render thread never waits on a worker), created by the worker on the render
+thread's free-threaded device; a device rebuild drops it. `main.cpp` drives the pane, the build job
+(cancelled through its own job_context generation when the item changes) and the histogram job.
+The WinUI pane (`IslandHost.Adjust.cs`) is a third panel island on the metadata pane's edge (one at
+a time), built of `Slider`s (already proven in the transport island). **It reports itself as text
+focus**, so the router hands every key but Esc to the sliders (Tab walks, arrows step) and Esc
+blurs back to the canvas. The C# chrome was compiled (warnings as errors) on Linux with the
+Windows App SDK's manifest tool stubbed; the HLSL compiles under DXC (vs/ps 6.0); the C++ host
+was syntax- and warning-checked with clang against mingw-w64 headers (`-Wall -Wextra -Wconversion
+-Wshadow`, nothing in changed lines). MSVC has not built it.
+
+**macOS half.** The same, in `main_mac.mm` / `present_lab_mac.mm` (atomic-exchange hand-off like
+`pending_image_`, `image::upload_linear` → `RGBA16Float`), `AdjustView.swift` / `AdjustStore.swift`
+over new `mv_chrome_adjust_*` bridge calls, and the MSL blit pasting the same kernel. The pane is
+keyboard-complete without Full Keyboard Access (↑ ↓ pick, ← → step, ⇧ ×10, 0, R, Esc).
+**Nothing Mac was compiled** (no Xcode here).
+
+**Mac crash reporting** (owed since old PR 17): see [13](13-updates-and-telemetry.md) "As built in
+PR 11 (macOS)". The scrub gained POSIX paths and bundle-module rules, tested on a synthetic
+Mac-shaped dump with the verify's canaries (runs on Linux in the existing scrub suite, which the Mac
+test target now builds too). `crashpad` joins the root manifest for `osx`; `macpack.py` ships the
+handler in `Contents/Helpers` and signs it before the app. `tools/mac/crash_canary.py` (+ tests in
+CI) replaces the two PowerShell verify scripts on Mac.
+
+**Calls made, so they are not re-decided by accident:**
+- **`Shift+A`, not `E`** ([16](16-commands.md) asked PR 11 for another key: `E` is the clip
+  transport). The Shift twin of **A**djust, as PR 9/10 did for O, I and C.
+- **Adjust and metadata panes share the right edge**; opening one closes the other.
+- **Colour exports are sRGB, untagged**; geometry-only exports are PR 10's, byte for byte.
+- A pre-existing 9-byte heap overflow in `test_minidump_scrub.cpp` (a 19-byte marker copied into a
+  10-byte tail) was fixed; ASan found it once the suite ran on Linux.
+
+**Not verified, owed:**
+- Every host verify on both platforms: slider latency on a 45 MP RAW (≤ 1 refresh), export vs
+  preview on real files, the cross-platform "same sliders, same bytes within 8-bit rounding" check,
+  the HLSL/MSL twins on real GPUs, and PR 1's and Mac PR 1's present-loop gates with the pane open.
+- The MSVC build of the Windows host, the Xcode build of the Mac host, the Swift chrome, the MSL.
+- Whether vcpkg's `crashpad` port builds for `arm64-osx` at the pinned baseline, and every step of
+  the Mac crash verify (minidump from the handler, canary scan, NSException with its cid, relaunch).
+- Mac has never had the `C` blinkies (a Mac PR 6 gap, not PR 11's); the accurate-RAW clipping is
+  therefore Windows-only until that lands.
+- Eyedropper readouts still sample the unadjusted 8-bit texture.

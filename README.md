@@ -77,7 +77,8 @@ host of the same core — not a UI-only port. Mac PR 1 is the Metal present lab
 (AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). Mac PR 2 adds JPEG/PNG/BMP decode,
 immutable Metal texture upload, fit / wheel-zoom-toward-cursor / drag-pan, and an MSL
 twin of the blit shader, plus (folded in from Windows PR 7) the rest of the D5 still
-formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump scrub.
+formats and RAW+JPEG/Live Photo pairing detection. Crashpad and the Mac minidump scrub,
+planned there, never landed with it; they are in the Mac half of PR 11 (below).
 Mac PR 3 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
 ported): a command bar, a bottom filmstrip, and a full-grid gallery overlay, all driven
 by an FSEvents-backed folder model and a JPEG-512 SQLite thumbnail cache sharing
@@ -87,6 +88,7 @@ plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscre
 a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
 It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane with a summary card, a searchable tree of every EXIF/IPTC/XMP tag and, for clips, a per-stream inspector; `O` adds camera, exposure and date lines to the on-canvas info; `Shift+O` draws AF points; `Shift+I` is a one-pixel eyedropper; `⌘⇧E` shows a folder tree; View ▸ Sort By adds date taken. It does **not** yet handle rating/metadata *writes* (PR 12) or RAW-pairing UI. On Windows the same features are in: `I` (or View ▸ Metadata pane) opens the pane on the right, `Ctrl+Shift+E` (or View ▸ Folder tree) the folder tree on the left rooted at the open folder, `O` adds the camera/exposure/date lines, `Shift+O` draws AF points, `Shift+I` is the eyedropper, and `Ctrl+C` copies the eyedropper colour (or, with it off, the marked/current file(s) as a file drop). View ▸ Sort by and Settings offer name, date modified, size, type and EXIF date taken, ascending or descending; the choice is saved. Both panes float over the photo, so opening one never refits it.
 On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. Neither host half has been compiled yet — see [plan/12](plan/12-decision-log.md) 2026-09-24.
+Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`⇧A` on Mac) opens an adjust pane with exposure, contrast, saturation, temperature and tint, a histogram and a clipped-highlights / crushed-shadows readout. Slider drags only change shader uniforms — nothing is re-decoded — and the colour is worked in linear light from an FP16 working image; for a RAW the sliders stay disabled ("Preparing…") until LibRaw's full linear develop is ready, never the embedded preview. Export (`Ctrl+S`) bakes the same maths at full resolution. The Mac half also brings **crash reporting**: Crashpad out of process, the Windows privacy scrub (now aware of `/Users/…`-style paths), and uncaught `NSException`s recorded with the id of the native call they happened in. PR 11's host halves are not verified on hardware yet — see [plan/12](plan/12-decision-log.md) 2026-09-24 (PR 11).
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -468,6 +470,12 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
+| `Shift+A` | adjust pane (PR 11): exposure, contrast, saturation, temperature, tint, histogram and clipping. It takes the keyboard: on Windows `Tab` walks the sliders and the arrows step them; on Mac `↑` `↓` pick a slider, `←` `→` step it (`⇧` ×10), `0` zeroes it, `R` resets. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
+
+Colour edits are worked in linear light (an FP16 working image, D6) and shown through the
+same shader on both platforms; `C` blinks what the edit clips. A RAW's sliders wait for
+LibRaw's full linear develop (seconds on a large file) rather than editing the embedded
+JPEG, so what you adjust is what exports.
 
 Keys go through one router and one table (`src/shell/commands.h`,
 [plan/16](plan/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
@@ -615,6 +623,36 @@ Remove-Item Env:MV_CRASH_TEST
 # pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
 # prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
 # crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
+```
+
+#### macOS (PR 11)
+
+Crashpad's `crashpad_handler` runs out of process (`MediaViewer.app/Contents/Helpers`, or
+beside `mediaviewer_lab`). Dumps go to `~/Library/Application Support/MediaViewer/Crashes`;
+nothing is uploaded, and forwarding to Apple's crash reporter is off. The next launch
+scrubs each dump with the Windows scrub, which also masks POSIX paths under `/Users`,
+`/Volumes`, `/private`, … and the short and full user name and computer name. An uncaught
+`NSException` from the chrome is written, scrubbed, to `Crashes/chrome/` with the
+correlation id of the native call in flight; the dump carries the same id
+(`mv_last_call_cid`). The verify, with `tools/mac/crash_canary.py` in place of the two
+PowerShell scripts:
+
+```sh
+# 1. a marked COPY of a real RAW (or no --source: the pixel-pattern BMP pair)
+python3 tools/mac/crash_canary.py make --source tools/testmedia/raw/pentax_k50.dng
+
+# 2. crash on it, then relaunch normally: the relaunch scrubs the dump
+MV_CRASH_TEST=decode build/MediaViewer.app/Contents/MacOS/MediaViewer \
+    /tmp/mv-crash-canary/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.dng
+open build/MediaViewer.app
+
+# 3. scan; exit 0 = PASS (it also fails a dump the app has not scrubbed yet)
+python3 tools/mac/crash_canary.py scan ~/Library/Application\ Support/MediaViewer/Crashes/*/*.dmp \
+    --forbid SECRET_FILENAME_canary_7Q3 --forbid PRIVATE_FOLDER_canary --forbid "$USER"
+
+# the chrome path: an NSException raised in AppKit event handling, or a Swift trap
+MV_CRASH_TEST=nsexception build/MediaViewer.app/Contents/MacOS/MediaViewer
+MV_CRASH_TEST=swift_trap  build/MediaViewer.app/Contents/MacOS/MediaViewer
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays

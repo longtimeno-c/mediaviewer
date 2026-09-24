@@ -36,6 +36,12 @@ struct blit_params_mac {
   // falls outside the source (crop mode's straightened frame).
   float uv_map[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
   bool clip_to_source = false;
+  // PR 11 colour adjust, twin of blit_params: MV_ADJUST_KERNEL (the same
+  // tokens as the HLSL, gfx/adjust_kernel.h) on the sample, before the
+  // background blend and the blinkies. edit::adjust_uniforms' a0 / a1.
+  bool adjust = false;
+  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
 };
 
 // Linear clear colour for `background` — same values as gfx::background_clear.

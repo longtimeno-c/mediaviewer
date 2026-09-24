@@ -89,6 +89,14 @@ class edit_session {
   [[nodiscard]] edit::geometry export_geometry() const;
   [[nodiscard]] const edit::edit_stack* stack() const;
 
+  // PR 11. The folded colour state of the current item (identity if none).
+  [[nodiscard]] edit::colour colour() const;
+  // Sets one parameter (clamped). `redraw` when the value changed.
+  [[nodiscard]] edit_effect set_adjust(edit::adjust_param p, float value);
+  // Back to identity colour, geometry untouched: one op, so one Ctrl+Z
+  // brings every slider back.
+  [[nodiscard]] edit_effect reset_adjust();
+
   // Called when the host's debounce fires. Null while a write is in flight or
   // when there is nothing to write (the turns cancelled out, a crop joined).
   [[nodiscard]] std::optional<rotation_write> take_pending_write();
@@ -163,8 +171,9 @@ inline constexpr int kExportLongEdgeCount =
 [[nodiscard]] expected run_rotation_write(const rotation_write& w);
 
 // Exports next to the original as "<name>-edit.jpg" (or " (2)", …: never an
-// overwrite). Returns the path written.
+// overwrite). Returns the path written. `c` is the PR 11 colour state.
 [[nodiscard]] result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
-                                             const edit::export_options& opt);
+                                             const edit::export_options& opt,
+                                             const edit::colour& c = {});
 
 }  // namespace mv::shell

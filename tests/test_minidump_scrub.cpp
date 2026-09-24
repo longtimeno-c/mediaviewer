@@ -141,6 +141,72 @@ TEST_CASE("scrub_text strips paths and filenames from a managed message", "[cras
   CHECK(s.find("0x80070002") != std::string::npos);
 }
 
+// ---- PR 11: the same scrub on a macOS dump (plan/13: "the same Crashpad
+// handler and the same scrub") --------------------------------------------------
+
+namespace {
+
+// Same layout as make_dump(), with what a Mac Crashpad dump carries instead:
+// POSIX paths in the module list (a bundle binary with no extension, a dylib
+// under the user's home), the canary folder and filename on the stack, the
+// Swift runtime's crash-info message, an SD card under /Volumes, and the
+// short and full user names.
+std::vector<std::uint8_t> make_mac_dump() {
+  auto dump = make_dump();
+  dump_builder d;
+  d.b = std::move(dump);
+  std::fill(d.b.begin() + 0x300, d.b.begin() + 0x400, std::uint8_t{0});
+  std::fill(d.b.begin() + 0x800, d.b.begin() + 0xC00, std::uint8_t{0});
+  d.ascii(0x304, "/Users/alice/Applications/MediaViewer.app/Contents/MacOS/MediaViewer");
+  d.ascii(0x360, "/Users/alice/Library/Frameworks/libraw_r.23.dylib");
+  d.ascii(0x3A0, "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit");
+  d.ascii(0x820, "open /Users/alice/Pictures/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.cr2 failed");
+  d.ascii(0x8A0, "card=/Volumes/EOS_DIGITAL/DCIM/100CANON/IMG_0042.CR3");
+  d.ascii(0x900, "tmp /private/var/folders/xy/T/MediaViewer/thumbs.sqlite");
+  d.ascii(0x960, "Fatal error: Index out of range (Alice Smith on alices-macbook)");
+  d.ascii(0x9C0, "see https://example.com/a/b and ./rel/path/");
+  return d.b;
+}
+
+}  // namespace
+
+TEST_CASE("scrub masks macOS paths and identities; keeps bundle and system module layout",
+          "[crash][scrub][mac]") {
+  auto dump = make_mac_dump();
+  const auto r = mv::shell::scrub_minidump(dump, {{"alice", "Alice Smith", "alices-macbook"}});
+  REQUIRE(r.valid);
+  // The canaries of the verify (plan/10 PR 11, macOS crash reporting).
+  CHECK_FALSE(contains(dump, "PRIVATE_FOLDER_canary", false));
+  CHECK_FALSE(contains(dump, "SECRET_FILENAME_canary_7Q3", false));
+  CHECK_FALSE(contains(dump, "Pictures", false));
+  CHECK_FALSE(contains(dump, "EOS_DIGITAL", false));
+  CHECK_FALSE(contains(dump, "IMG_0042", false));
+  CHECK_FALSE(contains(dump, "thumbs.sqlite", false));
+  CHECK_FALSE(contains(dump, "alice", false));
+  CHECK_FALSE(contains(dump, "Alice Smith", false));
+  CHECK_FALSE(contains(dump, "alices-macbook", false));
+  // Symbolication keeps its map: the bundle and dylib layout, the system frameworks.
+  CHECK(contains(dump, "/Users/", false));
+  CHECK(contains(dump, "/Applications/MediaViewer.app/Contents/MacOS/MediaViewer", false));
+  CHECK(contains(dump, "/Library/Frameworks/libraw_r.23.dylib", false));
+  CHECK(contains(dump, "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit", false));
+  // Not paths: a URL's authority and a relative path are left alone.
+  CHECK(contains(dump, "https://example.com/a/b", false));
+  CHECK(contains(dump, "./rel/path/", false));
+  CHECK(contains(dump, "Fatal error: Index out of range", false));
+}
+
+TEST_CASE("scrub_text strips a macOS path from an NSException reason", "[crash][scrub][mac]") {
+  const std::string s = mv::shell::scrub_text(
+      "*** -[NSURL initFileURLWithPath:]: /Users/bob/Desktop/trip/IMG_0001.HEIC is gone (bob)",
+      {{"bob"}});
+  CHECK(s.find("Desktop") == std::string::npos);
+  CHECK(s.find("IMG_0001") == std::string::npos);
+  CHECK(s.find("bob") == std::string::npos);
+  CHECK(s.find("initFileURLWithPath") != std::string::npos);
+  CHECK(s.find("/Users/") != std::string::npos);
+}
+
 TEST_CASE("decode crash scope annotates without paths and is inert unarmed", "[crash]") {
   std::vector<std::uint8_t> tiff = {'I', 'I', 42, 0, 8, 0, 0, 0};
   const std::string_view marker = mv::codec::kCrashTestMarker;
@@ -159,7 +225,8 @@ TEST_CASE("decode crash scope annotates without paths and is inert unarmed", "[c
   }
   CHECK(std::string(mv::crash_context::this_thread_slot()).empty());
 
-  std::vector<std::uint8_t> far(mv::codec::kCrashTestScanBytes + 10, 0);
+  // Room for the whole marker past the scan window (+10 overran it by 9 bytes).
+  std::vector<std::uint8_t> far(mv::codec::kCrashTestScanBytes + marker.size(), 0);
   std::memcpy(far.data() + mv::codec::kCrashTestScanBytes, marker.data(), marker.size());
   CHECK_FALSE(mv::codec::crash_test_marker_present(far));
 }

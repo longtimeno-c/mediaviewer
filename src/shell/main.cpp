@@ -44,16 +44,21 @@
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "canvas/refinement.h"
+#include "shell/adjust_pane.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
+#include "edit/histogram.h"
+#include "image/linear.h"
+#include "io/file.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
 #include "shell/marks.h"
+#include "shell/media_kind.h"
 #include "shell/meta_store.h"
 #include "shell/open_request.h"
 #include "shell/navigation.h"
@@ -89,6 +94,11 @@ constexpr UINT kMsgMetaReady = WM_APP + 0x71;  // a metadata read finished (any 
 constexpr UINT_PTR kRotateTimerId = 0x7601;  // PR 10: the lossless write waits for the keys to stop
 constexpr UINT kRotateDebounceMs = 400;
 constexpr UINT kMsgEditJobDone = WM_APP + 0x72;  // a rotate write or an export finished (any thread posts)
+// PR 11: the histogram waits for the sliders to settle; the working-image and
+// histogram jobs post their results back as one message.
+constexpr UINT_PTR kHistogramTimerId = 0x7701;
+constexpr UINT kHistogramDebounceMs = 120;
+constexpr UINT kMsgAdjustJobDone = WM_APP + 0x73;
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -137,6 +147,14 @@ struct app_state {
   std::int64_t edit_mtime = 0;
   // The export dialog's last answer, preselected next time (pack_export).
   std::int32_t export_choice = mv::shell::pack_export(mv::edit::export_options{});
+  // PR 11 (plan/07, plan/16): the adjust pane's state and the preview-sized
+  // FP16 working image the histogram reduces (the render thread holds its
+  // own GPU copy). `adjust_generation` cancels a build for an item the user
+  // has left (the job's job_context watches it), so a RAW develop never
+  // finishes for a photo no longer on screen.
+  mv::shell::adjust_pane adjust;
+  std::shared_ptr<const mv::image::linear_image> working;
+  std::atomic<mv::generation> adjust_generation{1};
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
   mv_session_t session = nullptr;
@@ -848,6 +866,9 @@ void schedule_rotation_write(app_state* app) noexcept {
   if (app->window) ::SetTimer(app->window, kRotateTimerId, kRotateDebounceMs, nullptr);
 }
 
+void adjust_item_changed(app_state* app);
+void adjust_colour_changed(app_state* app);
+
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
 // texture still on screen until the new pixels land (shell/edit_view.h).
@@ -860,6 +881,7 @@ void edit_item_opened(app_state* app) {
       app->edit_path.clear();
       app->edit_key = 0;
       publish_edit(app);
+      adjust_item_changed(app);
     }
     return;
   }
@@ -894,6 +916,7 @@ void edit_item_opened(app_state* app) {
   const bool carried_turn = app->edits.set_item(e);
   publish_edit(app);
   if (carried_turn) schedule_rotation_write(app);
+  adjust_item_changed(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -917,8 +940,8 @@ void start_export(app_state* app, const mv::edit::export_options& opt) {
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [path = app->edit_path, g = app->edits.export_geometry(), opt,
-                       hwnd](const mv::job_context&) -> mv::status {
-                        const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+                       c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
+                        const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
                         auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return out ? mv::status::ok : out.error();
@@ -976,12 +999,14 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
       publish_edit(app);
       ++app->input.activity_seq;
       publish(app);
+      adjust_colour_changed(app);  // undo / reset may have moved a slider
       return true;
     case mv::shell::edit_effect::write_rotation:
       publish_edit(app);
       ++app->input.activity_seq;
       publish(app);
       schedule_rotation_write(app);
+      adjust_colour_changed(app);
       return true;
     case mv::shell::edit_effect::export_image:
       if (app->chrome.attached()) {
@@ -992,6 +1017,212 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
       return true;
   }
   return true;
+}
+
+// ---- PR 11: colour adjusts, the adjust pane, the FP16 working image ---------
+
+// What an adjust job posts back (kMsgAdjustJobDone's LPARAM, owned by the handler).
+struct adjust_job_result {
+  bool histogram = false;  // else a working-image build
+  std::uint64_t token = 0;
+  bool ok = false;
+  bool from_raw = false;
+  std::shared_ptr<const mv::image::linear_image> working;
+  mv::edit::histogram hist;
+};
+
+void post_adjust_result(HWND hwnd, adjust_job_result* r) noexcept {
+  if (r && !::PostMessageW(hwnd, kMsgAdjustJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+}
+
+// The pane is for stills: a clip or an animation has no one frame to adjust.
+bool adjust_still(app_state* app) noexcept {
+  return app->mode != open_mode::none && !app->edit_path.empty() &&
+         !mv::shell::is_video_name(app->edit_path) && !video_mode(app) &&
+         app->lab.animation() == mv::shell::animation_state::none;
+}
+
+std::uint64_t adjust_item_id(app_state* app) noexcept {
+  if (app->mode == open_mode::none || app->edit_path.empty() ||
+      mv::shell::is_video_name(app->edit_path) || app->edit_key == 0) {
+    return 0;
+  }
+  // A rewritten file (a lossless turn landing) is a new generation: new pixels.
+  return app->edit_key ^ (static_cast<std::uint64_t>(app->edit_generation) * 0x9E3779B97F4A7C15ull);
+}
+
+void push_adjust_pane(app_state* app) noexcept {
+  if (!app->chrome.adjust_pane_visible()) return;
+  app->chrome.set_adjust_view(app->adjust.view(app->edits.colour()));
+}
+
+// Read, develop (for a RAW: LibRaw's linear 16-bit develop — plan/07 waits for
+// this, never the embedded preview), downscale to the preview edge, upload as
+// an immutable FP16 texture — all on the pool. Seconds for a 45 MP RAW; the
+// pane says "Preparing" meanwhile and the UI thread never waits (rule 1).
+void start_working_build(app_state* app, std::uint64_t token) {
+  if (!app->window) return;
+  app->working.reset();
+  app->lab.drop_working();
+  const mv::generation gen = app->adjust_generation.load(std::memory_order_relaxed);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(
+      mv::background_generation,
+      [path = app->edit_path, item = app->edit_key, view_gen = app->edit_generation, token, gen,
+       hwnd, app](const mv::job_context&) -> mv::status {
+        const mv::job_context ctx(0, gen, &app->adjust_generation, 0);
+        auto* r = new (std::nothrow) adjust_job_result{};
+        if (!r) return mv::status::out_of_memory;
+        r->token = token;
+        mv::status st = mv::status::ok;
+        auto bytes = mv::io::read_all(path);
+        if (!bytes) {
+          st = bytes.error();
+        } else if (auto full = mv::image::decode_linear(*bytes, &ctx); !full) {
+          st = full.error();
+        } else if (auto preview = mv::image::downsample(*full, mv::image::kWorkingPreviewEdge, &ctx);
+                   !preview) {
+          st = preview.error();
+        } else if (ctx.cancelled()) {
+          st = mv::status::cancelled;
+        } else {
+          r->from_raw = preview->from_raw;
+          r->ok = app->lab.upload_working(*preview, item, view_gen);
+          if (r->ok) {
+            try {
+              r->working = std::make_shared<const mv::image::linear_image>(std::move(preview).value());
+            } catch (...) {
+              r->ok = false;
+            }
+          }
+          if (!r->ok) st = mv::status::internal;
+        }
+        post_adjust_result(hwnd, r);
+        return st;
+      });
+}
+
+void schedule_histogram(app_state* app) noexcept {
+  app->adjust.histogram_dirty();
+  if (app->window) ::SetTimer(app->window, kHistogramTimerId, kHistogramDebounceMs, nullptr);
+}
+
+void start_histogram(app_state* app) {
+  if (app->window) ::KillTimer(app->window, kHistogramTimerId);
+  if (!app->working) return;
+  const std::optional<std::uint64_t> token = app->adjust.take_histogram_request();
+  if (!token) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [working = app->working, u = mv::edit::uniforms_of(app->edits.colour()),
+                       t = *token, hwnd](const mv::job_context&) -> mv::status {
+                        auto* r = new (std::nothrow) adjust_job_result{};
+                        if (!r) return mv::status::out_of_memory;
+                        r->histogram = true;
+                        r->token = t;
+                        auto h = mv::edit::compute_histogram(*working, u);
+                        r->ok = static_cast<bool>(h);
+                        if (h) r->hist = *h;
+                        post_adjust_result(hwnd, r);
+                        return h ? mv::status::ok : h.error();
+                      });
+}
+
+void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
+  if (!r) return;
+  if (r->histogram) {
+    if (r->ok && app->adjust.histogram_landed(r->token, r->hist)) push_adjust_pane(app);
+    return;
+  }
+  if (app->adjust.working_landed(r->token, r->ok, r->from_raw)) {
+    app->working = std::move(r->working);
+    schedule_histogram(app);
+  }
+  push_adjust_pane(app);
+}
+
+void adjust_build_if(app_state* app, std::optional<std::uint64_t> token) {
+  if (token) start_working_build(app, *token);
+}
+
+void adjust_item_changed(app_state* app) {
+  const std::uint64_t id = adjust_item_id(app);
+  const bool has_colour = app->edits.has_item() && !app->edits.colour().identity();
+  const auto before = app->adjust.readiness();
+  const std::optional<std::uint64_t> token = app->adjust.set_item(id, has_colour);
+  if (app->adjust.readiness() == mv::shell::adjust_readiness::none &&
+      before != mv::shell::adjust_readiness::none) {
+    // Left the item: stop its build and release its textures.
+    app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
+    app->working.reset();
+    app->lab.drop_working();
+  }
+  if (token) {
+    app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
+    start_working_build(app, *token);
+  }
+  push_adjust_pane(app);
+}
+
+void adjust_colour_changed(app_state* app) {
+  const bool has_colour = app->edits.has_item() && !app->edits.colour().identity();
+  adjust_build_if(app, app->adjust.colour_changed(has_colour));
+  schedule_histogram(app);
+  push_adjust_pane(app);
+}
+
+void set_adjust_pane(app_state* app, bool on) {
+  if (on && !adjust_still(app)) {
+    ::MessageBeep(MB_ICONWARNING);  // nothing to adjust: a clip, an animation, an empty window
+    return;
+  }
+  if (on == app->adjust.visible()) {
+    if (on) (void)app->chrome.focus_adjust_pane();
+    return;
+  }
+  // The adjust and metadata panes share the right edge: one at a time.
+  if (on && app->meta_pane_visible) set_meta_pane(app, false);
+  const bool has_colour = app->edits.has_item() && !app->edits.colour().identity();
+  adjust_build_if(app, app->adjust.show(on, has_colour));
+  if (!on && !has_colour) {
+    // Nothing on the canvas needs the working image now; a reopen rebuilds it.
+    app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
+    app->working.reset();
+    app->lab.drop_working();
+    app->adjust.working_dropped();
+  }
+  apply_view_state(app);
+  push_adjust_pane(app);
+  if (on) {
+    schedule_histogram(app);
+    (void)app->chrome.focus_adjust_pane();
+  } else if (app->window) {
+    focus_canvas(app);
+  }
+}
+
+// A slider moved (the pane's command carries the value). The sliders are
+// disabled until the working image is ready; a late event is ignored.
+void set_adjust_from_pane(app_state* app, mv::edit::adjust_param p, float value) {
+  if (!app->adjust.working_ready() || !adjust_still(app)) return;
+  if (app->edits.set_adjust(p, value) != mv::shell::edit_effect::redraw) return;
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+  // No push back to the pane here: it already shows the value it sent, and
+  // echoing it would fight the drag. The histogram follows when it settles.
+  const bool has_colour = !app->edits.colour().identity();
+  adjust_build_if(app, app->adjust.colour_changed(has_colour));
+  schedule_histogram(app);
+}
+
+void reset_adjust_from_pane(app_state* app) {
+  if (!adjust_still(app)) return;
+  if (app->edits.reset_adjust() != mv::shell::edit_effect::redraw) return;
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+  adjust_colour_changed(app);
 }
 
 void folder_select(app_state* app, std::uint32_t index) {
@@ -1266,6 +1497,20 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_export:
       app->export_choice = static_cast<std::int32_t>(arg);
       start_export(app, mv::shell::unpack_export(app->export_choice));
+      return;
+    // PR 11: the adjust pane's sliders carry their value; Reset carries none.
+    case static_cast<int>(mv::shell::command_id::adjust_exposure):
+    case static_cast<int>(mv::shell::command_id::adjust_contrast):
+    case static_cast<int>(mv::shell::command_id::adjust_saturation):
+    case static_cast<int>(mv::shell::command_id::adjust_temperature):
+    case static_cast<int>(mv::shell::command_id::adjust_tint):
+      set_adjust_from_pane(app,
+                           static_cast<mv::edit::adjust_param>(
+                               command - static_cast<int>(mv::shell::command_id::adjust_exposure)),
+                           arg);
+      return;
+    case static_cast<int>(mv::shell::command_id::adjust_reset):
+      reset_adjust_from_pane(app);
       return;
     case mv::shell::chrome_cmd_folder_ready:
       // The island owns the completion drain (plan/12 2026-09-07), so this is
@@ -2267,8 +2512,17 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       set_folder_tree(app, !app->tree_visible);
       return true;
     case metadata_pane:
+      if (!app->meta_pane_visible && app->adjust.visible()) set_adjust_pane(app, false);
       set_meta_pane(app, !app->meta_pane_visible);
       return true;
+    // PR 11 (plan/16 Pane): Shift+A shows the adjust pane and focuses its
+    // first slider; again (or its close button) hides it.
+    case adjust_pane:
+      set_adjust_pane(app, !app->adjust.visible());
+      return true;
+    case adjust_exposure: case adjust_contrast: case adjust_saturation:
+    case adjust_temperature: case adjust_tint: case adjust_reset:
+      return false;  // island-only: they carry a value (chrome_on_command)
 
     // Host-side and cheap (plan/16): photographers park the viewer on a
     // second monitor.
@@ -2357,9 +2611,13 @@ void layout_panels(app_state* app) noexcept {
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
   const bool want_meta = app->meta_pane_visible && !covered;
   const bool want_tree = app->tree_visible && !covered;
-  app->chrome.show_meta_pane(want_meta, width - side, top, side, span, dpi);
+  // PR 11: the adjust pane takes the metadata pane's edge (one at a time).
+  const bool want_adjust = app->adjust.visible() && !covered;
+  app->chrome.show_meta_pane(want_meta && !want_adjust, width - side, top, side, span, dpi);
+  app->chrome.show_adjust_pane(want_adjust, width - side, top, side, span, dpi);
   app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, dpi);
-  if (want_meta) push_meta_pane(app);
+  if (want_meta && !want_adjust) push_meta_pane(app);
+  if (want_adjust) push_adjust_pane(app);
 }
 
 void layout_chrome(app_state* app) noexcept {
@@ -2699,6 +2957,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_edit_job_done(app, std::unique_ptr<edit_job_result>(reinterpret_cast<edit_job_result*>(lparam)));
       return 0;
 
+    case kMsgAdjustJobDone:
+      on_adjust_job_done(app, std::unique_ptr<adjust_job_result>(reinterpret_cast<adjust_job_result*>(lparam)));
+      return 0;
+
     case kMsgMetaReady:
       metadata_ready(app);
       return 0;
@@ -2706,6 +2968,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_TIMER:
       if (wparam == kRotateTimerId) {
         start_rotation_write(app);
+        return 0;
+      }
+      if (wparam == kHistogramTimerId) {
+        start_histogram(app);
         return 0;
       }
       if (wparam == kMetaTimerId) {

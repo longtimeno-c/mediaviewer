@@ -104,7 +104,8 @@ bool edit_session::wants_write() const {
   const edit::edit_stack* s = stack();
   if (!s) return false;
   const edit::geometry g = edit::fold(*s);
-  return g.orientation_only() && !g.orient.identity();
+  // PR 11: a colour op makes the stack an export, never a file rewrite.
+  return g.orientation_only() && !g.orient.identity() && edit::fold_colour(s->ops).identity();
 }
 
 bool edit_session::set_item(const edit_item& item) {
@@ -142,15 +143,21 @@ bool edit_session::set_item(const edit_item& item) {
 
 void edit_session::land(std::uint64_t old_key, codec::d4 applied) {
   codec::d4 remaining{};
+  std::vector<op> colour_ops;  // PR 11: colour set while the write was in flight
   if (const auto it = stacks_.find(old_key); it != stacks_.end()) {
     const edit::geometry g = edit::fold(it->second);
     if (g.orientation_only()) remaining = codec::compose(codec::inverse(applied), g.orient);
+    for (const op& o : it->second.ops) {
+      if (o.kind == op_kind::adjust) colour_ops.push_back(o);
+    }
     stacks_.erase(it);
     order_.erase(std::remove(order_.begin(), order_.end(), old_key), order_.end());
   }
   ++epochs_[item_.path];
   write_failed_ = false;
-  current().ops = ops_for(remaining);
+  edit::edit_stack& s = current();
+  s.ops = ops_for(remaining);
+  s.ops.insert(s.ops.end(), colour_ops.begin(), colour_ops.end());
 }
 
 void edit_session::clear_item() noexcept {
@@ -177,6 +184,42 @@ edit::placement edit_session::preview_placement() const {
 edit::geometry edit_session::export_geometry() const {
   const edit::edit_stack* s = stack();
   return s ? edit::fold(*s) : edit::geometry{};
+}
+
+edit::colour edit_session::colour() const {
+  const edit::edit_stack* s = stack();
+  return s ? edit::fold_colour(s->ops) : edit::colour{};
+}
+
+edit_effect edit_session::set_adjust(edit::adjust_param p, float value) {
+  if (!has_item_ || static_cast<int>(p) >= edit::kAdjustParamCount) return edit_effect::refused;
+  value = edit::clamp_param(p, value);
+  edit::edit_stack& s = current();
+  // A drag (or a held arrow key) is one op: replace a trailing set of the
+  // same parameter instead of stacking hundreds of them.
+  if (!s.ops.empty() && s.ops.back().kind == op_kind::adjust && s.ops.back().param == p) {
+    if (s.ops.back().value == value) return edit_effect::none;
+    s.ops.back().value = value;
+    // A drag back to where the parameter stood before it is no op at all.
+    const std::span<const op> before(s.ops.data(), s.ops.size() - 1);
+    if (edit::fold_colour(before).get(p) == value) s.ops.pop_back();
+    return edit_effect::redraw;
+  }
+  if (edit::fold_colour(s.ops).get(p) == value) return edit_effect::none;
+  op o{op_kind::adjust};
+  o.param = p;
+  o.value = value;
+  s.push(o);
+  return edit_effect::redraw;
+}
+
+edit_effect edit_session::reset_adjust() {
+  if (!has_item_) return edit_effect::refused;
+  if (colour().identity()) return edit_effect::none;
+  op o{op_kind::adjust};
+  o.param = edit::adjust_param::count;  // every colour parameter, one undo step
+  current().push(o);
+  return edit_effect::redraw;
 }
 
 void edit_session::begin_crop() {
@@ -377,9 +420,9 @@ expected run_rotation_write(const rotation_write& w) {
 }
 
 result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
-                               const edit::export_options& opt) {
+                               const edit::export_options& opt, const edit::colour& c) {
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
-  MV_TRY(edit::export_result r, edit::export_image(bytes, g, opt));
+  MV_TRY(edit::export_result r, edit::export_image(bytes, g, c, opt));
 
   const std::size_t sep = source_path.find_last_of("/\\");
   const std::string dir = sep == std::string_view::npos ? std::string() : std::string(source_path.substr(0, sep + 1));

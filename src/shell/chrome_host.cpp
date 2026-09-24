@@ -260,6 +260,10 @@ expected chrome_host::load() noexcept {
   set_meta_data_ = get_entry(L"SetMetaData");
   set_tree_root_ = get_entry(L"SetTreeRoot");
   take_tree_path_ = get_entry(L"TakeTreePath");
+  // PR 11, optional the same way.
+  show_adjust_pane_ = get_entry(L"ShowAdjustPane");
+  set_adjust_view_ = get_entry(L"SetAdjustView");
+  focus_adjust_pane_ = get_entry(L"FocusAdjustPane");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -593,6 +597,7 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   panels_attached_ = false;
   meta_visible_ = false;
   tree_visible_ = false;
+  adjust_visible_ = false;
 
   chrome_filmstrip_args args{};
   args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
@@ -640,6 +645,23 @@ void chrome_host::show_folder_tree(bool visible, int x, int y, int width, int he
   if (!panels_attached_ || !show_folder_tree_) return;
   show_panel(show_folder_tree_, visible, x, y, width, height, dpi, y + height + 1);
   tree_visible_ = visible;
+}
+
+void chrome_host::show_adjust_pane(bool visible, int x, int y, int width, int height,
+                                   std::uint32_t dpi) noexcept {
+  if (!panels_attached_ || !show_adjust_pane_) return;
+  show_panel(show_adjust_pane_, visible, x, y, width, height, dpi, y + height + 1);
+  adjust_visible_ = visible;
+}
+
+void chrome_host::set_adjust_view(const adjust_view& view) noexcept {
+  if (!panels_attached_ || !set_adjust_view_) return;
+  (void)set_adjust_view_(const_cast<adjust_view*>(&view), static_cast<std::int32_t>(sizeof(view)));
+}
+
+bool chrome_host::focus_adjust_pane() noexcept {
+  if (!adjust_pane_visible() || !focus_adjust_pane_) return false;
+  return focus_adjust_pane_(nullptr, 0) == 0;
 }
 
 void chrome_host::set_meta_data(bool loading, const std::string& summary,
@@ -738,6 +760,7 @@ void chrome_host::detach() noexcept {
     panels_attached_ = false;
     meta_visible_ = false;
     tree_visible_ = false;
+    adjust_visible_ = false;
   }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);

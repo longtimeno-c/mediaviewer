@@ -860,3 +860,18 @@ TEST_CASE("3 toggles the runner view on the down edge without stealing image zoo
   s.game = false;
   CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
 }
+
+TEST_CASE("Shift+A opens the adjust pane on a still; E stays the clip's transport",
+          "[shell][router][adjust]") {
+  // PR 11: plan/16 left `E` to Q / E and asked for another key.
+  key_router r;
+  REQUIRE(r.on_key(down(char_key('A'), mod_shift), still()).command == command_id::adjust_pane);
+  // Plain A still walks the folder; on a clip Shift+A is not the pane.
+  REQUIRE(r.on_key(down(char_key('A')), still()).command == command_id::prev);
+  REQUIRE(r.on_key(down(char_key('A'), mod_shift), clip()).command != command_id::adjust_pane);
+  REQUIRE(r.on_key(down(char_key('E')), clip()).command == command_id::skim_forward);
+  // Listed in `?`; the pane's sliders are island-only and are not.
+  const std::string table = describe_commands();
+  REQUIRE(table.find("\tAdjust pane\tShift+A\t") != std::string::npos);
+  REQUIRE(table.find("Adjust: exposure") == std::string::npos);
+}

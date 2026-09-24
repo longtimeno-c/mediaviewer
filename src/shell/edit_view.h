@@ -2,10 +2,12 @@
 // PR 10: the render thread's side of input_state.h's edit_view, shared by
 // both labs (present_lab.cpp, present_lab_mac.mm) so they place a texture
 // through its edit geometry the same way. Pure; no GPU, no platform header.
+// PR 11 adds the colour uniforms (same_adjust, apply_adjust).
 #pragma once
 
 #include <cstdint>
 
+#include "edit/adjust.h"
 #include "edit/edit_stack.h"
 #include "shell/input_state.h"
 
@@ -48,6 +50,29 @@ namespace mv::shell {
          a.crop[2] == b.crop[2] && a.crop[3] == b.crop[3] && a.keep_frame == b.keep_frame;
 }
 
+// PR 11: the colour half, compared apart from the geometry so a slider drag
+// redraws without refitting the camera.
+[[nodiscard]] inline bool same_adjust(const edit_view& a, const edit_view& b) noexcept {
+  if (a.adjust != b.adjust) return false;
+  if (!a.adjust) return true;
+  for (int i = 0; i < 4; ++i) {
+    if (a.adjust0[i] != b.adjust0[i] || a.adjust1[i] != b.adjust1[i]) return false;
+  }
+  return true;
+}
+
+// The colour uniforms of `v` onto a blit's parameters (either host's
+// blit_params / blit_params_mac: the fields are named the same).
+template <class BlitParams>
+inline void apply_adjust(const edit_view* v, BlitParams& bp) noexcept {
+  bp.adjust = v != nullptr && v->adjust;
+  if (!bp.adjust) return;
+  for (int i = 0; i < 4; ++i) {
+    bp.adjust0[i] = v->adjust0[i];
+    bp.adjust1[i] = v->adjust1[i];
+  }
+}
+
 [[nodiscard]] inline bool same_overlay(const edit_view& a, const edit_view& b) noexcept {
   return a.crop_overlay == b.crop_overlay && a.overlay[0] == b.overlay[0] &&
          a.overlay[1] == b.overlay[1] && a.overlay[2] == b.overlay[2] &&
@@ -78,6 +103,15 @@ template <class Session>
   v.overlay[1] = r.y;
   v.overlay[2] = r.w;
   v.overlay[3] = r.h;
+  const edit::colour c = s.colour();
+  if (!c.identity()) {
+    const edit::adjust_uniforms u = edit::uniforms_of(c);
+    v.adjust = true;
+    for (int i = 0; i < 4; ++i) {
+      v.adjust0[i] = u.a0[i];
+      v.adjust1[i] = u.a1[i];
+    }
+  }
   return v;
 }
 

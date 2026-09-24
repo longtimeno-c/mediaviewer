@@ -206,6 +206,42 @@ int32_t mv_chrome_export_last_choice(void);
 void mv_chrome_export_confirm(int32_t packed);
 void mv_chrome_export_cancel(void);
 
+// ---- PR 11: adjust pane (plan/10 "SwiftUI adjust pane", plan/07) -------------
+//
+// The twin of the Windows adjust pane (IslandHost.Adjust.cs). The host owns the
+// edit stack; the pane posts slider values and draws what the host reports.
+// Nothing here touches pixels: the canvas redraws from the new uniforms on the
+// render thread, the histogram is a reduction a worker ran. [main-thread]
+
+// Field for field shell::adjust_view (src/shell/adjust_pane.h); main_mac.mm
+// static_asserts the size and offsets.
+//   readiness: 0 no still, 1 preparing (sliders disabled), 2 ready, 3 failed
+//   values:    exposure (EV, -5..5), contrast, saturation, temperature, tint (-100..100)
+//   bins:      64 bins each of R, G, B, luma, 0..1000 (edit::pack_histogram)
+typedef struct mv_adjust_view {
+  int32_t readiness;
+  int32_t from_raw;
+  float values[5];
+  float clip_high;
+  float clip_low;
+  int32_t histogram_valid;
+  int32_t reserved;
+  uint16_t bins[4 * 64];
+} mv_adjust_view;
+
+bool mv_chrome_adjust_visible(void);
+// Moves whenever the view below changes for a reason other than the pane's own
+// slider (readiness, the histogram, undo, reset, a new item). Swift re-reads
+// the view only when it moves, so a drag is never fought.
+uint64_t mv_chrome_adjust_generation(void);
+bool mv_chrome_adjust_view(mv_adjust_view* out);
+// `param` is edit::adjust_param (0 exposure .. 4 tint). Ignored until ready.
+void mv_chrome_adjust_set(int32_t param, float value);
+void mv_chrome_adjust_reset(void);
+void mv_chrome_adjust_close(void);
+// Esc in the pane: keyboard focus back to the canvas (the pane stays open).
+void mv_chrome_adjust_blur(void);
+
 #ifdef __cplusplus
 }
 #endif

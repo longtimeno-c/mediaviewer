@@ -77,6 +77,15 @@ public static partial class IslandHost
         // (mirrors command_id; chrome_host.h pins both with static_asserts).
         public const int FolderTree = 78;
         public const int MetadataPane = 92;
+        // PR 11: the adjust pane's close button (the Shift+A command) and its
+        // sliders, which carry their value (commands.h adjust_*).
+        public const int AdjustPane = 115;
+        public const int AdjustExposure = 116;
+        public const int AdjustContrast = 117;
+        public const int AdjustSaturation = 118;
+        public const int AdjustTemperature = 119;
+        public const int AdjustTint = 120;
+        public const int AdjustReset = 121;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -337,7 +346,10 @@ public static partial class IslandHost
             }
             else if (e.NewFocusedElement is UIElement element && element.XamlRoot is XamlRoot root)
             {
-                if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
+                // PR 11: the adjust pane's sliders own every key but Esc, like
+                // a text box: arrows step the slider instead of walking the folder.
+                if (OwnsRoot(_adjustPane, root)) kind = FocusKind.Text;
+                else if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
             }

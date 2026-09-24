@@ -19,7 +19,7 @@ Mac are both at PR 9.** The order from here is:
 | 1–8 | The viewer, packaged | Windows + Mac halves | Landed. Mac items still owed are listed under Dual-track |
 | **9** | Metadata (read) | both | **In progress.** Mac half ahead; Windows owes the XAML pane, tree island and sort menu |
 | **10** | Geometry edits + export | both | Mac half started on a branch; waits for PR 9 before merging |
-| 11 | Colour adjusts, plus Mac crash reporting | both | Planned |
+| 11 | Colour adjusts, plus Mac crash reporting | both | **Written on a branch** on top of PR 10; core tested, both host halves await their first compile and each platform's verify ([12](12-decision-log.md) 2026-09-24, PR 11) |
 | 12 | Metadata (write) | both | Planned |
 | 13 | Two-path trim | both | Planned |
 | 14 | Extract & remux | both | Planned |
@@ -371,6 +371,7 @@ tracked, but they do not block PR 9 from starting:
 - **Crashpad on Mac:** assigned to the **Mac half of PR 11** (owner, 2026-09-24). Until
   then Mac has no crash capture. Do not cut a stable Mac release that includes PR 9's new
   parsers before PR 11 lands, or say plainly in the release notes that crashes aren't captured.
+  *Written on the PR 11 branch (2026-09-24); not yet built or verified on a Mac.*
 
 No release version is promised for any slice. Each merged PR may ship to both
 platforms through the two-platform release flow (`RELEASING.md`,
@@ -430,6 +431,13 @@ The same crop on the same JPEG exports **byte-identical** on Windows and Mac: th
 is shared, so a difference is a bug.
 
 ### PR 11 — Colour adjusts (first editing set)
+*Status 2026-09-24: shared core and **both host halves written** on a branch from PR 10; the core
+is unit-tested (FP16 working space, kernel, bake, histogram, RAW linear develop, scrub), the C#
+chrome compiles and the HLSL compiles under DXC; the Windows C++ host, the macOS host and the
+Swift/MSL halves await their first build and each platform's verify run — see
+[12](12-decision-log.md), which also records where this departs from the text below (`Shift+A`,
+not `E`; one kernel source for HLSL, MSL and the CPU bake; a CPU histogram on a worker).*
+
 **Shared:** the exposure/contrast/saturation/temperature/tint math, histogram and clipping
 reduction, and full-resolution export bake. The working space is linear FP16 (D6).
 
@@ -445,8 +453,9 @@ native report. There is still no upload endpoint, same as Windows. It lands here
 stable Mac release that carries PR 9's Exiv2 / libavformat metadata parsing or PR 11's
 full-resolution RAW bake.
 
-Viewer `C` blinkies become accurate on RAW once the full decode exists. `E` focuses the
-adjust pane.
+Viewer `C` blinkies become accurate on RAW once the full decode exists. `Shift+A` (`⇧A`)
+opens and focuses the adjust pane — not `E`, which is the clip transport
+([16-commands.md](16-commands.md)).
 
 **Verify (both platforms):** dragging a slider is shader-only with no re-decode, updating
 within one refresh interval on a 45 MP RAW; export matches the preview within 8-bit

@@ -7,8 +7,10 @@
 #include "codec/decode.h"
 #include "codec/exif.h"
 #include "codec/format.h"
+#include "edit/bake.h"
 #include "edit/geometry.h"
 #include "edit/lossless_jpeg.h"
+#include "image/linear.h"
 
 namespace mv::edit {
 namespace {
@@ -93,8 +95,32 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
 
 result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
                                    const export_options& opt, const job_context* ctx) {
+  return export_image(source, stack, colour{}, opt, ctx);
+}
+
+result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
+                                   const colour& c, const export_options& opt,
+                                   const job_context* ctx) {
   geometry g = stack;
   if (opt.long_edge != 0) g.resize = resize_spec{resize_mode::long_edge, opt.long_edge, 0, 100.0f};
+
+  // PR 11 bake: colour changes every pixel, so there is no lossless path.
+  if (!c.identity()) {
+    MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    const placement p = place(g, size2{working.width, working.height});
+    MV_TRY(codec::raster out, bake(working, p, uniforms_of(c), ctx));
+    working = image::linear_image{};  // release the full frame before encoding
+    metadata_blobs meta = source_metadata(source, opt.policy);
+    patch_for_output(meta, out.width, out.height, true);
+    MV_TRY(std::vector<std::uint8_t> bytes, encode(out, opt.encode, meta));
+    export_result r;
+    r.bytes = std::move(bytes);
+    r.lossless = false;
+    r.width = out.width;
+    r.height = out.height;
+    return r;
+  }
   const bool is_jpeg = codec::probe(source) == codec::format_family::jpeg;
 
   // Lossless: JPEG → JPEG with no straighten and no resize.

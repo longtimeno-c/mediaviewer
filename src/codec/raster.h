@@ -30,4 +30,14 @@ struct raster {
   bool tagged_srgb = false;
 };
 
+// PR 11: a RAW developed to 16-bit *linear* light, Rec.709 / sRGB primaries —
+// the source of the edit working space (D6; plan/07 "wait for LibRaw's full
+// decode"). RGBA, alpha 65535. Row stride = width * 4 samples.
+struct raster16 {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  format_family format = format_family::unknown;
+  std::vector<std::uint16_t> rgba;
+};
+
 }  // namespace mv::codec

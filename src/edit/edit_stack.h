@@ -10,8 +10,9 @@
 //
 // This is plan/07's "crop, straighten, rotate, flip" order read the other way
 // round (the ops commute once the crop and angle are carried through the D4,
-// which `fold` does). Colour ops (PR 11) append to the same stack after
-// geometry; nothing here knows about pixels or a GPU.
+// which `fold` does). Colour ops (PR 11, edit/adjust.h) share the stack and
+// fold separately (`fold_colour`); plan/07 evaluates them after geometry.
+// Nothing here knows about pixels or a GPU.
 //
 // Straighten, resize and exact crop change pixels; rotate, flip and an
 // MCU-aligned crop of a JPEG do not (lossless_jpeg.h).
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "codec/orientation.h"
+#include "edit/adjust.h"
 
 namespace mv::edit {
 
@@ -54,6 +56,8 @@ enum class op_kind : std::uint8_t {
   crop,        // set the crop to `crop`, in the straightened (uncropped) frame
   straighten,  // set the straighten angle to `degrees`, clockwise, ±kMaxStraighten
   resize,      // set the output size to `resize`
+  adjust,      // PR 11: set colour parameter `param` to `value` (edit/adjust.h);
+               // `param` == adjust_param::count resets every colour parameter
 };
 
 // One parameter block. POD, so a stack copies, compares and serialises as
@@ -63,6 +67,8 @@ struct op {
   rect crop{};
   float degrees = 0.0f;
   resize_spec resize{};
+  adjust_param param = adjust_param::exposure;
+  float value = 0.0f;
 };
 
 inline constexpr float kMaxStraighten = 45.0f;

@@ -7,6 +7,7 @@
 #include "core/result.h"
 #include "image/colour.h"
 #include "image/gpu_image_mac.h"
+#include "image/linear.h"
 
 namespace mv::image {
 
@@ -19,5 +20,10 @@ namespace mv::image {
 // (Apple's guarantee), and this call never touches an encoder.
 [[nodiscard]] result<gpu_image_mac> upload(void* mtl_device, const display_image& src,
                                            const job_context* ctx = nullptr);
+
+// PR 11: the FP16 working image (image/linear.h, D6) as an immutable
+// MTLPixelFormatRGBA16Float texture, one level — the twin of present_lab.cpp's
+// R16G16B16A16_FLOAT upload. The blit samples linear light from it directly.
+[[nodiscard]] result<gpu_image_mac> upload_linear(void* mtl_device, const linear_image& src);
 
 }  // namespace mv::image

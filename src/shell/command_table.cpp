@@ -190,6 +190,10 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_ctrl, kBrowse, edge, export_image),
     row(C('Z'), mod_ctrl, kBrowse | kCrop, edge, undo_edit),
     row(C('R'), mod_ctrl, kBrowse | kCrop, edge, reset_edits),
+    // PR 11. plan/16 leaves `E` to the clip transport (Q / E) and asks PR 11
+    // for another key: the Shift twin of `A`djust, as PR 9 / 10 did for O, I
+    // and C. Stills only; the pane's own close button sends the same id.
+    row(C('A'), mod_shift, kBrowse, edge, adjust_pane),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -307,6 +311,13 @@ constexpr command_info kCommands[] = {
     {export_image, "Export…"},
     {undo_edit, "Undo edit"},
     {reset_edits, "Reset edits"},
+    {adjust_pane, "Adjust pane"},
+    {adjust_exposure, "Adjust: exposure", true},
+    {adjust_contrast, "Adjust: contrast", true},
+    {adjust_saturation, "Adjust: saturation", true},
+    {adjust_temperature, "Adjust: temperature", true},
+    {adjust_tint, "Adjust: tint", true},
+    {adjust_reset, "Adjust: reset", true},
 };
 
 const char* named_key(key k) noexcept {
