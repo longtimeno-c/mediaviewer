@@ -140,7 +140,7 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `Ctrl+Shift+E` | Folder tree show/focus (PR 9) |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
 | `Shift+O` | AF-point quads from the maker notes already read (PR 9; the plan gave no key, chosen 2026-09-24). Off by default |
-| `Shift+I` | Eyedropper: one-pixel readout under the cursor, sRGB 8-bit + hex (PR 9; key chosen 2026-09-24). Stills only. `Ctrl/Cmd+C` while it is on copies the readout as `#RRGGBB  rgb(r, g, b)  x y`; with it off the key stays free for PR 15's file copy |
+| `Shift+I` | Eyedropper: one-pixel readout under the cursor, sRGB 8-bit + hex (PR 9; key chosen 2026-09-24). Stills only. `Ctrl/Cmd+C` while it is on copies the readout as `#RRGGBB  rgb(r, g, b)  x y`; with it off it copies the marked (or current / gallery-selected) file(s), the macOS start of PR 15's `CF_HDROP` twin |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |
 | `\` hold | Previous item for burst pick. Uses the five-slot GPU LRU ([04-image-pipeline.md](04-image-pipeline.md)); must not `mv_image_open` a replacement |
 | `;` | Play Live Photo / motion once, return to the still. Required: hover-to-play fails the no-mouse bar. PR 7: edge only (no hold-to-play); `;` again, `Esc` or any navigation also returns to the still, which comes back from the LRU. Plays with audio. No transport strip on a Live Photo stop |

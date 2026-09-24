@@ -201,7 +201,7 @@ enum class command_id : std::uint16_t {
   metadata_pane,  // `I`: summary card, full tree, clip stream inspector
   af_points,      // Shift+O: AF-point quads from the maker notes already read
   eyedropper,     // Shift+I: one-pixel readout under the cursor
-  copy_pixel,     // Ctrl/Cmd+C while the eyedropper is on: copy its readout
+  copy_clipboard, // Ctrl/Cmd+C: the eyedropper's readout if it is on, else the marked / current file(s)
   count
 };
 

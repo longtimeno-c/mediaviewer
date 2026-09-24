@@ -87,7 +87,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
     // PR 9
-    case info_overlay: case af_points: case eyedropper: case copy_pixel: case metadata_pane: case folder_tree:
+    case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
       return true;
     default:
       return false;
@@ -2322,16 +2322,26 @@ enum MvMenuCmd : NSInteger {
       _snap.eyedropper = !_snap.eyedropper;
       [self pokeSnapshot];
       return YES;
-    case copy_pixel: {
-      // Cmd+C copies what the eyedropper is showing. Off, or nothing under the cursor:
-      // unhandled, so the key is not swallowed for nothing.
-      if (!_snap.eyedropper) return NO;
-      const std::string text = _lab.eyedropper_text();
-      if (text.empty()) return NO;
+    case copy_clipboard: {
       NSPasteboard* board = [NSPasteboard generalPasteboard];
+      // Eyedropper on and a pixel under the cursor: that colour.
+      if (_snap.eyedropper) {
+        const std::string text = _lab.eyedropper_text();
+        if (!text.empty()) {
+          [board clearContents];
+          [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+          return YES;
+        }
+      }
+      // Otherwise the file(s): the marks, else the current item, which is the selected
+      // cell while the gallery is up. Pasteable in Finder, Mail, Messages.
+      NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+      for (const auto& entry : [self markedOrCurrentEntries]) {
+        [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
+      }
+      if (urls.count == 0) return NO;
       [board clearContents];
-      [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
-      return YES;
+      return [board writeObjects:urls] ? YES : NO;
     }
     case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;

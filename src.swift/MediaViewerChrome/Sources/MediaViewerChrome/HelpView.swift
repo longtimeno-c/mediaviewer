@@ -40,7 +40,6 @@ struct HelpView: View {
       Row(keys: "O", action: "Info overlay (exposure, camera, date)"),
       Row(keys: "⇧O", action: "AF points (from maker notes)"),
       Row(keys: "⇧I", action: "Eyedropper (pixel under the cursor)"),
-      Row(keys: "⌘C", action: "Copy the eyedropper colour (hex, rgb, x y)"),
       Row(keys: "⌘⇧E", action: "Folder tree"),
       Row(keys: "View ▸ Sort By", action: "Name, date, size, type, date taken"),
     ]),
@@ -54,6 +53,7 @@ struct HelpView: View {
     Section(title: "Marks & files", rows: [
       Row(keys: "Insert  ⇧Space", action: "Mark / unmark"),
       Row(keys: "⌃A  ⌃D", action: "Mark all / unmark all"),
+      Row(keys: "⌘C", action: "Copy marked (or current / selected) files; the colour if the eyedropper is on"),
       Row(keys: "F7  F8", action: "Copy / move marked (⇧ picks folder)"),
       Row(keys: "⌫  ⌘⌫", action: "Move marked or current to Trash"),
     ]),
