@@ -236,7 +236,7 @@ Mac PRs 4, 6 and 7.
 | PR 4 folder, filmstrip, gallery, JPEG-512 thumbs, dir watch | folder ABI, SQLite thumbs | **Mac PR 4** — SwiftUI filmstrip + gallery; `io/dir_mac.cpp` (`kqueue` / `FSEvents`). Same listing, same cache spec `jpg512.1` |
 | PR 5a/b/c video, WASAPI clock, transport | `IVideoSource`, clock *policy* | **Mac PR 5** — FFmpeg + VideoToolbox on *your* `MTLDevice`, Core Audio master clock. **No `AVPlayer`.** Bindings from [16](16-commands.md) with a Mac default map |
 | PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | **Mac PR 6** — Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
-| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | **Mac PR 7** — same decoders, same fuzz corpus, Crashpad + Mac minidump scrub, same privacy line ([13](13-updates-and-telemetry.md)) |
+| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | **Mac PR 7** — same decoders, same fuzz corpus, same privacy line. Crashpad + the Mac minidump scrub never landed there: **Mac half of PR 11** (2026-09-24, [13](13-updates-and-telemetry.md)) |
 | PR 9 metadata read, info overlay, AF points, eyedropper | `meta/` | SwiftUI metadata pane; `I` focuses it |
 | PR 10 geometry + lossless JPEG rotate | `edit/` | SwiftUI crop mode; `[` `]` from the viewer. MSL twins of the geometry kernels |
 | PR 11 exposure/contrast/sat/temp | `edit/` | SwiftUI adjust pane; sliders still wait for full RAW decode |
@@ -245,6 +245,7 @@ Mac PRs 4, 6 and 7.
 | PR 14 extract & remux | same | Same operations, SwiftUI job panel |
 | PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **Mac PR 8** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process**. The rest (Dock menu, window tabs, Now Playing, Share, file-promise drag-out) is **PR 15's Mac half** |
 | PR 16–19 Import add-on: hash dedupe, verify, date layout, backup | `io/` import engine, BLAKE3, `import.db`, add-on host table | **The Mac half of each**: SwiftUI Import window in an `NSBundle` add-on, `NSWorkspace` mount notice, `F_NOCACHE` read-back, `DADiskUnmount` eject ([18](18-import.md)) |
+| PR 20–24 local AI search add-on | `infer/`, sampler, `index.db`, search | **The Mac half of each**: ORT + Core ML provider (CPU underneath), VideoToolbox sampler instance, SwiftUI search UI ([17](17-local-ai-search.md)) |
 | PR 8 Inno + Velopack, app identity | No | **Mac PR 8** — branded drag-install `.dmg` (GPL on mount), notarized Sparkle, same mark as `.icns` |
 
 Keyboard: the Mac host writes its own default map. It does not import a XAML

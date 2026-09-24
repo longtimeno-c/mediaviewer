@@ -19,13 +19,13 @@ Mac are both at PR 9.** The order from here is:
 | 1–8 | The viewer, packaged | Windows + Mac halves | Landed. Mac items still owed are listed under Dual-track |
 | **9** | Metadata (read) | both | **In progress.** Mac half ahead; Windows owes the XAML pane, tree island and sort menu |
 | **10** | Geometry edits + export | both | Mac half started on a branch; waits for PR 9 before merging |
-| 11 | Colour adjusts | both | Planned |
+| 11 | Colour adjusts, plus Mac crash reporting | both | Planned |
 | 12 | Metadata (write) | both | Planned |
 | 13 | Two-path trim | both | Planned |
 | 14 | Extract & remux | both | Planned |
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | Planned |
-| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | Windows-first (open) | Proposed |
+| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
@@ -240,7 +240,7 @@ numbers. Use this table to read them:
 | Old number | Is now | What it built |
 |---|---|---|
 | PR 16 | **Mac PR 1** | Metal present lab: AppKit, `CAMetalLayer`, display link, F3, `frametime` on Darwin |
-| PR 17 | **Mac PR 2** + **Mac PR 7** | Still decode, pan/zoom, the MSL blit twin, and the rest of the D5 formats + pairing detection (Crashpad still owed) |
+| PR 17 | **Mac PR 2** + **Mac PR 7** | Still decode, pan/zoom, the MSL blit twin, and the rest of the D5 formats + pairing detection (Crashpad moved to Mac PR 11) |
 | PR 18 | **Mac PR 3** + **Mac PR 4** + **Mac PR 6** | SwiftUI chrome in the AppKit window, folder/filmstrip/gallery + FSEvents, and keyboard-complete browse |
 | PR 19 | **Mac PR 5** (5a/5b/5c) | VideoToolbox + Core Audio clock + transport strip |
 | PR 20 | **Mac PR 8**, plus part of **Mac PR 15** | Notarized disk image, Sparkle, and (early) Finder types, Quick Look, the default-viewer sheet |
@@ -267,7 +267,8 @@ twin.
 
 **Folded in (2026-09-17, [12](12-decision-log.md)):** the rest of the Windows PR 7 camera-dump
 format set — TIFF, WebP, ICO, HEIC/HEIF, AVIF, RAW via LibRaw with embedded-preview-as-first-pixel
-— and Crashpad + the Mac minidump scrub, landing here for the same reason PR 7 paired them on
+— and Crashpad + the Mac minidump scrub (**never landed; moved to the Mac half of PR 11,
+2026-09-24**), planned here for the same reason PR 7 paired them on
 Windows: this is the PR where hostile real-world files first meet Mac decoders. RAW+JPEG and Live
 Photo pairing *detection* (`io/pairing.h` logic) can land here too, decode-side; surfacing a pair as
 one filmstrip stop is Mac PR 3's job once a filmstrip exists.
@@ -367,9 +368,9 @@ tracked, but they do not block PR 9 from starting:
 - Mac PR 5: the real-iPhone HLG check (only a synthetic HLG clip was checked).
 - Mac PR 8: Quick Look precedence over Finder's own generator; state carried across an
   update restart (zoom, pan, clip position); rollback after two failed starts.
-- **Crashpad on Mac.** This is still the owner's call: either Mac PR 7 still owes it or Mac PR 8
-  takes it. It must be settled before the first stable Mac release that includes PR 9.
-  Mac now takes new decoders (Exiv2, libavformat metadata) in the same PR as Windows.
+- **Crashpad on Mac:** assigned to the **Mac half of PR 11** (owner, 2026-09-24). Until
+  then Mac has no crash capture. Do not cut a stable Mac release that includes PR 9's new
+  parsers before PR 11 lands, or say plainly in the release notes that crashes aren't captured.
 
 No release version is promised for any slice. Each merged PR may ship to both
 platforms through the two-platform release flow (`RELEASING.md`,
@@ -430,6 +431,14 @@ reduction, and full-resolution export bake. The working space is linear FP16 (D6
 **Windows:** HLSL shaders on the live preview; WinUI adjust pane.
 
 **macOS:** MSL twins of every adjust kernel, **in this PR**; SwiftUI adjust pane.
+**Also Mac crash reporting** (owner call, 2026-09-24; owed since old PR 17). Crashpad,
+out-of-process, as on Windows ([13](13-updates-and-telemetry.md)). The Mac minidump goes
+through the same scrub before anything could be sent: no path, no filename, no username,
+no pixel data, no EXIF. The Swift/AppKit side is its own capture path: an uncaught
+`NSException` and a Swift runtime trap are recorded with the same correlation id as the
+native report. There is still no upload endpoint, same as Windows. It lands here, before any
+stable Mac release that carries PR 9's Exiv2 / libavformat metadata parsing or PR 11's
+full-resolution RAW bake.
 
 Viewer `C` blinkies become accurate on RAW once the full decode exists. `E` focuses the
 adjust pane.
@@ -440,6 +449,12 @@ rounding. **The adjust pane stays disabled until LibRaw's full decode completes*
 ([07-photo-editing.md](07-photo-editing.md)). A fixed slider set exported from the same
 source on both platforms matches within 8-bit rounding. HLSL and MSL twins that disagree
 fail the PR.
+
+**Verify (macOS, crash reporting):** a deliberately corrupted RAW opened on Mac produces a
+minidump from the out-of-process handler. The Mac twin of Windows' canary scan (a marked copy in
+`PRIVATE_FOLDER_canary/SECRET_FILENAME_canary…`, plus a pixel-pattern companion) finds **no path,
+filename, username or pixel data** in it. A forced `NSException` in the chrome is captured with
+the correlation id of the native call in flight. The app relaunches cleanly after each crash.
 
 ### PR 12 — Metadata (write) — narrow on purpose
 **Rating, orientation, and user comment only.** **Shared:** the Exiv2 writer, a snapshot
@@ -560,8 +575,11 @@ The add-on mechanism built in PR 16 is the one the AI pack (PR 20) installs thro
 
 ## Milestone H — Local AI search (PR 20–24, post-v1, proposed)
 
-Windows-first, opt-in, and a **downloadable extra installed from Settings** — the base
-installer and updates never carry it. Full design, models, index, yield policy and verify
+**Both platforms** (owner, 2026-09-24), like every PR from 9. Opt-in, and a **downloadable
+add-on installed from Settings** through PR 16's add-on mechanism. The base installer,
+disk image and updates never carry it. Windows runs ONNX Runtime on CPU plus the vendor
+providers. Mac runs ONNX Runtime with the **Core ML provider** (Apple GPU / Neural Engine),
+CPU underneath. Full design, models, index, yield policy and verify
 lines: [17-local-ai-search.md](17-local-ai-search.md). Proposed 2026-09-24
 ([12](12-decision-log.md)); not a D-decision. Every slice inherits PR 1's present-loop verify,
 re-run **while indexing**.
@@ -580,9 +598,8 @@ re-run **while indexing**.
 Renumbered 2026-09-24 from 21–25 (it follows Import). AI culling, cloud
 inference, and inference in the base installer stay out.
 
-**Open (owner, 2026-09-24):** H was proposed Windows-first, before PRs 9–15 went
-dual-track. Whether H follows the dual-track rule is not decided. A Mac half would need an
-ORT Core ML provider, which plan/17 does not specify. Decide before PR 20 starts.
+**Settled (owner, 2026-09-24): dual-track.** Each of PRs 20–24 has a Windows half and a Mac
+half and a verify line on each, and both present-loop gates hold **while indexing**.
 
 ---
 

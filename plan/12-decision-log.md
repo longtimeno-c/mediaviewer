@@ -1443,3 +1443,25 @@ the source only after the copy is verified. The feature set widened at the owner
 The backlog's "filename templating" is narrowed to renaming files already in a library. Full
 design: plan/18. Never offered: deleting from or formatting cards, overwriting destination
 files, uploading.
+
+## 2026-09-24 (later) — AI search is dual-track; Mac crash reporting goes in PR 11
+
+**Owner's calls, answering the two open questions from the renumbering entry above.**
+
+**AI search (PRs 20–24) is built on both platforms**, like every PR from 9. Mac runs the same
+ONNX model through ONNX Runtime's **Core ML provider** (Apple GPU / Neural Engine), with the
+CPU provider underneath. The Mac Compute toggle is Auto / Core ML / CPU only. Core ML is part of
+macOS, so there is no vendor sub-pack. The pack installs through PR 16's add-on mechanism,
+signed and notarized. Frame sampling on Mac uses a separate VideoToolbox decoder instance,
+never the playback one. Both present-loop gates hold while indexing. Indexes are local to one
+machine and never synced between platforms, because embeddings differ slightly per backend.
+The PR 20 spike measures how many of the model's operators Core ML covers; the rest fall back
+to CPU inside ORT.
+
+**Mac crash reporting goes in the Mac half of PR 11.** This settles the open question from the
+2026-09-23 PR 20 entry and the 2026-09-17 fold-in: the fold-in put Crashpad in old PR 17, and it
+never landed. The Mac half of PR 11 adds Crashpad out-of-process, the same scrub as Windows (no
+path, filename, username, pixels or EXIF), and a Swift/AppKit capture path tied to the native
+report by the correlation id. Its verify is a Mac canary scan. Until PR 11 lands, the Mac has
+no crash capture. A stable Mac release carrying PR 9's new parsers before then must say so in
+its notes.
