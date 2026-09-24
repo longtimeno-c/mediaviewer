@@ -263,3 +263,81 @@ TEST_CASE("scrubbing a folder abandons the decodes it passed", "[abi][folder][ca
   REQUIRE(mv_folder_close(session.handle) == MV_OK);
   mv::io::set_thumb_cache_dir_override({});
 }
+
+// PR 9: sort order lives in the session, so filmstrip, gallery and arrow keys all
+// see one order. set_sort re-sorts in place and keeps the current stop.
+TEST_CASE("mv_folder_set_sort re-sorts the listing and keeps the current stop", "[abi][folder][sort]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  write_bmp(dir, L"b.bmp");
+  write_bmp(dir, L"c.bmp");
+  {  // b is the largest, then c, then a: pad the files so the sizes differ.
+    std::ofstream b(dir + L"\\b.bmp", std::ios::binary | std::ios::app);
+    b << std::string(4000, 'x');
+    std::ofstream c(dir + L"\\c.bmp", std::ios::binary | std::ios::app);
+    c << std::string(2000, 'x');
+  }
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  int32_t packed = -1;
+  REQUIRE(mv_folder_get_sort(session.handle, &packed) == MV_OK);
+  CHECK(packed == 0);  // name, ascending
+
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\c.bmp").c_str(), &job) ==
+          MV_OK);
+  mv_completion c{};
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+
+  const auto names = [&] {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(session.handle, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(session.handle, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  CHECK(names() == "a.bmp b.bmp c.bmp ");
+  uint32_t selected = 0;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  CHECK(selected == 2);  // c.bmp
+
+  // Size, descending: b (4k+), c (2k+), a. Key 2 = size, bit 3 = descending.
+  REQUIRE(mv_folder_set_sort(session.handle, 2 | 8) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names() == "b.bmp c.bmp a.bmp ");
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  CHECK(selected == 1);  // still c.bmp: the current stop followed the file
+
+  REQUIRE(mv_folder_get_sort(session.handle, &packed) == MV_OK);
+  CHECK(packed == (2 | 8));
+  // An unknown key is name, not undefined behaviour.
+  REQUIRE(mv_folder_set_sort(session.handle, 7) == MV_OK);
+  REQUIRE(mv_folder_get_sort(session.handle, &packed) == MV_OK);
+  CHECK(packed == 0);
+
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+TEST_CASE("mv_list_subdirectories lists visible folders only, sorted", "[abi][folder][tree]") {
+  const auto dir = temp_dir();
+  REQUIRE(::CreateDirectoryW((dir + L"\\beta").c_str(), nullptr));
+  REQUIRE(::CreateDirectoryW((dir + L"\\Alpha").c_str(), nullptr));
+  REQUIRE(::CreateDirectoryW((dir + L"\\.git").c_str(), nullptr));
+  REQUIRE(::CreateDirectoryW((dir + L"\\hidden").c_str(), nullptr));
+  REQUIRE(::SetFileAttributesW((dir + L"\\hidden").c_str(), FILE_ATTRIBUTE_HIDDEN));
+  write_bmp(dir, L"not-a-folder.bmp");
+
+  char buf[1024]{};
+  uint32_t bytes = 0;
+  REQUIRE(mv_list_subdirectories(utf8(dir).c_str(), buf, sizeof(buf), &bytes) == MV_OK);
+  const std::string got(buf);
+  const std::string root = utf8(dir);
+  CHECK(got == "Alpha\t" + root + "\\Alpha\n" + "beta\t" + root + "\\beta\n");
+  CHECK(bytes == got.size() + 1);
+
+  // A directory that is not there is an I/O error, not an empty tree.
+  CHECK(mv_list_subdirectories((root + "\\nope").c_str(), buf, sizeof(buf), &bytes) == MV_ERR_IO);
+}

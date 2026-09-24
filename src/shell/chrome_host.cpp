@@ -252,6 +252,15 @@ expected chrome_host::load() noexcept {
     return err(status::internal);
   }
 
+  // Optional, like the updater: a chrome without the PR 9 panes still loads.
+  attach_panels_ = get_entry(L"AttachPanels");
+  detach_panels_ = get_entry(L"DetachPanels");
+  show_meta_pane_ = get_entry(L"ShowMetaPane");
+  show_folder_tree_ = get_entry(L"ShowFolderTree");
+  set_meta_data_ = get_entry(L"SetMetaData");
+  set_tree_root_ = get_entry(L"SetTreeRoot");
+  take_tree_path_ = get_entry(L"TakeTreePath");
+
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
   updater_exit_ = get_entry(L"UpdaterExit");
@@ -565,11 +574,106 @@ void chrome_host::show_transport(bool visible, int width, int client_height, int
   transport_visible_ = visible;
 }
 
-void chrome_host::apply_settings(std::int32_t flags) noexcept {
+void chrome_host::apply_settings(std::int32_t flags, std::int32_t sort) noexcept {
   if (!attached_ || !apply_settings_) return;
   chrome_flags_args args{};
   args.flags = flags;
+  args.sort = sort;
   (void)apply_settings_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_fn on_command,
+                                    void* session, int width, int height,
+                                    std::uint32_t dpi) noexcept {
+  if (!loaded() || !attach_panels_ || !show_meta_pane_ || !show_folder_tree_) {
+    return err(status::internal);
+  }
+  if (!parent) return err(status::invalid_arg);
+  if (panels_attached_ && detach_panels_) (void)detach_panels_(nullptr, 0);
+  panels_attached_ = false;
+  meta_visible_ = false;
+  tree_visible_ = false;
+
+  chrome_filmstrip_args args{};
+  args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
+  args.context = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(context));
+  args.on_command = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(on_command));
+  args.session = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(session));
+  args.client_width = width;
+  args.client_height = height;
+  args.dpi = static_cast<std::int32_t>(dpi);
+  const int rc = attach_panels_(&args, static_cast<std::int32_t>(sizeof(args)));
+  if (rc != 0) {
+    MV_LOG_WARN("chrome: AttachPanels failed (%d)", rc);
+    return err(status::internal);
+  }
+  panels_attached_ = true;  // built parked below the client area
+  return {};
+}
+
+namespace {
+void show_panel(chrome_entry_fn fn, bool visible, int x, int y, int width, int height,
+                std::uint32_t dpi, int client_height) noexcept {
+  chrome_panel_args args{};
+  args.visible = visible ? 1 : 0;
+  args.x = visible ? x : 0;
+  args.y = visible ? y : client_height;
+  args.width = visible ? width : 1;
+  args.height = visible ? height : 1;
+  args.dpi = static_cast<std::int32_t>(dpi);
+  (void)fn(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+}  // namespace
+
+// `y` is the top of the visible pane and `height` its height, both client
+// pixels. Hidden, the pane parks one client-height below the top: `y + height`
+// is the bottom edge the caller measured, and anything at or past it is off screen.
+void chrome_host::show_meta_pane(bool visible, int x, int y, int width, int height,
+                                 std::uint32_t dpi) noexcept {
+  if (!panels_attached_ || !show_meta_pane_) return;
+  show_panel(show_meta_pane_, visible, x, y, width, height, dpi, y + height + 1);
+  meta_visible_ = visible;
+}
+
+void chrome_host::show_folder_tree(bool visible, int x, int y, int width, int height,
+                                   std::uint32_t dpi) noexcept {
+  if (!panels_attached_ || !show_folder_tree_) return;
+  show_panel(show_folder_tree_, visible, x, y, width, height, dpi, y + height + 1);
+  tree_visible_ = visible;
+}
+
+void chrome_host::set_meta_data(bool loading, const std::string& summary,
+                                const std::string& properties,
+                                const std::string& streams) noexcept {
+  if (!panels_attached_ || !set_meta_data_) return;
+  chrome_meta_args args{};
+  args.summary = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(summary.data()));
+  args.properties = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(properties.data()));
+  args.streams = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(streams.data()));
+  args.summary_len = static_cast<std::int32_t>(summary.size());
+  args.properties_len = static_cast<std::int32_t>(properties.size());
+  args.streams_len = static_cast<std::int32_t>(streams.size());
+  args.loading = loading ? 1 : 0;
+  (void)set_meta_data_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_tree_root(const std::string& utf8_dir) noexcept {
+  if (!panels_attached_ || !set_tree_root_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8_dir.data()));
+  args.length = static_cast<std::int32_t>(utf8_dir.size());
+  (void)set_tree_root_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+std::string chrome_host::take_tree_path() noexcept {
+  if (!panels_attached_ || !take_tree_path_) return {};
+  char buf[4096]{};
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf));
+  args.length = static_cast<std::int32_t>(sizeof(buf));
+  const int n = take_tree_path_(&args, static_cast<std::int32_t>(sizeof(args)));
+  if (n <= 0 || n >= static_cast<int>(sizeof(buf))) return {};
+  return std::string(buf, static_cast<std::size_t>(n));
 }
 
 void chrome_host::apply_rate(float rate) noexcept {
@@ -624,9 +728,16 @@ bool chrome_host::navigate_focus(bool reverse) noexcept {
 void chrome_host::detach() noexcept {
   // Before any island goes: a static FocusManager.GotFocus handler firing
   // into a half-disposed island is a XAML fail-fast at exit.
-  if ((attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) &&
+  if ((attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_ ||
+       panels_attached_) &&
       begin_detach_) {
     (void)begin_detach_(nullptr, 0);
+  }
+  if (panels_attached_ && detach_panels_) {
+    (void)detach_panels_(nullptr, 0);
+    panels_attached_ = false;
+    meta_visible_ = false;
+    tree_visible_ = false;
   }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);
@@ -651,7 +762,10 @@ void chrome_host::detach() noexcept {
 }
 
 void chrome_host::shutdown_for_exit() noexcept {
-  if (attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_) detach();
+  if (attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_ ||
+      panels_attached_) {
+    detach();
+  }
   if (!shutdown_for_exit_) return;
   const int rc = shutdown_for_exit_(nullptr, 0);
   // Not silent: a live source here means an island skipped detach, which is

@@ -18,7 +18,7 @@
 
 #include "io/dir.h"
 
-namespace mv::shell {
+namespace mv::io {
 
 enum class sort_key : std::uint8_t { name = 0, modified, size, type, date_taken, count };
 
@@ -40,4 +40,4 @@ void sort_entries(std::vector<io::dir_entry>& entries, sort_order order,
 [[nodiscard]] std::int32_t pack_sort(sort_order o) noexcept;
 [[nodiscard]] sort_order unpack_sort(std::int32_t v) noexcept;
 
-}  // namespace mv::shell
+}  // namespace mv::io

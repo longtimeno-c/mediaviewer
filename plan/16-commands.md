@@ -286,7 +286,7 @@ Chrome, in-memory, no decode.
 - **Status / title:** `filename — 3/247 — 6000×4000 — 95 % — ★★★`. Index and listing stats
   come from the folder model, not from the decoder.
 - **Sort (PR 4):** name, mtime, size, type. **EXIF date-taken waits for PR 9** so PR 4 does
-  not parse every file. Remember the user's sort. *(macOS 2026-09-24: the sort orders, including date taken, ship in the View ▸ Sort By menu. Date-taken keys are read once per file by one background job and the listing re-sorts in place when they land; a file with no stamp sorts by mtime. The Windows sort UI is still to do.)*
+  not parse every file. Remember the user's sort. *(macOS 2026-09-24: the sort orders, including date taken, ship in the View ▸ Sort By menu. Date-taken keys are read once per file by one background job and the listing re-sorts in place when they land; a file with no stamp sorts by mtime. Windows 2026-09-24: the same five orders and a descending switch in View ▸ Sort by and in Settings, applied by the ABI session (`mv_folder_set_sort`) and saved as `[view] sort`.)*
 - **Filter:** all / photos / videos / RAW. In-memory flag on the listing. RAW flag is
   meaningful from PR 7.
 - **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item

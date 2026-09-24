@@ -230,6 +230,8 @@ add_library(mv_io STATIC
   src/io/file_ops.h
   src/io/file_ops_win.cpp
   src/io/pairing.h
+  src/io/sort_order.cpp
+  src/io/sort_order.h
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
@@ -394,10 +396,9 @@ add_library(mv::player ALIAS mv_player)
 # EXIF / IPTC / XMP and maker notes, libavformat for container and per-stream
 # facts. Depends downward only: meta -> {codec, io, core}.
 #
-# NOT BUILT ON WINDOWS YET. Written alongside the macOS twin (plan/12
-# 2026-09-24) and shares every source with it; the first MSVC build is the
-# Windows half of PR 9's verify. Expect /W4 /WX fixes in src/meta and the
-# vcpkg exiv2 port to need its `xmp`, `bmff` and `png` features.
+# Built and tested on Windows (plan/12 2026-09-24, /W4 /WX clean). Shares every
+# source with the macOS twin. The vcpkg exiv2 port needs its `xmp`, `bmff` and
+# `png` features (without `xmp` a PNG's XMP is silently empty).
 # ---------------------------------------------------------------------------
 find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
@@ -406,6 +407,8 @@ add_library(mv_meta STATIC
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
+  src/meta/tables.cpp
+  src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
   src/meta/internal.h
@@ -447,7 +450,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -701,10 +704,9 @@ if(MV_BUILD_TESTS)
     tests/test_audio_sink.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
-    # PR 9 (unbuilt on Windows until the first MSVC run, plan/12 2026-09-24)
+    # PR 9 (plan/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp
-    src/shell/sort_order.cpp
     src/shell/meta_store.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp

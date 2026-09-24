@@ -162,6 +162,35 @@ public sealed class MediaViewerSession : IDisposable
     public void FolderThumbsVisible(uint first, uint count) =>
         ThrowIfFailed(NativeMethods.mv_folder_thumbs_visible(_handle, first, count));
 
+    /// <summary>
+    /// The immediate subfolders of <paramref name="dir"/> for the folder tree (PR 9): hidden,
+    /// system and dot directories skipped, sorted by name. One directory read, so call it off
+    /// the UI thread. Returns an empty list when the directory cannot be read.
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Path)> ListSubdirectories(string dir)
+    {
+        var result = new List<(string, string)>();
+        MvStatus first = NativeMethods.mv_list_subdirectories(dir, IntPtr.Zero, 0, out uint need);
+        // cap == 0 reports the size and INVALID_ARG; an I/O failure reports neither.
+        if (need <= 1 || first == MvStatus.Io) return result;
+        IntPtr buf = Marshal.AllocHGlobal((int)need);
+        try
+        {
+            if (NativeMethods.mv_list_subdirectories(dir, buf, need, out _) != MvStatus.Ok) return result;
+            string text = Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+            foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                int tab = line.IndexOf('\t');
+                if (tab > 0) result.Add((line[..tab], line[(tab + 1)..]));
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+        return result;
+    }
+
     private delegate MvStatus FolderStringFn(MvSessionHandle session, uint index, IntPtr utf8,
                                              uint cap, out uint outBytes);
 

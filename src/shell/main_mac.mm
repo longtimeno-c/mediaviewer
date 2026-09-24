@@ -39,7 +39,7 @@
 #include "meta/meta.h"
 #include "shell/key_router.h"
 #include "shell/meta_store.h"
-#include "shell/sort_order.h"
+#include "io/sort_order.h"
 #include "shell/settings.h"
 #include "shell/input_state.h"
 #include "shell/install_from_dmg_mac.h"
@@ -934,7 +934,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
-  mv::shell::sort_order _sort;
+  mv::io::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
   SPUStandardUpdaterController* _updater;
@@ -1341,7 +1341,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
   // items, the current one still selected, no image reload.
-  if (_meta.consume_dates_changed() && _sort.key == mv::shell::sort_key::date_taken) {
+  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken) {
     [self resortKeepingSelection];
   }
   if (!_folder.consume_changed()) return;
@@ -1855,15 +1855,15 @@ enum MvMenuCmd : NSInteger {
     case kMenuFolderTree: [self runCommand:mv::shell::command_id::folder_tree back:mv::shell::back_target::none]; break;
     case kMenuSortName: case kMenuSortModified: case kMenuSortSize: case kMenuSortType:
     case kMenuSortDateTaken: {
-      mv::shell::sort_order o = _sort;
-      o.key = static_cast<mv::shell::sort_key>(cmd - kMenuSortName);
-      [self setSortOrder:mv::shell::pack_sort(o)];
+      mv::io::sort_order o = _sort;
+      o.key = static_cast<mv::io::sort_key>(cmd - kMenuSortName);
+      [self setSortOrder:mv::io::pack_sort(o)];
       break;
     }
     case kMenuSortDescending: {
-      mv::shell::sort_order o = _sort;
+      mv::io::sort_order o = _sort;
       o.descending = !o.descending;
-      [self setSortOrder:mv::shell::pack_sort(o)];
+      [self setSortOrder:mv::io::pack_sort(o)];
       break;
     }
   }
@@ -2457,10 +2457,10 @@ enum MvMenuCmd : NSInteger {
 // current item current without reloading its image.
 - (void)sortItems {
   mv::shell::meta_store* store = &_meta;
-  mv::shell::sort_entries(_items, _sort, [store](const mv::io::dir_entry& e) {
+  mv::io::sort_entries(_items, _sort, [store](const mv::io::dir_entry& e) {
     return store->date_key(e);
   });
-  if (_sort.key == mv::shell::sort_key::date_taken && !_items.empty()) {
+  if (_sort.key == mv::io::sort_key::date_taken && !_items.empty()) {
     // One background scan fills the keys; the listing re-sorts when it lands.
     _meta.resolve_date_keys(_items, _jobs, {});
   }
@@ -2486,9 +2486,9 @@ enum MvMenuCmd : NSInteger {
   [self publish];
 }
 
-- (int32_t)sortOrder { return mv::shell::pack_sort(_sort); }
+- (int32_t)sortOrder { return mv::io::pack_sort(_sort); }
 - (void)setSortOrder:(int32_t)packed {
-  const mv::shell::sort_order next = mv::shell::unpack_sort(packed);
+  const mv::io::sort_order next = mv::io::unpack_sort(packed);
   if (next.key == _sort.key && next.descending == _sort.descending) return;
   _sort = next;
   [[NSUserDefaults standardUserDefaults] setInteger:packed forKey:@"mv.sort"];
@@ -2553,7 +2553,7 @@ static NSString* const kDefaultsKeys = @"mv.keys";
     }
   }
   _router.rebuild(mv::shell::live_bindings());
-  _sort = mv::shell::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
+  _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);

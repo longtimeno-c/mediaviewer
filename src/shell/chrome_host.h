@@ -49,6 +49,11 @@ enum chrome_command : int {
   // (plan/16 — an update affordance is chrome). arg 0: the user clicked
   // "Update ready — restart"; arg 1: Update.exe is armed, close now.
   chrome_cmd_update_restart = 1003,
+  // PR 9. tree_open: the user chose a folder in the tree; native pulls the path
+  // with take_tree_path (the callback carries only a float). set_sort: arg is the
+  // packed sort order (io/sort_order.h pack_sort).
+  chrome_cmd_tree_open = 1004,
+  chrome_cmd_set_sort = 1005,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -95,6 +100,10 @@ static_assert(chrome_cmd_toggle_gallery == static_cast<int>(command_id::toggle_g
 static_assert(chrome_cmd_close_gallery == static_cast<int>(command_id::close_gallery));
 static_assert(chrome_cmd_gallery_activate == static_cast<int>(command_id::gallery_activate));
 static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle_filmstrip));
+// The panes' close buttons and the View menu send these keyed commands.
+static_assert(static_cast<int>(command_id::folder_tree) == 78);
+static_assert(static_cast<int>(command_id::metadata_pane) == 92);
+static_assert(chrome_cmd_tree_open >= kCommandCount && chrome_cmd_set_sort >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -112,7 +121,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_close_gallery, chrome_cmd_gallery_activate, chrome_cmd_set_settings,
       chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
       chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
-      chrome_cmd_reset_keys, chrome_cmd_update_restart};
+      chrome_cmd_reset_keys, chrome_cmd_update_restart, chrome_cmd_tree_open,
+      chrome_cmd_set_sort};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -169,9 +179,35 @@ struct chrome_show_args {
 
 static_assert(sizeof(chrome_show_args) == 16, "keep in sync with ChromeShowArgs");
 
+// PR 9 panes. Native owns the geometry: x/y/width/height are client pixels, and a
+// hidden pane is parked below the client area (the gallery's rule).
+struct chrome_panel_args {
+  std::int32_t visible;
+  std::int32_t x;
+  std::int32_t y;
+  std::int32_t width;
+  std::int32_t height;
+  std::int32_t dpi;
+};
+
+static_assert(sizeof(chrome_panel_args) == 24, "keep in sync with ChromePanelArgs");
+
+// The metadata pane's three tables (meta/tables.h), valid for the call only.
+struct chrome_meta_args {
+  std::uint64_t summary;
+  std::uint64_t properties;
+  std::uint64_t streams;
+  std::int32_t summary_len;
+  std::int32_t properties_len;
+  std::int32_t streams_len;
+  std::int32_t loading;
+};
+
+static_assert(sizeof(chrome_meta_args) == 40, "keep in sync with ChromeMetaArgs");
+
 struct chrome_flags_args {
   std::int32_t flags;
-  std::int32_t reserved;
+  std::int32_t sort;  // PR 9: packed sort order, so Settings and View > Sort by show the truth
 };
 
 static_assert(sizeof(chrome_flags_args) == 8, "keep in sync with ChromeFlagsArgs");
@@ -291,6 +327,26 @@ class chrome_host {
     return gallery_attached_ && gallery_visible_;
   }
 
+  // PR 9: the metadata pane (right) and folder tree (left), two islands that
+  // float over the canvas and never inset it. Optional: an older chrome without
+  // them still loads, and every call below is then a no-op.
+  [[nodiscard]] expected attach_panels(HWND parent, void* context, chrome_command_fn on_command,
+                                       void* session, int width, int height,
+                                       std::uint32_t dpi) noexcept;
+  [[nodiscard]] bool panels_attached() const noexcept { return panels_attached_; }
+  void show_meta_pane(bool visible, int x, int y, int width, int height,
+                      std::uint32_t dpi) noexcept;
+  void show_folder_tree(bool visible, int x, int y, int width, int height,
+                        std::uint32_t dpi) noexcept;
+  [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
+  [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
+  // The record's tables, formatted once by the host; the pane re-renders from them.
+  void set_meta_data(bool loading, const std::string& summary, const std::string& properties,
+                     const std::string& streams) noexcept;
+  void set_tree_root(const std::string& utf8_dir) noexcept;
+  // The folder the user chose in the tree ("" if none pending).
+  [[nodiscard]] std::string take_tree_path() noexcept;
+
   // The playback transport: a bottom strip, its content centred, shown only
   // while a clip is open. `filmstrip_px` is how much bottom chrome is already
   // spoken for, so the two strips stack instead of overlapping.
@@ -307,7 +363,7 @@ class chrome_host {
 
   // Push the persisted toggles into the settings menu so the menu and the
   // keyboard cannot disagree about what is on.
-  void apply_settings(std::int32_t flags) noexcept;
+  void apply_settings(std::int32_t flags, std::int32_t sort = 0) noexcept;
 
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
@@ -374,6 +430,13 @@ class chrome_host {
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
+  chrome_entry_fn attach_panels_ = nullptr;
+  chrome_entry_fn detach_panels_ = nullptr;
+  chrome_entry_fn show_meta_pane_ = nullptr;
+  chrome_entry_fn show_folder_tree_ = nullptr;
+  chrome_entry_fn set_meta_data_ = nullptr;
+  chrome_entry_fn set_tree_root_ = nullptr;
+  chrome_entry_fn take_tree_path_ = nullptr;
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn update_restart_ = nullptr;
@@ -384,6 +447,9 @@ class chrome_host {
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
+  bool panels_attached_ = false;
+  bool meta_visible_ = false;
+  bool tree_visible_ = false;
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   chrome_entry_fn shutdown_for_exit_ = nullptr;

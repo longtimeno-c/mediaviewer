@@ -45,7 +45,9 @@
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
+#include "io/sort_order.h"
 #include "meta/meta.h"
+#include "meta/tables.h"
 #include "shell/marks.h"
 #include "shell/meta_store.h"
 #include "shell/open_request.h"
@@ -110,6 +112,11 @@ struct app_state {
   input_snapshot input;
   // PR 9. Reads run on `jobs`, never here (rule 1); the record is the one the
   // overlays were last formatted from, so toggling them is not a file read.
+  // PR 9 panes. The wish is kept here; apply_view_state decides what is on screen
+  // (a pane hides under the gallery, fullscreen and Settings and comes back).
+  bool meta_pane_visible = false;
+  bool tree_visible = false;
+  std::string current_dir;  // the open folder, for the tree's root
   mv::job_system jobs;
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
@@ -259,6 +266,8 @@ std::string utf8_from_wide(std::wstring_view wide) {
 }
 
 void apply_view_state(app_state* app) noexcept;
+void push_tree_root(app_state* app) noexcept;
+void push_meta_pane(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void focus_canvas(app_state* app) noexcept;
@@ -279,6 +288,8 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
                        &job_id);
   ++app->folder_token;
+  app->current_dir = dir;
+  push_tree_root(app);
   ++app->input.activity_seq;
   publish(app);
   apply_view_state(app);
@@ -594,7 +605,7 @@ void refresh_item_info(app_state* app) noexcept {
 // ---- PR 9: metadata for the overlays ---------------------------------------
 
 bool metadata_wanted(const app_state* app) noexcept {
-  return app->input.info_overlay || app->input.af_points;
+  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
 }
 
 // The selected item as the store keys it: path + mtime + size, from one stat.
@@ -646,6 +657,7 @@ void adopt_metadata(app_state* app, std::shared_ptr<const mv::meta::metadata> re
   ++app->input.meta_seq;
   ++app->input.activity_seq;
   publish(app);
+  push_meta_pane(app);
 }
 
 // A cache hit is adopted at once; a miss submits one read on the pool and its
@@ -682,6 +694,58 @@ void metadata_selection_changed(app_state* app) {
     ++app->input.meta_seq;
   }
   if (metadata_wanted(app)) ::SetTimer(app->window, kMetaTimerId, kMetaDebounceMs, nullptr);
+  push_meta_pane(app);
+}
+
+// The pane shows the record already held: three text tables, formatted here once
+// per record. No record yet means "reading" while something is wanted, and the
+// pane renders its empty states. Never reads the file.
+void push_meta_pane(app_state* app) noexcept {
+  if (!app || !app->chrome.meta_pane_visible()) return;
+  if (app->meta_record) {
+    app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
+                              mv::meta::properties_table(*app->meta_record),
+                              mv::meta::streams_table(*app->meta_record));
+    return;
+  }
+  std::uint32_t count = 0;
+  const bool have = app->session && mv_folder_count(app->session, &count) == MV_OK && count > 0;
+  app->chrome.set_meta_data(have, {}, {}, {});
+}
+
+void push_tree_root(app_state* app) noexcept {
+  if (!app) return;
+  app->chrome.set_tree_root(app->current_dir);
+}
+
+void set_meta_pane(app_state* app, bool on) noexcept {
+  if (!app || app->meta_pane_visible == on) return;
+  app->meta_pane_visible = on;
+  apply_view_state(app);
+  if (on) {
+    request_metadata_now(app);
+    push_meta_pane(app);
+  }
+  if (app->window) focus_canvas(app);  // keys stay with the canvas
+}
+
+void set_folder_tree(app_state* app, bool on) noexcept {
+  if (!app || app->tree_visible == on) return;
+  app->tree_visible = on;
+  push_tree_root(app);
+  apply_view_state(app);
+  if (app->window) focus_canvas(app);
+}
+
+// PR 9 sort. The session owns the order (the filmstrip, the gallery and the arrow
+// keys all read one list); this persists it and tells the chrome what took effect.
+void set_sort(app_state* app, std::int32_t packed) noexcept {
+  if (!app || !app->session) return;
+  packed = mv::io::pack_sort(mv::io::unpack_sort(packed));
+  if (mv_folder_set_sort(app->session, packed) != MV_OK) return;
+  app->settings.sort = packed;
+  mv::shell::save_view_settings(app->settings);
+  app->chrome.apply_settings(chrome_flags(app), packed);
 }
 
 // Ctrl+C (plan/16): the eyedropper's readout when it is on and a pixel is under
@@ -880,7 +944,7 @@ void toggle_filmstrip_setting(app_state* app) {
                                              : app->settings.filmstrip_for_folder;
   flag = !flag;
   mv::shell::save_view_settings(app->settings);
-  app->chrome.apply_settings(chrome_flags(app));
+  app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
   apply_view_state(app);
 }
 
@@ -938,7 +1002,11 @@ void chrome_on_command(void* ctx, int command, float arg) {
       toggle_filmstrip_setting(app);
       return;
     case mv::shell::chrome_cmd_set_settings:
-      app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
+      {
+        const std::int32_t keep_sort = app->settings.sort;
+        app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
+        app->settings.sort = keep_sort;
+      }
       mv::shell::save_view_settings(app->settings);
       mv::shell::app_settings().set_int(
           "update", "auto_check",
@@ -952,8 +1020,29 @@ void chrome_on_command(void* ctx, int command, float arg) {
       }
       app->input.sticky_zoom = app->settings.sticky_zoom;
       app->input.background = app->settings.background;
-      app->chrome.apply_settings(chrome_flags(app));
+      app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
       apply_view_state(app);
+      return;
+    case mv::shell::chrome_cmd_tree_open: {
+      // The island cannot pass a string through the callback; it parks the
+      // chosen folder and native pulls it (chrome_host::take_tree_path).
+      const std::string dir = app->chrome.take_tree_path();
+      if (dir.empty()) return;
+      app->mode = open_mode::folder;
+      app->gallery_visible = false;
+      {
+        const int n = ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0);
+        if (n <= 1) return;
+        std::wstring wide(static_cast<std::size_t>(n), 0);
+        ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, wide.data(), n);
+        wide.resize(static_cast<std::size_t>(n) - 1);
+        open_folder(app, wide, {});
+      }
+      if (app->window) focus_canvas(app);
+      return;
+    }
+    case mv::shell::chrome_cmd_set_sort:
+      set_sort(app, static_cast<std::int32_t>(arg));
       return;
     case mv::shell::chrome_cmd_rebind: {
       const int packed = static_cast<int>(arg);
@@ -1968,8 +2057,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     // plan/12 2026-09-13: the tree island lands in PR 8. Its command, key and
     // chrome_left_px layout are here so the island maths is not retrofitted.
     case folder_tree:
-      MV_LOG_INFO("folder tree: lands in PR 8 (plan/12 2026-09-13)");
-      ::MessageBeep(MB_OK);
+      set_folder_tree(app, !app->tree_visible);
+      return true;
+    case metadata_pane:
+      set_meta_pane(app, !app->meta_pane_visible);
       return true;
 
     // Host-side and cheap (plan/16): photographers park the viewer on a
@@ -2034,6 +2125,36 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   return run_command(app, routed.command);
 }
 
+// PR 9. The panes float over the canvas: the metadata pane on the right, the tree
+// on the left, both between the command bar and the bottom strips. Native owns the
+// maths (the island only moves), and none of it touches the canvas rectangle, so
+// opening one never refits the photo or the present path (plan/12 2026-09-24).
+void layout_panels(app_state* app) noexcept {
+  if (!app || !app->window || !app->chrome.panels_attached()) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  int bottom = 0;
+  if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
+  if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
+  const int top = bar;
+  const int span = std::max(height - bar - bottom, 1);
+  // Hidden under the gallery (it covers the client), fullscreen chrome-off and
+  // Settings; the wish survives and the pane returns with them.
+  const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
+  const bool covered = app->gallery_visible || app->settings_open || chrome_hidden;
+  const int side = std::min(width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+  const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
+  const bool want_meta = app->meta_pane_visible && !covered;
+  const bool want_tree = app->tree_visible && !covered;
+  app->chrome.show_meta_pane(want_meta, width - side, top, side, span, dpi);
+  app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, dpi);
+  if (want_meta) push_meta_pane(app);
+}
+
 void layout_chrome(app_state* app) noexcept {
   if (!app || !app->window || !app->chrome.attached()) return;
   RECT rc{};
@@ -2051,6 +2172,7 @@ void layout_chrome(app_state* app) noexcept {
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (app->chrome.transport_attached()) app->chrome.resize_transport(width, height, strip, dpi);
   if (app->chrome.gallery_attached()) app->chrome.resize_gallery(width, height, dpi);
+  layout_panels(app);
 }
 
 bool attach_chrome(app_state* app) {
@@ -2073,7 +2195,9 @@ bool attach_chrome(app_state* app) {
                                      rc.right - rc.left, height, dpi);
   (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
                                    rc.right - rc.left, height, dpi);
-  app->chrome.apply_settings(chrome_flags(app));
+  (void)app->chrome.attach_panels(app->window, app, &chrome_on_command, app->session,
+                                  rc.right - rc.left, height, dpi);
+  app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
   // `?` and the palette read the same static table as the router (plan/16).
   publish_command_table(app);
   app->chrome.refresh_island_windows();
@@ -2141,6 +2265,7 @@ void apply_view_state(app_state* app) noexcept {
   } else if (want_transport) {
     app->chrome.resize_transport(width, height, strip, dpi);
   }
+  layout_panels(app);
   update_client_metrics(app, app->window);
   ++app->input.resize_seq;
   ++app->input.activity_seq;
@@ -2614,6 +2739,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::MessageBoxA(nullptr, mv_last_error_message(), "MediaViewer", MB_ICONERROR | MB_OK);
     return 2;
   }
+  // PR 9: the saved folder sort applies to every open from here on.
+  (void)mv_folder_set_sort(app.session, app.settings.sort);
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);

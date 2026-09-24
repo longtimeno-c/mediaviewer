@@ -1351,3 +1351,39 @@ selection changes debounce 90 ms; completions post a window message.
   drop with it off. The frametime harness and full ctest still pass; the PR 1 60 s soak was not re-run.
 - **Still owed on Windows:** XAML metadata pane (`I`), folder-tree island, sort menu.
 
+## 2026-09-24 — PR 9 Windows half completed (pane, tree, sort, ABI 0.6)
+
+This closes the "still owed on Windows" lists above. What was built and the calls made:
+
+- **Panes float, on Windows too.** The metadata pane (right, 340 DIP) and folder tree (left,
+  280 DIP) are two more islands over the canvas, between the command bar and the bottom
+  strips. `usable_canvas` has a left inset (`chrome_left_px`) but no right one, and an inset would
+  change the blit and camera, i.e. the present path; the macOS host made the same call. So
+  `chrome_left_px` stays 0 and opening a pane never refits the photo. Both hide under the gallery,
+  Settings and chrome-off fullscreen and come back with them. Revisit only with a present-loop soak.
+- **No `TextBox`, no `TreeView`.** Both fail-fast (`0xC000027B`, `Microsoft.UI.Xaml.dll`) in these
+  islands: `TextBox` was already known, `TreeView` crashed on first show and was found the hard way.
+  The tag search reuses `FakeInput`; the tree is StackPanels and Buttons with its own expand. The
+  tag list is a `ListView` of plain elements and did not crash.
+- **Sort lives in the ABI session, not the shell.** The Windows listing is owned by
+  `mv_session`, so filmstrip, gallery and arrow keys all read one order. `io/sort_order` moved
+  from `src/shell` to `src/io` (namespace `mv::io`; the macOS host, tests and `darwin.cmake` were
+  updated to match) so `abi -> io` stays legal. New calls, **ABI 0.6**: `mv_folder_set_sort`,
+  `mv_folder_get_sort`, `mv_list_subdirectories` ([14](14-abi.md)). The session keeps the scanned
+  listing so a new order or a batch of date-taken stamps re-applies without a disk scan; date
+  stamps come from `meta::read_date_taken` on one background job, checked per (mtime, size).
+  Persisted as `[view] sort`; an unknown key normalises to name.
+- **Pane data is three text tables** (`meta/tables.h`, the same formats the Mac bridge documents),
+  pushed to the chrome when the record changes. The chrome never reads a file. The tree lists a
+  folder on a pool task through `mv_list_subdirectories`, never on the UI thread.
+- **Tree open crosses as a pull.** The command callback carries a float, so the island parks the
+  chosen path and native pulls it (`chrome_cmd_tree_open` then `TakeTreePath`).
+- **Checked live:** an EXIF-stamped JPEG populates Summary and All tags (missing fields show a dash);
+  the tree lists subfolders, and invoking one opens it; View ▸ Sort by ▸ Size wrote `sort=2` and the
+  ABI test shows the listing re-sorted with the current stop kept. Full `ctest`: 517 pass.
+- **Not verified:** PR 1's 60 s present-loop soak (the open D6 gate; only the frametime harness
+  ran); PNG, HEIC and MP4 through the Windows pane by hand; the Windows Streams tab on a real clip
+  (the table format is unit-tested); the Canon AF sign (unchanged from above); a clean-VM run.
+  The macOS build was not rebuilt after the `sort_order` move (no Mac available); the edit is
+  mechanical (include path and namespace) but unproven there.
+

@@ -210,7 +210,7 @@ release version is promised for an individual slice.
 ## Milestone D — Viewer and editing updates (PR 9–12, post-v1)
 
 ### PR 9 — Metadata (read)
-*Status 2026-09-24: **macOS landed**, Windows UI outstanding — see [12](12-decision-log.md). The shared native core (`src/meta`, `meta_store`, `sort_order`) is done and unit-tested; the MSVC build, `O`/`Shift+O`/`Shift+I` overlays and `Ctrl+C` copy landed on Windows 2026-09-24; the Windows XAML pane, folder-tree island and sort menu are not.*
+*Status 2026-09-24: **landed on macOS and Windows.** The shared core (`src/meta`, `meta_store`, `io/sort_order`) is unit-tested on both. Windows adds the metadata pane, the folder-tree island, the sort menu (session-level, ABI 0.6), the `O` / `Shift+O` / `Shift+I` overlays and `Ctrl+C`; see [12](12-decision-log.md) 2026-09-24. Verified on Windows: full MSVC build and `ctest` (517 pass), the pane and tree driven in the running app on a JPEG with EXIF, sort and subfolder listing through the ABI. Not re-run: PR 1's 60 s soak (still the open D6 gate), and PNG / HEIC / MP4 through the Windows pane by hand (their records are covered by the `[meta]` tests).*
 
 Exiv2 + libavformat, unified property model, summary card + searchable full tree + per-stream video
 inspector. The folder-tree island deferred from PR 6 lands here too, using the existing
