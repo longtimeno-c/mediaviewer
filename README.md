@@ -547,8 +547,8 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
 ctest --test-dir build -C Release -R import_ --output-on-failure
 
-# ...and the same engine headless on Linux or any POSIX machine (what CI's
-# portable-core job runs; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
+# ...and the same engine headless on Linux or any POSIX machine (the
+# portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system):
 #   cmake -S cmake/portable -B build-portable \
 #     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \

@@ -1,0 +1,68 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index c116e8a..f0a65ae 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -56,6 +56,63 @@ jobs:
+       - run: python3 tools/mac/test_macpack.py -v
+       - run: python3 tools/package/test_github_release.py -v
+ 
++  # ---------------------------------------------------------------------------
++  # Milestone G (plan/18): the shared Import engine, add-on host and verified
++  # copy, built headless on Linux (cmake/portable) with the pinned vcpkg
++  # baseline, under ASan + UBSan. Includes the add-on packer's cross-check
++  # against the C++ verifier. The Windows and Mac legs run the same suite
++  # (mv_import_tests) inside their own builds.
++  # ---------------------------------------------------------------------------
++  portable-core:
++    name: Import engine (portable core, Linux, ASan)
++    if: ${{ github.event_name != 'schedule' }}
++    runs-on: ubuntu-latest
++    defaults:
++      run:
++        shell: bash
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Check out vcpkg at the manifest baseline
++        uses: actions/checkout@v4
++        with:
++          repository: microsoft/vcpkg
++          ref: ${{ env.VCPKG_COMMIT }}
++          path: vcpkg
++          fetch-depth: 0
++
++      - name: Bootstrap vcpkg
++        run: |
++          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
++          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
++
++      - name: Cache vcpkg packages
++        uses: actions/cache@v4
++        with:
++          path: build-portable/vcpkg_installed
++          key: vcpkg-portable-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('tools/portable/vcpkg.json') }}
++
++      # libsodium's vcpkg port builds with autotools on Linux.
++      - name: Build tools
++        run: sudo apt-get install -y --no-install-recommends autoconf automake libtool pkg-config
++
++      - name: Python for the packer test
++        run: python3 -m pip install --user cryptography
++
++      - name: Configure
++        run: |
++          cmake -S cmake/portable -B build-portable -DCMAKE_BUILD_TYPE=Debug -DMV_ASAN=ON \
++            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
++            -DVCPKG_MANIFEST_DIR="${{ github.workspace }}/tools/portable" \
++            -DPython3_EXECUTABLE="$(command -v python3)"
++
++      - name: Build
++        run: cmake --build build-portable
++
++      - name: Tests
++        timeout-minutes: 15
++        run: ctest --test-dir build-portable --output-on-failure
++
+   # ---------------------------------------------------------------------------
+   # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
+   # it catches different bugs (plan/09).

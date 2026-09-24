@@ -24,7 +24,7 @@ Mac are both at PR 9.** The order from here is:
 | 13 | Two-path trim | both | Planned |
 | 14 | Extract & remux | both | Planned |
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
-| 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux CI; both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
+| 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20

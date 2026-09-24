@@ -1683,8 +1683,9 @@ branch; it does **not** merge before 15, and it is not done until both platforms
   ID-signed for library validation.
 - **New dependencies:** BLAKE3 (taken under CC0-1.0) in `io`, libsodium (ISC) in `addon`. Both are
   permissive and in THIRD-PARTY.md. The add-on links SQLite (public domain).
-- **A headless Linux build of the shared core (`cmake/portable`)** runs the Import suite in CI under
-  ASan/UBSan. It is a test build, not a product platform: v1 is still Windows, the Mac is the second
+- **A headless Linux build of the shared core (`cmake/portable`)** runs the Import suite under
+  ASan/UBSan. Its CI job is `tools/portable/ci-portable-core.patch`: the writing session could not
+  push workflow files, so the owner applies it. It is a test build, not a product platform: v1 is still Windows, the Mac is the second
   host, and nothing in D9 changes. It exists so the engine every PR from here shares is proved on
   every pull request without a Mac runner.
 - **Import's commands are table rows gated at run time** (`set_addon_commands_available`), not
