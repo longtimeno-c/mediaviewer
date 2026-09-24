@@ -223,6 +223,8 @@ empty fields, never an error; toggling AF points and the info overlay does not r
 file.
 
 ### PR 10 — Geometry edits + export
+*Status 2026-09-24: **macOS landed** on PR 9's base, Windows host outstanding — see [12](12-decision-log.md). The shared core (`src/edit`, `codec/exif`, JPEG display orientation, `shell/edit_session`) is done and unit-tested on Linux; the Mac host and the MSL/HLSL blit change are written but were not compiled in that session.*
+
 `EditStack`, GPU op chain at viewport resolution, rotate/flip/crop/straighten/resize. Export with a
 metadata preservation policy. **Lossless JPEG** rotate and MCU-aligned crop where applicable.
 `[` `]` from the viewer invoke lossless rotate without opening the adjust pane. Crop is a

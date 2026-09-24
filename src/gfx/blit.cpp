@@ -21,6 +21,10 @@ cbuffer Camera : register(b0) {
   float clipping;
   float time;
   float grid;
+  // PR 10 geometry, twin of blit_metal.mm: output uv -> source uv. map0.w >
+  // 0.5 shows the background outside the source. Identity = unchanged.
+  float4 map0;
+  float4 map1;
 };
 
 cbuffer Tile : register(b1) {
@@ -142,7 +146,12 @@ float4 ps_main(VSOut vin) : SV_Target {
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(background_at(vin.pos.xy), opacity);
   }
-  return finish(sample_filtered(uv, texture_size), vin.pos.xy, image_px);
+  float3 h = float3(uv, 1.0);
+  float2 src = float2(dot(map0.xyz, h), dot(map1.xyz, h));
+  if (map0.w > 0.5 && (any(src < 0.0) || any(src > 1.0))) {
+    return float4(background_at(vin.pos.xy), opacity);
+  }
+  return finish(sample_filtered(src, texture_size), vin.pos.xy, image_px);
 }
 
 float4 ps_tile(VSOut vin) : SV_Target {
@@ -162,9 +171,11 @@ struct alignas(16) blit_cb {
   float origin_x, origin_y;
   float texture_w, texture_h;
   float background, clipping, time, grid;
+  float map0[4];
+  float map1[4];
 };
 
-static_assert(sizeof(blit_cb) == 64, "keep in sync with cbuffer Camera");
+static_assert(sizeof(blit_cb) == 96, "keep in sync with cbuffer Camera");
 
 struct alignas(16) tile_cb {
   float origin_x, origin_y;
@@ -306,6 +317,15 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   cb.clipping = p.clipping ? 1.0f : 0.0f;
   cb.time = p.time_seconds;
   cb.grid = p.pixel_grid ? 1.0f : 0.0f;
+  // A zero map would sample one texel everywhere: always write it.
+  cb.map0[0] = p.uv_map[0];
+  cb.map0[1] = p.uv_map[1];
+  cb.map0[2] = p.uv_map[2];
+  cb.map0[3] = p.clip_to_source ? 1.0f : 0.0f;
+  cb.map1[0] = p.uv_map[3];
+  cb.map1[1] = p.uv_map[4];
+  cb.map1[2] = p.uv_map[5];
+  cb.map1[3] = 0.0f;
   (void)upload_cb(ctx, cb_.Get(), &cb, sizeof(cb));
 
   ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

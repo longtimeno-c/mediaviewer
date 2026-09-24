@@ -2,6 +2,7 @@
 #include "image/pipeline.h"
 
 #include "codec/decode.h"
+#include "codec/orient.h"
 
 namespace mv::image {
 
@@ -16,7 +17,7 @@ result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const 
   const auto family = codec::probe(bytes);
   result<codec::raster> raster = err(status::unsupported_format);
   if (family == codec::format_family::jpeg) {
-    raster = codec::decode_jpeg(bytes, ctx, 4);
+    raster = codec::decode_jpeg_display(bytes, ctx, 4);
   } else if (family == codec::format_family::raw || family == codec::format_family::tiff ||
              codec::looks_like_raw(bytes)) {
     // Embedded JPEG inside a RAW — first pixel in preview time (plan/04, PR 7).

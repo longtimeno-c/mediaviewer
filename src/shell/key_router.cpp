@@ -23,6 +23,9 @@ mode resolve_mode(const view_state& s) noexcept {
   if (s.focus == focus_kind::filmstrip || s.focus == focus_kind::gallery) {
     return mode::island;
   }
+  // Crop is a canvas mode (plan/16): it only exists on a still, and the
+  // host leaves it when the item changes.
+  if (s.crop && s.item == item_kind::still) return mode::crop;
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;

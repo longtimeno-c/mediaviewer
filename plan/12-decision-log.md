@@ -1366,3 +1366,82 @@ sheet with the checkbox on and applies it only on Continue. Unticking it or choo
 Not Now preserves existing defaults, and an answered Mac prompt stays answered on
 updates. This replaces the earlier delayed-after-first-photo prompt policy; telemetry
 and promotional links remain unchanged.
+
+## 2026-09-24 — PR 10 (geometry edits + export) on macOS, on PR 9's base
+
+**Sequencing, the owner's call.** Asked for PR 10 built on the open PR 9 branch, which is
+Mac-first (row above). Same shape: the shared core is complete and unit-tested, the Mac
+host is wired, the Windows host is not. PR 9's verify is not re-run here and PR 1's
+present-loop soak was not re-run (no Mac or GPU in the session that wrote this). The
+native core was built and its suites run on Linux (gcc 13 with ASan/UBSan, clang 18 with
+the Mac warning flags) against system libjpeg-turbo 2.1 / libspng 0.7 / Catch2 3.4; the
+Objective-C++ host code, the MSL/HLSL blit change and the CMake targets were not compiled.
+
+**What landed (shared, portable).**
+- `src/edit`: the `EditStack` of POD ops (rotate / flip / crop / straighten / resize), folded
+  to one canonical geometry (D4 → straighten about the centre → crop → resize) with undo =
+  pop and reset = clear. `place()` turns it into output sizes and an *affine output → source
+  uv map*: that map **is** the GPU op chain for geometry at viewport resolution — the blit
+  samples through it, so a turn, flip, crop or straighten costs nothing per frame and never
+  re-decodes. The full-resolution chain runs once, on the CPU, on export (`geometry.cpp`;
+  exact pixel copies for rotate / flip / unscaled crop, linear-light resampling otherwise).
+  No FP16 working texture yet: geometry does not need one, and the D6 working space arrives
+  with PR 11's colour ops, which is where it is non-negotiable.
+- **Lossless JPEG** (`lossless_jpeg.cpp`) rearranges DCT coefficients on libjpeg's plain
+  coefficient API (jpegtran's algorithm; transupp is not a vcpkg export and the TurboJPEG
+  transform API is deprecated in 3.x). **Perfect transforms only**: an edge that would move a
+  partial MCU into the frame is refused, never trimmed. MCU-aligned crop (top-left on the
+  output's iMCU grid, any size). Tested: four quarter turns and two flips give back the
+  original pixels bit for bit in 4:2:0, 4:2:2 and 4:4:4.
+- **Display-path orientation for JPEG** (closes plan/12 2026-09-14 PR 7 row 4 for JPEG).
+  `codec::decode`, the preview and the thumbnailer apply the EXIF orientation to the decoded
+  raster; the file is untouched (plan/04). RAW previews keep the unrotated decode (LibRaw's
+  flip). TIFF / PNG / WebP orientation is still not applied. The thumbnail spec moves
+  `jpg512.1` → `jpg512.2` so sideways JPEG thumbs regenerate; `meta::display_orientation`
+  now reports JPEG as oriented (AF quads follow). Without this, `[` `]` on a JPEG whose
+  frame is not MCU-aligned (tag-only fallback, below) would change nothing on screen.
+- **Export** (`export.cpp`): lossless when JPEG → JPEG with only rotate / flip / an aligned
+  crop, re-encode otherwise (JPEG q92 4:2:0 or PNG). Output is always upright: EXIF
+  Orientation 1, `PixelX/YDimension` = written size, `tiff:Orientation` in XMP = 1, a stale
+  EXIF thumbnail unlinked. Metadata policy all / minus GPS / none; ICC is always kept.
+  EXIF is patched **in place**, byte-level (`codec/exif.cpp`): nothing moves, so maker notes
+  with absolute offsets survive. "Minus GPS" zeroes the GPS IFD and every value it points
+  at and unlinks it; an XMP packet naming `exif:GPS*` is dropped whole. Exports go beside the
+  original as `<name>-edit.jpg` (`name-edit (2).jpg` …), created exclusively (`io::write_new`).
+
+**Calls made, so they are not re-decided by accident:**
+- **`[` `]` `H` `V` on a JPEG rewrite that file** (the PR 10 verify line; plan/04 "`[` `]`
+  writes orientation"). This is the one place rule 5's "never modify an original" is met by
+  *what* is written rather than *whether*: only when the stack holds nothing but rotate /
+  flip, only losslessly (coefficients rearranged, or — when the frame is not MCU-aligned —
+  the Orientation tag alone patched in place, or a minimal EXIF APP1 added), atomically
+  (`io::replace_atomic`: sibling temp, fsync, `rename(2)` / `ReplaceFileW`), after a 0.4 s
+  debounce so `]]` is one half-turn write, one write in flight at a time, and only if the
+  file is still the bytes the turn was made against. `]` then `[` returns the same pixels.
+  EXIF with no Orientation entry on an unaligned frame is refused (growing IFD0 is PR 12's
+  writer's job). Anything else — crop, straighten, a non-JPEG — stays in the stack until
+  `⌘S` exports it.
+- **Edit stacks live for the session only**, keyed by (path, size, mtime, rewrite epoch).
+  plan/07's "sidecar is truth" XMP persistence is not built: PR 12 owns sidecar writing.
+- **New keys** (appended to the table; plan/16 gave only `[` `]`, `H` `V` and crop's
+  Enter/Esc): `Shift+C` crop mode (the `Shift+O` / `Shift+I` pattern: `C` is clipping),
+  `Ctrl+S` export, `Ctrl+Z` undo edit, `Ctrl+R` reset edits. Crop mode is `mode::crop`, the
+  eighth and last bit of `mode_mask`: arrows move the rect 1 % per press, `Shift+arrows`
+  resize from the bottom-right, `,` `.` straighten ∓0.5° (an untouched rect follows the
+  angle as its largest fit; a placed one only shrinks as far as the angle needs). A / D, G,
+  `Ctrl+O` do nothing in crop mode (walking away would drop the draft).
+- **Crop and export wait for a rotation write in flight.** A crop joining turns that are
+  being written would have to be re-expressed against the rewritten file.
+- **Preview geometry is tagged with the render item id**, two slots (current and previous),
+  so the rewritten file reopening under a new id never shows the old turn applied twice or
+  flashes back while its pixels load.
+
+**Not done, owed:**
+- **Windows host**: HLSL blit takes the same map (twin kept in step) but `main.cpp` /
+  `present_lab.cpp` do not drive it; the new commands no-op there. Windows `mv_edit` and its
+  tests are in `CMakeLists.txt`, never compiled with MSVC.
+- **Export sheet**: format / quality / chroma / resize / metadata policy are core options,
+  tested; the Mac host exports with the defaults (JPEG q92, all metadata, full size).
+- **Metadata on re-encoded exports from HEIC / RAW / TIFF / WebP**: only JPEG (APP1) and PNG
+  (eXIf, iTXt XMP) sources carry EXIF/XMP across; the others need an Exiv2 extraction path.
+- Tiled (> 64 MP) images: the D3D11 tile path ignores the map. Mac has no tiling yet.

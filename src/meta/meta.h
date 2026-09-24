@@ -98,7 +98,8 @@ struct metadata {
   std::vector<chapter> chapters;
   std::vector<af_point> af_points;
   // The EXIF orientation that the decoder has *already applied* to the pixels
-  // on screen: RAW is decoded rotated, JPEG/TIFF are not (plan/04). AF quads
+  // on screen: RAW and (from PR 10) JPEG are decoded rotated, TIFF is not
+  // (plan/04). AF quads
   // must be transformed by exactly this and no more.
   std::uint8_t display_orientation = 1;
   bool is_clip = false;

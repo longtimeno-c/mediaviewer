@@ -30,6 +30,12 @@ struct blit_params_mac {
   bool clipping = false;
   float time_seconds = 0.0f;
   bool pixel_grid = true;
+  // PR 10 edit geometry: output uv -> source uv (edit::placement::map). With
+  // a map, image_w/h are the *edited* size and texture_w/h must be the
+  // texture's own. `clip_to_source` shows the background where a sample
+  // falls outside the source (crop mode's straightened frame).
+  float uv_map[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+  bool clip_to_source = false;
 };
 
 // Linear clear colour for `background` — same values as gfx::background_clear.

@@ -70,6 +70,28 @@ float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
                             static_cast<float>(s.chrome_bottom_px));
 }
 
+// PR 10: an edit_view as the geometry edit::place() takes.
+mv::edit::geometry geometry_of(const mv::shell::edit_view& v) noexcept {
+  mv::edit::geometry g;
+  g.orient = mv::codec::d4{v.d4[0], v.d4[1], v.d4[2], v.d4[3]};
+  g.straighten = v.straighten;
+  g.crop = mv::edit::rect{v.crop[0], v.crop[1], v.crop[2], v.crop[3]};
+  return g;
+}
+
+bool same_geometry(const mv::shell::edit_view& a, const mv::shell::edit_view& b) noexcept {
+  return a.item == b.item && a.d4[0] == b.d4[0] && a.d4[1] == b.d4[1] && a.d4[2] == b.d4[2] &&
+         a.d4[3] == b.d4[3] && a.straighten == b.straighten && a.crop[0] == b.crop[0] &&
+         a.crop[1] == b.crop[1] && a.crop[2] == b.crop[2] && a.crop[3] == b.crop[3] &&
+         a.keep_frame == b.keep_frame;
+}
+
+bool same_overlay(const mv::shell::edit_view& a, const mv::shell::edit_view& b) noexcept {
+  return a.crop_overlay == b.crop_overlay && a.overlay[0] == b.overlay[0] &&
+         a.overlay[1] == b.overlay[1] && a.overlay[2] == b.overlay[2] &&
+         a.overlay[3] == b.overlay[3];
+}
+
 void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(static_cast<float>(s.width), static_cast<float>(s.height));
@@ -305,11 +327,75 @@ bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
     return true;
   }
   if (current_image_) {
-    *w = static_cast<float>(current_image_->width);
-    *h = static_cast<float>(current_image_->height);
+    // PR 10: the camera frames the *edited* picture (a quarter turn swaps it,
+    // a crop shrinks it).
+    const edit::placement p = place_image(*current_image_);
+    *w = static_cast<float>(p.cropped.w);
+    *h = static_cast<float>(p.cropped.h);
     return true;
   }
   return false;
+}
+
+const edit_view* present_lab_mac::edit_for(std::uint64_t item) const noexcept {
+  if (item == 0) return nullptr;
+  for (const edit_view& v : edit_slots_) {
+    if (v.item == item) return &v;
+  }
+  return nullptr;
+}
+
+edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) const noexcept {
+  const edit_view* v = edit_for(img.item_id);
+  const edit::geometry g = v ? geometry_of(*v) : edit::geometry{};
+  return edit::place(g, edit::size2{img.width, img.height}, {}, v && v->keep_frame);
+}
+
+// Crop mode (plan/16): the frame outside the draft rect is dimmed, the rect
+// has a border and thirds. ImGui draws in the same present as the picture.
+void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
+  if (!current_image_ || video_frame_) return;
+  const edit_view* v = edit_for(current_image_->item_id);
+  if (!v || !v->crop_overlay) return;
+  float pw = 0.0f, ph = 0.0f;
+  if (!picture_size(&pw, &ph)) return;
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+  const float win_w = static_cast<float>(snapshot.width);
+  const float win_h = usable_window_h(snapshot);
+  const float origin_y = static_cast<float>(snapshot.chrome_height_px);
+  const float zoom = camera_.zoom();
+  const auto to_screen = [&](float ix, float iy) {
+    return ImVec2(win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+                  origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
+  };
+  const ImVec2 f0 = to_screen(0.0f, 0.0f);
+  const ImVec2 f1 = to_screen(pw, ph);
+  const ImVec2 a = to_screen(v->overlay[0] * pw, v->overlay[1] * ph);
+  const ImVec2 b = to_screen((v->overlay[0] + v->overlay[2]) * pw, (v->overlay[1] + v->overlay[3]) * ph);
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  const ImU32 shade = IM_COL32(0, 0, 0, 140);
+  fg->AddRectFilled(f0, ImVec2(f1.x, a.y), shade);
+  fg->AddRectFilled(ImVec2(f0.x, b.y), f1, shade);
+  fg->AddRectFilled(ImVec2(f0.x, a.y), ImVec2(a.x, b.y), shade);
+  fg->AddRectFilled(ImVec2(b.x, a.y), ImVec2(f1.x, b.y), shade);
+  const ImU32 line = IM_COL32(255, 255, 255, 110);
+  for (int i = 1; i < 3; ++i) {
+    const float x = a.x + (b.x - a.x) * static_cast<float>(i) / 3.0f;
+    const float y = a.y + (b.y - a.y) * static_cast<float>(i) / 3.0f;
+    fg->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), line, scale);
+    fg->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), line, scale);
+  }
+  fg->AddRect(a, b, IM_COL32(255, 255, 255, 235), 0.0f, 0, 1.5f * scale);
+  char label[96];
+  std::snprintf(label, sizeof(label), "%u x %u   %+.1f\xC2\xB0   Enter apply   Esc cancel",
+                static_cast<unsigned>(std::lround(v->overlay[2] * pw)),
+                static_cast<unsigned>(std::lround(v->overlay[3] * ph)),
+                static_cast<double>(v->straighten));
+  const float fs = 16.0f * scale;
+  fg->AddText(ImGui::GetFont(), fs, ImVec2(a.x + scale, a.y - fs - 4.0f * scale + scale),
+              IM_COL32(0, 0, 0, 200), label);
+  fg->AddText(ImGui::GetFont(), fs, ImVec2(a.x, a.y - fs - 4.0f * scale),
+              IM_COL32(235, 235, 240, 255), label);
 }
 
 void present_lab_mac::retire_media() noexcept {
@@ -490,8 +576,8 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   return changed;
 }
 
-void present_lab_mac::open_item(std::string path_utf8) noexcept {
-  if (path_utf8.empty() || !options_.jobs) return;
+std::uint64_t present_lab_mac::open_item(std::string path_utf8) noexcept {
+  if (path_utf8.empty() || !options_.jobs) return 0;
   // Abandons whatever the previous open_item() call had in flight (folder
   // navigation is a new view intent) without touching folder_model_mac's own
   // relist/thumb jobs, which stay pinned to background_generation and are
@@ -503,6 +589,7 @@ void present_lab_mac::open_item(std::string path_utf8) noexcept {
   } else {
     submit_image_load(std::move(path_utf8), item);
   }
+  return item;
 }
 
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
@@ -564,7 +651,11 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
                   origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
   };
 
-  if (snapshot.af_points) {
+  // AF quads are in the unedited frame; with an edit they would point at the
+  // wrong place, so they wait until the edit is reset (PR 10).
+  const edit::placement edited = current_image_ && !video_frame_ ? place_image(*current_image_)
+                                                                 : edit::placement{};
+  if (snapshot.af_points && edited.map.identity()) {
     for (int i = 0; i < snapshot.meta.af_count && i < meta_overlay::kMaxAf; ++i) {
       const float* q = snapshot.meta.af[i];
       const ImVec2 a = to_screen(q[0] * pw, q[1] * ph);
@@ -613,10 +704,15 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
                             (tex.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
                              tex.pixelFormat == MTLPixelFormatRGBA8Unorm);
       if (readable) {
+        // Through the edit map (PR 10): output pixel -> source uv -> texel.
+        const float ou = ix / pw, ov = iy / ph;
+        const float* em = edited.map.m;
+        const float su = std::clamp(em[0] * ou + em[1] * ov + em[2], 0.0f, 1.0f);
+        const float sv = std::clamp(em[3] * ou + em[4] * ov + em[5], 0.0f, 1.0f);
         const auto tx = static_cast<std::uint32_t>(
-            std::min<float>(ix * static_cast<float>(tex.width) / pw, static_cast<float>(tex.width - 1)));
+            std::min<float>(su * static_cast<float>(tex.width), static_cast<float>(tex.width - 1)));
         const auto ty = static_cast<std::uint32_t>(
-            std::min<float>(iy * static_cast<float>(tex.height) / ph, static_cast<float>(tex.height - 1)));
+            std::min<float>(sv * static_cast<float>(tex.height), static_cast<float>(tex.height - 1)));
         if (!eye_.valid || eye_.texture != native || eye_.x != tx || eye_.y != ty) {
           [tex getBytes:eye_.rgba
                  bytesPerRow:4
@@ -774,6 +870,8 @@ void present_lab_mac::render_thread_main() noexcept {
     while (running_.load(std::memory_order_acquire)) {
       @autoreleasepool {
         const input_snapshot snapshot = input_.acquire();
+        edit_slots_[0] = snapshot.edit[0];
+        edit_slots_[1] = snapshot.edit[1];
         const double elapsed = monotonic_seconds() - start;
         if (!warmed_up_ && elapsed >= k_warmup_seconds) {
           warmed_up_ = true;
@@ -867,19 +965,28 @@ void present_lab_mac::render_thread_main() noexcept {
           if (media_ && media_item_ != loaded->item_id) retire_media();
           const bool refinement = current_image_ && loaded->item_id != 0 &&
                                   current_image_->item_id == loaded->item_id;
-          const auto old_w = current_image_ ? static_cast<float>(current_image_->width) : 0.0f;
-          const auto old_h = current_image_ ? static_cast<float>(current_image_->height) : 0.0f;
+          // PR 10: sizes through each image's own edit geometry.
+          float old_w = 0.0f, old_h = 0.0f;
+          if (current_image_ && !video_frame_) (void)picture_size(&old_w, &old_h);
           current_image_.reset(loaded);
+          {
+            const edit_view* ev = edit_for(current_image_->item_id);
+            applied_edit_ = ev ? *ev : edit_view{};
+            shown_w_.store(current_image_->width, std::memory_order_relaxed);
+            shown_h_.store(current_image_->height, std::memory_order_relaxed);
+            shown_item_.store(current_image_->item_id, std::memory_order_release);
+          }
+          const edit::placement landed = place_image(*current_image_);
           if (refinement) {
-            camera_.refine(old_w, old_h, static_cast<float>(current_image_->width),
-                           static_cast<float>(current_image_->height),
+            camera_.refine(old_w, old_h, static_cast<float>(landed.cropped.w),
+                           static_cast<float>(landed.cropped.h),
                            static_cast<float>(snapshot.width), usable_window_h(snapshot));
           } else {
             stills_shown_.fetch_add(1, std::memory_order_acq_rel);
             // plan/16 sticky zoom: off (default) fits every item; on keeps the
             // mode, or the zoom and pan fraction (same as the Windows lab).
-            const auto new_w = static_cast<float>(current_image_->width);
-            const auto new_h = static_cast<float>(current_image_->height);
+            const auto new_w = static_cast<float>(landed.cropped.w);
+            const auto new_h = static_cast<float>(landed.cropped.h);
             const auto win_w = static_cast<float>(snapshot.width);
             const float win_h = usable_window_h(snapshot);
             const bool had_media = old_w > 0.0f;
@@ -897,6 +1004,36 @@ void present_lab_mac::render_thread_main() noexcept {
           // like a resize/toggle/reset does -- same invalidation those
           // branches already apply.
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
+        }
+
+        // PR 10: the edit geometry of the still on screen changed (a turn, a
+        // committed crop, crop mode's draft). A new picture size refits, as a
+        // new item would; an overlay-only change just redraws.
+        if (current_image_ && !video_frame_) {
+          const edit_view* ev = edit_for(current_image_->item_id);
+          const edit_view now = ev ? *ev : edit_view{};
+          const bool geometry_changed = !same_geometry(now, applied_edit_);
+          if (geometry_changed || !same_overlay(now, applied_edit_)) {
+            float before_w = 0.0f, before_h = 0.0f;
+            {
+              const edit::geometry g = geometry_of(applied_edit_);
+              const edit::placement p = edit::place(
+                  applied_edit_.item == current_image_->item_id ? g : edit::geometry{},
+                  edit::size2{current_image_->width, current_image_->height}, {},
+                  applied_edit_.keep_frame);
+              before_w = static_cast<float>(p.cropped.w);
+              before_h = static_cast<float>(p.cropped.h);
+            }
+            applied_edit_ = now;
+            float pw = 0.0f, ph = 0.0f;
+            if (geometry_changed && picture_size(&pw, &ph) && (pw != before_w || ph != before_h)) {
+              camera_.reset();
+              camera_.fit(pw, ph, static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                          /*immediate=*/true);
+            }
+            redraw = true;
+            if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
+          }
         }
 
         // PR 19: a clip finished opening on a worker. The previous picture stays
@@ -1169,6 +1306,7 @@ void present_lab_mac::render_thread_main() noexcept {
         }
 
         draw_photo_overlays(snapshot);
+        draw_crop_overlay(snapshot);
 
         ImGui::Render();
 
@@ -1198,8 +1336,18 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.window_w = static_cast<float>(snapshot.width);
           bp.window_h = usable_window_h(snapshot);
           bp.origin_y = static_cast<float>(snapshot.chrome_height_px);
-          bp.image_w = static_cast<float>(current_image_->width);
-          bp.image_h = static_cast<float>(current_image_->height);
+          // PR 10: the edited picture is what the camera frames; the texture is
+          // sampled through the output -> source map.
+          const edit::placement pl = place_image(*current_image_);
+          const edit_view* ev = edit_for(current_image_->item_id);
+          bp.image_w = static_cast<float>(pl.cropped.w);
+          bp.image_h = static_cast<float>(pl.cropped.h);
+          bp.texture_w = static_cast<float>(current_image_->texture_width ? current_image_->texture_width
+                                                                           : current_image_->width);
+          bp.texture_h = static_cast<float>(current_image_->texture_height ? current_image_->texture_height
+                                                                            : current_image_->height);
+          for (int i = 0; i < 6; ++i) bp.uv_map[i] = pl.map.m[i];
+          bp.clip_to_source = ev && ev->keep_frame;
           bp.background = snapshot.background & 3;
           bp.time_seconds = static_cast<float>(elapsed);
           blitter_.draw((__bridge void*)enc,

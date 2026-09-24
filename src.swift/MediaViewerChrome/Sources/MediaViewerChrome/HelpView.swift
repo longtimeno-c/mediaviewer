@@ -43,6 +43,19 @@ struct HelpView: View {
       Row(keys: "⌘⇧E", action: "Folder tree"),
       Row(keys: "View ▸ Sort By", action: "Name, date, size, type, date taken"),
     ]),
+    Section(title: "Edit", rows: [
+      Row(keys: "[  ]", action: "Rotate left / right (a JPEG is rewritten losslessly)"),
+      Row(keys: "H  V", action: "Flip horizontal / vertical"),
+      Row(keys: "⇧C", action: "Crop / straighten"),
+      Row(keys: "⌘Z  ⌘R", action: "Undo edit / reset to the original"),
+      Row(keys: "⌘S", action: "Export as <name>-edit.jpg"),
+    ]),
+    Section(title: "Crop", rows: [
+      Row(keys: "← → ↑ ↓", action: "Move the crop"),
+      Row(keys: "⇧ ← → ↑ ↓", action: "Resize the crop"),
+      Row(keys: ", .", action: "Straighten -0.5° / +0.5°"),
+      Row(keys: "Enter  Esc", action: "Apply / cancel"),
+    ]),
     Section(title: "Gallery", rows: [
       Row(keys: "↑ ↓   W S", action: "Move by row"),
       Row(keys: "← →   A D", action: "Move by item"),

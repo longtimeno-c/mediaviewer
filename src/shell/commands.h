@@ -70,6 +70,7 @@ enum class mode : std::uint8_t {
   loupe = 4,      // Z held on the canvas: arrows nudge the loupe point
   gallery = 5,    // visible gallery owns navigation, even with canvas focus
   runner = 6,     // empty-window game; number keys do not change image zoom
+  crop = 7,       // PR 10: crop / straighten on the canvas; arrows nudge the rect
   count
 };
 
@@ -83,7 +84,9 @@ inline constexpr mode_mask kIsland = 1 << 3;
 inline constexpr mode_mask kLoupe = 1 << 4;
 inline constexpr mode_mask kGallery = 1 << 5;
 inline constexpr mode_mask kRunner = 1 << 6;
-inline constexpr mode_mask kAllModes = kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner;
+inline constexpr mode_mask kCrop = 1 << 7;  // the last bit of the mask byte
+inline constexpr mode_mask kAllModes =
+    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -201,6 +204,26 @@ enum class command_id : std::uint16_t {
   metadata_pane,  // `I`: summary card, full tree, clip stream inspector
   af_points,      // Shift+O: AF-point quads from the maker notes already read
   eyedropper,     // Shift+I: one-pixel readout under the cursor
+  // PR 10 (plan/16 View + Crop mode). Appended; every id above keeps its value.
+  rotate_ccw,       // `[`: −90°, a lossless file write on a JPEG
+  rotate_cw,        // `]`: +90°
+  flip_horizontal,  // H
+  flip_vertical,    // V
+  crop_mode,        // Shift+C: enter crop / straighten
+  crop_commit,      // Enter in crop mode (Esc cancels through `back`)
+  crop_move_left,   // arrows in crop mode move the rect
+  crop_move_right,
+  crop_move_up,
+  crop_move_down,
+  crop_narrower,    // Shift+arrows in crop mode move the bottom-right corner
+  crop_wider,
+  crop_shorter,
+  crop_taller,
+  straighten_ccw,   // `,` `.` in crop mode: ∓0.5°
+  straighten_cw,
+  export_image,     // Ctrl+S: bake the stack into a new file
+  undo_edit,        // Ctrl+Z: pop the edit stack
+  reset_edits,      // Ctrl+R: clear it — the original, exactly
   count
 };
 

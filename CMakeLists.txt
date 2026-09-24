@@ -292,6 +292,11 @@ add_library(mv_codec STATIC
   src/codec/avif.cpp
   src/codec/raw.cpp
   src/codec/raw_internal.h
+  src/codec/exif.cpp
+  src/codec/exif.h
+  src/codec/orient.cpp
+  src/codec/orient.h
+  src/codec/orientation.h
   src/codec/os_decode_win.cpp
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
@@ -416,6 +421,31 @@ target_link_libraries(mv_meta
   PUBLIC mv_core
   PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
+
+# ---------------------------------------------------------------------------
+# mv_edit -- PR 10 (plan/07): the EditStack and its geometry ops, the
+# full-resolution CPU evaluation for export, lossless JPEG rotate / flip /
+# MCU-aligned crop on libjpeg's coefficient API, and the JPEG / PNG export
+# encoders. Pure C++ over codec + io + core: no GPU, no platform header (D9);
+# the preview is the blit's output -> source map (gfx/blit*.h).
+# ---------------------------------------------------------------------------
+add_library(mv_edit STATIC
+  src/edit/edit_stack.cpp
+  src/edit/edit_stack.h
+  src/edit/geometry.cpp
+  src/edit/geometry.h
+  src/edit/lossless_jpeg.cpp
+  src/edit/lossless_jpeg.h
+  src/edit/encode.cpp
+  src/edit/encode.h
+  src/edit/export.cpp
+  src/edit/export.h
+  src/edit/metadata_policy.h
+)
+target_link_libraries(mv_edit
+  PUBLIC mv_core mv_codec
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (plan/03)
@@ -703,6 +733,10 @@ if(MV_BUILD_TESTS)
     tests/test_meta_store.cpp
     src/shell/sort_order.cpp
     src/shell/meta_store.cpp
+    # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
+    tests/test_edit.cpp
+    tests/test_edit_session.cpp
+    src/shell/edit_session.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
@@ -760,6 +794,7 @@ if(MV_BUILD_TESTS)
     mv_image
     mv_canvas
     mv_meta
+    mv_edit
     Exiv2::exiv2lib
     ${FFMPEG_LIBRARIES}
     mediaviewer_core

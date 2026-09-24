@@ -223,9 +223,9 @@ TEST_CASE("a JPEG with EXIF fills the summary card", "[meta]") {
   CHECK(s.gps == "48.85837\xC2\xB0 N, 2.29448\xC2\xB0 E");
   CHECK(s.file_size > 0);
   CHECK_FALSE(m->is_clip);
-  // JPEG orientation is not applied by the decoder (plan/04), so AF quads are
-  // not rotated for it.
-  CHECK(m->display_orientation == 1);
+  // From PR 10 the JPEG decoder applies EXIF orientation on the display path
+  // (codec/orient.h), so AF quads are rotated by it too.
+  CHECK(m->display_orientation == 6);
 }
 
 TEST_CASE("the full tree keeps every tag with its origin", "[meta]") {

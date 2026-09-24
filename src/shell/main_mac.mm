@@ -18,6 +18,8 @@
 #import <Sparkle/Sparkle.h>
 #endif
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -35,6 +37,7 @@
 #include "io/dir.h"
 #include "shell/browse_index.h"
 #include "shell/commands.h"
+#include "shell/edit_session.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
@@ -88,6 +91,12 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case metadata_pane: case folder_tree:
+    // PR 10
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
       return true;
     default:
       return false;
@@ -931,6 +940,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
+  // PR 10 (plan/07, plan/16). `_edits` owns every item's edit stack and crop
+  // mode; the render thread gets the geometry through _snap.edit, tagged with
+  // the item id _lab.open_item returned (so a reload never borrows it).
+  mv::shell::edit_session _edits;
+  std::uint64_t _itemId;
+  NSTimer* _rotateDebounce;
   mv::shell::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
@@ -1385,13 +1400,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   if (_items.empty()) {
     _wantSelectedPath.clear();
+    _edits.clear_item();
+    _itemId = 0;
+    [self publishEdit];
     _snap.item_index = 0;
     _snap.item_count = 0;
     _snap.item_name[0] = '\0';
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
-    _lab.open_item(entry.path_utf8);
+    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
@@ -2150,6 +2168,7 @@ enum MvMenuCmd : NSInteger {
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
   s.pane_open = _metaPaneVisible || _treeVisible;
+  s.crop = _edits.crop_active();
   return s;
 }
 
@@ -2224,6 +2243,11 @@ enum MvMenuCmd : NSInteger {
         case mv::shell::back_target::popup: [self setHelpVisible:NO]; break;
         case mv::shell::back_target::settings: [self setSettingsVisible:NO]; break;
         case mv::shell::back_target::gallery: [self setGalleryVisible:NO]; break;
+        case mv::shell::back_target::crop:
+          _edits.cancel_crop();
+          [self publishEdit];
+          [self pokeSnapshot];
+          break;
         case mv::shell::back_target::pane:
           [self setMetaPaneVisible:NO];
           [self setTreeVisible:NO];
@@ -2328,8 +2352,163 @@ enum MvMenuCmd : NSInteger {
       return YES;
     case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
+    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+      return [self runEditCommand:command];
     default: return NO;
   }
+}
+
+// ---- PR 10: edit stack, lossless rotate, crop, export ---------------------------
+
+// A new item (or the same file reopened) is on its way to the canvas. The old
+// item's geometry moves to slot 1 so its texture keeps it until the new
+// pixels land; slot 0 is the new item's.
+- (void)editItemOpened:(const mv::io::dir_entry&)entry item:(std::uint64_t)item {
+  _snap.edit[1] = _snap.edit[0];
+  _itemId = item;
+  mv::shell::edit_item e;
+  e.path = entry.path_utf8;
+  e.size = entry.size;
+  e.mtime = entry.mtime_unix;
+  // A hint: the write job probes the magic bytes and refuses anything else.
+  NSString* ext = [[NSString stringWithUTF8String:entry.name_utf8.c_str()] pathExtension].lowercaseString;
+  e.jpeg = [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] || [ext isEqualToString:@"jpe"];
+  const bool carried_turn = _edits.set_item(e);
+  [self publishEdit];
+  if (carried_turn) [self scheduleRotationWrite];
+}
+
+- (void)publishEdit {
+  mv::shell::edit_view v;
+  if (_edits.has_item() && _itemId != 0) {
+    const mv::edit::geometry g = _edits.preview();
+    v.item = _itemId;
+    v.d4[0] = g.orient.a;
+    v.d4[1] = g.orient.b;
+    v.d4[2] = g.orient.c;
+    v.d4[3] = g.orient.d;
+    v.straighten = g.straighten;
+    v.crop[0] = g.crop.x;
+    v.crop[1] = g.crop.y;
+    v.crop[2] = g.crop.w;
+    v.crop[3] = g.crop.h;
+    v.keep_frame = _edits.preview_keeps_frame();
+    v.crop_overlay = _edits.crop_active();
+    const mv::edit::rect r = _edits.crop_overlay();
+    v.overlay[0] = r.x;
+    v.overlay[1] = r.y;
+    v.overlay[2] = r.w;
+    v.overlay[3] = r.h;
+  }
+  _snap.edit[0] = v;
+}
+
+- (BOOL)runEditCommand:(mv::shell::command_id)command {
+  // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
+  // single frame to turn.
+  if (_items.empty() || [self currentItemIsVideo] || _lab.anim_active()) return NO;
+  std::uint32_t w = 0, h = 0;
+  if (_lab.still_size(_itemId, &w, &h)) _edits.set_size(w, h);
+  else if (command == mv::shell::command_id::crop_mode) {
+    NSBeep();  // no pixels yet: nothing to frame a crop against
+    return YES;
+  }
+  switch (_edits.run(command)) {
+    case mv::shell::edit_effect::none: return YES;
+    case mv::shell::edit_effect::refused: NSBeep(); return YES;
+    case mv::shell::edit_effect::redraw:
+      [self publishEdit];
+      [self pokeSnapshot];
+      return YES;
+    case mv::shell::edit_effect::write_rotation:
+      [self publishEdit];
+      [self pokeSnapshot];
+      [self scheduleRotationWrite];
+      return YES;
+    case mv::shell::edit_effect::export_image:
+      [self exportCurrentItem];
+      return YES;
+  }
+  return YES;
+}
+
+// `[` `]` `H` `V` on a JPEG: the preview has already turned. The file is
+// rewritten once the keys stop (a quick `]]` is one half-turn write), on the
+// pool, never the main thread (plan/16 speed rule 2).
+- (void)scheduleRotationWrite {
+  [_rotateDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _rotateDebounce = [NSTimer scheduledTimerWithTimeInterval:0.4
+                                                    repeats:NO
+                                                      block:^(NSTimer* timer) {
+                                                        (void)timer;
+                                                        [weakSelf startRotationWrite];
+                                                      }];
+}
+
+- (void)startRotationWrite {
+  _rotateDebounce = nil;
+  const std::optional<mv::shell::rotation_write> w = _edits.take_pending_write();
+  if (!w) return;
+  const mv::shell::rotation_write job = *w;
+  const std::string path = job.path;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [job, path, weakSelf](const mv::job_context&) -> mv::status {
+    const mv::expected written = mv::shell::run_rotation_write(job);
+    const bool ok = static_cast<bool>(written);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf rotationWriteFinished:ok path:path];
+    });
+    return ok ? mv::status::ok : written.error();
+  });
+}
+
+- (void)rotationWriteFinished:(bool)ok path:(const std::string&)path {
+  _edits.write_finished(ok);
+  if (!ok) {
+    NSBeep();
+    [self publishEdit];
+    [self pokeSnapshot];
+    return;
+  }
+  // The file changed under the listing: refresh its size / mtime (the edit
+  // key) the way the folder scan would, then reopen it if it is on screen.
+  struct stat st{};
+  if (::stat(path.c_str(), &st) == 0) {
+    for (auto& entry : _items) {
+      if (entry.path_utf8 != path) continue;
+      entry.size = static_cast<std::uint64_t>(st.st_size);
+      entry.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
+    }
+  }
+  if (!_items.empty() && _index.current() < _items.size() &&
+      _items[_index.current()].path_utf8 == path) {
+    [self selectIndex:_index.current()];
+  }
+}
+
+// Ctrl+S: the stack baked into "<name>-edit.jpg" beside the original (never
+// over it, never over an earlier export). JPEG q92, all metadata, full size;
+// an export sheet choosing format / quality / resize / metadata is owed
+// (plan/12 2026-09-24).
+- (void)exportCurrentItem {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::edit::geometry g = _edits.export_geometry();
+  _jobs.submit_at(mv::background_generation, [path, g](const mv::job_context&) -> mv::status {
+    mv::edit::export_options opt;
+    const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+    const bool ok = static_cast<bool>(out);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!ok) NSBeep();
+    });
+    return ok ? mv::status::ok : out.error();
+  });
 }
 
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------

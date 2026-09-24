@@ -28,6 +28,12 @@ struct Camera {
   float clipping;
   float time;
   float grid;
+  // PR 10 geometry (rotate / flip / straighten / crop): output uv -> source
+  // uv, affine. xyz of each row are the matrix; map0.w > 0.5 means samples
+  // that land outside the source show the background (a straightened frame's
+  // corners in crop mode). The identity leaves every pixel as before.
+  float4 map0;
+  float4 map1;
 };
 
 struct VSOut { float4 pos [[position]]; };
@@ -116,7 +122,12 @@ fragment float4 ps_main(VSOut vin [[stage_in]],
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(background_at(cam, vin.pos.xy), cam.opacity);
   }
-  return finish(cam, sample_filtered(cam, img, samp_aniso, samp_point, uv, cam.texture_size),
+  float3 h = float3(uv, 1.0);
+  float2 src = float2(dot(cam.map0.xyz, h), dot(cam.map1.xyz, h));
+  if (cam.map0.w > 0.5 && (any(src < 0.0) || any(src > 1.0))) {
+    return float4(background_at(cam, vin.pos.xy), cam.opacity);
+  }
+  return finish(cam, sample_filtered(cam, img, samp_aniso, samp_point, src, cam.texture_size),
                vin.pos.xy, image_px);
 }
 )";
@@ -130,9 +141,11 @@ struct alignas(16) camera_cb {
   float origin_x, origin_y;
   float texture_w, texture_h;
   float background, clipping, time, grid;
+  float map0[4];
+  float map1[4];
 };
 
-static_assert(sizeof(camera_cb) == 64, "keep in sync with the MSL Camera struct");
+static_assert(sizeof(camera_cb) == 96, "keep in sync with the MSL Camera struct");
 
 }  // namespace
 
@@ -249,6 +262,14 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
   cb.clipping = p.clipping ? 1.0f : 0.0f;
   cb.time = p.time_seconds;
   cb.grid = p.pixel_grid ? 1.0f : 0.0f;
+  cb.map0[0] = p.uv_map[0];
+  cb.map0[1] = p.uv_map[1];
+  cb.map0[2] = p.uv_map[2];
+  cb.map0[3] = p.clip_to_source ? 1.0f : 0.0f;
+  cb.map1[0] = p.uv_map[3];
+  cb.map1[1] = p.uv_map[4];
+  cb.map1[2] = p.uv_map[5];
+  cb.map1[3] = 0.0f;
 
   [encoder setRenderPipelineState:pso];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];

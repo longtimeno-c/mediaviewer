@@ -67,7 +67,7 @@ because skip and shuttle are the same gesture at two durations, not to double th
 | **Pane** | Folder tree / metadata / adjust / jobs | In-pane traversal; `Esc` returns to canvas |
 | **Video** | Current item is a clip, playing or paused | Frame step when paused (`,` `.` and arrows); `J` `K` `L` transport |
 | **Slideshow** | After `F5` | Next on a timer; `Esc` leaves |
-| **Crop** | Adjust geometry (PR 10) | Nudge crop; `Enter` commits, `Esc` cancels |
+| **Crop** | Adjust geometry (PR 10): `Shift+C` on a still | Nudge crop; `Enter` commits, `Esc` cancels |
 
 `Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas. The gallery
 covers the canvas like an overlay, so it closes before the window-level states. It does not quit from a
@@ -131,8 +131,11 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `4` | Fill |
 | `+` `-` | Zoom toward centre when no cursor; toward cursor when there is one. In the gallery, enlarge / shrink thumbnails instead (`=` also enlarges): 24 DIP steps, 80–344 DIP, initially 152 DIP. Keep the selection visible and retain the chosen size for the session. Separate gallery commands in the shared table allow independent remapping |
 | `Ctrl+0` | Reset pan/zoom (not rating-0 — rating is `Ctrl+Shift+0` or numpad, see below) |
-| `H` / `V` | Flip horizontal / vertical |
-| `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 10), from the viewer, no edit pane required |
+| `H` / `V` | Flip horizontal / vertical (PR 10). On a JPEG, a lossless file write like `[` `]` |
+| `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 10), from the viewer, no edit pane required. The preview turns at once; the file is rewritten 0.4 s after the last key, atomically, pixels untouched (plan/12 2026-09-24) |
+| `Shift+C` | Crop / straighten mode (PR 10; key chosen 2026-09-24 — `C` is clipping). See **Crop** below |
+| `Ctrl+Z` / `Ctrl+R` | Undo the last edit / reset edits to the original (PR 10; keys chosen 2026-09-24). A lossless rewrite already on disk is undone by the opposite turn |
+| `Ctrl+S` | Export the edits to a new file beside the original, `<name>-edit.jpg` (PR 10; key chosen 2026-09-24). Never overwrites |
 | `I` | Metadata pane (PR 9) |
 | `E` | Adjust pane (PR 11) — **collides with `Q` `E` transport below, landed in 5c. PR 11 picks a different key; this row is not a claim on `E`.** |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
@@ -183,6 +186,19 @@ opens its folder with that file selected. One folder dropped opens it; several f
 folder open it on the first; a mixed drop opens the first file's folder. If nothing exists, nothing
 opens and the app beeps. A watcher refresh keeps the current item selected; if it was removed the
 next one slides into its place (the previous one at the end).
+
+### Crop (PR 10)
+
+| Key | Command |
+|---|---|
+| Arrows | Move the crop rectangle 1 % of the frame |
+| `Shift` + arrows | Move its bottom-right corner (narrower / wider / shorter / taller) |
+| `,` `.` | Straighten −0.5° / +0.5° (±45°). An untouched rectangle follows the angle as its largest fit |
+| `[` `]` `H` `V` | Turn / flip with the draft carried along (no file write while cropping) |
+| `Enter` | Apply: the draft joins the edit stack |
+| `Esc` | Cancel the draft |
+
+`A` `D`, `G` and `Ctrl+O` do nothing while cropping: walking away would drop the draft.
 
 ### Rate (PR 12)
 
@@ -377,7 +393,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop. Landed: `;` play motion, unbound Open RAW / Open JPEG rows, `Esc` ends motion first, RAW / LIVE tile badges. Filter: RAW is **not** in this slice |
 | 8 | Package the existing viewer; About and release setup, no new feature commands |
 | 9 | Folder tree, `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
-| 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops) |
+| 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops). Landed on macOS 2026-09-24 with `Shift+C`, `Ctrl+S`, `Ctrl+Z`, `Ctrl+R`; Windows host owed |
 | 11 | `E` pane, accurate RAW clipping, histogram |
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]` |

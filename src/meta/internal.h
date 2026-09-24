@@ -15,7 +15,7 @@ namespace mv::meta::detail {
 // on a file Exiv2 cannot parse. Never throws (Exiv2's exceptions stop here).
 // `is_raw` is the decoder's own answer (codec::looks_like_raw) so that
 // display_orientation matches what was actually drawn.
-void read_still(std::span<const std::uint8_t> bytes, bool is_raw, metadata& out) noexcept;
+void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out) noexcept;
 
 // Date-taken only, for sort (a prefix is enough). nullopt when absent.
 [[nodiscard]] std::optional<std::int64_t> still_date_key(std::span<const std::uint8_t> bytes) noexcept;
