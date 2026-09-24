@@ -1322,3 +1322,13 @@ Mac dynamic manifest with `bmff`, `png`, `xmp` (without `xmp` a PNG's XMP is sil
   manifest but have never been compiled with MSVC; the XAML pane, tree island and
   Windows `list_subdirectories` do not exist yet. This is the Windows half of PR 9.
 
+### 2026-09-24 (later) — PR 9 Windows: native half built and tested under MSVC
+
+`mv_meta`, `meta_store`, `sort_order` and the metadata tests compile clean under `/W4 /WX` on
+MSVC 2022 with vcpkg `exiv2[bmff,png,xmp]` (no source changes were needed). Windows
+`io::list_subdirectories` added to `dir_win.cpp` (hidden/system and dot directories skipped,
+UTF-16 ordinal case-insensitive sort, one directory read). Full `ctest` from a fresh
+`build-pr9`: 514 pass, 0 fail (22 `[meta]` cases, 6 `[sort]`, frametime harness, broken corpus).
+**Still owed on Windows:** the XAML metadata pane, folder-tree island, sort UI, `O`/`Shift+O`
+overlay drawing, eyedropper, and the ABI calls that feed them (`chrome_left_px` is still 0).
+
