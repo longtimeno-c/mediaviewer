@@ -162,6 +162,34 @@ public sealed class MediaViewerSession : IDisposable
     public void FolderThumbsVisible(uint first, uint count) =>
         ThrowIfFailed(NativeMethods.mv_folder_thumbs_visible(_handle, first, count));
 
+    public string FolderDirectory => ReadUtf8(NativeMethods.mv_folder_directory);
+
+    public uint FolderSubfolderCount
+    {
+        get
+        {
+            ThrowIfFailed(NativeMethods.mv_folder_subfolder_count(_handle, out uint count));
+            return count;
+        }
+    }
+
+    public string FolderSubfolderName(uint index) =>
+        ReadFolderString(NativeMethods.mv_folder_subfolder_name, index);
+    public string FolderSubfolderPath(uint index) =>
+        ReadFolderString(NativeMethods.mv_folder_subfolder_path, index);
+
+    public MvFolderSummary FolderSummaryAt(uint index)
+    {
+        ThrowIfFailed(NativeMethods.mv_folder_summary_at(_handle, index, out MvFolderSummary summary));
+        return summary;
+    }
+
+    public string FolderSummaryCoverThumb(uint index) =>
+        ReadFolderString(NativeMethods.mv_folder_summary_cover_thumb_path, index);
+
+    public void FolderRequestSummary(uint index) =>
+        ThrowIfFailed(NativeMethods.mv_folder_request_summary(_handle, index));
+
     /// <summary>
     /// The immediate subfolders of <paramref name="dir"/> for the folder tree (PR 9): hidden,
     /// system and dot directories skipped, sorted by name. One directory read, so call it off
@@ -193,6 +221,8 @@ public sealed class MediaViewerSession : IDisposable
 
     private delegate MvStatus FolderStringFn(MvSessionHandle session, uint index, IntPtr utf8,
                                              uint cap, out uint outBytes);
+    private delegate MvStatus SessionStringFn(MvSessionHandle session, IntPtr utf8, uint cap,
+                                              out uint outBytes);
 
     private string ReadFolderString(FolderStringFn fn, uint index)
     {
@@ -203,6 +233,23 @@ public sealed class MediaViewerSession : IDisposable
         try
         {
             ThrowIfFailed(fn(_handle, index, buf, need, out _));
+            return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    private string ReadUtf8(SessionStringFn fn)
+    {
+        uint need = 0;
+        fn(_handle, IntPtr.Zero, 0, out need);
+        if (need <= 1) return string.Empty;
+        IntPtr buf = Marshal.AllocHGlobal((int)need);
+        try
+        {
+            ThrowIfFailed(fn(_handle, buf, need, out _));
             return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
         }
         finally

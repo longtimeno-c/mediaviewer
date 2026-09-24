@@ -640,10 +640,10 @@ names sort naturally (`Trip 2` < `Trip 10`).
 
 Shared native core first: `io::list_subfolders` / `summarize_dir` (portable, `dir_tree.cpp`,
 platform primitive `scan_subdirs`), `shell::browse_path` (trail arithmetic, header-only),
-`command_id::folder_up`. Then chrome, twice (D1): **SwiftUI first**; the WinUI gallery
-follows as its own slice on the same core (the Windows `scan_subdirs` is written but not yet
-built). Not here: a recursive "flatten" view with per-folder headers (needs per-folder thumb
-provenance in one listing), and the left folder-tree island, which stays PR 9.
+`command_id::folder_up`. Then chrome, twice (D1): SwiftUI and the WinUI gallery, breadcrumb
+and `folder_up` handler on the same core. Not here: a recursive "flatten" view with
+per-folder headers (needs per-folder thumb provenance in one listing), and the left
+folder-tree island, which stays PR 9.
 
 **Verify:** open a root whose only contents are subfolders → the gallery opens on folder tiles
 with covers and counts, no file I/O on the UI thread; click through three levels, the

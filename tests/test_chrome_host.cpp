@@ -13,6 +13,7 @@ TEST_CASE("chrome attach args stay 40 bytes") {
   REQUIRE(sizeof(mv::shell::chrome_filmstrip_args) == 48);
   REQUIRE(sizeof(mv::shell::chrome_show_args) == 16);
   REQUIRE(sizeof(mv::shell::chrome_flags_args) == 8);
+  REQUIRE(sizeof(mv::shell::chrome_browse_args) == 32);
 }
 
 TEST_CASE("view settings round-trip through the flag word") {
@@ -32,11 +33,13 @@ TEST_CASE("view settings round-trip through the flag word") {
   REQUIRE(mv::shell::view_settings::from_flags(0).flags() == 0);
 }
 
-TEST_CASE("chrome bar height is 48 DIP") {
+TEST_CASE("chrome bar height is 48 DIP, plus 28 with a path row") {
   REQUIRE(mv::shell::chrome_bar_height_px(96) == 48);
   REQUIRE(mv::shell::chrome_bar_height_px(120) == 60);
   REQUIRE(mv::shell::chrome_bar_height_px(144) == 72);
   REQUIRE(mv::shell::chrome_bar_height_px(0) == 48);
+  REQUIRE(mv::shell::chrome_bar_height_px(96, true) == 76);
+  REQUIRE(mv::shell::chrome_bar_height_px(0, true) == 76);
 }
 
 TEST_CASE("chrome host loads hostfxr and the blittable size") {

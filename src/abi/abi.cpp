@@ -29,6 +29,7 @@
 #include "player/container_probe.h"
 #include "player/poster.h"
 #include "core/job_system.h"
+#include "core/result.h"
 #include "core/spsc_ring.h"
 #include "core/status.h"
 #include "core/trace.h"
@@ -65,6 +66,7 @@ static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the 
 static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the ABI");
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
+static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
 static_assert(static_cast<int>(mv::io::pair_kind::none) == MV_PAIR_NONE, "mv_pair_kind drift");
 static_assert(static_cast<int>(mv::io::pair_kind::raw_jpeg) == MV_PAIR_RAW_JPEG, "mv_pair_kind drift");
 static_assert(static_cast<int>(mv::io::pair_kind::live_photo) == MV_PAIR_LIVE_PHOTO,
@@ -188,6 +190,19 @@ struct mv_session {
 
   std::mutex folder_mutex;
   std::vector<folder_item> folder_items;
+  // PR 26 folder tiles: child directories of folder_dir, natural order.
+  struct folder_card {
+    std::string name;
+    std::string path;
+    std::uint32_t media_count = 0;
+    std::uint32_t subdir_count = 0;
+    bool requested = false;
+    bool loaded = false;
+    bool photos_inside = false;
+    bool search_incomplete = false;
+    std::string cover_thumb;
+  };
+  std::vector<folder_card> folder_subdirs;
   std::string folder_dir;
   std::string folder_select_path;
   std::uint32_t folder_selected = 0;
@@ -827,6 +842,143 @@ void submit_prefetch(mv_session* session, uint32_t index, mv::generation gen) {
 void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> listed,
                        bool changed);
 
+// Child folders for gallery tiles. Additive: a failed subdir scan leaves the
+// previous tiles rather than wiping a listing that still has files.
+void refresh_subdirs(mv_session* session) {
+  std::string dir;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    dir = session->folder_dir;
+  }
+  if (dir.empty()) return;
+  auto scanned = mv::io::list_subfolders(dir);
+  if (!scanned) return;
+  std::vector<mv::io::subdir_entry> listed = std::move(scanned).value();
+  std::lock_guard lock(session->folder_mutex);
+  std::vector<mv_session::folder_card> next;
+  next.reserve(listed.size());
+  for (auto& e : listed) {
+    mv_session::folder_card card;
+    card.name = std::move(e.name_utf8);
+    card.path = std::move(e.path_utf8);
+    for (const auto& old : session->folder_subdirs) {
+      if (old.path == card.path) {
+        card.media_count = old.media_count;
+        card.subdir_count = old.subdir_count;
+        card.requested = old.requested;
+        card.loaded = old.loaded;
+        card.cover_thumb = old.cover_thumb;
+        break;
+      }
+    }
+    next.push_back(std::move(card));
+  }
+  session->folder_subdirs = std::move(next);
+}
+
+// JPEG-512 for a path that may not be in the current listing (a tile cover
+// borrowed from a descendant). Same cache as filmstrip thumbs.
+mv::result<std::string> cached_thumb_path(mv_session* session, const std::string& path,
+                                          std::int64_t mtime_unix, std::uint64_t size,
+                                          const mv::job_context& ctx, std::uint32_t folder_gen) {
+  if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+    return mv::err(status::cancelled);
+  }
+  if (!session->thumbs.is_open()) {
+    if (auto dir = mv::io::thumb_cache_dir()) (void)session->thumbs.open(dir.value());
+  }
+  const mv::image::thumb_key key{path, mtime_unix, size};
+  if (auto hit = session->thumbs.lookup(key); hit && !hit.value().empty()) return hit.value();
+  std::vector<std::uint8_t> jpeg_bytes;
+  if (video_path(path)) {
+    auto poster = mv::player::poster_frame(path.c_str(), mv::image::kThumbLongEdge, &ctx);
+    if (!poster) return mv::err(poster.error());
+    if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+      return mv::err(status::cancelled);
+    }
+    auto encoded = mv::image::encode_thumb_rgba(poster.value().rgba, poster.value().width,
+                                                poster.value().height);
+    if (!encoded) return mv::err(encoded.error());
+    jpeg_bytes = std::move(encoded).value();
+  } else {
+    auto bytes = mv::io::read_all(path);
+    if (!bytes) return mv::err(bytes.error());
+    if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+      return mv::err(status::cancelled);
+    }
+    auto jpeg = mv::image::make_thumb_jpeg(bytes.value(), &ctx);
+    if (!jpeg) return mv::err(jpeg.error());
+    jpeg_bytes = std::move(jpeg).value();
+  }
+  return session->thumbs.store(key, jpeg_bytes);
+}
+
+void submit_folder_summary(mv_session* session, uint32_t index) {
+  std::string path;
+  std::uint32_t folder_gen = 0;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    if (index >= session->folder_subdirs.size()) return;
+    auto& card = session->folder_subdirs[index];
+    if (card.requested || card.loaded) return;
+    card.requested = true;
+    path = card.path;
+    folder_gen = session->folder_generation.load(std::memory_order_relaxed);
+  }
+  const auto correlation = mv::abi::current_correlation_id();
+  (void)session->jobs.submit_at(
+      mv::background_generation,
+      [session, path, index, folder_gen](const mv::job_context& ctx) -> status {
+        const auto stale = [&] {
+          return session->folder_generation.load(std::memory_order_relaxed) != folder_gen;
+        };
+        if (stale()) {
+          std::lock_guard lock(session->folder_mutex);
+          for (auto& card : session->folder_subdirs) {
+            if (card.path == path) card.requested = false;
+          }
+          return status::cancelled;
+        }
+        auto summary = mv::io::summarize_dir(path);
+        if (!summary) {
+          std::lock_guard lock(session->folder_mutex);
+          for (auto& card : session->folder_subdirs) {
+            if (card.path == path) card.requested = false;
+          }
+          return summary.error();
+        }
+        const auto value = std::move(summary).value();
+        std::string cover_thumb;
+        if (value.has_cover) {
+          auto thumb = cached_thumb_path(session, value.cover.path_utf8, value.cover.mtime_unix,
+                                         value.cover.size, ctx, folder_gen);
+          if (thumb) cover_thumb = std::move(thumb).value();
+        }
+        std::lock_guard lock(session->folder_mutex);
+        for (auto& card : session->folder_subdirs) {
+          if (card.path != path) continue;
+          card.media_count = value.media_count;
+          card.subdir_count = value.subdir_count;
+          card.photos_inside = value.photos_inside;
+          card.search_incomplete = value.search_incomplete;
+          card.loaded = true;
+          card.cover_thumb = std::move(cover_thumb);
+          break;
+        }
+        return status::ok;
+      },
+      [session, correlation, index, folder_gen](mv::job_id id, mv::generation, status result) {
+        mv_completion c{};
+        c.kind = MV_COMPLETION_FOLDER_SUMMARY;
+        c.status = static_cast<uint32_t>(result);
+        c.job_id = id;
+        c.correlation_id = correlation;
+        c.generation = folder_gen;
+        c.payload = static_cast<int64_t>(index);
+        session->push_completion(c);
+      });
+}
+
 // Orders `listed` by the session's sort. Sorts the primaries with the shared
 // comparator and carries each pair along by path. Date taken consults the stamps
 // already read; a file without one sorts by its mtime (io/sort_order.h).
@@ -903,6 +1055,7 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     std::lock_guard lock(session->folder_mutex);
     session->folder_listing = listed;
   }
+  refresh_subdirs(session);
   sort_listed(session, listed);
   if (mv::io::unpack_sort(session->sort_packed.load()).key == mv::io::sort_key::date_taken) {
     resolve_date_stamps(session);
@@ -1293,6 +1446,7 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
       session->folder_select_path = select;
       session->folder_listing.clear();
       session->folder_items.clear();
+      session->folder_subdirs.clear();
       session->folder_selected = 0;
     }
     if (!session->thumbs.is_open()) {
@@ -1527,7 +1681,85 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
     session->folder_dir.clear();
     session->folder_select_path.clear();
     session->folder_items.clear();
+    session->folder_subdirs.clear();
     session->folder_selected = 0;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_directory(mv_session_t session, char* utf8, uint32_t cap,
+                                      uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_directory", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    return copy_utf8(session->folder_dir, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_subfolder_count(mv_session_t session, uint32_t* out_count) {
+  return static_cast<mv_status>(guard("mv_folder_subfolder_count", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_count != nullptr, "out_count must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    *out_count = static_cast<uint32_t>(session->folder_subdirs.size());
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_subfolder_name(mv_session_t session, uint32_t index, char* utf8,
+                                           uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_subfolder_name", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
+    return copy_utf8(session->folder_subdirs[index].name, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_subfolder_path(mv_session_t session, uint32_t index, char* utf8,
+                                           uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_subfolder_path", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
+    return copy_utf8(session->folder_subdirs[index].path, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_summary_at(mv_session_t session, uint32_t index,
+                                       mv_folder_summary* out_summary) {
+  return static_cast<mv_status>(guard("mv_folder_summary_at", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_summary != nullptr, "out_summary must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
+    const auto& card = session->folder_subdirs[index];
+    mv_folder_summary s{};
+    s.media_count = card.media_count;
+    s.subdir_count = card.subdir_count;
+    if (card.loaded) s.flags |= 1u;
+    if (!card.cover_thumb.empty()) s.flags |= 2u;
+    if (card.photos_inside) s.flags |= 4u;
+    if (card.search_incomplete) s.flags |= 8u;
+    *out_summary = s;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_summary_cover_thumb_path(mv_session_t session, uint32_t index,
+                                                     char* utf8, uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_summary_cover_thumb_path", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    MV_REQUIRE(index < session->folder_subdirs.size(), "index out of range");
+    return copy_utf8(session->folder_subdirs[index].cover_thumb, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_request_summary(mv_session_t session, uint32_t index) {
+  return static_cast<mv_status>(guard("mv_folder_request_summary", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    submit_folder_summary(session, index);
     return status::ok;
   }));
 }

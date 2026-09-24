@@ -154,6 +154,10 @@ public static partial class IslandHost
                 int index = (int)c.Payload;
                 UpdateThumb(index);
             }
+            else if (c.Kind == MvCompletionKind.FolderSummary)
+            {
+                ApplyFolderSummary((int)c.Payload);
+            }
             else if (c.Kind == MvCompletionKind.FolderSelected && c.Status == MvStatus.Ok)
             {
                 select = (int)c.Payload;
@@ -209,6 +213,7 @@ public static partial class IslandHost
         }
         _selectedIndex = selected;
         if (selected >= 0) ScrollTo(selected);
+        ReloadFolders();
         UpdateGalleryCount();
         // Native does not drain completions while an island is attached, so
         // this is how it learns a listing landed. Do not Send synchronously:
@@ -421,6 +426,17 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
             if (_thumbPath == value) return;
             _thumbPath = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbPath)));
+        }
+    }
+    private bool _galleryCurrent;
+    public bool GalleryCurrent
+    {
+        get => _galleryCurrent;
+        set
+        {
+            if (_galleryCurrent == value) return;
+            _galleryCurrent = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(GalleryCurrent)));
         }
     }
     public event PropertyChangedEventHandler? PropertyChanged;

@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 7
+#define MV_ABI_VERSION_MINOR 8
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -159,7 +159,9 @@ typedef enum mv_completion_kind {
    * these as notifications, not as acknowledgements of your own calls. The
    * ones that matter are the transitions the core makes on its own — reaching
    * the end of a clip, device loss. */
-  MV_COMPLETION_VIDEO_STATE = 9
+  MV_COMPLETION_VIDEO_STATE = 9,
+  /* PR 26. payload = subfolder index. Cover thumb path is then readable. */
+  MV_COMPLETION_FOLDER_SUMMARY = 10
 } mv_completion_kind;
 
 typedef struct mv_completion {
@@ -311,6 +313,45 @@ MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t
                                                   uint32_t count);
 
 MV_API mv_status MV_CALL mv_folder_close(mv_session_t session);
+
+/* ---------------------------------------------------------------------------
+ * PR 26 — child folders of the open directory (plan/10 folder tiles)
+ *
+ * Listed on the same relist as media items, additive: a folder whose
+ * subfolders cannot be read still shows its files. Strings use the same
+ * caller-buffer rules as mv_folder_item_*. Summaries (counts + cover) are
+ * requested lazily; the answer is FOLDER_SUMMARY, never I/O on this call.
+ * ------------------------------------------------------------------------- */
+
+/* [any-thread][no-block] The open directory, or empty when none. */
+MV_API mv_status MV_CALL mv_folder_directory(mv_session_t session, char* utf8, uint32_t cap,
+                                             uint32_t* out_bytes);
+
+/* [any-thread][no-block] Child folders in natural order, housekeeping dropped. */
+MV_API mv_status MV_CALL mv_folder_subfolder_count(mv_session_t session, uint32_t* out_count);
+MV_API mv_status MV_CALL mv_folder_subfolder_name(mv_session_t session, uint32_t index, char* utf8,
+                                                  uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_folder_subfolder_path(mv_session_t session, uint32_t index, char* utf8,
+                                                  uint32_t cap, uint32_t* out_bytes);
+
+typedef struct mv_folder_summary {
+  uint32_t media_count;    /* media files directly in the folder */
+  uint32_t subdir_count;   /* direct child folders */
+  uint32_t flags;          /* bit 0 loaded, bit 1 has cover, bit 2 photos in a
+                            * descendant, bit 3 bounded walk stopped early */
+  uint32_t reserved;
+} mv_folder_summary;
+
+/* [any-thread][no-block] Last summary for this tile; zeros until loaded. */
+MV_API mv_status MV_CALL mv_folder_summary_at(mv_session_t session, uint32_t index,
+                                              mv_folder_summary* out_summary);
+MV_API mv_status MV_CALL mv_folder_summary_cover_thumb_path(mv_session_t session, uint32_t index,
+                                                            char* utf8, uint32_t cap,
+                                                            uint32_t* out_bytes);
+
+/* [any-thread][no-block] Counts and a cover on a pool thread. Completion
+ * FOLDER_SUMMARY, payload = index. A no-op if already loaded or out of range. */
+MV_API mv_status MV_CALL mv_folder_request_summary(mv_session_t session, uint32_t index);
 
 /* 0.6 (PR 9). Sort order, packed: key in bits 0-2 (0 name, 1 modified, 2 size,
  * 3 type, 4 date taken), descending in bit 3. `set` re-sorts the current

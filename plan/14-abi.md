@@ -267,6 +267,29 @@ Edits themselves never cross the ABI: the edit stack, crop mode and the lossless
 live in `shell/edit_session` (shared with the Mac host), and the geometry reaches the render
 thread through the input snapshot, like every other view state.
 
+## PR 26 — child folders for gallery tiles (ABI 0.8)
+
+Minor bump, **no layout change**. The open folder's child directories ride the same relist as
+media items (`FOLDER_READY` / `FOLDER_CHANGED` payloads stay the media-stop count). Summaries
+(counts and a cover thumb) are requested lazily; the answer is `FOLDER_SUMMARY`.
+
+```c
+mv_status mv_folder_directory(mv_session_t, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_folder_subfolder_count(mv_session_t, uint32_t* out_count);
+mv_status mv_folder_subfolder_name / _path(...);  /* same buffer rules as item strings */
+typedef struct mv_folder_summary {
+  uint32_t media_count, subdir_count,
+           flags /* bit 0 loaded, bit 1 has cover, bit 2 photos in a descendant,
+                    bit 3 bounded walk stopped early */, reserved;
+} mv_folder_summary;  /* 16 bytes */
+mv_status mv_folder_summary_at(mv_session_t, uint32_t index, mv_folder_summary*);
+mv_status mv_folder_summary_cover_thumb_path(...);
+mv_status mv_folder_request_summary(mv_session_t, uint32_t index);  /* FOLDER_SUMMARY, payload = index */
+```
+
+This is not `mv_list_subdirectories` (the PR 9 tree's one-shot read). Tiles use
+`io::list_subfolders`: natural order, housekeeping folders dropped, listed with the folder.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving
