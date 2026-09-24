@@ -144,9 +144,9 @@ destination file, or any upload.
 
 ## Add-ons: how Import is installed
 
-Import is the **first add-on**, so it builds the add-on mechanism that the AI pack
-([17](17-local-ai-search.md), PR 20) then reuses. The design follows the AI pack's delivery
-rules:
+Import is the **first add-on**, so it builds the add-on mechanism that later add-ons reuse:
+the AI pack ([17](17-local-ai-search.md), PR 20) and Voice ([19](19-voice.md), PR 27).
+The design follows the AI pack's delivery rules:
 
 - **Settings → Add-ons** lists each add-on with its size, version and **Install / Remove**.
   Installing is one click, with the size shown ("Install Import, 3 MB"). The first time a card

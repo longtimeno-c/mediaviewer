@@ -172,6 +172,41 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
   return out;
 }
 
+result<std::vector<subdir_entry>> scan_subdirs(std::string_view utf8_dir) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  const std::wstring wide = wide_from_utf8(utf8_dir);
+  if (wide.empty()) return err(status::invalid_arg);
+
+  std::wstring glob = wide;
+  if (glob.back() != L'\\' && glob.back() != L'/') glob.push_back(L'\\');
+  glob.push_back(L'*');
+
+  WIN32_FIND_DATAW fd{};
+  HANDLE find = ::FindFirstFileExW(glob.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
+                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
+  if (find == INVALID_HANDLE_VALUE) return err(status::io);
+
+  std::vector<subdir_entry> out;
+  try {
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+      if (fd.cFileName[0] == L'.') continue;  // ".", "..", and dot-folders
+      if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
+
+      subdir_entry e;
+      e.name_utf8 = utf8_from_wide(fd.cFileName);
+      e.path_utf8 = join_utf8(utf8_dir, e.name_utf8);
+      e.mtime_unix = unix_from_filetime(fd.ftLastWriteTime);
+      out.push_back(std::move(e));
+    } while (::FindNextFileW(find, &fd));
+  } catch (const std::bad_alloc&) {
+    ::FindClose(find);
+    return err(status::out_of_memory);
+  }
+  ::FindClose(find);
+  return out;
+}
+
 result<std::vector<subdir>> list_subdirectories(std::string_view utf8_dir) {
   if (utf8_dir.empty()) return err(status::invalid_arg);
   const std::wstring wide = wide_from_utf8(utf8_dir);

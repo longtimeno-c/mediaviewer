@@ -26,9 +26,12 @@ Mac are both at PR 9.** The order from here is:
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | Planned |
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
+| 26 | Folder tiles, breadcrumb, up | both | Specified |
+| 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
+PR 25 stays unused. PR 26 stays folder tiles. Voice query is 27–28 (Milestone I).
 
 **Dual-track from PR 9 (2026-09-24):** from PR 9 on, **every PR lands on Windows and macOS
 together**: one shared core change, a WinUI half and a SwiftUI half, and a verify line on
@@ -584,7 +587,7 @@ slice is dual-track, with a verify line on each platform, and both present-loop 
 - **PR 19 — Library tools.** Library-wide duplicate scope, import history, and
   verify-a-folder (silent-corruption check).
 
-The add-on mechanism built in PR 16 is the one the AI pack (PR 20) installs through.
+The add-on mechanism built in PR 16 is the one the AI pack (PR 20) and the Voice add-on (PR 27) install through.
 
 ---
 
@@ -615,6 +618,62 @@ inference, and inference in the base installer stay out.
 
 **Settled (owner, 2026-09-24): dual-track.** Each of PRs 20–24 has a Windows half and a Mac
 half and a verify line on each, and both present-loop gates hold **while indexing**.
+
+---
+
+## Milestone H — Multi-folder browsing (PR 26)
+
+### PR 26 — Folder tiles, breadcrumb, up
+A camera dump is one folder; a NAS or an organised library is a tree (`2024/06/…`). Opening
+the root used to list only its direct files, so a root of year folders looked empty. Now the
+gallery shows the open folder's **child folders as tiles**. A folder of only folders uses
+big tiles; a folder that also holds photos keeps one short row of folders above them. A
+cover is the folder's own first photo, or one borrowed from a descendant (bounded to depth
+3 / 48 directories so a deep tree never turns into a crawl). The tile says when that photo
+was found further down, when the level is only more folders, and when the look stopped
+early. Click or `Enter` opens a tile. The **path** stays on screen while a photo is open;
+a long middle collapses until asked for. **`Ctrl/Cmd+Up`** goes up and selects the folder
+you left. **`Ctrl/Cmd+Left/Right`** opens the previous or next folder beside the one open.
+`/` on the folder row finds a tile by the start of its name. A folder that holds only
+folders opens the gallery on its own. Synology `@eaDir`, `#recycle`, `$RECYCLE.BIN` and dot-folders are never tiles;
+names sort naturally (`Trip 2` < `Trip 10`).
+
+Shared native core first: `io::list_subfolders` / `summarize_dir` (portable, `dir_tree.cpp`,
+platform primitive `scan_subdirs`), `shell::browse_path` (trail arithmetic, header-only),
+`command_id::folder_up`. Then chrome, twice (D1): SwiftUI and the WinUI gallery, breadcrumb
+and `folder_up` handler on the same core. Not here: a recursive "flatten" view with
+per-folder headers (needs per-folder thumb provenance in one listing), and the left
+folder-tree island, which stays PR 9.
+
+**Verify:** open a root whose only contents are subfolders → the gallery opens on folder tiles
+with covers and counts, no file I/O on the UI thread; click through three levels, the
+breadcrumb and `Ctrl/Cmd+Up` walk back; a mixed folder shows tiles above images and Up/Down
+crosses between them in the same column; keyboard-only (`Ctrl/Cmd+Up`, arrows, `Enter`, `Esc`)
+reaches every folder; `test_dir_tree` and `test_browse_path` pass; PR 1's present-loop verify
+still holds.
+
+---
+
+## Milestone I — Voice query add-on (PR 27–28, both platforms)
+
+An **optional add-on installed from Settings**, separate from the AI pack. Hold a key and say
+"pull up all the photos that include…"; the words are the text query Local search already
+answers (PR 22), the gallery shows that grid, and a short spoken line gives the count.
+On-device recognition only. The mic stays closed until the key is held. Full design, the
+Windows recognizer spike, privacy line and verify lines: [19-voice.md](19-voice.md).
+Proposed 2026-09-24 ([12](12-decision-log.md)); not a D-decision.
+
+It installs through PR 16's add-on mechanism and does not merge before PR 22's verify holds.
+It does not index, does not ship ONNX Runtime, and does not open `index.db`. Voice without
+Local search tells you so and searches nothing. PR 26 (folder tiles) is independent and keeps
+its number. Both present-loop gates hold **while listening and while speaking**.
+
+- **PR 27 — Listen, ask, answer.** The Windows spike (unpackaged OS speech, or a small native
+  model inside this add-on if that API needs MSIX), then hold-to-talk, the mic button, the
+  transcript in the search box, and the spoken count.
+- **PR 28 — Corrections, follow-ups, missing speech.** An editable transcript, four short
+  follow-up phrases mapped to existing commands, and the states where the OS language or model
+  is missing.
 
 ---
 

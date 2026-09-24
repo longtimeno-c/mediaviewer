@@ -225,6 +225,7 @@ add_library(mv_io STATIC
   src/io/replace.h
   src/io/replace_win.cpp
   src/io/dir_win.cpp
+  src/io/dir_tree.cpp
   src/io/dir.h
   src/io/paths_win.cpp
   src/io/paths.h
@@ -731,6 +732,8 @@ if(MV_BUILD_TESTS)
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
+    tests/test_dir_tree.cpp
+    tests/test_browse_path.cpp
     tests/test_folder.cpp
     tests/test_presenter.cpp
     tests/test_colour_desc.cpp

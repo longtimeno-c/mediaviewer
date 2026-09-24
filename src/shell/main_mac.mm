@@ -36,6 +36,7 @@
 #include "io/collision_name.h"
 #include "io/dir.h"
 #include "shell/browse_index.h"
+#include "shell/browse_path.h"
 #include "shell/commands.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
@@ -90,6 +91,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
+    case folder_up: case folder_prev: case folder_next:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
     // PR 10
@@ -118,6 +120,7 @@ mv_chrome_thumb_ready_fn g_thumb_ready_callback = nullptr;
 // Cells per gallery row, reported by the SwiftUI grid (mv_chrome_set_gallery_
 // columns). Main-thread only, like every other bridge call.
 int32_t g_gallery_columns = 1;
+mv_chrome_folder_summary_fn g_folder_summary_callback = nullptr;
 }  // namespace
 
 // [any-thread] SwiftUI runs button actions on the main actor, so these run
@@ -145,6 +148,7 @@ extern "C" void mv_chrome_one_to_one(void) {
 // — that field, and every canvas-rect field alongside it, is already in
 // physical pixels, matching Windows' PerMonitorV2 convention).
 constexpr CGFloat kChromeBarHeightPoints = 48.0;  // Windows bar height
+constexpr CGFloat kPathRowPoints = 28.0;          // breadcrumb under the bar while a folder is open
 // Filmstrip strip height, in points -- same conversion-to-backing-pixels
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
@@ -165,6 +169,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSWindow* window;
 @property(nonatomic, strong) MvMetalView* view;
 @property(nonatomic, strong) NSView* commandBar;
+@property(nonatomic, strong) NSLayoutConstraint* commandBarHeight;
+- (CGFloat)chromeBarHeight;
+- (BOOL)folderQueryInto:(char*)buf size:(int32_t)size;
 @property(nonatomic, strong) NSView* filmstripHost;
 @property(nonatomic, strong) NSView* galleryHost;
 @property(nonatomic, strong) NSView* helpHost;
@@ -269,6 +276,20 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // what the canvas shows.
 - (void)galleryMoveRows:(NSInteger)rows;
 - (void)adjustGalleryCellSize:(NSInteger)direction;
+// PR 26 multi-folder browsing: child-folder tiles, breadcrumb, up. The
+// folder cursor is the gallery's keyboard position while it is on a folder
+// tile (-1 = on the images).
+- (NSInteger)subfolderCount;
+- (BOOL)subfolderPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
+- (void)openSubfolderAtIndex:(NSInteger)index;
+- (void)requestFolderSummaryAtIndex:(NSInteger)index;
+- (NSInteger)crumbCount;
+- (BOOL)crumbPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
+- (void)openCrumbAtIndex:(NSInteger)index;
+- (BOOL)canGoUp;
+- (BOOL)navigateUp;
+- (NSInteger)folderCursor;
+- (BOOL)folderCursorStep:(NSInteger)delta;
 // `?` cheat sheet (SwiftUI HelpView), an overlay like the gallery.
 - (BOOL)helpVisible;
 - (void)setHelpVisible:(BOOL)visible;
@@ -456,6 +477,44 @@ extern "C" void mv_chrome_video_step(int32_t frames) {
   g_chrome_snap->anim_steps += frames;
   MvPublishVideoInput();
 }
+extern "C" int32_t mv_chrome_subfolder_count(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app subfolderCount]) : 0;
+}
+extern "C" bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t out_buf_size) {
+  if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
+  return [g_chrome_app subfolderPathAtIndex:index into:out_buf size:out_buf_size] == YES;
+}
+extern "C" void mv_chrome_open_subfolder(int32_t index) {
+  if (g_chrome_app) [g_chrome_app openSubfolderAtIndex:index];
+}
+extern "C" void mv_chrome_request_folder_summary(int32_t index) {
+  if (g_chrome_app) [g_chrome_app requestFolderSummaryAtIndex:index];
+}
+extern "C" void mv_chrome_set_folder_summary_callback(mv_chrome_folder_summary_fn callback) {
+  g_folder_summary_callback = callback;
+}
+extern "C" int32_t mv_chrome_crumb_count(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app crumbCount]) : 0;
+}
+extern "C" bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size) {
+  if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
+  return [g_chrome_app crumbPathAtIndex:index into:out_buf size:out_buf_size] == YES;
+}
+extern "C" void mv_chrome_open_crumb(int32_t index) {
+  if (g_chrome_app) [g_chrome_app openCrumbAtIndex:index];
+}
+extern "C" bool mv_chrome_can_go_up(void) {
+  return g_chrome_app && [g_chrome_app canGoUp] == YES;
+}
+extern "C" void mv_chrome_navigate_up(void) {
+  if (g_chrome_app) [g_chrome_app navigateUp];
+}
+extern "C" int32_t mv_chrome_folder_cursor(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app folderCursor]) : -1;
+}
+extern "C" bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size) {
+  return g_chrome_app && [g_chrome_app folderQueryInto:out_buf size:out_buf_size] == YES;
+}
 // ---- PR 9 bridge: metadata pane, folder tree, sort -------------------------------
 namespace {
 
@@ -604,8 +663,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (flags & NSEventModifierFlagOption) mods |= mv::shell::mod_alt;
   if (mods_out) *mods_out = mods;
 
-  NSString* base = event.charactersIgnoringModifiers;
-  const unichar c = base.length > 0 ? [base characterAtIndex:0] : 0;
+  NSString* ignored = event.charactersIgnoringModifiers;
+  const unichar c = ignored.length > 0 ? [ignored characterAtIndex:0] : 0;
   if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
     return static_cast<key>(static_cast<int>(key::f1) + static_cast<int>(c - NSF1FunctionKey));
   }
@@ -629,22 +688,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   if (c >= 'a' && c <= 'z') return static_cast<key>(c - 'a' + 'A');
   if (c >= 'A' && c <= 'Z') return static_cast<key>(c);
-  // Digits and symbols: the character the layout produced with Shift applied
-  // (so `?` is '?' with no Shift, `+` is '+'). Control / Command give control
-  // codes or ignore Shift, so those use the base character.
-  unichar out = c;
-  if (!(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl))) {
-    NSString* shifted = event.characters;
-    if (shifted.length > 0) {
-      const unichar sc = [shifted characterAtIndex:0];
-      if (sc >= 0x21 && sc <= 0x7E) {
-        if (sc != c && mods_out) *mods_out = static_cast<std::uint8_t>(mods & ~mv::shell::mod_shift);
-        out = sc;
-      }
-    }
-  }
-  if (out >= 0x21 && out <= 0x7E) return mv::shell::char_key(static_cast<char>(out));
-  return key::none;
+  // `charactersIgnoringModifiers` does not drop Shift, so Shift+/ is '?' in
+  // both that string and `characters`. Comparing them never cleared Shift,
+  // and the table binds `?` / `+` with no Shift (same as translate_key on
+  // Windows). The unshifted glyph comes from the layout, not that string.
+  // Command / Control can turn `characters` into a control code; those keep
+  // the ignored character.
+  NSString* plain = [event charactersByApplyingModifiers:0];
+  const unichar plainChar = plain.length > 0 ? [plain characterAtIndex:0] : c;
+  const unichar produced = event.characters.length > 0 ? [event.characters characterAtIndex:0] : 0;
+  const bool command = (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0;
+  return mv::shell::resolve_layout_symbol(plainChar, c, produced, command, mods_out);
 }
 
 @interface MvMetalView : NSView <NSDraggingSource>
@@ -701,8 +755,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->width = static_cast<std::uint32_t>(std::max(1.0, backing.width));
   self.snap->height = static_cast<std::uint32_t>(std::max(1.0, backing.height));
   self.snap->dpi_scale = static_cast<float>(self.window.backingScaleFactor);
-  self.snap->chrome_height_px = static_cast<std::uint32_t>(
-      kChromeBarHeightPoints * self.window.backingScaleFactor);
+  const CGFloat bar = self.app ? [self.app chromeBarHeight] : kChromeBarHeightPoints;
+  self.snap->chrome_height_px = static_cast<std::uint32_t>(bar * self.window.backingScaleFactor);
   // chrome_bottom_px: 0 when the filmstrip is hidden, so present_lab_mac.mm's
   // usable_window_h() lets the canvas reclaim that space the moment `T`
   // hides it -- single source of truth here, same as chrome_height_px above,
@@ -875,6 +929,29 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   mv::shell::folder_model _folder;
   mv::shell::browse_index _index;
   std::vector<mv::io::dir_entry> _items;
+  // PR 26: the open folder's child folders (same relist as `_items`), the
+  // breadcrumb trail through the tree, and the gallery's keyboard position
+  // while it is on a folder tile (-1 = on the images).
+  std::vector<mv::io::subdir_entry> _subdirs;
+  mv::shell::browse_path _browsePath;
+  NSInteger _folderCursor;
+  // Child folder we just left. Applied once, when that parent's listing arrives,
+  // so Up and a breadcrumb click land on the tile that was open.
+  std::string _revealChild;
+  // Sibling folders of the one open, so Cmd+Left / Cmd+Right can move sideways
+  // without listing the parent on the UI thread. Filled from the listing we
+  // left, then confirmed by a background read of the parent.
+  std::vector<std::string> _siblings;
+  NSInteger _siblingIndex;
+  std::uint64_t _siblingGeneration;
+  // `/` while the folder row is active: a short prefix matched against tile names.
+  BOOL _folderFind;
+  std::string _folderQuery;
+  CFAbsoluteTime _folderFindTick;
+  // Set by every open / navigation; the first relist of exactly that folder
+  // opens the gallery if it holds no media of its own (a NAS root of year
+  // folders would otherwise open onto an empty canvas).
+  std::string _galleryIfEmptyDir;
   // The path -selectIndex: last asked to display. Anchors the selection
   // across a relist: found again -> that's the new index (files added
   // elsewhere in the folder don't move the selection); not found (removed)
@@ -988,6 +1065,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   return self;
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+  _folderCursor = -1;
+  _siblingIndex = -1;
   (void)notification;
   [self loadSettings];
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
@@ -1098,11 +1177,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self.commandBar setContentHuggingPriority:NSLayoutPriorityDefaultLow
                                forOrientation:NSLayoutConstraintOrientationHorizontal];
   [container addSubview:self.commandBar];
+  self.commandBarHeight =
+      [self.commandBar.heightAnchor constraintEqualToConstant:[self chromeBarHeight]];
   [NSLayoutConstraint activateConstraints:@[
     [self.commandBar.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
     [self.commandBar.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.commandBar.topAnchor constraintEqualToAnchor:container.topAnchor],
-    [self.commandBar.heightAnchor constraintEqualToConstant:kChromeBarHeightPoints],
+    self.commandBarHeight,
   ]];
 
   // Filmstrip: a bottom strip, the same "sibling drawn over the canvas's own
@@ -1289,6 +1370,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (BOOL)openEntryPath:(const char*)utf8_path {
+  return [self openPath:utf8_path navigation:NO];
+}
+
+// `navigation` = moving through the folder tree the user already opened (a
+// folder tile, a breadcrumb, up): the trail keeps its root and the filmstrip
+// setting is left alone. NO = a fresh open (Open, a drop, the CLI), which
+// starts a new trail.
+- (BOOL)openPath:(const char*)utf8_path navigation:(BOOL)navigation {
   if (!utf8_path || !*utf8_path) return NO;
   const std::string path(utf8_path);
   // A single stat() to answer "does anything exist here" is the one I/O
@@ -1308,9 +1397,53 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     dir = containing.value();
     select_path = path;
   }
+  // Moving up into a folder that contains the one we are leaving: remember
+  // that child so its tile is selected when the parent listing arrives.
+  if (navigation && !_currentDir.empty() && dir != _currentDir &&
+      mv::shell::browse_path::within(_currentDir, dir)) {
+    _revealChild = _currentDir;
+  } else {
+    _revealChild.clear();
+  }
+  // The destination is one of the folders on screen: those paths are its
+  // siblings, already in memory, so sideways navigation does not wait.
+  bool seeded = false;
+  for (std::size_t i = 0; i < _subdirs.size(); ++i) {
+    if (_subdirs[i].path_utf8 != dir) continue;
+    _siblings.clear();
+    _siblings.reserve(_subdirs.size());
+    for (const auto& sub : _subdirs) _siblings.push_back(sub.path_utf8);
+    _siblingIndex = static_cast<NSInteger>(i);
+    seeded = true;
+    break;
+  }
+  if (!seeded) {
+    bool kept = false;
+    for (std::size_t i = 0; i < _siblings.size(); ++i) {
+      if (_siblings[i] == dir) {
+        _siblingIndex = static_cast<NSInteger>(i);
+        kept = true;
+        break;
+      }
+    }
+    if (!kept) {
+      _siblings.clear();
+      _siblingIndex = -1;
+    }
+  }
+  _folderFind = NO;
+  _folderQuery.clear();
+  if (navigation) {
+    _browsePath.visit(dir);
+  } else {
+    _browsePath.reset(dir);
+  }
+  _folderCursor = -1;
+  _subdirs.clear();
+  _galleryIfEmptyDir = dir;
   // Settings: a folder open earns the filmstrip; opening one image is a viewing
   // intent and keeps it off until asked (plan/16, same as Windows).
-  {
+  if (!navigation) {
     const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
     const BOOL want = is_dir.value() ? prefs.filmstrip_for_folder : prefs.filmstrip_for_image;
     if (want != _filmstripVisible) [self setFilmstripVisible:want];
@@ -1360,6 +1493,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                     }
                     return mv::status::ok;
                   });
+  [self updateChromeBarHeight];
   return YES;
 }
 
@@ -1381,6 +1515,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   if (!_folder.consume_changed()) return;
   _items = _folder.items();
+  _subdirs = _folder.subfolders();
+  if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
+    _folderCursor = static_cast<NSInteger>(_subdirs.size()) - 1;
+  }
   [self sortItems];
   ++_listingGeneration;
 
@@ -1416,6 +1554,30 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self selectIndex:new_index];
+
+  bool revealed = false;
+  if (!_revealChild.empty()) {
+    for (std::size_t i = 0; i < _subdirs.size(); ++i) {
+      if (_subdirs[i].path_utf8 == _revealChild) {
+        _folderCursor = static_cast<NSInteger>(i);
+        revealed = true;
+        break;
+      }
+    }
+    _revealChild.clear();
+  }
+
+  // A folder that holds only folders opens the gallery so the tiles are what
+  // the user lands on. Coming back up also opens it, on the tile that was left.
+  if (!_galleryIfEmptyDir.empty() && _folder.directory() == _galleryIfEmptyDir) {
+    _galleryIfEmptyDir.clear();
+    if (_items.empty() && !_subdirs.empty()) {
+      [self setGalleryVisible:YES];
+      if (!revealed) _folderCursor = 0;
+    }
+  }
+  if (revealed) [self setGalleryVisible:YES];
+  [self refreshSiblings];
 }
 
 - (void)selectIndex:(std::size_t)new_index {
@@ -1818,13 +1980,64 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ++_marksGeneration;
   [self updateMarkSnapshot];
 }
+- (BOOL)folderStrip {
+  return !_subdirs.empty() && !_items.empty();
+}
 - (void)galleryMoveRows:(NSInteger)rows {
-  if (_items.empty()) return;
-  const NSInteger count = static_cast<NSInteger>(_items.size());
   const NSInteger cols = std::max<NSInteger>(1, g_gallery_columns);
+  const NSInteger folders = static_cast<NSInteger>(_subdirs.size());
+  // Mixed folder: the tiles are one horizontal row above the photos, not a
+  // block in the same grid. Down leaves that row for the first photo row.
+  if ([self folderStrip]) {
+    if (_folderCursor >= 0) {
+      if (rows < 0) return;
+      const NSInteger col = std::min(_folderCursor, cols - 1);
+      _folderCursor = -1;
+      [self selectIndex:static_cast<std::size_t>(
+                            std::min<NSInteger>(col, static_cast<NSInteger>(_items.size()) - 1))];
+      return;
+    }
+    const NSInteger cur = [self currentIndex];
+    if (rows < 0 && cur < cols) {
+      _folderCursor = std::min(cur, folders - 1);
+      return;
+    }
+  }
+  // No images to move over (a folder of folders): the tiles are all there is.
+  if (_items.empty()) {
+    if (folders == 0) return;
+    if (_folderCursor < 0) _folderCursor = 0;
+  }
+  if (_folderCursor >= 0) {
+    NSInteger target = _folderCursor + rows * cols;
+    if (target < 0) return;  // already on the first row of tiles
+    if (target >= folders) {
+      if (_folderCursor / cols < (folders - 1) / cols) {
+        target = folders - 1;  // short last row: land on its final tile
+      } else {
+        // Down from the last row of tiles: onto the images, same column.
+        if (_items.empty()) return;
+        const NSInteger col = _folderCursor % cols;
+        _folderCursor = -1;
+        [self selectIndex:static_cast<std::size_t>(
+                              std::min<NSInteger>(col, static_cast<NSInteger>(_items.size()) - 1))];
+        return;
+      }
+    }
+    _folderCursor = target;
+    return;
+  }
+  const NSInteger count = static_cast<NSInteger>(_items.size());
   const NSInteger cur = [self currentIndex];
   NSInteger target = cur + rows * cols;
-  if (target < 0) return;  // already on the first row
+  if (target < 0) {
+    // Up from the first row of images: onto the folder tiles, same column.
+    if (folders > 0 && rows < 0) {
+      const NSInteger col = cur % cols;
+      _folderCursor = std::min<NSInteger>(folders - 1, ((folders - 1) / cols) * cols + col);
+    }
+    return;
+  }
   if (target >= count) {
     // Down from a row above the last: land on the final item rather than
     // doing nothing (a short last row has no cell directly below).
@@ -1832,6 +2045,249 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     target = count - 1;
   }
   [self selectIndex:static_cast<std::size_t>(target)];
+}
+
+// Left / Right (and A / D) while the gallery's cursor is on a folder tile.
+// Returns NO when the keys should keep walking images.
+- (BOOL)folderCursorStep:(NSInteger)delta {
+  const NSInteger folders = static_cast<NSInteger>(_subdirs.size());
+  if (!_galleryVisible || folders == 0) return NO;
+  if (_folderCursor < 0) {
+    if (!_items.empty()) return NO;
+    _folderCursor = 0;
+  }
+  _folderCursor = std::clamp<NSInteger>(_folderCursor + delta, 0, folders - 1);
+  return YES;
+}
+
+- (NSInteger)folderCursor {
+  return _folderCursor;
+}
+
+- (NSInteger)subfolderCount {
+  return static_cast<NSInteger>(_subdirs.size());
+}
+
+static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
+  const std::size_t n = std::min(text.size(), static_cast<std::size_t>(size) - 1);
+  std::memcpy(buf, text.data(), n);
+  buf[n] = '\0';
+  return YES;
+}
+
+- (BOOL)subfolderPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return NO;
+  return MvCopyUtf8(_subdirs[static_cast<std::size_t>(index)].path_utf8, buf, size);
+}
+
+- (void)openSubfolderAtIndex:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return;
+  const std::string path = _subdirs[static_cast<std::size_t>(index)].path_utf8;
+  [self openPath:path.c_str() navigation:YES];
+}
+
+// Same shape as -requestThumbAtIndex: (pool thread -> main-thread callback,
+// keyed by path so a relist that reorders tiles cannot misfile a result). The
+// cover's thumbnail rides the ordinary thumb pipeline, so it is cached like
+// any other and is a poster frame when the folder's first item is a clip.
+- (void)requestFolderSummaryAtIndex:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return;
+  const std::string dir = _subdirs[static_cast<std::size_t>(index)].path_utf8;
+  mv::shell::folder_model* folder = &_folder;
+  auto deliver = [](std::string dir_path, bool ok, std::uint32_t media, std::uint32_t subs,
+                    int32_t flags, std::string thumb) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!g_folder_summary_callback) return;
+      g_folder_summary_callback(dir_path.c_str(), ok, static_cast<int32_t>(media),
+                                static_cast<int32_t>(subs), flags,
+                                thumb.empty() ? nullptr : thumb.c_str());
+    });
+  };
+  _folder.request_summary(
+      dir, [folder, deliver](std::string dir_path, bool ok, mv::io::folder_summary summary) {
+        if (!ok) {
+          deliver(dir_path, false, 0, 0, 0, {});
+          return;
+        }
+        int32_t flags = 0;
+        if (summary.photos_inside) flags |= 1;
+        if (summary.search_incomplete) flags |= 2;
+        if (!summary.has_cover) {
+          deliver(dir_path, true, summary.media_count, summary.subdir_count, flags, {});
+          return;
+        }
+        const std::uint32_t media = summary.media_count;
+        const std::uint32_t subs = summary.subdir_count;
+        folder->request_thumb(summary.cover.path_utf8, summary.cover.mtime_unix,
+                              summary.cover.size,
+                              [deliver, dir_path, media, subs, flags](std::string, std::string thumb) {
+                                deliver(dir_path, true, media, subs, flags, std::move(thumb));
+                              });
+      });
+}
+
+- (NSInteger)crumbCount {
+  return static_cast<NSInteger>(_browsePath.crumbs().size());
+}
+
+- (BOOL)crumbPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  const auto crumbs = _browsePath.crumbs();
+  if (index < 0 || static_cast<std::size_t>(index) >= crumbs.size()) return NO;
+  return MvCopyUtf8(crumbs[static_cast<std::size_t>(index)].path, buf, size);
+}
+
+- (void)openCrumbAtIndex:(NSInteger)index {
+  const auto crumbs = _browsePath.crumbs();
+  if (index < 0 || static_cast<std::size_t>(index) >= crumbs.size()) return;
+  const std::string path = crumbs[static_cast<std::size_t>(index)].path;
+  if (path == _browsePath.current()) return;
+  [self openPath:path.c_str() navigation:YES];
+}
+
+- (BOOL)canGoUp {
+  return !_browsePath.parent().empty();
+}
+
+- (CGFloat)chromeBarHeight {
+  return _currentDir.empty() ? kChromeBarHeightPoints : kChromeBarHeightPoints + kPathRowPoints;
+}
+
+- (void)updateChromeBarHeight {
+  if (self.commandBarHeight) self.commandBarHeight.constant = [self chromeBarHeight];
+  if (self.view) [self.view syncSize];
+}
+
+- (void)refreshSiblings {
+  const std::string parent = _browsePath.parent();
+  const std::string here = _currentDir;
+  const std::uint64_t gen = ++_siblingGeneration;
+  if (parent.empty() || here.empty()) return;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [parent, here, gen, weakSelf](const mv::job_context&) -> mv::status {
+                    auto subs = mv::io::list_subfolders(parent);
+                    const bool ok = static_cast<bool>(subs);
+                    std::vector<std::string> paths;
+                    NSInteger index = -1;
+                    if (ok) {
+                      paths.reserve(subs.value().size());
+                      for (std::size_t i = 0; i < subs.value().size(); ++i) {
+                        paths.push_back(subs.value()[i].path_utf8);
+                        if (subs.value()[i].path_utf8 == here) index = static_cast<NSInteger>(i);
+                      }
+                    }
+                    const auto error = ok ? mv::status::ok : subs.error();
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      MvLabApp* app = weakSelf;
+                      if (!app || gen != app->_siblingGeneration || here != app->_currentDir || !ok) return;
+                      app->_siblings = paths;
+                      app->_siblingIndex = index;
+                    });
+                    return error;
+                  });
+}
+
+- (BOOL)navigateSibling:(NSInteger)delta {
+  if (_siblingIndex < 0 || _siblings.empty()) return NO;
+  const NSInteger next = _siblingIndex + delta;
+  if (next < 0 || next >= static_cast<NSInteger>(_siblings.size())) return NO;
+  const std::string path = _siblings[static_cast<std::size_t>(next)];
+  _siblingIndex = next;
+  return [self openPath:path.c_str() navigation:YES];
+}
+
+- (BOOL)folderFindLive {
+  if (!_folderFind) return NO;
+  if (CFAbsoluteTimeGetCurrent() - _folderFindTick > 1.2) {
+    _folderFind = NO;
+    _folderQuery.clear();
+    return NO;
+  }
+  return YES;
+}
+
+- (void)touchFolderFind {
+  _folderFind = YES;
+  _folderFindTick = CFAbsoluteTimeGetCurrent();
+}
+
+- (void)moveFolderCursorToQuery {
+  if (_folderQuery.empty() || _subdirs.empty()) return;
+  NSString* query = [NSString stringWithUTF8String:_folderQuery.c_str()];
+  if (query.length == 0) return;
+  for (std::size_t i = 0; i < _subdirs.size(); ++i) {
+    NSString* name = [NSString stringWithUTF8String:_subdirs[i].name_utf8.c_str()];
+    if ([name rangeOfString:query options:NSAnchoredSearch | NSCaseInsensitiveSearch].location == 0) {
+      _folderCursor = static_cast<NSInteger>(i);
+      [self setGalleryVisible:YES];
+      return;
+    }
+  }
+}
+
+- (BOOL)folderQueryInto:(char*)buf size:(int32_t)size {
+  if (![self folderFindLive] || !buf || size <= 0) return NO;
+  return MvCopyUtf8(_folderQuery, buf, size);
+}
+
+- (BOOL)handleFolderFind:(NSEvent*)event key:(mv::shell::key)k mods:(std::uint8_t)mods {
+  if (![self folderFindLive]) return NO;
+  if (event.type != NSEventTypeKeyDown) return YES;
+  using mv::shell::key;
+  if (k == key::escape && mods == mv::shell::mod_none) {
+    _folderFind = NO;
+    _folderQuery.clear();
+    return YES;
+  }
+  if (k == key::backspace && mods == mv::shell::mod_none) {
+    if (!_folderQuery.empty()) {
+      // Drop one UTF-8 code point, not one byte.
+      while (!_folderQuery.empty() &&
+             (static_cast<unsigned char>(_folderQuery.back()) & 0xC0) == 0x80) {
+        _folderQuery.pop_back();
+      }
+      if (!_folderQuery.empty()) _folderQuery.pop_back();
+    }
+    [self touchFolderFind];
+    [self moveFolderCursorToQuery];
+    return YES;
+  }
+  if (k == key::enter && mods == mv::shell::mod_none) {
+    _folderFind = NO;
+    _folderQuery.clear();
+    if (_folderCursor >= 0) [self openSubfolderAtIndex:_folderCursor];
+    return YES;
+  }
+  if (mods != mv::shell::mod_none) {
+    _folderFind = NO;
+    _folderQuery.clear();
+    return NO;
+  }
+  NSString* chars = event.charactersIgnoringModifiers;
+  if (chars.length != 1) {
+    _folderFind = NO;
+    _folderQuery.clear();
+    return NO;
+  }
+  unichar c = [chars characterAtIndex:0];
+  if (c < 0x20 || c == 0x7F || c == '/') {
+    if (c == '/') return YES;
+    _folderFind = NO;
+    _folderQuery.clear();
+    return NO;
+  }
+  NSString* next = [NSString stringWithUTF8String:_folderQuery.c_str()];
+  next = [next stringByAppendingString:chars];
+  _folderQuery = next.UTF8String;
+  [self touchFolderFind];
+  [self moveFolderCursorToQuery];
+  return YES;
+}
+
+- (BOOL)navigateUp {
+  const std::string parent = _browsePath.parent();
+  if (parent.empty()) return NO;
+  return [self openPath:parent.c_str() navigation:YES];
 }
 - (void)adjustGalleryCellSize:(NSInteger)direction {
   [MVChromeHost adjustGalleryCellSize:direction];
@@ -2201,6 +2657,7 @@ enum MvMenuCmd : NSInteger {
   std::uint8_t mods = 0;
   const key k = MvKeyFromEvent(event, &mods);
   if (k == key::none) return NO;
+  if ([self handleFolderFind:event key:k mods:mods]) return YES;
   // Settings owns the keyboard (the router agrees: settings_open routes
   // nothing); Esc closes it when no capture is pending.
   if (_settingsVisible) {
@@ -2252,10 +2709,12 @@ enum MvMenuCmd : NSInteger {
       if (!_items.empty() || !_gameOn) return NO;
       ++_snap.game_view_seq; [self pokeSnapshot]; return YES;
     case prev:
+      if ([self folderCursorStep:-1]) return YES;
       if (_items.empty()) return NO;
       [self navigatePrev];
       return YES;
     case next:
+      if ([self folderCursorStep:1]) return YES;
       // Space with no folder open starts the empty-window runner (a soak
       // keeps the lab's sweep).
       if (_items.empty()) {
@@ -2298,7 +2757,25 @@ enum MvMenuCmd : NSInteger {
     case toggle_filmstrip: [self toggleFilmstrip]; return YES;
     case gallery_up: [self galleryMoveRows:-1]; return YES;
     case gallery_down: [self galleryMoveRows:1]; return YES;
-    case gallery_open_selected: [self setGalleryVisible:NO]; return YES;
+    case gallery_open_selected:
+      if (_galleryVisible && _folderCursor >= 0) {
+        [self openSubfolderAtIndex:_folderCursor];
+        return YES;
+      }
+      [self setGalleryVisible:NO];
+      return YES;
+    case folder_up: return [self navigateUp];
+    case folder_prev: return [self navigateSibling:-1];
+    case folder_next: return [self navigateSibling:1];
+    case typeahead: {
+      const bool on_folders = _galleryVisible && !_subdirs.empty() &&
+                              (_folderCursor >= 0 || _items.empty());
+      if (!on_folders) return NO;
+      _folderQuery.clear();
+      [self touchFolderFind];
+      if (_folderCursor < 0 && !_subdirs.empty()) _folderCursor = 0;
+      return YES;
+    }
     case gallery_larger: [self adjustGalleryCellSize:1]; return YES;
     case gallery_smaller: [self adjustGalleryCellSize:-1]; return YES;
     case fullscreen: [self toggleFullscreen]; return YES;
@@ -2675,7 +3152,9 @@ enum MvMenuCmd : NSInteger {
   return [NSString stringWithUTF8String:_currentDir.c_str()];
 }
 - (void)openFolderPath:(const char*)utf8_path {
-  if (![self openEntryPath:utf8_path]) NSBeep();
+  // A tree click stays on the trail (visit), so the root the user started from
+  // remains the root. Open Folder from the menu still resets it.
+  if (!utf8_path || ![self openPath:utf8_path navigation:YES]) NSBeep();
 }
 
 // Sort. `sortItems` orders `_items` for a fresh listing; `resortKeepingSelection`

@@ -57,6 +57,10 @@ enum chrome_command : int {
   // PR 10. The export dialog was confirmed; arg is the packed choice
   // (edit_session.h pack_export). Cancel sends nothing.
   chrome_cmd_export = 1006,
+  // PR 26 folder tiles. Chrome, not keyed commands: the gallery posts these.
+  chrome_cmd_open_subfolder = 1007,   // arg is the child-folder index
+  chrome_cmd_open_crumb = 1008,       // arg is the breadcrumb index
+  chrome_cmd_gallery_columns = 1009,  // arg is cells per row
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -107,8 +111,10 @@ static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle
 // The panes' close buttons and the View menu send these keyed commands.
 static_assert(static_cast<int>(command_id::folder_tree) == 78);
 static_assert(static_cast<int>(command_id::metadata_pane) == 92);
+static_assert(static_cast<int>(command_id::folder_up) == 115);
 static_assert(chrome_cmd_tree_open >= kCommandCount && chrome_cmd_set_sort >= kCommandCount);
 static_assert(chrome_cmd_export >= kCommandCount);
+static_assert(chrome_cmd_open_subfolder >= kCommandCount && chrome_cmd_gallery_columns >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -127,7 +133,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_folder_ready, chrome_cmd_toggle_filmstrip, chrome_cmd_video_active,
       chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
       chrome_cmd_reset_keys, chrome_cmd_update_restart, chrome_cmd_tree_open,
-      chrome_cmd_set_sort, chrome_cmd_export};
+      chrome_cmd_set_sort, chrome_cmd_export, chrome_cmd_open_subfolder, chrome_cmd_open_crumb,
+      chrome_cmd_gallery_columns};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -233,10 +240,26 @@ struct chrome_navigate_args {
   std::int32_t reserved;
 };
 
+// PR 26: breadcrumb trail + gallery folder-tile cursor. crumbs_utf8 is
+// "name\tpath\n" lines, valid for the call only (same rule as the command table).
+// query_bytes is -1 when folder-find is idle; 0 or more is the live query.
+struct chrome_browse_args {
+  std::int32_t folder_cursor;  // -1 = on images
+  std::int32_t can_go_up;
+  std::int32_t crumbs_bytes;
+  std::int32_t query_bytes;
+  std::uint64_t crumbs_utf8;
+  std::uint64_t query_utf8;
+};
+
+static_assert(sizeof(chrome_browse_args) == 32, "keep in sync with ChromeBrowseArgs");
+
 using chrome_entry_fn = int (*)(void* arg, std::int32_t arg_size_in_bytes);
 
 // DIP height of the command-bar strip. Physical pixels = this * dpi / 96.
 inline constexpr int kChromeBarDip = 48;
+// Breadcrumb under the bar while a folder is open (Mac kPathRowPoints).
+inline constexpr int kPathRowDip = 28;
 inline constexpr int kFilmstripDip = 112;
 // The transport strip. It sits BELOW the canvas and above the filmstrip, and
 // the canvas rectangle shrinks by exactly this much while it is up — plan/16
@@ -244,9 +267,10 @@ inline constexpr int kFilmstripDip = 112;
 // transport must never cover the video.
 inline constexpr int kTransportDip = 52;
 
-[[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi) noexcept {
+[[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi, bool path_row = false) noexcept {
   if (dpi == 0) dpi = 96;
-  return static_cast<int>((kChromeBarDip * static_cast<int>(dpi) + 48) / 96);
+  const int dip = kChromeBarDip + (path_row ? kPathRowDip : 0);
+  return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96);
 }
 
 [[nodiscard]] inline int chrome_filmstrip_height_px(std::uint32_t dpi) noexcept {
@@ -385,6 +409,8 @@ class chrome_host {
   }
   void navigate_gallery(std::int32_t direction, std::int32_t index) noexcept;
   void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
+  void apply_browse(std::int32_t folder_cursor, bool can_go_up, const std::string& crumbs,
+                    bool finding = false, const std::string& query = {}) noexcept;
 
   // True when the island consumed the message (do not Translate/Dispatch).
   [[nodiscard]] bool pre_translate(MSG* msg) noexcept;
@@ -449,6 +475,7 @@ class chrome_host {
   chrome_entry_fn take_tree_path_ = nullptr;
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
+  chrome_entry_fn apply_browse_ = nullptr;
   chrome_entry_fn update_restart_ = nullptr;
   chrome_entry_fn updater_exit_ = nullptr;
   bool transport_attached_ = false;
@@ -457,6 +484,7 @@ class chrome_host {
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
+  bool path_row_ = false;  // command bar grew by kPathRowDip; gallery Y follows
   bool panels_attached_ = false;
   bool meta_visible_ = false;
   bool tree_visible_ = false;

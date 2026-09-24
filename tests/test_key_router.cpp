@@ -731,6 +731,40 @@ TEST_CASE("symbol keys are characters, independent of the Shift that made them",
   REQUIRE(r.on_key(down(char_key('=')), s).command == command_id::zoom_in);
   REQUIRE(char_key('d') == char_key('D'));
   REQUIRE(char_key(' ') == key::none);
+
+  // macOS: charactersIgnoringModifiers keeps Shift, so Shift+/ is '?' with
+  // the Shift flag still set. The overlay is bound to '?' alone.
+  std::uint8_t mods = mod_shift;
+  const key question = resolve_layout_symbol('/', '?', '?', false, &mods);
+  REQUIRE(question == char_key('?'));
+  REQUIRE(mods == mod_none);
+  REQUIRE(r.on_key(down(question, mods), s).command == command_id::help);
+
+  mods = mod_shift;
+  REQUIRE(resolve_layout_symbol('/', '/', '?', false, &mods) == char_key('?'));
+  REQUIRE(mods == mod_none);
+
+  mods = mod_shift;
+  const key plus = resolve_layout_symbol('=', '+', '+', false, &mods);
+  REQUIRE(plus == char_key('+'));
+  REQUIRE(mods == mod_none);
+  REQUIRE(r.on_key(down(plus, mods), s).command == command_id::zoom_in);
+
+  mods = mod_none;
+  const key slash = resolve_layout_symbol('/', '/', '/', false, &mods);
+  REQUIRE(slash == char_key('/'));
+  REQUIRE(mods == mod_none);
+  REQUIRE(r.on_key(down(slash, mods), s).command == command_id::typeahead);
+
+  mods = mod_shift;
+  REQUIRE(resolve_layout_symbol('1', '!', '!', false, &mods) == char_key('1'));
+  REQUIRE(mods == mod_shift);
+
+  mods = mod_ctrl;
+  const key comma = resolve_layout_symbol(',', ',', ',', true, &mods);
+  REQUIRE(comma == char_key(','));
+  REQUIRE(mods == mod_ctrl);
+  REQUIRE(r.on_key(down(comma, mods), s).command == command_id::open_settings);
 }
 
 TEST_CASE("`;` plays a Live Photo once: edge only, on a still or over its motion",
@@ -837,6 +871,18 @@ TEST_CASE("Esc leaves the empty-window runner, before it moves focus", "[keys][d
   view_state idle;
   CHECK(resolve_back(idle) == back_target::none);
   CHECK_FALSE(key_router().on_key(down(key::escape), idle).handled);
+}
+
+TEST_CASE("Cmd+Left and Cmd+Right move to the sibling folder while a photo is open",
+          "[shell][router][folders]") {
+  key_router r;
+  REQUIRE(r.on_key(down(key::left, mod_ctrl), still()).command == command_id::folder_prev);
+  REQUIRE(r.on_key(down(key::right, mod_ctrl), still()).command == command_id::folder_next);
+  // The gallery already uses Left / Right for its tiles.
+  view_state gallery = still();
+  gallery.gallery_open = true;
+  REQUIRE(r.on_key(down(key::left, mod_ctrl), gallery).command != command_id::folder_prev);
+  REQUIRE(r.on_key(down(char_key('/')), gallery).command == command_id::typeahead);
 }
 
 TEST_CASE("3 toggles the runner view on the down edge without stealing image zoom", "[keys][dino]") {

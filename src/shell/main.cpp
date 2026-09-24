@@ -44,6 +44,7 @@
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "canvas/refinement.h"
+#include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
@@ -89,6 +90,7 @@ constexpr UINT kMsgMetaReady = WM_APP + 0x71;  // a metadata read finished (any 
 constexpr UINT_PTR kRotateTimerId = 0x7601;  // PR 10: the lossless write waits for the keys to stop
 constexpr UINT kRotateDebounceMs = 400;
 constexpr UINT kMsgEditJobDone = WM_APP + 0x72;  // a rotate write or an export finished (any thread posts)
+constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Left/Right (any thread posts)
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -128,6 +130,19 @@ struct app_state {
   bool focus_meta_next = false;
   bool focus_tree_next = false;
   std::string current_dir;  // the open folder, for the tree's root
+  // PR 26: breadcrumb trail, gallery folder-tile cursor, auto-open for a
+  // folder of folders. trail is string arithmetic, no I/O.
+  mv::shell::browse_path trail;
+  int folder_cursor = -1;     // >= 0: keyboard is on a folder tile
+  int gallery_columns = 1;
+  std::string gallery_if_empty_dir;
+  std::string reveal_child;   // path of the folder we left, selected after Up
+  std::vector<std::string> siblings;
+  int sibling_index = -1;
+  std::uint64_t sibling_generation = 0;
+  bool folder_find = false;
+  ULONGLONG folder_find_tick = 0;
+  std::string folder_query;
   mv::job_system jobs;
   // PR 10 (plan/07, plan/16). `edits` owns every item's edit stack and crop
   // mode; the render thread gets the geometry through input.edit, tagged with
@@ -287,7 +302,19 @@ std::string utf8_from_wide(std::wstring_view wide) {
   return out;
 }
 
+std::wstring wide_from_utf8(std::string_view utf8) {
+  if (utf8.empty()) return {};
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+                                      nullptr, 0);
+  if (n <= 0) return {};
+  std::wstring out(static_cast<std::size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), n);
+  return out;
+}
+
 void apply_view_state(app_state* app) noexcept;
+void push_browse_state(app_state* app);
+void set_gallery(app_state* app, bool visible);
 void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
@@ -301,33 +328,63 @@ void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
 void stop_motion(app_state* app) noexcept;
 
-void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select) {
+std::string subfolder_path_at(app_state* app, std::uint32_t index);
+std::string subfolder_name_at(app_state* app, std::uint32_t index);
+void seed_siblings_for(app_state* app, const std::string& dir);
+void refresh_siblings(app_state* app);
+bool navigate_sibling(app_state* app, int delta);
+int chrome_bar_px(app_state* app, std::uint32_t dpi) noexcept;
+
+void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select,
+                 bool navigation = false) {
   if (!app || !app->session || wide_dir.empty()) return;
   const std::string dir = utf8_from_wide(wide_dir);
   if (dir.empty()) return;
   const std::string select = utf8_from_wide(wide_select);
+  // Moving up into a folder that contains the one we are leaving: remember
+  // that child so its tile is selected when the parent listing arrives.
+  if (navigation && !app->current_dir.empty() && dir != app->current_dir &&
+      mv::shell::browse_path::within(app->current_dir, dir)) {
+    app->reveal_child = app->current_dir;
+  } else {
+    app->reveal_child.clear();
+  }
+  seed_siblings_for(app, dir);
+  app->folder_find = false;
+  app->folder_query.clear();
   uint64_t job_id = 0;
   (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
                        &job_id);
   ++app->folder_token;
   app->current_dir = dir;
+  app->folder_cursor = -1;
+  app->gallery_if_empty_dir = dir;
+  if (navigation) app->trail.visit(dir);
+  else app->trail.reset(dir);
   push_tree_root(app);
+  push_browse_state(app);
   ++app->input.activity_seq;
   publish(app);
   apply_view_state(app);
+  layout_chrome(app);
 }
 
-void open_path(app_state* app, std::wstring_view wide_path) {
+void open_path(app_state* app, std::wstring_view wide_path, bool navigation = false) {
   if (!app || wide_path.empty()) return;
   const std::string utf8 = utf8_from_wide(wide_path);
   if (utf8.empty()) return;
   auto dir = mv::io::is_directory(utf8);
   if (dir && dir.value()) {
-    app->mode = open_mode::folder;
-    app->gallery_visible = false;
-    open_folder(app, wide_path, {});
+    if (!navigation) {
+      app->mode = open_mode::folder;
+      app->gallery_visible = false;
+    } else {
+      app->mode = open_mode::folder;
+    }
+    open_folder(app, wide_path, {}, navigation);
     return;
   }
+  if (navigation) return;
   app->mode = open_mode::image;
   app->gallery_visible = false;
   const auto slash = wide_path.find_last_of(L"\\/");
@@ -846,6 +903,13 @@ struct edit_job_result {
   std::string path;         // the file written (rotate) or the source (export)
 };
 
+struct sibling_job_result {
+  std::uint64_t generation = 0;
+  std::string here;
+  std::vector<std::string> paths;
+  int index = -1;
+};
+
 void publish_edit(app_state* app) noexcept {
   app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
 }
@@ -1105,10 +1169,275 @@ std::uint32_t folder_count(app_state* app) noexcept {
   return count;
 }
 
-// The gallery is only a view of a folder. One file in the directory is the
-// image already on screen, so there is nothing to lay out in a grid.
+std::uint32_t subfolder_count(app_state* app) noexcept {
+  std::uint32_t count = 0;
+  if (!app || !app->session) return 0;
+  if (mv_folder_subfolder_count(app->session, &count) != MV_OK) return 0;
+  return count;
+}
+
+int chrome_bar_px(app_state* app, std::uint32_t dpi) noexcept {
+  return mv::shell::chrome_bar_height_px(dpi, app && !app->current_dir.empty());
+}
+
+std::string subfolder_path_at(app_state* app, std::uint32_t index) {
+  if (!app || !app->session) return {};
+  char buf[4096]{};
+  std::uint32_t bytes = 0;
+  if (mv_folder_subfolder_path(app->session, index, buf, sizeof(buf), &bytes) != MV_OK) return {};
+  buf[sizeof(buf) - 1] = '\0';
+  return buf;
+}
+
+std::string subfolder_name_at(app_state* app, std::uint32_t index) {
+  if (!app || !app->session) return {};
+  char buf[1024]{};
+  std::uint32_t bytes = 0;
+  if (mv_folder_subfolder_name(app->session, index, buf, sizeof(buf), &bytes) != MV_OK) return {};
+  buf[sizeof(buf) - 1] = '\0';
+  return buf;
+}
+
+bool folder_name_starts_with(std::string_view name, std::string_view query) {
+  if (query.empty()) return true;
+  const std::wstring wide_name = wide_from_utf8(name);
+  const std::wstring wide_query = wide_from_utf8(query);
+  if (wide_query.size() > wide_name.size()) return false;
+  return ::CompareStringEx(LOCALE_NAME_USER_DEFAULT, NORM_IGNORECASE, wide_name.data(),
+                           static_cast<int>(wide_query.size()), wide_query.data(),
+                           static_cast<int>(wide_query.size()), nullptr, nullptr, 0) == CSTR_EQUAL;
+}
+
+void seed_siblings_for(app_state* app, const std::string& dir) {
+  if (!app) return;
+  const std::uint32_t n = subfolder_count(app);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    if (subfolder_path_at(app, i) != dir) continue;
+    app->siblings.clear();
+    app->siblings.reserve(n);
+    for (std::uint32_t j = 0; j < n; ++j) app->siblings.push_back(subfolder_path_at(app, j));
+    app->sibling_index = static_cast<int>(i);
+    return;
+  }
+  for (std::size_t i = 0; i < app->siblings.size(); ++i) {
+    if (app->siblings[i] == dir) {
+      app->sibling_index = static_cast<int>(i);
+      return;
+    }
+  }
+  app->siblings.clear();
+  app->sibling_index = -1;
+}
+
+void refresh_siblings(app_state* app) {
+  if (!app || !app->window) return;
+  const std::string parent = app->trail.parent();
+  const std::string here = app->current_dir;
+  const std::uint64_t gen = ++app->sibling_generation;
+  if (parent.empty() || here.empty()) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [parent, here, gen, hwnd](const mv::job_context&) -> mv::status {
+                        auto subs = mv::io::list_subfolders(parent);
+                        auto* r = new (std::nothrow) sibling_job_result{};
+                        if (!r) return subs ? mv::status::ok : subs.error();
+                        r->generation = gen;
+                        r->here = here;
+                        if (subs) {
+                          r->paths.reserve(subs.value().size());
+                          for (std::size_t i = 0; i < subs.value().size(); ++i) {
+                            r->paths.push_back(subs.value()[i].path_utf8);
+                            if (subs.value()[i].path_utf8 == here) {
+                              r->index = static_cast<int>(i);
+                            }
+                          }
+                        }
+                        if (!::PostMessageW(hwnd, kMsgSiblingsReady, 0, reinterpret_cast<LPARAM>(r))) {
+                          delete r;
+                        }
+                        return subs ? mv::status::ok : subs.error();
+                      });
+}
+
+void on_siblings_ready(app_state* app, std::unique_ptr<sibling_job_result> r) {
+  if (!app || !r) return;
+  if (r->generation != app->sibling_generation || r->here != app->current_dir) return;
+  app->siblings = std::move(r->paths);
+  app->sibling_index = r->index;
+}
+
+bool folder_find_live(app_state* app) {
+  if (!app || !app->folder_find) return false;
+  if (::GetTickCount64() - app->folder_find_tick > 1200) {
+    app->folder_find = false;
+    app->folder_query.clear();
+    return false;
+  }
+  return true;
+}
+
+void touch_folder_find(app_state* app) {
+  if (!app) return;
+  app->folder_find = true;
+  app->folder_find_tick = ::GetTickCount64();
+}
+
+void clear_folder_find(app_state* app) {
+  if (!app) return;
+  app->folder_find = false;
+  app->folder_query.clear();
+}
+
+void move_folder_cursor_to_query(app_state* app) {
+  if (!app || app->folder_query.empty()) return;
+  const std::uint32_t n = subfolder_count(app);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    if (!folder_name_starts_with(subfolder_name_at(app, i), app->folder_query)) continue;
+    app->folder_cursor = static_cast<int>(i);
+    set_gallery(app, true);
+    return;
+  }
+}
+
+void push_browse_state(app_state* app) {
+  if (!app || !app->chrome.attached()) return;
+  std::string blob;
+  for (const auto& c : app->trail.crumbs()) {
+    blob += c.name;
+    blob += '\t';
+    blob += c.path;
+    blob += '\n';
+  }
+  const bool finding = folder_find_live(app);
+  app->chrome.apply_browse(app->folder_cursor, !app->trail.parent().empty(), blob, finding,
+                           app->folder_query);
+}
+
+void open_utf8_dir(app_state* app, std::string_view utf8, bool navigation) {
+  const std::wstring wide = wide_from_utf8(utf8);
+  if (wide.empty()) return;
+  open_path(app, wide, navigation);
+}
+
+void open_subfolder_at(app_state* app, std::uint32_t index) {
+  if (!app || !app->session) return;
+  char buf[4096]{};
+  std::uint32_t bytes = 0;
+  if (mv_folder_subfolder_path(app->session, index, buf, sizeof(buf), &bytes) != MV_OK) return;
+  buf[sizeof(buf) - 1] = '\0';
+  open_utf8_dir(app, buf, true);
+}
+
+void open_crumb_at(app_state* app, std::int32_t index) {
+  if (!app) return;
+  const auto crumbs = app->trail.crumbs();
+  if (index < 0 || static_cast<std::size_t>(index) >= crumbs.size()) return;
+  if (crumbs[static_cast<std::size_t>(index)].path == app->trail.current()) return;
+  open_utf8_dir(app, crumbs[static_cast<std::size_t>(index)].path, true);
+}
+
+bool navigate_folder_up(app_state* app) {
+  if (!app) return false;
+  const std::string parent = app->trail.parent();
+  if (parent.empty()) return false;
+  open_utf8_dir(app, parent, true);
+  return true;
+}
+
+bool navigate_sibling(app_state* app, int delta) {
+  if (!app || app->sibling_index < 0 || app->siblings.empty()) return false;
+  const int next = app->sibling_index + delta;
+  if (next < 0 || next >= static_cast<int>(app->siblings.size())) return false;
+  const std::string path = app->siblings[static_cast<std::size_t>(next)];
+  app->sibling_index = next;
+  open_utf8_dir(app, path, true);
+  return true;
+}
+
+// Mac's galleryMoveRows: a mixed folder keeps folders in one strip; a
+// folders-only view shares a column count with nothing, so Up/Down stay in
+// the same column. Mixed Up/Down cross the strip in one step.
+void gallery_move_rows(app_state* app, int rows) {
+  if (!app || rows == 0) return;
+  const int cols = std::max(1, app->gallery_columns);
+  const int folders = static_cast<int>(subfolder_count(app));
+  const int items = static_cast<int>(folder_count(app));
+  if (folders > 0 && items > 0) {
+    if (app->folder_cursor >= 0) {
+      if (rows < 0) return;
+      const int col = std::min(app->folder_cursor, cols - 1);
+      app->folder_cursor = -1;
+      folder_select(app, static_cast<std::uint32_t>(std::min(col, items - 1)));
+      push_browse_state(app);
+      return;
+    }
+    std::uint32_t selected = 0;
+    if (mv_folder_selected(app->session, &selected) != MV_OK) selected = 0;
+    if (rows < 0 && static_cast<int>(selected) < cols) {
+      app->folder_cursor = std::min(static_cast<int>(selected), folders - 1);
+      push_browse_state(app);
+      return;
+    }
+  }
+  if (items == 0) {
+    if (folders == 0) return;
+    if (app->folder_cursor < 0) app->folder_cursor = 0;
+  }
+  if (app->folder_cursor >= 0) {
+    int target = app->folder_cursor + rows * cols;
+    if (target < 0) return;
+    if (target >= folders) {
+      if (app->folder_cursor / cols < (folders - 1) / cols) {
+        target = folders - 1;
+      } else {
+        if (items == 0) return;
+        const int col = app->folder_cursor % cols;
+        app->folder_cursor = -1;
+        folder_select(app, static_cast<std::uint32_t>(std::min(col, items - 1)));
+        push_browse_state(app);
+        return;
+      }
+    }
+    app->folder_cursor = target;
+    push_browse_state(app);
+    return;
+  }
+  std::uint32_t selected = 0;
+  if (mv_folder_selected(app->session, &selected) != MV_OK) selected = 0;
+  const int cur = static_cast<int>(selected);
+  int target = cur + rows * cols;
+  if (target < 0) {
+    if (folders > 0 && rows < 0) {
+      const int col = cur % cols;
+      app->folder_cursor = std::min(folders - 1, ((folders - 1) / cols) * cols + col);
+      push_browse_state(app);
+    }
+    return;
+  }
+  if (target >= items) {
+    if (cur / cols >= (items - 1) / cols) return;
+    target = items - 1;
+  }
+  folder_select(app, static_cast<std::uint32_t>(target));
+}
+
+bool folder_cursor_step(app_state* app, int delta) {
+  if (!app || !app->gallery_visible) return false;
+  const int folders = static_cast<int>(subfolder_count(app));
+  if (folders == 0) return false;
+  if (app->folder_cursor < 0) {
+    if (folder_count(app) > 0) return false;
+    app->folder_cursor = 0;
+  }
+  app->folder_cursor = std::clamp(app->folder_cursor + delta, 0, folders - 1);
+  push_browse_state(app);
+  return true;
+}
+
+// Mac toggles the gallery whenever a folder is open, even a leaf of one photo
+// or a folder of folders. The empty state is a real view, not a refused key.
 bool gallery_available(app_state* app) noexcept {
-  return app && app->chrome.gallery_attached() && folder_count(app) > 1;
+  return app && app->chrome.gallery_attached() && app->mode != open_mode::none;
 }
 
 void set_gallery(app_state* app, bool visible) {
@@ -1273,7 +1602,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->export_choice = static_cast<std::int32_t>(arg);
       start_export(app, mv::shell::unpack_export(app->export_choice));
       return;
-    case mv::shell::chrome_cmd_folder_ready:
+    case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
       refresh_item_info(app);
@@ -1283,11 +1612,44 @@ void chrome_on_command(void* ctx, int command, float arg) {
       edit_item_opened(app);
       ++app->input.activity_seq;
       publish(app);
+      bool revealed = false;
+      if (!app->reveal_child.empty()) {
+        const std::uint32_t n = subfolder_count(app);
+        for (std::uint32_t i = 0; i < n; ++i) {
+          if (subfolder_path_at(app, i) != app->reveal_child) continue;
+          app->folder_cursor = static_cast<int>(i);
+          revealed = true;
+          break;
+        }
+        app->reveal_child.clear();
+      }
+      // A folder of folders opens the gallery so the tiles are what lands.
+      // Coming back up also opens it, on the tile that was left.
+      if (!app->gallery_if_empty_dir.empty() && app->trail.current() == app->gallery_if_empty_dir) {
+        app->gallery_if_empty_dir.clear();
+        if (folder_count(app) == 0 && subfolder_count(app) > 0) {
+          set_gallery(app, true);
+          if (!revealed) app->folder_cursor = 0;
+        }
+      }
+      if (revealed) set_gallery(app, true);
+      refresh_siblings(app);
+      push_browse_state(app);
       apply_view_state(app);
-      if (g_restore.gallery && arg > 0.0f) {
+      if (g_restore.gallery && gallery_available(app)) {
         g_restore.gallery = false;
         set_gallery(app, true);
       }
+      return;
+    }
+    case mv::shell::chrome_cmd_open_subfolder:
+      open_subfolder_at(app, static_cast<std::uint32_t>(arg));
+      return;
+    case mv::shell::chrome_cmd_open_crumb:
+      open_crumb_at(app, static_cast<std::int32_t>(arg));
+      return;
+    case mv::shell::chrome_cmd_gallery_columns:
+      app->gallery_columns = std::max(1, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_focus_changed: {
       const int kind = static_cast<int>(arg);
@@ -1967,8 +2329,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
-    case prev: folder_step(app, -1); return true;
+    case prev:
+      if (folder_cursor_step(app, -1)) return true;
+      folder_step(app, -1);
+      return true;
     case next:
+      if (folder_cursor_step(app, 1)) return true;
       // Nothing open: Space starts the empty-window runner (dino_game.h).
       if (folder_count(app) == 0 && app->mode == open_mode::none && !video_mode(app)) {
         app->game_on = true;
@@ -1983,6 +2349,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
     case gallery_open_selected:
       if (!app->gallery_visible) return false;
+      if (app->folder_cursor >= 0) {
+        open_subfolder_at(app, static_cast<std::uint32_t>(app->folder_cursor));
+        return true;
+      }
       // Enter returns to the normal viewer, including the configured filmstrip.
       // It also leaves any slideshow that was running behind the gallery.
       stop_slideshow(app);
@@ -1993,11 +2363,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case gallery_up:
     case gallery_down: {
       if (!app->gallery_visible) return false;
-      std::uint32_t selected = 0;
-      if (mv_folder_selected(app->session, &selected) == MV_OK) {
-        app->chrome.navigate_gallery(command == gallery_up ? -1 : 1,
-                                     static_cast<std::int32_t>(selected));
-      }
+      gallery_move_rows(app, command == gallery_up ? -1 : 1);
       return true;
     }
     case gallery_larger:
@@ -2249,6 +2615,15 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case help:
     case go_to:
     case typeahead: {
+      const bool on_folders = app->gallery_visible && subfolder_count(app) > 0 &&
+                              (app->folder_cursor >= 0 || folder_count(app) == 0);
+      if (on_folders) {
+        app->folder_query.clear();
+        touch_folder_find(app);
+        if (app->folder_cursor < 0) app->folder_cursor = 0;
+        push_browse_state(app);
+        return true;
+      }
       if (!app->chrome.attached()) return false;
       // `?` toggles. ShowPopup closes then reopens, which flickered as "it
       // does not open".
@@ -2281,6 +2656,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case folder_tree:
       set_folder_tree(app, !app->tree_visible);
       return true;
+    case folder_up:
+      return navigate_folder_up(app);
+    case folder_prev:
+      return navigate_sibling(app, -1);
+    case folder_next:
+      return navigate_sibling(app, 1);
     case metadata_pane:
       set_meta_pane(app, !app->meta_pane_visible);
       return true;
@@ -2329,6 +2710,52 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
 
 // Runs before the island's pre-translate, so F3 and friends work with the
 // command bar focused. The router decides what a focused island keeps.
+bool handle_folder_find(app_state* app, const mv::shell::key_event& e, bool is_down) {
+  if (!folder_find_live(app)) return false;
+  if (!is_down) return true;
+  using mv::shell::key;
+  if (e.k == key::escape && e.mods == mv::shell::mod_none) {
+    clear_folder_find(app);
+    push_browse_state(app);
+    return true;
+  }
+  if (e.k == key::backspace && e.mods == mv::shell::mod_none) {
+    while (!app->folder_query.empty() &&
+           (static_cast<unsigned char>(app->folder_query.back()) & 0xC0) == 0x80) {
+      app->folder_query.pop_back();
+    }
+    if (!app->folder_query.empty()) app->folder_query.pop_back();
+    touch_folder_find(app);
+    move_folder_cursor_to_query(app);
+    push_browse_state(app);
+    return true;
+  }
+  if (e.k == key::enter && e.mods == mv::shell::mod_none) {
+    const int cursor = app->folder_cursor;
+    clear_folder_find(app);
+    if (cursor >= 0) open_subfolder_at(app, static_cast<std::uint32_t>(cursor));
+    else push_browse_state(app);
+    return true;
+  }
+  if (e.mods != mv::shell::mod_none) {
+    clear_folder_find(app);
+    push_browse_state(app);
+    return false;
+  }
+  const auto code = static_cast<std::uint16_t>(e.k);
+  if (code == static_cast<std::uint16_t>(mv::shell::char_key('/'))) return true;
+  if (code < 0x21 || code > 0x7E) {
+    clear_folder_find(app);
+    push_browse_state(app);
+    return false;
+  }
+  app->folder_query.push_back(static_cast<char>(code));
+  touch_folder_find(app);
+  move_folder_cursor_to_query(app);
+  push_browse_state(app);
+  return true;
+}
+
 bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   // Mid-teardown a key must not open a dialog or touch a detached island.
   if (!app || app->closing) return false;
@@ -2337,6 +2764,7 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   if (!is_down && !is_up) return false;
   const auto event = translate_key(msg, is_up);
   if (event.k == mv::shell::key::none) return false;
+  if (handle_folder_find(app, event, is_down)) return true;
   const auto routed = app->router.on_key(event, view_state_of(app));
   if (!routed.handled) return false;
   if (routed.command == mv::shell::command_id::back) {
@@ -2358,7 +2786,7 @@ void layout_panels(app_state* app) noexcept {
   const auto dpi = ::GetDpiForWindow(app->window);
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
-  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_px(app, dpi);
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
   if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
@@ -2384,7 +2812,7 @@ void layout_chrome(app_state* app) noexcept {
   RECT rc{};
   ::GetClientRect(app->window, &rc);
   const auto dpi = ::GetDpiForWindow(app->window);
-  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_px(app, dpi);
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
   // Fullscreen parks the bar, except while a flyout hangs off it. Settings
@@ -2405,7 +2833,7 @@ bool attach_chrome(app_state* app) {
   RECT rc{};
   ::GetClientRect(app->window, &rc);
   const auto dpi = ::GetDpiForWindow(app->window);
-  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_px(app, dpi);
   auto attached = app->chrome.attach(app->window, app, &chrome_on_command,
                                      rc.right - rc.left, bar, dpi);
   if (!attached) return false;
@@ -2437,7 +2865,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   app->input.dpi_scale = static_cast<float>(dpi) / 96.0f;
   app->input.chrome_height_px =
       (app->chrome_on_screen && !app->fullscreen)
-          ? static_cast<std::uint32_t>(mv::shell::chrome_bar_height_px(dpi))
+          ? static_cast<std::uint32_t>(chrome_bar_px(app, dpi))
           : 0;
   // Both bottom strips reserve canvas. The transport is only ever up while a
   // clip is playing or paused, and reserving is what keeps it off the video.
@@ -2458,14 +2886,14 @@ void apply_view_state(app_state* app) noexcept {
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
 
-  const bool have_folder = folder_count(app) > 1;
-  if (!have_folder) app->gallery_visible = false;
+  const bool have_media = folder_count(app) > 1;
+  if (app->mode == open_mode::none) app->gallery_visible = false;
 
   // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool settings = app->settings_open;
   const bool want_filmstrip =
-      have_folder && !app->gallery_visible && !chrome_hidden && !settings &&
+      have_media && !app->gallery_visible && !chrome_hidden && !settings &&
       (app->mode == open_mode::image ? app->settings.filmstrip_for_image
        : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
                                         : false);
@@ -2720,6 +3148,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       metadata_ready(app);
       return 0;
 
+    case kMsgSiblingsReady:
+      on_siblings_ready(app, std::unique_ptr<sibling_job_result>(
+                                 reinterpret_cast<sibling_job_result*>(lparam)));
+      return 0;
+
     case WM_TIMER:
       if (wparam == kRotateTimerId) {
         start_rotation_write(app);
@@ -2730,6 +3163,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         return 0;
       }
       if (wparam == kTitleTimerId) {
+        if (app->folder_find && ::GetTickCount64() - app->folder_find_tick > 1200) {
+          clear_folder_find(app);
+          push_browse_state(app);
+        }
         update_title(app);
         // An update restart's zoom goes back once the still is on screen; a
         // preset before the decode lands would be replaced by the fit.

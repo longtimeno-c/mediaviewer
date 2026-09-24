@@ -244,6 +244,7 @@ expected chrome_host::load() noexcept {
   show_popup_ = get_entry(L"ShowPopup");
   navigate_gallery_ = get_entry(L"NavigateGallery");
   scale_gallery_ = get_entry(L"ScaleGallery");
+  apply_browse_ = get_entry(L"ApplyBrowse");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -493,7 +494,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
     show_gallery(false, width, client_height, dpi);
     return;
   }
-  const int bar = chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_height_px(dpi, path_row_);
   chrome_resize_args args{};
   args.width = width;
   args.height = client_height > bar ? client_height - bar : 1;
@@ -505,7 +506,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
 void chrome_host::show_gallery(bool visible, int width, int client_height,
                                std::uint32_t dpi) noexcept {
   if (!gallery_attached_ || !show_gallery_) return;
-  const int bar = chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_height_px(dpi, path_row_);
   chrome_show_args args{};
   args.visible = visible ? 1 : 0;
   args.width = visible ? width : 1;
@@ -722,6 +723,22 @@ void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noex
   // Same two-int32 payload as gallery navigation: direction and selection.
   std::int32_t args[] = {direction, index};
   (void)scale_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::apply_browse(std::int32_t folder_cursor, bool can_go_up,
+                               const std::string& crumbs, bool finding,
+                               const std::string& query) noexcept {
+  if (!attached_ || !apply_browse_) return;
+  path_row_ = !crumbs.empty();
+  chrome_browse_args args{};
+  args.folder_cursor = folder_cursor;
+  args.can_go_up = can_go_up ? 1 : 0;
+  args.crumbs_bytes = static_cast<std::int32_t>(crumbs.size());
+  args.query_bytes = finding ? static_cast<std::int32_t>(query.size()) : -1;
+  args.crumbs_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(crumbs.data()));
+  args.query_utf8 = finding ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(query.data()))
+                            : 0;
+  (void)apply_browse_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {

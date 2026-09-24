@@ -67,6 +67,11 @@ public static partial class IslandHost
         // PR 10: the export dialog was confirmed; arg is the packed choice
         // (edit_session.h pack_export). Cancel sends nothing.
         public const int Export = 1006;
+        // PR 26 folder tiles.
+        public const int OpenSubfolder = 1007;
+        public const int OpenCrumb = 1008;
+        public const int GalleryColumns = 1009;
+        public const int FolderUp = 115;  // mirrors command_id::folder_up
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -87,7 +92,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
-                UpdateRestart, TreeOpen, SetSort, Export,
+                UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns,
             };
             unchecked
             {
@@ -322,6 +327,7 @@ public static partial class IslandHost
     {
         ReleaseRepeater(ref _repeater);
         ReleaseRepeater(ref _galleryRepeater);
+        ReleaseRepeater(ref _folderRepeater);
     }
 
     /// <summary>
@@ -1194,10 +1200,14 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(bar, 0);
         root.Children.Add(bar);
+        FrameworkElement path = BuildBarPathRow();
+        Grid.SetRow(path, 1);
+        root.Children.Add(path);
         Grid busy = BuildBusyBar();
         Grid.SetRow(busy, 0);
         root.Children.Add(busy);

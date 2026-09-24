@@ -246,6 +246,7 @@ Mac PRs 4, 6 and 7.
 | PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **Mac PR 8** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process**. The rest (Dock menu, window tabs, Now Playing, Share, file-promise drag-out) is **PR 15's Mac half** |
 | PR 16–19 Import add-on: hash dedupe, verify, date layout, backup | `io/` import engine, BLAKE3, `import.db`, add-on host table | **The Mac half of each**: SwiftUI Import window in an `NSBundle` add-on, `NSWorkspace` mount notice, `F_NOCACHE` read-back, `DADiskUnmount` eject ([18](18-import.md)) |
 | PR 20–24 local AI search add-on | `infer/`, sampler, `index.db`, search | **The Mac half of each**: ORT + Core ML provider (CPU underneath), VideoToolbox sampler instance, SwiftUI search UI ([17](17-local-ai-search.md)) |
+| PR 27–28 Voice query add-on | Host `search_query` forward; the add-on owns capture | **The Mac half of each**: Speech framework with on-device recognition required, `AVSpeechSynthesizer`, SwiftUI mic button ([19](19-voice.md)) |
 | PR 8 Inno + Velopack, app identity | No | **Mac PR 8** — branded drag-install `.dmg` (GPL on mount), notarized Sparkle, same mark as `.icns` |
 
 Keyboard: the Mac host writes its own default map. It does not import a XAML

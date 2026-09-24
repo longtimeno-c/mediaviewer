@@ -128,6 +128,55 @@ TEST_CASE("mv_folder_open lists stills and serves item names", "[abi][folder]") 
   mv::io::set_thumb_cache_dir_override({});
 }
 
+TEST_CASE("mv_folder_open lists child folders and summarises a tile", "[abi][folder][pr26]") {
+  const auto dir = temp_dir();
+  REQUIRE(::CreateDirectoryW((dir + L"\\2024").c_str(), nullptr));
+  write_bmp(dir + L"\\2024", L"cover.bmp");
+  REQUIRE(::CreateDirectoryW((dir + L"\\@eaDir").c_str(), nullptr));
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), nullptr, &job) == MV_OK);
+
+  mv_completion c{};
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  REQUIRE(c.status == MV_OK);
+  REQUIRE(c.payload == 0ll);
+
+  uint32_t items = 0, subs = 0;
+  REQUIRE(mv_folder_count(session.handle, &items) == MV_OK);
+  REQUIRE(items == 0);
+  REQUIRE(mv_folder_subfolder_count(session.handle, &subs) == MV_OK);
+  REQUIRE(subs == 1);
+
+  char name[64]{};
+  uint32_t bytes = 0;
+  REQUIRE(mv_folder_subfolder_name(session.handle, 0, name, sizeof(name), &bytes) == MV_OK);
+  REQUIRE(std::string(name) == "2024");
+
+  REQUIRE(mv_folder_request_summary(session.handle, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_SUMMARY, &c));
+  if (c.status != MV_OK) {
+    // A watcher relist can cancel the first request; retry once it has settled.
+    REQUIRE(mv_folder_request_summary(session.handle, 0) == MV_OK);
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_SUMMARY, &c));
+  }
+  REQUIRE(c.status == MV_OK);
+
+  mv_folder_summary summary{};
+  REQUIRE(mv_folder_summary_at(session.handle, 0, &summary) == MV_OK);
+  REQUIRE((summary.flags & 1u) != 0);
+  REQUIRE(summary.media_count == 1);
+  REQUIRE(summary.subdir_count == 0);
+  REQUIRE((summary.flags & 4u) == 0);  // photos_inside is for a descendant cover
+  REQUIRE((summary.flags & 8u) == 0);
+
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 namespace {
 
 std::string item_string(mv_session_t s, uint32_t index,
