@@ -1792,11 +1792,11 @@ enum MvMenuCmd : NSInteger {
   [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"MVAskedDefaultViewer"];
   if (!self.window || self.window.attachedSheet) return;
   NSAlert* alert = [[NSAlert alloc] init];
-  alert.messageText = @"Open photos with MediaViewer?";
+  alert.messageText = @"Open photos and videos with MediaViewer?";
   alert.informativeText =
-      @"MediaViewer can be the app that opens JPEG, PNG, HEIC, RAW and the other photo "
-      @"formats it reads when you double-click them in Finder. You can change this later "
-      @"in the MediaViewer menu.";
+      @"MediaViewer can be the app that opens JPEG, PNG, HEIC, RAW, MP4, MOV and the other "
+      @"photo and video formats it reads when you double-click them in Finder. You can "
+      @"change this later in the MediaViewer menu.";
   [alert addButtonWithTitle:@"Make Default"];
   [alert addButtonWithTitle:@"Not Now"];
   [alert beginSheetModalForWindow:self.window

@@ -281,6 +281,21 @@ Why this shape:
 
 This does not reverse D1–D8. It is a PR 14 product call, not a new contested decision.
 
+## 2026-09-24 — Default-app: installer registers, video included
+
+Amends the 2026-09-07 entry above on two points, at the owner's request.
+
+- **Windows wizard registers associations and offers Default Apps.** `mediaviewer.iss`
+  writes per-user `ProgId` / `OpenWithProgids` / `RegisteredApplications` keys for the D5
+  stills and video, and the Finish page has an **unticked** "Choose MediaViewer as the
+  default" that opens Settings > Default apps. Still no `UserChoice` write; the in-app ask
+  stays. Uninstall removes every key.
+- **Video is in scope** for registration and the default prompt (Windows and macOS). macOS
+  gains a `Video` document type (Alternate, Viewer); the existing prompt reads Info.plist,
+  so it covers video with no other change. Quick Look thumbnails stay stills-only.
+
+Unchanged: nothing is taken silently, and the OS confirms the choice.
+
 ## 2026-09-07 — D9: macOS is Milestone F, not a UI port and not dual-track v1
 
 The owner asked to add Mac support as a step on the plan, with the working assumption that

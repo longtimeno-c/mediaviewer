@@ -238,9 +238,10 @@ open build-darwin/MediaViewer.app
 The bundle holds the app, `MediaViewerThumbnails.appex` (Finder thumbnails for the D5
 still set, run by Quick Look in its own sandboxed process, never inside Finder), the LGPL
 dylibs in `Contents/Frameworks`, and, when configured, Sparkle. It registers the D5 still
-types at rank *Alternate*: MediaViewer shows up in Finder's **Open With** and never makes
-itself the default. After the first photo it opens, it asks once whether to become the
-default; the MediaViewer menu has the same command.
+and video types at rank *Alternate*: MediaViewer shows up in Finder's **Open With** and never
+makes itself the default. After the first photo it opens, it asks once whether to become the
+default for photos and video (macOS confirms each type); the MediaViewer menu has the same
+command.
 
 #### Runbook: build, sign, release, update (macOS)
 
@@ -676,10 +677,13 @@ recovery steps. There is no automatic publishing on push or run-number version s
 ### Installing and uninstalling
 
 The wizard is six pages and no more: Welcome, Licence (GPL, scroll and accept), Location,
-Options (Start Menu **on**, Desktop **off**), Progress, Finish (Launch, GitHub, Licence).
-It does **not** ask to become your default photo viewer — that is a later update, prompted
-in the app after you have actually opened a photo — and it does **not** ask about
-telemetry, which is a first-run screen inside the app.
+Options (Start Menu **on**, Desktop **off**), Progress, Finish (Launch, GitHub, Licence, and
+an unticked *Choose MediaViewer as the default for photos and video*).
+It registers MediaViewer for the D5 photo and video types (per-user, removed on uninstall),
+so it appears in **Open with** and in Settings > Default apps. Windows does not let an
+installer set the default itself: tick the Finish-page box to open Default apps on
+MediaViewer and confirm there. It does **not** ask about telemetry, which is a first-run
+screen inside the app.
 
 Uninstall is from Apps & features, and removes the shortcuts, the registry entry and the
 whole install directory.

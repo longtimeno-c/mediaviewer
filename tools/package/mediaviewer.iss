@@ -17,8 +17,9 @@
 ; that list exact.
 ;
 ; NOT in this wizard, deliberately:
-;   * "make MediaViewer the default photo viewer" - PR 15, in-app, after the
-;     first successful still open.
+;   * silently becoming the default app - Windows does not allow it. The wizard
+;     registers the associations ([Registry]) and offers, unticked, to open
+;     Settings > Default apps on the Finish page. The in-app ask (plan/09) stays.
 ;   * telemetry - the first-run screen inside the app (plan/13 Part 3).
 ;   * "install for all users" - see above.
 ;   * anything pre-ticked beyond the Start Menu shortcut.
@@ -65,6 +66,7 @@ DisableProgramGroupPage=yes
 DisableReadyPage=yes
 DisableWelcomePage=no
 AllowNoIcons=no
+ChangesAssociations=yes
 
 LicenseFile={#MvRepoRoot}\LICENSE
 SetupIconFile={#MvRepoRoot}\assets\icon\mediaviewer.ico
@@ -112,6 +114,9 @@ Source: "{#MvPayloadSetup}"; Flags: dontcopy
 ; a browser unless the user asks for it (plan/13: do not auto-open the repo).
 Filename: "{app}\MediaViewer.exe"; Description: "Launch {#MvAppName}"; \
   Flags: nowait postinstall skipifsilent
+; Opens Settings > Default apps on MediaViewer. Unticked: Windows makes the user
+; confirm the choice there, and nothing is taken silently.
+Filename: "ms-settings:defaultapps?registeredAppUser=MediaViewer";   Description: "Choose MediaViewer as the default for photos and video";   Flags: nowait postinstall skipifsilent shellexec unchecked
 Filename: "{#MvRepoUrl}"; Description: "Visit the project on GitHub"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
 Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-2.0-or-later)"; \
@@ -127,6 +132,106 @@ Name: "{userprograms}\{#MvAppName}"; Filename: "{app}\MediaViewer.exe"; \
   IconFilename: "{app}\MediaViewer.exe"; Tasks: startmenu
 Name: "{userdesktop}\{#MvAppName}"; Filename: "{app}\MediaViewer.exe"; \
   IconFilename: "{app}\MediaViewer.exe"; Tasks: desktopicon
+
+[Registry]
+; File associations (plan/09 "Windows integration"). REGISTER, never take: Windows
+; will not let an app write UserChoice, so nothing here changes what opens a file
+; today. It puts MediaViewer in "Open with", makes it a candidate in Settings >
+; Default apps, and the Finish page can open that page. Every key is per-user
+; (HKCU) and points at the root stub, which survives updates. All of it is
+; removed on uninstall (uninsdeletekey / uninsdeletevalue): plan/10 "an update
+; that leaves a zombie association is a failed uninstall".
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image"; ValueType: string; ValueData: "MediaViewer Photo"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video"; ValueType: string; ValueData: "MediaViewer Video"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "MediaViewer"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "View photos and video from a camera dump."
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "MediaViewer"; ValueData: "Software\MediaViewer\Capabilities"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.jpg\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jpg"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.jpeg\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jpeg"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.png\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".png"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.bmp\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bmp"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.gif\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gif"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.webp\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".webp"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.tif\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tif"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.tiff\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tiff"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.ico\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ico"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.heic\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".heic"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.heif\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".heif"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.hif\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hif"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.avif\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".avif"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.dng\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".dng"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.cr2\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cr2"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.cr3\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cr3"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.nef\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".nef"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.nrw\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".nrw"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.arw\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".arw"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.srf\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".srf"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.sr2\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".sr2"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.orf\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".orf"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.raf\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".raf"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.rw2\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rw2"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.pef\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pef"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.ptx\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ptx"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.srw\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".srw"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.rwl\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rwl"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.3fr\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".3fr"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.fff\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".fff"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.iiq\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".iiq"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.mef\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mef"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.mos\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mos"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.raw\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".raw"; ValueData: "MediaViewer.Image"
+Root: HKCU; Subkey: "Software\Classes\.mp4\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mp4"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.mov\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mov"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.mkv\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mkv"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.webm\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".webm"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.avi\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".avi"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.ts\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ts"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.m4v\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".m4v"; ValueData: "MediaViewer.Video"
 
 [UninstallDelete]
 ; The whole Velopack layout. Inno removes what it installed by itself, and it
@@ -216,9 +321,10 @@ end;
    partial update left, and this hook removes the duplicate registry entry if
    an update put it back since install.
 
-   When PR 15 adds ProgId and handler registrations, they are removed HERE,
-   before the tree goes - plan/10: "an update that leaves a zombie association
-   is a failed uninstall". *)
+   The ProgId, OpenWithProgids and RegisteredApplications keys are [Registry]
+   entries with uninsdeletekey / uninsdeletevalue, so Inno removes them with
+   the tree - plan/10: "an update that leaves a zombie association is a failed
+   uninstall". *)
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then

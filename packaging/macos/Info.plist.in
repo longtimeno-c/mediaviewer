@@ -4,12 +4,13 @@
   SPDX-License-Identifier: GPL-2.0-or-later
   MediaViewer.app (PR 20, plan/15). Configured by cmake/darwin.cmake.
 
-  Document types are the D5 still set only (plan/10 PR 20: "UTIs for the D5
-  still set"), at LSHandlerRank Alternate: MediaViewer appears in Finder's
-  "Open With" and never becomes the default on its own. Becoming the default
-  is an in-app prompt, once, after the first still opens (plan/13).
-  QuickLook-Info.plist.in lists the same types; tools/mac/check_plists.py
-  fails if the two lists drift or a D5 still format goes missing.
+  Document types are the D5 still set plus the D5 video containers, at
+  LSHandlerRank Alternate: MediaViewer appears in Finder's "Open With" and
+  never becomes the default on its own. Becoming the default is an in-app
+  prompt, once, after the first still opens (plan/13); it reads this list, so
+  video is offered with the stills. QuickLook-Info.plist.in lists the still
+  types; tools/mac/check_plists.py fails if the two drift or a D5 still
+  format goes missing.
 -->
 <plist version="1.0">
 <dict>
@@ -74,11 +75,29 @@
         <string>public.camera-raw-image</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Video</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.mpeg-4</string>
+        <string>com.apple.m4v-video</string>
+        <string>com.apple.quicktime-movie</string>
+        <string>org.matroska.mkv</string>
+        <string>org.webmproject.webm</string>
+        <string>public.avi</string>
+        <string>public.mpeg-2-transport-stream</string>
+      </array>
+    </dict>
   </array>
 
-  <!-- macOS 14 declares every type above. AVIF is imported as well, so an
-       older type database never leaves a .avif without a type. An imported
-       declaration yields to the system's own. -->
+  <!-- macOS 14 declares every type above except AVIF, Matroska and WebM,
+       which are imported so a .avif/.mkv/.webm never lacks a type. An
+       imported declaration yields to the system's own. -->
   <key>UTImportedTypeDeclarations</key>
   <array>
     <dict>
@@ -99,6 +118,48 @@
         <key>public.mime-type</key>
         <array>
           <string>image/avif</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.matroska.mkv</string>
+      <key>UTTypeDescription</key>
+      <string>Matroska video</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.movie</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>mkv</string>
+        </array>
+        <key>public.mime-type</key>
+        <array>
+          <string>video/x-matroska</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.webmproject.webm</string>
+      <key>UTTypeDescription</key>
+      <string>WebM video</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.movie</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>webm</string>
+        </array>
+        <key>public.mime-type</key>
+        <array>
+          <string>video/webm</string>
         </array>
       </dict>
     </dict>

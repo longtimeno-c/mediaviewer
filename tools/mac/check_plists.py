@@ -37,6 +37,12 @@ FAMILY_UTIS = {
     "raw": {"public.camera-raw-image"},
 }
 
+# The D5 video containers (src/shell/media_kind.h). Video has its own document
+# type; Quick Look thumbnails stay stills-only.
+VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie",
+              "org.matroska.mkv", "org.webmproject.webm", "public.avi",
+              "public.mpeg-2-transport-stream"}
+
 
 def configure(template: Path, extra: dict[str, str] | None = None) -> dict:
     text = template.read_text()
@@ -69,8 +75,10 @@ def main() -> int:
 
     doc_types = app.get("CFBundleDocumentTypes", [])
     app_utis: set[str] = set()
+    video_utis: set[str] = set()
     for doc in doc_types:
-        app_utis.update(doc.get("LSItemContentTypes", []))
+        (video_utis if doc.get("CFBundleTypeName") == "Video" else app_utis).update(
+            doc.get("LSItemContentTypes", []))
         if doc.get("LSHandlerRank") != "Alternate":
             problems.append(f"document type {doc.get('CFBundleTypeName')!r}: LSHandlerRank must be "
                             "Alternate (never a silent default-app hijack)")
@@ -99,6 +107,10 @@ def main() -> int:
     extra = app_utis - known
     if extra:
         problems.append(f"types outside the D5 still set: {sorted(extra)}")
+
+    if video_utis != VIDEO_UTIS:
+        problems.append(f"video document type must list exactly the D5 containers: "
+                        f"missing {sorted(VIDEO_UTIS - video_utis)}, extra {sorted(video_utis - VIDEO_UTIS)}")
 
     for name, plist in (("app", app), ("extension", appex)):
         if plist.get("LSMinimumSystemVersion") != "14.0":
