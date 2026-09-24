@@ -53,6 +53,15 @@ public final class MVChromeHost: NSObject {
     host(SettingsView())
   }
 
+  /// PR 9: the metadata pane and folder tree, floating over the canvas.
+  @objc public static func makeMetadataView() -> NSView {
+    host(MetadataView())
+  }
+
+  @objc public static func makeFolderTreeView() -> NSView {
+    host(FolderTreeView())
+  }
+
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {

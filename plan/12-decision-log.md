@@ -1280,3 +1280,45 @@ This is a testing exception to the normal first-distributed-build updater requir
 Both hosts use CMake's strict x.y.z version. Builds run independently; publication waits
 for both and uploads to a draft before making it visible. Never publish a partial latest
 release or replace published assets under an existing version. RELEASING.md is the runbook.
+
+## 2026-09-24 — PR 9 (metadata read) starts on macOS before Windows PR 8 is verified
+
+**Sequencing, the owner's call.** PR 9 is a Milestone D update and plan/10 says PR N+1 waits
+for N's verify. The owner asked for PR 9 on macOS first, with Windows to follow on a
+Windows machine. Windows PR 8's clean-VM verify is not re-run by this change, and Mac has no
+numbered metadata PR (Milestone F stops at 20), so this is the Mac twin of Windows PR 9,
+recorded here rather than given a new number. PR 1's present-loop verify is untouched: no
+present-path code changed beyond three extra ImGui draws that only run when an overlay is on.
+
+**What landed (shared, portable).** `src/meta` (Exiv2 for EXIF/IPTC/XMP + maker notes,
+libavformat for container/stream/chapters, property model, summary rows, overlay lines, AF
+geometry), `shell/meta_store` (one read per (path, mtime, size), LRU, and a background
+date-taken scan) and `shell/sort_order` (name / mtime / size / type / date taken).
+`io::list_subdirectories` feeds the tree. Exiv2 is GPL-2.0 and dynamic-link only, added to the
+Mac dynamic manifest with `bmff`, `png`, `xmp` (without `xmp` a PNG's XMP is silently empty).
+
+**Calls made, so they are not re-decided by accident:**
+- **Panes float, they do not inset.** The Mac canvas maths has vertical insets only; a
+  horizontal one changes the blit and camera, i.e. the present path. The metadata pane
+  (right) and folder tree (left) overlay the canvas like the gallery. `chrome_left_px` stays
+  unused on Mac. Revisit only with a present-loop soak.
+- **New keys.** `I` pane (plan/16), plus `Shift+O` AF points and `Shift+I` eyedropper, which
+  plan/16 left unbound. Appended to the table so saved Settings indices hold.
+- **Metadata is read only while something shows it,** after a 90 ms pause, so arrow-key
+  scrubbing queues no reads. Toggling the pane, `O` or `Shift+O` reads the cached record, never
+  the file (unit-tested with an injected reader).
+- **Eyedropper** reads one texel of the CPU-visible source texture; not available on video.
+- **Sort** was name-only on both hosts (PR 4's other orders never shipped); the Mac now has all
+  five. Windows still has none.
+
+**Not verified, owed:**
+- **Canon AF-point Y sign.** `canon_af_points` treats AFInfo2 Y offsets as positive-down. No
+  Canon file is in the corpus, so a wrong sign would mirror quads vertically. Nikon, Sony,
+  Fujifilm and EXIF SubjectArea go through the same tested geometry; only SubjectArea was
+  checked on a real file (an iPhone JPEG).
+- **HEIC/RAW on real cameras.** HEIC is covered by the in-tree fixtures (dimensions,
+  orientation); no RAW metadata was exercised.
+- **Windows entirely.** `mv_meta` and its tests are in `CMakeLists.txt` and the vcpkg
+  manifest but have never been compiled with MSVC; the XAML pane, tree island and
+  Windows `list_subdirectories` do not exist yet. This is the Windows half of PR 9.
+

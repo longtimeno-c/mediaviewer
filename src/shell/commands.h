@@ -197,6 +197,10 @@ enum class command_id : std::uint16_t {
   open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
   mute,         // Shift+M (plan/16 Video): toggle the clip's audio
   game_toggle_3d,  // 3 in the empty-window runner only
+  // PR 9 (plan/16 View + Overlays)
+  metadata_pane,  // `I`: summary card, full tree, clip stream inspector
+  af_points,      // Shift+O: AF-point quads from the maker notes already read
+  eyedropper,     // Shift+I: one-pixel readout under the cursor
   count
 };
 

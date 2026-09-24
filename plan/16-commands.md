@@ -139,6 +139,8 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it |
 | `Ctrl+Shift+E` | Folder tree show/focus (PR 9) |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
+| `Shift+O` | AF-point quads from the maker notes already read (PR 9; the plan gave no key, chosen 2026-09-24). Off by default |
+| `Shift+I` | Eyedropper: one-pixel readout under the cursor, sRGB 8-bit + hex (PR 9; key chosen 2026-09-24). Stills only |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |
 | `\` hold | Previous item for burst pick. Uses the five-slot GPU LRU ([04-image-pipeline.md](04-image-pipeline.md)); must not `mv_image_open` a replacement |
 | `;` | Play Live Photo / motion once, return to the still. Required: hover-to-play fails the no-mouse bar. PR 7: edge only (no hold-to-play); `;` again, `Esc` or any navigation also returns to the still, which comes back from the LRU. Plays with audio. No transport strip on a Live Photo stop |
@@ -284,7 +286,7 @@ Chrome, in-memory, no decode.
 - **Status / title:** `filename — 3/247 — 6000×4000 — 95 % — ★★★`. Index and listing stats
   come from the folder model, not from the decoder.
 - **Sort (PR 4):** name, mtime, size, type. **EXIF date-taken waits for PR 9** so PR 4 does
-  not parse every file. Remember the user's sort.
+  not parse every file. Remember the user's sort. *(macOS 2026-09-24: the sort orders, including date taken, ship in the View ▸ Sort By menu. Date-taken keys are read once per file by one background job and the listing re-sorts in place when they land; a file with no stamp sorts by mtime. The Windows sort UI is still to do.)*
 - **Filter:** all / photos / videos / RAW. In-memory flag on the listing. RAW flag is
   meaningful from PR 7.
 - **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item

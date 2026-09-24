@@ -124,6 +124,19 @@ class present_lab_mac {
   void update_video_status() noexcept;
   // The picture on the canvas, still or video frame. False when there is none.
   [[nodiscard]] bool picture_size(float* w, float* h) const noexcept;
+  // [render-thread] PR 9 overlays: the info lines, AF quads and eyedropper. All
+  // three draw bytes the UI thread already published in `snapshot.meta`; none of
+  // them touches a file or the metadata store (plan/16).
+  void draw_photo_overlays(const input_snapshot& snapshot) noexcept;
+
+  // Eyedropper: the last texel read, so an idle cursor costs no readback.
+  struct eyedropper_sample {
+    const void* texture = nullptr;
+    std::uint32_t x = 0, y = 0;
+    std::uint8_t rgba[4] = {};
+    bool valid = false;
+  };
+  eyedropper_sample eye_;
 
   void* view_ = nullptr;
   void* display_link_ = nullptr;

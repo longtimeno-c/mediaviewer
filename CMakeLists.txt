@@ -390,6 +390,34 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
+# mv_meta -- PR 9 metadata read model (plan/06). Exiv2 (GPL-2.0, DLL only) for
+# EXIF / IPTC / XMP and maker notes, libavformat for container and per-stream
+# facts. Depends downward only: meta -> {codec, io, core}.
+#
+# NOT BUILT ON WINDOWS YET. Written alongside the macOS twin (plan/12
+# 2026-09-24) and shares every source with it; the first MSVC build is the
+# Windows half of PR 9's verify. Expect /W4 /WX fixes in src/meta and the
+# vcpkg exiv2 port to need its `xmp`, `bmff` and `png` features.
+# ---------------------------------------------------------------------------
+find_package(exiv2 CONFIG REQUIRED)
+add_library(mv_meta STATIC
+  src/meta/read.cpp
+  src/meta/still.cpp
+  src/meta/clip.cpp
+  src/meta/af.cpp
+  src/meta/format.cpp
+  src/meta/meta.h
+  src/meta/af.h
+  src/meta/internal.h
+)
+target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_meta
+  PUBLIC mv_core
+  PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+add_library(mv::meta ALIAS mv_meta)
+
+# ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (plan/03)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
@@ -670,6 +698,11 @@ if(MV_BUILD_TESTS)
     tests/test_audio_sink.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
+    # PR 9 (unbuilt on Windows until the first MSVC run, plan/12 2026-09-24)
+    tests/test_meta.cpp
+    tests/test_meta_store.cpp
+    src/shell/sort_order.cpp
+    src/shell/meta_store.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
@@ -726,6 +759,9 @@ if(MV_BUILD_TESTS)
     mv_codec
     mv_image
     mv_canvas
+    mv_meta
+    Exiv2::exiv2lib
+    ${FFMPEG_LIBRARIES}
     mediaviewer_core
     JPEG::JPEG
     ${MV_SPNG_TARGET}

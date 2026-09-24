@@ -35,6 +35,14 @@ struct HelpView: View {
       Row(keys: "F5", action: "Slideshow"),
       Row(keys: "F3", action: "Frame-time overlay"),
     ]),
+    Section(title: "Metadata", rows: [
+      Row(keys: "I", action: "Metadata pane (summary, all tags, streams)"),
+      Row(keys: "O", action: "Info overlay (exposure, camera, date)"),
+      Row(keys: "⇧O", action: "AF points (from maker notes)"),
+      Row(keys: "⇧I", action: "Eyedropper (pixel under the cursor)"),
+      Row(keys: "⌘⇧E", action: "Folder tree"),
+      Row(keys: "View ▸ Sort By", action: "Name, date, size, type, date taken"),
+    ]),
     Section(title: "Gallery", rows: [
       Row(keys: "↑ ↓   W S", action: "Move by row"),
       Row(keys: "← →   A D", action: "Move by item"),

@@ -535,6 +535,120 @@ void present_lab_mac::wake() noexcept {
   g_wait_cv.notify_all();
 }
 
+// PR 9. Everything here reads `snapshot.meta` (published by the UI thread when
+// the selection's metadata arrives) plus the camera; toggling an overlay is one
+// more draw in the present that was already going out, never a file read.
+void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexcept {
+  if (!snapshot.info_overlay && !snapshot.af_points && !snapshot.eyedropper) return;
+  float pw = 0.0f, ph = 0.0f;
+  if (!picture_size(&pw, &ph) || pw <= 0.0f || ph <= 0.0f) return;
+
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+  const float win_w = static_cast<float>(snapshot.width);
+  const float win_h = usable_window_h(snapshot);
+  const float origin_y = static_cast<float>(snapshot.chrome_height_px);
+  const float zoom = camera_.zoom();
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  ImFont* font = ImGui::GetFont();
+  const float fs = 16.0f * scale;
+  const float pad = 12.0f * scale;
+  const ImU32 text = IM_COL32(230, 230, 235, 255);
+  const ImU32 shadow = IM_COL32(0, 0, 0, 200);
+  const auto label = [&](float x, float y, const char* s) {
+    fg->AddText(font, fs, ImVec2(x + scale, y + scale), shadow, s);
+    fg->AddText(font, fs, ImVec2(x, y), text, s);
+  };
+  // Image pixel <-> screen pixel, the inverse of the blit's own mapping.
+  const auto to_screen = [&](float ix, float iy) {
+    return ImVec2(win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+                  origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
+  };
+
+  if (snapshot.af_points) {
+    for (int i = 0; i < snapshot.meta.af_count && i < meta_overlay::kMaxAf; ++i) {
+      const float* q = snapshot.meta.af[i];
+      const ImVec2 a = to_screen(q[0] * pw, q[1] * ph);
+      const ImVec2 b = to_screen((q[0] + q[2]) * pw, (q[1] + q[3]) * ph);
+      const ImU32 col = q[4] > 0.5f ? IM_COL32(80, 255, 120, 255) : IM_COL32(255, 210, 60, 255);
+      fg->AddRect(ImVec2(a.x - scale, a.y - scale), ImVec2(b.x + scale, b.y + scale),
+                  IM_COL32(0, 0, 0, 200), 0.0f, 0, 3.0f * scale);
+      fg->AddRect(a, b, col, 0.0f, 0, 1.5f * scale);
+    }
+  }
+
+  if (snapshot.info_overlay) {
+    // Bottom-left, stacked upward: the item line, then whatever the property
+    // model could fill. An empty field simply has no line (plan/06).
+    const float line_h = fs * 1.35f;
+    float y = origin_y + win_h - fs - pad;
+    char line[400];
+    const int zoom_pct = static_cast<int>(std::lround(zoom * 100.0f));
+    if (snapshot.item_count > 0) {
+      std::snprintf(line, sizeof(line), "%s  -  %u / %u  -  %ux%u  -  %d %%", snapshot.item_name,
+                    snapshot.item_index + 1, snapshot.item_count, static_cast<unsigned>(pw),
+                    static_cast<unsigned>(ph), zoom_pct);
+    } else {
+      std::snprintf(line, sizeof(line), "%ux%u  -  %d %%", static_cast<unsigned>(pw),
+                    static_cast<unsigned>(ph), zoom_pct);
+    }
+    label(pad, y, line);
+    for (const char* extra : {snapshot.meta.exposure_line, snapshot.meta.camera_line,
+                              snapshot.meta.date_line}) {
+      if (!extra[0]) continue;
+      y -= line_h;
+      label(pad, y, extra);
+    }
+  }
+
+  if (snapshot.eyedropper && snapshot.mouse_in_client) {
+    // One texel, on demand: the source texture is CPU-visible (shared) so this
+    // is a 4-byte read, never a download of the picture. Video frames are
+    // planar YUV and are not sampled.
+    const float ix = camera_.pan_x() + (snapshot.mouse_x - win_w * 0.5f) / zoom;
+    const float iy = camera_.pan_y() + (snapshot.mouse_y - (origin_y + win_h * 0.5f)) / zoom;
+    if (current_image_ && !video_frame_ && ix >= 0.0f && iy >= 0.0f && ix < pw && iy < ph) {
+      const void* native = anim_frame_ ? anim_frame_->texture : current_image_->texture;
+      id<MTLTexture> tex = (__bridge id<MTLTexture>)native;
+      const bool readable = tex && tex.storageMode != MTLStorageModePrivate &&
+                            (tex.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
+                             tex.pixelFormat == MTLPixelFormatRGBA8Unorm);
+      if (readable) {
+        const auto tx = static_cast<std::uint32_t>(
+            std::min<float>(ix * static_cast<float>(tex.width) / pw, static_cast<float>(tex.width - 1)));
+        const auto ty = static_cast<std::uint32_t>(
+            std::min<float>(iy * static_cast<float>(tex.height) / ph, static_cast<float>(tex.height - 1)));
+        if (!eye_.valid || eye_.texture != native || eye_.x != tx || eye_.y != ty) {
+          [tex getBytes:eye_.rgba
+                 bytesPerRow:4
+                  fromRegion:MTLRegionMake2D(tx, ty, 1, 1)
+                 mipmapLevel:0];
+          eye_.texture = native;
+          eye_.x = tx;
+          eye_.y = ty;
+          eye_.valid = true;
+        }
+        char readout[96];
+        std::snprintf(readout, sizeof(readout), "#%02X%02X%02X   %u %u %u   x%d y%d", eye_.rgba[0],
+                      eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
+                      static_cast<int>(ix), static_cast<int>(iy));
+        const ImVec2 size = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, readout);
+        const float box = fs;
+        float x = snapshot.mouse_x + 18.0f * scale;
+        float y = snapshot.mouse_y + 18.0f * scale;
+        if (x + box + 8.0f * scale + size.x + pad > win_w) x = snapshot.mouse_x - (box + 8.0f * scale + size.x + 18.0f * scale);
+        if (y + fs + pad > origin_y + win_h) y = snapshot.mouse_y - (fs + 18.0f * scale);
+        fg->AddRectFilled(ImVec2(x - 6.0f * scale, y - 4.0f * scale),
+                          ImVec2(x + box + 8.0f * scale + size.x + 6.0f * scale, y + fs + 4.0f * scale),
+                          IM_COL32(0, 0, 0, 190), 4.0f * scale);
+        fg->AddRectFilled(ImVec2(x, y), ImVec2(x + box, y + fs),
+                          IM_COL32(eye_.rgba[0], eye_.rgba[1], eye_.rgba[2], 255));
+        fg->AddRect(ImVec2(x, y), ImVec2(x + box, y + fs), IM_COL32(255, 255, 255, 220));
+        label(x + box + 8.0f * scale, y, readout);
+      }
+    }
+  }
+}
+
 void present_lab_mac::render_thread_main() noexcept {
   pthread_setname_np("mv.render");
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
@@ -1053,6 +1167,8 @@ void present_lab_mac::render_thread_main() noexcept {
           }
           ImGui::End();
         }
+
+        draw_photo_overlays(snapshot);
 
         ImGui::Render();
 

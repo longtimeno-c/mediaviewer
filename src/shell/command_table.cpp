@@ -153,6 +153,13 @@ constexpr binding kBindings[] = {
     // Append: Settings persists the existing row indices.
     row(key::space, mod_none, kRunner, edge, next),
     row(C('3'), mod_none, kRunner, edge, game_toggle_3d),
+    // PR 9. Appended, like every row before it, so saved Settings indices keep
+    // their meaning. plan/16 gives `I` the metadata pane; the two overlays are
+    // Shift twins of the keys they sit beside (`O` info, `I` pane) because
+    // every other letter on the canvas already has a job.
+    row(C('I'), mod_none, kViewing, edge, metadata_pane),
+    row(C('O'), mod_shift, kViewing, edge, af_points),
+    row(C('I'), mod_shift, kViewing, edge, eyedropper),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -247,6 +254,9 @@ constexpr command_info kCommands[] = {
     {mute, "Mute"},
     {open_jpeg, "Open JPEG of pair"},
     {game_toggle_3d, "Runner: toggle 3D view"},
+    {metadata_pane, "Metadata pane"},
+    {af_points, "AF points"},
+    {eyedropper, "Eyedropper"},
 };
 
 const char* named_key(key k) noexcept {

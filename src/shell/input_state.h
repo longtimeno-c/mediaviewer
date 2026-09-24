@@ -18,6 +18,21 @@ namespace mv::shell {
 
 enum class mouse_button : std::uint32_t { left = 0, right = 1, middle = 2, count = 3 };
 
+// PR 9: what the info overlay and the AF quads need from the property model,
+// formatted by the UI thread when the selection's metadata arrives. The render
+// thread only draws these bytes — it never sees a `metadata`, a path or a file,
+// which is what makes toggling the overlays free of I/O (plan/16).
+struct meta_overlay {
+  static constexpr int kMaxAf = 16;
+  char camera_line[160] = {};    // "Canon EOS R5  |  RF85mm F1.2 L USM"
+  char exposure_line[128] = {};  // "1/250 s   f/2.8   ISO 400   85 mm"
+  char date_line[96] = {};       // "2024-05-01 14:03:22   48.85837 N, 2.29448 E"
+  // AF quads, normalised 0..1 in the *displayed* image (orientation already
+  // applied by the host): x, y, w, h, in_focus (1 / 0).
+  std::uint8_t af_count = 0;
+  float af[kMaxAf][5] = {};
+};
+
 struct input_snapshot {
   // Client-area size in physical pixels, and the DPI scale to divide by for
   // layout. PerMonitorV2, so both change on WM_DPICHANGED.
@@ -69,6 +84,9 @@ struct input_snapshot {
   std::int32_t loupe_steps_y = 0;
   bool hold_previous = false;   // held backslash
   bool info_overlay = false;    // O
+  bool af_points = false;       // Shift+O: quads from `meta`, no file read
+  bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
+  meta_overlay meta;
   // For the info overlay, filled by the UI thread when the selection changes.
   // The render thread never calls into the folder model.
   std::uint32_t item_index = 0;
