@@ -43,6 +43,11 @@ uint64_t mv_chrome_keys_generation(void);
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
 
+// The running version, from CMake project(VERSION) — the same string Windows
+// shows in About. Writes a NUL-terminated string into `buf`. Returns false
+// when the host was built without a version or `size` < 1. [any-thread]
+bool mv_chrome_app_version(char* buf, int32_t size);
+
 // PR 18 (folded-in PR 4, plan/12 2026-09-17): the filmstrip/gallery
 // SwiftUI-side follow-up. These all read/mutate state MvLabApp owns
 // (folder_model + browse_index, src/shell/main_mac.mm) — never folder_model

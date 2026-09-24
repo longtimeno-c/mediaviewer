@@ -143,6 +143,25 @@ extern "C" void mv_chrome_one_to_one(void) {
   if (g_chrome_lab) g_chrome_lab->wake();
 }
 
+// CMake's project(VERSION), the same number Windows puts in VERSIONINFO.
+// Empty when this file is compiled outside the host targets.
+#ifndef MV_APP_VERSION
+#define MV_APP_VERSION ""
+#endif
+
+extern "C" bool mv_chrome_app_version(char* buf, int32_t size) {
+  if (!buf || size <= 0) return false;
+  constexpr const char* version = MV_APP_VERSION;
+  if (version[0] == '\0') {
+    buf[0] = '\0';
+    return false;
+  }
+  const std::size_t n = std::min(std::strlen(version), static_cast<std::size_t>(size) - 1);
+  std::memcpy(buf, version, n);
+  buf[n] = '\0';
+  return true;
+}
+
 // Command-bar strip height, in points (converted to backing pixels via the
 // window's backingScaleFactor before it reaches input_snapshot.chrome_height_px
 // — that field, and every canvas-rect field alongside it, is already in
@@ -2414,6 +2433,18 @@ enum MvMenuCmd : NSInteger {
   return item;
 }
 
+// App-menu About. ApplicationVersion is the bare number; AppKit draws the
+// "Version " prefix. The command-bar flyout formats that prefix itself.
+- (void)showAbout:(id)sender {
+  (void)sender;
+  char buf[64];
+  NSDictionary* options = nil;
+  if (mv_chrome_app_version(buf, static_cast<int32_t>(sizeof buf))) {
+    options = @{NSAboutPanelOptionApplicationVersion : [NSString stringWithUTF8String:buf]};
+  }
+  [NSApp orderFrontStandardAboutPanelWithOptions:options];
+}
+
 - (void)installMainMenu {
   NSMenu* bar = [[NSMenu alloc] init];
   auto submenu = [bar](NSString* title) {
@@ -2424,9 +2455,10 @@ enum MvMenuCmd : NSInteger {
   };
 
   NSMenu* app = submenu(@"MediaViewer");
-  [app addItemWithTitle:@"About MediaViewer"
-                 action:@selector(orderFrontStandardAboutPanel:)
-          keyEquivalent:@""];
+  NSMenuItem* about = [app addItemWithTitle:@"About MediaViewer"
+                                      action:@selector(showAbout:)
+                               keyEquivalent:@""];
+  about.target = self;
   [app addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"," mods:NSEventModifierFlagCommand toMenu:app];
 #if MV_WITH_SPARKLE

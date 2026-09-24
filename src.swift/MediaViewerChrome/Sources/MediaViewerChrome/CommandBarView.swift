@@ -76,6 +76,14 @@ private struct FlyoutRule: View {
   }
 }
 
+/// "Version 0.1.2", from CMake project(VERSION). "Version unknown" if the host
+/// was built without one — the same wording as the Windows About flyout.
+private func aboutVersionLine() -> String {
+  var buf = [CChar](repeating: 0, count: 64)
+  guard mv_chrome_app_version(&buf, Int32(buf.count)) else { return "Version unknown" }
+  return "Version \(String(cString: buf))"
+}
+
 /// A bar button that opens a dark flyout beneath it.
 private struct BarFlyout<Content: View>: View {
   let title: String
@@ -139,11 +147,25 @@ public struct CommandBarView: View {
         }
         Button("Settings") { mv_chrome_menu(18) }.buttonStyle(FlatButtonStyle())
         BarFlyout(title: "About") { _ in
-          Text("MediaViewer — GPL-2.0-or-later\n\nEverything works from the keyboard. Press ? for the shortcuts of what you are doing.")
-            .font(MVTheme.font())
-            .foregroundStyle(MVTheme.title)
-            .padding(12)
-            .frame(width: 300, alignment: .leading)
+          VStack(alignment: .leading, spacing: 0) {
+            Text("MediaViewer")
+              .font(MVTheme.font())
+              .foregroundStyle(MVTheme.title)
+            Text(aboutVersionLine())
+              .font(MVTheme.font())
+              .foregroundStyle(MVTheme.body)
+            Text("Licensed GPL-2.0-or-later")
+              .font(MVTheme.font())
+              .foregroundStyle(MVTheme.body)
+              .padding(.top, 6)
+            Text("Everything works from the keyboard. Press ? for the shortcuts of what you are doing.")
+              .font(MVTheme.font())
+              .foregroundStyle(MVTheme.title)
+              .padding(.top, 10)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .padding(12)
+          .frame(width: 300, alignment: .leading)
         }
         Spacer()
         // What F7 / F8 / Delete will act on (plan/16): the marks if any, else

@@ -463,6 +463,8 @@ function(mv_mac_host target)
     "-framework Combine")
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
+  # Same string Windows reads from VERSIONINFO (CMakeLists.txt project(VERSION)).
+  target_compile_definitions(${target} PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
 endfunction()
 
 mv_mac_host(mediaviewer_lab)
