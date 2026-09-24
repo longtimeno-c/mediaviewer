@@ -20,6 +20,19 @@ if(WIN32)
   include(InstallRequiredSystemLibraries)
   set(MV_OPENMP_REDIST ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS})
   list(FILTER MV_OPENMP_REDIST INCLUDE REGEX "[Vv][Cc][Oo][Mm][Pp]140\\.dll$")
+  # Under -T ClangCL the module derives the redist folder from clang-cl's
+  # path (VC/Tools/Llvm) and finds nothing. Look in the VS instance instead.
+  if(NOT MV_OPENMP_REDIST AND CMAKE_GENERATOR_INSTANCE)
+    file(GLOB MV_OPENMP_REDIST
+         "${CMAKE_GENERATOR_INSTANCE}/VC/Redist/MSVC/*/x64/Microsoft.VC*.OpenMP/vcomp140.dll")
+    list(SORT MV_OPENMP_REDIST COMPARE NATURAL ORDER DESCENDING)
+    list(SUBLIST MV_OPENMP_REDIST 0 1 MV_OPENMP_REDIST)
+    file(GLOB MV_OPENMP_DEBUG_FALLBACK
+         "${CMAKE_GENERATOR_INSTANCE}/VC/Redist/MSVC/*/debug_nonredist/x64/Microsoft.VC*.DebugOpenMP/vcomp140d.dll")
+    list(SORT MV_OPENMP_DEBUG_FALLBACK COMPARE NATURAL ORDER DESCENDING)
+    list(SUBLIST MV_OPENMP_DEBUG_FALLBACK 0 1 MV_OPENMP_DEBUG_FALLBACK)
+    list(APPEND CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS ${MV_OPENMP_REDIST} ${MV_OPENMP_DEBUG_FALLBACK})
+  endif()
   if(NOT MV_OPENMP_REDIST)
     message(FATAL_ERROR "MSVC OpenMP redistributable missing; install the C++ toolset redist.")
   endif()
