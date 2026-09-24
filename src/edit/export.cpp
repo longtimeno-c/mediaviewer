@@ -70,7 +70,8 @@ void patch_for_output(metadata_blobs& m, std::uint32_t w, std::uint32_t h, bool 
 
 }  // namespace
 
-metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_policy policy) {
+metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_policy policy,
+                               const metadata_blobs* carried) {
   metadata_blobs m;
   if (policy == metadata_policy::none) return m;
   switch (codec::probe(source)) {
@@ -82,6 +83,10 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
       png_metadata(source, m);
       break;
     default:
+      if (carried) {
+        (void)assign(m.exif, carried->exif);
+        (void)assign(m.xmp, carried->xmp);
+      }
       break;
   }
   if (policy == metadata_policy::minus_gps) {
@@ -92,7 +97,8 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
 }
 
 result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
-                                   const export_options& opt, const job_context* ctx) {
+                                   const export_options& opt, const job_context* ctx,
+                                   const metadata_blobs* carried) {
   geometry g = stack;
   if (opt.long_edge != 0) g.resize = resize_spec{resize_mode::long_edge, opt.long_edge, 0, 100.0f};
   const bool is_jpeg = codec::probe(source) == codec::format_family::jpeg;
@@ -132,7 +138,7 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   MV_TRY(codec::raster out, render(decoded, p, ctx));
   decoded = codec::raster{};  // release the full frame before encoding
 
-  metadata_blobs meta = source_metadata(source, opt.policy);
+  metadata_blobs meta = source_metadata(source, opt.policy, carried);
   patch_for_output(meta, out.width, out.height, !g.identity());
   MV_TRY(std::vector<std::uint8_t> bytes, encode(out, opt.encode, meta));
   export_result r;

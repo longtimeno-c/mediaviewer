@@ -119,6 +119,11 @@ struct affine {
   }
 };
 
+// The inverse map (source uv → output uv). Every geometry map is invertible
+// (a signed permutation, a rotation and a positive scale); a degenerate one
+// comes back as the identity.
+[[nodiscard]] affine invert(const affine& a) noexcept;
+
 struct size2 {
   std::uint32_t w = 0;
   std::uint32_t h = 0;

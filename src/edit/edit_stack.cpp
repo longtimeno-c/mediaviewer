@@ -143,6 +143,21 @@ rect constrain_crop(rect r, float straighten, size2 frame) noexcept {
   return out;
 }
 
+affine invert(const affine& a) noexcept {
+  const double m0 = a.m[0], m1 = a.m[1], m2 = a.m[2], m3 = a.m[3], m4 = a.m[4], m5 = a.m[5];
+  const double det = m0 * m4 - m1 * m3;
+  if (!(std::abs(det) > 1e-12)) return affine{};
+  affine r;
+  const double i0 = m4 / det, i1 = -m1 / det, i3 = -m3 / det, i4 = m0 / det;
+  r.m[0] = static_cast<float>(i0);
+  r.m[1] = static_cast<float>(i1);
+  r.m[2] = static_cast<float>(-(i0 * m2 + i1 * m5));
+  r.m[3] = static_cast<float>(i3);
+  r.m[4] = static_cast<float>(i4);
+  r.m[5] = static_cast<float>(-(i3 * m2 + i4 * m5));
+  return r;
+}
+
 rect auto_crop(float straighten, size2 frame) noexcept {
   return constrain_crop(rect{}, straighten, frame);
 }

@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <cmath>
 
+#include "codec/format.h"
 #include "edit/lossless_jpeg.h"
 #include "io/collision_name.h"
 #include "io/file.h"
 #include "io/replace.h"
+#include "meta/meta.h"
 
 namespace mv::shell {
 namespace {
@@ -379,7 +381,17 @@ expected run_rotation_write(const rotation_write& w) {
 result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
                                const edit::export_options& opt) {
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
-  MV_TRY(edit::export_result r, edit::export_image(bytes, g, opt));
+  // HEIC, TIFF, RAW, WebP: the metadata comes from Exiv2 (meta/), which edit/
+  // cannot call; JPEG and PNG are read by edit/ itself.
+  edit::metadata_blobs carried;
+  const codec::format_family family = codec::probe(bytes);
+  if (opt.policy != edit::metadata_policy::none && family != codec::format_family::jpeg &&
+      family != codec::format_family::png) {
+    meta::carried_metadata m = meta::read_carried(bytes);
+    carried.exif = std::move(m.exif);
+    carried.xmp = std::move(m.xmp);
+  }
+  MV_TRY(edit::export_result r, edit::export_image(bytes, g, opt, nullptr, &carried));
 
   const std::size_t sep = source_path.find_last_of("/\\");
   const std::string dir = sep == std::string_view::npos ? std::string() : std::string(source_path.substr(0, sep + 1));

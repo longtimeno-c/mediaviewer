@@ -411,6 +411,7 @@ find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
   src/meta/still.cpp
+  src/meta/carried.cpp
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
@@ -747,6 +748,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_export_carried.cpp
     src/shell/edit_session.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp

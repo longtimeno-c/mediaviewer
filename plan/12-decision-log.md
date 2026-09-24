@@ -1658,7 +1658,20 @@ open has its own id). Export sheet: `ExportView.swift`, the twin of the Windows 
   the Mac flags): `test_edit`, `test_edit_session`, the key-router suites. Windows CI is the first
   MSVC build of the host half and of `test_abi_roundtrip`'s 0.7 case; the C# flyout and the Swift
   sheet are unbuilt. PR 1's and Mac PR 1's present-loop gates were not re-run.
-- **Metadata on re-encoded exports from HEIC / RAW / TIFF / WebP**: only JPEG (APP1) and PNG sources
-  carry EXIF / XMP across; the others need an Exiv2 extraction path.
-- Tiled (> 64 MP) images: an edited tiled image draws its overview through the map (tiles are
-  sampled in the unedited frame); the Mac has no tiling yet.
+- The Canon / Sony maker-note re-encode (below) on real camera files: the corpus has no RAW in git.
+
+**Closed the same day:**
+- **Re-encoded exports carry HEIC / TIFF / RAW / WebP metadata.** `meta::read_carried` builds the
+  EXIF block with Exiv2 from what it read, not by copying bytes: a TIFF's or a RAW's IFD0 describes
+  *its* pixels (strips, tiles, compression, sub-images, the thumbnail IFD, DNG private data), and
+  those tags are left out; Orientation is written as 1. Maker notes are kept while the block fits one
+  APP1 and dropped (not the whole block) when it would not. `edit/` and `meta/` are siblings, so
+  `shell::run_export` reads it and hands it to `edit::export_image`; the policy applies to it as to a
+  JPEG's own. Tested against Exiv2 0.28.3 (the vcpkg line) with WebP and TIFF fixtures written by
+  libwebp / libtiff + Exiv2, and the in-tree `iphone_like.heic` (Orientation 6 arrives as 1).
+- **An edited tiled (> 64 MP) image draws its tiles**, not just its overview. The tile shaders take
+  the inverse map and the source size (`gfx/blit.cpp` `vs_tile` / `ps_tile`): tile corners are source
+  pixels mapped to the output, and a pixel outside the edited output is discarded. The tiles are
+  chosen for the viewport seen from the source (`shell/edit_view.h` `view_in_source`: the centre
+  mapped back, the extent the box of the mapped corners). The Mac has no tiling yet, so there is no
+  MSL twin to change.

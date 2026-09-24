@@ -41,6 +41,49 @@ namespace mv::shell {
   return edit::place(g, edit::size2{width, height}, {}, v && v->keep_frame);
 }
 
+// A tiled image's tiles are chosen in the *source* image's pixels, around a
+// pan point, for a viewport of a given size (image/tiles.h tile_view). The
+// camera looks at the edited output; this is the same viewport seen from the
+// source: its centre mapped back, and its extent the bounding box of its four
+// corners mapped back (a quarter turn swaps the extents, a straighten grows
+// them). Zoom is unchanged — no geometry op scales.
+struct source_view {
+  float pan_x = 0.0f, pan_y = 0.0f, zoom = 1.0f, view_w = 1.0f, view_h = 1.0f;
+};
+
+[[nodiscard]] inline source_view view_in_source(const edit::placement& p, float source_w,
+                                                float source_h, float pan_x, float pan_y,
+                                                float zoom, float view_w, float view_h) noexcept {
+  const float ow = static_cast<float>(p.cropped.w), oh = static_cast<float>(p.cropped.h);
+  const float* m = p.map.m;
+  const auto to_source = [&](float ox, float oy, float& sx, float& sy) {
+    const float u = ow > 0.0f ? ox / ow : 0.0f, v = oh > 0.0f ? oy / oh : 0.0f;
+    sx = (m[0] * u + m[1] * v + m[2]) * source_w;
+    sy = (m[3] * u + m[4] * v + m[5]) * source_h;
+  };
+  source_view s;
+  s.zoom = zoom;
+  to_source(pan_x, pan_y, s.pan_x, s.pan_y);
+  const float z = zoom > 0.0f ? zoom : 1.0f;
+  const float hw = view_w * 0.5f / z, hh = view_h * 0.5f / z;
+  float min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+  bool first = true;
+  for (const float dx : {-hw, hw}) {
+    for (const float dy : {-hh, hh}) {
+      float sx = 0, sy = 0;
+      to_source(pan_x + dx, pan_y + dy, sx, sy);
+      if (first || sx < min_x) min_x = sx;
+      if (first || sx > max_x) max_x = sx;
+      if (first || sy < min_y) min_y = sy;
+      if (first || sy > max_y) max_y = sy;
+      first = false;
+    }
+  }
+  s.view_w = (max_x - min_x) * z;
+  s.view_h = (max_y - min_y) * z;
+  return s;
+}
+
 [[nodiscard]] inline bool same_geometry(const edit_view& a, const edit_view& b) noexcept {
   return a.item == b.item && a.generation == b.generation && a.d4[0] == b.d4[0] &&
          a.d4[1] == b.d4[1] && a.d4[2] == b.d4[2] && a.d4[3] == b.d4[3] &&

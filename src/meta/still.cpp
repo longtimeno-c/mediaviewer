@@ -349,7 +349,9 @@ std::vector<af_point> find_af_points(const Exiv2::ExifData& e, const summary& s)
   return {};
 }
 
-std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
+}  // namespace
+
+std::unique_ptr<Exiv2::Image> open_image(std::span<const std::uint8_t> bytes) {
   // Exiv2 initialises its XMP parser lazily and that is not safe to race; the
   // metadata jobs run on the pool, so do it exactly once, up front. Never
   // terminated: the process owns it until exit.
@@ -364,6 +366,10 @@ std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
   return image;
 }
 
+namespace {
+std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
+  return open_image(bytes);
+}
 }  // namespace
 
 void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out) noexcept {

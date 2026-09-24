@@ -25,6 +25,11 @@ cbuffer Camera : register(b0) {
   // 0.5 shows the background outside the source. Identity = unchanged.
   float4 map0;
   float4 map1;
+  // The inverse map (source uv -> output uv) and the source's full-resolution
+  // size, for the tile path: tiles live in the source's pixels.
+  float4 inv0;
+  float4 inv1;
+  float4 source_size;  // xy
 };
 
 cbuffer Tile : register(b1) {
@@ -51,13 +56,19 @@ VSOut vs_main(uint id : SV_VertexID) {
 // One tile's content rect, clipped to the image. Adjacent tiles compute a
 // shared edge from the same expression, so the rasteriser's fill rule leaves
 // neither a crack nor a double-blended seam.
+// PR 10: the tile's corners are source pixels; they reach the screen through
+// the inverse edit map, so an edited (turned, cropped, straightened) tiled
+// image still draws its tiles. The map is affine, so the shared-edge rule
+// above survives it: both tiles map the same edge through the same matrix.
 VSOut vs_tile(uint id : SV_VertexID) {
   static const float2 corners[6] = {
     float2(0, 0), float2(1, 0), float2(0, 1),
     float2(0, 1), float2(1, 0), float2(1, 1)
   };
   VSOut o;
-  float2 image_px = min((tile_origin + corners[id] * tile_content) * tile_scale, image_size);
+  float2 source_px = min((tile_origin + corners[id] * tile_content) * tile_scale, source_size.xy);
+  float3 s = float3(source_px / source_size.xy, 1.0);
+  float2 image_px = float2(dot(inv0.xyz, s), dot(inv1.xyz, s)) * image_size;
   float2 rel = window_size * 0.5 + (image_px - pan) * zoom;
   float2 ndc = rel / window_size * 2.0 - 1.0;
   o.pos = float4(ndc.x, -ndc.y, 0.0, 1.0);
@@ -156,7 +167,13 @@ float4 ps_main(VSOut vin) : SV_Target {
 
 float4 ps_tile(VSOut vin) : SV_Target {
   float2 image_px = image_px_at(vin.pos.xy);
-  float2 level_px = image_px / tile_scale;
+  // Output pixel -> source pixel. A tile can reach past the edited output (the
+  // cropped-away part of the source): those pixels are not the picture.
+  float2 out_uv = image_px / image_size;
+  if (any(out_uv < 0.0) || any(out_uv > 1.0)) discard;
+  float3 h = float3(out_uv, 1.0);
+  float2 source_px = float2(dot(map0.xyz, h), dot(map1.xyz, h)) * source_size.xy;
+  float2 level_px = source_px / tile_scale;
   float2 uv = (level_px - tile_origin + tile_border) / tile_tex;
   return finish(sample_filtered(uv, float2(tile_tex, tile_tex)), vin.pos.xy, image_px);
 }
@@ -173,9 +190,12 @@ struct alignas(16) blit_cb {
   float background, clipping, time, grid;
   float map0[4];
   float map1[4];
+  float inv0[4];
+  float inv1[4];
+  float source_size[4];
 };
 
-static_assert(sizeof(blit_cb) == 96, "keep in sync with cbuffer Camera");
+static_assert(sizeof(blit_cb) == 144, "keep in sync with cbuffer Camera");
 
 struct alignas(16) tile_cb {
   float origin_x, origin_y;
@@ -326,6 +346,12 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   cb.map1[1] = p.uv_map[4];
   cb.map1[2] = p.uv_map[5];
   cb.map1[3] = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    cb.inv0[i] = p.uv_inverse[i];
+    cb.inv1[i] = p.uv_inverse[3 + i];
+  }
+  cb.source_size[0] = p.source_w > 0.0f ? p.source_w : p.image_w;
+  cb.source_size[1] = p.source_h > 0.0f ? p.source_h : p.image_h;
   (void)upload_cb(ctx, cb_.Get(), &cb, sizeof(cb));
 
   ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
