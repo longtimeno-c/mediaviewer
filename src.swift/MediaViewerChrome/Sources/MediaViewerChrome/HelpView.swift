@@ -66,6 +66,7 @@ struct HelpView: View {
     Section(title: "Marks & files", rows: [
       Row(keys: "Insert  ⇧Space", action: "Mark / unmark"),
       Row(keys: "⌃A  ⌃D", action: "Mark all / unmark all"),
+      Row(keys: "⌘C", action: "Copy marked (or current / selected) files; the colour if the eyedropper is on"),
       Row(keys: "F7  F8", action: "Copy / move marked (⇧ picks folder)"),
       Row(keys: "⌫  ⌘⌫", action: "Move marked or current to Trash"),
     ]),

@@ -1357,6 +1357,35 @@ Mac dynamic manifest with `bmff`, `png`, `xmp` (without `xmp` a PNG's XMP is sil
   manifest but have never been compiled with MSVC; the XAML pane, tree island and
   Windows `list_subdirectories` do not exist yet. This is the Windows half of PR 9.
 
+### 2026-09-24 (later) — PR 9 Windows: native half built and tested under MSVC
+
+`mv_meta`, `meta_store`, `sort_order` and the metadata tests compile clean under `/W4 /WX` on
+MSVC 2022 with vcpkg `exiv2[bmff,png,xmp]` (no source changes were needed). Windows
+`io::list_subdirectories` added to `dir_win.cpp` (hidden/system and dot directories skipped,
+UTF-16 ordinal case-insensitive sort, one directory read). Full `ctest` from a fresh
+`build-pr9`: 514 pass, 0 fail (22 `[meta]` cases, 6 `[sort]`, frametime harness, broken corpus).
+**Still owed on Windows:** the XAML metadata pane, folder-tree island, sort UI, `O`/`Shift+O`
+overlay drawing, eyedropper, and the ABI calls that feed them (`chrome_left_px` is still 0).
+
+### 2026-09-24 (later still) — PR 9 Windows: overlays, eyedropper and Ctrl+C
+
+Windows now has what the Mac commits `ac62036` / `cb460a3` / `3a6f324` added that is not XAML:
+the info overlay's camera/exposure/date lines, AF quads, the "AF points: none recorded" and
+"Eyedropper: stills only / move the cursor" notes, the eyedropper, and `Ctrl+C`
+(`copy_clipboard`: the colour when the eyedropper has one, else the marked/current file(s) as
+`CF_HDROP`, pairs copied whole as F7 does). `meta_store` runs on an `app_state` job system;
+selection changes debounce 90 ms; completions post a window message.
+- **Eyedropper readback:** image textures are immutable, so one texel is copied to a 1x1 staging
+  texture and mapped with `D3D11_MAP_FLAG_DO_NOT_WAIT` on a later frame. The render thread never
+  waits on the GPU; the readout shows nothing until the copy has landed rather than a stale texel.
+  Only 8-bit RGBA textures are read.
+- **Not applicable on Windows:** the Mac tracking-area fix (Win32 already tracks the mouse) and
+  the tree-rooted-at-open-folder change (no tree yet).
+- **Checked live:** an EXIF-stamped JPEG shows its three lines under `O`; `Ctrl+C` returned
+  `#C9B4A1  rgb(201, 180, 161)  x1571 y1832` with the eyedropper on and the file path as a file
+  drop with it off. The frametime harness and full ctest still pass; the PR 1 60 s soak was not re-run.
+- **Still owed on Windows:** XAML metadata pane (`I`), folder-tree island, sort menu.
+
 ## 2026-09-24 — Default-viewer setup selected initially
 
 The owner requested that both platforms offer all supported media as defaults with

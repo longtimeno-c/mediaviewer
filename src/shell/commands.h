@@ -204,6 +204,7 @@ enum class command_id : std::uint16_t {
   metadata_pane,  // `I`: summary card, full tree, clip stream inspector
   af_points,      // Shift+O: AF-point quads from the maker notes already read
   eyedropper,     // Shift+I: one-pixel readout under the cursor
+  copy_clipboard, // Ctrl/Cmd+C: the eyedropper's readout if it is on, else the marked / current file(s)
   // PR 10 (plan/16 View + Crop mode). Appended; every id above keeps its value.
   rotate_ccw,       // `[`: −90°, a lossless file write on a JPEG
   rotate_cw,        // `]`: +90°

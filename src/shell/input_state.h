@@ -106,6 +106,9 @@ struct input_snapshot {
   // rotate reloads the file under a new item id; until its pixels land the
   // old texture keeps the old geometry, so the turn never flashes back.
   edit_view edit[2];
+  // Bumped by the UI thread whenever `meta` is replaced, so an idle render
+  // thread draws one frame for it (the struct is too big to compare).
+  std::uint32_t meta_seq = 0;
   // For the info overlay, filled by the UI thread when the selection changes.
   // The render thread never calls into the folder model.
   std::uint32_t item_index = 0;

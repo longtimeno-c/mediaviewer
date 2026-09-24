@@ -164,6 +164,9 @@ constexpr binding kBindings[] = {
     row(C('I'), mod_none, kViewing, edge, metadata_pane),
     row(C('O'), mod_shift, kViewing, edge, af_points),
     row(C('I'), mod_shift, kViewing, edge, eyedropper),
+    // Ctrl+C (plan/16): with the eyedropper on it copies the colour; otherwise it
+    // copies the marked (or current / gallery-selected) files.
+    row(C('C'), mod_ctrl, kViewing, edge, copy_clipboard),
     // PR 10 (plan/16 View, Crop mode). Appended. `[` `]` H V act on a still in
     // browse (a clip takes `[` `]` for trim in PR 13); on a JPEG with nothing
     // else in its stack they rewrite the file losslessly, no pane needed.
@@ -284,6 +287,7 @@ constexpr command_info kCommands[] = {
     {metadata_pane, "Metadata pane"},
     {af_points, "AF points"},
     {eyedropper, "Eyedropper"},
+    {copy_clipboard, "Copy"},
     {rotate_ccw, "Rotate left"},
     {rotate_cw, "Rotate right"},
     {flip_horizontal, "Flip horizontal"},

@@ -46,7 +46,7 @@ struct MetadataView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .background(.regularMaterial)
-    .overlay(alignment: .leading) { Divider() }
+    .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }
     }

@@ -507,6 +507,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
   src/shell/marks.h
+  src/shell/meta_store.cpp
+  src/shell/meta_store.h
   src/shell/open_request.cpp
   src/shell/open_request.h
   src/shell/slideshow.h
@@ -536,6 +538,7 @@ set_source_files_properties(src/shell/mediaviewer.rc PROPERTIES
   OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico")
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
+  mv_meta
   mv_gfx
   mv_canvas
   mv_io

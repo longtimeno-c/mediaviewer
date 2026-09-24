@@ -651,10 +651,26 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
                   origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
   };
 
+  // A toggle that draws nothing looks broken, so say why there is nothing to see.
+  float note_y = origin_y + pad;
+  const auto note = [&](const char* text_line) {
+    label(pad, note_y, text_line);
+    note_y += fs * 1.35f;
+  };
   // AF quads are in the unedited frame; with an edit they would point at the
   // wrong place, so they wait until the edit is reset (PR 10).
   const edit::placement edited = current_image_ && !video_frame_ ? place_image(*current_image_)
                                                                  : edit::placement{};
+  if (snapshot.af_points && snapshot.meta.af_count == 0) {
+    note("AF points: none recorded in this file");
+  } else if (snapshot.af_points && !edited.map.identity()) {
+    note("AF points: hidden while the image is edited");
+  }
+  if (snapshot.eyedropper) {
+    if (video_frame_) note("Eyedropper: stills only");
+    else if (!snapshot.mouse_in_client) note("Eyedropper: move the cursor over the image");
+  }
+
   if (snapshot.af_points && edited.map.identity()) {
     for (int i = 0; i < snapshot.meta.af_count && i < meta_overlay::kMaxAf; ++i) {
       const float* q = snapshot.meta.af[i];
@@ -691,6 +707,7 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
     }
   }
 
+  std::string copy_text;  // what Cmd+C puts on the clipboard; empty = nothing under the cursor
   if (snapshot.eyedropper && snapshot.mouse_in_client) {
     // One texel, on demand: the source texture is CPU-visible (shared) so this
     // is a 4-byte read, never a download of the picture. Video frames are
@@ -727,6 +744,11 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
         std::snprintf(readout, sizeof(readout), "#%02X%02X%02X   %u %u %u   x%d y%d", eye_.rgba[0],
                       eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
                       static_cast<int>(ix), static_cast<int>(iy));
+        char clip[96];
+        std::snprintf(clip, sizeof(clip), "#%02X%02X%02X  rgb(%u, %u, %u)  x%d y%d", eye_.rgba[0],
+                      eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
+                      static_cast<int>(ix), static_cast<int>(iy));
+        copy_text = clip;
         const ImVec2 size = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, readout);
         const float box = fs;
         float x = snapshot.mouse_x + 18.0f * scale;
@@ -742,6 +764,10 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
         label(x + box + 8.0f * scale, y, readout);
       }
     }
+  }
+  if (snapshot.eyedropper) {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    eye_text_ = std::move(copy_text);
   }
 }
 

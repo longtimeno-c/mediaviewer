@@ -186,9 +186,6 @@ int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t s
 int32_t mv_chrome_current_folder(char* buf, int32_t size);
 // Opens `dir_utf8` exactly as Open Folder does. [main-thread]
 void mv_chrome_open_folder(const char* dir_utf8);
-// The user's home directory and mounted volumes, as tree roots: "name\tpath"
-// lines. [any-thread]
-int32_t mv_chrome_tree_roots(char* buf, int32_t size);
 
 // Sort (plan/16). Packed as sort_order.h pack_sort: key in bits 0-2 (0 name,
 // 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3. Changing it
