@@ -87,7 +87,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
     // PR 9
-    case info_overlay: case af_points: case eyedropper: case metadata_pane: case folder_tree:
+    case info_overlay: case af_points: case eyedropper: case copy_pixel: case metadata_pane: case folder_tree:
       return true;
     default:
       return false;
@@ -545,25 +545,6 @@ extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
   if (g_chrome_app && dir_utf8) [g_chrome_app openFolderPath:dir_utf8];
 }
-// [any-thread]: the tree's top level. Home first, then whatever is mounted.
-extern "C" int32_t mv_chrome_tree_roots(char* buf, int32_t size) {
-  std::string out;
-  @autoreleasepool {
-    NSString* home = NSHomeDirectory();
-    out += "Home\t" + std::string(home.UTF8String) + "\n";
-    NSArray<NSURL*>* volumes = [[NSFileManager defaultManager]
-        mountedVolumeURLsIncludingResourceValuesForKeys:@[ NSURLVolumeNameKey ]
-                                                options:NSVolumeEnumerationSkipHiddenVolumes];
-    for (NSURL* url in volumes) {
-      NSString* name = nil;
-      [url getResourceValue:&name forKey:NSURLVolumeNameKey error:nil];
-      if (url.path.length == 0) continue;
-      out += MvFlat(std::string(name ? name.UTF8String : url.path.UTF8String)) + "\t" +
-             std::string(url.path.UTF8String) + "\n";
-    }
-  }
-  return MvCopyOut(out, buf, size);
-}
 extern "C" int32_t mv_chrome_sort_order(void) {
   return g_chrome_app ? [g_chrome_app sortOrder] : 0;
 }
@@ -804,13 +785,35 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self publish];
   if (self.lab) self.lab->wake();
 }
+// Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
+// why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
+// the render thread while the eyedropper is on.
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  for (NSTrackingArea* area in [self.trackingAreas copy]) [self removeTrackingArea:area];
+  [self addTrackingArea:[[NSTrackingArea alloc]
+                            initWithRect:NSZeroRect
+                                 options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                                         NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+                                   owner:self
+                                userInfo:nil]];
+}
+- (void)mouseExited:(NSEvent*)event {
+  (void)event;
+  self.snap->mouse_in_client = false;
+  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  [self publish];
+  if (self.snap->eyedropper && self.lab) self.lab->wake();
+}
 - (void)mouseMoved:(NSEvent*)event {
   const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
   const NSPoint backing = [self convertPointToBacking:p];
   self.snap->mouse_x = static_cast<float>(backing.x);
   self.snap->mouse_y = static_cast<float>(self.snap->height) - static_cast<float>(backing.y);
   self.snap->mouse_in_client = NSPointInRect(p, self.bounds);
+  if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
+  if (self.snap->eyedropper && self.lab) self.lab->wake();
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
@@ -2319,6 +2322,17 @@ enum MvMenuCmd : NSInteger {
       _snap.eyedropper = !_snap.eyedropper;
       [self pokeSnapshot];
       return YES;
+    case copy_pixel: {
+      // Cmd+C copies what the eyedropper is showing. Off, or nothing under the cursor:
+      // unhandled, so the key is not swallowed for nothing.
+      if (!_snap.eyedropper) return NO;
+      const std::string text = _lab.eyedropper_text();
+      if (text.empty()) return NO;
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      [board clearContents];
+      [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+      return YES;
+    }
     case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
     default: return NO;

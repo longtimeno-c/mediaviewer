@@ -40,6 +40,7 @@ struct HelpView: View {
       Row(keys: "O", action: "Info overlay (exposure, camera, date)"),
       Row(keys: "⇧O", action: "AF points (from maker notes)"),
       Row(keys: "⇧I", action: "Eyedropper (pixel under the cursor)"),
+      Row(keys: "⌘C", action: "Copy the eyedropper colour (hex, rgb, x y)"),
       Row(keys: "⌘⇧E", action: "Folder tree"),
       Row(keys: "View ▸ Sort By", action: "Name, date, size, type, date taken"),
     ]),

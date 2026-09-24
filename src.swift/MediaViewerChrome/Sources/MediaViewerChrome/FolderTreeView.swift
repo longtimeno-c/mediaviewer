@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// PR 9 (plan/06, plan/16 Ctrl/Cmd+Shift+E): the folder tree. Roots are the home
-// folder and mounted volumes; a node lists its subfolders on first expand, in a
+// PR 9 (plan/06, plan/16 Ctrl/Cmd+Shift+E): the folder tree, rooted at the open folder (not the computer). A node lists its subfolders on first expand, in a
 // background task through the host's portable `io::list_subdirectories` -- the
 // main actor never touches the disk (rule 1). Choosing a folder opens it exactly
 // as Open Folder does.
@@ -53,11 +52,11 @@ final class TreeNode: ObservableObject, Identifiable {
 final class FolderTreeStore: ObservableObject {
   static let shared = FolderTreeStore()
 
-  @Published private(set) var roots: [TreeNode] = []
+  /// The open folder, expanded to show its subfolders. The tree is rooted here, not
+  /// at the computer: opening a subfolder re-roots it, and "Up" goes to the parent.
+  @Published private(set) var root: TreeNode?
   @Published private(set) var visible = false
-  @Published private(set) var current = ""
   private var timer: Timer?
-  private var revealed = false
 
   private init() {
     timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
@@ -65,44 +64,24 @@ final class FolderTreeStore: ObservableObject {
     }
   }
 
+  var parentPath: String? {
+    guard let path = root?.path, path != "/" else { return nil }
+    let parent = (path as NSString).deletingLastPathComponent
+    return parent.isEmpty ? "/" : parent
+  }
+
   private func poll() {
     let nowVisible = mv_chrome_tree_visible()
     if nowVisible != visible { visible = nowVisible }
-    guard nowVisible else {
-      revealed = false
-      return
-    }
+    guard nowVisible else { return }
     var buf = [CChar](repeating: 0, count: 4096)
     _ = buf.withUnsafeMutableBufferPointer { mv_chrome_current_folder($0.baseAddress, Int32($0.count)) }
     let folder = String(cString: buf)
-    if folder != current {
-      current = folder
-      revealed = false
-    }
-    if roots.isEmpty {
-      Task {
-        let list = await Task.detached { readLines { mv_chrome_tree_roots($0, $1) } ?? [] }.value
-        if roots.isEmpty { roots = list.map { TreeNode(name: $0.0, path: $0.1) } }
-      }
-    } else if !revealed && !current.isEmpty {
-      revealed = true
-      Task { await reveal(current) }
-    }
-  }
-
-  /// Expands the chain of folders down to `path`, so the open folder is visible.
-  private func reveal(_ path: String) async {
-    guard let root = roots.filter({ path == $0.path || path.hasPrefix($0.path + "/") })
-      .max(by: { $0.path.count < $1.path.count })
-    else { return }
-    var node = root
-    let rest = path.dropFirst(root.path.count).split(separator: "/").map(String.init)
-    for component in rest {
-      node.isExpanded = true
-      await node.loadIfNeeded()
-      guard let next = node.children?.first(where: { $0.name == component }) else { return }
-      node = next
-    }
+    guard !folder.isEmpty, folder != root?.path else { return }
+    let name = folder == "/" ? "/" : (folder as NSString).lastPathComponent
+    let node = TreeNode(name: name, path: folder)
+    node.isExpanded = true  // loads its subfolders in the background
+    root = node
   }
 }
 
@@ -141,15 +120,32 @@ struct FolderTreeView: View {
     VStack(alignment: .leading, spacing: 0) {
       Text("Folders").font(.headline).padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
       Divider()
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 2) {
-          ForEach(store.roots) { TreeRow(node: $0, current: store.current, depth: 0) }
+      if let root = store.root {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 2) {
+            if let parent = store.parentPath {
+              Button {
+                parent.withCString { mv_chrome_open_folder($0) }
+              } label: {
+                Label("Up to \((parent as NSString).lastPathComponent.isEmpty ? "/" : (parent as NSString).lastPathComponent)",
+                      systemImage: "arrow.up.left")
+                  .foregroundStyle(.secondary)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+              .padding(.bottom, 6)
+            }
+            TreeRow(node: root, current: root.path, depth: 0)
+          }
+          .padding(10)
         }
-        .padding(10)
+      } else {
+        Text("No folder open").foregroundStyle(.secondary).padding(14)
+        Spacer()
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
-    .overlay(alignment: .trailing) { Divider() }
+    .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
   }
 }
