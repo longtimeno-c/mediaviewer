@@ -160,6 +160,9 @@ constexpr binding kBindings[] = {
     row(C('I'), mod_none, kViewing, edge, metadata_pane),
     row(C('O'), mod_shift, kViewing, edge, af_points),
     row(C('I'), mod_shift, kViewing, edge, eyedropper),
+    // Ctrl+C is reserved for copying the file (PR 15, plan/16). Until then it is
+    // the eyedropper's copy, and it does nothing (unhandled) when the eyedropper is off.
+    row(C('C'), mod_ctrl, kViewing, edge, copy_pixel),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -257,6 +260,7 @@ constexpr command_info kCommands[] = {
     {metadata_pane, "Metadata pane"},
     {af_points, "AF points"},
     {eyedropper, "Eyedropper"},
+    {copy_pixel, "Copy eyedropper colour"},
 };
 
 const char* named_key(key k) noexcept {

@@ -87,7 +87,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
     // PR 9
-    case info_overlay: case af_points: case eyedropper: case metadata_pane: case folder_tree:
+    case info_overlay: case af_points: case eyedropper: case copy_pixel: case metadata_pane: case folder_tree:
       return true;
     default:
       return false;
@@ -2322,6 +2322,17 @@ enum MvMenuCmd : NSInteger {
       _snap.eyedropper = !_snap.eyedropper;
       [self pokeSnapshot];
       return YES;
+    case copy_pixel: {
+      // Cmd+C copies what the eyedropper is showing. Off, or nothing under the cursor:
+      // unhandled, so the key is not swallowed for nothing.
+      if (!_snap.eyedropper) return NO;
+      const std::string text = _lab.eyedropper_text();
+      if (text.empty()) return NO;
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      [board clearContents];
+      [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+      return YES;
+    }
     case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
     default: return NO;

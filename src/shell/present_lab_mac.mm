@@ -614,6 +614,7 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
     }
   }
 
+  std::string copy_text;  // what Cmd+C puts on the clipboard; empty = nothing under the cursor
   if (snapshot.eyedropper && snapshot.mouse_in_client) {
     // One texel, on demand: the source texture is CPU-visible (shared) so this
     // is a 4-byte read, never a download of the picture. Video frames are
@@ -645,6 +646,11 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
         std::snprintf(readout, sizeof(readout), "#%02X%02X%02X   %u %u %u   x%d y%d", eye_.rgba[0],
                       eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
                       static_cast<int>(ix), static_cast<int>(iy));
+        char clip[96];
+        std::snprintf(clip, sizeof(clip), "#%02X%02X%02X  rgb(%u, %u, %u)  x%d y%d", eye_.rgba[0],
+                      eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
+                      static_cast<int>(ix), static_cast<int>(iy));
+        copy_text = clip;
         const ImVec2 size = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, readout);
         const float box = fs;
         float x = snapshot.mouse_x + 18.0f * scale;
@@ -660,6 +666,10 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
         label(x + box + 8.0f * scale, y, readout);
       }
     }
+  }
+  if (snapshot.eyedropper) {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    eye_text_ = std::move(copy_text);
   }
 }
 
