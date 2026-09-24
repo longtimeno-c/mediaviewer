@@ -1310,6 +1310,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _updater = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
                                                             updaterDelegate:self
                                                          userDriverDelegate:nil];
+  // Sparkle's scheduled check only fires once SUScheduledCheckInterval has
+  // elapsed since the last one, so a release published between launches went
+  // unseen for up to 6 h. Check on every start; still silent unless an update
+  // exists. Skipped when the user turned automatic checks off.
+  if (_updater.updater.automaticallyChecksForUpdates)
+    [_updater.updater checkForUpdatesInBackground];
 #endif
   // Settings screen: a full-container overlay like the help sheet, hidden until
   // opened (Settings button, Cmd+,).
