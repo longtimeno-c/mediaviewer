@@ -142,6 +142,21 @@ struct tree_entry {
 [[nodiscard]] expected walk_files(std::string_view utf8_root, int max_depth,
                                   const std::function<bool(const tree_entry&)>& visit);
 
+enum class entry_kind : std::uint8_t {
+  file,       // a regular file
+  directory,  // a real directory, walked into
+  other,      // a link, junction, device, or a directory past max_depth: never followed
+};
+
+// Every entry under `utf8_root`, recursively, with nothing skipped: hidden and
+// system entries included, links and junctions reported as entry_kind::other
+// rather than followed or dropped. For checking that a folder holds exactly
+// what a manifest lists (src/addon); walk_files is the one for a user's card.
+// Unsorted. `visit` returning false stops the walk (status::cancelled).
+[[nodiscard]] expected walk_all_entries(
+    std::string_view utf8_root, int max_depth,
+    const std::function<bool(std::string_view relative_slash, entry_kind kind)>& visit);
+
 // Names of the immediate subdirectories of `utf8_dir` (hidden ones and links
 // skipped), sorted byte-wise.
 [[nodiscard]] result<std::vector<std::string>> child_directories(std::string_view utf8_dir);

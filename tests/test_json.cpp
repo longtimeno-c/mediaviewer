@@ -15,6 +15,12 @@ TEST_CASE("the JSON reader is strict", "[json]") {
   REQUIRE_FALSE(mv::json::parse("{} {}"));
   REQUIRE_FALSE(mv::json::parse(std::string(100, '[') + std::string(100, ']')));  // depth
   REQUIRE_FALSE(mv::json::parse("[99999999999999999999]"));  // out of int64
+  // Malformed UTF-8: another parser would reject it, so this one does too.
+  REQUIRE_FALSE(mv::json::parse("[\"\xC3\"]"));              // truncated sequence
+  REQUIRE_FALSE(mv::json::parse("[\"\xC0\xAF\"]"));          // overlong '/'
+  REQUIRE_FALSE(mv::json::parse("[\"\xED\xA0\x80\"]"));      // encoded surrogate
+  REQUIRE_FALSE(mv::json::parse("[\"\xF4\x90\x80\x80\"]"));  // past U+10FFFF
+  REQUIRE_FALSE(mv::json::parse("[\"\xFF\"]"));
 
   const auto v = mv::json::parse(R"({"n":-12,"s":"q\"\\/","f":1.5e2,"t":true})");
   REQUIRE(v);

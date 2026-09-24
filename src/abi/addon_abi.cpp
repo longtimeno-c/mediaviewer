@@ -283,7 +283,13 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
     if (it == g_loaded.end()) {
       auto s = open_store();
       if (!s) return s.error();
-      s->startup_cleanup();
+      // Once per process, at the first load: a later load (after an install)
+      // must not sweep .staging while the chrome is downloading into it.
+      static bool cleaned = false;  // guarded by g_mutex
+      if (!cleaned) {
+        s->startup_cleanup();
+        cleaned = true;
+      }
       mv::addon::host_services svc;
       svc.capture = &capture_info;
       svc.thumbnail = &thumbnail;

@@ -46,13 +46,17 @@ class host_table {
 
   // Used by the C thunks.
   struct watch_state {
-    std::mutex m;
+    std::mutex control;  // start / stop
+    std::mutex m;        // cb and user
     io::volume_watcher watcher;
     void(MV_CALL* cb)(void*, std::uint32_t, const char*) = nullptr;
     void* user = nullptr;
     bool running = false;
   };
   watch_state watch;
+  // Unregisters the add-on's volume callback and stops the watcher; returns
+  // only when no callback is running. Idempotent.
+  void stop_watch() noexcept;
 
  private:
   host_services svc_;

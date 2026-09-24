@@ -186,6 +186,7 @@ mv_status MV_CALL t_volume_of(void*, const char* path, mv_addon_volume* out) {
 
 mv_status MV_CALL t_list_volumes(void*, mv_addon_volume* out, uint32_t cap, uint32_t* count) {
   return guarded([&] {
+    if (!out && cap) return MV_ERR_INVALID_ARG;
     auto v = io::list_volumes();
     if (!v) return to_mv(v.error());
     const auto n = static_cast<uint32_t>(std::min<std::size_t>(v->size(), cap));
@@ -219,17 +220,21 @@ mv_status MV_CALL t_watch(void* host, void(MV_CALL* cb)(void*, std::uint32_t, co
                           void* user) {
   return guarded([&] {
     auto& w = self(host).watch;
+    if (!cb) {
+      self(host).stop_watch();
+      return MV_OK;
+    }
+    // `control` serialises start / stop; `m` only guards the callback, so
+    // the watcher thread never waits on a start or stop in progress.
+    std::lock_guard control(w.control);
     {
       std::lock_guard lock(w.m);
       w.cb = cb;
       w.user = user;
     }
-    if (cb && !w.running) {
+    if (!w.running) {
       if (!w.watcher.start(&on_io_volume, &w)) return MV_ERR_IO;
       w.running = true;
-    } else if (!cb && w.running) {
-      w.watcher.stop();
-      w.running = false;
     }
     return MV_OK;
   });
@@ -353,10 +358,19 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.log = &t_log;
 }
 
-host_table::~host_table() {
-  std::lock_guard lock(watch.m);
-  watch.cb = nullptr;
+host_table::~host_table() { stop_watch(); }
+
+void host_table::stop_watch() noexcept {
+  std::lock_guard control(watch.control);
+  {
+    std::lock_guard lock(watch.m);
+    watch.cb = nullptr;
+    watch.user = nullptr;
+  }
+  // Not under `m`: stop() drains the watcher thread, which may be inside
+  // on_io_volume waiting for `m`.
   if (watch.running) watch.watcher.stop();
+  watch.running = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +394,9 @@ loaded_addon::~loaded_addon() {
   // The add-on stops its threads before its code goes away, and the host
   // table (whose thunks it calls) outlives both.
   if (api_.shutdown && api_.addon) api_.shutdown(api_.addon);
+  // An add-on that left its volume callback registered must not be called
+  // after its code is unmapped.
+  if (table_) table_->stop_watch();
   lib_.close();
   table_.reset();
 }

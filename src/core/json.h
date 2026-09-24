@@ -321,9 +321,49 @@ class parser {
   }
 };
 
+// Well-formed UTF-8 (RFC 3629): no overlongs, no surrogates, nothing past
+// U+10FFFF. A byte another parser would reject must not reach a manifest field.
+[[nodiscard]] inline bool valid_utf8(std::string_view text) noexcept {
+  std::size_t i = 0;
+  while (i < text.size()) {
+    const auto c = static_cast<unsigned char>(text[i]);
+    if (c < 0x80) {
+      ++i;
+      continue;
+    }
+    std::size_t n = 0;
+    std::uint32_t cp = 0;
+    if (c >= 0xC2 && c <= 0xDF) {
+      n = 1;
+      cp = c & 0x1F;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+      n = 2;
+      cp = c & 0x0F;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+      n = 3;
+      cp = c & 0x07;
+    } else {
+      return false;
+    }
+    if (text.size() - i <= n) return false;  // truncated sequence
+    for (std::size_t k = 1; k <= n; ++k) {
+      const auto cc = static_cast<unsigned char>(text[i + k]);
+      if ((cc & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if ((n == 2 && cp < 0x800) || (n == 3 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+        (cp >= 0xD800 && cp <= 0xDFFF)) {
+      return false;
+    }
+    i += n + 1;
+  }
+  return true;
+}
+
 }  // namespace detail
 
 [[nodiscard]] inline std::optional<value> parse(std::string_view text, int max_depth = 32) {
+  if (!detail::valid_utf8(text)) return std::nullopt;
   value v;
   detail::parser p(text, max_depth);
   if (!p.parse_document(v)) return std::nullopt;

@@ -135,7 +135,11 @@ result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string
   if (from.empty() || to.empty()) return err(status::invalid_arg);
   // No MOVEFILE_REPLACE_EXISTING (never an overwrite) and no COPY_ALLOWED (the
   // temp file is always beside its final name, on the same volume).
-  if (::MoveFileExW(from.c_str(), to.c_str(), 0)) return rename_outcome::renamed;
+  // WRITE_THROUGH: the rename is on disk before F8 across volumes deletes the
+  // source.
+  if (::MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) {
+    return rename_outcome::renamed;
+  }
   if (exists_error(::GetLastError())) return rename_outcome::name_taken;
   return err(status::io);
 }
@@ -274,6 +278,10 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
     const std::wstring_view name(fd.cFileName);
     if (name == L"." || name == L"..") continue;
     if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
+    // Dot names are hidden on the Mac side of a card and are skipped there
+    // (AppleDouble "._IMG_0001.JPG", ".Trashes", ".Spotlight-V100"): the same
+    // card must list the same files on both platforms.
+    if (name.front() == L'.') continue;
     // Junctions and symlinks are never followed: a card has none, and a share
     // that loops back on itself must not walk forever.
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
@@ -298,7 +306,58 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
   return true;
 }
 
+bool walk_all_dir(const std::wstring& dir, const std::string& rel, int depth, int max_depth,
+                  const std::function<bool(std::string_view, entry_kind)>& visit, bool& stopped) {
+  WIN32_FIND_DATAW fd{};
+  HANDLE find = ::FindFirstFileExW((dir + L"\\*").c_str(), FindExInfoBasic, &fd,
+                                   FindExSearchNameMatch, nullptr, 0);
+  if (find == INVALID_HANDLE_VALUE) return false;
+  std::vector<std::wstring> subdirs;
+  do {
+    const std::wstring_view name(fd.cFileName);
+    if (name == L"." || name == L"..") continue;
+    const std::string name8 = narrow(name);
+    const std::string child_rel = rel.empty() ? name8 : rel + "/" + name8;
+    // Hidden and system entries are reported like any other; a reparse point
+    // (symlink, junction) is never followed.
+    entry_kind kind = entry_kind::other;
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        kind = entry_kind::file;
+      } else if (depth < max_depth) {
+        kind = entry_kind::directory;
+      }
+    }
+    if (!visit(child_rel, kind)) {
+      stopped = true;
+      break;
+    }
+    if (kind == entry_kind::directory) subdirs.emplace_back(name);
+  } while (::FindNextFileW(find, &fd));
+  ::FindClose(find);
+  bool ok = true;
+  for (const std::wstring& sub : subdirs) {
+    if (stopped) break;
+    const std::string sub8 = narrow(sub);
+    ok = walk_all_dir(dir + L"\\" + sub, rel.empty() ? sub8 : rel + "/" + sub8, depth + 1,
+                      max_depth, visit, stopped) &&
+         ok;
+  }
+  return ok;
+}
+
 }  // namespace
+
+expected walk_all_entries(std::string_view utf8_root, int max_depth,
+                          const std::function<bool(std::string_view, entry_kind)>& visit) {
+  std::wstring root = wide(utf8_root);
+  if (root.empty()) return err(status::invalid_arg);
+  while (root.size() > 3 && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+  bool stopped = false;
+  const bool ok = walk_all_dir(root, std::string(), 0, max_depth, visit, stopped);
+  if (stopped) return err(status::cancelled);
+  return ok ? expected{} : err(status::io);
+}
 
 result<std::vector<std::string>> child_directories(std::string_view utf8_dir) {
   std::wstring dir = wide(utf8_dir);

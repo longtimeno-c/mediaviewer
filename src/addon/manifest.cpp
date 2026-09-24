@@ -151,12 +151,18 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   }
   const auto host_min = host->integer("min");
   const auto host_max = host->integer("max");
-  if (!host_min || !host_max || *host_min < 1 || *host_max < *host_min) return d;
+  if (!host_min || !host_max || *host_min < 1 || *host_max < *host_min ||
+      *host_max > std::int64_t{UINT32_MAX} || *schema < 0 || *schema > 1000) {
+    return d;
+  }
   if (id->empty() || id->size() > 32 ||
       !std::all_of(id->begin(), id->end(), [](char c) { return (c >= 'a' && c <= 'z') || c == '-'; })) {
     return d;
   }
-  if (!parse_version(*version) || name->empty() || name->find_first_of("/\\:") != std::string::npos) {
+  // The name is a folder on the Mac (Add-ons/<name>/<version>, store.cpp): one
+  // plain, visible path component, never "." or "..".
+  if (!parse_version(*version) || !safe_relative_path(*name) ||
+      name->find('/') != std::string::npos || name->front() == '.' || name->size() > 64) {
     return d;
   }
   m.id = *id;
@@ -267,16 +273,31 @@ rejection verify_files(const std::string& dir, const manifest& m) {
     listed.insert(f.path);
   }
   // Nothing else may sit beside them: a dropped-in DLL would otherwise ride
-  // along with a valid signature.
-  rejection extra = rejection::none;
-  (void)io::walk_files(dir, 16, [&](const io::tree_entry& e) {
-    if (e.relative_utf8 == "manifest.json" || e.relative_utf8 == "manifest.json.sig") return true;
-    if (!listed.count(e.relative_utf8)) {
-      extra = rejection::unexpected_file;
-      return false;
+  // along with a valid signature. The walk skips nothing (a hidden DLL loads
+  // as well as a visible one) and follows no link: a link, a junction, or a
+  // folder nested deeper than any add-on needs is itself unexpected.
+  // The shells' own folder metadata is the one exception: Finder and Explorer
+  // write it into any folder a user opens, and nothing ever loads it as code.
+  const auto shell_metadata = [](std::string_view rel) {
+    const std::string_view leaf = rel.substr(rel.find_last_of('/') + 1);
+    std::string lower(leaf);
+    for (char& c : lower) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     }
-    return true;
+    return leaf == ".DS_Store" || lower == "thumbs.db" || lower == "desktop.ini";
+  };
+  rejection extra = rejection::none;
+  const auto walked = io::walk_all_entries(dir, 16, [&](std::string_view rel, io::entry_kind kind) {
+    if (kind == io::entry_kind::directory) return true;
+    if (kind == io::entry_kind::file &&
+        (rel == "manifest.json" || rel == "manifest.json.sig" || listed.count(std::string(rel)) ||
+         shell_metadata(rel))) {
+      return true;
+    }
+    extra = rejection::unexpected_file;
+    return false;
   });
+  if (extra == rejection::none && !walked) return rejection::file_missing;
   return extra;
 }
 

@@ -143,6 +143,14 @@ TEST_CASE("manifest policy: platform, host API range, unsafe paths", "[addon][ma
             rejection::none);
   }
   REQUIRE(mv::addon::safe_relative_path("Import.bundle/Contents/MacOS/Import"));
+  // The name is the add-on's folder on the Mac: never a way out of Add-ons/.
+  for (const char* bad : {"..", ".", ".hidden", "a/b", "a\\b", "C:"}) {
+    std::string m = manifest_json(files, "lib/mv_import.bin");
+    const std::string from = R"("name":"Import")";
+    m.replace(m.find(from), from.size(), std::string(R"("name":")") + bad + "\"");
+    REQUIRE(mv::addon::check_manifest(bytes_of(m), k.sign(m), k.pub, 1).why !=
+            rejection::none);
+  }
 }
 
 TEST_CASE("install verifies every file; a tampered or extra file is refused", "[addon][store]") {
@@ -185,6 +193,34 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     write_text(fs::path(*staged) / "version.dll", "planted");
     REQUIRE_FALSE(st.install(*staged));
   }
+  SECTION("a hidden file dropped beside them") {
+    auto staged = st.make_staging();
+    REQUIRE(staged);
+    stage(*staged, files, m, k.sign(m));
+    // LoadLibrary / dlopen do not care that a dependency is hidden.
+    write_text(fs::path(*staged) / ".version.dll", "planted");
+    REQUIRE_FALSE(st.install(*staged));
+  }
+  SECTION("Finder's .DS_Store is not a tamper") {
+    auto staged = st.make_staging();
+    REQUIRE(staged);
+    stage(*staged, files, m, k.sign(m));
+    write_text(fs::path(*staged) / "LICENSES/.DS_Store", "finder");
+    REQUIRE(st.install(*staged));
+  }
+#if !defined(_WIN32)
+  SECTION("a listed file that is a link") {
+    auto staged = st.make_staging();
+    REQUIRE(staged);
+    stage(*staged, files, m, k.sign(m));
+    // Same bytes, but through a link the verify cannot pin down.
+    const fs::path real = s.root() / "elsewhere.bin";
+    write_bytes(real, pattern(4096, 7));
+    fs::remove(fs::path(*staged) / "mv_import.bin");
+    fs::create_symlink(real, fs::path(*staged) / "mv_import.bin");
+    REQUIRE_FALSE(st.install(*staged));
+  }
+#endif
   SECTION("a manifest signed by someone else") {
     keypair other;
     auto staged = st.make_staging();

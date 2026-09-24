@@ -51,6 +51,19 @@ bool iequals_tail(std::string_view name, std::string_view ext) noexcept {
   return true;
 }
 
+// The rename itself to stable storage: the directory entry, not only the
+// file's bytes. F8 across volumes deletes the source right after this, so a
+// power cut must not be able to lose the new name. Best effort: some card and
+// network filesystems refuse to sync a directory.
+void sync_parent(const std::string& path) noexcept {
+  std::string dir(parent_of(path));
+  if (dir.empty()) dir = ".";
+  const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return;
+  (void)durable_sync(fd);
+  ::close(fd);
+}
+
 bool is_package(std::string_view name) noexcept {
   for (const char* ext : {".app", ".photoslibrary", ".bundle", ".framework", ".lrdata"}) {
     if (iequals_tail(name, ext)) return true;
@@ -124,9 +137,13 @@ result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string
   const std::string from(from_utf8);
   const std::string to(to_utf8);
 #if defined(__APPLE__)
-  if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0) return rename_outcome::renamed;
+  if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0) {
+    sync_parent(to);
+    return rename_outcome::renamed;
+  }
 #else
   if (::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0) {
+    sync_parent(to);
     return rename_outcome::renamed;
   }
 #endif
@@ -146,12 +163,14 @@ result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string
   // physical destination").
   if (::link(from.c_str(), to.c_str()) == 0) {
     ::unlink(from.c_str());
+    sync_parent(to);
     return rename_outcome::renamed;
   }
   if (errno == EEXIST) return rename_outcome::name_taken;
   struct stat st{};
   if (::lstat(to.c_str(), &st) == 0) return rename_outcome::name_taken;
   if (::rename(from.c_str(), to.c_str()) != 0) return err(status::io);
+  sync_parent(to);
   return rename_outcome::renamed;
 }
 
@@ -321,7 +340,47 @@ bool walk_dir(const std::string& dir, const std::string& rel, int depth, int max
   return true;
 }
 
+bool walk_all_dir(const std::string& dir, const std::string& rel, int depth, int max_depth,
+                  const std::function<bool(std::string_view, entry_kind)>& visit, bool& stopped) {
+  DIR* d = ::opendir(dir.c_str());
+  if (!d) return false;
+  std::vector<std::string> subdirs;
+  bool ok = true;
+  while (dirent* ent = ::readdir(d)) {
+    const std::string_view name(ent->d_name);
+    if (name == "." || name == "..") continue;
+    const std::string child_rel = rel.empty() ? std::string(name) : rel + "/" + std::string(name);
+    struct stat st{};
+    entry_kind kind = entry_kind::other;
+    if (::lstat(join_path(dir, name).c_str(), &st) == 0) {
+      if (S_ISREG(st.st_mode)) kind = entry_kind::file;
+      if (S_ISDIR(st.st_mode) && depth < max_depth) kind = entry_kind::directory;
+    }
+    if (!visit(child_rel, kind)) {
+      stopped = true;
+      break;
+    }
+    if (kind == entry_kind::directory) subdirs.emplace_back(name);
+  }
+  ::closedir(d);
+  for (const std::string& sub : subdirs) {
+    if (stopped) break;
+    const std::string child_rel = rel.empty() ? sub : rel + "/" + sub;
+    ok = walk_all_dir(join_path(dir, sub), child_rel, depth + 1, max_depth, visit, stopped) && ok;
+  }
+  return ok;
+}
+
 }  // namespace
+
+expected walk_all_entries(std::string_view utf8_root, int max_depth,
+                          const std::function<bool(std::string_view, entry_kind)>& visit) {
+  if (utf8_root.empty()) return err(status::invalid_arg);
+  bool stopped = false;
+  const bool ok = walk_all_dir(std::string(utf8_root), std::string(), 0, max_depth, visit, stopped);
+  if (stopped) return err(status::cancelled);
+  return ok ? expected{} : err(status::io);
+}
 
 result<std::vector<std::string>> child_directories(std::string_view utf8_dir) {
   if (utf8_dir.empty()) return err(status::invalid_arg);
