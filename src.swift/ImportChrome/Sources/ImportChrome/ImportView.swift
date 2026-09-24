@@ -51,11 +51,12 @@ struct ImportView: View {
     .sheet(isPresented: $showHistory) {
       VStack(alignment: .leading) {
         Text("Imports").font(.title2)
-        List(model.history(), id: \.self) { Text($0) }
+        List(model.historyRows, id: \.self) { Text($0) }
         Button("Close") { showHistory = false }.keyboardShortcut(.cancelAction)
       }
       .padding()
       .frame(width: 720, height: 480)
+      .onAppear { model.loadHistory() }
     }
   }
 

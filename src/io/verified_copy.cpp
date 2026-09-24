@@ -90,8 +90,10 @@ std::string create_temp(const std::string& final_path, file_writer& out) {
   return {};
 }
 
+// `indices[i]` is finals[i]'s position in the caller's target list: a retry
+// copies only the targets that failed, and a fault is aimed by that position.
 attempt_result one_attempt(std::string_view src, std::span<const std::string* const> finals,
-                           const copy_options& o) {
+                           std::span<const std::size_t> indices, const copy_options& o) {
   attempt_result res;
   res.outcomes.assign(finals.size(), copy_target_outcome::write_failed);
 
@@ -138,8 +140,8 @@ attempt_result one_attempt(std::string_view src, std::span<const std::string* co
   threads.reserve(finals.size());
   for (std::size_t i = 0; i < finals.size(); ++i) {
     if (!writers[i].ok) continue;
-    threads.emplace_back(writer_loop, std::ref(r), std::ref(writers[i]), static_cast<int>(i),
-                         o.fault);
+    threads.emplace_back(writer_loop, std::ref(r), std::ref(writers[i]),
+                         static_cast<int>(indices[i]), o.fault);
   }
 
   hasher h;
@@ -279,7 +281,7 @@ result<copy_outcome> verified_copy(std::string_view src_utf8, std::span<const st
     std::vector<const std::string*> finals;
     finals.reserve(todo.size());
     for (std::size_t i : todo) finals.push_back(&targets[i]);
-    attempt_result a = one_attempt(src_utf8, finals, options);
+    attempt_result a = one_attempt(src_utf8, finals, todo, options);
     if (a.was_cancelled) {
       for (std::size_t i : todo) out.targets[i].outcome = copy_target_outcome::cancelled;
       return err(status::cancelled);

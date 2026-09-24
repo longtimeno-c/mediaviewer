@@ -103,6 +103,7 @@ final class ImportModel: ObservableObject {
   @Published var banner = ""
   @Published var bannerJob: UInt64 = 0
   @Published var thumbs: [Int: NSImage] = [:]
+  @Published var historyRows: [String] = []
 
   var marks: [String] = []
   private var presets: [[String: Any]] = []
@@ -450,8 +451,17 @@ final class ImportModel: ObservableObject {
     chrome?.track(id, label: "verify")
   }
 
-  func history() -> [String] {
-    let text = table.json { api.history_json!(table.ctx, $0, $1, $2) }
+  /// Reads import.db off the main thread (rule 1: history_json waits on the
+  /// database a running job is writing), then publishes `historyRows`.
+  func loadHistory() {
+    let t = table
+    Task.detached {
+      let text = t.json { t.api.pointee.history_json!(t.ctx, $0, $1, $2) }
+      await MainActor.run { self.historyRows = ImportModel.historyLines(text) }
+    }
+  }
+
+  nonisolated static func historyLines(_ text: String?) -> [String] {
     return (parse(text) as? [[String: Any]] ?? []).map { j in
       let when = Date(timeIntervalSince1970: TimeInterval(j["created"] as? Int ?? 0))
       let files = ((j["summary"] as? [String: Any])?["copied"] as? [String: Any])?["files"] as? Int

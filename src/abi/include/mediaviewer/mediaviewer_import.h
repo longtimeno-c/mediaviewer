@@ -75,7 +75,10 @@ typedef struct mv_import_api {
   void* ctx;
 
   /* ---- sources ---------------------------------------------------------- */
-  /* [ui-thread][no-block] Cards, drives and added folders:
+  /* [worker-thread] Cards, drives and added folders. Asks the OS about every
+   * mounted volume (a dead network share can take seconds) and reads
+   * import.db, so both chromes call it off the UI thread, as they do the other
+   * *_json reads below (presets, history, unfinished):
    * [{"root","label","volume_id","kind":"card|drive|network|folder",
    *   "removable","total_bytes","free_bytes","new_count":-1|n,"preset"}]. */
   mv_status(MV_CALL* sources_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);

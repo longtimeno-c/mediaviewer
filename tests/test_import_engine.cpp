@@ -37,6 +37,7 @@ struct wrap_state {
   std::atomic<int> hashes{0};
   std::atomic<std::uint64_t> copy_bytes{0};
   std::uint32_t fault_times = 0;
+  std::int32_t fault_target = 0;
   std::function<void(int)> before_copy;
   std::map<std::string, std::string> cards;  // root -> volume id
 };
@@ -47,7 +48,7 @@ mv_status MV_CALL w_copy(void* host, const mv_addon_copy_request* req, mv_addon_
   if (g_wrap->before_copy) g_wrap->before_copy(n);
   mv_addon_copy_request r = *req;
   if (g_wrap->fault_times > 0) {
-    r.fault_target = 0;
+    r.fault_target = g_wrap->fault_target;
     r.fault_offset = 3;
     r.fault_times = g_wrap->fault_times;
   }
@@ -403,6 +404,42 @@ TEST_CASE("a backup destination is written from the same read", "[import][engine
     if (e.is_regular_file() && e.path().extension() != ".BDM") card_bytes += e.file_size();
   }
   REQUIRE(r.wrap.copy_bytes == card_bytes);
+}
+
+TEST_CASE("a file the backup could not take is taken back from the main destination",
+          "[import][engine]") {
+  rig r;
+  r.make_card();
+  const std::string backup = utf8(r.dir / "Backup");
+  // The first file verifies on the main destination but fails twice on the
+  // backup: the unit is failed, and neither destination keeps any of it, so
+  // Retry failed finds the names free and writes both.
+  r.wrap.fault_target = 1;
+  r.wrap.before_copy = [&](int n) { r.wrap.fault_times = n == 0 ? 2 : 0; };
+  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + backup + R"(")"));
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_FAILED);
+  REQUIRE(r.progress(job).units_failed == 1);
+  REQUIRE(list_tree(r.dest()) == list_tree(backup));
+  REQUIRE(list_tree(r.dest()).size() < 9);
+
+  r.wrap.before_copy = nullptr;
+  r.wrap.fault_times = 0;
+  auto retry = r.eng->retry_failed(job);
+  REQUIRE(retry);
+  r.eng->wait_idle();
+  REQUIRE(r.progress(*retry).state == MV_IMPORT_JOB_DONE);
+  REQUIRE(list_tree(r.dest()).size() == 9);
+  REQUIRE(list_tree(r.dest()) == list_tree(backup));
+}
+
+TEST_CASE("Retry failed on an unknown job fails rather than reporting success",
+          "[import][engine]") {
+  rig r;
+  auto retry = r.eng->retry_failed(424242);
+  REQUIRE(retry);
+  r.eng->wait_idle();
+  REQUIRE(r.progress(*retry).state == MV_IMPORT_JOB_FAILED);
 }
 
 TEST_CASE("rename templates number per day and survive re-imports", "[import][engine]") {

@@ -908,12 +908,27 @@ void engine::run_job(const std::shared_ptr<job>& j) {
       if (!copied && copied.error() == status::cancelled) break;
       bool member_ok = copied.has_value();
       std::uint32_t bad = MV_COPY_WRITE_FAILED;
+      const auto written = [&res](std::uint32_t t) {
+        return res.outcome[t] == MV_COPY_VERIFIED || res.outcome[t] == MV_COPY_WRITTEN_UNVERIFIED;
+      };
       if (member_ok) {
         for (std::uint32_t t = 0; t < res.target_count; ++t) {
-          if (res.outcome[t] != MV_COPY_VERIFIED && res.outcome[t] != MV_COPY_WRITTEN_UNVERIFIED) {
+          if (!written(t)) {
             member_ok = false;
             bad = res.outcome[t];
           }
+        }
+        // The retry read different bytes: targets that verified on the two
+        // attempts hold different content, and neither can be trusted.
+        if (res.source_unstable) member_ok = false;
+      }
+      if (!member_ok && copied) {
+        // Never half a member either: a destination that did take this file
+        // while another failed (a backup drive, a cancel during read-back)
+        // gives it back, so a retry or resume finds the name free. Only what
+        // this copy renamed into place is removed; a taken name never is.
+        for (std::uint32_t t = 0; t < res.target_count && t < row.targets.size(); ++t) {
+          if (written(t)) (void)host_.remove_file(row.targets[t]);
         }
       }
       if (member_ok) {
@@ -968,16 +983,23 @@ void engine::run_job(const std::shared_ptr<job>& j) {
       }
       if (!unit_ok && !interrupted && !j->cancel) {
         any_failed = true;
-        std::lock_guard lock(j->m);
-        ++j->prog.units_failed;
         // Mark the unit's untouched members failed too, so it reads as one.
-        for (std::size_t k = at; k < end; ++k) {
-          if (j->rows[order[k]].state == member_state::pending) {
-            j->rows[order[k]].state = member_state::failed;
-            j->rows[order[k]].reason = "not copied: " + reason;
-            idx_->journal_set(j->id, j->rows[order[k]].unit, j->rows[order[k]].member,
-                              member_state::failed, nullptr, j->rows[order[k]].reason);
+        // The journal is written outside j->m: progress() takes that lock on
+        // the UI thread and must never wait on a database write.
+        std::vector<journal_row> marked;
+        {
+          std::lock_guard lock(j->m);
+          ++j->prog.units_failed;
+          for (std::size_t k = at; k < end; ++k) {
+            if (j->rows[order[k]].state == member_state::pending) {
+              j->rows[order[k]].state = member_state::failed;
+              j->rows[order[k]].reason = "not copied: " + reason;
+              marked.push_back(j->rows[order[k]]);
+            }
           }
+        }
+        for (const journal_row& r : marked) {
+          idx_->journal_set(j->id, r.unit, r.member, member_state::failed, nullptr, r.reason);
         }
       }
       if (j->cancel || interrupted) break;
@@ -1095,6 +1117,7 @@ std::string engine::make_summary(job& j, std::uint32_t state) {
 }
 
 void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
+  double rate = 0;
   {
     std::lock_guard lock(j->m);
     if (j->started != clock_type::time_point{}) {
@@ -1106,11 +1129,12 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
     j->prog.current_name_utf8[0] = '\0';
     // The measured rate on this source device is the next plan's ETA.
     if (j->kind == 0 && j->prog.bytes_read > (64u << 20) && j->prog.elapsed_ms > 0) {
-      const double rate = static_cast<double>(j->prog.bytes_read) * 1000.0 /
-                          static_cast<double>(j->prog.elapsed_ms);
-      idx_->set_setting("rate." + j->device_key, std::to_string(rate));
+      rate = static_cast<double>(j->prog.bytes_read) * 1000.0 /
+             static_cast<double>(j->prog.elapsed_ms);
     }
   }
+  // Outside j->m, which the UI thread's progress() takes.
+  if (rate > 0) idx_->set_setting("rate." + j->device_key, std::to_string(rate));
   j->state = state;
 
   // The local report: plain text beside import.db, never sent anywhere (rule 6).
@@ -1181,17 +1205,20 @@ result<std::string> engine::report_path(std::uint64_t id) {
 }
 
 result<std::uint64_t> engine::retry_failed(std::uint64_t id) {
-  auto old = idx_->job(id);
-  if (!old) return err(status::invalid_arg);
-  preset p;
-  (void)parse_preset(old->preset_json, p);
-  p.selection = selection_mode::all;
-  auto j = make_job(0, p);
-  post_task([this, j, id, p] {
+  // The old job is read on the control thread: this call comes from the UI
+  // thread, which never waits on import.db (rule 1).
+  auto j = make_job(0, preset{});
+  post_task([this, j, id] {
+    auto old = idx_->job(id);
+    preset p;
+    if (old) (void)parse_preset(old->preset_json, p);
+    p.selection = selection_mode::all;
+    j->settings = p;
+    j->fast = p.fast;
     // Re-planned from the files themselves, so a name that is now taken gets
     // a safe name and a file that now matches is skipped.
     std::vector<std::string> paths;
-    for (const journal_row& r : idx_->journal(id)) {
+    for (const journal_row& r : old ? idx_->journal(id) : std::vector<journal_row>{}) {
       if (r.state == member_state::failed || r.state == member_state::cancelled ||
           r.state == member_state::pending) {
         if (std::find(paths.begin(), paths.end(), r.src) == paths.end()) paths.push_back(r.src);
@@ -1199,7 +1226,7 @@ result<std::uint64_t> engine::retry_failed(std::uint64_t id) {
     }
     if (paths.empty()) {
       persist(j);
-      finish_job(j, MV_IMPORT_JOB_DONE);
+      finish_job(j, old ? MV_IMPORT_JOB_DONE : MV_IMPORT_JOB_FAILED);
       return;
     }
     pipeline_into(j, paths, {}, p);
@@ -1211,7 +1238,10 @@ std::string engine::unfinished_json() {
   json::writer w;
   w.begin_array();
   for (const job_row& r : idx_->unfinished_jobs()) {
-    if (auto live = find_job(r.id); live && !live->finished) continue;  // still running
+    if (auto live = find_job(r.id)) {
+      std::lock_guard lock(mutex_);
+      if (!live->finished) continue;  // still running
+    }
     std::uint32_t pending = 0;
     std::uint32_t done = 0;
     for (const journal_row& row : idx_->journal(r.id)) {
@@ -1233,8 +1263,12 @@ std::string engine::unfinished_json() {
 }
 
 expected engine::resume(std::uint64_t id) {
-  if (auto live = find_job(id); live && !live->finished && live->thread.joinable()) {
-    return err(status::invalid_arg);  // running
+  {
+    std::lock_guard lock(mutex_);  // guards `finished` and the thread handle
+    auto it = jobs_.find(id);
+    if (it != jobs_.end() && !it->second->finished && it->second->thread.joinable()) {
+      return err(status::invalid_arg);  // running
+    }
   }
   post_task([this, id] { resume_on_control(id); });
   return {};
