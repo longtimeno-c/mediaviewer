@@ -20,14 +20,17 @@
 //    database (shell/minidump_scrub.h — the Windows scrub, which now knows
 //    POSIX paths) before any send could be offered.
 //
-// The second capture path (plan/13 "two capture paths"): Swift / AppKit. An
-// uncaught NSException is recorded as a scrubbed text report in Crashes/chrome/
-// carrying the correlation id of the native call in flight, then left to
-// abort — so Crashpad writes the minidump with the same id in
-// mv_last_call_cid. NSApplicationCrashOnExceptions is set, so AppKit does not
-// swallow an exception thrown inside event handling. A Swift runtime trap is a
-// Mach exception: Crashpad records it, with the Swift runtime's own message in
-// the dump's crash-info stream (scrubbed like every other string).
+// The second capture path (plan/13 "two capture paths"): Swift / AppKit.
+// NSApplicationCrashOnExceptions is set so AppKit does not keep running after
+// an exception in event handling. AppKit still catches that exception itself
+// and calls -[NSApplication reportException:], which traps in
+// _crashOnException: and never calls NSUncaughtExceptionHandler. Both that
+// method and the uncaught handler write one scrubbed text report to
+// Crashes/chrome/ carrying the correlation id of the native call in flight,
+// and set mv_exception, before the trap — so Crashpad's minidump carries the
+// same id in mv_last_call_cid. A Swift runtime trap is a Mach exception
+// (EXC_BREAKPOINT): Crashpad records the dump. The runtime's message is not
+// in it. ReportCrash forwarding stays off, so Apple keeps no unscrubbed copy.
 //
 // Handler missing → the app runs without crash reporting and logs once.
 #pragma once

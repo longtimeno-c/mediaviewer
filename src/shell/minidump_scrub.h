@@ -20,20 +20,27 @@
 //      image buffers are excluded structurally rather than by allocation tag.
 //   2. Text, over the rest of the file (stacks included) in 8-bit and UTF-16LE
 //      at both byte parities:
-//        - a drive/UNC path (X:\..., \\server\..., \\?\...) is masked after
-//          its root, unless it names a module (.dll/.exe/.pdb/...), in which
-//          case only the user-profile component and identity tokens are;
+//        - a drive/UNC path (X:\..., \\server\..., \\?\...) or a POSIX path
+//          under a user root (/Users, /Volumes, /private, /tmp, …) is masked
+//          after its root, unless it names a module (.dll/.exe/.dylib/…,
+//          or a Mac bundle), in which case only the user-profile component
+//          and identity tokens are;
+//        - on thread-stack bytes only, an unrooted run of two or more
+//          components (a rooted path whose prefix a later frame overwrote:
+//          "pad/canary/PRIVATE_FOLDER_canary"). A "://" URL and a relative
+//          "./" or "../" run are left, including on the stack. The same run
+//          outside a stack is left, so a system module path (/System/…)
+//          stays available for symbolication;
 //        - a bare filename ending in a camera-dump extension is masked up to
 //          the extension;
 //        - identity tokens (username, computer name) are masked wherever they
 //          stand as a whole token.
 //      Masked code units become '_', so structure offsets never move.
 //
-// Residual risk (documented in plan/13): a bare folder name with no drive
-// root and no media extension on a live stack frame; a filename stem without
-// its extension; non-drive-rooted relative paths; pixel bytes a decoder keeps
-// in a stack-local array. The verify (tools/minidump-scan.ps1) checks for all
-// of these on a real crash.
+// Residual risk: a single folder name with no separator and no media
+// extension; a filename stem without its extension; pixel bytes a decoder
+// keeps in a stack-local array. The verify (tools/minidump-scan.ps1,
+// tools/mac/crash_canary.py) checks a real crash.
 //
 // Portable: no Windows headers, so the mac host (Milestone F) reuses it.
 #pragma once

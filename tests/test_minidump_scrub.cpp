@@ -161,10 +161,14 @@ std::vector<std::uint8_t> make_mac_dump() {
   d.ascii(0x360, "/Users/alice/Library/Frameworks/libraw_r.23.dylib");
   d.ascii(0x3A0, "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit");
   d.ascii(0x820, "open /Users/alice/Pictures/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.cr2 failed");
+  // A rooted path whose prefix a later frame overwrote. No drive, no /Users.
+  // 32 bytes, ending exactly at the next string. The wide twin sits further down the stack.
+  d.ascii(0x880, "pad/canary/PRIVATE_FOLDER_canary");
   d.ascii(0x8A0, "card=/Volumes/EOS_DIGITAL/DCIM/100CANON/IMG_0042.CR3");
   d.ascii(0x900, "tmp /private/var/folders/xy/T/MediaViewer/thumbs.sqlite");
   d.ascii(0x960, "Fatal error: Index out of range (Alice Smith on alices-macbook)");
   d.ascii(0x9C0, "see https://example.com/a/b and ./rel/path/");
+  d.wide(0xB00, "pad/canary/PRIVATE_FOLDER_canary");
   return d.b;
 }
 
@@ -175,8 +179,10 @@ TEST_CASE("scrub masks macOS paths and identities; keeps bundle and system modul
   auto dump = make_mac_dump();
   const auto r = mv::shell::scrub_minidump(dump, {{"alice", "Alice Smith", "alices-macbook"}});
   REQUIRE(r.valid);
-  // The canaries of the verify (plan/10 PR 11, macOS crash reporting).
+  // The canaries of the verify (plan/10 PR 11, macOS crash reporting),
+  // including the unrooted stack fragment in both encodings.
   CHECK_FALSE(contains(dump, "PRIVATE_FOLDER_canary", false));
+  CHECK_FALSE(contains(dump, "PRIVATE_FOLDER_canary", true));
   CHECK_FALSE(contains(dump, "SECRET_FILENAME_canary_7Q3", false));
   CHECK_FALSE(contains(dump, "Pictures", false));
   CHECK_FALSE(contains(dump, "EOS_DIGITAL", false));
@@ -205,6 +211,16 @@ TEST_CASE("scrub_text strips a macOS path from an NSException reason", "[crash][
   CHECK(s.find("bob") == std::string::npos);
   CHECK(s.find("initFileURLWithPath") != std::string::npos);
   CHECK(s.find("/Users/") != std::string::npos);
+}
+
+TEST_CASE("scrub_text masks an unrooted path fragment and keeps a url and a relative path",
+          "[crash][scrub][mac]") {
+  const std::string s = mv::shell::scrub_text(
+      "see pad/canary/PRIVATE_FOLDER_canary and https://example.com/a/b and ./rel/path/", {});
+  CHECK(s.find("PRIVATE_FOLDER_canary") == std::string::npos);
+  CHECK(s.find("pad/canary") == std::string::npos);
+  CHECK(s.find("https://example.com/a/b") != std::string::npos);
+  CHECK(s.find("./rel/path/") != std::string::npos);
 }
 
 TEST_CASE("decode crash scope annotates without paths and is inert unarmed", "[crash]") {

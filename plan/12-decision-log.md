@@ -1846,8 +1846,42 @@ CI) replaces the two PowerShell verify scripts on Mac.
 - The MSVC build of the Windows host, the Xcode build of the Mac host, the Swift chrome, the MSL.
 - Whether vcpkg's `crashpad` port builds for `arm64-osx` at the pinned baseline, and every step of
   the Mac crash verify (minidump from the handler, canary scan, NSException with its cid, relaunch).
+  **Done on this Mac, 2026-09-24** — see the entry below. The adjust-pane verify and the Windows
+  half are still open.
 - Mac has never had the `C` blinkies (a Mac PR 6 gap, not PR 11's); the accurate-RAW clipping is
   therefore Windows-only until that lands.
 - Eyedropper readouts still sample the unadjusted 8-bit texture.
 - Main's keyboard-navigable panes (`focus_kind::pane`) arrived in the merge; the adjust pane uses
   them (shown with focus, Esc returns to the canvas) instead of posing as a text field.
+
+## 2026-09-24 — Mac crash verify: stack fragments and the NSException record
+
+The Mac crash-reporting verify failed on two criteria. Both are closed. The calls:
+
+- **Unrooted stack fragments.** A decode crash left `PRIVATE_FOLDER_canary` in a scrubbed dump,
+  in thread-stack bytes. The bytes were a path whose root a later frame had overwritten
+  (`pad/canary/PRIVATE_FOLDER_canary`). The scrub only masked a path that starts at a drive, a
+  UNC prefix, or a POSIX root — the residual recorded on 2026-09-14. Thread-stack bytes now also
+  mask a run of two or more components. A space ends a component, so the run does not swallow the
+  prose around it. A `://` URL and a relative `./` or `../` run are left, including on the stack.
+  The same run outside a stack is left, so `/System/Library/…` stays available for symbolication.
+  A single folder name with no separator can still survive.
+- **NSException chrome record.** AppKit catches an exception raised in event handling and calls
+  `-[NSApplication reportException:]`, which traps in `_crashOnException:` and does not call
+  `NSUncaughtExceptionHandler`. `NSApplicationCrashOnExceptions` was already on, so Crashpad wrote
+  a dump and `Crashes/chrome/` stayed empty. The record is written from `reportException:` (and
+  still from the uncaught handler, for an exception that escapes the run loop) before the trap.
+  One record per crash.
+- **Report metadata.** Replacing a dump with `rename` dropped Crashpad's extended attributes, so
+  the next launch logged that it could not read the report. The rewrite copies the attributes
+  onto the replacement first.
+
+Verified here with `mediaviewer_lab` and `MediaViewer.app`: a decode crash on the canary folder,
+scrub on relaunch, `crash_canary.py scan` with no hits for the folder, the filename, the short
+user name, or either pixel pattern; `MV_CRASH_TEST=nsexception` wrote
+`Crashes/chrome/…-cid1-nsexception.txt` and the dump's `mv_exception` / `mv_last_call_cid` are
+that same id after scrub; `MV_CRASH_TEST=swift_trap` wrote an `EXC_BREAKPOINT` dump and no chrome
+record. The Swift runtime's "Index out of range" text is not in the dump — ReportCrash forwarding
+stays off, and Crashpad did not capture a crash-info string. No "Failed to read report metadata"
+on relaunch; each dump kept its `org.chromium.crashpad.database.uuid` attribute. The adjust-pane
+verify and the Windows half were not run.

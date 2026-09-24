@@ -9,7 +9,10 @@
 #include <mach-o/dyld.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/xattr.h>
 #include <unistd.h>
+
+#include <objc/runtime.h>
 
 #include <atomic>
 #include <chrono>
@@ -119,6 +122,39 @@ bool read_file(const std::string& path, std::vector<std::uint8_t>& out) {
   return !out.empty() && out.size() < (1ull << 31);
 }
 
+// Crashpad's Mac database keeps report metadata in extended attributes on the
+// dump. rename() of a new inode drops them, and the next launch logs
+// "Failed to read report metadata" and skips the report. Copy every attribute
+// we can onto the temp file first. A crashpad attribute that will not copy
+// fails the replace, so the old dump — metadata included — stays put.
+bool copy_xattrs(const std::string& from, const std::string& to) {
+  const ssize_t list_size = ::listxattr(from.c_str(), nullptr, 0, XATTR_NOFOLLOW);
+  if (list_size < 0) return false;
+  if (list_size == 0) return true;
+  std::string names(static_cast<std::size_t>(list_size), '\0');
+  if (::listxattr(from.c_str(), names.data(), names.size(), XATTR_NOFOLLOW) != list_size) {
+    return false;
+  }
+  bool crashpad_ok = true;
+  for (std::size_t i = 0; i < names.size();) {
+    const char* name = names.c_str() + i;
+    const std::size_t nlen = std::strlen(name);
+    if (nlen == 0) break;
+    const bool crashpad = std::strstr(name, "crashpad") != nullptr;
+    const ssize_t vsz = ::getxattr(from.c_str(), name, nullptr, 0, 0, XATTR_NOFOLLOW);
+    bool copied = vsz >= 0;
+    if (copied) {
+      std::vector<char> val(static_cast<std::size_t>(vsz));
+      copied = (vsz == 0 ||
+                ::getxattr(from.c_str(), name, val.data(), val.size(), 0, XATTR_NOFOLLOW) == vsz) &&
+               ::setxattr(to.c_str(), name, val.data(), val.size(), 0, XATTR_NOFOLLOW) == 0;
+    }
+    if (!copied && crashpad) crashpad_ok = false;
+    i += nlen + 1;
+  }
+  return crashpad_ok;
+}
+
 // Atomic: an exit mid-scrub leaves the old dump, never half of one.
 bool replace_file(const std::string& path, const std::vector<std::uint8_t>& bytes) {
   const std::string tmp = path + ".scrub.tmp";
@@ -127,6 +163,7 @@ bool replace_file(const std::string& path, const std::vector<std::uint8_t>& byte
   bool ok = ::write(fd, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size()) &&
             ::fsync(fd) == 0;
   ok = ::close(fd) == 0 && ok;
+  if (ok) ok = copy_xattrs(path, tmp);
   if (ok) ok = ::rename(tmp.c_str(), path.c_str()) == 0;
   if (!ok) ::unlink(tmp.c_str());
   return ok;
@@ -182,49 +219,106 @@ void write_all(int fd, const std::string& s) noexcept {
   }
 }
 
-void on_uncaught_exception(NSException* exception) {
-  const std::uint64_t cid = *mv::crash_context::last_call_address();
-  scrub_options opt;
-  opt.identities = g_identities;
-  const std::string name = scrub_text(exception.name ? exception.name.UTF8String : "?", opt);
-  const std::string reason = scrub_text(exception.reason ? exception.reason.UTF8String : "", opt);
-  // In the dump first: it is written when abort() follows, whatever happens here.
-  if (g_exception_annotation) {
-    const std::string note = "NSException " + name.substr(0, 120) + " cid=" + std::to_string(cid);
-    g_exception_annotation->Set(note.c_str());
-  }
-  if (!g_chrome_dir.empty()) {
-    struct timeval tv{};
-    ::gettimeofday(&tv, nullptr);
-    const long long ms = static_cast<long long>(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
-    const std::string path =
-        g_chrome_dir + "/" + std::to_string(ms) + "-cid" + std::to_string(cid) + "-nsexception.txt";
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd >= 0) {
-      std::string text = "MediaViewer " MV_APP_VERSION " chrome exception (macOS)\n";
-      text += "cid=" + std::to_string(cid) + "\n";
-      text += "name=" + name + "\n";
-      text += "reason=" + reason + "\n";
-      text += "stack:\n";
-      for (NSString* frame in exception.callStackSymbols) {
-        text += "  " + scrub_text(frame.UTF8String ? frame.UTF8String : "", opt) + "\n";
-      }
-      write_all(fd, text);
-      ::fsync(fd);
-      ::close(fd);
+// One report per crash. AppKit's run loop and the uncaught handler can both
+// observe the same exception; the second arrival must not write a second file
+// or call back into reportException:.
+std::atomic_flag g_chrome_recorded;
+using ReportExceptionFn = void (*)(id, SEL, NSException*);
+ReportExceptionFn g_orig_report_exception = nullptr;
+std::atomic<int> g_in_report{0};
+
+void record_chrome_exception(NSException* exception) noexcept {
+  if (!exception) return;
+  if (g_chrome_recorded.test_and_set(std::memory_order_relaxed)) return;
+  try {
+    const std::uint64_t cid = *mv::crash_context::last_call_address();
+    scrub_options opt;
+    opt.identities = g_identities;
+    const char* raw_name = exception.name ? exception.name.UTF8String : nullptr;
+    const char* raw_reason = exception.reason ? exception.reason.UTF8String : nullptr;
+    const std::string name = scrub_text(raw_name ? raw_name : "?", opt);
+    const std::string reason = scrub_text(raw_reason ? raw_reason : "", opt);
+    // In the dump first: Crashpad writes it when the trap follows, whatever
+    // happens to the file.
+    if (g_exception_annotation) {
+      const std::string note = "NSException " + name.substr(0, 120) + " cid=" + std::to_string(cid);
+      g_exception_annotation->Set(note.c_str());
     }
+    if (!g_chrome_dir.empty()) {
+      struct timeval tv{};
+      ::gettimeofday(&tv, nullptr);
+      const long long ms = static_cast<long long>(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
+      const std::string path = g_chrome_dir + "/" + std::to_string(ms) + "-cid" +
+                               std::to_string(cid) + "-nsexception.txt";
+      const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd >= 0) {
+        std::string text = "MediaViewer " MV_APP_VERSION " chrome exception (macOS)\n";
+        text += "cid=" + std::to_string(cid) + "\n";
+        text += "name=" + name + "\n";
+        text += "reason=" + reason + "\n";
+        text += "stack:\n";
+        @try {
+          for (NSString* frame in exception.callStackSymbols) {
+            const char* line = frame.UTF8String;
+            text += "  " + scrub_text(line ? line : "", opt) + "\n";
+          }
+        } @catch (NSException*) {
+        }
+        write_all(fd, text);
+        ::fsync(fd);
+        ::close(fd);
+      }
+    }
+    MV_LOG_ERROR("crash: uncaught NSException (cid %llu)", static_cast<unsigned long long>(cid));
+  } catch (...) {
   }
-  MV_LOG_ERROR("crash: uncaught NSException (cid %llu)", static_cast<unsigned long long>(cid));
-  if (g_previous_handler) g_previous_handler(exception);
+}
+
+void on_uncaught_exception(NSException* exception) {
+  record_chrome_exception(exception);
+  if (g_previous_handler && g_previous_handler != &on_uncaught_exception) {
+    g_previous_handler(exception);
+  }
   // Returning lets the runtime abort(): Crashpad writes the minidump.
 }
 
+// AppKit catches an exception raised inside event handling and calls this
+// instead of NSUncaughtExceptionHandler, then traps. Recording has to happen
+// here or Crashes/chrome/ stays empty while Crashpad still writes a dump.
+void swizzled_report_exception(id self, SEL cmd, NSException* exception) {
+  // original -> AppKit's uncaught handler -> reportException: again. The
+  // second entry must not call original, or the two recurse.
+  if (g_in_report.exchange(1, std::memory_order_relaxed) != 0) return;
+  record_chrome_exception(exception);
+  if (g_orig_report_exception) g_orig_report_exception(self, cmd, exception);
+}
+
 void install_chrome_capture() {
-  // AppKit otherwise catches an exception raised inside event handling, logs
-  // it and carries on in an unknown state (plan/13: capture it instead).
-  [[NSUserDefaults standardUserDefaults] registerDefaults:@{@"NSApplicationCrashOnExceptions" : @YES}];
+  // Without this, AppKit logs the exception and carries on (plan/13).
+  // registerDefaults before NSApplication is created; AppKit reads it then.
+  [[NSUserDefaults standardUserDefaults]
+      registerDefaults:@{@"NSApplicationCrashOnExceptions" : @YES}];
   g_previous_handler = NSGetUncaughtExceptionHandler();
   NSSetUncaughtExceptionHandler(&on_uncaught_exception);
+}
+
+// sharedApplication replaces the uncaught handler and owns reportException:.
+// Re-install after that, from the main queue once the run loop is up.
+void arm_appkit_capture() {
+  NSUncaughtExceptionHandler* current = NSGetUncaughtExceptionHandler();
+  if (current != &on_uncaught_exception) {
+    g_previous_handler = current;
+    NSSetUncaughtExceptionHandler(&on_uncaught_exception);
+  }
+  if (g_orig_report_exception) return;
+  // AppKit is linked by the host. This file stays on Foundation plus the
+  // runtime so it does not pull AppKit in before NSApplication exists.
+  Class app = objc_getClass("NSApplication");
+  if (!app) return;
+  Method method = class_getInstanceMethod(app, @selector(reportException:));
+  if (!method) return;
+  g_orig_report_exception = reinterpret_cast<ReportExceptionFn>(
+      method_setImplementation(method, reinterpret_cast<IMP>(&swizzled_report_exception)));
 }
 
 }  // namespace
@@ -297,7 +391,11 @@ start_result start() noexcept {
     result.handler_found = !handler.empty();
     if (!db.empty() && make_dirs(db + "/chrome")) g_chrome_dir = db + "/chrome";
     // The chrome path does not need the handler: install it regardless.
+    // AppKit overwrites the uncaught handler inside sharedApplication, which
+    // has not run yet; the main-queue block lands on the first turn of the
+    // run loop, before the verify's two-second timer fires.
     install_chrome_capture();
+    dispatch_async(dispatch_get_main_queue(), ^{ arm_appkit_capture(); });
     if (!result.handler_found || db.empty()) {
       MV_LOG_WARN("crash: crashpad_handler not found; native crash reporting is off");
     } else {
