@@ -357,7 +357,7 @@ Standard-viewer ideas that fail the speed bar, D4/D5, or "this is not a library"
 | Quick-export presets on one key | After PR 10 export exists and has been used |
 | PiP / compact overlay | v1.1. Second window is a second present path unless it is DWM-only |
 | Focus peaking, zebras, RGB channels | v1.1 shaders |
-| Face detect, AI cull, cloud albums | Rule 6; also not a viewer |
+| Cloud albums, AI cull | Rule 6; also not a viewer. Local search and faces are planned separately in [17](17-local-ai-search.md) (post-v1, opt-in) |
 | Duplicate finder, catalog, albums | Library product |
 | Slideshow crossfade / music | Drops frames / movie player |
 | Plugins, scripting, hex view, WIA capture, PDF, Cast | Out of scope |
