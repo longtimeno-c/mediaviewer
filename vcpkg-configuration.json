@@ -1,0 +1,6 @@
+{
+  "$comment": "The libraw overlay parallelises LibRaw 0.22.2's serial colour loops and forces OpenMP on Apple. The pinned baseline port is otherwise unchanged.",
+  "overlay-ports": [
+    "tools/vcpkg/ports"
+  ]
+}

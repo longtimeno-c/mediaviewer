@@ -52,6 +52,13 @@ struct jpeg_size {
                                          const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_avif(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
+// How many LibRaw threads the image on screen may use. Leaves processors for
+// the present loop; prefetch passes 1 instead. Output pixels do not depend on it.
+[[nodiscard]] unsigned raw_foreground_threads() noexcept;
+// Upper bound a benchmark may request. One decode never exceeds this, so a
+// RAW job cannot occupy every logical processor the present thread needs.
+[[nodiscard]] unsigned raw_thread_ceiling() noexcept;
+
 [[nodiscard]] result<raster> decode_raw(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr,
                                         unsigned thread_limit = 4);

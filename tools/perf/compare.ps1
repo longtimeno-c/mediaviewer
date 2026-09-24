@@ -12,10 +12,17 @@ $Clips  = @("$Media\av_transport.mp4", "$Media\hevc_4k_8bit_bt709.mp4")
 $pm = "C:\Program Files\Intel\PresentMon\PresentMonConsoleApplication\PresentMon-2.6.0-x64.exe"
 $csv = "$OutDir\presentmon.csv"; Remove-Item $csv -ErrorAction SilentlyContinue
 $budget = 60 + $Stills.Count * 2 * $OpenReps * 20 + $Stills.Count * 2 * $PanReps * 45 + $Clips.Count * 2 * ($PlaySeconds + 25)
-& $pm --restart_as_admin --process_name mediaviewer_lab.exe --process_name Photos.exe --process_name Microsoft.Media.Player.exe `
-      --qpc_time --no_console_stats --timed $budget --terminate_after_timed --output_file $csv | Out-Null
-for ($i = 0; $i -lt 60 -and -not (Test-Path $csv); $i++) { Start-Sleep 1 }
-if (-not (Test-Path $csv)) { throw "PresentMon did not start (was the UAC prompt declined?)" }
+# Start the trace and keep going. Waiting on the process would block until the whole capture ends,
+# so the scripted opens would happen after PresentMon had already stopped.
+$pmProc = Start-Process -FilePath $pm -PassThru -WindowStyle Hidden -ArgumentList @(
+  '--restart_as_admin',
+  '--process_name', 'mediaviewer_lab.exe', '--process_name', 'Photos.exe', '--process_name', 'Microsoft.Media.Player.exe',
+  '--qpc_time', '--no_console_stats', '--timed', "$budget", '--terminate_after_timed', '--output_file', $csv)
+for ($i = 0; $i -lt 180 -and -not (Test-Path $csv); $i++) { Start-Sleep 1 }
+if (-not (Test-Path $csv)) {
+  if ($pmProc -and -not $pmProc.HasExited) { Stop-Process -Id $pmProc.Id -Force -ErrorAction SilentlyContinue }
+  throw "PresentMon did not start (was the UAC prompt declined?)"
+}
 Start-Sleep 3
 
 $runs = New-Object System.Collections.ArrayList

@@ -972,6 +972,12 @@ void present_lab_mac::render_thread_main() noexcept {
             fade_.begin(elapsed, canvas::refine_fade_seconds(current_image_->mean_luma,
                                                             loaded->mean_luma));
             fade_from_ = std::move(current_image_);
+          } else if (refinement && fade_.active(elapsed) &&
+                     current_image_->width == loaded->width &&
+                     current_image_->height == loaded->height) {
+            // A second full-size publish (top level, then the mip chain) used
+            // to cancel the fade and cut the preview out. Keep the fade that
+            // is already running and swap the incoming texture under it.
           } else {
             fade_from_.reset();
             fade_.cancel();

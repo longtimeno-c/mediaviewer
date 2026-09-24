@@ -112,16 +112,16 @@ def main():
     (DIR / "summary.json").write_text(json.dumps({f"{k}|{a}|{f}": v for k, d in s.items() for (a, f), v in d.items()}, indent=1))
     files = sorted({f for (_, f) in s["open"]})
     grouped("Double-click to picture on screen", [(f, {a: med(s["open"].get((a, f), [])) for a in ("mv", "photos")}) for f in files],
-            ("mv", "photos"), "ms", "Median of 3 cold launches, screen-capture timing (about +/-40 ms). Same files, same machine.",
+            ("mv", "photos"), "ms", "Median of repeated cold launches. Screen-capture timing, about one refresh either way. Same files, same machine.",
             "compare-open.svg")
     pans = sorted({f for (_, f) in s["pan"]})
     grouped("Panning a zoomed-in photo: 99th-percentile frame gap", [(f, {a: med([r["p99_ms"] for r in s["pan"].get((a, f), [])]) for a in ("mv", "photos")}) for f in pans],
-            ("mv", "photos"), "ms", "Scripted mouse drag, 20 s, PresentMon. Lower is smoother; 16.7 ms is one 60 Hz refresh.", "compare-pan.svg", ref=(16.7, "one refresh"))
+            ("mv", "photos"), "ms", "Same scripted mouse drag on each app, PresentMon. Lower is smoother. 16.7 ms is one refresh of this 60 Hz display.", "compare-pan.svg", ref=(16.7, "one refresh"))
     grouped("Panning: frames presented per second", [(f, {a: med([r["fps"] for r in s["pan"].get((a, f), [])]) for a in ("mv", "photos")}) for f in pans],
-            ("mv", "photos"), "fps", "Same drag. An app that presents fewer frames while you drag feels choppier.", "compare-pan-fps.svg", ref=(60, "60 Hz"))
+            ("mv", "photos"), "fps", "Same drag. Fewer frames while you drag feels choppier.", "compare-pan-fps.svg", ref=(60, "60 Hz"))
     clips = sorted({f for (_, f) in s["play"]})
     grouped("Video playback: 99th-percentile frame gap", [(f, {a: med([r["p99_ms"] for r in s["play"].get((a, f), [])]) for a in ("mv", "wmp")}) for f in clips],
-            ("mv", "wmp"), "ms", "30 s of playback, PresentMon. A steady 30 fps clip should sit near 33 ms.", "compare-video.svg")
+            ("mv", "wmp"), "ms", "Same clips, PresentMon. A steady 30 fps clip sits near 33 ms. A 60 fps clip sits near 16.7 ms.", "compare-video.svg")
     print(json.dumps({k: {f"{a}|{f}": v for (a, f), v in d.items()} for k, d in s.items()}, indent=1)[:6000])
 
 

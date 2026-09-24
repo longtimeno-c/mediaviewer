@@ -171,8 +171,34 @@ def browse():
     return svg(w, h, "".join(body), "Moving through the folder")
 
 
+def video_pacing():
+    r = json.loads((PERF / "investigation" / "video-native-60s.json").read_text())
+    side = json.loads((PERF / "investigation" / "video-native-60s.json.video.json").read_text())
+    refresh = r["refresh_interval_ms"]
+    w, h, left, right, top = 760, 220, 250, 40, 78
+    scale_max = 2.2 * refresh
+    px = lambda v: left + (w - left - right) * v / scale_max
+    body = []
+    for t in (0, 10, 20, 30):
+        body.append(f'<line x1="{px(t)}" y1="{top - 8}" x2="{px(t)}" y2="{h - 52}" stroke="{GRID}"/>')
+        body.append(text(px(t), h - 36, f"{t} ms", 11, anchor="middle"))
+    body.append(f'<line x1="{px(refresh)}" y1="{top - 12}" x2="{px(refresh)}" y2="{h - 52}" stroke="{ACCENT}" stroke-dasharray="4 4"/>')
+    body.append(text(px(refresh) + 6, top - 16, f"one refresh, {refresh:.2f} ms", 11, ACCENT))
+    body.append(text(left - 12, top + 28, f"1080p HEVC, {r['frames']} frames", 12, FG, "end"))
+    for i, (name, key) in enumerate((("p50", "p50_ms"), ("p99", "p99_ms"), ("max", "max_ms"))):
+        v = r[key]
+        yy = top + i * 18
+        body.append(f'<rect x="{left}" y="{yy}" width="{px(v) - left:.1f}" height="14" rx="3" fill="{ACCENT}" opacity="{1 - 0.22 * i:.2f}"/>')
+        body.append(text(px(v) + 6, yy + 11, f"{name} {v:.2f} ms", 11, FG))
+    body.append(text(24, h - 16,
+                     f"{r['dropped_frames']} dropped presents, {side['dropped']} skipped video frames, "
+                     f"A/V error p99 {side['error_p99_ms']:.1f} ms. Audio is the clock. 60 s on screen.",
+                     11))
+    return svg(w, h, "".join(body), "Video frame pacing, on screen")
+
+
 def drift():
-    rows = list(csv.DictReader((PERF / "av-drift-120s.csv").open()))
+    rows = list(csv.DictReader((PERF / "investigation" / "av-after-120s.csv").open()))
     t = [float(r["elapsed_s"]) for r in rows]
     p99 = [float(r["error_p99_ms"]) for r in rows]
     p50 = [abs(float(r["error_p50_ms"])) for r in rows]
@@ -194,16 +220,96 @@ def drift():
         body.append(f'<polyline points="{pts}" fill="none" stroke="{colour}" stroke-width="2"/>')
     body.append(f'<rect x="{left}" y="46" width="12" height="12" rx="2" fill="{ACCENT}"/>' + text(left + 18, 57, "p99 A/V error", 12, FG))
     body.append(f'<rect x="{left + 130}" y="46" width="12" height="12" rx="2" fill="{GOOD}"/>' + text(left + 148, 57, "median |A/V error|", 12, FG))
-    body.append(text(left, h - 10, f"HEVC 720p30 + AAC, WASAPI as master clock. 120 s diagnostic run "
-                     f"(the verify soak is 30 min). ms of audio-to-video error.", 11))
+    last = rows[-1]
+    body.append(text(left, h - 10,
+                     f"1080p HEVC + AAC, audio is the clock, 120 s. Ends at p99 {float(last['error_p99_ms']):.1f} ms. "
+                     f"{last['dropped']} frames discarded by the selector out of {last['presented']}. "
+                     "A half-hour soak has not been run.",
+                     11))
     return svg(w, h, "".join(body), "Audio/video sync over 120 s of playback")
+
+
+def _screen_bars(title, rows, apps, unit, note, fname, ref=None, missing="did not show a picture"):
+    """rows: list of (label, {app: value or None})."""
+    colours = {"mv": ACCENT, "photos": "#ff9f43", "wmp": "#c56cf0"}
+    names = {"mv": "MediaViewer", "photos": "Windows Photos", "wmp": "Media Player"}
+    w, left, top, bar, gap = 820, 210, 86, 16, 28
+    h = top + len(rows) * (len(apps) * (bar + 5) + gap) + 40
+    vals = [v for _, d in rows for v in d.values() if v]
+    vmax = (max(vals) if vals else 1) * 1.18
+    px = lambda v: left + (w - left - 110) * v / vmax
+    body = []
+    x = left
+    for a in apps:
+        body.append(f'<rect x="{x}" y="48" width="12" height="12" rx="2" fill="{colours[a]}"/>')
+        body.append(text(x + 18, 59, names[a], 12, FG))
+        x += 160
+    y = top
+    for label, d in rows:
+        body.append(text(left - 12, y + len(apps) * (bar + 5) / 2, label, 12, FG, "end"))
+        for a in apps:
+            v = d.get(a)
+            if not v:
+                body.append(text(left + 6, y + 12, missing, 11, WARN))
+            else:
+                body.append(f'<rect x="{left}" y="{y}" width="{max(px(v) - left, 2):.1f}" height="{bar}" rx="3" fill="{colours[a]}"/>')
+                body.append(text(px(v) + 6, y + 12, f"{v:.0f} {unit}" if v >= 10 else f"{v:.1f} {unit}", 11, FG))
+            y += bar + 5
+        y += gap
+    if ref:
+        body.append(f'<line x1="{px(ref[0])}" y1="{top - 8}" x2="{px(ref[0])}" y2="{h - 36}" stroke="{WARN}" stroke-dasharray="4 4"/>')
+        body.append(text(min(px(ref[0]) + 4, w - 120), top - 12, ref[1], 11, WARN))
+    body.append(text(24, h - 12, note, 11))
+    return svg(w, h, "".join(body), title)
+
+
+def compare_screen():
+    data = json.loads((PERF / "compare" / "screen.json").read_text(encoding="utf-8-sig"))
+    def med(kind, app, name, key):
+        vals = [r[key] for r in data[kind] if r["app"] == app and r["file"] == name and r.get(key)]
+        return sum(vals) / len(vals) if vals else None
+    stills = []
+    for r in data["open"]:
+        if r["file"] not in stills:
+            stills.append(r["file"])
+    clips = []
+    for r in data["play"]:
+        if r["file"] not in clips:
+            clips.append(r["file"])
+    short = lambda n: n if len(n) <= 22 else n[:19] + "..."
+    charts = [
+        ("compare-open.svg", _screen_bars(
+            "Time until the picture is on screen",
+            [(short(f), {"mv": med("open", "mv", f, "first_pixel_ms"), "photos": med("open", "photos", f, "first_pixel_ms")}) for f in stills],
+            ("mv", "photos"), "ms",
+            "Same files. Timed from launch until the window's picture stops changing. A grab is about 17 ms, so treat differences smaller than that as a tie.",
+            "compare-open.svg")),
+        ("compare-pan.svg", _screen_bars(
+            "Panning a zoomed photo: gap between screen updates",
+            [(short(f), {"mv": med("pan", "mv", f, "p99_ms"), "photos": med("pan", "photos", f, "p99_ms")}) for f in stills],
+            ("mv", "photos"), "ms",
+            "99th percentile gap while dragging. Photos never moved under this drag, so it has no number. About ±17 ms.",
+            "compare-pan.svg", ref=(16.7, "one refresh"), missing="drag did not move the picture")),
+        ("compare-video.svg", _screen_bars(
+            "Video playback: gap between screen updates",
+            [(short(f), {"mv": med("play", "mv", f, "p99_ms"), "wmp": med("play", "wmp", f, "p99_ms")}) for f in clips],
+            ("mv", "wmp"), "ms",
+            "99th percentile gap. A smooth 30 fps picture sits near 33 ms. The 4K clip stayed on one frame in Media Player. About ±17 ms.",
+            "compare-video.svg", ref=(33.3, "30 fps"), missing="stayed on one frame")),
+    ]
+    return charts
 
 
 if __name__ == "__main__":
     IMG.mkdir(parents=True, exist_ok=True)
-    jobs = [("perf-pacing.svg", pacing), ("perf-first-pixel.svg", first_pixel), ("perf-av-sync.svg", drift)]
+    jobs = [("perf-pacing.svg", pacing), ("perf-first-pixel.svg", first_pixel),
+            ("perf-video.svg", video_pacing), ("perf-av-sync.svg", drift)]
     if (PERF / "browse.json").exists():
         jobs.append(("perf-browse.svg", browse))
     for name, fn in jobs:
         (IMG / name).write_text(fn(), encoding="utf-8")
         print("wrote", IMG / name)
+    if (PERF / "compare" / "screen.json").exists():
+        for name, body in compare_screen():
+            (IMG / name).write_text(body, encoding="utf-8")
+            print("wrote", IMG / name)

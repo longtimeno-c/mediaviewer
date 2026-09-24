@@ -8,6 +8,17 @@ media-player control, so decoding never stands between you and the screen.
 
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
+## Download
+
+**[MediaViewer 0.1.2](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2)** is the current public release.
+
+| | |
+|---|---|
+| **Windows 10/11, x64** | [MediaViewer-0.1.2-Setup.exe](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2-Setup.exe) |
+| **Mac, Apple Silicon, macOS 14+** | [MediaViewer-0.1.2.dmg](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2.dmg) |
+
+Windows may show a SmartScreen warning the first time. This installer is not Authenticode-signed. Checksums are on the [release page](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2).
+
 ---
 
 ## Speed you can measure
@@ -22,21 +33,51 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not
 | **0.08 % CPU, 0 presents** | Cost of a still image sitting on screen. Idle means idle |
 | **0.2 ms, then the next refresh** | Arrow to the next photo once it has been decoded ahead. The frame is ready in 0.2 ms; a 60 Hz monitor shows it within 16.7 ms |
 | **51–100 ms** | Jump to a RAW that was not next to the current one: its embedded preview, about the same as opening that file |
-| **Under one frame** | Audio/video sync error (p99 16 ms) over a 120 s clip |
+| **0 dropped video frames** | 60 s of 1080p HEVC on screen: 3,597 presents, p99 17.10 ms. Audio/video error over that minute stays at p99 7.2 ms |
+
+### Stills
+
+**Panning.** Two 60 s soaks, including a 42 MP Sony RAW. The line at 16.68 ms is one refresh of this display.
 
 ![Frame pacing over two 60 second soaks](docs/img/perf-pacing.svg)
 
+**First pixel.** Embedded preview first. The grey bar is the full decode that replaces it.
+
 ![Time to first pixel for five camera RAW formats and HEIC](docs/img/perf-first-pixel.svg)
+
+**Next photo.** Arrow after the neighbours have been decoded, and a jump to a photo that has not.
 
 ![Time to move from one photo to the next](docs/img/perf-browse.svg)
 
+### Video
+
+**On screen.** 60 s of 1080p HEVC. Frame time sits on the refresh. No present was dropped, and no video frame was skipped.
+
+![Video frame pacing over 60 seconds of playback](docs/img/perf-video.svg)
+
+**Audio against video.** 120 s of the same kind of clip. The error stays under one frame of a 30 fps video (33.3 ms). The selector discarded 2 of 3,597 frames; that is not a dropped screen present.
+
 ![Audio/video error over 120 seconds of playback](docs/img/perf-av-sync.svg)
 
-Honest limits: the full RAW decode takes 1.0-1.9 s (it happens behind the preview); one of six short RAW-open
-runs dropped a frame during the preview-to-full swap; and a 120 s clip run logged some dropped video
-presents, so smooth 30 fps playback is not yet claimed. The folder chart is stills only (five RAWs and
-one HEIC); stepping onto a video was not timed. Charts are drawn by
-[`tools/perf/make-charts.py`](tools/perf/make-charts.py) from the reports in [`docs/perf/`](docs/perf/).
+What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. Playback has been measured for one to two minutes, not yet a half hour. The folder chart is stills only.
+
+### Against Windows Photos and Media Player
+
+Same machine, same sample files, timed from the screen (a grab is about 17 ms). These are cold launches: the clock starts when the app is opened, so they are not the 44–125 ms in-app preview times above.
+
+**Opening.** Two launches each. RAW is a tie. Photos is faster on the HEIC (810 ms vs 964 ms).
+
+![Launch to a settled picture, MediaViewer and Windows Photos](docs/img/compare-open.svg)
+
+**Panning.** With the mouse, MediaViewer updates the picture about every refresh (p50 16.7 ms). The slowest updates were 49–84 ms. The same wheel-and-drag did not move the picture in Photos, so Photos has no pan number here.
+
+![Mouse-drag pan, MediaViewer and Windows Photos](docs/img/compare-pan.svg)
+
+**Video.** On a 30 fps test clip both apps ran at 29 fps. Media Player's slow gaps were shorter (p99 44 ms, MediaViewer 66 ms). On a 4K HEVC clip MediaViewer averaged 24 fps; Media Player stayed on a single frame for the whole sample, so it has no playback number for that file.
+
+![Video playback gaps, MediaViewer and Media Player](docs/img/compare-video.svg)
+
+Charts are drawn by [`tools/perf/make-charts.py`](tools/perf/make-charts.py) from the reports in [`docs/perf/`](docs/perf/).
 
 ---
 
@@ -85,7 +126,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 - **Nothing about your files leaves the machine.** Telemetry is opt-in and off by default. Crash reports are captured
   locally, scrubbed of paths, filenames and your username, and never sent without asking.
 - **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
-- **Installs per user**, with an installer and a background updater (not yet signed), and never silently takes over your file associations.
+- **Installs per user**, with a public installer and a background updater. The 0.1.2 installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
 - **Hardened decoding.** A corpus of broken files and per-decoder fuzzers run in CI.
 
 ---
@@ -104,26 +145,19 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Voice search** (optional add-on) | Speak the query; speech runs on-device |
 | **macOS** | The same core with a native Metal and SwiftUI app; it already builds, browses and plays video, and is being brought to parity |
 
-## Get it
+## From source
 
-MediaViewer for Windows is in pre-release. There is no signed public build yet. To try it, build from source
-(below). Windows 10/11, x64.
+Building needs Visual Studio 2022, CMake 3.28+, vcpkg and the .NET 8 SDK. The first configure builds FFmpeg and takes a while. Commands, tests and the macOS recipe are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```powershell
-git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
-& $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
-$env:VCPKG_ROOT = "$env:USERPROFILE\vcpkg"
+git clone https://github.com/longtimeno-c/mediaviewer
+cd mediaviewer
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 .\build\bin\Release\mediaviewer_lab.exe C:\path\to\photos
 ```
 
-You need Visual Studio 2022 with the C++ workload, CMake 3.28+, vcpkg and the .NET 8 SDK. The first configure builds
-FFmpeg and takes a while. Full build, test, packaging and macOS instructions are in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Reproduce the measurements with
-`.\build\bin\Release\frametime.exe --seconds 60` and
-`.\build\bin\Release\mediaviewer_lab.exe --browse-soak --json docs\perf\browse.json path\to\folder`,
-then `python tools/perf/make-charts.py`.
+Reproduce the charts with `.\build\bin\Release\frametime.exe --seconds 60`, then `python tools/perf/make-charts.py`. The folder chart is `mediaviewer_lab.exe --browse-soak --json docs\perf\browse.json path\to\folder`.
 
 ## Licence
 

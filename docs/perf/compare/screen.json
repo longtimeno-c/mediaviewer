@@ -1,0 +1,162 @@
+﻿{
+    "pan":  [
+                {
+                    "p99_ms":  49.7,
+                    "app":  "mv",
+                    "p50_ms":  16.7,
+                    "fps":  56.9,
+                    "changes":  684,
+                    "file":  "sony_ilce7rm3.arw"
+                },
+                {
+                    "p99_ms":  null,
+                    "app":  "photos",
+                    "p50_ms":  null,
+                    "fps":  0.1,
+                    "changes":  1,
+                    "file":  "sony_ilce7rm3.arw"
+                },
+                {
+                    "p99_ms":  83.7,
+                    "app":  "mv",
+                    "p50_ms":  16.7,
+                    "fps":  53.2,
+                    "changes":  638,
+                    "file":  "nikon_d7500.nef"
+                },
+                {
+                    "p99_ms":  null,
+                    "app":  "photos",
+                    "p50_ms":  null,
+                    "fps":  0.1,
+                    "changes":  1,
+                    "file":  "nikon_d7500.nef"
+                },
+                {
+                    "p99_ms":  49,
+                    "app":  "mv",
+                    "p50_ms":  16.7,
+                    "fps":  51.9,
+                    "changes":  623,
+                    "file":  "libheif-example.heic"
+                },
+                {
+                    "p99_ms":  null,
+                    "app":  "photos",
+                    "p50_ms":  null,
+                    "fps":  0.1,
+                    "changes":  1,
+                    "file":  "libheif-example.heic"
+                }
+            ],
+    "method":  "screen grab, about 17 ms",
+    "play":  [
+                 {
+                     "p99_ms":  66.3,
+                     "app":  "mv",
+                     "p50_ms":  33.3,
+                     "fps":  29,
+                     "changes":  348,
+                     "file":  "av_transport.mp4"
+                 },
+                 {
+                     "p99_ms":  43.6,
+                     "app":  "wmp",
+                     "p50_ms":  33.3,
+                     "fps":  29.2,
+                     "changes":  350,
+                     "file":  "av_transport.mp4"
+                 },
+                 {
+                     "p99_ms":  366.9,
+                     "app":  "mv",
+                     "p50_ms":  33.4,
+                     "fps":  24.1,
+                     "changes":  289,
+                     "file":  "hevc_4k_8bit_bt709.mp4"
+                 },
+                 {
+                     "p99_ms":  null,
+                     "app":  "wmp",
+                     "p50_ms":  null,
+                     "fps":  0.1,
+                     "changes":  1,
+                     "file":  "hevc_4k_8bit_bt709.mp4"
+                 }
+             ],
+    "open":  [
+                 {
+                     "rep":  0,
+                     "app":  "mv",
+                     "first_pixel_ms":  896.7,
+                     "file":  "sony_ilce7rm3.arw"
+                 },
+                 {
+                     "rep":  1,
+                     "app":  "mv",
+                     "first_pixel_ms":  838,
+                     "file":  "sony_ilce7rm3.arw"
+                 },
+                 {
+                     "rep":  0,
+                     "app":  "photos",
+                     "first_pixel_ms":  1016.1,
+                     "file":  "sony_ilce7rm3.arw"
+                 },
+                 {
+                     "rep":  1,
+                     "app":  "photos",
+                     "first_pixel_ms":  745.6,
+                     "file":  "sony_ilce7rm3.arw"
+                 },
+                 {
+                     "rep":  0,
+                     "app":  "mv",
+                     "first_pixel_ms":  897.8,
+                     "file":  "nikon_d7500.nef"
+                 },
+                 {
+                     "rep":  1,
+                     "app":  "mv",
+                     "first_pixel_ms":  551.9,
+                     "file":  "nikon_d7500.nef"
+                 },
+                 {
+                     "rep":  0,
+                     "app":  "photos",
+                     "first_pixel_ms":  784,
+                     "file":  "nikon_d7500.nef"
+                 },
+                 {
+                     "rep":  1,
+                     "app":  "photos",
+                     "first_pixel_ms":  770,
+                     "file":  "nikon_d7500.nef"
+                 },
+                 {
+                     "rep":  0,
+                     "app":  "mv",
+                     "first_pixel_ms":  945.2,
+                     "file":  "libheif-example.heic"
+                 },
+                 {
+                     "rep":  1,
+                     "app":  "mv",
+                     "first_pixel_ms":  982.6,
+                     "file":  "libheif-example.heic"
+                 },
+                 {
+                     "rep":  0,
+                     "app":  "photos",
+                     "first_pixel_ms":  919.7,
+                     "file":  "libheif-example.heic"
+                 },
+                 {
+                     "rep":  1,
+                     "app":  "photos",
+                     "first_pixel_ms":  700.5,
+                     "file":  "libheif-example.heic"
+                 }
+             ],
+    "machine":  "Ryzen 7 5700X3D / RTX 4070 / 2560x1440"
+}

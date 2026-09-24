@@ -753,8 +753,9 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
           }
         }
 
-        auto decoded = mv::image::decode_bytes(bytes.value(), &ctx,
-                                               path_is_selected(session, path) ? 4u : 1u);
+        auto decoded = mv::image::decode_bytes(
+            bytes.value(), &ctx,
+            path_is_selected(session, path) ? mv::codec::raw_foreground_threads() : 1u);
         if (!decoded) return decoded.error();
         if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
@@ -1369,7 +1370,8 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
             return status::cancelled;
           }
 
-          auto decoded = mv::image::decode_bytes(bytes.value(), &ctx);
+          auto decoded = mv::image::decode_bytes(bytes.value(), &ctx,
+                                                 mv::codec::raw_foreground_threads());
           if (!decoded) return decoded.error();
           if (ctx.cancelled()) return status::cancelled;
 

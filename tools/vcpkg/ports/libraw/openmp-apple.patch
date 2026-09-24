@@ -1,0 +1,19 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -501,6 +501,6 @@ if(JASPER_SUPPORT_CAN_BE_COMPILED)
+ if(OPENMP_SUPPORT_CAN_BE_COMPILED)
+     target_link_libraries(raw PUBLIC OpenMP::OpenMP_CXX)
+-    if(MINGW)
++    if(MINGW OR APPLE)
+         target_compile_definitions(raw PRIVATE LIBRAW_FORCE_OPENMP)
+     endif()
+ endif()
+@@ -568,6 +568,6 @@ endif()
+ if(OPENMP_SUPPORT_CAN_BE_COMPILED)
+     target_link_libraries(raw_r PUBLIC OpenMP::OpenMP_CXX)
+-    if(MINGW)
++    if(MINGW OR APPLE)
+         target_compile_definitions(raw_r PRIVATE LIBRAW_FORCE_OPENMP)
+     endif()
+ endif()
