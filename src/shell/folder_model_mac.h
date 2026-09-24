@@ -45,6 +45,18 @@ class folder_model {
   [[nodiscard]] std::vector<io::dir_entry> items() const;
   [[nodiscard]] std::size_t item_count() const noexcept;
 
+  // Child folders of the open directory (plan/10 PR 26), natural order,
+  // refreshed by the same relist that refreshes items().
+  [[nodiscard]] std::vector<io::subdir_entry> subfolders() const;
+  [[nodiscard]] std::string directory() const;
+
+  using summary_ready_fn = std::function<void(std::string dir_utf8, bool ok, io::folder_summary)>;
+
+  // Counts and picks a cover for a folder tile on a pool thread (io::summarize_dir
+  // is bounded, but it is still directory I/O). `on_ready` runs on that thread;
+  // `ok` is false on failure or when the model moved to another folder first.
+  void request_summary(std::string dir_utf8, summary_ready_fn on_ready);
+
   // True once the watcher has fired and the relist has completed since the
   // last call. Callers poll this (e.g. once per UI tick) to know a redraw
   // of the filmstrip/gallery is due.
@@ -72,6 +84,7 @@ class folder_model {
     std::mutex mutex;
     std::string dir;
     std::vector<io::dir_entry> items;
+    std::vector<io::subdir_entry> subdirs;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
     // Bumped by every open(): `thumbs` is one mutable object re-pointed at a

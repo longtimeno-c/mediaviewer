@@ -67,6 +67,11 @@ public static partial class IslandHost
         // PR 10: the export dialog was confirmed; arg is the packed choice
         // (edit_session.h pack_export). Cancel sends nothing.
         public const int Export = 1006;
+        // PR 26 folder tiles.
+        public const int OpenSubfolder = 1007;
+        public const int OpenCrumb = 1008;
+        public const int GalleryColumns = 1009;
+        public const int FolderUp = 115;  // mirrors command_id::folder_up
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -79,13 +84,13 @@ public static partial class IslandHost
         public const int MetadataPane = 92;
         // PR 11: the adjust pane's close button (the Shift+A command) and its
         // sliders, which carry their value (commands.h adjust_*).
-        public const int AdjustPane = 115;
-        public const int AdjustExposure = 116;
-        public const int AdjustContrast = 117;
-        public const int AdjustSaturation = 118;
-        public const int AdjustTemperature = 119;
-        public const int AdjustTint = 120;
-        public const int AdjustReset = 121;
+        public const int AdjustPane = 118;
+        public const int AdjustExposure = 119;
+        public const int AdjustContrast = 120;
+        public const int AdjustSaturation = 121;
+        public const int AdjustTemperature = 122;
+        public const int AdjustTint = 123;
+        public const int AdjustReset = 124;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -96,7 +101,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
-                UpdateRestart, TreeOpen, SetSort, Export,
+                UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns,
             };
             unchecked
             {
@@ -115,7 +120,13 @@ public static partial class IslandHost
         public const int Gallery = 3;
         public const int Transport = 4;
         public const int Text = 5;
+        // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane").
+        public const int Pane = 6;
     }
+
+    // IslandWindow asks for the pane islands by these ids (past the focus kinds).
+    internal const int PaneMetaIsland = 6;
+    internal const int PaneTreeIsland = 7;
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
     // menu is a view of it, pushed in by ApplySettings so a T keypress and the
@@ -190,6 +201,8 @@ public static partial class IslandHost
                 FocusKind.Filmstrip => _filmstrip,
                 FocusKind.Gallery => _gallery,
                 FocusKind.Transport => _transport,
+                PaneMetaIsland => _metaPane,
+                PaneTreeIsland => _tree,
                 _ => null,
             };
             long hwnd = source?.SiteBridge is null
@@ -323,6 +336,7 @@ public static partial class IslandHost
     {
         ReleaseRepeater(ref _repeater);
         ReleaseRepeater(ref _galleryRepeater);
+        ReleaseRepeater(ref _folderRepeater);
     }
 
     /// <summary>
@@ -346,12 +360,14 @@ public static partial class IslandHost
             }
             else if (e.NewFocusedElement is UIElement element && element.XamlRoot is XamlRoot root)
             {
-                // PR 11: the adjust pane's sliders own every key but Esc, like
-                // a text box: arrows step the slider instead of walking the folder.
-                if (OwnsRoot(_adjustPane, root)) kind = FocusKind.Text;
-                else if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
+                if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
+                else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root))
+                {
+                    // PR 11: the adjust pane too — its sliders own the arrows.
+                    kind = FocusKind.Pane;
+                }
             }
             Send(Command.FocusChanged, kind);
         }
@@ -1197,10 +1213,14 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(bar, 0);
         root.Children.Add(bar);
+        FrameworkElement path = BuildBarPathRow();
+        Grid.SetRow(path, 1);
+        root.Children.Add(path);
         Grid busy = BuildBusyBar();
         Grid.SetRow(busy, 0);
         root.Children.Add(busy);

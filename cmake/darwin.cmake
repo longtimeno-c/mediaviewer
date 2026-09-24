@@ -176,6 +176,7 @@ add_library(mv::codec ALIAS mv_codec)
 # ---------------------------------------------------------------------------
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
+  src/io/dir_tree.cpp
   src/io/file_mac.cpp
   src/io/replace_mac.cpp
   src/io/replace.h
@@ -281,9 +282,12 @@ find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
   src/meta/still.cpp
+  src/meta/carried.cpp
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
+  src/meta/tables.cpp
+  src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
   src/meta/internal.h
@@ -356,6 +360,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
+  src/shell/browse_path.h
   # The one key router and command table, shared with Windows (plan/16): the
   # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
   # translates virtual keys. Pure C++, no platform header.
@@ -491,6 +496,7 @@ function(mv_mac_host target)
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
+  # Same string Windows reads from VERSIONINFO (CMakeLists.txt project(VERSION)).
   target_compile_definitions(${target} PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
 endfunction()
 
@@ -538,6 +544,8 @@ if(MV_BUILD_TESTS)
     tests/test_frametime_report.cpp
     tests/test_dino_game.cpp
     tests/test_browse_index.cpp
+    tests/test_browse_path.cpp
+    tests/test_dir_tree.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
@@ -565,6 +573,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_export_carried.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
@@ -573,6 +582,7 @@ if(MV_BUILD_TESTS)
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
+    mv_io
     mv_gfx
     mv_shell
     mv_edit

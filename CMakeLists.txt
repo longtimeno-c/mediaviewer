@@ -40,7 +40,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.2
+  VERSION 0.1.3
   DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
 
@@ -113,6 +113,7 @@ if(MV_ASAN)
     # match the vcpkg ABI. Heap, stack, and global ASan checks still run.
     # https://learn.microsoft.com/cpp/sanitizers/error-container-overflow
     target_compile_definitions(mv_project_options INTERFACE
+      MV_ASAN=1
       _DISABLE_VECTOR_ANNOTATION
       _DISABLE_STRING_ANNOTATION
       _DISABLE_OPTIONAL_ANNOTATION)
@@ -226,6 +227,7 @@ add_library(mv_io STATIC
   src/io/replace.h
   src/io/replace_win.cpp
   src/io/dir_win.cpp
+  src/io/dir_tree.cpp
   src/io/dir.h
   src/io/paths_win.cpp
   src/io/paths.h
@@ -415,6 +417,7 @@ find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
   src/meta/still.cpp
+  src/meta/carried.cpp
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
@@ -745,6 +748,8 @@ if(MV_BUILD_TESTS)
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
+    tests/test_dir_tree.cpp
+    tests/test_browse_path.cpp
     tests/test_folder.cpp
     tests/test_presenter.cpp
     tests/test_colour_desc.cpp
@@ -762,6 +767,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_export_carried.cpp
     src/shell/edit_session.cpp
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp

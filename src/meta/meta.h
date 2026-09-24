@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,6 +122,25 @@ struct metadata {
 [[nodiscard]] std::optional<std::int64_t> parse_date_key(std::string_view stamp) noexcept;
 // EXIF GPS: degrees/minutes/seconds + ref → "48.85837° N".
 [[nodiscard]] std::string format_coordinate(double degrees, char hemisphere);
+// ---- PR 10: metadata an export carries ----------------------------------------
+
+// EXIF as a TIFF block (what follows "Exif\0\0" in a JPEG APP1) and the XMP
+// packet, for a re-encoded export of a still whose container is not JPEG or
+// PNG (HEIC / AVIF, TIFF, camera RAW, WebP — edit/export.h reads those two
+// itself). Built by Exiv2 from what it read, not copied: a TIFF's or a RAW's
+// IFD0 describes *its* pixels (strips, tiles, compression, sub-images, the
+// embedded thumbnail, DNG private data), and those tags are left out.
+// Orientation is written as 1, since the pixels are exported upright. Maker
+// notes are kept while the block still fits one JPEG APP1 segment, and dropped
+// rather than the whole block when it would not. Empty fields when there is
+// nothing to carry. Worker thread only. Never throws.
+struct carried_metadata {
+  std::vector<std::uint8_t> exif;
+  std::vector<std::uint8_t> xmp;
+};
+
+[[nodiscard]] carried_metadata read_carried(std::span<const std::uint8_t> bytes) noexcept;
+
 // ---- Presentation, shared by both hosts (pure; no I/O) ----------------------
 
 // The summary card as label/value rows, in display order. Every row for the

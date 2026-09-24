@@ -20,6 +20,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
 | 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](plan/18-import.md)) | Planned, optional download |
 | 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](plan/17-local-ai-search.md)) | Proposed |
+| 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](plan/19-voice.md)) | Proposed |
 
 See [plan/10-roadmap.md](plan/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -42,8 +43,10 @@ builds and links with a real toolchain (`cmake`+`ninja`+`vcpkg`+`swift build`) a
 suite passes (210 assertions, 60 cases). It has been run on a real Mac with a display
 (2026-09-19): the 60 s present-loop gate passes with the chrome on screen, and the window,
 menu bar, filmstrip, gallery and `?` sheet were driven by hand. Still unproven on Mac:
-drag-and-drop, copy/move/Trash and slideshow on real folders, animated GIF/APNG/WebP playback
-(they show frame 0 as a still), and the tonal step when a RAW's embedded preview is replaced
+drag-and-drop, copy/move/Trash and slideshow on real folders, a *by-eye* check of animated
+GIF/APNG/WebP playback (the render loop is traced cycling a 4-frame GIF at its 500 ms delays,
+looping forever, but a screen capture of the Metal layer is not a reliable instrument, so
+nobody has yet watched it), and the tonal step when a RAW's embedded preview is replaced
 by the full decode — see [macOS](#macos-mac-prs-16) below. Mac PR 8 (MediaViewer.app: Finder open,
 Quick Look thumbnails, Sparkle updates, the notarized disk image) is written but **not yet
 built or run on a Mac** — see [MediaViewer.app](#mediaviewerapp-and-a-shippable-mac-build-mac-pr-8).**
@@ -112,7 +115,7 @@ that apply to what you are doing.
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. No rating/metadata/RAW-pairing UI yet. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
+| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Built only on Apple Silicon / macOS 14+. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 
 ## Build
@@ -444,8 +447,8 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
 | `Ctrl+G` | go to an item by its number in the folder |
 | `/` | find an item by name. With the filmstrip or gallery focused, just type |
-| `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9) |
-| `Ctrl+Shift+E` | folder tree, rooted at the open folder; click a folder to open it (PR 9) |
+| `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
+| `Ctrl+Shift+E` | folder tree, rooted at the open folder (PR 9). Focuses it: arrows walk, Right / Left open and close a folder, `Enter` opens it, `Esc` returns to the photo. It follows the folder as subfolders come and go |
 | `O` / `Shift+O` / `Shift+I` | info overlay with exposure lines / AF points / eyedropper (PR 9) |
 | `Ctrl+C` | copy the eyedropper colour if it is on, otherwise the marked (or current) file(s) |
 
@@ -454,7 +457,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. `W` / `S` or Up / Down move between rows; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges), keeping the selection visible. The size is remembered until the app closes. `Enter` opens the selected image in the normal viewer, showing the filmstrip if enabled. A click also opens the item; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers, counts, and a path bar (middle collapses to `…`) stay on screen, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
@@ -506,7 +509,7 @@ takes photos and clips), View (zoom in/out,
 fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
 The filmstrip along
-the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. Clips get a
+the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; the gallery also shows child-folder tiles (or a chip strip in a mixed folder) and a path bar (`Ctrl+Up` goes up, `Ctrl+Left`/`Ctrl+Right` the sibling). Thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. Clips get a
 thumbnail too — a poster frame from about 10 % into the clip, in that same cache — so a
 camera dump does not show blanks where the video is. With no
 folder open the canvas shows a welcome card (drop target, open shortcut, formats, key legend) reading *Drop photos, videos or a folder here*, not the
@@ -725,6 +728,10 @@ line. Signing needs credentials the repo does not and must not hold:
 Without Authenticode, Windows SmartScreen may warn. Without a correctly signed update
 manifest, clients reject updates. The production public key is already pinned in
 `src.managed/MediaViewer.Updater/UpdateKeys.cs`; preserve its matching private key.
+
+### Continuous integration
+
+Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
 
 ### Releasing from CI
 
@@ -1153,11 +1160,14 @@ and nothing may depend on `shell`. That is what keeps the core testable with no 
 The parts worth knowing before touching anything:
 
 - **[plan/10-roadmap.md](plan/10-roadmap.md)** — one PR number per feature on both platforms: PRs 1–8
-  (Windows v1 and their Mac halves), 9–15 updates, 16–19 the Import add-on, 20–24 AI search. Each
+  (Windows v1 and their Mac halves), 9–15 updates, 16–19 the Import add-on, 20–24 AI search,
+  27–28 Voice query. Each
   has a verify line per platform. Work is one slice; PR N+1 does not merge until N holds on both
   platforms *and* both present-loop gates still do.
 - **[plan/18-import.md](plan/18-import.md)** — the Import add-on: what it does better than an
   Explorer/Finder copy, its window, settings, engine and how add-ons install.
+- **[plan/19-voice.md](plan/19-voice.md)** — the Voice add-on: speak a Local search query. Its own
+  download, on-device recognition, a spoken count.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](plan/12-decision-log.md)** — why a call was reversed, so it

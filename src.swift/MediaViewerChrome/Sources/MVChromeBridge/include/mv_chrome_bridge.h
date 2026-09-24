@@ -43,6 +43,11 @@ uint64_t mv_chrome_keys_generation(void);
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
 
+// The running version, from CMake project(VERSION) — the same string Windows
+// shows in About. Writes a NUL-terminated string into `buf`. Returns false
+// when the host was built without a version or `size` < 1. [any-thread]
+bool mv_chrome_app_version(char* buf, int32_t size);
+
 // PR 18 (folded-in PR 4, plan/12 2026-09-17): the filmstrip/gallery
 // SwiftUI-side follow-up. These all read/mutate state MvLabApp owns
 // (folder_model + browse_index, src/shell/main_mac.mm) — never folder_model
@@ -131,6 +136,40 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 // and relaunches onto the same folder and file. [main-thread]
 bool mv_chrome_update_ready(void);
 void mv_chrome_restart_to_update(void);
+
+// Multi-folder browsing (plan/10 PR 26). The open folder's child folders are
+// shown as tiles above its images; the breadcrumb runs from the highest folder
+// reached to the one on screen. All [main-thread]. Folder tiles are keyed by
+// their full path, which survives a relist.
+int32_t mv_chrome_subfolder_count(void);
+// Copies the folder's full UTF-8 path; false if `index` is out of range.
+bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t out_buf_size);
+// Navigates into the child folder (a fresh listing; the trail keeps its root).
+void mv_chrome_open_subfolder(int32_t index);
+// Asks for the tile's item count, folder count and cover thumbnail. Result via
+// the callback below, always on the main thread. Never blocks.
+void mv_chrome_request_folder_summary(int32_t index);
+// `ok` is false on failure or when the host moved to another folder first;
+// `cover_thumb_path_utf8` is NULL when the folder has no media to cover it.
+// `flags` bit 0: the cover is a descendant (photos were found further down, this
+// folder's own listing has none). Bit 1: the bounded look stopped early and
+// found no photo, so the tile must not say the branch is only folders.
+typedef void (*mv_chrome_folder_summary_fn)(const char* folder_path_utf8, bool ok,
+                                            int32_t media_count, int32_t subfolder_count,
+                                            int32_t flags, const char* cover_thumb_path_utf8);
+void mv_chrome_set_folder_summary_callback(mv_chrome_folder_summary_fn callback);
+// Breadcrumb: root … current. `mv_chrome_crumb_path` copies the full path
+// (the last component is the label); false if out of range.
+int32_t mv_chrome_crumb_count(void);
+bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size);
+void mv_chrome_open_crumb(int32_t index);
+bool mv_chrome_can_go_up(void);
+void mv_chrome_navigate_up(void);
+// The gallery's keyboard position while on a folder tile; -1 when on images.
+int32_t mv_chrome_folder_cursor(void);
+// The in-progress folder-name query (`/`, folder row active). False when idle;
+// an empty string means the query is open and nothing has been typed yet.
+bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
 
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.

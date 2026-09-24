@@ -1118,6 +1118,10 @@ void present_lab::render_thread_main() noexcept {
       const auto shown_h = static_cast<float>(shown_place.cropped.h);
       for (int i = 0; i < 6; ++i) bp.uv_map[i] = shown_place.map.m[i];
       bp.clip_to_source = shown_edit && shown_edit->keep_frame;
+      const edit::affine shown_inverse = edit::invert(shown_place.map);
+      for (int i = 0; i < 6; ++i) bp.uv_inverse[i] = shown_inverse.m[i];
+      bp.source_w = static_cast<float>(shown->width);
+      bp.source_h = static_cast<float>(shown->height);
       // PR 11: the colour kernel's uniforms, and the FP16 working texture in
       // place of the 8-bit one when it has landed for this still. Until then
       // the same kernel runs on the 8-bit texture, so the edit never flashes
@@ -1152,11 +1156,19 @@ void present_lab::render_thread_main() noexcept {
       if (fade_from_ && !fade_.active(elapsed)) fade_from_.reset();
       const bool fade_now = is_current && fade_from_ && fade_from_->srv;
       const float fade_alpha = fade_now ? fade_.alpha(elapsed) : 1.0f;
-      // Tiles are sampled in the unedited frame (blit.h): an edited tiled
-      // image shows its overview through the map instead.
-      const bool tiled = is_current && shown->tiles && shown_place.map.identity() && !working;
+      const bool tiled = is_current && shown->tiles && !working;
       if (tiled) {
-        tile_draws_ = mv::abi::tiles_frame(*shown, {bp.pan_x, bp.pan_y, bp.zoom, view.w, view.h});
+        // Tiles live in the source's pixels. The camera looks at the edited
+        // output, so an edited image asks for the tiles under the same
+        // viewport seen from the source (shell/edit_view.h); the tile shaders
+        // then place them through the inverse map (gfx/blit.cpp).
+        image::tile_view tv{bp.pan_x, bp.pan_y, bp.zoom, view.w, view.h};
+        if (!shown_place.map.identity()) {
+          const source_view sv = view_in_source(shown_place, bp.source_w, bp.source_h, bp.pan_x,
+                                                bp.pan_y, bp.zoom, view.w, view.h);
+          tv = image::tile_view{sv.pan_x, sv.pan_y, sv.zoom, sv.view_w, sv.view_h};
+        }
+        tile_draws_ = mv::abi::tiles_frame(*shown, tv);
         if (tiles_complete_seconds_ < 0.0 && !shown->tiles->pending() &&
             mv::abi::tiles_stats(*shown).requested == 0 && seen_tile_seq_ > 0) {
           tiles_complete_seconds_ = elapsed;

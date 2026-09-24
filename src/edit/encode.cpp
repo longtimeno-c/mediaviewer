@@ -179,7 +179,8 @@ result<std::vector<std::uint8_t>> encode_png(const codec::raster& img, const met
   ihdr.width = img.width;
   ihdr.height = img.height;
   ihdr.bit_depth = 8;
-  ihdr.color_type = opaque ? SPNG_COLOR_TYPE_TRUECOLOR : SPNG_COLOR_TYPE_TRUECOLOR_ALPHA;
+  ihdr.color_type = static_cast<std::uint8_t>(opaque ? SPNG_COLOR_TYPE_TRUECOLOR
+                                                   : SPNG_COLOR_TYPE_TRUECOLOR_ALPHA);
   if (spng_set_ihdr(g.ctx, &ihdr) != 0) return err(status::invalid_arg);
 
   // libspng copies nothing: the buffers below must outlive the encode.

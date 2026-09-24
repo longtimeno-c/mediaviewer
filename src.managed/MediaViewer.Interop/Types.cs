@@ -30,6 +30,7 @@ public enum MvCompletionKind : uint
     VideoOpened = 7,
     VideoEnded = 8,
     VideoState = 9,
+    FolderSummary = 10,  // PR 26: payload = subfolder index
 }
 
 /// <summary>Mirrors <c>mv_session_config</c>.</summary>
@@ -91,6 +92,20 @@ public enum MvPairKind : uint
     None = 0,
     RawJpeg = 1,
     LivePhoto = 2,
+}
+
+/// <summary>Mirrors <c>mv_folder_summary</c> (PR 26 folder tiles).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct MvFolderSummary
+{
+    public const uint FlagLoaded = 1;
+    public const uint FlagHasCover = 2;
+    public const uint FlagPhotosInside = 4;
+    public const uint FlagSearchIncomplete = 8;
+    public uint MediaCount;
+    public uint SubdirCount;
+    public uint Flags;
+    public uint Reserved;
 }
 
 /// <summary>Mirrors <c>mv_folder_item</c>: one navigation stop.</summary>

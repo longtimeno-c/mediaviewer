@@ -59,8 +59,10 @@ shared vector space; search is a dot product. This is the only class of model th
   assumption.
 - Multilingual text queries are a *model* property (e.g. multilingual SigLIP variants), decided
   in PR 20 on the eval set. English-only is an acceptable first pack.
-- **Out of scope for this doc:** speech transcript search (Whisper), OCR, object boxes,
-  captioning. Each is a later, separate pack with its own tower.
+- **Out of scope for this doc:** speech transcript search (Whisper over a video's own audio), OCR, object boxes,
+  captioning. Each is a later, separate pack with its own tower. Speaking a query
+  ("pull up all the photos that include…") is not a tower in this pack: it is the Voice
+  add-on ([19](19-voice.md)), which calls this search and ships as its own install.
 
 ## Runtime
 
@@ -342,4 +344,5 @@ faces are indexing.
 
 AI culling/"best photo" scoring (owner did not ask for it 2026-09-24; stays out), auto-tagging
 into keywords, generative anything, cloud inference or cloud model calls, telemetry about queries,
-a catalog/albums layer, and any inference in the base installer.
+a catalog/albums layer, and any inference in the base installer. A microphone, a recognizer,
+and a speaking voice are the Voice add-on ([19](19-voice.md)), not model files in this pack.

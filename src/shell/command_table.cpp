@@ -138,7 +138,8 @@ constexpr binding kBindings[] = {
     row(C('E'), mod_ctrl | mod_shift, kNotCrop, edge, folder_tree),
     // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
     // with the filmstrip or gallery focused, plain typing jumps by name.
-    row(C('/'), mod_none, kBrowse | kVideo, edge, typeahead),
+    // In the gallery, `/` with the folder row active finds a folder tile.
+    row(C('/'), mod_none, kBrowse | kVideo | kGallery, edge, typeahead),
     // Append rows so existing Settings row indices keep their meaning.
     row(C('+'), mod_none, kGallery, repeat, gallery_larger),
     row(C('='), mod_none, kGallery, repeat, gallery_larger),
@@ -183,13 +184,21 @@ constexpr binding kBindings[] = {
     row(key::down, mod_none, kCrop, repeat, crop_move_down),
     row(key::left, mod_shift, kCrop, repeat, crop_narrower),
     row(key::right, mod_shift, kCrop, repeat, crop_wider),
-    row(key::up, mod_shift, kCrop, repeat, crop_shorter),
+    row(key::up, mod_shift, kCrop,repeat, crop_shorter),
     row(key::down, mod_shift, kCrop, repeat, crop_taller),
     row(C(','), mod_none, kCrop, repeat, straighten_ccw),
     row(C('.'), mod_none, kCrop, repeat, straighten_cw),
     row(C('S'), mod_ctrl, kBrowse, edge, export_image),
     row(C('Z'), mod_ctrl, kBrowse | kCrop, edge, undo_edit),
     row(C('R'), mod_ctrl, kBrowse | kCrop, edge, reset_edits),
+    // Up one folder (Finder's Cmd+Up). Appended so the rows above keep their
+    // Settings indices. Only meaningful with a folder open that has a parent;
+    // the host answers "not handled" otherwise.
+    row(key::up, mod_ctrl, kViewing, edge, folder_up),
+    // Previous / next folder beside the one open. Browse and video only: in
+    // the gallery, Left / Right already move among the tiles.
+    row(key::left, mod_ctrl, kBrowse | kVideo, edge, folder_prev),
+    row(key::right, mod_ctrl, kBrowse | kVideo, edge, folder_next),
     // PR 11. plan/16 leaves `E` to the clip transport (Q / E) and asks PR 11
     // for another key: the Shift twin of `A`djust, as PR 9 / 10 did for O, I
     // and C. Stills only; the pane's own close button sends the same id.
@@ -311,6 +320,9 @@ constexpr command_info kCommands[] = {
     {export_image, "Export…"},
     {undo_edit, "Undo edit"},
     {reset_edits, "Reset edits"},
+    {folder_up, "Up one folder"},
+    {folder_prev, "Previous folder"},
+    {folder_next, "Next folder"},
     {adjust_pane, "Adjust pane"},
     {adjust_exposure, "Adjust: exposure", true},
     {adjust_contrast, "Adjust: contrast", true},

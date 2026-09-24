@@ -138,11 +138,13 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `Shift+C` | Crop / straighten mode (PR 10; key chosen 2026-09-24 — `C` is clipping). See **Crop** below |
 | `Ctrl+Z` / `Ctrl+R` | Undo the last edit / reset edits to the original (PR 10; keys chosen 2026-09-24). A lossless rewrite already on disk is undone by the opposite turn |
 | `Ctrl+S` | Export the edits to a new file beside the original, `<name>-edit.jpg` (PR 10; key chosen 2026-09-24). Never overwrites |
-| `I` | Metadata pane (PR 9) |
+| `I` | Metadata pane (PR 9). Windows 2026-09-24: focuses the pane; Left / Right change tab, Down reaches the tag search (type to filter), `Esc` returns to the canvas and a second `Esc` closes it |
 | `Shift+A` | Adjust pane (PR 11; `⇧A` on Mac). Not `E`: that is the clip transport (`Q` `E`, 5c), as this row used to warn. Shows the pane and focuses its first slider; again (or the pane's close button) hides it. Stills only |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
-| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it |
-| `Ctrl+Shift+E` | Folder tree show/focus (PR 9) |
+| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are big tiles when the folder holds only folders, and one row above the photos when it holds both. Up from the first photo row moves onto that row, Left / Right move among them, `Enter` opens the tile, Down returns to the photos. `/` on that row finds a tile by the start of its name |
+| `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder and selects the folder you just left. The path stays on screen, including while a photo is open; a long middle collapses until asked for. Not bound to Backspace, which is Previous |
+| `Ctrl+Left` / `Ctrl+Right` (`⌘←` `⌘→` on Mac) | Previous / next folder beside the one open (PR 26), while a photo is open. The gallery keeps plain Left / Right for its tiles |
+| `Ctrl+Shift+E` | Folder tree show/focus (PR 9). Windows 2026-09-24: focuses the tree; Up / Down walk it, Right / Left open and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a second `Esc` closes it |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
 | `Shift+O` | AF-point quads from the maker notes already read (PR 9; the plan gave no key, chosen 2026-09-24). Off by default |
 | `Shift+I` | Eyedropper: one-pixel readout under the cursor, sRGB 8-bit + hex (PR 9; key chosen 2026-09-24). Stills only. `Ctrl/Cmd+C` while it is on copies the readout as `#RRGGBB  rgb(r, g, b)  x y`; with it off it copies the marked (or current / gallery-selected) file(s), the macOS start of PR 15's `CF_HDROP` twin |
@@ -310,7 +312,8 @@ Chrome, in-memory, no decode.
 - **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item
   whose name starts with what was typed (Explorer-style, 300 ms idle to reset). With the
   **canvas** focused every letter is already a command, so `/` opens a find box over the
-  already-loaded listing instead (plan/12 2026-09-13). `Ctrl+G` go-to index.
+  already-loaded listing instead (plan/12 2026-09-13). On the gallery's folder row, `/`
+  finds a folder tile by the start of its name. `Ctrl+G` go-to index.
 - **Wrap** at end of folder: on by default, toggle in settings.
 - **Session:** window placement, last folder, zoom mode (fit / 100 % / sticky), wrap,
   background. Not a catalog.
@@ -401,6 +404,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 13 | Trim mode takes `[` `]` |
 | 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
 | 16–19 | Import add-on commands, present only while it is installed ([18-import.md](18-import.md#commands)). Base app, PR 16: `F8` across volumes deletes the source only after verify |
+| 27–28 | Voice query add-on commands, present only while it is installed ([19-voice.md](19-voice.md#commands)). Hold-to-talk is `Ctrl+Shift+Space` / `⌘⇧Space`; `Space` stays next / play |
 
 **Verify (PR 6, additive with the existing line):** keyboard-only browse of a real folder —
 open, next/prev, zoom/fit/100 %, mark, copy-to a destination, delete to Recycle Bin,

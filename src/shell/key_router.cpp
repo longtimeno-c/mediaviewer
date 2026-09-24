@@ -132,6 +132,15 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   // ContentPreTranslateMessage returning false does not mean XAML declined it.
   if (s.settings_open) return {};
 
+  // A focused pane owns its keys (arrows walk it, Enter opens); Esc returns to the
+  // canvas (plan/16 "Pane": in-pane traversal, Esc returns).
+  if (s.focus == focus_kind::pane) {
+    if (e.k == key::escape && e.mods == mod_none && !e.repeat) {
+      return {command_id::back, back_target::canvas_focus, true};
+    }
+    return {};
+  }
+
   // A text control owns every key except the one that leaves it.
   if (s.focus == focus_kind::text) {
     if (e.k == key::escape && e.mods == mod_none && !e.repeat) {
@@ -170,6 +179,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       case command_id::toggle_gallery:
       case command_id::fullscreen:
       case command_id::help:
+      case command_id::typeahead:
         break;
       default: return {};
     }

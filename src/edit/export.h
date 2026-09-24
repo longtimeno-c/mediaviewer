@@ -53,21 +53,27 @@ struct export_result {
 };
 
 // `g` is relative to what the viewer displays (the decoded, oriented image).
+// `carried` is the metadata of a source this module cannot read itself (HEIC,
+// TIFF, RAW, WebP: meta::read_carried, which the host runs — edit/ and meta/
+// are siblings). Ignored for JPEG and PNG sources, which are read here.
 [[nodiscard]] result<export_result> export_image(std::span<const std::uint8_t> source,
                                                  const geometry& g, const export_options& opt,
-                                                 const job_context* ctx = nullptr);
+                                                 const job_context* ctx = nullptr,
+                                                 const metadata_blobs* carried = nullptr);
 // PR 11: with colour adjusts. An identity `c` is exactly the overload above.
 [[nodiscard]] result<export_result> export_image(std::span<const std::uint8_t> source,
                                                  const geometry& g, const colour& c,
                                                  const export_options& opt,
-                                                 const job_context* ctx = nullptr);
+                                                 const job_context* ctx = nullptr,
+                                                 const metadata_blobs* carried = nullptr);
 
 // The metadata an export carries for `source` under `policy`, before the
-// orientation / dimension patch. JPEG (APP1) and PNG (eXIf, iTXt XMP) sources
-// are read; other formats carry none in PR 10 (their EXIF lives in
-// containers only Exiv2 walks — plan/12 2026-09-24).
+// orientation / dimension patch. JPEG (APP1) and PNG (eXIf, iTXt XMP) are read
+// here; any other source uses `carried` when given. The policy applies to
+// both.
 [[nodiscard]] metadata_blobs source_metadata(std::span<const std::uint8_t> source,
-                                             metadata_policy policy);
+                                             metadata_policy policy,
+                                             const metadata_blobs* carried = nullptr);
 
 // "IMG_0001.HEIC" → "IMG_0001-edit.jpg". The host runs it through
 // io::unique_name, so an existing export is never overwritten either.

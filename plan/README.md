@@ -30,7 +30,7 @@ Read in order:
 | [07-photo-editing.md](07-photo-editing.md) | Non-destructive GPU edit stack, first editing update vs later ops |
 | [08-video-editing.md](08-video-editing.md) | Post-v1 two-path trim, smart cut later |
 | [09-build-and-test.md](09-build-and-test.md) | CMake/vcpkg, perf regression harness, fuzzing |
-| [10-roadmap.md](10-roadmap.md) | One PR number per feature on both platforms: PRs 1–8 (Windows v1 + their Mac halves), 9–15 dual-track updates, 16–19 Import add-on, 20–24 AI search — each with a verify line |
+| [10-roadmap.md](10-roadmap.md) | One PR number per feature on both platforms: PRs 1–8 (Windows v1 + their Mac halves), 9–15 dual-track updates, 16–19 Import add-on, 20–24 AI search, 27–28 Voice query — each with a verify line |
 | [11-licensing.md](11-licensing.md) | FFmpeg LGPL, codec patents, the Exiv2 GPL trap — settle in PR 1 |
 | [12-decision-log.md](12-decision-log.md) | What changed, when, and why |
 | [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | First-install wizard, Velopack updates, crash reporting, the privacy line |
@@ -39,6 +39,7 @@ Read in order:
 | [16-commands.md](16-commands.md) | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. |
 | [17-local-ai-search.md](17-local-ai-search.md) | Post-v1, proposed: local, opt-in AI search over photos and video keyframes, plus faces. A Settings-installed extra, never in the base installer. |
 | [18-import.md](18-import.md) | Import add-on (PRs 16–19): card/folder copy with content-hash duplicate skip, verify, date folders, backup, resume. Also how add-ons install. |
+| [19-voice.md](19-voice.md) | Voice query add-on (PRs 27–28): on-device speech-to-text and a spoken count, over Local search, as its own Settings install. |
 
 ## The rules that don't bend
 

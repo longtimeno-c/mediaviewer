@@ -17,6 +17,9 @@ enum class focus_kind : std::uint8_t {
   gallery = 3,
   transport = 4,
   text = 5,  // a XAML text control: keys belong to it; Esc blurs back
+  // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane" mode).
+  // In-pane traversal belongs to XAML; Esc walks back out to the canvas.
+  pane = 6,
 };
 
 enum class item_kind : std::uint8_t { none, still, clip, animation };

@@ -133,5 +133,11 @@ TEST_CASE("pairing a 4000-file dump is scan-fast and exact", "[io][pairing][perf
   INFO("pair_listing 4000 entries: " << per_run_ms << " ms");
   REQUIRE(stops == stems);
   // The old O(n^2) scan took seconds here; the watcher relists on every change.
+  // ASan on a hosted runner measured 131 ms (2026-09-24). Keep that budget far
+  // below a quadratic regression, and keep the tight one everywhere else.
+#ifdef MV_ASAN
+  REQUIRE(per_run_ms < 400.0);
+#else
   REQUIRE(per_run_ms < 50.0);
+#endif
 }

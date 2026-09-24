@@ -1350,6 +1350,16 @@ feature is a downloadable extra installed from Settings, never in the base insta
 culling was not requested and stays out. Recorded in plan/17 only, not as a numbered D-decision.
 Known gap: AMD GPUs run CPU until a provider exists.
 
+## 2026-09-24 — Multi-folder browsing is PR 26 (folder tiles + breadcrumb), not the tree
+
+The owner opens a NAS root organised by year and got an empty viewer: listing was one directory
+deep. Options weighed: folder tiles + breadcrumb, a left tree, a recursive sectioned gallery, all
+three. Chosen: **tiles + breadcrumb + `Ctrl/Cmd+Up`** (PR 26, Milestone H), because it needs no new
+chrome strip and fits the existing gallery and keyboard model. The left **folder-tree island stays
+PR 9** (unchanged). A recursive flatten view is deferred: thumbnails, marks and relist are keyed to
+one open directory, so one listing spanning folders is a model change, not a view. Not a D-decision;
+no D1–D9 call is touched. Windows chrome follows on the shared core.
+
 ## 2026-09-24 — D9 amended: PRs 9–15 are dual-track, Windows and macOS in the same PR
 
 **Owner's call.** Windows PRs 1–8 are in the tree and signed off (entry above). The owner
@@ -1572,6 +1582,42 @@ This closes the "still owed on Windows" lists above. What was built and the call
   The macOS build was not rebuilt after the `sort_order` move (no Mac available); the edit is
   mechanical (include path and namespace) but unproven there.
 
+### 2026-09-24 (last) — PR 9 Windows: checked against the plan's verify line, gaps closed
+
+Rechecking the Windows half against [10](10-roadmap.md)'s PR 9 verify line (rewritten on main for
+dual-track) found gaps in the first pass, now closed:
+
+- **"The folder tree opens from the keyboard and navigates without the mouse."** It could not: the
+  rows were deliberately not focusable. Now `Ctrl+Shift+E` shows **and focuses** the tree, and `I` focuses
+  the pane (plan/16). Up / Down walk the rows, Right / Left open and close a folder, Enter opens it (focus
+  returns to the canvas), Esc returns to the canvas, and a second Esc closes the pane (plan/16: Esc walks
+  out, crop -> pane -> gallery -> fullscreen). New `focus_kind::pane` in the router: a focused pane owns
+  its keys except Esc; `view_state.pane_open` is driven by the shown panes and `back_target::pane` closes
+  them. A mouse click on a pane control never moves keyboard focus into it, so a mouse user keeps the arrows
+  on the canvas. Router tests added.
+- **`FocusManager.TryMoveFocus` fail-fasts** in these islands (`0xC000027B`, found by bisecting a crash on
+  Down into the search box). Directional focus is therefore not used: the tab bar, the search box and the
+  tree handle Left / Right / Up / Down explicitly. Add it to the `TextBox` / `TreeView` list above.
+- **The tree follows the watcher.** The plan asks for folder-tree data that follows it. A listing change
+  of the open folder (the watcher fires on directory names too) re-lists the root and diffs the rows in
+  place, so expanded folders and the focused row survive. Deeper folders are not watched; they refresh when
+  opened.
+- **Date-taken sort had no end-to-end test.** Added: three JPEGs whose name, mtime and EXIF orders all differ,
+  through `mv_folder_set_sort`, including re-sort once the stamps land and back to another key.
+- **Pane re-render dropped keyboard focus** when the record arrived after `I`; the tab bar now restores focus
+  and identical pushes no longer rebuild the pane.
+
+**Present-loop gate, Windows.** `frametime.exe --seconds 60`: 3597 frames, 0 dropped, p99 17.05 ms at a
+16.68 ms refresh, idle 0 presents at 0.26 % CPU: PASS. A lab soak (`--pan-soak`, chrome on) with the metadata pane
+and the tree opened during it: 2398 frames, 0 dropped, 0 missed refreshes, p99 17.0 ms. That run fails
+the *idle CPU* limit (2.85 % against 1 %), but so does the same soak with no pane open (2.54 %) and the
+pre-PR-9 binary (1.99 %), on a machine that was not quiet: not attributable to the panes, and not a
+substitute for a quiet-machine run.
+
+**Still not verified on Windows:** PNG-with-XMP, HEIC, a RAW and an MP4 through the pane by hand (no RAW is in
+the corpus); the Streams tab on a real clip; a quiet-machine lab soak. **Shared with macOS, unchanged:**
+Canon AF sign, HEIC/RAW on real cameras. **macOS:** the `sort_order` move to `src/io` was not rebuilt on a Mac.
+
 ## 2026-09-24 — PR 10 (geometry edits + export), Windows and macOS
 
 Built on the PR 9 branch, against the dual-track PR 10 in [10](10-roadmap.md): one shared core
@@ -1658,14 +1704,59 @@ open has its own id). Export sheet: `ExportView.swift`, the twin of the Windows 
   the Mac flags): `test_edit`, `test_edit_session`, the key-router suites. Windows CI is the first
   MSVC build of the host half and of `test_abi_roundtrip`'s 0.7 case; the C# flyout and the Swift
   sheet are unbuilt. PR 1's and Mac PR 1's present-loop gates were not re-run.
-- **Metadata on re-encoded exports from HEIC / RAW / TIFF / WebP**: only JPEG (APP1) and PNG sources
-  carry EXIF / XMP across; the others need an Exiv2 extraction path.
-- Tiled (> 64 MP) images: an edited tiled image draws its overview through the map (tiles are
-  sampled in the unedited frame); the Mac has no tiling yet.
+- The Canon / Sony maker-note re-encode (below) on real camera files: the corpus has no RAW in git.
+
+**Closed the same day:**
+- **Re-encoded exports carry HEIC / TIFF / RAW / WebP metadata.** `meta::read_carried` builds the
+  EXIF block with Exiv2 from what it read, not by copying bytes: a TIFF's or a RAW's IFD0 describes
+  *its* pixels (strips, tiles, compression, sub-images, the thumbnail IFD, DNG private data), and
+  those tags are left out; Orientation is written as 1. Maker notes are kept while the block fits one
+  APP1 and dropped (not the whole block) when it would not. `edit/` and `meta/` are siblings, so
+  `shell::run_export` reads it and hands it to `edit::export_image`; the policy applies to it as to a
+  JPEG's own. Tested against Exiv2 0.28.3 (the vcpkg line) with WebP and TIFF fixtures written by
+  libwebp / libtiff + Exiv2, and the in-tree `iphone_like.heic` (Orientation 6 arrives as 1).
+- **An edited tiled (> 64 MP) image draws its tiles**, not just its overview. The tile shaders take
+  the inverse map and the source size (`gfx/blit.cpp` `vs_tile` / `ps_tile`): tile corners are source
+  pixels mapped to the output, and a pixel outside the edited output is discarded. The tiles are
+  chosen for the viewport seen from the source (`shell/edit_view.h` `view_in_source`: the centre
+  mapped back, the extent the box of the mapped corners). The Mac has no tiling yet, so there is no
+  MSL twin to change.
+
+## 2026-09-24 — Voice query is its own add-on, Milestone I (PRs 27–28)
+
+**Owner's call.** After the add-on mechanism (Milestone G) exists, the owner wants to speak a
+search — "pull up all the photos that include…" — and have Local search answer it. Speech is
+**not** a piece of the AI pack. It is a separate Settings install, [19-voice.md](19-voice.md).
+
+**Where it sits.** It needs PR 16's add-on host and PR 22's text query, so it does not merge
+before PR 22. Numbers are **27–28, Milestone I**. PR 25 stays unused (freed when AI search
+moved to 20–24). PR 26 stays folder tiles. Voice and folder tiles do not block each other.
+Not a numbered D-decision. Nothing here changes the PR 1–8 viewer or the base installer.
+
+**What was decided with it:**
+- The utterance is the query. There is no intent parser and no second index. Voice calls the
+  host, and the host forwards to the AI add-on. Voice does not open `index.db`.
+- Voice installed without Local search searches nothing and does not download Local search
+  by itself. Each pack is its own opt-in.
+- Recognition is on-device. The mic opens only while the key is held (`Ctrl+Shift+Space` /
+  `⌘⇧Space`). The spoken reply is the result count. A wake word, always-on listening, cloud
+  recognition, cloud voices, and searching the speech inside a video stay out.
+- Mac listens with the Speech framework and `requiresOnDeviceRecognition = true`, and speaks
+  with `AVSpeechSynthesizer`.
+- **Windows is a spike, not a silent choice.** The OS on-device API
+  (`Microsoft.Windows.AI.Speech`) is documented as MSIX plus `systemAIModels`. This app stays
+  unpackaged (GPL, direct download, no Store, 2026-09-06). PR 27 measures whether an
+  unpackaged process can use it with no outbound connection. If it cannot, the Voice add-on
+  carries a small native recognizer of its own (whisper.cpp, MIT). That file stays out of the
+  AI pack and out of the base tree. The legacy cloud-capable Windows recognizer is refused
+  either way. The viewer's Windows 10 floor does not move.
+- The host table gains `search_query` at the end. Older add-ons keep their ordinals.
+
+Full design and both verify lines: plan/19. Not implemented.
 
 ## 2026-09-24 — PR 11 (colour adjusts + Mac crash reporting), Windows and macOS
 
-Built on the PR 10 branch against the dual-track PR 11 in [10](10-roadmap.md). What was built, the
+Built on the PR 10 branch (merged into main before this PR; main merged in, including PR 26's folder tiles) against the dual-track PR 11 in [10](10-roadmap.md). What was built, the
 calls made, and where it departs from the plan text.
 
 **Shared (core, both hosts).**
@@ -1720,9 +1811,9 @@ calls made, and where it departs from the plan text.
 thread's free-threaded device; a device rebuild drops it. `main.cpp` drives the pane, the build job
 (cancelled through its own job_context generation when the item changes) and the histogram job.
 The WinUI pane (`IslandHost.Adjust.cs`) is a third panel island on the metadata pane's edge (one at
-a time), built of `Slider`s (already proven in the transport island). **It reports itself as text
-focus**, so the router hands every key but Esc to the sliders (Tab walks, arrows step) and Esc
-blurs back to the canvas. The C# chrome was compiled (warnings as errors) on Linux with the
+a time), built of `Slider`s (already proven in the transport island). It is a focused pane
+(`focus_kind::pane`, shown with focus on `Shift+A`), so the sliders own the arrows (Tab walks,
+arrows step) and Esc returns to the canvas. The C# chrome was compiled (warnings as errors) on Linux with the
 Windows App SDK's manifest tool stubbed; the HLSL compiles under DXC (vs/ps 6.0); the C++ host
 was syntax- and warning-checked with clang against mingw-w64 headers (`-Wall -Wextra -Wconversion
 -Wshadow`, nothing in changed lines). MSVC has not built it.
@@ -1758,3 +1849,5 @@ CI) replaces the two PowerShell verify scripts on Mac.
 - Mac has never had the `C` blinkies (a Mac PR 6 gap, not PR 11's); the accurate-RAW clipping is
   therefore Windows-only until that lands.
 - Eyedropper readouts still sample the unadjusted 8-bit texture.
+- Main's keyboard-navigable panes (`focus_kind::pane`) arrived in the merge; the adjust pane uses
+  them (shown with focus, Esc returns to the canvas) instead of posing as a text field.

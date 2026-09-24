@@ -3,13 +3,23 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
 
 #include "meta/meta.h"
 
+namespace Exiv2 {
+class Image;
+}
+
 namespace mv::meta::detail {
+
+// Exiv2 over bytes in memory, metadata read. Initialises Exiv2's XMP parser
+// once and mutes its log (its messages can name paths, rule 6). Null when
+// Exiv2 does not know the format. Throws Exiv2's exceptions: callers catch.
+[[nodiscard]] std::unique_ptr<Exiv2::Image> open_image(std::span<const std::uint8_t> bytes);
 
 // Exiv2 over an in-memory prefix/whole file. Fills `out`; leaves it untouched
 // on a file Exiv2 cannot parse. Never throws (Exiv2's exceptions stop here).

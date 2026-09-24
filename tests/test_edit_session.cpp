@@ -14,6 +14,7 @@
 #include "edit/lossless_jpeg.h"
 #include "io/replace.h"
 #include "shell/edit_session.h"
+#include "shell/edit_view.h"
 
 namespace {
 
@@ -303,4 +304,53 @@ TEST_CASE("the export dialog's choice round-trips through one small integer", "[
   CHECK(junk.encode.quality >= 1);
   CHECK(junk.encode.quality <= 100);
   CHECK(static_cast<int>(junk.policy) <= 2);
+}
+
+TEST_CASE("an edited tiled image picks its tiles in source space", "[shell][edit][tiles]") {
+  // 8000 x 6000 source, turned clockwise: the output is 6000 x 8000.
+  mv::edit::geometry g;
+  g.orient = mv::codec::kRotateCw;
+  const auto p = mv::edit::place(g, {8000, 6000});
+  REQUIRE(p.cropped == mv::edit::size2{6000, 8000});
+  // The camera looks at output pixel (1000, 2000), zoom 1, a 1600 x 900 view.
+  const auto s = mv::shell::view_in_source(p, 8000, 6000, 1000, 2000, 1.0f, 1600, 900);
+  // Output (x, y) shows source (y, H - 1 - x): (2000, 5000).
+  CHECK(std::abs(s.pan_x - 2000.0f) < 0.5f);
+  CHECK(std::abs(s.pan_y - 5000.0f) < 0.5f);
+  CHECK(std::abs(s.view_w - 900.0f) < 0.5f);  // a quarter turn swaps the extents
+  CHECK(std::abs(s.view_h - 1600.0f) < 0.5f);
+  CHECK(s.zoom == 1.0f);
+
+  // The identity is the camera itself.
+  const auto id = mv::edit::place({}, {8000, 6000});
+  const auto t = mv::shell::view_in_source(id, 8000, 6000, 1234, 567, 0.5f, 1600, 900);
+  CHECK(std::abs(t.pan_x - 1234.0f) < 0.5f);
+  CHECK(std::abs(t.view_w - 1600.0f) < 0.5f);
+
+  // A straighten grows the box that covers the rotated viewport.
+  mv::edit::geometry st;
+  st.straighten = 10.0f;
+  const auto ps = mv::edit::place(st, {8000, 6000});
+  const auto u = mv::shell::view_in_source(ps, 8000, 6000, 2000, 2000, 1.0f, 1600, 900);
+  CHECK(u.view_w > 1600.0f);
+  CHECK(u.view_h > 900.0f);
+}
+
+TEST_CASE("the geometry map inverts exactly", "[shell][edit][tiles]") {
+  for (int o = 1; o <= 8; ++o) {
+    mv::edit::geometry g;
+    g.orient = mv::codec::from_exif(o);
+    g.straighten = o == 5 ? 7.5f : 0.0f;
+    g.crop = {0.1f, 0.2f, 0.5f, 0.6f};
+    const auto p = mv::edit::place(g, {4000, 3000});
+    const auto inv = mv::edit::invert(p.map);
+    for (float u : {0.0f, 0.3f, 1.0f}) {
+      for (float v : {0.0f, 0.7f, 1.0f}) {
+        const float su = p.map.m[0] * u + p.map.m[1] * v + p.map.m[2];
+        const float sv = p.map.m[3] * u + p.map.m[4] * v + p.map.m[5];
+        CHECK(std::abs(inv.m[0] * su + inv.m[1] * sv + inv.m[2] - u) < 1e-4f);
+        CHECK(std::abs(inv.m[3] * su + inv.m[4] * sv + inv.m[5] - v) < 1e-4f);
+      }
+    }
+  }
 }

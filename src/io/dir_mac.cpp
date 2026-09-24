@@ -115,6 +115,36 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
   return out;
 }
 
+result<std::vector<subdir_entry>> scan_subdirs(std::string_view utf8_dir) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+
+  const std::string dir_path(utf8_dir);
+  DIR* d = ::opendir(dir_path.c_str());
+  if (!d) return err(status::io);
+
+  std::vector<subdir_entry> out;
+  while (dirent* ent = ::readdir(d)) {
+    const std::string_view name(ent->d_name);
+    if (name == "." || name == ".." || name.front() == '.') continue;
+
+    const std::string full = join_utf8(utf8_dir, name);
+    // stat, not lstat: a symlink to a folder is how a NAS root usually links
+    // its shares in, and it should read as a folder.
+    struct stat st{};
+    if (::stat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+#ifdef UF_HIDDEN
+    if (st.st_flags & UF_HIDDEN) continue;
+#endif
+    subdir_entry e;
+    e.name_utf8 = std::string(name);
+    e.path_utf8 = full;
+    e.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
+    out.push_back(std::move(e));
+  }
+  ::closedir(d);
+  return out;
+}
+
 result<std::vector<subdir>> list_subdirectories(std::string_view utf8_dir) {
   if (utf8_dir.empty()) return err(status::invalid_arg);
   const std::string dir_path(utf8_dir);

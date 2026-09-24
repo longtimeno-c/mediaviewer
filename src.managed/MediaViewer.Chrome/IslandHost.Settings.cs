@@ -287,7 +287,7 @@ public static partial class IslandHost
                 _settingsHost.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _settingsHost.VerticalAlignment = VerticalAlignment.Stretch;
                 Grid.SetRow(_settingsHost, 0);
-                Grid.SetRowSpan(_settingsHost, 3);
+                Grid.SetRowSpan(_settingsHost, 4);
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();

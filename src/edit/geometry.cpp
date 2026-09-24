@@ -22,10 +22,10 @@ struct transfer_tables {
   std::array<float, 256> to_linear{};
   std::array<std::uint8_t, 65536> to_srgb{};  // indexed by linear * 65535
   transfer_tables() noexcept {
-    for (int i = 0; i < 256; ++i) to_linear[static_cast<std::size_t>(i)] = srgb_to_linear(i / 255.0f);
+    for (int i = 0; i < 256; ++i) to_linear[static_cast<std::size_t>(i)] = srgb_to_linear(static_cast<float>(i) / 255.0f);
     for (int i = 0; i < 65536; ++i) {
       to_srgb[static_cast<std::size_t>(i)] =
-          static_cast<std::uint8_t>(std::lround(linear_to_srgb(i / 65535.0f) * 255.0f));
+          static_cast<std::uint8_t>(std::lround(linear_to_srgb(static_cast<float>(i) / 65535.0f) * 255.0f));
     }
   }
 };

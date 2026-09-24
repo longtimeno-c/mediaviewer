@@ -28,6 +28,40 @@ final class ThumbSlot: ObservableObject {
   @Published fileprivate(set) var image: CGImage?
 }
 
+/// One folder tile (plan/10 PR 26). Like ThumbSlot, tiles observe their own
+/// card, so a cover arriving re-renders one tile, not the grid.
+@MainActor
+final class FolderCard: ObservableObject {
+  @Published fileprivate(set) var mediaCount: Int = 0
+  @Published fileprivate(set) var subfolderCount: Int = 0
+  /// A photo was found in a descendant, not in this folder itself.
+  @Published fileprivate(set) var photosInside = false
+  /// The bounded look stopped before it could say the branch has no photos.
+  @Published fileprivate(set) var searchStopped = false
+  @Published fileprivate(set) var cover: CGImage?
+  @Published fileprivate(set) var loaded = false
+
+  var status: String {
+    if !loaded { return "" }
+    if searchStopped { return "Search stopped" }
+    if mediaCount > 0 {
+      let items = mediaCount == 1 ? "1 item" : "\(mediaCount) items"
+      if subfolderCount == 0 { return items }
+      let folders = subfolderCount == 1 ? "1 folder" : "\(subfolderCount) folders"
+      return "\(items), \(folders)"
+    }
+    if photosInside { return "Photos inside" }
+    if subfolderCount > 0 { return "Folders only" }
+    return "Empty"
+  }
+}
+
+struct Crumb: Identifiable, Equatable {
+  let index: Int
+  let name: String
+  var id: Int { index }
+}
+
 @MainActor
 final class FolderStore: ObservableObject {
   static let shared = FolderStore()
@@ -42,9 +76,21 @@ final class FolderStore: ObservableObject {
   @Published private(set) var markedCount: Int = 0
   /// Gallery cell edge in points (plan/16 `+`/`-`: 24 pt steps, 80-344, start 152).
   @Published private(set) var galleryCellSize: CGFloat = 152
+  /// Child folders of the open folder, as full paths (natural order).
+  @Published private(set) var folders: [String] = []
+  /// Breadcrumb from the highest folder reached down to the one on screen.
+  @Published private(set) var crumbs: [Crumb] = []
+  @Published private(set) var canGoUp = false
+  /// The gallery's keyboard position while on a folder tile; -1 = on the images.
+  @Published private(set) var folderCursor: Int = -1
+  /// `/` on the folder row. Nil when idle; empty while the query is open and
+  /// nothing has been typed.
+  @Published private(set) var folderQuery: String?
   /// A staged update is waiting for the user (plan/13 "Update ready — restart").
   @Published private(set) var updateReady = false
 
+  private var cards: [String: FolderCard] = [:]
+  private var requestedCards: Set<String> = []
   private var slots: [String: ThumbSlot] = [:]
   // Names asked for and not yet failed/evicted, so scrolling back and forth
   // doesn't re-request a thumbnail that is in flight or already decoded.
@@ -66,6 +112,7 @@ final class FolderStore: ObservableObject {
     // main_mac.mm's g_thumb_ready_callback is always called on the main
     // thread (mv_chrome_bridge.h's contract).
     mv_chrome_set_thumb_ready_callback(thumbReadyTrampoline)
+    mv_chrome_set_folder_summary_callback(folderSummaryTrampoline)
     // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h) --
     // the same 0.15 s cadence MvLabApp's own -refreshFolderIfChanged uses.
     pollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
@@ -85,7 +132,17 @@ final class FolderStore: ObservableObject {
     if listingChanged {
       listingGeneration = generation
       reloadNames(count: count)
+      reloadFolders()
     }
+    let cursor = Int(mv_chrome_folder_cursor())
+    if cursor != folderCursor { folderCursor = cursor }
+    var queryBuf = [CChar](repeating: 0, count: 512)
+    let querying = queryBuf.withUnsafeMutableBufferPointer { ptr -> Bool in
+      guard let base = ptr.baseAddress else { return false }
+      return mv_chrome_folder_query(base, Int32(ptr.count))
+    }
+    let query: String? = querying ? String(cString: queryBuf) : nil
+    if query != folderQuery { folderQuery = query }
     let marks = mv_chrome_marks_generation()
     if listingChanged || marks != marksGeneration {
       marksGeneration = marks
@@ -116,6 +173,105 @@ final class FolderStore: ObservableObject {
       slots.removeAll()
       requested.removeAll()
       decoded.removeAll()
+    }
+  }
+
+  private static func string(_ fill: (UnsafeMutablePointer<CChar>, Int32) -> Bool) -> String? {
+    var buf = [CChar](repeating: 0, count: 4096)
+    let ok = buf.withUnsafeMutableBufferPointer { ptr -> Bool in
+      guard let base = ptr.baseAddress else { return false }
+      return fill(base, Int32(ptr.count))
+    }
+    return ok ? String(cString: buf) : nil
+  }
+
+  /// Folder tiles and the breadcrumb move with the listing: the host relists
+  /// (and bumps the generation) after every navigation.
+  private func reloadFolders() {
+    var freshFolders: [String] = []
+    for i in 0..<Int(mv_chrome_subfolder_count()) {
+      if let path = Self.string({ mv_chrome_subfolder_path(Int32(i), $0, $1) }) {
+        freshFolders.append(path)
+      }
+    }
+    if freshFolders != folders {
+      folders = freshFolders
+      // Cards for folders that are gone would only pin memory; a folder that is
+      // still there keeps its cover.
+      let keep = Set(freshFolders)
+      cards = cards.filter { keep.contains($0.key) }
+      requestedCards.formIntersection(keep)
+    }
+    var freshCrumbs: [Crumb] = []
+    for i in 0..<Int(mv_chrome_crumb_count()) {
+      guard let path = Self.string({ mv_chrome_crumb_path(Int32(i), $0, $1) }) else { continue }
+      let leaf = URL(fileURLWithPath: path).lastPathComponent
+      freshCrumbs.append(Crumb(index: i, name: leaf.isEmpty ? path : leaf))
+    }
+    if freshCrumbs != crumbs { crumbs = freshCrumbs }
+    let up = mv_chrome_can_go_up()
+    if up != canGoUp { canGoUp = up }
+  }
+
+  func folderName(_ path: String) -> String {
+    let leaf = URL(fileURLWithPath: path).lastPathComponent
+    return leaf.isEmpty ? path : leaf
+  }
+
+  func card(for path: String) -> FolderCard {
+    if let existing = cards[path] { return existing }
+    let created = FolderCard()
+    cards[path] = created
+    return created
+  }
+
+  func openFolder(at index: Int) { mv_chrome_open_subfolder(Int32(index)) }
+  func openCrumb(_ index: Int) { mv_chrome_open_crumb(Int32(index)) }
+  func navigateUp() { mv_chrome_navigate_up() }
+
+  // Called from a tile's .onAppear: the count and cover of a folder cost a
+  // directory listing (on a NAS, several), so only tiles on screen ask.
+  func requestFolderSummaryIfNeeded(at index: Int) {
+    guard folders.indices.contains(index) else { return }
+    let path = folders[index]
+    guard !requestedCards.contains(path) else { return }
+    requestedCards.insert(path)
+    mv_chrome_request_folder_summary(Int32(index))
+  }
+
+  fileprivate func folderSummaryReady(
+    path: String, ok: Bool, media: Int, subfolders: Int, flags: Int, coverThumbPath: String?
+  ) {
+    guard ok else {
+      // Failed or superseded: allow a later request rather than pinning a blank tile.
+      requestedCards.remove(path)
+      return
+    }
+    guard let card = cards[path] else { return }
+    card.mediaCount = media
+    card.subfolderCount = subfolders
+    card.photosInside = (flags & 1) != 0
+    card.searchStopped = (flags & 2) != 0
+    card.loaded = true
+    guard let coverThumbPath else { return }
+    Self.decodeQueue.async {
+      let image = Self.decodeThumbnail(atPath: coverThumbPath)
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { FolderStore.shared.cards[path]?.cover = image }
+      }
+    }
+  }
+
+  nonisolated private static func decodeThumbnail(atPath path: String) -> CGImage? {
+    let url = URL(fileURLWithPath: path) as CFURL
+    let options: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceThumbnailMaxPixelSize: 384,
+    ]
+    return CGImageSourceCreateWithURL(url, nil).flatMap {
+      CGImageSourceCreateThumbnailAtIndex($0, 0, options as CFDictionary)
     }
   }
 
@@ -183,16 +339,7 @@ final class FolderStore: ObservableObject {
     // too): ImageIO with ShouldCacheImmediately does the JPEG decode here, so
     // the main thread only ever assigns a finished bitmap.
     Self.decodeQueue.async {
-      let url = URL(fileURLWithPath: path) as CFURL
-      let options: [CFString: Any] = [
-        kCGImageSourceCreateThumbnailFromImageAlways: true,
-        kCGImageSourceCreateThumbnailWithTransform: true,
-        kCGImageSourceShouldCacheImmediately: true,
-        kCGImageSourceThumbnailMaxPixelSize: 384,
-      ]
-      let image = CGImageSourceCreateWithURL(url, nil).flatMap {
-        CGImageSourceCreateThumbnailAtIndex($0, 0, options as CFDictionary)
-      }
+      let image = Self.decodeThumbnail(atPath: path)
       DispatchQueue.main.async {
         MainActor.assumeIsolated { FolderStore.shared.thumbnailDecoded(name: name, image: image) }
       }
@@ -230,5 +377,21 @@ private func thumbReadyTrampoline(
   let path = pathUTF8.map { String(cString: $0) }
   MainActor.assumeIsolated {
     FolderStore.shared.thumbnailReady(name: name, path: path)
+  }
+}
+
+// Same shape as thumbReadyTrampoline: a non-capturing C function pointer that
+// asserts the main actor, valid because main_mac.mm hops to the main queue first.
+private func folderSummaryTrampoline(
+  _ folderPathUTF8: UnsafePointer<CChar>?, _ ok: Bool, _ media: Int32, _ subfolders: Int32,
+  _ flags: Int32, _ coverThumbUTF8: UnsafePointer<CChar>?
+) {
+  guard let folderPathUTF8 else { return }
+  let path = String(cString: folderPathUTF8)
+  let cover = coverThumbUTF8.map { String(cString: $0) }
+  MainActor.assumeIsolated {
+    FolderStore.shared.folderSummaryReady(
+      path: path, ok: ok, media: Int(media), subfolders: Int(subfolders), flags: Int(flags),
+      coverThumbPath: cover)
   }
 }

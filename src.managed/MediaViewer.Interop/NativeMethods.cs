@@ -142,6 +142,43 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_close(MvSessionHandle session);
 
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_directory(MvSessionHandle session, IntPtr utf8,
+                                                         uint cap, out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_subfolder_count(MvSessionHandle session,
+                                                               out uint count);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_subfolder_name(MvSessionHandle session, uint index,
+                                                              IntPtr utf8, uint cap,
+                                                              out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_subfolder_path(MvSessionHandle session, uint index,
+                                                              IntPtr utf8, uint cap,
+                                                              out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_summary_at(MvSessionHandle session, uint index,
+                                                          out MvFolderSummary summary);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_summary_cover_thumb_path(MvSessionHandle session,
+                                                                        uint index, IntPtr utf8,
+                                                                        uint cap, out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_request_summary(MvSessionHandle session, uint index);
+
     // ABI 0.6 (PR 9): the folder tree's one directory read. Worker threads only.
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]

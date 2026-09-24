@@ -244,6 +244,7 @@ expected chrome_host::load() noexcept {
   show_popup_ = get_entry(L"ShowPopup");
   navigate_gallery_ = get_entry(L"NavigateGallery");
   scale_gallery_ = get_entry(L"ScaleGallery");
+  apply_browse_ = get_entry(L"ApplyBrowse");
   if (!probe_ || !attach_ || !resize_ || !detach_ || !navigate_ || !attach_filmstrip_ ||
       !resize_filmstrip_ || !detach_filmstrip_ || !show_filmstrip_ || !attach_gallery_ ||
       !resize_gallery_ || !show_gallery_ || !detach_gallery_ || !attach_transport_ ||
@@ -263,7 +264,6 @@ expected chrome_host::load() noexcept {
   // PR 11, optional the same way.
   show_adjust_pane_ = get_entry(L"ShowAdjustPane");
   set_adjust_view_ = get_entry(L"SetAdjustView");
-  focus_adjust_pane_ = get_entry(L"FocusAdjustPane");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -298,6 +298,7 @@ std::int32_t chrome_host::probe_commands() const noexcept {
 
 void chrome_host::refresh_island_windows() noexcept {
   for (auto& hwnd : island_hwnds_) hwnd = nullptr;
+  for (auto& hwnd : pane_hwnds_) hwnd = nullptr;
   if (!loaded()) return;
   if (!island_window_) island_window_ = get_entry(L"IslandWindow");
   if (!island_window_) return;
@@ -311,6 +312,13 @@ void chrome_host::refresh_island_windows() noexcept {
     island_window_args args{island, 0, 0};
     if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
       island_hwnds_[island] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
+    }
+  }
+  // The pane islands are asked for by ids past the focus kinds (6 metadata, 7 tree).
+  for (int i = 0; i < 2; ++i) {
+    island_window_args args{6 + i, 0, 0};
+    if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
+      pane_hwnds_[i] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
     }
   }
 }
@@ -336,6 +344,9 @@ focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
     if (root && focus && (focus == root || ::IsChild(root, focus))) {
       return static_cast<focus_kind>(island);
     }
+  }
+  for (const HWND root : pane_hwnds_) {
+    if (root && focus && (focus == root || ::IsChild(root, focus))) return focus_kind::pane;
   }
   // A flyout's own popup window, or anything unrecognised: never the canvas,
   // so the router leaves traversal keys to XAML.
@@ -486,7 +497,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
     show_gallery(false, width, client_height, dpi);
     return;
   }
-  const int bar = chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_height_px(dpi, path_row_);
   chrome_resize_args args{};
   args.width = width;
   args.height = client_height > bar ? client_height - bar : 1;
@@ -498,7 +509,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
 void chrome_host::show_gallery(bool visible, int width, int client_height,
                                std::uint32_t dpi) noexcept {
   if (!gallery_attached_ || !show_gallery_) return;
-  const int bar = chrome_bar_height_px(dpi);
+  const int bar = chrome_bar_height_px(dpi, path_row_);
   chrome_show_args args{};
   args.visible = visible ? 1 : 0;
   args.width = visible ? width : 1;
@@ -618,14 +629,14 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
 
 namespace {
 void show_panel(chrome_entry_fn fn, bool visible, int x, int y, int width, int height,
-                std::uint32_t dpi, int client_height) noexcept {
+                bool focus, int client_height) noexcept {
   chrome_panel_args args{};
   args.visible = visible ? 1 : 0;
   args.x = visible ? x : 0;
   args.y = visible ? y : client_height;
   args.width = visible ? width : 1;
   args.height = visible ? height : 1;
-  args.dpi = static_cast<std::int32_t>(dpi);
+  args.focus = visible && focus ? 1 : 0;
   (void)fn(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 }  // namespace
@@ -634,34 +645,29 @@ void show_panel(chrome_entry_fn fn, bool visible, int x, int y, int width, int h
 // pixels. Hidden, the pane parks one client-height below the top: `y + height`
 // is the bottom edge the caller measured, and anything at or past it is off screen.
 void chrome_host::show_meta_pane(bool visible, int x, int y, int width, int height,
-                                 std::uint32_t dpi) noexcept {
+                                 bool focus) noexcept {
   if (!panels_attached_ || !show_meta_pane_) return;
-  show_panel(show_meta_pane_, visible, x, y, width, height, dpi, y + height + 1);
+  show_panel(show_meta_pane_, visible, x, y, width, height, focus, y + height + 1);
   meta_visible_ = visible;
 }
 
 void chrome_host::show_folder_tree(bool visible, int x, int y, int width, int height,
-                                   std::uint32_t dpi) noexcept {
+                                   bool focus) noexcept {
   if (!panels_attached_ || !show_folder_tree_) return;
-  show_panel(show_folder_tree_, visible, x, y, width, height, dpi, y + height + 1);
+  show_panel(show_folder_tree_, visible, x, y, width, height, focus, y + height + 1);
   tree_visible_ = visible;
 }
 
 void chrome_host::show_adjust_pane(bool visible, int x, int y, int width, int height,
-                                   std::uint32_t dpi) noexcept {
+                                   bool focus) noexcept {
   if (!panels_attached_ || !show_adjust_pane_) return;
-  show_panel(show_adjust_pane_, visible, x, y, width, height, dpi, y + height + 1);
+  show_panel(show_adjust_pane_, visible, x, y, width, height, focus, y + height + 1);
   adjust_visible_ = visible;
 }
 
 void chrome_host::set_adjust_view(const adjust_view& view) noexcept {
   if (!panels_attached_ || !set_adjust_view_) return;
   (void)set_adjust_view_(const_cast<adjust_view*>(&view), static_cast<std::int32_t>(sizeof(view)));
-}
-
-bool chrome_host::focus_adjust_pane() noexcept {
-  if (!adjust_pane_visible() || !focus_adjust_pane_) return false;
-  return focus_adjust_pane_(nullptr, 0) == 0;
 }
 
 void chrome_host::set_meta_data(bool loading, const std::string& summary,
@@ -733,6 +739,22 @@ void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noex
   // Same two-int32 payload as gallery navigation: direction and selection.
   std::int32_t args[] = {direction, index};
   (void)scale_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::apply_browse(std::int32_t folder_cursor, bool can_go_up,
+                               const std::string& crumbs, bool finding,
+                               const std::string& query) noexcept {
+  if (!attached_ || !apply_browse_) return;
+  path_row_ = !crumbs.empty();
+  chrome_browse_args args{};
+  args.folder_cursor = folder_cursor;
+  args.can_go_up = can_go_up ? 1 : 0;
+  args.crumbs_bytes = static_cast<std::int32_t>(crumbs.size());
+  args.query_bytes = finding ? static_cast<std::int32_t>(query.size()) : -1;
+  args.crumbs_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(crumbs.data()));
+  args.query_utf8 = finding ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(query.data()))
+                            : 0;
+  (void)apply_browse_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::pre_translate(MSG* msg) noexcept {

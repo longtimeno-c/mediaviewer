@@ -24,9 +24,10 @@ namespace MediaViewer.Chrome;
 /// canvas redraws from the new uniforms on the render thread, and the
 /// histogram is a reduction a worker ran. The sliders stay disabled until the
 /// FP16 working image is built — for a RAW, LibRaw's full linear develop
-/// (plan/07: never the embedded preview). Keyboard-complete: Shift+A focuses the
-/// first slider, Tab walks them, arrows step, Esc returns to the canvas
-/// (the pane reports text focus, so native routes every other key here).
+/// (plan/07: never the embedded preview). Keyboard-complete: Shift+A shows the
+/// pane focused on its first slider (ShowPanel's focus flag), Tab walks the
+/// sliders, arrows step, Esc returns to the canvas — a focused pane owns its
+/// keys (FocusKind.Pane, plan/16 "Pane").
 /// </remarks>
 public static partial class IslandHost
 {
@@ -85,25 +86,6 @@ public static partial class IslandHost
             _adjustPaneVisible = false;
             DropAdjustUi();
         });
-
-    /// <summary>Focus the first slider (Shift+A). No-op while hidden.</summary>
-    public static int FocusAdjustPane(IntPtr arg, int sizeBytes)
-    {
-        _ = arg;
-        _ = sizeBytes;
-        try
-        {
-            if (!_adjustPaneVisible || _adjustPane is null) return 1;
-            _adjustPane.NavigateFocus(new XamlSourceFocusNavigationRequest(XamlSourceFocusNavigationReason.First));
-            if (_adjustSliders is { Length: > 0 } s) s[0].Focus(FocusState.Keyboard);
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-            return unchecked((int)0x80004005);
-        }
-    }
 
     /// <summary>
     /// Native pushes readiness, values, histogram and clipping whenever any of

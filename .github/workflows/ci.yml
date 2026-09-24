@@ -9,10 +9,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # PR 7: nightly long fuzz run (plan/09 "run in CI nightly"). Only the `fuzz`
-  # job does work on this event; build / abi-smoke / frametime skip it.
+  # PR 7: nightly long fuzz run (plan/09 "run in CI nightly"). Build, ABI
+  # smoke and the frame-time gate skip it. The dependency job still runs,
+  # because the nightly fuzz and the full broken-corpus sweep need it.
   schedule:
     - cron: '17 3 * * *'
+
+# A push or pull-request update replaces the run already in progress for that
+# branch. Without this, every push queued another full Windows matrix, and the
+# runs sat for more than an hour before a runner was free. The nightly fuzz
+# keeps its own group so a push cannot cancel it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 defaults:
   run:
@@ -57,13 +66,53 @@ jobs:
       - run: python3 tools/package/test_github_release.py -v
 
   # ---------------------------------------------------------------------------
+  # One install of the manifest. FFmpeg alone is about 22 minutes from source,
+  # and a cold configure of the whole manifest is about 45. Every other Windows
+  # job restores this tree. They must not install it themselves: four matrix
+  # legs plus the ABI smoke and the fuzzer used to each miss the cache and
+  # rebuild the same ports, and actions/cache then refused to save because
+  # another job already held the key. A failed test leg used to skip the save
+  # entirely, so ASan rebuilt from source on every run.
+  # ---------------------------------------------------------------------------
+  windows-deps:
+    name: Windows dependencies
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: vcpkg
+        id: vcpkg
+        uses: ./.github/actions/windows-vcpkg
+
+      # Configure is what runs `vcpkg install`. Tests stay off: this job only
+      # fills build/vcpkg_installed. The manifest installs every dependency
+      # either way, including Catch2.
+      - name: Install the manifest
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        run: cmake -S . -B build -A x64 -DMV_BUILD_TESTS=OFF
+
+      # A release job can reserve the same key in the same minute. Losing that
+      # race is not a failed install; the tree is already in this workspace and
+      # the other writer published it.
+      - name: Save installed packages
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: build/vcpkg_installed
+          key: ${{ steps.vcpkg.outputs.cache-primary-key }}
+
+  # ---------------------------------------------------------------------------
   # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
   # it catches different bugs (plan/09).
   # ---------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.toolchain }}, ${{ matrix.config }})
+    needs: windows-deps
     if: ${{ github.event_name != 'schedule' }}
     runs-on: windows-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -109,30 +158,13 @@ jobs:
           Write-Host "--- vcpkg ---"
           Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
 
-      - name: Check out vcpkg at the manifest baseline
-        uses: actions/checkout@v4
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ env.VCPKG_COMMIT }}
-          path: vcpkg
-          # Full history, not shallow. Manifest mode resolves the baseline
-          # through git, and vcpkg has been known to refuse to operate in a
-          # shallow clone. A minute of clone beats an error that reads as a
-          # missing port.
-          fetch-depth: 0
+      - name: vcpkg
+        id: vcpkg
+        uses: ./.github/actions/windows-vcpkg
 
-      - name: Bootstrap vcpkg
-        run: |
-          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
-
-      # PR 1 pulls only imgui and catch2, so this is a small cache. It exists to
-      # keep the matrix from rebuilding the same two ports four times.
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: build/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ matrix.toolchain }}
+      - name: Require the dependency cache
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        run: throw 'Windows dependency cache was not restored. The Windows dependencies job should have saved it before this job started.'
 
       # No -G: CMake picks the newest Visual Studio generator the image has, so
       # this does not break the day the runner image moves to a new VS. No
@@ -165,8 +197,10 @@ jobs:
   # ---------------------------------------------------------------------------
   abi-smoke:
     name: ABI smoke test (C#)
+    needs: windows-deps
     if: ${{ github.event_name != 'schedule' }}
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -174,18 +208,13 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Check out vcpkg at the manifest baseline
-        uses: actions/checkout@v4
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ env.VCPKG_COMMIT }}
-          path: vcpkg
-          fetch-depth: 0
+      - name: vcpkg
+        id: vcpkg
+        uses: ./.github/actions/windows-vcpkg
 
-      - name: Bootstrap vcpkg
-        run: |
-          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+      - name: Require the dependency cache
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        run: throw 'Windows dependency cache was not restored. The Windows dependencies job should have saved it before this job started.'
 
       - name: Build the core
         run: |
@@ -269,30 +298,19 @@ jobs:
   # ---------------------------------------------------------------------------
   fuzz:
     name: Fuzz (${{ github.event_name == 'schedule' && 'nightly' || 'smoke' }})
+    needs: windows-deps
     runs-on: windows-latest
-    timeout-minutes: ${{ github.event_name == 'schedule' && 355 || 60 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 355 || 45 }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out vcpkg at the manifest baseline
-        uses: actions/checkout@v4
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ env.VCPKG_COMMIT }}
-          path: vcpkg
-          fetch-depth: 0
+      - name: vcpkg
+        id: vcpkg
+        uses: ./.github/actions/windows-vcpkg
 
-      - name: Bootstrap vcpkg
-        run: |
-          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
-
-      # Same key as the clang-cl build leg: identical ports, identical triplet.
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: build-fuzz/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-clang-cl
+      - name: Require the dependency cache
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        run: throw 'Windows dependency cache was not restored. The Windows dependencies job should have saved it before this job started.'
 
       - name: Diagnose clang runtime
         run: |
@@ -302,10 +320,10 @@ jobs:
             ForEach-Object FullName
 
       - name: Configure
-        run: cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
+        run: cmake -S . -B build -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 
       - name: Build harnesses
-        run: cmake --build build-fuzz --config Release --target mv_fuzzers
+        run: cmake --build build --config Release --target mv_fuzzers
 
       # fuzz_decode and fuzz_animation were excluded here after dying at 0xC0000142
       # on this image (plan/12, 2026-09-23). They start and fuzz cleanly locally
@@ -315,7 +333,7 @@ jobs:
         run: |
           $seconds = if ('${{ github.event_name }}' -eq 'schedule') { 1200 } else { 60 }
           $harnesses = 'jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw','raw_preview','decode','animation'
-          ./tools/fuzz/run.ps1 -BuildDir build-fuzz -Seconds $seconds -Harness $harnesses
+          ./tools/fuzz/run.ps1 -BuildDir build -Seconds $seconds -Harness $harnesses
 
       - name: Upload fuzz artefacts
         if: failure()
@@ -323,14 +341,15 @@ jobs:
         with:
           name: fuzz-artifacts-${{ github.run_id }}
           path: |
-            build-fuzz/fuzz-out/artifacts/
-            build-fuzz/fuzz-out/*.log
+            build/fuzz-out/artifacts/
+            build/fuzz-out/*.log
           if-no-files-found: ignore
 
   # The exhaustive broken-corpus sweep (every truncation up to 64 KiB, every
   # header offset up to 512) is too slow for every PR; nightly only.
   broken-corpus-full:
     name: Broken corpus (full sweep, nightly)
+    needs: windows-deps
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     timeout-minutes: 240
@@ -341,24 +360,13 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Check out vcpkg at the manifest baseline
-        uses: actions/checkout@v4
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ env.VCPKG_COMMIT }}
-          path: vcpkg
-          fetch-depth: 0
+      - name: vcpkg
+        id: vcpkg
+        uses: ./.github/actions/windows-vcpkg
 
-      - name: Bootstrap vcpkg
-        run: |
-          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
-          "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
-
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: build/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
+      - name: Require the dependency cache
+        if: steps.vcpkg.outputs.cache-hit != 'true'
+        run: throw 'Windows dependency cache was not restored. The Windows dependencies job should have saved it before this job started.'
 
       - name: Configure and build
         run: |
