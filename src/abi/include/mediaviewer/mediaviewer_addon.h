@@ -227,6 +227,66 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
                                             mv_addon_api* out);
 #define MV_ADDON_ENTRY_SYMBOL "mv_addon_get"
 
+/* ---------------------------------------------------------------------------
+ * Host-side management, exported by the Windows core DLL for the C# chrome
+ * (the Mac host calls src/addon directly). [worker-thread] unless noted:
+ * these read and hash files. JSON out follows mediaviewer_import.h's buffer
+ * rule (cap / needed, MV_ERR_INVALID_ARG when short).
+ *
+ * Add-on events arrive on the session's completion queue as
+ * mv_completion{kind = MV_COMPLETION_ADDON, job_id = event id,
+ * generation = mv_addon_event_kind, status, payload}.
+ * ------------------------------------------------------------------------- */
+
+/* [{"id","name","version","dir","size","state":"ok|needs_update|invalid",
+ *   "why","loaded"}] for every add-on folder present. Empty array when none. */
+MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32_t* needed);
+
+/* Checks a downloaded manifest and its signature against the pinned key
+ * before anything else is fetched: {"ok","why","id","name","version",
+ * "installed_size","archive":{"path","sha256","size"}}. [any-thread] */
+MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t manifest_len,
+                                                 const void* signature, uint32_t signature_len,
+                                                 char* out, uint32_t cap, uint32_t* needed);
+
+/* SHA-256 of a file, lowercase hex (the archive, before it is opened). */
+MV_API mv_status MV_CALL mv_addon_sha256_file(const char* path_utf8, char out[65]);
+
+/* A fresh staging folder under the add-ons folder: extract there, put
+ * manifest.json and manifest.json.sig beside the files, then install. */
+MV_API mv_status MV_CALL mv_addon_make_staging(char* out_utf8, uint32_t cap);
+
+/* Verifies the staged folder (signature, every file, nothing extra) and moves
+ * it into place. The staging folder is consumed either way. */
+MV_API mv_status MV_CALL mv_addon_install(const char* staged_dir_utf8);
+
+/* Unloads if loaded, then removes every version; keep_data = 0 also deletes
+ * the add-on's data (import.db). Locked files are removed at next start. */
+MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
+
+/* Re-verifies, loads the native library, and returns the named interface
+ * ("mv.import.1") plus the absolute path of the add-on's chrome entry (for
+ * Windows, the chrome assembly). Events post to `session`'s queue. A second
+ * load of a loaded add-on returns the same interface. MV_ERR_UNSUPPORTED_FORMAT:
+ * the add-on needs an update. MV_ERR_CORRUPT: it failed verification. */
+MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
+                                       const char* interface_id, const void** out_interface,
+                                       char* out_chrome_utf8, uint32_t chrome_cap);
+
+/* Shuts the add-on down (its jobs stop, resumable) and unloads it. [ui-thread] */
+MV_API mv_status MV_CALL mv_addon_unload(const char* id);
+
+/* The base app's own card watch, for the one-time "Install Import?" hint
+ * when a card appears and Import is not installed (plan/18). Posts
+ * MV_ADDON_EVENT_VOLUME_ARRIVED (payload 1 for removable media, 0 otherwise)
+ * to `session`. enable = 0 stops it. Reads nothing on the card. */
+MV_API mv_status MV_CALL mv_volume_watch(mv_session_t session, uint32_t enable);
+
+/* The render loop says whether it is presenting frames (panning, zooming,
+ * playing, loading). Background add-on work waits between buffers while it
+ * is (plan/18 "Priority"). [any-thread][no-block] */
+MV_API void MV_CALL mv_present_set_busy(uint32_t busy);
+
 #ifdef __cplusplus
 }
 #endif

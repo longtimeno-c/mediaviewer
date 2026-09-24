@@ -67,6 +67,11 @@ public static partial class IslandHost
         // PR 10: the export dialog was confirmed; arg is the packed choice
         // (edit_session.h pack_export). Cancel sends nothing.
         public const int Export = 1006;
+        // Milestone G: arg 1/0 = the Import add-on is loaded / absent (its
+        // commands exist only while it is). OpenPath: native pulls the path
+        // with TakeTreePath and opens it in the viewer.
+        public const int AddonState = 1007;
+        public const int OpenPath = 1008;
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -87,7 +92,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
-                UpdateRestart, TreeOpen, SetSort, Export,
+                UpdateRestart, TreeOpen, SetSort, Export, AddonState, OpenPath,
             };
             unchecked
             {
@@ -1159,6 +1164,7 @@ public static partial class IslandHost
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
         row.Children.Add(BuildUpdateButton());
+        row.Children.Add(BuildImportHint());  // Milestone G (IslandHost.Addons.cs)
 
         var speed = BuildSpeed();
         speed.HorizontalAlignment = HorizontalAlignment.Right;

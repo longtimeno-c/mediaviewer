@@ -43,6 +43,8 @@ added by the PR that adds the dependency.
 | [liblzma (xz)](https://tukaani.org/xz/) | 5.8.3 | 0BSD | Dynamic (vcpkg x64-windows) | Transitive, via libtiff. |
 | [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (plan/13 Part 1). |
 | [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | 2.7.0 | MIT (Bouncy Castle) | Managed assembly | Ed25519 verification of the signed update manifest (PR 8). The signature check runs before anything from the channel is trusted. |
+| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, plan/18). CC0 because Apache-2.0 alone does not combine with GPL-2.0. |
+| [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static) | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (plan/18 "Signed, verified, then loaded"). |
 
 ## macOS (MediaViewer.app, PR 20)
 

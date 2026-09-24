@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "abi/addon_bridge.h"
 #include "abi/animation_session.h"
 #include "abi/folder_reselect.h"
 #include "codec/decode.h"
@@ -1852,5 +1853,11 @@ player::video_frame* take_ready_video_frame(mv_session_t session, std::uint32_t 
 }
 void release_video_frame(player::video_frame* frame) { delete frame; }
 
+
+// Milestone G: add-on events ride the session's completion queue
+// (abi/addon_abi.cpp, mediaviewer_addon.h).
+void push_addon_completion(mv_session_t session, const mv_completion& c) noexcept {
+  if (session) session->push_completion(c);
+}
 
 }  // namespace mv::abi

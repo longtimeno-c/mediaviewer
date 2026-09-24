@@ -2,6 +2,7 @@
 // Scratch folders and files for the Import / verified-copy / add-on tests.
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>

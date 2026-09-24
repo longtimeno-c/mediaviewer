@@ -225,6 +225,10 @@ enum class command_id : std::uint16_t {
   export_image,     // Ctrl+S: bake the stack into a new file
   undo_edit,        // Ctrl+Z: pop the edit stack
   reset_edits,      // Ctrl+R: clear it — the original, exactly
+  // Milestone G (plan/18 "Commands"). Appended. Listed, routed and shown only
+  // while the Import add-on is installed (set_addon_commands_available).
+  open_import,      // Ctrl+Shift+I: the Import window
+  import_now,       // Ctrl+Shift+F7: import the marked / current file(s), last preset
   count
 };
 
@@ -275,6 +279,13 @@ void reset_live_bindings() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.
 [[nodiscard]] std::span<const command_id> pending_commands() noexcept;
+
+// Add-on commands (plan/18: "They exist only while Import is installed").
+// With the add-on absent, describe_commands() does not list them and the host
+// does not run them, so the key falls through as if unbound.
+[[nodiscard]] bool is_addon_command(command_id id) noexcept;
+void set_addon_commands_available(bool available) noexcept;
+[[nodiscard]] bool addon_commands_available() noexcept;
 
 // "Ctrl+Shift+O", "Space", "F3", "?" — what `?` and the palette show.
 [[nodiscard]] std::string key_label(key k, std::uint8_t mods);

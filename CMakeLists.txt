@@ -234,9 +234,24 @@ add_library(mv_io STATIC
   src/io/pairing.h
   src/io/sort_order.cpp
   src/io/sort_order.h
+  # Milestone G (plan/18): verified copy (also F8 across volumes), the file
+  # and volume ports Import reaches through the add-on host table.
+  src/io/content_hash.cpp
+  src/io/content_hash.h
+  src/io/file_port.cpp
+  src/io/file_port.h
+  src/io/file_port_win.cpp
+  src/io/verified_copy.cpp
+  src/io/verified_copy.h
+  src/io/volume.h
+  src/io/volume_win.cpp
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
-target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
+# setupapi + cfgmgr32: the volume port's eject (plan/18).
+# blake3: CC0-1.0 (plan/18, THIRD-PARTY.md).
+find_package(blake3 CONFIG REQUIRED)
+target_link_libraries(mv_io PUBLIC mv_core
+  PRIVATE shell32 ole32 uuid setupapi cfgmgr32 BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
@@ -453,6 +468,16 @@ target_link_libraries(mv_edit
 add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
+# Milestone G: the add-on host (mv_addon, in the base app) and the Import
+# add-on (mv_import, built beside it and packed separately; never installed
+# with the app). cmake/import.cmake.
+# ---------------------------------------------------------------------------
+find_package(unofficial-sodium CONFIG REQUIRED)
+set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
+set(MV_SODIUM_TARGET unofficial-sodium::sodium)
+include("${CMAKE_SOURCE_DIR}/cmake/import.cmake")
+
+# ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (plan/03)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
@@ -472,17 +497,20 @@ add_library(mv::canvas ALIAS mv_canvas)
 # ---------------------------------------------------------------------------
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
+  src/abi/addon_abi.cpp
   src/abi/crash_export.cpp
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
   src/abi/include/mediaviewer/mediaviewer.h
+  src/abi/include/mediaviewer/mediaviewer_addon.h
+  src/abi/include/mediaviewer/mediaviewer_import.h
 )
 target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -623,6 +651,8 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Update.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Telemetry.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Addons.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/Addons.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateManifest.cs"
@@ -647,6 +677,19 @@ if(DOTNET_EXE)
   )
   set_property(TARGET mediaviewer_lab APPEND PROPERTY LINK_DEPENDS ${MV_CHROME_SOURCES})
   add_custom_target(mv_chrome DEPENDS mediaviewer_lab ${MV_CHROME_SOURCES})
+
+  # Milestone G: the Import add-on's chrome goes beside mv_import.dll in
+  # build/addons/import, never beside the app (tools/package/addon-pack.py
+  # packs that folder, signed). The base install tree stays byte-identical.
+  add_custom_target(mv_import_chrome ALL
+    COMMAND ${DOTNET_EXE} publish
+            "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Import.Chrome/MediaViewer.Import.Chrome.csproj"
+            --nologo --configuration $<IF:$<CONFIG:Debug>,Debug,Release>
+            -r win-x64 --no-self-contained -p:Platform=x64
+            -o "$<TARGET_FILE_DIR:mv_import>"
+    DEPENDS mv_import
+    COMMENT "Publishing MediaViewer.Import.Chrome beside mv_import.dll"
+    VERBATIM)
 
   # PR 8 clean-VM install: the Windows App SDK ships IN the payload
   # (WindowsAppSDKSelfContained in MediaViewer.Chrome.csproj), because the
@@ -865,6 +908,28 @@ if(MV_BUILD_TESTS)
   endif()
   catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
+
+  # Milestone G (plan/18): verified copy, add-on manifests / store / loader,
+  # and the Import engine end to end. The same sources run on Linux CI
+  # (cmake/portable) and on the Mac (cmake/darwin.cmake).
+  add_executable(mv_import_tests
+    tests/test_content_hash.cpp
+    tests/test_verified_copy.cpp
+    tests/test_addon_manifest.cpp
+    tests/test_import_naming.cpp
+    tests/test_import_engine.cpp
+    tests/test_json.cpp
+  )
+  target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
+    unofficial-sodium::sodium Catch2::Catch2WithMain)
+  target_include_directories(mv_import_tests PRIVATE src tests)
+  target_compile_definitions(mv_import_tests PRIVATE
+    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+  add_dependencies(mv_import_tests mv_import)
+  mv_asan_runtime_beside(mv_import_tests)
+  catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
+               ENVIRONMENT "TZ=UTC")
   if(TARGET mv_chrome)
     add_dependencies(mv_tests mv_chrome)
   endif()

@@ -119,6 +119,7 @@ public static partial class IslandHost
     {
         _completionWait?.Unregister(null);
         if (_folderSession is null) return;
+        StartAddons();  // Milestone G: needs the session (IslandHost.Addons.cs)
         _completionWait = ThreadPool.RegisterWaitForSingleObject(
             _folderSession.CompletionSignal,
             (_, _) =>
@@ -143,7 +144,11 @@ public static partial class IslandHost
         bool video = false;
         foreach (var c in _folderSession.Drain())
         {
-            if (c.Kind is MvCompletionKind.FolderReady or MvCompletionKind.FolderChanged)
+            if (AddonCompletion.TryFrom(c, out AddonCompletion addon))
+            {
+                OnAddonCompletion(addon);  // Milestone G (IslandHost.Addons.cs)
+            }
+            else if (c.Kind is MvCompletionKind.FolderReady or MvCompletionKind.FolderChanged)
             {
                 ReloadItems();
                 select = -1;

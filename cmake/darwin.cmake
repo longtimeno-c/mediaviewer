@@ -182,8 +182,21 @@ add_library(mv_io STATIC
   src/io/dir.h
   src/io/file.h
   src/io/paths.h
+  # Milestone G (plan/18): verified copy (also F8 across volumes) and the file
+  # and volume ports Import reaches through the add-on host table.
+  src/io/content_hash.cpp
+  src/io/content_hash.h
+  src/io/file_port.cpp
+  src/io/file_port.h
+  src/io/file_port_mac.cpp
+  src/io/verified_copy.cpp
+  src/io/verified_copy.h
+  src/io/volume.h
+  src/io/volume_mac.cpp
 )
-target_link_libraries(mv_io PUBLIC mv_core PRIVATE "-framework CoreServices")
+find_package(blake3 CONFIG REQUIRED)
+target_link_libraries(mv_io PUBLIC mv_core PRIVATE "-framework CoreServices"
+  "-framework CoreFoundation" "-framework DiskArbitration" BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
@@ -316,6 +329,15 @@ target_link_libraries(mv_edit
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
 add_library(mv::edit ALIAS mv_edit)
 
+# ---------------------------------------------------------------------------
+# Milestone G: the add-on host (in the app) and the Import add-on
+# (libmv_import.dylib, packed and signed separately; never in the app bundle).
+# ---------------------------------------------------------------------------
+find_package(unofficial-sodium CONFIG REQUIRED)
+set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
+set(MV_SODIUM_TARGET unofficial-sodium::sodium)
+include("${CMAKE_CURRENT_LIST_DIR}/import.cmake")
+
 # playprobe -- headless pipeline check (tools/playprobe): decoder actually used,
 # presenter counters, drift slope. Not shipped.
 add_executable(playprobe tools/playprobe/main_mac.mm)
@@ -360,7 +382,7 @@ add_library(mv_shell STATIC
   src/shell/edit_session.h
   src/shell/edit_view.h
 )
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit)
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon)
 add_library(mv::shell ALIAS mv_shell)
 
 find_package(imgui CONFIG REQUIRED)
@@ -547,6 +569,23 @@ if(MV_BUILD_TESTS)
   target_link_libraries(mv_tests PRIVATE Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
   include(Catch)
   catch_discover_tests(mv_tests)
+
+  # Milestone G: the same Import suite as Windows and Linux CI.
+  add_executable(mv_import_tests
+    tests/test_content_hash.cpp
+    tests/test_verified_copy.cpp
+    tests/test_addon_manifest.cpp
+    tests/test_import_naming.cpp
+    tests/test_import_engine.cpp
+    tests/test_json.cpp
+  )
+  target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
+    unofficial-sodium::sodium Catch2::Catch2WithMain)
+  target_include_directories(mv_import_tests PRIVATE src tests)
+  target_compile_definitions(mv_import_tests PRIVATE
+    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+  add_dependencies(mv_import_tests mv_import)
+  catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
 endif()
 
 message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-2.0-or-later")

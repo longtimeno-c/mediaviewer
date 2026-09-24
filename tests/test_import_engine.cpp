@@ -8,6 +8,7 @@
 #include <mediaviewer/mediaviewer_import.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <map>

@@ -62,6 +62,7 @@ public static partial class IslandHost
         view.Children.Add(_sticky);
         AddUpdateSettingsRow(view);     // PR 8 updater (IslandHost.Update.cs)
         AddTelemetrySettingsRow(view);  // PR 8 telemetry (IslandHost.Telemetry.cs)
+        AddAddonsSettingsRow(view);     // Milestone G add-ons (IslandHost.Addons.cs)
         view.Children.Add(Label("Canvas background"));
         _background = new ComboBox
         {

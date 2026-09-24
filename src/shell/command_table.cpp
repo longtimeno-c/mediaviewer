@@ -3,6 +3,7 @@
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"
 
+#include <atomic>
 #include <iterator>
 #include <vector>
 
@@ -190,6 +191,9 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_ctrl, kBrowse, edge, export_image),
     row(C('Z'), mod_ctrl, kBrowse | kCrop, edge, undo_edit),
     row(C('R'), mod_ctrl, kBrowse | kCrop, edge, reset_edits),
+    // Milestone G: only while the Import add-on is installed (plan/18).
+    row(C('I'), mod_ctrl | mod_shift, kViewing, edge, open_import),
+    row(key::f7, mod_ctrl | mod_shift, kViewing, edge, import_now),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -307,6 +311,8 @@ constexpr command_info kCommands[] = {
     {export_image, "Export…"},
     {undo_edit, "Undo edit"},
     {reset_edits, "Reset edits"},
+    {open_import, "Import…"},
+    {import_now, "Import marked now"},
 };
 
 const char* named_key(key k) noexcept {
@@ -394,6 +400,14 @@ std::span<const command_info> command_infos() noexcept { return kCommands; }
 // the folder tree's command is handled as a documented slip, plan/12).
 std::span<const command_id> pending_commands() noexcept { return {}; }
 
+namespace {
+std::atomic<bool> g_addon_commands{false};
+}  // namespace
+
+bool is_addon_command(command_id id) noexcept { return id == open_import || id == import_now; }
+void set_addon_commands_available(bool available) noexcept { g_addon_commands = available; }
+bool addon_commands_available() noexcept { return g_addon_commands.load(); }
+
 std::string key_label(key k, std::uint8_t mods) {
   std::string out;
   if (mods & mod_ctrl) out += "Ctrl+";
@@ -426,6 +440,7 @@ std::string describe_commands() {
   const auto line = [&out](command_id id, mode_mask modes, std::string keys, std::size_t row) {
     const command_info* info = find_command(id);
     if (!info || info->keyless || id == back) return;
+    if (is_addon_command(id) && !addon_commands_available()) return;
     out += std::to_string(static_cast<int>(id));
     out += '\t';
     out += std::to_string(static_cast<int>(modes));

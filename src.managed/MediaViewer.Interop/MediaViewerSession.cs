@@ -30,6 +30,7 @@ public sealed class MediaViewerSession : IDisposable
     public void VideoLoop(long a, long b) => ThrowIfFailed(NativeMethods.mv_video_set_loop(_handle, a, b));
 
     private readonly MvSessionHandle _handle;
+    internal MvSessionHandle Handle => _handle;
     private MvCompletion[] _drainBuffer = new MvCompletion[256];
 
     private MediaViewerSession(MvSessionHandle handle)
