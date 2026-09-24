@@ -7,7 +7,7 @@ Windows integration follow in future updates. **v1 is Windows.** From PR 4 the n
 kept hostable; macOS is a second host of the same core (`plan/15-platforms.md`, D9), not a
 UI-only port. **One PR number per feature on both platforms:** the Mac host (built as old
 PRs 16–20) is the Mac halves of PRs 1–8, both platforms are at PR 9, and every PR from 9 lands
-on Windows and macOS together (D9 amended 2026-09-24). 16–19 is the Import add-on, 20–24 AI search.
+on Windows and macOS together (D9 amended 2026-09-24). 16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
 
 **v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
 Light editing and trim follow in future updates. Not a develop module.
@@ -44,6 +44,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/16-commands.md` | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. Read before adding a key, overlay, or chrome command |
 | `plan/17-local-ai-search.md` | AI search add-on (PRs 20–24), both platforms, proposed |
 | `plan/18-import.md` | Import add-on (PRs 16–19): card copy with hash dedupe + verify; the add-on mechanism |
+| `plan/19-voice.md` | Voice query add-on (PRs 27–28): on-device STT/TTS over Local search, separate install |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.

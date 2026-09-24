@@ -20,6 +20,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
 | 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](plan/18-import.md)) | Planned, optional download |
 | 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](plan/17-local-ai-search.md)) | Proposed |
+| 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](plan/19-voice.md)) | Proposed |
 
 See [plan/10-roadmap.md](plan/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1117,11 +1118,14 @@ and nothing may depend on `shell`. That is what keeps the core testable with no 
 The parts worth knowing before touching anything:
 
 - **[plan/10-roadmap.md](plan/10-roadmap.md)** — one PR number per feature on both platforms: PRs 1–8
-  (Windows v1 and their Mac halves), 9–15 updates, 16–19 the Import add-on, 20–24 AI search. Each
+  (Windows v1 and their Mac halves), 9–15 updates, 16–19 the Import add-on, 20–24 AI search,
+  27–28 Voice query. Each
   has a verify line per platform. Work is one slice; PR N+1 does not merge until N holds on both
   platforms *and* both present-loop gates still do.
 - **[plan/18-import.md](plan/18-import.md)** — the Import add-on: what it does better than an
   Explorer/Finder copy, its window, settings, engine and how add-ons install.
+- **[plan/19-voice.md](plan/19-voice.md)** — the Voice add-on: speak a Local search query. Its own
+  download, on-device recognition, a spoken count.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](plan/12-decision-log.md)** — why a call was reversed, so it

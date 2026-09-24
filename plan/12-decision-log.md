@@ -1721,3 +1721,35 @@ open has its own id). Export sheet: `ExportView.swift`, the twin of the Windows 
   chosen for the viewport seen from the source (`shell/edit_view.h` `view_in_source`: the centre
   mapped back, the extent the box of the mapped corners). The Mac has no tiling yet, so there is no
   MSL twin to change.
+
+## 2026-09-24 — Voice query is its own add-on, Milestone I (PRs 27–28)
+
+**Owner's call.** After the add-on mechanism (Milestone G) exists, the owner wants to speak a
+search — "pull up all the photos that include…" — and have Local search answer it. Speech is
+**not** a piece of the AI pack. It is a separate Settings install, [19-voice.md](19-voice.md).
+
+**Where it sits.** It needs PR 16's add-on host and PR 22's text query, so it does not merge
+before PR 22. Numbers are **27–28, Milestone I**. PR 25 stays unused (freed when AI search
+moved to 20–24). PR 26 stays folder tiles. Voice and folder tiles do not block each other.
+Not a numbered D-decision. Nothing here changes the PR 1–8 viewer or the base installer.
+
+**What was decided with it:**
+- The utterance is the query. There is no intent parser and no second index. Voice calls the
+  host, and the host forwards to the AI add-on. Voice does not open `index.db`.
+- Voice installed without Local search searches nothing and does not download Local search
+  by itself. Each pack is its own opt-in.
+- Recognition is on-device. The mic opens only while the key is held (`Ctrl+Shift+Space` /
+  `⌘⇧Space`). The spoken reply is the result count. A wake word, always-on listening, cloud
+  recognition, cloud voices, and searching the speech inside a video stay out.
+- Mac listens with the Speech framework and `requiresOnDeviceRecognition = true`, and speaks
+  with `AVSpeechSynthesizer`.
+- **Windows is a spike, not a silent choice.** The OS on-device API
+  (`Microsoft.Windows.AI.Speech`) is documented as MSIX plus `systemAIModels`. This app stays
+  unpackaged (GPL, direct download, no Store, 2026-09-06). PR 27 measures whether an
+  unpackaged process can use it with no outbound connection. If it cannot, the Voice add-on
+  carries a small native recognizer of its own (whisper.cpp, MIT). That file stays out of the
+  AI pack and out of the base tree. The legacy cloud-capable Windows recognizer is refused
+  either way. The viewer's Windows 10 floor does not move.
+- The host table gains `search_query` at the end. Older add-ons keep their ordinals.
+
+Full design and both verify lines: plan/19. Not implemented.
