@@ -167,7 +167,7 @@ ranges. **Marks are a separate set.**
 | `Ctrl+A` | Mark all (current filter) |
 | `Ctrl+D` | Unmark all |
 | `F7` | Copy marked (else current) to last destination; `Shift+F7` picks a folder |
-| `F8` | Move, same rule. Same-volume `MoveFileEx`; copy+delete across volumes. I/O thread |
+| `F8` | Move, same rule. Same-volume `MoveFileEx`; across volumes a **verified** copy (hashed while read, read back uncached, compared), then the delete (plan/18: never an unverified source). I/O thread |
 | `Ctrl+C` | Clipboard `CF_HDROP` of original(s) |
 | `Ctrl+Shift+C` | Copy path(s) as text |
 | `Ctrl+Alt+C` | Flattened PNG/JPEG of the current view (edits baked). Worker, not UI thread |
@@ -201,6 +201,21 @@ next one slides into its place (the previous one at the end).
 | `Esc` | Cancel the draft |
 
 `A` `D`, `G` and `Ctrl+O` do nothing while cropping: walking away would drop the draft.
+
+### Import (Milestone G, only while the add-on is installed)
+
+| Windows | Mac | Command |
+|---|---|---|
+| `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
+| `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
+
+Both rows are in the one command table and are listed, routed and shown in `?` / Settings **only while
+Import is installed and loaded**; with it absent the keys fall through as if unbound (plan/18).
+Checked free against the live table on 2026-09-24. Inside the Import window (its own keys, not
+table rows): `Enter` / `Return` imports (on a focused tile it opens that file in the viewer, for
+culling first), `Ctrl+Enter` / `⌘Return` imports from anywhere, `Space` toggles a tile and pauses /
+resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctrl+Shift+Tab` (`⌃Tab`)
+the next / previous source, `Ctrl+J` / `⌘J` ejects, `Esc` closes the window and the import carries on.
 
 ### Rate (PR 12)
 

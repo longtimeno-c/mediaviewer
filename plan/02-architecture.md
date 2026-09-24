@@ -25,8 +25,10 @@ tools/         frame-time harness, golden-image runner, corpus fuzzers
 ```
 
 Dependencies point **downward only**:
-`shell → abi → {canvas, edit, player, image, meta} → {codec, gfx, io} → core`, and the C# side
-depends on **`abi` alone**. No back-edges, and **no native module may depend on `shell`** — that
+`shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`, and the C# side
+depends on **`abi` alone**. (`addon`, Milestone G, is the base app's add-on host; an add-on itself
+— `src/addons/<name>` — links nothing of the core and reaches it only through the host function
+table, plan/18.) No back-edges, and **no native module may depend on `shell`** — that
 rule is what keeps the core testable headlessly and re-hostable. Enforce with a CI script that
 greps includes; it takes 20 lines and saves the project.
 
