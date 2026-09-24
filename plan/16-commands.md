@@ -354,7 +354,7 @@ Standard-viewer ideas that fail the speed bar, D4/D5, or "this is not a library"
 | Side-by-side compare workspace | v1.1. Hold-previous is the cheap cousin |
 | Burst-stack as one filmstrip item | Heuristic, can hide files. Live Photo / RAW+JPEG pairing is exact; burst grouping waits |
 | Print / contact sheet | v1.1. Not the hot path, but it is a week of print UI |
-| ~~Card ingest with verify~~ | **Moved to PR 26 (2026-09-24):** hash dedupe, verify-after-copy, date-taken layout, on both platforms. A catalogue and renaming templates remain out ([10](10-roadmap.md)) |
+| ~~Card ingest with verify~~ | **Moved to the Import add-on, PRs 16–19 (2026-09-24)** ([18-import.md](18-import.md)) |
 | GPS map, keywords, colour labels | v1.1 metadata |
 | Quick-export presets on one key | After PR 10 export exists and has been used |
 | PiP / compact overlay | v1.1. Second window is a second present path unless it is DWM-only |
@@ -382,7 +382,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]` |
 | 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
-| 26 | Ingest… (`Shift+F7` menu entry), cancel/resume ingest. `F8` across volumes deletes the source only after verify |
+| 16–19 | Import add-on commands, present only while it is installed ([18-import.md](18-import.md#commands)). Base app, PR 16: `F8` across volumes deletes the source only after verify |
 
 **Verify (PR 6, additive with the existing line):** keyboard-only browse of a real folder —
 open, next/prev, zoom/fit/100 %, mark, copy-to a destination, delete to Recycle Bin,

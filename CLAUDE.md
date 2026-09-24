@@ -4,8 +4,10 @@ Windows viewer for a real camera dump — photos and video in one folder. Opens 
 instantly and pans without a dropped frame. The first release ships the viewer through
 PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
 Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
-kept hostable; macOS is Milestone F (`plan/15-platforms.md`, D9), not a UI-only port.
-**From PR 9, every PR lands on Windows and macOS together** (D9 amended 2026-09-24).
+kept hostable; macOS is a second host of the same core (`plan/15-platforms.md`, D9), not a
+UI-only port. **One PR number per feature on both platforms:** the Mac host (built as old
+PRs 16–20) is the Mac halves of PRs 1–8, both platforms are at PR 9, and every PR from 9 lands
+on Windows and macOS together (D9 amended 2026-09-24). 16–19 is the Import add-on, 20–24 AI search.
 
 **v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
 Light editing and trim follow in future updates. Not a develop module.
@@ -40,6 +42,8 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/14-abi.md` | C ABI between host and core |
 | `plan/15-platforms.md` | Windows v1, hostable core from PR 4, macOS as Milestone F, dual-track from PR 9 — **D9**. Read before any new Win32/D3D11 or Cocoa/Metal leak out of the hosts / `gfx/` |
 | `plan/16-commands.md` | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. Read before adding a key, overlay, or chrome command |
+| `plan/17-local-ai-search.md` | AI search add-on (PRs 20–24), proposed |
+| `plan/18-import.md` | Import add-on (PRs 16–19): card copy with hash dedupe + verify; the add-on mechanism |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.
@@ -73,7 +77,7 @@ If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
-| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is Milestone F (PR 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. |
+| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is the Mac halves of PRs 1–8 (built as Milestone F, old PRs 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. |
 
 Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path **on one OS**.
 
@@ -96,8 +100,8 @@ not revert unrelated changes. If concurrent work prevents a meaningful build,
 validate the current PR in an isolated checkout and report which source was
 tested. Keep changes to shared files compatible with the other work.
 
-Work is **one PR slice from `plan/10-roadmap.md`**. Do not start PR N+1 until N's verify
-holds **and** PR 1's present-loop verify still holds.
+Work is **one PR slice from `plan/10-roadmap.md`**. Do not merge PR N+1 until N's verify
+holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR 1) still hold.
 
 - The verify line is the success criterion. Quote it before you start; do not invent a
   different one.
@@ -105,8 +109,9 @@ holds **and** PR 1's present-loop verify still holds.
   The stack is designed to take them later; adding them now is scope. Do not skip a D9 port in
   order to call Win32 **or Cocoa/Metal** from `image/`, `player/`, `edit/`, or `meta/`.
 - From PR 9 a slice has two host halves. Build both, and run the verify line on both
-  platforms plus both present-loop gates (PR 1 on Windows, PR 16 on Mac). A slice green on one
-  platform only is not done, and PR N+1 does not start until it is.
+  platforms plus both present-loop gates (PR 1 on Windows, Mac PR 1 on Mac). A slice green on one
+  platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
+  on a branch).
 - Do not add a format that is not in the D5 v1 set.
 - Do not build a batch metadata engine before the read pane has been used (PR 12 writes
   rating, orientation, and user comment only).

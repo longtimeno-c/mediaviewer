@@ -306,7 +306,7 @@ it can never justify delaying v1. Fuzz the decoders from PR 6 in the meantime
 ## D9 — Platforms: **Windows v1, hostable core, macOS as Milestone F** ✅ decided · amended 2026-09-24: dual-track from PR 9
 
 **Amendment (2026-09-24, owner).** Windows v1 is packaged (PR 8) and the Mac host exists
-(PR 16–20). **From PR 9, every PR lands on Windows and macOS together.** It has one shared
+(the Mac halves of PRs 1–8). **From PR 9, every PR lands on Windows and macOS together.** It has one shared
 core change, a WinUI half and a SwiftUI half, HLSL and MSL twins in the same PR, and a
 verify line per platform. A PR is done only when both hold
 ([10-roadmap.md](10-roadmap.md#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)).
@@ -336,14 +336,14 @@ I/O, and notarization are the other half. Recorded in [12](12-decision-log.md).
 
 **Call: v1 is a Windows app. macOS is the next product, specified now, built after PR 8.**
 D1–D8 stand, with the per-OS reading below. PR 1–3 are not retrofitted. Do not implement
-Metal, Swift, or a `*_mac.cpp` during Windows v1 (PRs 1–8), except the already-authorized PR 16 present lab.
+Metal, Swift, or a `*_mac.cpp` during Windows v1 (PRs 1–8), except the already-authorized Mac PR 1 present lab.
 
 What this costs, stated honestly:
 
 - **Chrome is written twice.** Filmstrip, folder tree, metadata pane, adjust pane, settings:
   WinUI on Windows, SwiftUI on Mac. Sharing them by rewriting in C++ throws D1 away. Sharing
   them via Qt/Flutter/MAUI throws D1 away a different way.
-- **A Metal present lab in PR 16**, the Mac equivalent of PR 1, with its own 60 s animated
+- **A Metal present lab in Mac PR 1**, the Mac equivalent of PR 1, with its own 60 s animated
   and idle soaks. A Windows DXGI pass is not a Mac pass.
 - **Hand-written HLSL and MSL twins** from the first kernel the Mac path needs. No SPIR-V, no
   shader compiler, no third language.

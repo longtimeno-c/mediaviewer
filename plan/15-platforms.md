@@ -4,19 +4,16 @@
 second host of the same decode / colour / edit / metadata library, not a rewrite of those.
 The Mac app is **Milestone F** ([10-roadmap.md](10-roadmap.md)).
 
-**Amended 2026-09-24: dual-track from PR 9.** Windows PR 8 and Mac PRs 16–20 are in the
-tree. PRs 9–15 (and PR 26, Ingest) now land **on both platforms in the same PR**: a shared
-core change, a WinUI half, a SwiftUI half, HLSL + MSL twins, and a verify line per
-platform ([10-roadmap.md](10-roadmap.md#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)).
-Where this document says "Milestone F" or "after PR 18" for a PR 9–15 feature, read "the
-Mac half of that PR". The rules below are unchanged.
-
-This document is the rule set. Metal, Swift, and `*_mac.cpp`/`*_mac.mm` work is authorized
-to proceed during Windows v1 for PRs 16–20 only (widened 2026-09-17 from the PR-16-only
-exception of 2026-09-13 — [12](12-decision-log.md)); VideoToolbox specifically waits for
-PR 19, in F's own sequence. The hostable-core rules continue through future Windows
-updates (PRs 9–15) regardless; do not call Win32 from `image/`, `player/`, `edit/`, or
-`meta/`.
+**Amended 2026-09-24: dual-track from PR 9, one number per feature.** The Mac host
+(built as Milestone F, old PRs 16–20) is filed as the **Mac halves of PRs 1–8**
+([10-roadmap.md](10-roadmap.md#mac-halves-of-prs-18--landed-formerly-milestone-f-prs-1620)).
+Both platforms are at PR 9. PRs 9–19 (the Import add-on is 16–19) land **on both platforms
+in the same PR**: a shared core change, a WinUI half, a SwiftUI half, HLSL + MSL twins, and
+a verify line per platform
+([10-roadmap.md](10-roadmap.md#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)).
+Where this document says "Milestone F" for a feature from PR 9 on, read "the Mac half of that
+PR". The rules below are unchanged. Do not call Win32 **or Cocoa/Metal** from `image/`,
+`player/`, `edit/`, or `meta/`.
 
 ## This is not a UI update
 
@@ -94,13 +91,13 @@ host cannot replace.
   and will bit-rot. The Windows file is `*_win.cpp` (or lives in `shell/`) when a
   port is required; the Mac file arrives with Milestone F, as a real implementation.
 - **No Swift project, no Metal, no Cocoa, no Catalyst in Windows v1**, except the
-  already-authorized PR 16 Metal present lab.
+  already-authorized Mac PR 1 Metal present lab.
 
 `tools/check-module-graph.ps1` already forbids native modules depending on `shell/`.
 `tools/check-hostable-core.ps1` (PR 4) fails a direct `#include` of `d3d11.h`,
 `<windows.h>`, or `<atlbase.h>` from `core/`, `codec/`, `canvas/`, `image/`,
 `meta/`, `player/`, `edit/`, and from `io/*.h`. Windows I/O and watch stay in
-`io/*_win.cpp`. A leak that “saves a day” in PR 5a is a rewrite in PR 16.
+`io/*_win.cpp`. A leak that “saves a day” in PR 5a is a rewrite in Mac PR 1.
 
 `image/gpu_image.h` still pulls D3D11 *transitively* through `gfx/device.h`. That
 is a PR 2 leftover, not a licence to add more. Do not include `gfx/device.h` from
@@ -119,20 +116,20 @@ so a line-for-line MSL twin is possible (no HLSL-only syntax in the *algorithm*,
 register binding documented in a comment). Do not introduce FXC/DXC → SPIR-V → MSL.
 Do not share bytecode.
 
-## Milestone F — the Mac host (PR 16–20)
+## Milestone F — the Mac host (now the Mac halves of PRs 1–8, landed)
 
 F no longer waits for PR 8's verify to start (widened 2026-09-17, below), but **PR 1's
 present-loop verify must still hold on Windows**, independently, and F has its own
 present-loop gate on Mac; a DXGI JSON report is not evidence on Metal.
 
-**Sequencing exception (2026-09-13, widened 2026-09-17):** PR 16 was authorized to
+**Sequencing exception (2026-09-13, widened 2026-09-17):** Mac PR 1 was authorized to
 proceed in parallel with Windows v1 on 2026-09-13. On 2026-09-17 the owner widened
-this to PRs 17–20 as well — Milestone F no longer waits on Windows PR 8. D9 itself
+this to the Mac halves of PRs 2–8 as well — Milestone F no longer waits on Windows PR 8. D9 itself
 (Mac is a host, not a UI port) is unchanged; F's internal sequencing (16 before 17
 before 18 before 19 before 20, each verify line before the next PR starts) is
 unchanged too. [12](12-decision-log.md).
 
-### PR 16 — Metal present lab
+### Mac PR 1 — Metal present lab (was PR 16)
 
 AppKit window, `CAMetalLayer`, display-link pacing (`CAMetalDisplayLink` on macOS 14,
 not `Sleep`, not a display-link that waits *after* encode), max drawable 1, idle →
@@ -144,13 +141,13 @@ instrument, and it stays as a debug harness the way the Win32 lab does.
 CPU idle, **on Apple Silicon, measured from the Metal / display-link side**. A
 Windows soak copied over is not this verify.
 
-### PR 17 — Still decode + pan/zoom, on Metal
+### Mac PR 2 + PR 7 — Still decode + pan/zoom + camera-dump formats, on Metal (was PR 17)
 
 Same ABI, same decoders, same LCMS policy (D6), starting from JPEG/PNG/BMP. Immutable
 Metal texture upload from the worker pool, fit / wheel-zoom-toward-cursor / drag-pan, `0` /
 `1`. First blit shader gets its MSL twin here.
 
-**Folded in (2026-09-17, [12](12-decision-log.md) — no PR 16–20 slot existed for Windows
+**Folded in (2026-09-17, [12](12-decision-log.md) — no Mac slot (old PRs 16–20) existed for Windows
 PR 7):** TIFF, WebP, ICO, HEIC/HEIF, AVIF, RAW via LibRaw with embedded-preview-as-first-pixel,
 tiled pyramid above ~64 MP, broken-file corpus + libFuzzer harnesses, and Crashpad + the Mac
 minidump scrub — landing here for the reason PR 7 paired them on Windows: this is where
@@ -163,13 +160,13 @@ shows a preview in JPEG-comparable time with the full decode replacing it withou
 pop; original RAW bytes unchanged; nothing in the broken-file corpus crashes or hangs; a
 deliberately corrupted RAW produces a minidump with no path, filename, or pixel data.
 
-### PR 18 — SwiftUI chrome, hosted in the AppKit window
+### Mac PR 3 + PR 4 + PR 6 — SwiftUI chrome, hosted in the AppKit window (was PR 18)
 
-**The canvas is not ported to SwiftUI.** PR 16's AppKit window and `CAMetalLayer`
+**The canvas is not ported to SwiftUI.** Mac PR 1's AppKit window and `CAMetalLayer`
 stay exactly as built; SwiftUI chrome is hosted inside them. Command bar and window
 chrome only — panes come with the same features they have on Windows, not earlier.
 
-**Folded in (2026-09-17, [12](12-decision-log.md) — no PR 16–20 slot existed for Windows
+**Folded in (2026-09-17, [12](12-decision-log.md) — no Mac slot (old PRs 16–20) existed for Windows
 PR 4/6):** folder listing + sort, `kqueue`/`FSEvents` dir watch (`io/dir_mac.cpp`), a
 SwiftUI filmstrip + gallery over the same folder model and JPEG-512 thumbnail cache spec
 (`jpg512.1`) as Windows, and keyboard-complete browse — one key router with a Mac default
@@ -177,17 +174,17 @@ map (`⌘` not `Ctrl`, same command ids as [16-commands.md](16-commands.md)), `?
 marks, copy-to/move-to, Trash (not Recycle Bin) with confirm, drag-and-drop in and out,
 argv handling, fullscreen, slideshow as a mode, fit/100%/fill, animated GIF/APNG/WebP on
 the display-link frame clock. RAW+JPEG and Live Photo pairs surface as one filmstrip stop
-here, using the pairing detection PR 17 lands decode-side.
+here, using the pairing detection Mac PR 2 lands decode-side.
 
 **Verify:** zero dropped frames while panning a cached image at display refresh,
-unchanged from PR 17 now that chrome is on screen. Focus and keyboard traversal
+unchanged from Mac PR 2 now that chrome is on screen. Focus and keyboard traversal
 cross the SwiftUI / canvas boundary; a popover opens over the canvas without
 clipping. 2000 mixed JPEGs — filmstrip scrolls without a hitch, second folder visit has
 near-instant thumbnails; keyboard-only browse — open, next/prev, zoom, mark, copy-to,
 delete to Trash, fullscreen, slideshow — without the mouse, `?` listing those bindings; a
 RAW+JPEG pair and a Live Photo are each one filmstrip stop.
 
-### PR 19 — VideoToolbox + Core Audio
+### Mac PR 5 — VideoToolbox + Core Audio (was PR 19)
 
 FFmpeg + VideoToolbox on *your* `MTLDevice`, decoded surfaces copied into a
 presentation ring you own (same DPB rule as D3D11VA — do not present decoder-pool
@@ -200,16 +197,16 @@ Mac with no extra codec packs; an iPhone HLG clip looks correct; A/V drift flat
 over 30 minutes; photo → video → photo leaks no textures. `AVPlayer` does not
 appear in the process.
 
-### PR 20 — Finder + notarized ship
+### Mac PR 8 — Finder + notarized ship (was PR 20)
 
 UTIs for the D5 still set, one “Open with” registration, never a silent default-app
 hijack. Quick Look / thumbnail generation in a **separate process** — loading
 libheif / LibRaw / FFmpeg into Finder is how you crash the desktop, same landmine
 as in-process Explorer handlers. Notarized, stapled, Sparkle updates, Apple
-Silicon only. Crash reporting already exists from PR 17 (folded in 2026-09-17, mirroring
+Silicon only. Crash reporting already exists from Mac PR 7 (folded in 2026-09-17, mirroring
 Windows PR 7); the Mac minidump path scrubs the same (no paths, filenames, pixels, EXIF). First install is the Mac
 twin of the PR 8 wizard: a branded drag-install disk image with the GPL shown on
-mount, not a `.pkg` ([13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20)).
+mount, not a `.pkg` ([13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-mac-pr-8)).
 
 **Verify:** double-clicking a HEIC in Finder opens the app; a deliberately
 corrupted HEIC in a browsed folder leaves Finder running; a clean Mac → mount the
@@ -227,28 +224,28 @@ metadata / canvas springs / the C ABI **transfer**. Chrome, present, hwdecode,
 audio, I/O, and ship **do not**. This table is the checklist so a feature is not
 forgotten because it was "not a Mac PR."
 
-**2026-09-17:** PR 4, PR 6, and PR 7 originally had no PR 16–20 slot at all (see the
-parity note in [10-roadmap.md](10-roadmap.md)). The owner folded them into PR 17/18
-rather than adding new PR numbers; the rows below now point at those, not "after PR 18."
+**2026-09-17:** PR 4, PR 6, and PR 7 originally had no Mac slot (old PRs 16–20) at all (see the
+parity note in [10-roadmap.md](10-roadmap.md)). The owner folded them into old PRs 17/18. Since the 2026-09-24 renumber, those are simply
+Mac PRs 4, 6 and 7.
 
 | Windows v1 | Transfers? | Mac home |
 |---|---|---|
-| PR 1 present lab, F3, idle-stop, 60 s gate | No | **PR 16** — AppKit + `CAMetalLayer` + `CAMetalDisplayLink`, `frametime` on Darwin |
-| PR 2 JPEG/PNG/BMP, LCMS, pan/zoom springs | Decoders, colour, `canvas/` | **PR 17** — immutable Metal upload, first MSL blit twin |
-| PR 3 command-bar chrome | ABI only | **PR 18** — SwiftUI hosted in the AppKit window; canvas stays Metal |
-| PR 4 folder, filmstrip, gallery, JPEG-512 thumbs, dir watch | folder ABI, SQLite thumbs | **PR 18** — SwiftUI filmstrip + gallery; `io/dir_mac.cpp` (`kqueue` / `FSEvents`). Same listing, same cache spec `jpg512.1` |
-| PR 5a/b/c video, WASAPI clock, transport | `IVideoSource`, clock *policy* | **PR 19** — FFmpeg + VideoToolbox on *your* `MTLDevice`, Core Audio master clock. **No `AVPlayer`.** Bindings from [16](16-commands.md) with a Mac default map |
-| PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | **PR 18** — Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
-| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | **PR 17** — same decoders, same fuzz corpus, Crashpad + Mac minidump scrub, same privacy line ([13](13-updates-and-telemetry.md)) |
+| PR 1 present lab, F3, idle-stop, 60 s gate | No | **Mac PR 1** — AppKit + `CAMetalLayer` + `CAMetalDisplayLink`, `frametime` on Darwin |
+| PR 2 JPEG/PNG/BMP, LCMS, pan/zoom springs | Decoders, colour, `canvas/` | **Mac PR 2** — immutable Metal upload, first MSL blit twin |
+| PR 3 command-bar chrome | ABI only | **Mac PR 3** — SwiftUI hosted in the AppKit window; canvas stays Metal |
+| PR 4 folder, filmstrip, gallery, JPEG-512 thumbs, dir watch | folder ABI, SQLite thumbs | **Mac PR 4** — SwiftUI filmstrip + gallery; `io/dir_mac.cpp` (`kqueue` / `FSEvents`). Same listing, same cache spec `jpg512.1` |
+| PR 5a/b/c video, WASAPI clock, transport | `IVideoSource`, clock *policy* | **Mac PR 5** — FFmpeg + VideoToolbox on *your* `MTLDevice`, Core Audio master clock. **No `AVPlayer`.** Bindings from [16](16-commands.md) with a Mac default map |
+| PR 6 keyboard-complete browse, slideshow, Recycle, DnD, argv | command *effects* via ABI | **Mac PR 6** — Mac host default map (`⌘` not `Ctrl`). `?` overlay, `⌘K` palette, Trash not Recycle Bin. Same command ids. Remap UI still v1.1 |
+| PR 7 HEIC/AVIF/RAW/TIFF/WebP/ICO, pairing, fuzz, crashpad | `codec/` | **Mac PR 7** — same decoders, same fuzz corpus, Crashpad + Mac minidump scrub, same privacy line ([13](13-updates-and-telemetry.md)) |
 | PR 9 metadata read, info overlay, AF points, eyedropper | `meta/` | SwiftUI metadata pane; `I` focuses it |
 | PR 10 geometry + lossless JPEG rotate | `edit/` | SwiftUI crop mode; `[` `]` from the viewer. MSL twins of the geometry kernels |
 | PR 11 exposure/contrast/sat/temp | `edit/` | SwiftUI adjust pane; sliders still wait for full RAW decode |
 | PR 12 rating / orientation / comment, XMP sidecar | writers | Same sidecar rule. Atomic replace is `io/replace_mac.cpp` (`rename` + `FSEVENTS`), never rewrite a RAW original |
 | PR 13 two-path trim | remux/encode policy | Same two paths, labelled. Hardware encode is VideoToolbox, not NVENC/QSV/AMF |
 | PR 14 extract & remux | same | Same operations, SwiftUI job panel |
-| PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process**. The rest (Dock menu, window tabs, Now Playing, Share, file-promise drag-out) is **PR 15's Mac half** |
-| PR 26 ingest: hash dedupe, verify, date layout | `io/` ingest, BLAKE3, `ingest.db` | **PR 26's Mac half** — SwiftUI pane, `NSWorkspace` mount notice, `F_NOCACHE` read-back |
-| PR 8 Inno + Velopack, app identity | No | **PR 20** — branded drag-install `.dmg` (GPL on mount), notarized Sparkle, same mark as `.icns` |
+| PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **Mac PR 8** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process**. The rest (Dock menu, window tabs, Now Playing, Share, file-promise drag-out) is **PR 15's Mac half** |
+| PR 16–19 Import add-on: hash dedupe, verify, date layout, backup | `io/` import engine, BLAKE3, `import.db`, add-on host table | **The Mac half of each**: SwiftUI Import window in an `NSBundle` add-on, `NSWorkspace` mount notice, `F_NOCACHE` read-back, `DADiskUnmount` eject ([18](18-import.md)) |
+| PR 8 Inno + Velopack, app identity | No | **Mac PR 8** — branded drag-install `.dmg` (GPL on mount), notarized Sparkle, same mark as `.icns` |
 
 Keyboard: the Mac host writes its own default map. It does not import a XAML
 keymap and it does not put `VK_*` or Carbon key codes into `image/`, `player/`,
@@ -276,7 +273,7 @@ These are the leaks that turn Milestone F into a rewrite:
 
 Neither Store (GPL — [11-licensing.md](11-licensing.md)).
 
-| | Windows (PR 8) | macOS (PR 20) |
+| | Windows (PR 8) | macOS (Mac PR 8) |
 |---|---|---|
 | First install | Inno Setup wizard, once | Branded `.dmg`, drag to `/Applications` or `~/Applications`, GPL on mount |
 | Install | Per-user `%LocalAppData%\MediaViewer` | The dragged `.app`; no `.pkg`, no root, no helper |

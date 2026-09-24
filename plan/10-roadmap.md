@@ -7,21 +7,39 @@ Metadata panes/writes, photo editing/export, video trimming, and additional Wind
 integration ship in future updates; they do not block v1 (D4/D7 amended in
 [01-decisions.md](01-decisions.md), rationale in [12](12-decision-log.md)).
 
-**Numbering:** former PR 15 becomes PR 8; former PRs 8–14 become PRs 9–15 respectively.
-PRs 1–7 (including 5a/5b/5c) and Mac PRs 16–20 keep their numbers. Historical decision-log
-entries retain their original numbers. Milestone C is now the Windows release;
-D/E are later feature updates and F remains the Mac host (**D9**).
+**Numbering (2026-09-14):** former PR 15 became PR 8; former PRs 8–14 became PRs 9–15.
 
-**Dual-track from PR 9 (2026-09-24):** Windows PRs 1–8 and Mac PRs 16–20 are in the tree.
-From PR 9 on, **every PR lands on Windows and macOS together**: one shared core change,
-a WinUI half and a SwiftUI half, and a verify line on each platform. A PR is done only
-when both halves hold. See [Dual-track updates](#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)
-and D9 in [01-decisions.md](01-decisions.md). PR 26 (Ingest) is planned as a separate lane
-after PR 9.
+**Numbering (2026-09-24): one number per feature, on both platforms.** The Mac host, built
+as Milestone F (old PRs 16–20), is filed as the **Mac halves of PRs 1–8** (table under
+[Mac halves](#mac-halves-of-prs-18--landed-formerly-milestone-f-prs-1620)). **Windows and
+Mac are both at PR 9.** The order from here is:
+
+| PR | Slice | Platforms | State (2026-09-24) |
+|---|---|---|---|
+| 1–8 | The viewer, packaged | Windows + Mac halves | Landed. Mac items still owed are listed under Dual-track |
+| **9** | Metadata (read) | both | **In progress.** Mac half ahead; Windows owes the XAML pane, tree island and sort menu |
+| **10** | Geometry edits + export | both | Mac half started on a branch; waits for PR 9 before merging |
+| 11 | Colour adjusts | both | Planned |
+| 12 | Metadata (write) | both | Planned |
+| 13 | Two-path trim | both | Planned |
+| 14 | Extract & remux | both | Planned |
+| 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
+| 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | Planned |
+| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | Windows-first (open) | Proposed |
+
+Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
+→ Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
+
+**Dual-track from PR 9 (2026-09-24):** from PR 9 on, **every PR lands on Windows and macOS
+together**: one shared core change, a WinUI half and a SwiftUI half, and a verify line on
+each platform. A PR is done only when both halves hold. See
+[Dual-track updates](#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)
+and D9 in [01-decisions.md](01-decisions.md).
 
 Work is sliced into **independently runnable PRs, each with a verify line**. Do not start PR N+1
+(from PR 9: do not *merge* it; a host half may start ahead on a branch)
 until N's verify holds **and PR 1's present-loop verify still holds** (from PR 9, on both
-platforms, plus PR 16's Metal gate on Mac). That second clause is what
+platforms: Windows PR 1's DXGI gate and Mac PR 1's Metal gate). That second clause is what
 stops smoothness eroding one feature at a time. Week numbers are deliberately absent; they are
 fiction.
 
@@ -210,11 +228,108 @@ PR 15 associations or handlers; once those arrive, uninstall must remove them to
 Exercise update signature rejection and rollback, and confirm telemetry stays off
 unless explicitly enabled.
 
+## Mac halves of PRs 1–8 — landed (formerly Milestone F, PRs 16–20)
+
+**Renumbered 2026-09-24 ([12](12-decision-log.md)).** The Mac host was built as its own
+milestone, F, numbered PRs 16–20. Since the D9 amendment, **one PR number means one feature on
+both platforms**, so those five PRs are now filed as the **Mac halves of Windows PRs 1–8**.
+Both platforms are at PR 9. Numbers 16–20 are reused by the Import add-on (16–19) and AI search
+(20). Decision-log entries, branch names and commits from before 2026-09-24 keep the old
+numbers. Use this table to read them:
+
+| Old number | Is now | What it built |
+|---|---|---|
+| PR 16 | **Mac PR 1** | Metal present lab: AppKit, `CAMetalLayer`, display link, F3, `frametime` on Darwin |
+| PR 17 | **Mac PR 2** + **Mac PR 7** | Still decode, pan/zoom, the MSL blit twin, and the rest of the D5 formats + pairing detection (Crashpad still owed) |
+| PR 18 | **Mac PR 3** + **Mac PR 4** + **Mac PR 6** | SwiftUI chrome in the AppKit window, folder/filmstrip/gallery + FSEvents, and keyboard-complete browse |
+| PR 19 | **Mac PR 5** (5a/5b/5c) | VideoToolbox + Core Audio clock + transport strip |
+| PR 20 | **Mac PR 8**, plus part of **Mac PR 15** | Notarized disk image, Sparkle, and (early) Finder types, Quick Look, the default-viewer sheet |
+
+The sections below are the record of what each was built to, with their verify lines. Mac is a
+**host of the same core**, not a UI-only port (D9). Decode, colour, EditStack, metadata and the
+C ABI transfer. Present, hardware decode, audio, I/O, chrome and the installer do not
+([15-platforms.md](15-platforms.md)). Each Mac half has its own present-loop gate (Mac PR 1's
+Metal soak), checked independently of Windows PR 1's.
+
+### Mac PR 1 — Metal present lab (was PR 16)
+AppKit window, `CAMetalLayer`, display-link pacing, idle → stop presenting, F3 overlay,
+`frametime` on Darwin. **No SwiftUI yet** — this is the Mac instrument, kept as a debug
+harness the way the Win32 lab is.
+
+**Verify:** presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle,
+**on Apple Silicon, measured from the Metal / display-link side**. A Windows DXGI soak is
+not this verify.
+
+### Mac PR 2 + PR 7 — Still decode, pan/zoom and the camera-dump formats, on Metal (was PR 17)
+Same ABI and decoders as PR 2 (JPEG/PNG/BMP) to start. Immutable Metal texture upload from
+the worker pool, fit / wheel-zoom-toward-cursor / drag-pan. First blit shader gets its MSL
+twin.
+
+**Folded in (2026-09-17, [12](12-decision-log.md)):** the rest of the Windows PR 7 camera-dump
+format set — TIFF, WebP, ICO, HEIC/HEIF, AVIF, RAW via LibRaw with embedded-preview-as-first-pixel
+— and Crashpad + the Mac minidump scrub, landing here for the same reason PR 7 paired them on
+Windows: this is the PR where hostile real-world files first meet Mac decoders. RAW+JPEG and Live
+Photo pairing *detection* (`io/pairing.h` logic) can land here too, decode-side; surfacing a pair as
+one filmstrip stop is Mac PR 3's job once a filmstrip exists.
+
+**Verify:** everything PR 2's verify line asked, plus: iPhone HEIC opens with no extra codec
+install; a CR2/NEF/ARW shows a preview in JPEG-comparable time and the full decode replaces it
+without a visible pop; **original RAW bytes unchanged**; nothing in the broken-file corpus
+crashes or hangs; a deliberately corrupted RAW produces a minidump containing no path, filename,
+or pixel data. A 12 MP JPEG pans at refresh with zero decode on mouse move; a tagged AdobeRGB
+JPEG renders correctly and an untagged one is treated as sRGB, with **no tone-map applied
+to either** (D6).
+
+### Mac PR 3 + PR 4 + PR 6 — SwiftUI chrome, folder/filmstrip/gallery, keyboard-complete browse (was PR 18)
+**The canvas is not ported to SwiftUI.** Mac PR 1's AppKit window and `CAMetalLayer` stay;
+SwiftUI chrome is hosted inside them. Command bar and window chrome only.
+
+**Folded in (2026-09-17, [12](12-decision-log.md)):** the Windows PR 4 and PR 6 scope that has
+nowhere else to go once chrome exists — folder listing + sort, `kqueue`/`FSEvents` dir watch
+(`io/dir_mac.cpp`), filmstrip + gallery as SwiftUI views over the same folder model and the same
+JPEG-512 thumbnail cache spec (`jpg512.1`) Windows uses, and PR 6's keyboard-complete browse: one
+key router with a Mac default map (`⌘` not `Ctrl`), `?` overlay, marks, copy-to/move-to, Trash
+(not Recycle Bin) with confirm, drag-and-drop in and out, argv handling, fullscreen, slideshow as
+a mode, fit/100%/fill, animated GIF/APNG/WebP on the display-link frame clock. Same command ids as
+Windows ([16-commands.md](16-commands.md)); the Mac host writes its own default map rather than
+importing the XAML one.
+
+**Verify:** zero dropped frames while panning a cached image at display refresh, unchanged
+from Mac PR 2 now that chrome is on screen. Focus and keyboard traversal cross the SwiftUI /
+canvas boundary; a popover opens over the canvas without clipping. 2000 mixed JPEGs — filmstrip
+scrolls without a hitch, second folder visit has near-instant thumbnails; keyboard-only browse of
+a real folder — open, next/prev, zoom/fit/100%, mark, copy-to, delete to Trash, fullscreen,
+slideshow start/stop — without the mouse, with `?` listing those bindings; a file dropped into the
+folder appears without restart; animation timing matches a browser.
+
+### Mac PR 5 — VideoToolbox + Core Audio + transport (was PR 19)
+FFmpeg + VideoToolbox on *your* `MTLDevice`, copy out of the decoder pool into a
+presentation ring you own, NV12 and 10-bit sample paths, HDR→SDR in the MSL twin. Core
+Audio is the master clock. **`AVPlayer` is forbidden.**
+
+**Verify:** 4K 10-bit HEVC plays at full rate with VideoToolbox active, on a clean Mac with
+no extra codec packs; an iPhone HLG clip looks correct; A/V drift flat over 30 minutes;
+photo → video → photo leaks no textures.
+
+### Mac PR 8 — Notarized disk image, Sparkle, and early Finder integration (was PR 20)
+UTIs for the D5 still set, never a silent default-app hijack. Quick Look / thumbnails in a
+**separate process**. Notarized Sparkle, Apple Silicon only. Crash reporting already exists
+from Mac PR 7 (folded in 2026-09-17, mirroring Windows PR 7) — this PR does not add it.
+First install is a branded drag-install `.dmg` with the GPL on mount — the Mac twin of the
+PR 8 wizard, not a `.pkg`
+([13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-mac-pr-8)).
+
+**Verify:** double-clicking a HEIC in Finder opens the app; a deliberately corrupted HEIC
+in a browsed folder leaves Finder running; a clean Mac → mount the notarized image (GPL
+shown) → drag to Applications → open a real camera dump, with no Gatekeeper block and no
+codec dialog; Sparkle takes N → N+1 silently and refuses an appcast signed with any other
+key; dragging the app to the Trash removes the Quick Look extension.
+
 ## Dual-track updates — PRs 9–15 on Windows and macOS together (2026-09-24)
 
 **Owner's call, 2026-09-24 ([12](12-decision-log.md), D9 amended in
 [01-decisions.md](01-decisions.md)).** Windows v1 is packaged (PR 8) and the Mac host
-exists (PR 16–20). From PR 9 on, **each PR lands on both platforms**. These are no
+exists (the Mac halves of PRs 1–8). From PR 9 on, **each PR lands on both platforms**. These are no
 longer "future Windows updates" with a Mac catch-up later. There is one PR number, one
 design and one shared core change. It has two host halves and a verify line for each
 platform.
@@ -234,24 +349,25 @@ How a dual-track PR is shaped:
   default binding ([16-commands.md](16-commands.md)): `⌘` for `Ctrl`, and no numpad
   assumption on Mac laptops.
 - **Two verify lines, both required.** The PR's shared verify runs on both platforms,
-  plus each platform's own additions. **PR N is done only when both halves hold.** Do
-  not start PR N+1 on either platform until then. That keeps the two apps at the same
-  PR instead of letting one run ahead.
+  plus each platform's own additions. **PR N is done only when both halves hold, and PR
+  N+1 does not merge until then.** A host half may be *started* ahead on a branch (the Mac
+  half of PR 10 already is), but merges go in number order. That keeps the two apps at the
+  same PR instead of letting one run ahead.
 - **Two present-loop gates, inherited every PR.** PR 1's gate on Windows (DXGI, `frametime`)
-  and PR 16's gate on Mac (Metal / display link, `frametime` on Darwin). Neither is
+  and Mac PR 1's gate on Mac (Metal / display link, `frametime` on Darwin). Neither is
   evidence for the other.
 - **One host half may lag inside a PR, but only in its own branch.** Merge a PR when both
-  halves are green. A Windows-only or Mac-only merge of a PR 9–15 feature is a
+  halves are green. A Windows-only or Mac-only merge of a feature from PR 9 onward is a
   partial release, and D9 does not allow one any more.
 
 **Entry state for PR 9** (the owner confirmed the basic Mac setup is complete on
 2026-09-24). These items were recorded as owed in [12](12-decision-log.md). They stay
 tracked, but they do not block PR 9 from starting:
 
-- PR 19: the real-iPhone HLG check (only a synthetic HLG clip was checked).
-- PR 20: Quick Look precedence over Finder's own generator; state carried across an
+- Mac PR 5: the real-iPhone HLG check (only a synthetic HLG clip was checked).
+- Mac PR 8: Quick Look precedence over Finder's own generator; state carried across an
   update restart (zoom, pan, clip position); rollback after two failed starts.
-- **Crashpad on Mac.** This is still the owner's call: either PR 17 still owes it or PR 20
+- **Crashpad on Mac.** This is still the owner's call: either Mac PR 7 still owes it or Mac PR 8
   takes it. It must be settled before the first stable Mac release that includes PR 9.
   Mac now takes new decoders (Exiv2, libavformat metadata) in the same PR as Windows.
 
@@ -376,9 +492,9 @@ palette. Everything is in the core; the hosts only add UI.
 **Verify (both platforms):** each operation round-trips; lossless rotate does not re-encode.
 
 ### PR 15 — OS integration
-The Mac already has part of this from PR 20: UTIs, the "Open with" registration, Quick Look
+The Mac already has part of this from Mac PR 8: UTIs, the "Open with" registration, Quick Look
 in a separate process, and the first-launch default-viewer sheet. So this PR's Mac half is
-smaller, and **not** a redo of PR 20.
+smaller, and **not** a redo of Mac PR 8.
 
 **Windows:** file associations via `ProgId`/`OpenWithProgids` + a Default Apps deep link
 (never a silent hijack). The default-viewer prompt follows the 2026-09-24 decision-log
@@ -388,9 +504,9 @@ with timeouts. Jump list, taskbar transport buttons, drag-out via `CFSTR_FILEDES
 single-instance-with-tabs. **Reuse the identity shipped in PR 8** for each still `ProgId`'s
 `DefaultIcon`.
 
-**macOS:** the twins that PR 20 did not land. A Dock menu of recent folders (the jump list
+**macOS:** the twins that Mac PR 8 did not land. A Dock menu of recent folders (the jump list
 twin). Window tabs through `NSWindow` tabbing (single-instance-with-tabs). Now Playing /
-`MPRemoteCommandCenter` transport (the taskbar-button twin), if PR 19 has not already
+`MPRemoteCommandCenter` transport (the taskbar-button twin), if Mac PR 5 has not already
 provided it. Drag-out of a flattened view as a file promise (`NSFilePromiseProvider`).
 Share through `NSSharingServicePicker`. **Open:** a Spotlight importer as the twin of the
 property handler. It is out-of-process by construction, but whether it is worth its own
@@ -407,203 +523,42 @@ window and taskbar button use the app icon, not the default exe. Accepting the d
 offer opens Default Apps rather than writing `UserChoice`; declining leaves existing
 defaults unchanged.
 
-**Verify (macOS):** PR 20's Finder verify still holds. The Dock menu lists recent folders
+**Verify (macOS):** Mac PR 8's Finder verify still holds. The Dock menu lists recent folders
 and opens one. A second open of a file goes to the running instance as a tab. Transport
 from the Now Playing controls drives the clip. `⌘C` of a still pastes as a file in Finder.
 Share opens the system picker with the file. Dragging the app to the Trash still removes
 every extension.
 
-## Ingest — PR 26 (both platforms, planned 2026-09-24)
+## Milestone G — Import add-on (PR 16–19, both platforms)
 
-**Owner's call, 2026-09-24 ([12](12-decision-log.md)).** This moves "card ingest with verify"
-out of the backlog. It is **not a faster copy engine.** Bytes still move at the speed of the
-card, bus and disk, and Explorer and Finder already copy close to that. The wins come from
-copying less, copying safely, and sorting while you copy.
+An **optional add-on installed from Settings**: copy a card or folder into a library, skip
+content duplicates (a size check, then a BLAKE3 hash, never the name), verify every copy,
+sort by date taken, keep pairs and sidecars together, resume after an unplug, and back up to
+a second drive from one read. The base viewer, installer and updates never carry it. It is not a
+faster copy engine: the time saved comes from copying less and never stopping to ask. Full
+design, GUI, settings, engine, add-on mechanism and verify lines:
+[18-import.md](18-import.md). Planned 2026-09-24 ([12](12-decision-log.md)).
 
-PR 26 is numbered after Milestone G so PRs 9–25 keep their numbers. **It may start once
-PR 9 holds on both platforms.** It needs PR 9's date taken, and otherwise builds on PR 6's
-marks and `F7`/`F8` (Mac: PR 18). It touches `io/`, the folder model and the copy path, not
-`edit/` or `player/`, so it runs beside PRs 10–15 as its own lane. Its verify gates only
-itself, and both present-loop gates still hold throughout.
+Sequenced **after PR 15**, because PRs 9 and 10 are already in flight on both platforms. Each
+slice is dual-track, with a verify line on each platform, and both present-loop gates held
+**while importing**.
 
-**Shared (core):**
+- **PR 16 — Add-on mechanism + import engine.** Signed add-on install/remove in Settings,
+  host function table, the engine (duplicates, library index, verify, overlap, units, resume)
+  and a minimal sheet. The base app's `F8` stops deleting a source before its copy is verified.
+- **PR 17 — The Import window.** Sources with "N new" counts, a day-grouped grid, a preset
+  panel with a **Where files go** preview, ETA, pause/cancel, background running, summary,
+  eject. Keyboard-complete.
+- **PR 18 — Presets, backup, layouts, rename.** Named and per-card presets, opt-in auto-import,
+  a second destination from one read, layouts, rename templates, camera sidecars.
+- **PR 19 — Library tools.** Library-wide duplicate scope, import history, and
+  verify-a-folder (silent-corruption check).
 
-- **Duplicate skip by content, never by name.** Skip a file only when a destination file
-  has the same size **and** the same BLAKE3-256 hash. A different name with the same bytes
-  counts as a duplicate. The same name with different bytes is **not** a duplicate: it is
-  copied under the PR 6 collision-safe name. Size is compared first, so most files are
-  never hashed. Destination hashes are cached in SQLite (`ingest.db`, keyed by volume,
-  path, size and mtime), so a second ingest into the same library does not re-read it.
-  Every skip is listed in the result, with the file it matched.
-- **Verify after copy.** Hash while reading the source (no second pass over the card),
-  flush the destination, read it back uncached where the OS allows
-  (`FILE_FLAG_NO_BUFFERING` on Windows, `F_NOCACHE` on Mac), and compare. A mismatch
-  deletes the bad copy, retries once, and then reports the failure. It never reports
-  success.
-- **Move is copy, then verify, then delete.** `F8` across volumes deletes the source
-  **only after** the verify passes (this tightens PR 6's copy+delete). Same-volume move
-  stays a rename. **Nothing is ever deleted from a source during ingest, and the app never
-  formats or erases a card.** Rule 5 in spirit: the only original of a photo is on that card.
-- **Overlap, not "parallel" for show.** One reader per physical source device and one
-  writer per destination device, double-buffered with large sequential I/O, so the card
-  is read while the SSD writes. Two sources on different devices (two card readers) run
-  at the same time. Parallel reads from one card are **not** added: they make a card
-  slower, not faster.
-- **Sort while copying.** An optional destination layout by date taken (PR 9):
-  `YYYY/YYYY-MM-DD/` from EXIF / container dates, with file mtime as the labelled fallback.
-  This is one fixed layout. **User filename templating stays v1.1** (the Metadata backlog
-  row).
-- **Pairs travel together.** A RAW+JPEG pair and a Live Photo (PR 7 pairing) are copied,
-  verified, skipped and sorted as one unit. A pair is never split across date folders.
-- **Cull first, then copy.** The source is whatever is marked (else the current file), as
-  in `F7`/`F8` today, so culling in the viewer decides what gets copied.
-- The job runs on the I/O workers, is cancellable, and resumes a half-done ingest by
-  hash. Cancelling leaves no partial files. **Never on the UI or render thread** (rule 1).
-- Hashes, paths and filenames stay on the machine (rule 6). Nothing about an ingest goes
-  into telemetry beyond counts, if telemetry is on at all.
-
-BLAKE3 is offered under CC0-1.0 or Apache-2.0. **Use it under CC0.** Apache-2.0 alone
-does not combine with GPL-2.0, and the app is GPL-2.0-or-later. Add it to `THIRD-PARTY.md`
-and the vcpkg manifest in this PR ([11-licensing.md](11-licensing.md)).
-
-**Windows:** an Ingest pane in WinUI (source, destination, the date-layout toggle, and a
-progress list with copied / skipped-duplicate / failed rows). `Shift+F7` gains
-"Ingest…". Removable-volume arrival (`WM_DEVICECHANGE`) can offer the pane, but **never
-starts a copy by itself**.
-
-**macOS:** the same pane in SwiftUI. Volume arrival comes from `NSWorkspace` mount
-notifications. The same rule applies: offer the pane, never auto-copy.
-
-**Not in this PR:** a catalogue or library database, a duplicate finder across a
-whole existing library, near-duplicate or burst detection (burst-stack grouping stays in
-the backlog), renaming templates, backup to a second destination, cloud anything.
-
-**Verify (both platforms):**
-
-- Ingest a 64 GB card dump of mixed RAW, JPEG, HEIC and video to an empty folder. Every
-  file's destination hash matches its source. Total time is within 10 % of the OS file
-  copy of the same set to the same drive (verification must not cost a second read of the
-  card).
-- Ingest the same card again. **Zero bytes are written**, every file is reported as a
-  duplicate, the destination is not re-read (the hash cache holds), and each card file
-  is read at most once.
-- Rename files on the card and ingest again: still zero copies. Change one byte of a
-  JPEG, keeping its name: it is copied under a collision-safe name, not skipped.
-- A copy corrupted in flight (fault injection in the writer) is detected, retried, and
-  either fixed or reported. It is never counted as done.
-- `F8` from the card to another volume: pull the destination drive mid-job, and no source
-  file whose copy was not verified is gone.
-- A RAW+JPEG pair and a Live Photo land in the same date folder. Date layout puts a clip
-  and a still shot on the same day in the same folder.
-- The UI and canvas stay responsive during ingest, and **both present-loop gates hold
-  while ingesting**.
-
-## Milestone F — It opens on a Mac (PR 16–20)
-
-**Status (2026-09-24):** landed. The owner confirmed that the basic Mac setup is complete
-and that PRs 9–15 are now dual-track. The items still owed from F are listed under
-[Dual-track updates](#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24).
-The sections below are kept as the record of what F was built to. Mac is a **host of the
-same core**, not a UI-only port (D9). Decode, colour, EditStack, metadata, and
-the C ABI transfer. Present, hardware decode, audio, I/O, chrome, and the installer do not.
-Full split and the hostable-core rule: [15-platforms.md](15-platforms.md).
-
-**Parity note (2026-09-17, [12](12-decision-log.md)):** the original PR 16–20 split only
-reached Windows PR 1/2/3/5abc/8 parity — Windows PR 4 (folder/filmstrip/gallery), PR 6
-(keyboard-complete browse), and PR 7 (camera-dump formats + crashpad), all already shipped
-on Windows, had no assigned Mac PR. The owner chose to fold that scope into the existing
-PR 17/18/20 slots rather than add new PR numbers — PR 17 and PR 18 are wider than their
-Windows twins as a result, each still with its own verify line below.
-
-F no longer waits for PR 8's verify (widened 2026-09-13 → 2026-09-17 below), but **PR 1's
-present-loop verify must still hold on Windows** and F has its own present-loop gate on Mac —
-both are checked independently, not waived by the other.
-
-**Sequencing exception (2026-09-13, widened 2026-09-17):** the owner started **PR 16** in
-parallel with Windows v1 because multiple agents can take the Metal present lab without
-blocking Windows PRs. On 2026-09-17 the owner widened the exception to **PRs 17–20**
-as well, working from a Mac day to day and ahead of Windows PR 8 shipping. D9's product
-call is unchanged — Mac is a host, not a UI port — and Milestone F's own internal
-sequencing (16 → 17 → 18 → 19 → 20, each verify line before the next starts) still
-applies. See [12](12-decision-log.md).
-
-### PR 16 — Metal present lab
-AppKit window, `CAMetalLayer`, display-link pacing, idle → stop presenting, F3 overlay,
-`frametime` on Darwin. **No SwiftUI yet** — this is the Mac instrument, kept as a debug
-harness the way the Win32 lab is.
-
-**Verify:** presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle,
-**on Apple Silicon, measured from the Metal / display-link side**. A Windows DXGI soak is
-not this verify.
-
-### PR 17 — Still decode + pan/zoom, on Metal
-Same ABI and decoders as PR 2 (JPEG/PNG/BMP) to start. Immutable Metal texture upload from
-the worker pool, fit / wheel-zoom-toward-cursor / drag-pan. First blit shader gets its MSL
-twin.
-
-**Folded in (2026-09-17, [12](12-decision-log.md)):** the rest of the Windows PR 7 camera-dump
-format set — TIFF, WebP, ICO, HEIC/HEIF, AVIF, RAW via LibRaw with embedded-preview-as-first-pixel
-— and Crashpad + the Mac minidump scrub, landing here for the same reason PR 7 paired them on
-Windows: this is the PR where hostile real-world files first meet Mac decoders. RAW+JPEG and Live
-Photo pairing *detection* (`io/pairing.h` logic) can land here too, decode-side; surfacing a pair as
-one filmstrip stop is PR 18's job once a filmstrip exists.
-
-**Verify:** everything PR 2's verify line asked, plus: iPhone HEIC opens with no extra codec
-install; a CR2/NEF/ARW shows a preview in JPEG-comparable time and the full decode replaces it
-without a visible pop; **original RAW bytes unchanged**; nothing in the broken-file corpus
-crashes or hangs; a deliberately corrupted RAW produces a minidump containing no path, filename,
-or pixel data. A 12 MP JPEG pans at refresh with zero decode on mouse move; a tagged AdobeRGB
-JPEG renders correctly and an untagged one is treated as sRGB, with **no tone-map applied
-to either** (D6).
-
-### PR 18 — SwiftUI chrome, hosted in the AppKit window
-**The canvas is not ported to SwiftUI.** PR 16's AppKit window and `CAMetalLayer` stay;
-SwiftUI chrome is hosted inside them. Command bar and window chrome only.
-
-**Folded in (2026-09-17, [12](12-decision-log.md)):** the Windows PR 4 and PR 6 scope that has
-nowhere else to go once chrome exists — folder listing + sort, `kqueue`/`FSEvents` dir watch
-(`io/dir_mac.cpp`), filmstrip + gallery as SwiftUI views over the same folder model and the same
-JPEG-512 thumbnail cache spec (`jpg512.1`) Windows uses, and PR 6's keyboard-complete browse: one
-key router with a Mac default map (`⌘` not `Ctrl`), `?` overlay, marks, copy-to/move-to, Trash
-(not Recycle Bin) with confirm, drag-and-drop in and out, argv handling, fullscreen, slideshow as
-a mode, fit/100%/fill, animated GIF/APNG/WebP on the display-link frame clock. Same command ids as
-Windows ([16-commands.md](16-commands.md)); the Mac host writes its own default map rather than
-importing the XAML one.
-
-**Verify:** zero dropped frames while panning a cached image at display refresh, unchanged
-from PR 17 now that chrome is on screen. Focus and keyboard traversal cross the SwiftUI /
-canvas boundary; a popover opens over the canvas without clipping. 2000 mixed JPEGs — filmstrip
-scrolls without a hitch, second folder visit has near-instant thumbnails; keyboard-only browse of
-a real folder — open, next/prev, zoom/fit/100%, mark, copy-to, delete to Trash, fullscreen,
-slideshow start/stop — without the mouse, with `?` listing those bindings; a file dropped into the
-folder appears without restart; animation timing matches a browser.
-
-### PR 19 — VideoToolbox + Core Audio
-FFmpeg + VideoToolbox on *your* `MTLDevice`, copy out of the decoder pool into a
-presentation ring you own, NV12 and 10-bit sample paths, HDR→SDR in the MSL twin. Core
-Audio is the master clock. **`AVPlayer` is forbidden.**
-
-**Verify:** 4K 10-bit HEVC plays at full rate with VideoToolbox active, on a clean Mac with
-no extra codec packs; an iPhone HLG clip looks correct; A/V drift flat over 30 minutes;
-photo → video → photo leaks no textures.
-
-### PR 20 — Finder + notarized ship
-UTIs for the D5 still set, never a silent default-app hijack. Quick Look / thumbnails in a
-**separate process**. Notarized Sparkle, Apple Silicon only. Crash reporting already exists
-from PR 17 (folded in 2026-09-17, mirroring Windows PR 7) — this PR does not add it.
-First install is a branded drag-install `.dmg` with the GPL on mount — the Mac twin of the
-PR 8 wizard, not a `.pkg`
-([13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20)).
-
-**Verify:** double-clicking a HEIC in Finder opens the app; a deliberately corrupted HEIC
-in a browsed folder leaves Finder running; a clean Mac → mount the notarized image (GPL
-shown) → drag to Applications → open a real camera dump, with no Gatekeeper block and no
-codec dialog; Sparkle takes N → N+1 silently and refuses an appcast signed with any other
-key; dragging the app to the Trash removes the Quick Look extension.
+The add-on mechanism built in PR 16 is the one the AI pack (PR 20) installs through.
 
 ---
 
-## Milestone G — Local AI search (PR 21–25, post-v1, proposed)
+## Milestone H — Local AI search (PR 20–24, post-v1, proposed)
 
 Windows-first, opt-in, and a **downloadable extra installed from Settings** — the base
 installer and updates never carry it. Full design, models, index, yield policy and verify
@@ -611,23 +566,23 @@ lines: [17-local-ai-search.md](17-local-ai-search.md). Proposed 2026-09-24
 ([12](12-decision-log.md)); not a D-decision. Every slice inherits PR 1's present-loop verify,
 re-run **while indexing**.
 
-- **PR 21 — Inference host and the AI pack.** `src/infer`, ORT CPU + a vendor provider,
+- **PR 20 — Inference host and the AI pack.** `src/infer`, ORT CPU + a vendor provider,
   signed pack download/verify, per-piece Install/Remove and an Auto / provider / CPU-only
   toggle in Settings. Starts with a measured spike.
-- **PR 22 — Video sampler and index.** Keyframe sampling with gap limits, embedding dedupe,
+- **PR 21 — Video sampler and index.** Keyframe sampling with gap limits, embedding dedupe,
   resumable background `index.db`, yield-to-playback policy.
-- **PR 23 — Search and results.** Natural-language query ("man on broom") over photos and
+- **PR 22 — Search and results.** Natural-language query ("man on broom") over photos and
   video, results in the gallery island, Enter seeks to the moment, match markers on the
   scrub bar, keyboard-complete.
-- **PR 24 — Find-similar, index management, hardening.**
-- **PR 25 — Faces.** Local, opt-in, deletable people index; stricter biometric handling.
+- **PR 23 — Find-similar, index management, hardening.**
+- **PR 24 — Faces.** Local, opt-in, deletable people index; stricter biometric handling.
 
-Numbers continue after Milestone F to avoid renumbering PRs 9–20. AI culling, cloud
+Renumbered 2026-09-24 from 21–25 (it follows Import). AI culling, cloud
 inference, and inference in the base installer stay out.
 
-**Open (owner, 2026-09-24):** G was proposed Windows-first, before PRs 9–15 went
-dual-track. Whether G follows the dual-track rule is not decided. A Mac half would need an
-ORT Core ML provider, which plan/17 does not specify. Decide before PR 21 starts.
+**Open (owner, 2026-09-24):** H was proposed Windows-first, before PRs 9–15 went
+dual-track. Whether H follows the dual-track rule is not decided. A Mac half would need an
+ORT Core ML provider, which plan/17 does not specify. Decide before PR 20 starts.
 
 ---
 
@@ -644,11 +599,11 @@ feature slices; that label does not promise everything in one release.
 | Video | **Smart cut** (D7), subtitle rendering beyond plain text, HDR passthrough |
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
-| Metadata | Batch date-shift, copy-metadata, strip-on-share, filename templating (PR 26's fixed date layout is not templating), colour labels, keywords |
+| Metadata | Batch date-shift, copy-metadata, strip-on-share, renaming files already in a library (Import's rename-on-import, PR 18, is not this), colour labels, keywords |
 | Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim); **theme**: colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Per-machine MSI for enterprise (Store MSIX remains excluded by the licence decision) |
-| Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS is Milestone F, not v1.1.** |
+| Platform | Windows ARM64, Intel Macs. **Apple Silicon macOS landed as the Mac halves of PRs 1–8; it is not v1.1.** |
 
 ## Sequencing advice
 

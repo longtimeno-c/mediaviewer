@@ -1149,7 +1149,7 @@ Build one or accept kill-switch-only on Mac, and log it. If the on-mount licence
 proves unreliable on macOS 14, fall back to a `Licence` file in the window + About, never
 an in-app accept modal.
 
-Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
+Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-mac-pr-8).
 
 ## 2026-09-23 — PR 20 starts before PR 19's verify fully holds; calls made starting it
 
@@ -1403,3 +1403,43 @@ CC0 (Apache-2.0 alone does not combine with GPL-2.0).
 
 **Still out:** filename templating (v1.1), a catalogue, library-wide duplicate finding,
 near-duplicate or burst grouping, backup to a second destination.
+
+## 2026-09-24 (later) — One PR number per feature: Mac 16–20 become the Mac halves of 1–8; Import is an add-on at 16–19; AI moves to 20–24
+
+**Owner's call.** The owner asked for the plan to show Mac and Windows in sync, as they now are,
+by renumbering into the order work actually happens. The state was checked in the repo, not
+assumed: `pr9-metadata-read-mac` carries PR 9 on both platforms (Mac ahead; Windows owes the
+XAML pane, tree island and sort menu), and `claude/compassionate-davinci-5fiwyz` has started
+the Mac half of PR 10.
+
+**Renumbering.** Old PR 16 → Mac PR 1. Old 17 → Mac PR 2 + 7. Old 18 → Mac PR 3 + 4 + 6.
+Old 19 → Mac PR 5. Old 20 → Mac PR 8 (plus the early Finder part of PR 15). Milestone F is
+therefore complete as the Mac halves of PRs 1–8, and both platforms are at PR 9. PRs 9–15 keep
+their numbers because 9 and 10 are in flight. The Import add-on takes 16–19 (Milestone G),
+superseding this morning's "PR 26 Ingest". Local AI search moves from 21–25 to 20–24 and becomes
+Milestone H. **Entries above this one, and branches and commits, keep the numbers they were
+written with.**
+
+**Sequencing wording changed to match practice.** From PR 9, PR N+1 does not *merge* until N
+holds on both platforms and both present-loop gates hold. A host half may start ahead on a
+branch, which the Mac half of PR 10 already has.
+
+**Import becomes an installable add-on** (owner request), like the AI pack: Settings →
+Add-ons, a signed manifest, verify before load, a per-user versioned folder, silent updates
+with the app, and sideloading. It has a native shared library behind a host function table,
+plus a chrome assembly (Windows) or `NSBundle` (Mac). It is absent from the base tree when not
+installed. Import builds this mechanism in PR 16. The AI pack (PR 20) reuses it instead of
+building its own. The base app keeps one safety fix regardless: `F8` across volumes deletes
+the source only after the copy is verified. The feature set widened at the owner's request
+("more features, better GUI"):
+- the Import window;
+- new-since-last-import;
+- presets, including per-card presets and opt-in auto-import;
+- a second destination from one read;
+- layouts and rename-on-import templates;
+- camera sidecars kept with their files;
+- library tools, including verify-a-folder.
+
+The backlog's "filename templating" is narrowed to renaming files already in a library. Full
+design: plan/18. Never offered: deleting from or formatting cards, overwriting destination
+files, uploading.
