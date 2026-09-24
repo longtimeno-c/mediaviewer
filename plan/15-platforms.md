@@ -2,7 +2,14 @@
 
 **D9.** v1 is a Windows app. The native core is kept hostable from PR 4 so a Mac app is a
 second host of the same decode / colour / edit / metadata library, not a rewrite of those.
-The Mac app is **Milestone F** ([10-roadmap.md](10-roadmap.md)), after Windows ships.
+The Mac app is **Milestone F** ([10-roadmap.md](10-roadmap.md)).
+
+**Amended 2026-09-24: dual-track from PR 9.** Windows PR 8 and Mac PRs 16–20 are in the
+tree. PRs 9–15 (and PR 26, Ingest) now land **on both platforms in the same PR**: a shared
+core change, a WinUI half, a SwiftUI half, HLSL + MSL twins, and a verify line per
+platform ([10-roadmap.md](10-roadmap.md#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)).
+Where this document says "Milestone F" or "after PR 18" for a PR 9–15 feature, read "the
+Mac half of that PR". The rules below are unchanged.
 
 This document is the rule set. Metal, Swift, and `*_mac.cpp`/`*_mac.mm` work is authorized
 to proceed during Windows v1 for PRs 16–20 only (widened 2026-09-17 from the PR-16-only
@@ -213,7 +220,8 @@ Quick Look extension.
 
 ## Windows v1 surface on Mac
 
-Milestone F is five PRs, not a dual-track of 4–15. Feature parity is still the
+Milestone F was five PRs, not a dual-track of 4–15. **From PR 9 it is a dual-track**
+(2026-09-24): the "Mac home" for PR 9–15 below is the Mac half of that same PR. Feature parity is still the
 goal: every Windows v1 behaviour has a Mac home. Decode / colour / EditStack /
 metadata / canvas springs / the C ABI **transfer**. Chrome, present, hwdecode,
 audio, I/O, and ship **do not**. This table is the checklist so a feature is not
@@ -238,7 +246,8 @@ rather than adding new PR numbers; the rows below now point at those, not "after
 | PR 12 rating / orientation / comment, XMP sidecar | writers | Same sidecar rule. Atomic replace is `io/replace_mac.cpp` (`rename` + `FSEVENTS`), never rewrite a RAW original |
 | PR 13 two-path trim | remux/encode policy | Same two paths, labelled. Hardware encode is VideoToolbox, not NVENC/QSV/AMF |
 | PR 14 extract & remux | same | Same operations, SwiftUI job panel |
-| PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process** |
+| PR 15 Explorer associations, OOP thumbnails (reuses PR 8 identity) | No | **PR 20** — UTIs for the D5 still set, never a silent default hijack. Quick Look in a **separate process**. The rest (Dock menu, window tabs, Now Playing, Share, file-promise drag-out) is **PR 15's Mac half** |
+| PR 26 ingest: hash dedupe, verify, date layout | `io/` ingest, BLAKE3, `ingest.db` | **PR 26's Mac half** — SwiftUI pane, `NSWorkspace` mount notice, `F_NOCACHE` read-back |
 | PR 8 Inno + Velopack, app identity | No | **PR 20** — branded drag-install `.dmg` (GPL on mount), notarized Sparkle, same mark as `.icns` |
 
 Keyboard: the Mac host writes its own default map. It does not import a XAML
@@ -248,7 +257,7 @@ keymap and it does not put `VK_*` or Carbon key codes into `image/`, `player/`,
 Do not ship a Mac build that is "SwiftUI on the Windows present path," and do
 not ship one that is "Metal present lab plus `AVPlayer` for video."
 
-## What Windows work (PRs 4–15) must not do
+## What Windows work (PRs 4–15) must not do — and, from PR 9, Mac work too
 
 These are the leaks that turn Milestone F into a rewrite:
 
@@ -259,6 +268,9 @@ These are the leaks that turn Milestone F into a rewrite:
 - Completions that assume a WinUI dispatcher.
 - Shaders that can only be expressed in HLSL.
 - “We'll `#ifdef _WIN32` in `image/` just this once.”
+- The mirror image, from PR 9: no `#import <Cocoa/Cocoa.h>`, `Metal/Metal.h`,
+  `CoreFoundation` or `__APPLE__` branches in `canvas/`, `image/`, `edit/`, `meta/`,
+  `codec/` or `core/`. Mac code lives in `*_mac.cpp`/`*_mac.mm` backends and the host.
 
 ## Distribution, per OS
 

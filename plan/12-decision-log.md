@@ -1349,3 +1349,57 @@ CUDA/TensorRT) as optional sub-packs with CPU always the fallback and a Settings
 feature is a downloadable extra installed from Settings, never in the base installer. AI
 culling was not requested and stays out. Recorded in plan/17 only, not as a numbered D-decision.
 Known gap: AMD GPUs run CPU until a provider exists.
+
+## 2026-09-24 — D9 amended: PRs 9–15 are dual-track, Windows and macOS in the same PR
+
+**Owner's call.** Windows PRs 1–8 are in the tree and signed off (entry above). The owner
+reports the basic Mac setup (PRs 16–20) complete, and is now working on PR 9 onward for both
+platforms at the same time. **Reverses** D9's "Milestone F is five PRs, not a dual-track of
+4–15" and plan/10's "Mac … not a dual-track requirement for those updates" for PRs 9–15.
+Everything else in D9 stands: Mac is a host, not a UI port. One present path per OS. No
+Vulkan, MoltenVK, wgpu or SPIR-V. No `AVPlayer`. The ports stay narrow.
+
+**Why.** The column D9 rejected ("Windows and macOS in v1") was rejected because it would
+have delayed Windows v1 behind a Metal lab the Windows user did not need. That reason is
+gone: v1 is packaged and the Metal lab exists. Keeping a PR 9–15 Mac catch-up would leave
+the Mac a permanent release behind. It would also let `meta/` and `edit/` grow
+Windows-shaped before anyone built them on Darwin, the leak D9 exists to prevent.
+
+**Rules.** One PR number, one shared core change, a WinUI half and a SwiftUI half, HLSL and
+MSL twins in the same PR, a verify line on each platform, and both present-loop gates
+(PR 1 Windows, PR 16 Mac). A PR is done only when both halves hold, and PR N+1 does not start
+on either platform before that. PR 15's Mac half is only the twins PR 20 did not already land.
+
+**Carried, not closed by this entry:** the PR 19 real-iPhone HLG check; PR 20's Quick Look
+precedence, state across an update restart, and rollback; and Crashpad on Mac (still the
+owner's call: PR 17 or PR 20). None blocks PR 9 from starting. Crashpad must be settled
+before the first stable Mac release that carries PR 9's new decoders. **Still open:** whether
+Milestone G (AI search) follows the dual-track rule. It was proposed Windows-first, and a Mac
+half needs an ORT Core ML provider that plan/17 does not specify.
+
+Edited: plan/01 (D9), plan/10 (PR 9–15 rewritten with host halves), plan/15, plan/16,
+plan/06 (Mac atomic replace), plan/README, CLAUDE.md, README.
+
+## 2026-09-24 — Ingest with hash dedupe and verify: PR 26, out of the backlog
+
+**Owner's call.** "Card ingest with verify" was a v1.1 backlog row (plan/10, plan/16:
+"adjacent product"). The owner asked for duplicate skipping by content hash, not by name,
+and for faster sorting of a camera dump. It becomes **PR 26**, dual-track. It may start once
+PR 9 holds on both platforms and runs beside PRs 10–15 as its own lane, because it touches
+`io/` and the copy path, not `edit/` or `player/`.
+
+**What it is not.** It is not a faster copy engine: throughput is bounded by the card, bus
+and disk, and the OS copy is already close to that. The gains are: copying less (a
+size-then-BLAKE3-256 duplicate skip, with a cached destination hash index); no second pass
+for verification (hash on read, uncached read-back of the destination); overlapping the
+card read with the SSD write; parallel work only across different physical devices; and
+sorting on the way in (a fixed `YYYY/YYYY-MM-DD` layout from date taken).
+
+**Safety calls.** A name match is never a duplicate, and a name clash with different bytes
+is copied under a collision-safe name. `F8` across volumes deletes the source only after
+verify. Ingest never deletes from or erases a card. A volume arriving offers the pane and
+never starts a copy. RAW+JPEG and Live Photo pairs move as one unit. BLAKE3 is taken under
+CC0 (Apache-2.0 alone does not combine with GPL-2.0).
+
+**Still out:** filename templating (v1.1), a catalogue, library-wide duplicate finding,
+near-duplicate or burst grouping, backup to a second destination.

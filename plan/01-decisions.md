@@ -303,7 +303,18 @@ into a crashed helper. It is also a pure win with no product-visible change, whi
 it can never justify delaying v1. Fuzz the decoders from PR 6 in the meantime
 ([09-build-and-test.md](09-build-and-test.md)).
 
-## D9 — Platforms: **Windows v1, hostable core, macOS as Milestone F** ✅ decided
+## D9 — Platforms: **Windows v1, hostable core, macOS as Milestone F** ✅ decided · amended 2026-09-24: dual-track from PR 9
+
+**Amendment (2026-09-24, owner).** Windows v1 is packaged (PR 8) and the Mac host exists
+(PR 16–20). **From PR 9, every PR lands on Windows and macOS together.** It has one shared
+core change, a WinUI half and a SwiftUI half, HLSL and MSL twins in the same PR, and a
+verify line per platform. A PR is done only when both hold
+([10-roadmap.md](10-roadmap.md#dual-track-updates--prs-915-on-windows-and-macos-together-2026-09-24)).
+The rest of D9 stands: Mac is a host, not a UI port. One present path per OS. No Vulkan,
+MoltenVK, wgpu or SPIR-V. `AVPlayer` is forbidden. The ports stay narrow. The table below
+is the original 2026-09 call. The third column's cost ("the remaining Windows PRs become
+dual-track") is now accepted for PRs 9–15, after v1, not before it. Recorded in
+[12](12-decision-log.md).
 
 v1 is Windows. From PR 4 the native core is kept hostable so a Mac app is a second host of
 the same decode / colour / edit / metadata library, not a rewrite of those. The Mac app is

@@ -4,8 +4,16 @@ A Windows viewer for a real camera dump — photos and video in one folder. Open
 instantly and pans without a dropped frame. The first release ships the viewer through
 PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
 Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
-kept hostable; macOS is Milestone F (PR 16–20), a later host of the same core, not a UI-only
+kept hostable; macOS is Milestone F (PR 16–20), a host of the same core, not a UI-only
 port — see [plan/15-platforms.md](plan/15-platforms.md).
+
+**Next: PRs 9–15 are built for Windows and macOS together.** Each PR has one shared core
+change, a WinUI half and a SwiftUI half, and a verify line on each platform. A PR is done
+only when both hold (D9, amended 2026-09-24). The order is: metadata read (9), geometry
+edits + export (10), colour adjusts (11), rating/orientation/comment writes (12), two-path
+trim (13), extract & remux (14), and OS integration (15). **PR 26, Ingest**, runs beside
+them once PR 9 holds: copy off a card with hash-based duplicate skip, verify-after-copy and
+a date-taken folder layout. See [plan/10-roadmap.md](plan/10-roadmap.md).
 
 **Status: PR 7's slices are all merged and pass locally. Its clean-VM HEIC, real
 Live Photo and on-screen no-pop checks now have gates around them
@@ -15,7 +23,7 @@ the icon, About, the Inno wizard, the Velopack updater, opt-in telemetry and the
 runtimes are in the tree and build, the wizard installs and uninstalls cleanly on this
 machine, and the signature-rejection suite passes. It has **not** been through the
 clean-VM run its verify line asks for, and no artefact is signed — see
-[Package and install](#package-and-install-pr-8). PRs 9–15 are future feature updates.
+[Package and install](#package-and-install-pr-8). PRs 9–15 are next, on both platforms at once.
 The owner widened the 2026-09-13 sequencing exception on 2026-09-17
 ([plan/12-decision-log.md](plan/12-decision-log.md)) so Mac work (PR 16–20) no longer waits
 on Windows PR 8 shipping; PR 16 (Metal present lab), PR 17 (decode + pan/zoom, folded in the
