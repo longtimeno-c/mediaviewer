@@ -205,6 +205,8 @@ struct SettingsView: View {
             Text("Descending").font(MVTheme.font()).foregroundStyle(MVTheme.title)
           }
           .toggleStyle(.switch)
+          // Milestone G (AddonsView.swift).
+          AddonsSection().padding(.top, 8)
           Spacer()
         }
         .padding(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))

@@ -72,6 +72,11 @@ public static partial class IslandHost
         public const int OpenCrumb = 1008;
         public const int GalleryColumns = 1009;
         public const int FolderUp = 115;  // mirrors command_id::folder_up
+        // Milestone G: arg 1/0 = the Import add-on is loaded / absent (its
+        // commands exist only while it is). OpenPath: native pulls the path
+        // with TakeTreePath and opens it in the viewer.
+        public const int AddonState = 1010;
+        public const int OpenPath = 1011;
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -101,7 +106,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
-                UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns,
+                UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns, AddonState, OpenPath,
             };
             unchecked
             {
@@ -1187,6 +1192,7 @@ public static partial class IslandHost
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
         row.Children.Add(BuildUpdateButton());
+        row.Children.Add(BuildImportHint());  // Milestone G (IslandHost.Addons.cs)
 
         var speed = BuildSpeed();
         speed.HorizontalAlignment = HorizontalAlignment.Right;

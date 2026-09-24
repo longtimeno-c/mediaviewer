@@ -39,8 +39,14 @@ $allowed = [ordered]@{
     'player' = @('player', 'codec', 'gfx', 'io', 'core')
     'edit'   = @('edit', 'image', 'codec', 'gfx', 'io', 'core')
     'canvas' = @('canvas', 'image', 'gfx', 'io', 'core')
-    'abi'    = @('abi', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
-    'shell'  = @('shell', 'abi', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    # Milestone G (plan/18). addon: the add-on host in the base app, beside
+    # meta/image. addons: the add-ons themselves, which reach the core only
+    # through the host function table and may include only core's
+    # header-only pieces (result.h, status.h, json.h) and themselves.
+    'addon'  = @('addon', 'io', 'core')
+    'addons' = @('addons', 'core')
+    'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    'shell'  = @('shell', 'abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
 }
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path

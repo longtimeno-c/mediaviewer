@@ -62,6 +62,12 @@ enum chrome_command : int {
   chrome_cmd_open_subfolder = 1007,   // arg is the child-folder index
   chrome_cmd_open_crumb = 1008,       // arg is the breadcrumb index
   chrome_cmd_gallery_columns = 1009,  // arg is cells per row
+  // Milestone G. arg 1: the Import add-on is installed and loaded, so its
+  // commands exist (plan/18 "Commands"); arg 0: it is not.
+  chrome_cmd_addon_state = 1010,
+  // Milestone G. Open a file in the viewer (Import's Enter); native pulls the
+  // path with take_tree_path, as for the tree.
+  chrome_cmd_open_path = 1011,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -121,6 +127,8 @@ static_assert(static_cast<int>(command_id::adjust_reset) == 124);
 static_assert(chrome_cmd_tree_open >= kCommandCount && chrome_cmd_set_sort >= kCommandCount);
 static_assert(chrome_cmd_export >= kCommandCount);
 static_assert(chrome_cmd_open_subfolder >= kCommandCount && chrome_cmd_gallery_columns >= kCommandCount);
+static_assert(chrome_cmd_addon_state >= kCommandCount);
+static_assert(chrome_cmd_open_path >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -140,7 +148,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_set_rate, chrome_cmd_focus_changed, chrome_cmd_popup, chrome_cmd_rebind,
       chrome_cmd_reset_keys, chrome_cmd_update_restart, chrome_cmd_tree_open,
       chrome_cmd_set_sort, chrome_cmd_export, chrome_cmd_open_subfolder, chrome_cmd_open_crumb,
-      chrome_cmd_gallery_columns};
+      chrome_cmd_gallery_columns,
+      chrome_cmd_addon_state, chrome_cmd_open_path};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -420,6 +429,10 @@ class chrome_host {
 
   // The command table for `?` (describe_commands). Once at attach.
   void set_command_table(const std::string& utf8) noexcept;
+  // Milestone G: open the Import window (kind 0), or import `paths_json` now
+  // with the last preset (kind 1, Ctrl+Shift+F7). Optional entry point: a
+  // chrome without it ignores the call.
+  void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -486,6 +499,7 @@ class chrome_host {
   chrome_entry_fn apply_settings_ = nullptr;
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
+  chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

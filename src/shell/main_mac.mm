@@ -40,6 +40,9 @@
 #include "io/collision_name.h"
 #include "io/file.h"
 #include "io/dir.h"
+#include "io/file_port.h"
+#include "io/verified_copy.h"
+#include "shell/addons_mac.h"
 #include "shell/adjust_pane.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
@@ -70,6 +73,16 @@
 // link error against the Swift side.
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
+
+// Whether two file URLs are on one volume, where a move is a rename. Unknown
+// counts as different, so an unanswerable case takes the verified path.
+static BOOL MvSameVolume(NSURL* a, NSURL* b) {
+  id va = nil;
+  id vb = nil;
+  [a getResourceValue:&va forKey:NSURLVolumeIdentifierKey error:nil];
+  [b getResourceValue:&vb forKey:NSURLVolumeIdentifierKey error:nil];
+  return va != nil && vb != nil && [va isEqual:vb];
+}
 
 #include <cstddef>
 
@@ -120,6 +133,9 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // PR 11
     case adjust_pane:
       return true;
+    // Milestone G: only while the Import add-on is loaded (plan/18).
+    case open_import: case import_now:
+      return mv::shell::addon_commands_available();
     default:
       return false;
   }
@@ -1160,6 +1176,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _siblingIndex = -1;
   (void)notification;
   [self loadSettings];
+  // Milestone G: an installed Import add-on is verified and loaded off the
+  // main thread; with none installed this only watches for the card hint.
+  MvLabApp* __weak weakApp = self;
+  static MvLabApp* __weak g_addon_app = nil;
+  g_addon_app = weakApp;
+  MvAddonsStart(
+      [](void*, const char* path) {
+        MvLabApp* app = g_addon_app;
+        if (app && path) (void)[app openEntryPath:path];
+      },
+      nullptr);
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
       initWithContentRect:rect
@@ -1854,8 +1881,26 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
           NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
 
           NSError* error = nil;
-          const BOOL ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
-                               : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+          BOOL ok = NO;
+          if (move && !MvSameVolume(srcURL, destDir)) {
+            // plan/18: F8 across volumes deletes the source only after the
+            // copy is verified (hashed while read, F_FULLFSYNC, read back
+            // with F_NOCACHE, compared). -moveItemAtURL: would copy and
+            // delete with no check in between.
+            const std::string targets[] = {std::string(dstURL.path.UTF8String)};
+            const auto copied =
+                mv::io::verified_copy(src_paths[i], targets, mv::io::copy_options{});
+            ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
+                 [fm removeItemAtURL:srcURL error:&error];
+            if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
+              // The source would not go: a move that leaves two copies is not
+              // a move. Take the verified copy back and report it.
+              (void)mv::io::remove_file(targets[0]);
+            }
+          } else {
+            ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
+                      : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+          }
           if (ok) {
             succeeded.push_back(src_paths[i]);
           } else {
@@ -2914,6 +2959,20 @@ enum MvMenuCmd : NSInteger {
       return YES;
     case help: [self toggleHelp]; return YES;
     case open_settings: [self setSettingsVisible:!_settingsVisible]; return YES;
+    // Milestone G (plan/18 "Commands"): ⌘⇧I and ⌘⇧F7, while Import is loaded.
+    case open_import: {
+      if (!mv::shell::addon_commands_available()) return NO;
+      std::vector<std::string> marks(_marks.begin(), _marks.end());
+      MvAddonsOpenImport(marks);
+      return YES;
+    }
+    case import_now: {
+      if (!mv::shell::addon_commands_available()) return NO;
+      std::vector<std::string> paths;
+      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
+      MvAddonsImportNow(paths);
+      return !paths.empty();
+    }
     case reveal_in_explorer: {
       NSString* path = [self currentItemPathForDrag];
       if (!path) return NO;

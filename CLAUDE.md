@@ -148,8 +148,9 @@ Deliberately narrow subset: RAII, `std::unique_ptr` / `ComPtr`, `std::span`,
 No deep template metaprogramming. Compile `/W4 /WX /permissive- /GR- /utf-8`.
 
 Dependencies point **downward only**:
-`shell → abi → {canvas, edit, player, image, meta} → {codec, gfx, io} → core`.
-No back-edges. After D1, chrome is C#; the native top is the C ABI. From PR 4, `HWND` /
+`shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`.
+No back-edges. Add-ons (`src/addons/<name>`, Milestone G) link nothing of the core and reach it
+only through the host function table (`mediaviewer_addon.h`, `plan/18-import.md`). After D1, chrome is C#; the native top is the C ABI. From PR 4, `HWND` /
 `ID3D11*` / `wchar_t` paths stay in `shell/` and the D3D11 backend (`plan/15-platforms.md`).
 
 Five thread roles. UI and render **never** wait on I/O, decode, or a lock a worker holds.

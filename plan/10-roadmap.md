@@ -24,7 +24,7 @@ Mac are both at PR 9.** The order from here is:
 | 13 | Two-path trim | both | Planned |
 | 14 | Extract & remux | both | Planned |
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
-| 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | Planned |
+| 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
 | 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
@@ -597,6 +597,21 @@ slice is dual-track, with a verify line on each platform, and both present-loop 
   verify-a-folder (silent-corruption check).
 
 The add-on mechanism built in PR 16 is the one the AI pack (PR 20) and the Voice add-on (PR 27) install through.
+
+**State (2026-09-24): built ahead on a branch** off PR 10's branch, as the dual-track rule allows
+("a host half may start ahead on a branch"); it merges only after 11–15. All four slices are
+written as one change because they share one engine: `src/addon` (the host: signed manifests,
+install / remove, loader, host function table), `src/addons/import` (the add-on: scanner,
+planner, engine, `mv.import.1`), the new io ports (verified copy, file, volume), the WinUI chrome
+(`IslandHost.Addons.cs`, `MediaViewer.Import.Chrome`) and the SwiftUI chrome (`AddonsView.swift`,
+`src.swift/ImportChrome` → `Import.bundle`), and `tools/package/addon-pack.py`. What is proved:
+the shared core's suite (`mv_import_tests`, 37 cases walking the PR 16–19 verify lines at card
+scale, under ASan/UBSan and TSan) and the packer's cross-check against the C++ verifier, on Linux.
+What is owed, per platform: the first MSVC and Xcode builds of the host halves, and every
+verify line that needs hardware — the 64 GB timing against the OS copy, eject, a real card pull,
+the grid at 2,000 files, the 10 s ETA, and both present-loop gates **while importing**. Details
+and deviations: [18 "Implementation notes"](18-import.md#implementation-notes-2026-09-24) and
+[12](12-decision-log.md).
 
 ---
 

@@ -1910,3 +1910,52 @@ run on a real Intel Mac (discrete AMD, Intel iGPU, and the display-link cadence)
 fallback speed) is likewise unmeasured. Do not describe Intel as verified before that run.
 
 Windows ARM64 remains deferred.
+
+## 2026-09-24 — Milestone G (Import add-on, PRs 16–19) built ahead on a branch
+
+**What:** the whole Import milestone was written as one change on a branch cut from PR 10's branch
+(PR 10 has since merged to main, and main is merged into the branch),
+at the owner's request, ahead of PRs 11–15. The dual-track rule allows a half to start ahead on a
+branch; it does **not** merge before 15, and it is not done until both platforms' verify lines hold
+(plan/10). The four slices share one engine, so they were not split.
+
+**Calls made (none reverses a D-decision):**
+
+- **Module graph:** a new `addon` module (the base app's add-on host) sits beside `meta` / `image`
+  and depends only on `io` and `core`; `abi` and `shell` may include it. Add-ons live in
+  `src/addons/<name>`, may include only `core`'s header-only pieces and themselves, and link nothing
+  of the core. `tools/check-module-graph.ps1` and `check-hostable-core.ps1` enforce both.
+- **F8 across volumes now copies through the verified-copy path** on both hosts (plan/18: "stays in
+  the base app regardless"). Before, Windows checked the size and the Mac checked nothing.
+- **One add-on signing key: the update-manifest Ed25519 key**, verified in C++ with libsodium on both
+  platforms (Windows had it only in C# BouncyCastle). The Mac bundle is additionally Developer
+  ID-signed for library validation.
+- **New dependencies:** BLAKE3 (taken under CC0-1.0) in `io`, libsodium (ISC) in `addon`. Both are
+  permissive and in THIRD-PARTY.md. The add-on links SQLite (public domain).
+- **A headless Linux build of the shared core (`cmake/portable`)** runs the Import suite under
+  ASan/UBSan. Its CI job is `tools/portable/ci-portable-core.patch`: the writing session could not
+  push workflow files, so the owner applies it. It is a test build, not a product platform: v1 is still Windows, the Mac is the second
+  host, and nothing in D9 changes. It exists so the engine every PR from here shares is proved on
+  every pull request without a Mac runner.
+- **Merged with main after PR 10 landed** (same day): Import's chrome notifications moved to
+  1010 / 1011 and its command ids after PR 26's `folder_up` / `folder_prev` / `folder_next`; the ABI
+  goes to 0.9. The Mac add-on follows D9's Intel amendment: one universal package (`macos`),
+  joined with `tools/mac/lipo_merge.py`, unmeasured on Intel like the app.
+- **Import's commands are table rows gated at run time** (`set_addon_commands_available`), not
+  rows added and removed: the table stays static, `?` / Settings / the router hide them while the
+  add-on is absent.
+- The smaller calls (units all-or-nothing, `{seq}` committed at job start, per-device writer lock,
+  "interrupted" as a resumable state, Enter vs open-in-viewer) are in
+  [18 "Implementation notes"](18-import.md#implementation-notes-2026-09-24).
+
+**Not verified, owed:**
+
+- **Nothing in either host was compiled by a platform compiler in the session that wrote it** (Linux
+  container). Shared core: built and tested with gcc 13 (ASan/UBSan and TSan). Windows-only C++: a
+  MinGW `-Wall -Wextra -Wshadow -Wconversion` syntax pass, not MSVC. WinUI C#: both projects compile
+  with the .NET 8 SDK on Linux with the Windows packaging steps disabled. Swift / Objective-C++: not
+  compiled at all (no Swift toolchain); `Import.bundle`'s C header was checked with a C compiler.
+- Every hardware verify line in plan/18 (timing vs the OS copy, eject, a real unplug, the 2,000-file
+  grid, the 10 s ETA) and **both present-loop gates while importing**.
+- Clip posters in the Import grid, and the Mac finish notification (a beep until notification
+  permission is requested).
