@@ -604,6 +604,7 @@ result<processed_image> develop(std::span<const std::uint8_t> bytes, const job_c
 result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context* ctx,
                          const raw_detail::raw_options& opt) {
   MV_TRY(processed_image img, develop(bytes, ctx, opt, false));
+  const auto pack_start = std::chrono::steady_clock::now();
   const std::uint32_t w = img->width;
   const std::uint32_t h = img->height;
   const auto colors = static_cast<std::size_t>(img->colors);
@@ -638,7 +639,11 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   out.format = format_family::raw;
   out.intent = transfer_intent::display_referred;
   out.tagged_srgb = true;
-  if (opt.timings) opt.timings->pack_ms = elapsed_ms();
+  if (opt.timings) {
+    opt.timings->pack_ms = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - pack_start)
+                               .count();
+  }
   return out;
 }
 
