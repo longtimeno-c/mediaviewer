@@ -221,12 +221,14 @@ jobs:
     needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
-      fail-fast: true
+      fail-fast: false
+      max-parallel: 1
       matrix:
         include:
-          - { arch: arm64, runner: macos-14, triplet: arm64-osx }
-          - { arch: x64, runner: macos-15-intel, triplet: x64-osx }
+          - { arch: arm64, runner: macos-14, triplet: arm64-osx, experimental: false }
+          - { arch: x64, runner: macos-15-intel, triplet: x64-osx, experimental: true }
     defaults:
       run:
         shell: bash
@@ -264,7 +266,7 @@ jobs:
       # a subsequent manifest install otherwise removes the other triplet.
       - name: Install macOS dynamic codec libraries
         run: |
-          brew install libomp
+          brew install libomp nasm
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
@@ -380,21 +382,29 @@ jobs:
             exit 1
           fi
 
-      - name: Join the arm64 and x86_64 apps
+      - name: Join the ARM and Intel apps when both are available
         run: |
-          mkdir -p arm64 x86_64 build/universal
+          set -euo pipefail
+          mkdir -p arm64 build/universal
           tar -xf apps/MediaViewer-arm64.tar -C arm64
-          tar -xf apps/MediaViewer-x64.tar -C x86_64
-          python3 tools/mac/lipo_merge.py --arm64 arm64/MediaViewer.app \
-            --x86_64 x86_64/MediaViewer.app --out build/universal/MediaViewer.app
+          if [[ -f apps/MediaViewer-x64.tar ]]; then
+            mkdir -p x86_64
+            tar -xf apps/MediaViewer-x64.tar -C x86_64
+            python3 tools/mac/lipo_merge.py --arm64 arm64/MediaViewer.app \
+              --x86_64 x86_64/MediaViewer.app --out build/universal/MediaViewer.app
+          else
+            cp -R arm64/MediaViewer.app build/universal/MediaViewer.app
+          fi
           app=build/universal/MediaViewer.app
-          for f in "$app/Contents/MacOS/MediaViewer" "$app"/Contents/Frameworks/*.dylib; do
-            archs="$(lipo -archs "$f")"
-            case "$archs" in
-              *arm64*x86_64*|*x86_64*arm64*) ;;
-              *) echo "$f is $archs, not universal" >&2; exit 1 ;;
-            esac
-          done
+          if [[ -f apps/MediaViewer-x64.tar ]]; then
+            for f in "$app/Contents/MacOS/MediaViewer" "$app"/Contents/Frameworks/*.dylib; do
+              archs="$(lipo -archs "$f")"
+              case "$archs" in
+                *arm64*x86_64*|*x86_64*arm64*) ;;
+                *) echo "$f is $archs, not universal" >&2; exit 1 ;;
+              esac
+            done
+          fi
 
       - name: dmgbuild
         run: python3 -m pip install --break-system-packages -r tools/mac/requirements.txt
