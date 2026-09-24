@@ -154,6 +154,45 @@ void mv_chrome_video_set_volume(float volume);
 // Frame step, paused only: -1 back, +1 forward (plan/16 "More" panel buttons).
 void mv_chrome_video_step(int32_t frames);
 
+// ---- PR 9: metadata pane, folder tree, sort (plan/06, plan/16) ---------------
+//
+// The pane reads a record the host already holds (meta_store). Nothing here
+// reads the file on the main thread, and toggling the pane, the info overlay or
+// the AF quads never reads it again. [main-thread] unless noted.
+
+// Moves when the record the pane shows changes: the selection moved, or its
+// read finished. Swift re-reads the tables below only when it moves.
+uint64_t mv_chrome_meta_generation(void);
+bool mv_chrome_meta_pane_visible(void);
+// True while the current item's record has been asked for and not yet arrived.
+bool mv_chrome_meta_loading(void);
+// Text tables, one record per line, fields tab-separated (tabs and newlines in
+// values are flattened to spaces). Each returns the length needed and writes at
+// most `size` bytes, NUL-terminated, like mv_chrome_command_table.
+//   summary:    "label\tvalue"                      every row for the kind, value may be empty
+//   properties: "space\tgroup\tlabel\tvalue\traw_tag"  space = exif|iptc|xmp|container|computed
+//   streams:    "S\tindex\tkind\tcodec" starts a stream, "F\tlabel\tvalue" adds a field to
+//               it, "C\tstart_ms\ttitle" is a chapter; empty for a still
+int32_t mv_chrome_meta_summary(char* buf, int32_t size);
+int32_t mv_chrome_meta_properties(char* buf, int32_t size);
+int32_t mv_chrome_meta_streams(char* buf, int32_t size);
+
+// Folder tree. `mv_chrome_list_subdirectories` does a directory read, so call it
+// from a background task, never from the main actor. [any-thread] Writes
+// "name\tpath" lines; returns the length needed, or -1 if `dir` cannot be read.
+bool mv_chrome_tree_visible(void);
+int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size);
+// The folder currently open in the viewer ("" when none). [main-thread]
+int32_t mv_chrome_current_folder(char* buf, int32_t size);
+// Opens `dir_utf8` exactly as Open Folder does. [main-thread]
+void mv_chrome_open_folder(const char* dir_utf8);
+
+// Sort (plan/16). Packed as sort_order.h pack_sort: key in bits 0-2 (0 name,
+// 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3. Changing it
+// re-sorts the listing and keeps the current item selected. [main-thread]
+int32_t mv_chrome_sort_order(void);
+void mv_chrome_set_sort_order(int32_t packed);
+
 #ifdef __cplusplus
 }
 #endif

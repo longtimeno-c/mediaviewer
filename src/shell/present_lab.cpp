@@ -12,6 +12,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "abi/native.h"
 #include "codec/format.h"
@@ -758,6 +759,23 @@ void present_lab::render_thread_main() noexcept {
         redraw = true;  // one frame for a toggle or a nudge; idle again after
       }
     }
+    {
+      // PR 9: AF quads and the eyedropper are toggles; the eyedropper also
+      // follows the cursor, and a fresh metadata record needs one frame. Idle
+      // stays idle: none of this redraws unless one of these actually moved.
+      const auto flags2 = static_cast<std::uint8_t>((snapshot.af_points ? 1 : 0) |
+                                                    (snapshot.eyedropper ? 2 : 0));
+      const bool eye_moved = snapshot.eyedropper && (snapshot.mouse_x != seen_eye_x_ ||
+                                                     snapshot.mouse_y != seen_eye_y_);
+      if (flags2 != seen_view_flags2_ || snapshot.meta_seq != seen_meta_seq_ || eye_moved ||
+          (snapshot.eyedropper && eye_.pending)) {
+        seen_view_flags2_ = flags2;
+        seen_meta_seq_ = snapshot.meta_seq;
+        seen_eye_x_ = snapshot.mouse_x;
+        seen_eye_y_ = snapshot.mouse_y;
+        redraw = true;
+      }
+    }
     if (snapshot.fill_seq != seen_fill_seq_) {
       seen_fill_seq_ = snapshot.fill_seq;
       if (current_image_ || current_video_.texture) {
@@ -1193,6 +1211,131 @@ void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
     label(view.x + view.w - size.x - pad, view.y + pad, marks);
   }
 
+  // A toggle that draws nothing looks broken, so say why there is nothing to see.
+  float note_y = view.y + pad;
+  const auto note = [&](const char* text_line) {
+    label(view.x + pad, note_y, text_line);
+    note_y += fs * 1.35f;
+  };
+  if (snapshot.af_points && snapshot.meta.af_count == 0) {
+    note("AF points: none recorded in this file");
+  }
+  if (snapshot.eyedropper) {
+    if (!current_image_) note("Eyedropper: stills only");
+    else if (!snapshot.mouse_in_client) note("Eyedropper: move the cursor over the image");
+  }
+
+  const float pw = media_width();
+  const float ph = media_height();
+  const float zoom = camera_.zoom();
+  const float cx = view.x + view.w * 0.5f;
+  const float cy = view.y + view.h * 0.5f;
+  if (snapshot.af_points && current_image_ && pw > 0.0f && ph > 0.0f && zoom > 0.0f) {
+    const auto to_screen = [&](float ix, float iy) {
+      return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
+    };
+    for (int i = 0; i < snapshot.meta.af_count && i < meta_overlay::kMaxAf; ++i) {
+      const float* q = snapshot.meta.af[i];
+      const ImVec2 a = to_screen(q[0] * pw, q[1] * ph);
+      const ImVec2 b = to_screen((q[0] + q[2]) * pw, (q[1] + q[3]) * ph);
+      const ImU32 col = q[4] > 0.5f ? IM_COL32(80, 255, 120, 255) : IM_COL32(255, 210, 60, 255);
+      fg->AddRect(ImVec2(a.x - scale, a.y - scale), ImVec2(b.x + scale, b.y + scale),
+                  IM_COL32(0, 0, 0, 200), 0.0f, 0, 3.0f * scale);
+      fg->AddRect(a, b, col, 0.0f, 0, 1.5f * scale);
+    }
+  }
+
+  std::string copy_text;  // what Ctrl+C puts on the clipboard; empty = nothing under the cursor
+  if (snapshot.eyedropper && snapshot.mouse_in_client && current_image_ && zoom > 0.0f) {
+    const float ix = camera_.pan_x() + (snapshot.mouse_x - cx) / zoom;
+    const float iy = camera_.pan_y() + (snapshot.mouse_y - cy) / zoom;
+    ID3D11Texture2D* tex = current_image_->texture.Get();
+    D3D11_TEXTURE2D_DESC td{};
+    if (tex) tex->GetDesc(&td);
+    const bool readable = tex && ix >= 0.0f && iy >= 0.0f && ix < pw && iy < ph &&
+                          (td.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+                           td.Format == DXGI_FORMAT_R8G8B8A8_UNORM);
+    if (readable) {
+      const auto tx = static_cast<std::uint32_t>(
+          std::min<float>(ix * static_cast<float>(td.Width) / pw, static_cast<float>(td.Width - 1)));
+      const auto ty = static_cast<std::uint32_t>(std::min<float>(
+          iy * static_cast<float>(td.Height) / ph, static_cast<float>(td.Height - 1)));
+      ID3D11DeviceContext* ctx = device_.context();
+      if (!eye_staging_) {
+        D3D11_TEXTURE2D_DESC sd{};
+        sd.Width = 1;
+        sd.Height = 1;
+        sd.MipLevels = 1;
+        sd.ArraySize = 1;
+        sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sd.SampleDesc.Count = 1;
+        sd.Usage = D3D11_USAGE_STAGING;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(device_.d3d()->CreateTexture2D(&sd, nullptr, eye_staging_.GetAddressOf()))) {
+          eye_staging_.Reset();
+        }
+      }
+      // Collect the copy from an earlier frame without waiting for it.
+      if (eye_staging_ && eye_.pending) {
+        D3D11_MAPPED_SUBRESOURCE m{};
+        const HRESULT hr = ctx->Map(eye_staging_.Get(), 0, D3D11_MAP_READ,
+                                    D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+        if (SUCCEEDED(hr)) {
+          std::memcpy(eye_.rgba, m.pData, 4);
+          ctx->Unmap(eye_staging_.Get(), 0);
+          eye_.pending = false;
+          eye_.valid = true;
+        } else if (hr != DXGI_ERROR_WAS_STILL_DRAWING) {
+          eye_.pending = false;
+        }
+      }
+      if (eye_staging_ && !eye_.pending &&
+          (eye_.texture != tex || eye_.x != tx || eye_.y != ty)) {
+        const D3D11_BOX box{tx, ty, 0, tx + 1, ty + 1, 1};
+        ctx->CopySubresourceRegion(eye_staging_.Get(), 0, 0, 0, 0, tex, 0, &box);
+        eye_.texture = tex;
+        eye_.x = tx;
+        eye_.y = ty;
+        eye_.pending = true;
+        eye_.valid = false;  // until the copy lands; the readout never shows a stale texel
+      }
+      if (eye_.valid && eye_.texture == tex && eye_.x == tx && eye_.y == ty) {
+        char readout[96];
+        std::snprintf(readout, sizeof(readout), "#%02X%02X%02X   %u %u %u   x%d y%d", eye_.rgba[0],
+                      eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
+                      static_cast<int>(ix), static_cast<int>(iy));
+        char clip[96];
+        std::snprintf(clip, sizeof(clip), "#%02X%02X%02X  rgb(%u, %u, %u)  x%d y%d", eye_.rgba[0],
+                      eye_.rgba[1], eye_.rgba[2], eye_.rgba[0], eye_.rgba[1], eye_.rgba[2],
+                      static_cast<int>(ix), static_cast<int>(iy));
+        copy_text = clip;
+        const ImVec2 size = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, readout);
+        const float box_px = fs;
+        float x = snapshot.mouse_x + 18.0f * scale;
+        float y = snapshot.mouse_y + 18.0f * scale;
+        if (x + box_px + 8.0f * scale + size.x + pad > view.x + view.w) {
+          x = snapshot.mouse_x - (box_px + 8.0f * scale + size.x + 18.0f * scale);
+        }
+        if (y + fs + pad > view.y + view.h) y = snapshot.mouse_y - (fs + 18.0f * scale);
+        fg->AddRectFilled(ImVec2(x - 6.0f * scale, y - 4.0f * scale),
+                          ImVec2(x + box_px + 8.0f * scale + size.x + 6.0f * scale,
+                                 y + fs + 4.0f * scale),
+                          IM_COL32(0, 0, 0, 190), 4.0f * scale);
+        fg->AddRectFilled(ImVec2(x, y), ImVec2(x + box_px, y + box_px),
+                          IM_COL32(eye_.rgba[0], eye_.rgba[1], eye_.rgba[2], 255));
+        fg->AddRect(ImVec2(x, y), ImVec2(x + box_px, y + box_px), text, 0.0f, 0, scale);
+        label(x + box_px + 8.0f * scale, y, readout);
+      }
+    }
+  }
+  if (snapshot.eyedropper) {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    eye_text_ = std::move(copy_text);
+  } else {
+    eye_.valid = false;
+    eye_.texture = nullptr;
+  }
+
   if (snapshot.info_overlay) {
     char line[400];
     const int zoom_pct = static_cast<int>(std::lround(camera_.zoom() * 100.0f));
@@ -1204,7 +1347,16 @@ void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
     } else {
       std::snprintf(line, sizeof(line), "%ux%u  -  %d %%", w, h, zoom_pct);
     }
-    label(view.x + pad, view.y + view.h - fs - pad, line);
+    float y = view.y + view.h - fs - pad;
+    label(view.x + pad, y, line);
+    // Whatever the property model filled, stacked upward; an empty field has no
+    // line (plan/06).
+    for (const char* extra : {snapshot.meta.exposure_line, snapshot.meta.camera_line,
+                              snapshot.meta.date_line}) {
+      if (!extra[0]) continue;
+      y -= fs * 1.35f;
+      label(view.x + pad, y, extra);
+    }
   }
 }
 

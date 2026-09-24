@@ -64,7 +64,7 @@ is settled before it arrives, rather than discovered afterwards.
 | Component | Licence | Required linkage | Arrives in |
 |---|---|---|---|
 | DirectXTex | MIT | Static | Deferred from PR 4 until a thumbnail must be GPU-resident (plan/12 2026-09-07) |
-| **Exiv2** | **GPL-2.0** | Dynamic (DLL) | PR 12 (metadata write) |
+| **Exiv2** | **GPL-2.0** | Dynamic (DLL / dylib) | PR 9 (metadata read); PR 12 adds writes. Pulls brotli (MIT) and expat (MIT) for its BMFF and XMP features |
 
 ### Rules the build enforces
 

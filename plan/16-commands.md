@@ -135,12 +135,14 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `Ctrl+0` | Reset pan/zoom (not rating-0 — rating is `Ctrl+Shift+0` or numpad, see below) |
 | `H` / `V` | Flip horizontal / vertical |
 | `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 10), from the viewer, no edit pane required |
-| `I` | Metadata pane (PR 9) |
+| `I` | Metadata pane (PR 9). Windows 2026-09-24: focuses the pane; Left / Right change tab, Down reaches the tag search (type to filter), `Esc` returns to the canvas and a second `Esc` closes it |
 | `E` | Adjust pane (PR 11) — **collides with `Q` `E` transport below, landed in 5c. PR 11 picks a different key; this row is not a claim on `E`.** |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
 | `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it |
-| `Ctrl+Shift+E` | Folder tree show/focus (PR 9) |
+| `Ctrl+Shift+E` | Folder tree show/focus (PR 9). Windows 2026-09-24: focuses the tree; Up / Down walk it, Right / Left open and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a second `Esc` closes it |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
+| `Shift+O` | AF-point quads from the maker notes already read (PR 9; the plan gave no key, chosen 2026-09-24). Off by default |
+| `Shift+I` | Eyedropper: one-pixel readout under the cursor, sRGB 8-bit + hex (PR 9; key chosen 2026-09-24). Stills only. `Ctrl/Cmd+C` while it is on copies the readout as `#RRGGBB  rgb(r, g, b)  x y`; with it off it copies the marked (or current / gallery-selected) file(s), the macOS start of PR 15's `CF_HDROP` twin |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |
 | `\` hold | Previous item for burst pick. Uses the five-slot GPU LRU ([04-image-pipeline.md](04-image-pipeline.md)); must not `mv_image_open` a replacement |
 | `;` | Play Live Photo / motion once, return to the still. Required: hover-to-play fails the no-mouse bar. PR 7: edge only (no hold-to-play); `;` again, `Esc` or any navigation also returns to the still, which comes back from the LRU. Plays with audio. No transport strip on a Live Photo stop |
@@ -286,7 +288,7 @@ Chrome, in-memory, no decode.
 - **Status / title:** `filename — 3/247 — 6000×4000 — 95 % — ★★★`. Index and listing stats
   come from the folder model, not from the decoder.
 - **Sort (PR 4):** name, mtime, size, type. **EXIF date-taken waits for PR 9** so PR 4 does
-  not parse every file. Remember the user's sort.
+  not parse every file. Remember the user's sort. *(macOS 2026-09-24: the sort orders, including date taken, ship in the View ▸ Sort By menu. Date-taken keys are read once per file by one background job and the listing re-sorts in place when they land; a file with no stamp sorts by mtime. Windows 2026-09-24: the same five orders and a descending switch in View ▸ Sort by and in Settings, applied by the ABI session (`mv_folder_set_sort`) and saved as `[view] sort`.)*
 - **Filter:** all / photos / videos / RAW. In-memory flag on the listing. RAW flag is
   meaningful from PR 7.
 - **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item

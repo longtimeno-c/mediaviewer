@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -124,6 +125,30 @@ class present_lab_mac {
   void update_video_status() noexcept;
   // The picture on the canvas, still or video frame. False when there is none.
   [[nodiscard]] bool picture_size(float* w, float* h) const noexcept;
+  // [render-thread] PR 9 overlays: the info lines, AF quads and eyedropper. All
+  // three draw bytes the UI thread already published in `snapshot.meta`; none of
+  // them touches a file or the metadata store (plan/16).
+  void draw_photo_overlays(const input_snapshot& snapshot) noexcept;
+ public:
+  // [any-thread] What the eyedropper last read, ready for the clipboard; empty when
+  // the cursor is off the picture or the eyedropper is off.
+  [[nodiscard]] std::string eyedropper_text() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return eye_text_;
+  }
+
+ private:
+
+  // Eyedropper: the last texel read, so an idle cursor costs no readback.
+  struct eyedropper_sample {
+    const void* texture = nullptr;
+    std::uint32_t x = 0, y = 0;
+    std::uint8_t rgba[4] = {};
+    bool valid = false;
+  };
+  eyedropper_sample eye_;
+  mutable std::mutex eye_mutex_;
+  std::string eye_text_;  // "#RRGGBB  rgb(r, g, b)  x, y" for the texel under the cursor
 
   void* view_ = nullptr;
   void* display_link_ = nullptr;

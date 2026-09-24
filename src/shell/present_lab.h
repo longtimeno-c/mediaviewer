@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -126,6 +127,35 @@ class present_lab {
   // Loupe frame, hold-previous label, info line. ImGui, same present.
   void draw_view_overlays(const input_snapshot& snapshot) noexcept;
   bool write_json_report() const noexcept;
+
+ public:
+  // [any-thread] What the eyedropper last read, as `#RRGGBB  rgb(r, g, b)  x y`;
+  // empty when it is off or the cursor is not over a readable still.
+  [[nodiscard]] std::string eyedropper_text() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return eye_text_;
+  }
+
+ private:
+  // Eyedropper (PR 9). Image textures are immutable GPU memory, so one texel is
+  // copied into a 1x1 staging texture and mapped with DO_NOT_WAIT on a later
+  // frame: the render thread never stalls on the GPU (rule 1).
+  struct eyedropper_sample {
+    const void* texture = nullptr;
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint8_t rgba[4] = {};
+    bool valid = false;    // rgba holds the texel for (texture, x, y)
+    bool pending = false;  // a copy is in flight into staging
+  };
+  eyedropper_sample eye_;
+  gfx::com_ptr<ID3D11Texture2D> eye_staging_;
+  mutable std::mutex eye_mutex_;
+  std::string eye_text_;
+  std::uint32_t seen_meta_seq_ = 0;
+  std::uint8_t seen_view_flags2_ = 0;
+  float seen_eye_x_ = -1.0f;
+  float seen_eye_y_ = -1.0f;
 
   HWND window_ = nullptr;
   lab_options options_{};

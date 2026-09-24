@@ -40,7 +40,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.1
+  VERSION 0.1.2
   DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
 
@@ -230,6 +230,8 @@ add_library(mv_io STATIC
   src/io/file_ops.h
   src/io/file_ops_win.cpp
   src/io/pairing.h
+  src/io/sort_order.cpp
+  src/io/sort_order.h
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE shell32 ole32 uuid)
@@ -390,6 +392,35 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
+# mv_meta -- PR 9 metadata read model (plan/06). Exiv2 (GPL-2.0, DLL only) for
+# EXIF / IPTC / XMP and maker notes, libavformat for container and per-stream
+# facts. Depends downward only: meta -> {codec, io, core}.
+#
+# Built and tested on Windows (plan/12 2026-09-24, /W4 /WX clean). Shares every
+# source with the macOS twin. The vcpkg exiv2 port needs its `xmp`, `bmff` and
+# `png` features (without `xmp` a PNG's XMP is silently empty).
+# ---------------------------------------------------------------------------
+find_package(exiv2 CONFIG REQUIRED)
+add_library(mv_meta STATIC
+  src/meta/read.cpp
+  src/meta/still.cpp
+  src/meta/clip.cpp
+  src/meta/af.cpp
+  src/meta/format.cpp
+  src/meta/tables.cpp
+  src/meta/tables.h
+  src/meta/meta.h
+  src/meta/af.h
+  src/meta/internal.h
+)
+target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_meta
+  PUBLIC mv_core
+  PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+add_library(mv::meta ALIAS mv_meta)
+
+# ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (plan/03)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
@@ -419,7 +450,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -449,6 +480,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
   src/shell/marks.h
+  src/shell/meta_store.cpp
+  src/shell/meta_store.h
   src/shell/open_request.cpp
   src/shell/open_request.h
   src/shell/slideshow.h
@@ -478,6 +511,7 @@ set_source_files_properties(src/shell/mediaviewer.rc PROPERTIES
   OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer.ico")
 target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
+  mv_meta
   mv_gfx
   mv_canvas
   mv_io
@@ -670,6 +704,10 @@ if(MV_BUILD_TESTS)
     tests/test_audio_sink.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
+    # PR 9 (plan/12 2026-09-24)
+    tests/test_meta.cpp
+    tests/test_meta_store.cpp
+    src/shell/meta_store.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
@@ -726,6 +764,9 @@ if(MV_BUILD_TESTS)
     mv_codec
     mv_image
     mv_canvas
+    mv_meta
+    Exiv2::exiv2lib
+    ${FFMPEG_LIBRARIES}
     mediaviewer_core
     JPEG::JPEG
     ${MV_SPNG_TARGET}

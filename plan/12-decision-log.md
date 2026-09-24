@@ -1465,3 +1465,146 @@ path, filename, username, pixels or EXIF), and a Swift/AppKit capture path tied 
 report by the correlation id. Its verify is a Mac canary scan. Until PR 11 lands, the Mac has
 no crash capture. A stable Mac release carrying PR 9's new parsers before then must say so in
 its notes.
+
+## 2026-09-24 — PR 9 (metadata read) starts on macOS before Windows PR 8 is verified
+
+**Sequencing, the owner's call.** PR 9 is a Milestone D update and plan/10 says PR N+1 waits
+for N's verify. The owner asked for PR 9 on macOS first, with Windows to follow on a
+Windows machine. Windows PR 8's clean-VM verify is not re-run by this change, and Mac has no
+numbered metadata PR (Milestone F stops at 20), so this is the Mac twin of Windows PR 9,
+recorded here rather than given a new number. PR 1's present-loop verify is untouched: no
+present-path code changed beyond three extra ImGui draws that only run when an overlay is on.
+
+**What landed (shared, portable).** `src/meta` (Exiv2 for EXIF/IPTC/XMP + maker notes,
+libavformat for container/stream/chapters, property model, summary rows, overlay lines, AF
+geometry), `shell/meta_store` (one read per (path, mtime, size), LRU, and a background
+date-taken scan) and `shell/sort_order` (name / mtime / size / type / date taken).
+`io::list_subdirectories` feeds the tree. Exiv2 is GPL-2.0 and dynamic-link only, added to the
+Mac dynamic manifest with `bmff`, `png`, `xmp` (without `xmp` a PNG's XMP is silently empty).
+
+**Calls made, so they are not re-decided by accident:**
+- **Panes float, they do not inset.** The Mac canvas maths has vertical insets only; a
+  horizontal one changes the blit and camera, i.e. the present path. The metadata pane
+  (right) and folder tree (left) overlay the canvas like the gallery. `chrome_left_px` stays
+  unused on Mac. Revisit only with a present-loop soak.
+- **New keys.** `I` pane (plan/16), plus `Shift+O` AF points and `Shift+I` eyedropper, which
+  plan/16 left unbound. Appended to the table so saved Settings indices hold.
+- **Metadata is read only while something shows it,** after a 90 ms pause, so arrow-key
+  scrubbing queues no reads. Toggling the pane, `O` or `Shift+O` reads the cached record, never
+  the file (unit-tested with an injected reader).
+- **Eyedropper** reads one texel of the CPU-visible source texture; not available on video.
+- **Sort** was name-only on both hosts (PR 4's other orders never shipped); the Mac now has all
+  five. Windows still has none.
+
+**Not verified, owed:**
+- **Canon AF-point Y sign.** `canon_af_points` treats AFInfo2 Y offsets as positive-down. No
+  Canon file is in the corpus, so a wrong sign would mirror quads vertically. Nikon, Sony,
+  Fujifilm and EXIF SubjectArea go through the same tested geometry; only SubjectArea was
+  checked on a real file (an iPhone JPEG).
+- **HEIC/RAW on real cameras.** HEIC is covered by the in-tree fixtures (dimensions,
+  orientation); no RAW metadata was exercised.
+- **Windows entirely.** `mv_meta` and its tests are in `CMakeLists.txt` and the vcpkg
+  manifest but have never been compiled with MSVC; the XAML pane, tree island and
+  Windows `list_subdirectories` do not exist yet. This is the Windows half of PR 9.
+
+### 2026-09-24 (later) — PR 9 Windows: native half built and tested under MSVC
+
+`mv_meta`, `meta_store`, `sort_order` and the metadata tests compile clean under `/W4 /WX` on
+MSVC 2022 with vcpkg `exiv2[bmff,png,xmp]` (no source changes were needed). Windows
+`io::list_subdirectories` added to `dir_win.cpp` (hidden/system and dot directories skipped,
+UTF-16 ordinal case-insensitive sort, one directory read). Full `ctest` from a fresh
+`build-pr9`: 514 pass, 0 fail (22 `[meta]` cases, 6 `[sort]`, frametime harness, broken corpus).
+**Still owed on Windows:** the XAML metadata pane, folder-tree island, sort UI, `O`/`Shift+O`
+overlay drawing, eyedropper, and the ABI calls that feed them (`chrome_left_px` is still 0).
+
+### 2026-09-24 (later still) — PR 9 Windows: overlays, eyedropper and Ctrl+C
+
+Windows now has what the Mac commits `ac62036` / `cb460a3` / `3a6f324` added that is not XAML:
+the info overlay's camera/exposure/date lines, AF quads, the "AF points: none recorded" and
+"Eyedropper: stills only / move the cursor" notes, the eyedropper, and `Ctrl+C`
+(`copy_clipboard`: the colour when the eyedropper has one, else the marked/current file(s) as
+`CF_HDROP`, pairs copied whole as F7 does). `meta_store` runs on an `app_state` job system;
+selection changes debounce 90 ms; completions post a window message.
+- **Eyedropper readback:** image textures are immutable, so one texel is copied to a 1x1 staging
+  texture and mapped with `D3D11_MAP_FLAG_DO_NOT_WAIT` on a later frame. The render thread never
+  waits on the GPU; the readout shows nothing until the copy has landed rather than a stale texel.
+  Only 8-bit RGBA textures are read.
+- **Not applicable on Windows:** the Mac tracking-area fix (Win32 already tracks the mouse) and
+  the tree-rooted-at-open-folder change (no tree yet).
+- **Checked live:** an EXIF-stamped JPEG shows its three lines under `O`; `Ctrl+C` returned
+  `#C9B4A1  rgb(201, 180, 161)  x1571 y1832` with the eyedropper on and the file path as a file
+  drop with it off. The frametime harness and full ctest still pass; the PR 1 60 s soak was not re-run.
+- **Still owed on Windows:** XAML metadata pane (`I`), folder-tree island, sort menu.
+
+## 2026-09-24 — PR 9 Windows half completed (pane, tree, sort, ABI 0.6)
+
+This closes the "still owed on Windows" lists above. What was built and the calls made:
+
+- **Panes float, on Windows too.** The metadata pane (right, 340 DIP) and folder tree (left,
+  280 DIP) are two more islands over the canvas, between the command bar and the bottom
+  strips. `usable_canvas` has a left inset (`chrome_left_px`) but no right one, and an inset would
+  change the blit and camera, i.e. the present path; the macOS host made the same call. So
+  `chrome_left_px` stays 0 and opening a pane never refits the photo. Both hide under the gallery,
+  Settings and chrome-off fullscreen and come back with them. Revisit only with a present-loop soak.
+- **No `TextBox`, no `TreeView`.** Both fail-fast (`0xC000027B`, `Microsoft.UI.Xaml.dll`) in these
+  islands: `TextBox` was already known, `TreeView` crashed on first show and was found the hard way.
+  The tag search reuses `FakeInput`; the tree is StackPanels and Buttons with its own expand. The
+  tag list is a `ListView` of plain elements and did not crash.
+- **Sort lives in the ABI session, not the shell.** The Windows listing is owned by
+  `mv_session`, so filmstrip, gallery and arrow keys all read one order. `io/sort_order` moved
+  from `src/shell` to `src/io` (namespace `mv::io`; the macOS host, tests and `darwin.cmake` were
+  updated to match) so `abi -> io` stays legal. New calls, **ABI 0.6**: `mv_folder_set_sort`,
+  `mv_folder_get_sort`, `mv_list_subdirectories` ([14](14-abi.md)). The session keeps the scanned
+  listing so a new order or a batch of date-taken stamps re-applies without a disk scan; date
+  stamps come from `meta::read_date_taken` on one background job, checked per (mtime, size).
+  Persisted as `[view] sort`; an unknown key normalises to name.
+- **Pane data is three text tables** (`meta/tables.h`, the same formats the Mac bridge documents),
+  pushed to the chrome when the record changes. The chrome never reads a file. The tree lists a
+  folder on a pool task through `mv_list_subdirectories`, never on the UI thread.
+- **Tree open crosses as a pull.** The command callback carries a float, so the island parks the
+  chosen path and native pulls it (`chrome_cmd_tree_open` then `TakeTreePath`).
+- **Checked live:** an EXIF-stamped JPEG populates Summary and All tags (missing fields show a dash);
+  the tree lists subfolders, and invoking one opens it; View ▸ Sort by ▸ Size wrote `sort=2` and the
+  ABI test shows the listing re-sorted with the current stop kept. Full `ctest`: 517 pass.
+- **Not verified:** PR 1's 60 s present-loop soak (the open D6 gate; only the frametime harness
+  ran); PNG, HEIC and MP4 through the Windows pane by hand; the Windows Streams tab on a real clip
+  (the table format is unit-tested); the Canon AF sign (unchanged from above); a clean-VM run.
+  The macOS build was not rebuilt after the `sort_order` move (no Mac available); the edit is
+  mechanical (include path and namespace) but unproven there.
+
+### 2026-09-24 (last) — PR 9 Windows: checked against the plan's verify line, gaps closed
+
+Rechecking the Windows half against [10](10-roadmap.md)'s PR 9 verify line (rewritten on main for
+dual-track) found gaps in the first pass, now closed:
+
+- **"The folder tree opens from the keyboard and navigates without the mouse."** It could not: the
+  rows were deliberately not focusable. Now `Ctrl+Shift+E` shows **and focuses** the tree, and `I` focuses
+  the pane (plan/16). Up / Down walk the rows, Right / Left open and close a folder, Enter opens it (focus
+  returns to the canvas), Esc returns to the canvas, and a second Esc closes the pane (plan/16: Esc walks
+  out, crop -> pane -> gallery -> fullscreen). New `focus_kind::pane` in the router: a focused pane owns
+  its keys except Esc; `view_state.pane_open` is driven by the shown panes and `back_target::pane` closes
+  them. A mouse click on a pane control never moves keyboard focus into it, so a mouse user keeps the arrows
+  on the canvas. Router tests added.
+- **`FocusManager.TryMoveFocus` fail-fasts** in these islands (`0xC000027B`, found by bisecting a crash on
+  Down into the search box). Directional focus is therefore not used: the tab bar, the search box and the
+  tree handle Left / Right / Up / Down explicitly. Add it to the `TextBox` / `TreeView` list above.
+- **The tree follows the watcher.** The plan asks for folder-tree data that follows it. A listing change
+  of the open folder (the watcher fires on directory names too) re-lists the root and diffs the rows in
+  place, so expanded folders and the focused row survive. Deeper folders are not watched; they refresh when
+  opened.
+- **Date-taken sort had no end-to-end test.** Added: three JPEGs whose name, mtime and EXIF orders all differ,
+  through `mv_folder_set_sort`, including re-sort once the stamps land and back to another key.
+- **Pane re-render dropped keyboard focus** when the record arrived after `I`; the tab bar now restores focus
+  and identical pushes no longer rebuild the pane.
+
+**Present-loop gate, Windows.** `frametime.exe --seconds 60`: 3597 frames, 0 dropped, p99 17.05 ms at a
+16.68 ms refresh, idle 0 presents at 0.26 % CPU: PASS. A lab soak (`--pan-soak`, chrome on) with the metadata pane
+and the tree opened during it: 2398 frames, 0 dropped, 0 missed refreshes, p99 17.0 ms. That run fails
+the *idle CPU* limit (2.85 % against 1 %), but so does the same soak with no pane open (2.54 %) and the
+pre-PR-9 binary (1.99 %), on a machine that was not quiet: not attributable to the panes, and not a
+substitute for a quiet-machine run.
+
+**Still not verified on Windows:** PNG-with-XMP, HEIC, a RAW and an MP4 through the pane by hand (no RAW is in
+the corpus); the Streams tab on a real clip; a quiet-machine lab soak. **Shared with macOS, unchanged:**
+Canon AF sign, HEIC/RAW on real cameras. **macOS:** the `sort_order` move to `src/io` was not rebuilt on a Mac.
+

@@ -60,12 +60,20 @@ public static partial class IslandHost
         public const int Rebind = 1001;
         public const int ResetKeys = 1002;
         public const int UpdateRestart = 1003;  // PR 8: chrome, not a keyed command
+        // PR 9. TreeOpen: native pulls the chosen folder with TakeTreePath.
+        // SetSort: arg is the packed order (key in bits 0-2, descending in bit 3).
+        public const int TreeOpen = 1004;
+        public const int SetSort = 1005;
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
         public const int Help = 75;
         public const int RevealInExplorer = 80;
         public const int OpenSettings = 84;
+        // Keyed commands the View menu and the panes' close buttons also send
+        // (mirrors command_id; chrome_host.h pins both with static_asserts).
+        public const int FolderTree = 78;
+        public const int MetadataPane = 92;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -76,7 +84,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
-                UpdateRestart,
+                UpdateRestart, TreeOpen, SetSort,
             };
             unchecked
             {
@@ -95,7 +103,13 @@ public static partial class IslandHost
         public const int Gallery = 3;
         public const int Transport = 4;
         public const int Text = 5;
+        // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane").
+        public const int Pane = 6;
     }
+
+    // IslandWindow asks for the pane islands by these ids (past the focus kinds).
+    internal const int PaneMetaIsland = 6;
+    internal const int PaneTreeIsland = 7;
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
     // menu is a view of it, pushed in by ApplySettings so a T keypress and the
@@ -119,6 +133,10 @@ public static partial class IslandHost
 
     // Telemetry is absent from this initial word on purpose: until native
     // pushes the real settings in, the chrome assumes off (plan/13).
+    // Packed sort order (key in bits 0-2: name, modified, size, type, date taken;
+    // descending in bit 3). Native owns it; the menu and Settings are a view of it.
+    private static int _sortPacked;
+
     private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -143,6 +161,8 @@ public static partial class IslandHost
         if (Marshal.SizeOf<ChromeRateArgs>() != RateArgsSize) return -7;
         if (Marshal.SizeOf<ChromePopupArgs>() != PopupArgsSize) return -8;
         if (Marshal.SizeOf<ChromeTableArgs>() != TableArgsSize) return -9;
+        if (Marshal.SizeOf<ChromePanelArgs>() != PanelArgsSize) return -10;
+        if (Marshal.SizeOf<ChromeMetaArgs>() != MetaDataArgsSize) return -11;
         return AttachArgsSize;
     }
 
@@ -164,6 +184,8 @@ public static partial class IslandHost
                 FocusKind.Filmstrip => _filmstrip,
                 FocusKind.Gallery => _gallery,
                 FocusKind.Transport => _transport,
+                PaneMetaIsland => _metaPane,
+                PaneTreeIsland => _tree,
                 _ => null,
             };
             long hwnd = source?.SiteBridge is null
@@ -314,7 +336,7 @@ public static partial class IslandHost
         {
             int kind = FocusKind.CommandBar;
             if (_popupTakesText ||
-                e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
+                e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or FakeInput)
             {
                 kind = FocusKind.Text;
             }
@@ -323,6 +345,7 @@ public static partial class IslandHost
                 if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
+                else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root)) kind = FocusKind.Pane;
             }
             Send(Command.FocusChanged, kind);
         }
@@ -400,6 +423,7 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
+            _sortPacked = args.Sort;
             RefreshSettingsMenu();
             RefreshSettingsScreen();
             // PR 8: the telemetry first-run screen, once, when native reports
@@ -1023,6 +1047,32 @@ public static partial class IslandHost
                  () => SetFlag(SettingFlag.Wrap, !HasFlag(SettingFlag.Wrap))));
     }
 
+    private static readonly string[] SortNames =
+        { "Name", "Date modified", "Size", "Type", "Date taken (EXIF)" };
+
+    // View > Sort by. Rebuilt each time the flyout opens so the marker is the
+    // order native actually applied, never a guess.
+    private static MenuFlyoutSubItem SortSubMenu(MenuFlyout owner)
+    {
+        var sub = new MenuFlyoutSubItem { Text = "Sort by" };
+        void Fill()
+        {
+            sub.Items.Clear();
+            for (int k = 0; k < SortNames.Length; k++)
+            {
+                int key = k;
+                sub.Items.Add(Item(SortNames[k], (_sortPacked & 7) == k ? "●" : null,
+                    () => Send(Command.SetSort, (_sortPacked & 8) | key)));
+            }
+            sub.Items.Add(Sep());
+            sub.Items.Add(Item("Descending", (_sortPacked & 8) != 0 ? "on" : "off",
+                () => Send(Command.SetSort, _sortPacked ^ 8)));
+        }
+        owner.Opening += (_, _) => Fill();
+        Fill();
+        return sub;
+    }
+
     private static UIElement BuildChrome()
     {
         var viewFlyout = new MenuFlyout
@@ -1042,6 +1092,9 @@ public static partial class IslandHost
         viewFlyout.Items.Add(Item("Gallery", "G", () => Send(Command.ToggleGallery)));
         viewFlyout.Items.Add(Item("Full screen", "F11", () => Send(Command.Fullscreen)));
         viewFlyout.Items.Add(Item("Filmstrip", "T", () => Send(Command.ToggleFilmstrip)));
+        viewFlyout.Items.Add(Item("Metadata pane", "I", () => Send(Command.MetadataPane)));
+        viewFlyout.Items.Add(Item("Folder tree", "Ctrl+Shift+E", () => Send(Command.FolderTree)));
+        viewFlyout.Items.Add(SortSubMenu(viewFlyout));
         viewFlyout.Items.Add(Sep());
         viewFlyout.Items.Add(Item("Clipping warnings", "C", () => Send(Command.Clipping)));
         viewFlyout.Items.Add(Item("Frame-time overlay", "F3", () => Send(Command.Overlay)));

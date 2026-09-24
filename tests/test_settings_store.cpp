@@ -70,6 +70,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     v.wrap = false;
     v.sticky_zoom = true;
     v.background = 3;
+    v.sort = 2 | 8;  // PR 9: size, descending
     save_view_settings(store, v);
     save_destinations(store, {"D:\\Cull", "E:\\K\xC3\xA9" "ep"});  // non-ANSI survives
     const key_override keys[] = {{4, 0x41, 2}, {9, 0x70, 0}};
@@ -87,6 +88,11 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   REQUIRE_FALSE(v.wrap);
   REQUIRE(v.sticky_zoom);
   REQUIRE(v.background == 3);
+  REQUIRE(v.sort == (2 | 8));
+  // A hand-edited or future key is name, never an out-of-range order.
+  again.set_int("view", "sort", 7);
+  REQUIRE(load_view_settings(again).sort == 0);
+  again.set_int("view", "sort", 2 | 8);
   REQUIRE(load_destinations(again) == std::vector<std::string>{"D:\\Cull", "E:\\K\xC3\xA9" "ep"});
   const auto keys = load_key_overrides(again);
   REQUIRE(keys.size() == 2);

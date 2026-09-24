@@ -15,6 +15,11 @@
       "name": "ffmpeg",
       "default-features": false,
       "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"]
+    },
+    {
+      "name": "exiv2",
+      "default-features": false,
+      "features": ["bmff", "png", "xmp"]
     }
   ]
 }
