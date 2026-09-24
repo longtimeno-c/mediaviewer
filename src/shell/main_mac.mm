@@ -35,6 +35,8 @@
 #include "core/trace.h"
 #include "io/collision_name.h"
 #include "io/dir.h"
+#include "io/file_port.h"
+#include "io/verified_copy.h"
 #include "shell/browse_index.h"
 #include "shell/commands.h"
 #include "shell/edit_session.h"
@@ -62,6 +64,16 @@
 // link error against the Swift side.
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
+
+// Whether two file URLs are on one volume, where a move is a rename. Unknown
+// counts as different, so an unanswerable case takes the verified path.
+static BOOL MvSameVolume(NSURL* a, NSURL* b) {
+  id va = nil;
+  id vb = nil;
+  [a getResourceValue:&va forKey:NSURLVolumeIdentifierKey error:nil];
+  [b getResourceValue:&vb forKey:NSURLVolumeIdentifierKey error:nil];
+  return va != nil && vb != nil && [va isEqual:vb];
+}
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -1581,8 +1593,26 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
           NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
 
           NSError* error = nil;
-          const BOOL ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
-                               : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+          BOOL ok = NO;
+          if (move && !MvSameVolume(srcURL, destDir)) {
+            // plan/18: F8 across volumes deletes the source only after the
+            // copy is verified (hashed while read, F_FULLFSYNC, read back
+            // with F_NOCACHE, compared). -moveItemAtURL: would copy and
+            // delete with no check in between.
+            const std::string targets[] = {std::string(dstURL.path.UTF8String)};
+            const auto copied =
+                mv::io::verified_copy(src_paths[i], targets, mv::io::copy_options{});
+            ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
+                 [fm removeItemAtURL:srcURL error:&error];
+            if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
+              // The source would not go: a move that leaves two copies is not
+              // a move. Take the verified copy back and report it.
+              (void)mv::io::remove_file(targets[0]);
+            }
+          } else {
+            ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
+                      : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+          }
           if (ok) {
             succeeded.push_back(src_paths[i]);
           } else {

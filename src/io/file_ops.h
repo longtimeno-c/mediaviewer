@@ -19,9 +19,10 @@ namespace mv::io {
 
 enum class transfer_kind : std::uint8_t {
   copy,
-  // Same volume: a rename. Across volumes: copy, verify the size, then delete
-  // the source. A copy that fails or comes up short is removed and the source
-  // is left where it was. Moving a file into the folder it is already in is a
+  // Same volume: a rename. Across volumes: a verified copy (io/verified_copy.h:
+  // hashed while read, read back uncached, compared), then delete the source.
+  // A copy that fails or does not verify is removed and the source is left
+  // where it was (plan/18: F8 never removes an unverified source). Moving a file into the folder it is already in is a
   // no-op that succeeds (unlike a copy, which lands beside it as `name (2)`).
   move,
 };

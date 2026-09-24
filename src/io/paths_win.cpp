@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <initializer_list>
 #include <mutex>
 #include <string>
 
@@ -12,6 +13,7 @@ namespace {
 
 std::mutex g_mu;
 std::string g_override;
+std::string g_addons_override;
 
 std::string utf8_from_wide(const wchar_t* wide) {
   if (!wide || !wide[0]) return {};
@@ -51,6 +53,38 @@ result<std::string> thumb_cache_dir() {
     if (errn != ERROR_ALREADY_EXISTS) return err(status::io);
   }
   return utf8_from_wide(dir.c_str());
+}
+
+void set_addons_dir_override(std::string_view utf8_dir) {
+  std::lock_guard lock(g_mu);
+  g_addons_override.assign(utf8_dir);
+}
+
+result<std::string> addons_dir() {
+  {
+    std::lock_guard lock(g_mu);
+    if (!g_addons_override.empty()) return g_addons_override;
+  }
+  wchar_t local[MAX_PATH]{};
+  if (FAILED(::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, local))) {
+    return err(status::io);
+  }
+  const std::wstring app = std::wstring(local) + L"\\MediaViewer";
+  const std::wstring dir = app + L"\\addons";
+  for (const std::wstring* d : {&app, &dir}) {
+    if (!::CreateDirectoryW(d->c_str(), nullptr) && ::GetLastError() != ERROR_ALREADY_EXISTS) {
+      return err(status::io);
+    }
+  }
+  return utf8_from_wide(dir.c_str());
+}
+
+result<std::string> default_library_dir() {
+  wchar_t pictures[MAX_PATH]{};
+  if (FAILED(::SHGetFolderPathW(nullptr, CSIDL_MYPICTURES, nullptr, SHGFP_TYPE_CURRENT, pictures))) {
+    return err(status::io);
+  }
+  return utf8_from_wide((std::wstring(pictures) + L"\\MediaViewer").c_str());
 }
 
 }  // namespace mv::io
