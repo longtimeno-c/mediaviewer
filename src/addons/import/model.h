@@ -149,6 +149,10 @@ struct plan_unit {
   std::string matched;     // for a duplicate: what it matched (relative path)
   bool renamed_for_clash = false;
   std::uint32_t seq = 0;   // the {seq} it was given, 0 if none
+  // A duplicate on the main destination that the backup does not hold: the
+  // backup still gets it, so the backup mirrors the card (plan/18 "Backup").
+  bool backup_needed = false;  // the planner's finding
+  bool backup_only = false;    // selected for the backup copy (follows selection)
 };
 
 struct plan_result {

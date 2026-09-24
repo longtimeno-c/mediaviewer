@@ -291,6 +291,17 @@ Calls made while building it (none reverses a D-decision; logged in [12](12-deci
 - **Interrupted, not failed**: when a copy fails and the source or destination root is gone, the job
   stops as *interrupted* with the rest pending; the app lists it at next open with **Resume**.
 - **Temporaries are `<final>.mvtmp`** (then `.mvtmp2` …), removed on cancel, failure and resume.
+- **Duplicates are decided per destination.** A unit whose content the main destination (or, at
+  library scope, the library) already holds is skipped there and reported with what it matched,
+  but a backup destination that lacks it still gets it, so the backup mirrors the card. It follows
+  the selection rules as if it were not a duplicate. A copy on the backup drive does not count as
+  "in the library" for the main destination.
+- **A member is all-or-nothing across destinations too.** If one destination fails, the copy the
+  other destination verified is removed; resume after a crash between the two renames keeps the
+  destination that holds matching bytes and copies only the missing one.
+- **No add-on downgrades.** Install refuses a signed manifest older than a working installed
+  version; the same version again is a repair. An installed copy that is tampered or needs a newer
+  app does not block an older one.
 - **The Mac card watch uses DiskArbitration's mount callbacks** (the C API NSWorkspace sits on) so
   `io/` stays free of Objective-C; the base app's one-time hint uses NSWorkspace itself.
 - **Key clash in the window:** plan text gives Enter to both "start" and "open in viewer". Enter

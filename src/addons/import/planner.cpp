@@ -86,6 +86,9 @@ struct dup_finder {
     if (!ensure_hash(h, idx, scan, f, cancel)) return {};
     for (const library_row& c : candidates) {
       if (c.hash != f.hash) continue;
+      // The backup drive is indexed too, but a copy there is not the library:
+      // the main destination still needs the file.
+      if (!plan.backup.empty() && c.root == plan.backup) continue;
       // The index says so; the file must still be there (a stat, not a read).
       auto now = destination_hash(h, idx, c.root, c.rel, cancel);
       if (now && *now == f.hash) {
@@ -94,6 +97,18 @@ struct dup_finder {
     }
     if (auto it = seen.find(f.hash); it != seen.end()) return it->second;
     return {};
+  }
+
+  // Whether `root` already holds `f`'s content (the index, confirmed on disk).
+  bool present_on(source_file& f, const std::string& root) {
+    std::vector<library_row> candidates = idx.by_size(f.size, &root);
+    if (candidates.empty() || !ensure_hash(h, idx, scan, f, cancel)) return false;
+    for (const library_row& c : candidates) {
+      if (c.hash != f.hash) continue;
+      auto now = destination_hash(h, idx, c.root, c.rel, cancel);
+      if (now && *now == f.hash) return true;
+    }
+    return false;
   }
 
   void remember(source_file& f) {
@@ -170,6 +185,12 @@ bool apply_selection(plan_result& plan, int unit, const std::string* day, bool s
       pu.selected = want;
       changed = true;
     }
+    // A skipped duplicate the backup lacks follows the selection too.
+    const bool backup = selected && pu.backup_needed && !pu.selected;
+    if (pu.backup_only != backup) {
+      pu.backup_only = backup;
+      changed = true;
+    }
   }
   return changed;
 }
@@ -199,10 +220,16 @@ void assign_names(const host& h, library_index& idx, scan_result& scan, plan_res
                                                    : std::string_view(primary.rel).substr(0, slash);
     pu.folder = layout_folder(p, li);
 
+    // Units that will be copied somewhere: every destination, or the backup
+    // alone for a duplicate the backup lacks.
+    const bool work = pu.selected || pu.backup_only;
+    const std::vector<std::string> backup_root{plan.backup};
+    const std::vector<std::string>& targets = pu.selected ? roots : backup_root;
+
     pu.seq = 0;
     std::string base = old_stem;
     if (!p.rename.empty()) {
-      if (uses_seq && pu.selected) {
+      if (uses_seq && work) {
         auto [it, inserted] = next_seq.try_emplace(pu.day, 0u);
         if (inserted) it->second = idx.last_seq(plan.destination, pu.day);
         pu.seq = ++it->second;
@@ -223,27 +250,43 @@ void assign_names(const host& h, library_index& idx, scan_result& scan, plan_res
       }
       // Only a unit that will be copied looks at the disk; the rest are shown
       // where they would go.
-      if (!clash && pu.selected) {
+      bool settled = false;  // decided without a copy: a duplicate, or already backed up
+      if (!clash && work) {
         for (std::size_t m = 0; m < names.size() && !clash; ++m) {
           const std::string rel = rel_join(pu.folder, names[m]);
-          for (const std::string& root : roots) {
+          for (const std::string& root : targets) {
             if (!h.stat(join_native(root, rel))) continue;
             // Something is there already. Same bytes: it is this file, a
             // duplicate the index had not seen. Different bytes: a clash.
             source_file& f = scan.files[u.files[m]];
             auto there = destination_hash(h, idx, root, rel, cancel);
-            if (there && f.type != file_type::sidecar && ensure_hash(h, idx, scan, f, cancel) &&
-                *there == f.hash && p.skip_duplicates && m == 0 && root == plan.destination) {
+            const bool same = there && f.type != file_type::sidecar &&
+                              ensure_hash(h, idx, scan, f, cancel) && *there == f.hash &&
+                              p.skip_duplicates && m == 0;
+            if (same && root == plan.destination) {
               pu.state = unit_state::duplicate;
               pu.matched = rel;
               pu.selected = false;
+              // The backup still gets it, unless something is already at
+              // that name there (then it is shown as the duplicate it is).
+              pu.backup_needed = !plan.backup.empty() &&
+                                 !h.stat(join_native(plan.backup, rel)).has_value();
+              pu.backup_only = pu.backup_needed;
+              settled = true;
+            } else if (same && root == plan.backup && !pu.selected) {
+              pu.backup_needed = false;  // the backup has it after all
+              pu.backup_only = false;
+              settled = true;
             }
             clash = true;
             break;
           }
         }
-        if (pu.state == unit_state::duplicate) {
+        if (settled) {
           pu.names = std::move(names);
+          if (pu.backup_only) {
+            for (const std::string& name : pu.names) claimed.insert(lower_ascii(rel_join(pu.folder, name)));
+          }
           break;
         }
       }
@@ -305,6 +348,16 @@ result<plan_result> make_plan(const host& h, library_index& idx, scan_result& sc
       if (all_dup && !first_match.empty()) {
         pu.state = unit_state::duplicate;
         pu.matched = std::move(first_match);
+        // Skipped on the main destination; the backup is checked on its own.
+        if (!plan.backup.empty() && settings.skip_duplicates) {
+          for (std::uint32_t fi : u.files) {
+            source_file& f = scan.files[fi];
+            if (f.type != file_type::sidecar && !dups.present_on(f, plan.backup)) {
+              pu.backup_needed = true;
+              break;
+            }
+          }
+        }
       } else {
         pu.state = u.imported_before ? unit_state::imported : unit_state::fresh;
         for (std::uint32_t fi : u.files) {
@@ -331,6 +384,22 @@ result<plan_result> make_plan(const host& h, library_index& idx, scan_result& sc
     }
     // An explicit list (the viewer's marks, Ctrl+Shift+F7) means "these".
     if (scan.explicit_files && importable) pu.selected = true;
+    if (pu.backup_needed) {
+      // Selected for the backup exactly when it would have been selected had
+      // it not been a duplicate on the main destination.
+      const bool as_new = !u.imported_before;
+      switch (settings.selection) {
+        case selection_mode::new_only: pu.backup_only = as_new; break;
+        case selection_mode::all:
+        case selection_mode::date_range: pu.backup_only = true; break;
+        case selection_mode::marked:
+          pu.backup_only = std::any_of(u.files.begin(), u.files.end(), [&](std::uint32_t fi) {
+            return marked.count(scan.files[fi].path) != 0;
+          });
+          break;
+      }
+      if (scan.explicit_files) pu.backup_only = true;
+    }
     plan.units.push_back(std::move(pu));
   }
 
@@ -355,6 +424,7 @@ std::string plan_to_json(const scan_result& scan, const plan_result& plan, doubl
   std::uint32_t duplicates = 0;
   std::uint32_t imported = 0;
   std::uint32_t fresh = 0;
+  std::uint32_t backup_only = 0;
   for (const plan_unit& pu : plan.units) {
     const unit& u = scan.units[pu.unit];
     day_row& d = days[pu.day];
@@ -369,7 +439,10 @@ std::string plan_to_json(const scan_result& scan, const plan_result& plan, doubl
       ++imported;
       ++d.imported;
     }
-    if (pu.selected) {
+    // Backup-only work is work: it counts toward what the Import button
+    // copies and the ETA.
+    if (pu.backup_only) ++backup_only;
+    if (pu.selected || pu.backup_only) {
       ++d.selected;
       ++selected_units;
       selected_files += static_cast<std::uint32_t>(u.files.size());
@@ -400,6 +473,7 @@ std::string plan_to_json(const scan_result& scan, const plan_result& plan, doubl
   w.key("selected_units").integer(selected_units);
   w.key("selected_files").integer(selected_files);
   w.key("selected_bytes").integer(static_cast<std::int64_t>(selected_bytes));
+  w.key("backup_only").integer(backup_only);
   // The ETA comes from throughput measured on this device before, never a
   // guess: without a measurement it is -1 and the chrome says so.
   w.key("bytes_per_second").number(bytes_per_second);
@@ -457,6 +531,7 @@ std::string plan_to_json(const scan_result& scan, const plan_result& plan, doubl
     w.end_array();
     w.key("matched").string(pu.matched);
     w.key("renamed_for_clash").boolean(pu.renamed_for_clash);
+    w.key("backup_only").boolean(pu.backup_only);
     w.end_object();
   }
   w.end_array();

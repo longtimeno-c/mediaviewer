@@ -540,6 +540,8 @@ expected engine::select(std::uint64_t plan_id, int unit, const std::string* day,
           live.matched = copy.units[i].matched;
           live.selected = false;
         }
+        live.backup_needed = copy.units[i].backup_needed;
+        live.backup_only = copy.units[i].backup_only;
       }
     }
     host_.post(MV_ADDON_EVENT_PLAN_READY, MV_OK, slot->id, 0);
@@ -618,9 +620,14 @@ void engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result
   std::uint64_t bytes = 0;
   std::uint32_t units = 0;
   std::uint32_t skipped = 0;
+  const std::string& backup = plan.backup;
   for (const plan_unit& pu : plan.units) {
     const unit& u = scan.units[pu.unit];
     const std::string display = scan.files[u.files.front()].rel;
+    // A duplicate on the main destination that the backup lacks: reported as
+    // skipped (with what it matched) and, as a unit of its own, copied to
+    // the backup alone.
+    const bool backup_copy = !pu.selected && pu.backup_only && !backup.empty();
     if (!pu.selected) {
       // A duplicate decided up front is reported with what it matched.
       if (pu.state == unit_state::duplicate) {
@@ -636,7 +643,7 @@ void engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result
         rows.push_back(std::move(r));
         ++skipped;
       }
-      continue;
+      if (!backup_copy) continue;
     }
     ++units;
     for (std::size_t m = 0; m < u.files.size(); ++m) {
@@ -651,6 +658,7 @@ void engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result
       r.mtime = f.mtime;
       const std::string rel = pu.folder.empty() ? pu.names[m] : pu.folder + "/" + pu.names[m];
       for (const std::string& root : j->dest_roots) {
+        if (backup_copy && root != backup) continue;
         r.targets.push_back(join_native(root, rel));
         r.target_roots.push_back(root);
       }
@@ -938,8 +946,12 @@ void engine::run_job(const std::shared_ptr<job>& j) {
         std::lock_guard lock(j->m);
         j->rows[order[k]].state = member_state::done;
         j->rows[order[k]].hash = d;
-        for (std::size_t t = 0; t < row.targets.size() && t < MV_IMPORT_MAX_DESTINATIONS; ++t) {
-          j->prog.bytes_verified[t] += row.size;
+        // Per destination, not per target: a backup-only or resumed row
+        // lists fewer targets than the job has destinations.
+        for (const std::string& root : row.target_roots) {
+          const auto d = static_cast<std::size_t>(
+              std::find(j->dest_roots.begin(), j->dest_roots.end(), root) - j->dest_roots.begin());
+          if (d < MV_IMPORT_MAX_DESTINATIONS) j->prog.bytes_verified[d] += row.size;
         }
         copied_now.push_back(order[k]);
         continue;
@@ -1300,11 +1312,16 @@ void engine::resume_on_control(std::uint64_t id) {
   if (auto v = host_.volume_of(j->source_root)) j->source_removable = v->removable != 0;
 
   std::vector<journal_row> rows = idx_->journal(id);
+  // Destinations in the job's order (main, then backup): rows that list
+  // every destination set it; a backup-only row lists the backup alone.
   j->dest_roots.clear();
-  for (const journal_row& r : rows) {
-    for (const std::string& root : r.target_roots) {
-      if (std::find(j->dest_roots.begin(), j->dest_roots.end(), root) == j->dest_roots.end()) {
-        j->dest_roots.push_back(root);
+  for (const bool full : {true, false}) {
+    for (const journal_row& r : rows) {
+      if (full && r.target_roots.size() < 2) continue;
+      for (const std::string& root : r.target_roots) {
+        if (std::find(j->dest_roots.begin(), j->dest_roots.end(), root) == j->dest_roots.end()) {
+          j->dest_roots.push_back(root);
+        }
       }
     }
   }
@@ -1334,24 +1351,41 @@ void engine::resume_on_control(std::uint64_t id) {
     for (const std::string& t : r.targets) {
       for (int n = 0; n < kTempAttempts; ++n) (void)host_.remove_file(temp_name(t, n));
     }
-    bool all_there = !r.targets.empty();
-    for (const std::string& t : r.targets) {
-      auto st = host_.stat(t);
-      all_there = all_there && st && st->size == r.size;
-    }
-    if (all_there) {
-      copy_callbacks none;
-      auto src = host_.hash(r.src, false, none);
-      bool same = src.has_value();
-      for (const std::string& t : r.targets) {
-        auto dst = same ? host_.hash(t, true, none) : result<digest>(err(status::io));
-        same = same && dst && *dst == *src;
+    // Per destination: a crash between the two renames leaves the file on
+    // one destination and not the other. What is there and matches the
+    // source is kept; only the missing destinations are copied.
+    copy_callbacks none;
+    std::optional<digest> src;
+    bool src_failed = false;
+    std::vector<std::size_t> present;
+    for (std::size_t t = 0; t < r.targets.size() && !src_failed; ++t) {
+      auto st = host_.stat(r.targets[t]);
+      if (!st || st->size != r.size) continue;  // missing, or a clash the copy will report
+      if (!src) {
+        auto h = host_.hash(r.src, false, none);
+        if (!h) {
+          src_failed = true;
+          break;
+        }
+        src = *h;
       }
-      if (same) {
-        r.state = member_state::done;
-        r.hash = *src;
-        idx_->journal_set(id, r.unit, r.member, member_state::done, &r.hash, "");
-        bytes -= r.size;
+      auto dst = host_.hash(r.targets[t], true, none);
+      if (dst && *dst == *src) present.push_back(t);
+    }
+    if (!present.empty() && present.size() == r.targets.size()) {
+      r.state = member_state::done;
+      r.hash = *src;
+      idx_->journal_set(id, r.unit, r.member, member_state::done, &r.hash, "");
+      bytes -= r.size;
+    } else if (!present.empty()) {
+      // Index the verified copies now (the unit's completion only indexes the
+      // targets it copies) and leave just the missing ones to copy. The
+      // journal keeps the full list, so another resume reconciles again.
+      for (auto it = present.rbegin(); it != present.rend(); ++it) {
+        const std::string root = r.target_roots[*it];
+        idx_->upsert(library_row{root, rel_under(root, r.targets[*it]), r.size, r.mtime, *src});
+        r.targets.erase(r.targets.begin() + static_cast<std::ptrdiff_t>(*it));
+        r.target_roots.erase(r.target_roots.begin() + static_cast<std::ptrdiff_t>(*it));
       }
     }
     if (r.state != member_state::done) unit_complete[r.unit] = false;

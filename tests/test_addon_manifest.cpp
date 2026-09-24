@@ -221,6 +221,31 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     REQUIRE_FALSE(st.install(*staged));
   }
 #endif
+  SECTION("an older signed version does not replace a newer one") {
+    auto staged = st.make_staging();
+    REQUIRE(staged);
+    stage(*staged, files, m, k.sign(m));  // 1.2.3
+    REQUIRE(st.install(*staged));
+    const std::string older = manifest_json(files, "mv_import.bin", "1.1.9");
+    auto old_stage = st.make_staging();
+    REQUIRE(old_stage);
+    stage(*old_stage, files, older, k.sign(older));
+    REQUIRE_FALSE(st.install(*old_stage));
+    REQUIRE_FALSE(fs::exists(*old_stage));  // consumed all the same
+    REQUIRE(st.list()[0].version == "1.2.3");
+    // The same version again is a repair.
+    auto again = st.make_staging();
+    REQUIRE(again);
+    stage(*again, files, m, k.sign(m));
+    REQUIRE(st.install(*again));
+    // A newer one updates.
+    const std::string newer = manifest_json(files, "mv_import.bin", "1.10.0");
+    auto new_stage = st.make_staging();
+    REQUIRE(new_stage);
+    stage(*new_stage, files, newer, k.sign(newer));
+    REQUIRE(st.install(*new_stage));
+    REQUIRE(st.list()[0].version == "1.10.0");
+  }
   SECTION("a manifest signed by someone else") {
     keypair other;
     auto staged = st.make_staging();

@@ -1,8 +1,8 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 62fbbec..f5f1d7c 100644
+index 62fbbec..85c4281 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -64,6 +64,63 @@ jobs:
+@@ -64,6 +64,64 @@ jobs:
        - run: python3 tools/mac/check_plists.py
        - run: python3 tools/mac/test_macpack.py -v
        - run: python3 tools/package/test_github_release.py -v
@@ -42,19 +42,20 @@ index 62fbbec..f5f1d7c 100644
 +          path: build-portable/vcpkg_installed
 +          key: vcpkg-portable-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('tools/portable/vcpkg.json') }}
 +
-+      # libsodium's vcpkg port builds with autotools on Linux.
++      # libsodium's vcpkg port builds with autotools on Linux. The packer test
++      # needs `cryptography`; Ubuntu's own package, since the system Python
++      # refuses `pip install --user` (PEP 668).
 +      - name: Build tools
-+        run: sudo apt-get install -y --no-install-recommends autoconf automake libtool pkg-config
-+
-+      - name: Python for the packer test
-+        run: python3 -m pip install --user cryptography
++        run: |
++          sudo apt-get update
++          sudo apt-get install -y --no-install-recommends autoconf automake libtool pkg-config python3-cryptography
 +
 +      - name: Configure
 +        run: |
 +          cmake -S cmake/portable -B build-portable -DCMAKE_BUILD_TYPE=Debug -DMV_ASAN=ON \
 +            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
 +            -DVCPKG_MANIFEST_DIR="${{ github.workspace }}/tools/portable" \
-+            -DPython3_EXECUTABLE="$(command -v python3)"
++            -DPython3_EXECUTABLE=/usr/bin/python3
 +
 +      - name: Build
 +        run: cmake --build build-portable

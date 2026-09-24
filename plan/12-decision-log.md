@@ -1959,3 +1959,16 @@ branch; it does **not** merge before 15, and it is not done until both platforms
   grid, the 10 s ETA) and **both present-loop gates while importing**.
 - Clip posters in the Import grid, and the Mac finish notification (a beep until notification
   permission is requested).
+
+**Review follow-ups (same day), decided by the owner:**
+
+- **Duplicates per destination:** a duplicate on the main destination still goes to a backup that
+  lacks it (the backup mirrors the card). Was: skipped for both. Backup copies no longer count as
+  library copies for the main destination's duplicate test.
+- **Resume per destination:** a file a crash left on one destination only is kept there and copied
+  to the other. Was: that member failed as "name taken".
+- **No add-on downgrades:** install refuses an older signed version than a working installed one,
+  so a replayed old manifest cannot roll the add-on back.
+- Review fixes that change no call: a hidden file or link beside an add-on is refused; a member that
+  fails on one destination removes what it wrote on the other; the UI thread no longer reads
+  `import.db`; the host table's volume-watch deadlock. See the PR.

@@ -433,6 +433,96 @@ TEST_CASE("a file the backup could not take is taken back from the main destinat
   REQUIRE(list_tree(r.dest()) == list_tree(backup));
 }
 
+TEST_CASE("a duplicate already in the library still goes to a backup that lacks it",
+          "[import][engine]") {
+  rig r;
+  r.make_card();
+  // The main library already holds this content, imported from a copy of the
+  // card in another reader (a different volume, so not "imported before").
+  const fs::path other = r.dir / "OTHER_CARD";
+  fs::copy(r.card(), other, fs::copy_options::recursive);
+  for (const auto& e : fs::recursive_directory_iterator(other)) {
+    if (e.is_regular_file()) set_mtime(e.path(), kSat - 60);  // as make_card() stamps them
+  }
+  r.wrap.cards[utf8(other)] = "uuid:CARD-B";
+  auto [p1, pl1] = r.plan(other, r.preset());
+  r.run(p1);
+  const auto library = list_tree(r.dest());
+  REQUIRE(library.size() == 9);
+
+  const std::string backup = utf8(r.dir / "Backup");
+  const std::string with_backup = r.preset(R"(,"backup":")" + backup + R"(")");
+  auto [p2, pl2] = r.plan(r.card(), with_backup);
+  REQUIRE(totals(pl2, "duplicates") == 5);
+  REQUIRE(totals(pl2, "backup_only") == 5);
+  REQUIRE(totals(pl2, "selected_units") == 5);  // work to do: the Import button counts it
+  r.wrap.copies = 0;
+  const auto job = r.run(p2);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_DONE);
+  REQUIRE(r.wrap.copies == 9);
+  REQUIRE(list_tree(r.dest()) == library);  // nothing new in the library
+  REQUIRE(list_tree(backup) == library);    // the backup mirrors the card
+  const auto sum = r.summary(job);
+  REQUIRE(sum.find("skipped")->a.size() == 5);  // still reported as duplicates on the main
+  REQUIRE(*sum.find("copied")->integer("files") == 9);
+
+  // Now both hold it: nothing to do, for either.
+  auto [p3, pl3] = r.plan(r.card(), with_backup);
+  REQUIRE(totals(pl3, "backup_only") == 0);
+  REQUIRE(totals(pl3, "selected_units") == 0);
+
+  // Clearing the selection clears the backup work too. (The card is
+  // "imported before" now, so "new only" would select nothing: take all.)
+  const std::string again = utf8(r.dir / "Backup2");
+  auto [p4, pl4] =
+      r.plan(r.card(), r.preset(R"(,"selection":"all","backup":")" + again + R"(")"));
+  REQUIRE(totals(pl4, "backup_only") == 5);
+  REQUIRE(r.eng->select(p4, -1, nullptr, false));
+  r.eng->wait_idle();
+  REQUIRE(totals(r.plan_of(p4), "backup_only") == 0);
+  REQUIRE(totals(r.plan_of(p4), "selected_units") == 0);
+}
+
+TEST_CASE("resume copies only the destination a crash left without the file",
+          "[import][engine]") {
+  rig r;
+  r.make_card();
+  const std::string backup = utf8(r.dir / "Backup");
+  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + backup + R"(")"));
+  const fs::path gone = r.dir / "pulled";
+  r.wrap.before_copy = [&](int n) {
+    if (n == 3) fs::rename(r.card(), gone);
+  };
+  const auto job = r.run(pid);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_INTERRUPTED);
+  r.wrap.before_copy = nullptr;
+
+  // A crash between the two renames: one pending file is on the main
+  // destination, verified bytes and all, and not on the backup.
+  std::string crashed;
+  {
+    auto idx = mv::import::library_index::open(utf8(r.dir / "data/import.db"));
+    REQUIRE(idx);
+    for (const auto& row : (*idx)->journal(job)) {
+      if (row.state != mv::import::member_state::pending || row.targets.size() != 2) continue;
+      const std::string rel = row.src.substr(utf8(r.card()).size() + 1);
+      fs::create_directories(fs::path(row.targets[0]).parent_path());
+      fs::copy_file(gone / rel, row.targets[0]);
+      crashed = row.targets[1];
+      break;
+    }
+  }
+  REQUIRE_FALSE(crashed.empty());
+  fs::rename(gone, r.card());
+  r.restart();
+  REQUIRE(r.eng->resume(job));
+  r.eng->wait_idle();
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_DONE);
+  REQUIRE(fs::exists(crashed));
+  REQUIRE(list_tree(r.dest()).size() == 9);
+  REQUIRE(list_tree(r.dest()) == list_tree(backup));
+}
+
 TEST_CASE("Retry failed on an unknown job fails rather than reporting success",
           "[import][engine]") {
   rig r;

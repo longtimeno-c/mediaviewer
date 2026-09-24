@@ -177,6 +177,17 @@ result<installed> store::install(const std::string& staged_dir) const {
                                                                 : status::corrupt);
   if (verify_files(staged_dir, d.m) != rejection::none) return err(status::corrupt);
 
+  // No downgrades: an older build is signed with the same key, so a replayed
+  // old manifest (and whatever it fixed since) verifies like a new one. A
+  // working installed version newer than this one refuses it; the same
+  // version again is a repair and goes ahead. A newer copy that is tampered
+  // or needs a newer app does not block an older one that works.
+  if (auto current = find(d.m.id);
+      current && current->state == install_state::ok &&
+      compare_versions(current->version, d.m.version) > 0) {
+    return err(status::corrupt);
+  }
+
   const std::string name = dir_name_for(d.m);
   const std::string addon_dir = io::join_path(root_, name);
   MV_TRY_VOID(io::make_directories(addon_dir));

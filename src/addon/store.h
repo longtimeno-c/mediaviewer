@@ -54,7 +54,8 @@ class store {
   [[nodiscard]] result<std::string> make_staging() const;
 
   // Verifies a staged folder (manifest.json + .sig + files) and moves it into
-  // place. The folder is consumed either way. Older versions are removed, or
+  // place. The folder is consumed either way. An older version than one that
+  // is installed and verifies is refused (status::corrupt): no downgrades. Older versions are removed, or
   // marked for removal at next start if they are loaded right now.
   [[nodiscard]] result<installed> install(const std::string& staged_dir) const;
 
