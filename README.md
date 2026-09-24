@@ -142,17 +142,20 @@ timeout with nothing in the log.
 
 Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, a full Xcode install (Command Line
 Tools alone are not enough — `swift build`'s SwiftUI target and `xcrun metal` both
-need it), Swift 6. Intel Macs are out of scope (D9). This path does not build FFmpeg,
-WinUI, or the Windows lab.
+need it), Swift 6. Intel Macs are out of scope (D9). This path builds the native
+Mac app and its dynamic FFmpeg libraries; it does not build WinUI or the Windows lab.
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped
-# Format libraries. libheif (+ libde265) and LibRaw are LGPL and must be dynamic
-# (CLAUDE.md, plan/11), so they go in the dynamic triplet; the rest are permissive
-# and static. libheif's default features stay off (its `hevc` feature is x265).
-"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx giflib libwebp tiff "libavif[core,dav1d]"
-"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic "libheif[core]" libraw
-cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+# Dynamic LGPL codecs use a separate manifest/tree; CMake installs the static
+# permissive dependencies from the root manifest. See RELEASING.md.
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
+  --x-manifest-root="$PWD/tools/mac/dependencies" \
+  --x-install-root="$PWD/build/vcpkg_dynamic"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_TARGET_TRIPLET=arm64-osx \
+  -DMV_VCPKG_DYNAMIC_PREFIX="$PWD/build/vcpkg_dynamic/arm64-osx-dynamic"
 cmake --build build
 ./build/bin/mediaviewer_lab --open some.jpg
 ./build/bin/frametime --seconds 60 --lab ./build/bin/mediaviewer_lab
@@ -188,13 +191,8 @@ The Mac has a real menu bar (File / View / Go / Window / Help), `?` opens a shor
 and in the gallery `↑`/`↓`/`W`/`S` move by row, `Enter` opens the selection and `+`/`-` resize the
 thumbnails.
 
-**Video on Mac (PR 19).** FFmpeg is LGPL and dynamic-link only, so it joins libheif/LibRaw in
-the dynamic triplet:
-
-```sh
-"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
-  "ffmpeg[core,avcodec,avformat,avfilter,swresample,swscale,dav1d]"   # + `ffmpeg` for the CLI
-```
+**Video on Mac (PR 19).** FFmpeg is LGPL and dynamic-link only. The dynamic manifest
+installed above includes it alongside libheif/LibRaw; no extra install is needed.
 
 Open a folder with clips in it. `Space`/`K` play/pause, `,` `.` frame step, `Q`/`E` ±2 s,
 `J`/`L` ±10 s, `Shift+Q`/`Shift+E` speed 0.25–4×, `Shift+M` mute (`?` lists them; the transport
@@ -265,13 +263,15 @@ the procedure.
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg
-# libraries: the two install lines from "macOS (PR 16–18)" and "Video on Mac" above
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
+  --x-manifest-root="$PWD/tools/mac/dependencies" \
+  --x-install-root="$PWD/build-darwin/vcpkg_dynamic"
 
 cmake -S . -B build-darwin -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DCMAKE_BUILD_TYPE=Release \
   -DVCPKG_TARGET_TRIPLET=arm64-osx \
-  -DVCPKG_MANIFEST_INSTALL=OFF -DVCPKG_INSTALLED_DIR="$VCPKG_ROOT/installed" \
-  -DMV_VCPKG_DYNAMIC_PREFIX="$VCPKG_ROOT/installed/arm64-osx-dynamic"
+  -DMV_VCPKG_DYNAMIC_PREFIX="$PWD/build-darwin/vcpkg_dynamic/arm64-osx-dynamic"
 cmake --build build-darwin --target mediaviewer_app
 open build-darwin/MediaViewer.app
 ```

@@ -160,9 +160,13 @@ each platform and an upgrade from the previous stable before announcing a releas
 - Missing secrets: use `preview` now, or configure the named secrets for `stable`.
 - Mac signing failed: inspect Apple's submission log; check the private key, identity,
   Team ID and app-specific password.
+- `arm64-osx-dynamic prefix not found`: the dynamic codec install is missing, not
+  an Apple credential problem. The workflow installs the manifest below before CMake.
 - Build/upload failed: rerun failed jobs while the successful jobs' artifacts still exist.
   An interrupted upload leaves a draft the same source commit can resume. Review/remove
   unexpected extra draft assets before retrying. Published assets are never clobbered.
+- After changing source or workflow files, push the fix and start a **new** workflow
+  run. Re-running an old run still builds its original commit.
 - Version already published: bump CMake and release again; do not reuse stable tags.
 - Signing key lost: restore its backup; a new key will not make old installs trust it.
 
@@ -179,6 +183,34 @@ dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- verify-
 Optional `-SigningMetadata` signs the Velopack payload; local builds need a separate
 wizard-signing step ([update-signing.md](tools/package/update-signing.md)). See the
 [README Mac runbook](README.md#runbook-build-sign-release-update-macos) for local Mac builds.
+
+### macOS dependencies (local and Actions)
+
+GitHub's Apple Silicon runner can build the Mac release; no local Mac is needed for
+the Actions build. It uses two pinned vcpkg manifests with separate install trees:
+
+- Root `vcpkg.json`: static permissive libraries, installed by CMake as `arm64-osx`.
+- [`tools/mac/dependencies/vcpkg.json`](tools/mac/dependencies/vcpkg.json): dynamic
+  FFmpeg, libheif/libde265 and LibRaw, installed as `arm64-osx-dynamic` before CMake.
+
+On an Apple Silicon Mac with Xcode and vcpkg, run from the repository root:
+
+```sh
+"$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
+  --x-manifest-root="$PWD/tools/mac/dependencies" \
+  --x-install-root="$PWD/build/vcpkg_dynamic"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DVCPKG_TARGET_TRIPLET=arm64-osx \
+  -DMV_VCPKG_DYNAMIC_PREFIX="$PWD/build/vcpkg_dynamic/arm64-osx-dynamic"
+cmake --build build --config Release
+cmake --build build --config Release --target mediaviewer_app
+ctest --test-dir build -C Release --output-on-failure --no-tests=error
+```
+
+Keep both manifests' baselines and the workflow's `VCPKG_COMMIT` aligned. Do not install
+both manifests into the same directory: manifest mode reconciles the install tree and
+can remove packages needed by the other manifest. Actions caches both directories.
+
 For manual uploads, attach both complete platform asset sets to a draft before publishing Latest.
 
 References: [GitHub CLI](https://cli.github.com/manual/gh_release_create),

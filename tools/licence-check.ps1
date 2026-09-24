@@ -41,8 +41,9 @@ function Add-Violation([string]$rule, [string]$detail) {
 }
 
 # --- 1. Forbidden encoders anywhere in the manifest ------------------------
-$manifestPath = Join-Path $RepoRoot 'vcpkg.json'
-if (Test-Path $manifestPath) {
+foreach ($manifestName in @('vcpkg.json', 'tools/mac/dependencies/vcpkg.json')) {
+    $manifestPath = Join-Path $RepoRoot $manifestName
+    if (-not (Test-Path $manifestPath)) { continue }
     $manifest = Get-Content -Raw -LiteralPath $manifestPath
 
     # Only the real dependency list matters; the $comment-* keys deliberately
@@ -57,18 +58,18 @@ if (Test-Path $manifestPath) {
     foreach ($forbidden in @('x264', 'x265', 'fdk-aac', 'libbluray')) {
         if ($declared -contains $forbidden) {
             Add-Violation 'forbidden encoder / GPL-only port' `
-                "vcpkg.json declares '$forbidden'. plan/11: never bundle a software HEVC or AAC encoder."
+                "$manifestName declares '$forbidden'. plan/11: never bundle a software HEVC or AAC encoder."
         }
     }
 
     foreach ($dep in $declared) {
         if ($dep -like 'libraw-demosaic-pack*') {
             Add-Violation 'LibRaw GPL demosaic pack' `
-                "vcpkg.json declares '$dep'. These packs are GPL-2/3 and are not used."
+                "$manifestName declares '$dep'. These packs are GPL-2/3 and are not used."
         }
         if ($dep -match 'ffmpeg' -and $dep -match 'gpl|nonfree') {
             Add-Violation 'FFmpeg feature' `
-                "vcpkg.json declares '$dep'. FFmpeg is LGPL-only: no gpl, no nonfree features."
+                "$manifestName declares '$dep'. FFmpeg is LGPL-only: no gpl, no nonfree features."
         }
     }
 }

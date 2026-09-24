@@ -248,8 +248,19 @@ jobs:
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         with:
-          path: build/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-arm64-osx
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json') }}-arm64-osx-mixed-v1
+
+      # CMake installs the static, permissive dependencies from the root
+      # manifest. Keep the LGPL dylibs in a separate manifest/install tree:
+      # a subsequent manifest install otherwise removes the other triplet.
+      - name: Install macOS dynamic codec libraries
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
+            --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
+            --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
 
       - name: Signing keychain
         if: inputs.mode == 'stable'
@@ -295,7 +306,9 @@ jobs:
 
       - name: Configure
         run: |
-          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION")
+          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION"
+                -DVCPKG_TARGET_TRIPLET=arm64-osx
+                -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/arm64-osx-dynamic")
           if [ "$MODE" = "stable" ]; then
             args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
           fi

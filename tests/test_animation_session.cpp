@@ -15,10 +15,13 @@
 #include "abi/animation_session.h"
 #include "codec/decode.h"
 
-using mv::abi::animation_frame;
-using mv::abi::animation_session;
-
 namespace {
+
+struct fake_texture {
+  std::uint32_t width{}, height{}, generation{}, mip_levels{};
+};
+using animation_frame = mv::abi::animation_frame<fake_texture>;
+using animation_session = mv::abi::animation_session<fake_texture>;
 
 struct gif_writer {
   std::vector<std::uint8_t> bytes;
@@ -73,7 +76,7 @@ struct fake_textures {
   animation_session::make_texture_fn maker() {
     return [this](const mv::codec::canvas_frame& frame, const mv::codec::animation_info& info,
                   std::uint32_t generation) {
-      auto t = std::make_unique<mv::image::gpu_image>();
+      auto t = std::make_unique<fake_texture>();
       t->width = info.width;
       t->height = info.height;
       t->generation = generation;

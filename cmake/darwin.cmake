@@ -78,9 +78,9 @@ add_library(mv::gfx ALIAS mv_gfx)
 # Linkage (CLAUDE.md "Licensing", plan/11): libheif, libde265 and LibRaw are
 # dynamic-link only, so they come from vcpkg's arm64-osx-dynamic triplet;
 # giflib, libwebp, libtiff and libavif+dav1d are permissive and stay static
-# in the default arm64-osx triplet. Install once with:
-#   vcpkg install --triplet arm64-osx giflib libwebp tiff "libavif[core,dav1d]"
-#   vcpkg install --triplet arm64-osx-dynamic "libheif[core]" libraw
+# in the default arm64-osx triplet, installed from the root manifest.
+# Install tools/mac/dependencies/vcpkg.json separately with arm64-osx-dynamic
+# for the LGPL codecs (including FFmpeg); see RELEASING.md for the commands.
 # libheif's default features are OFF for the same reason as on Windows: the
 # port's `hevc` feature is x265 encode, which is forbidden.
 # ---------------------------------------------------------------------------
@@ -90,12 +90,13 @@ else()
   set(MV_DYNAMIC_PREFIX_DEFAULT "")
 endif()
 set(MV_VCPKG_DYNAMIC_PREFIX "${MV_DYNAMIC_PREFIX_DEFAULT}" CACHE PATH
-  "vcpkg arm64-osx-dynamic install prefix (libheif, libde265, LibRaw)")
+  "vcpkg arm64-osx-dynamic install prefix (libheif, libde265, LibRaw, FFmpeg)")
 if(NOT MV_VCPKG_DYNAMIC_PREFIX OR NOT IS_DIRECTORY "${MV_VCPKG_DYNAMIC_PREFIX}")
   message(FATAL_ERROR
     "arm64-osx-dynamic prefix not found (${MV_VCPKG_DYNAMIC_PREFIX}); install "
-    "libheif[core] and libraw with `vcpkg install --triplet arm64-osx-dynamic`, or set "
-    "MV_VCPKG_DYNAMIC_PREFIX.")
+    "tools/mac/dependencies/vcpkg.json with triplet arm64-osx-dynamic into a separate "
+    "install root, then set MV_VCPKG_DYNAMIC_PREFIX to its arm64-osx-dynamic directory. "
+    "See RELEASING.md (macOS dependencies).")
 endif()
 list(APPEND CMAKE_PREFIX_PATH "${MV_VCPKG_DYNAMIC_PREFIX}")
 
