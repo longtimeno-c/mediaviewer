@@ -210,7 +210,7 @@ release version is promised for an individual slice.
 ## Milestone D — Viewer and editing updates (PR 9–12, post-v1)
 
 ### PR 9 — Metadata (read)
-*Status 2026-09-24: **macOS landed**, Windows UI outstanding — see [12](12-decision-log.md). The shared native core (`src/meta`, `meta_store`, `sort_order`) is done and unit-tested; the Windows XAML pane, folder-tree island and MSVC build are not.*
+*Status 2026-09-24: **macOS landed**, Windows UI outstanding — see [12](12-decision-log.md). The shared native core (`src/meta`, `meta_store`, `sort_order`) is done and unit-tested; the MSVC build, `O`/`Shift+O`/`Shift+I` overlays and `Ctrl+C` copy landed on Windows 2026-09-24; the Windows XAML pane, folder-tree island and sort menu are not.*
 
 Exiv2 + libavformat, unified property model, summary card + searchable full tree + per-stream video
 inspector. The folder-tree island deferred from PR 6 lands here too, using the existing

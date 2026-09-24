@@ -87,6 +87,9 @@ struct input_snapshot {
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
   meta_overlay meta;
+  // Bumped by the UI thread whenever `meta` is replaced, so an idle render
+  // thread draws one frame for it (the struct is too big to compare).
+  std::uint32_t meta_seq = 0;
   // For the info overlay, filled by the UI thread when the selection changes.
   // The render thread never calls into the folder model.
   std::uint32_t item_index = 0;

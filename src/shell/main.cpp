@@ -25,9 +25,11 @@
 #include <atomic>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <cwchar>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -42,7 +44,10 @@
 #include "shell/chrome_host.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
+#include "core/job_system.h"
+#include "meta/meta.h"
 #include "shell/marks.h"
+#include "shell/meta_store.h"
 #include "shell/open_request.h"
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
@@ -71,6 +76,9 @@ enum class open_mode { none, folder, image };
 
 // plan/16 §Focus: in fullscreen, ↓ at fit (or the bottom hot-edge) shows the
 // strips until navigation settles — this long after the last navigation.
+constexpr UINT_PTR kMetaTimerId = 0x7501;   // PR 9: pause before a metadata read
+constexpr UINT kMetaDebounceMs = 90;
+constexpr UINT kMsgMetaReady = WM_APP + 0x71;  // a metadata read finished (any thread posts)
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -100,6 +108,11 @@ constexpr UINT kUpdateConfirmMs = 10000;
 struct app_state {
   present_lab lab;
   input_snapshot input;
+  // PR 9. Reads run on `jobs`, never here (rule 1); the record is the one the
+  // overlays were last formatted from, so toggling them is not a file read.
+  mv::job_system jobs;
+  mv::shell::meta_store meta;
+  std::shared_ptr<const mv::meta::metadata> meta_record;
   mv_session_t session = nullptr;
   bool tracking_mouse = false;
   bool chrome_enabled = true;
@@ -578,6 +591,163 @@ void refresh_item_info(app_state* app) noexcept {
   app->input.item_name[cap - 1] = '\0';
 }
 
+// ---- PR 9: metadata for the overlays ---------------------------------------
+
+bool metadata_wanted(const app_state* app) noexcept {
+  return app->input.info_overlay || app->input.af_points;
+}
+
+// The selected item as the store keys it: path + mtime + size, from one stat.
+bool current_dir_entry(app_state* app, mv::io::dir_entry& out) {
+  const std::string utf8 = current_item_path(app);
+  if (utf8.empty()) return false;
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (n <= 1) return false;
+  std::wstring wide(static_cast<std::size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
+  WIN32_FILE_ATTRIBUTE_DATA fa{};
+  if (!::GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &fa)) return false;
+  ULARGE_INTEGER size{};
+  size.LowPart = fa.nFileSizeLow;
+  size.HighPart = fa.nFileSizeHigh;
+  ULARGE_INTEGER ft{};
+  ft.LowPart = fa.ftLastWriteTime.dwLowDateTime;
+  ft.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+  out.path_utf8 = utf8;
+  const std::size_t slash = utf8.find_last_of("\\/");
+  out.name_utf8 = slash == std::string::npos ? utf8 : utf8.substr(slash + 1);
+  out.size = size.QuadPart;
+  out.mtime_unix = static_cast<std::int64_t>(ft.QuadPart / 10000000ULL) - 11644473600LL;
+  return true;
+}
+
+// Pre-format everything the render thread will draw, once, here.
+void adopt_metadata(app_state* app, std::shared_ptr<const mv::meta::metadata> record) {
+  app->meta_record = record;
+  mv::shell::meta_overlay o;
+  const auto copy = [](char* dst, std::size_t cap, const std::string& src) {
+    const std::size_t n = std::min(src.size(), cap - 1);
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  copy(o.camera_line, sizeof(o.camera_line), mv::meta::overlay_camera_line(*record));
+  copy(o.exposure_line, sizeof(o.exposure_line), mv::meta::overlay_exposure_line(*record));
+  copy(o.date_line, sizeof(o.date_line), mv::meta::overlay_date_line(*record));
+  const auto af = mv::meta::displayed_af_points(*record);
+  for (std::size_t i = 0; i < af.size() && i < mv::shell::meta_overlay::kMaxAf; ++i) {
+    o.af[i][0] = af[i].x;
+    o.af[i][1] = af[i].y;
+    o.af[i][2] = af[i].w;
+    o.af[i][3] = af[i].h;
+    o.af[i][4] = af[i].in_focus ? 1.0f : 0.0f;
+    o.af_count = static_cast<std::uint8_t>(i + 1);
+  }
+  app->input.meta = o;
+  ++app->input.meta_seq;
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// A cache hit is adopted at once; a miss submits one read on the pool and its
+// completion posts kMsgMetaReady back to this thread.
+void request_metadata_now(app_state* app) {
+  if (!app->window) return;
+  ::KillTimer(app->window, kMetaTimerId);
+  if (app->meta_record || !metadata_wanted(app)) return;
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry)) return;
+  const HWND hwnd = app->window;
+  auto record = app->meta.get(entry, app->jobs, [hwnd](std::string) {
+    ::PostMessageW(hwnd, kMsgMetaReady, 0, 0);
+  });
+  if (record) adopt_metadata(app, std::move(record));
+}
+
+void metadata_ready(app_state* app) {
+  if (app->meta_record || !metadata_wanted(app)) return;
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry)) return;
+  if (auto record = app->meta.peek(entry)) adopt_metadata(app, std::move(record));
+}
+
+// Selection moved: the old record is no longer the item on screen. The new one
+// is asked for only if something is showing metadata, and only after a pause, so
+// holding an arrow key queues no read for the images that flash past.
+void metadata_selection_changed(app_state* app) {
+  if (!app->window) return;
+  ::KillTimer(app->window, kMetaTimerId);
+  if (app->meta_record) {
+    app->meta_record.reset();
+    app->input.meta = mv::shell::meta_overlay{};
+    ++app->input.meta_seq;
+  }
+  if (metadata_wanted(app)) ::SetTimer(app->window, kMetaTimerId, kMetaDebounceMs, nullptr);
+}
+
+// Ctrl+C (plan/16): the eyedropper's readout when it is on and a pixel is under
+// the cursor; otherwise the marked files, else the current item (the selected
+// cell while the gallery is up) as CF_HDROP, pasteable in Explorer, Mail, chat.
+// A pair copies both halves, as F7 does. Never asks the user anything.
+bool set_clipboard(app_state* app, UINT format, HGLOBAL mem) {
+  if (!::OpenClipboard(app->window)) {
+    ::GlobalFree(mem);
+    return false;
+  }
+  ::EmptyClipboard();
+  const bool ok = ::SetClipboardData(format, mem) != nullptr;
+  if (!ok) ::GlobalFree(mem);  // the clipboard owns it only on success
+  ::CloseClipboard();
+  return ok;
+}
+
+bool copy_to_clipboard(app_state* app) {
+  if (!app || !app->window) return false;
+  if (app->input.eyedropper) {
+    const std::string text = app->lab.eyedropper_text();
+    if (!text.empty()) {
+      const int n = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+      if (n <= 1) return false;
+      HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) * sizeof(wchar_t));
+      if (!mem) return false;
+      auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
+      if (!dst) {
+        ::GlobalFree(mem);
+        return false;
+      }
+      ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, dst, n);
+      ::GlobalUnlock(mem);
+      return set_clipboard(app, CF_UNICODETEXT, mem);
+    }
+  }
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  if (targets.empty()) return false;
+  // DROPFILES, then each path as UTF-16 with a NUL, then one more NUL.
+  std::wstring list;
+  for (const std::string& utf8 : targets) {
+    const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (n <= 1) continue;
+    std::wstring wide(static_cast<std::size_t>(n), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
+    list.append(wide.c_str(), static_cast<std::size_t>(n));  // includes its NUL
+  }
+  if (list.empty()) return false;
+  list.push_back(L'\0');
+  const SIZE_T bytes = sizeof(DROPFILES) + list.size() * sizeof(wchar_t);
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+  if (!mem) return false;
+  auto* drop = static_cast<DROPFILES*>(::GlobalLock(mem));
+  if (!drop) {
+    ::GlobalFree(mem);
+    return false;
+  }
+  drop->pFiles = sizeof(DROPFILES);
+  drop->fWide = TRUE;
+  std::memcpy(reinterpret_cast<char*>(drop) + sizeof(DROPFILES), list.data(),
+              list.size() * sizeof(wchar_t));
+  ::GlobalUnlock(mem);
+  return set_clipboard(app, CF_HDROP, mem);
+}
+
 void folder_select(app_state* app, std::uint32_t index) {
   if (!app || !app->session) return;
   // Any navigation bumps the generation, which retires a Live Photo's motion.
@@ -589,6 +759,7 @@ void folder_select(app_state* app, std::uint32_t index) {
   if (mv_folder_select(app->session, index, &job) == MV_OK) {
     refresh_item_info(app);
     refresh_mark_state(app);
+    metadata_selection_changed(app);
     // Navigation keeps a fullscreen reveal up; it hides once this settles.
     if (app->fullscreen_reveal && app->window) {
       ::SetTimer(app->window, kRevealTimerId, kRevealMs, nullptr);
@@ -1691,7 +1862,19 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case info_overlay:
       app->input.info_overlay = !app->input.info_overlay;
       refresh_item_info(app);
+      request_metadata_now(app);
       return set_level(app);
+    // PR 9: both read the record the store already holds; toggling them never
+    // reads the file (the verify line).
+    case af_points:
+      app->input.af_points = !app->input.af_points;
+      request_metadata_now(app);
+      return set_level(app);
+    case eyedropper:
+      app->input.eyedropper = !app->input.eyedropper;
+      return set_level(app);
+    case copy_clipboard:
+      return copy_to_clipboard(app);
     // Marks (plan/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -2180,7 +2363,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                 reinterpret_cast<mv::shell::file_job_result*>(lparam)));
       return 0;
 
+    case kMsgMetaReady:
+      metadata_ready(app);
+      return 0;
+
     case WM_TIMER:
+      if (wparam == kMetaTimerId) {
+        request_metadata_now(app);
+        return 0;
+      }
       if (wparam == kTitleTimerId) {
         update_title(app);
         // An update restart's zoom goes back once the still is on screen; a
@@ -2400,6 +2591,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // interop uses. If the shell ever reaches around the ABI, the two-language
   // boundary stops being tested by the thing that matters most.
   app_state app;
+  (void)app.jobs.start();
   app.chrome_enabled = chrome_enabled;
   // settings.ini was read once, at startup, by app_settings(). From here every
   // settings save is in memory; the file is written on the store's worker, and
@@ -2543,6 +2735,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   mv::shell::app_settings().stop();
   app.files.stop();
   app.lab.stop();
+  app.jobs.shutdown();
   const int code = app.lab.exit_code();
 
   mv_session_release(app.session);
