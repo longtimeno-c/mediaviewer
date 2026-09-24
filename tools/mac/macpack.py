@@ -54,6 +54,16 @@ def parse_otool_deps(output: str, own_id: str | None = None) -> list[str]:
     return deps
 
 
+def universal_feed_problem(feed: str, archs: Iterable[str]) -> str | None:
+    """A universal app must not be arch-restricted in its appcast, or the
+    excluded Macs (Intel, once) never see an update. Sparkle writes
+    sparkle:hardwareRequirements for a single-arch bundle."""
+    if {"arm64", "x86_64"} <= set(archs) and "hardwareRequirements" in feed:
+        return ("the app is universal but appcast.xml has sparkle:hardwareRequirements, "
+                "which would hide the update from some Macs")
+    return None
+
+
 def parse_otool_rpaths(output: str) -> list[str]:
     """LC_RPATH entries from `otool -l`."""
     rpaths: list[str] = []
@@ -427,6 +437,11 @@ def cmd_release(args: argparse.Namespace) -> None:
         if "sparkle-signatures" not in feed:
             raise SystemExit("macpack: appcast.xml carries no feed signature; "
                              "the app (SURequireSignedFeed) would reject it")
+        archs = run(["lipo", "-archs", str(app / "Contents" / "MacOS" / APP_NAME)],
+                    capture=True).split()
+        problem = universal_feed_problem(feed, archs)
+        if problem:
+            raise SystemExit(f"macpack: {problem}")
     print(f"macpack: first install {dmg}\nmacpack: update archive {archive}")
 
 

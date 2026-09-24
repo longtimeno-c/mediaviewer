@@ -175,5 +175,91 @@ class BundleCheckTests(unittest.TestCase):
         self.assertEqual(len(problems), 2)
 
 
+class UniversalFeedTests(unittest.TestCase):
+    def test_universal_app_with_arch_restriction_fails(self):
+        self.assertIsNotNone(macpack.universal_feed_problem(
+            "<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>", ["arm64", "x86_64"]))
+
+    def test_universal_app_without_restriction_passes(self):
+        self.assertIsNone(macpack.universal_feed_problem("<item/>", ["x86_64", "arm64"]))
+
+    def test_single_arch_app_may_be_restricted(self):
+        self.assertIsNone(macpack.universal_feed_problem(
+            "<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>", ["arm64"]))
+
+
+class LipoMergeTests(unittest.TestCase):
+    """lipo_merge.merge_trees with a fake `lipo`: a file's "architectures" are
+    the words after the magic bytes."""
+    MAGIC = b"\xcf\xfa\xed\xfe"
+
+    def _mk(self, root: Path, files: dict[str, bytes]) -> Path:
+        for rel, data in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        return root
+
+    def _macho(self, *archs: str) -> bytes:
+        return self.MAGIC + " ".join(archs).encode()
+
+    @staticmethod
+    def _archs(path: Path) -> frozenset[str]:
+        return frozenset(path.read_bytes()[4:].decode().split())
+
+    @staticmethod
+    def _create(arm: Path, x64: Path, out: Path) -> None:
+        out.write_bytes(arm.read_bytes() + b" " + x64.read_bytes()[4:])
+
+    def _merge(self, arm: dict[str, bytes], x64: dict[str, bytes]):
+        import lipo_merge
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            a = self._mk(t / "arm", arm)
+            b = self._mk(t / "x64", x64)
+            out = t / "out"
+            warnings = lipo_merge.merge_trees(a, b, out, archs_of=self._archs,
+                                              lipo_create=self._create)
+            result = {p.relative_to(out).as_posix(): p.read_bytes()
+                      for p in out.rglob("*") if p.is_file()}
+        return warnings, result
+
+    def test_thin_binaries_are_joined_and_universal_ones_left_alone(self):
+        warnings, out = self._merge(
+            {"Contents/MacOS/MediaViewer": self._macho("arm64"),
+             "Contents/Frameworks/Sparkle": self._macho("arm64", "x86_64"),
+             "Contents/Info.plist": b"plist"},
+            {"Contents/MacOS/MediaViewer": self._macho("x86_64"),
+             "Contents/Frameworks/Sparkle": self._macho("arm64", "x86_64"),
+             "Contents/Info.plist": b"plist"})
+        self.assertEqual(warnings, [])
+        self.assertEqual(self._archs_of_bytes(out["Contents/MacOS/MediaViewer"]),
+                         {"arm64", "x86_64"})
+        self.assertEqual(out["Contents/Frameworks/Sparkle"], self._macho("arm64", "x86_64"))
+        self.assertEqual(out["Contents/Info.plist"], b"plist")
+
+    def _archs_of_bytes(self, data: bytes) -> set[str]:
+        return set(data[4:].decode().split())
+
+    def test_layout_mismatch_fails(self):
+        with self.assertRaises(SystemExit):
+            self._merge({"Contents/a.dylib": self._macho("arm64")}, {})
+
+    def test_macho_in_one_app_only_fails(self):
+        with self.assertRaises(SystemExit):
+            self._merge({"Contents/x": self._macho("arm64")}, {"Contents/x": b"text"})
+
+    def test_data_file_difference_warns_and_keeps_arm64(self):
+        warnings, out = self._merge({"Contents/Resources/f": b"one"},
+                                    {"Contents/Resources/f": b"two"})
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(out["Contents/Resources/f"], b"one")
+
+    def test_code_signature_dirs_are_ignored(self):
+        warnings, out = self._merge({"Contents/_CodeSignature/CodeResources": b"a"},
+                                    {"Contents/_CodeSignature/CodeResources": b"b"})
+        self.assertEqual(warnings, [])
+
+
 if __name__ == "__main__":
     unittest.main()

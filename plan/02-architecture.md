@@ -107,8 +107,8 @@ path — **`IoRing` is Windows 11 only** and is an optional fast path at best, n
 this out loud in code review whenever someone reaches for a Win11-only API; the alternative is
 discovering the floor by shipping.
 
-macOS is Milestone F ([15-platforms.md](15-platforms.md)): Apple Silicon, macOS 14+. Intel Macs
-and Windows ARM64 wait. The Mac host is a later sibling of `shell/`, talking to the same `abi/`.
+macOS is Milestone F ([15-platforms.md](15-platforms.md)): Apple Silicon and Intel, macOS 14+
+(Intel added 2026-09-24). Windows ARM64 waits. The Mac host is a later sibling of `shell/`, talking to the same `abi/`.
 
 ## Hostable core (D9) — from PR 4
 

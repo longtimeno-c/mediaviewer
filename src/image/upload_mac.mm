@@ -280,7 +280,9 @@ result<gpu_image_mac> upload(void* mtl_device, const display_image& src,
                                                       mipmapped:levels > 1];
   desc.mipmapLevelCount = levels;
   desc.usage = MTLTextureUsageShaderRead;
-  desc.storageMode = MTLStorageModeShared;
+  // Shared textures need unified memory (Apple Silicon); Intel Macs use Managed.
+  // replaceRegion keeps a managed texture's GPU copy in sync.
+  desc.storageMode = device.hasUnifiedMemory ? MTLStorageModeShared : MTLStorageModeManaged;
   id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
   if (!texture) return err(status::device_lost);
 

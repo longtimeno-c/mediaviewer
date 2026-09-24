@@ -214,18 +214,26 @@ jobs:
             Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $name) -Force -ErrorAction SilentlyContinue
           }
 
-  macos:
-    name: macOS Apple Silicon disk image
+  # One native build per architecture: each has its own vcpkg triplet and
+  # dylibs, and the Intel tests run on Intel. `macos` below joins the two apps.
+  macos-build:
+    name: macOS ${{ matrix.arch }} app
     needs: prepare
-    runs-on: macos-14
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { arch: arm64, runner: macos-14, triplet: arm64-osx }
+          - { arch: x64, runner: macos-15-intel, triplet: x64-osx }
     defaults:
       run:
         shell: bash
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
-      TAG: ${{ needs.prepare.outputs.tag }}
       MODE: ${{ inputs.mode }}
+      TRIPLET: ${{ matrix.triplet }}
     steps:
       - uses: actions/checkout@v4
 
@@ -249,16 +257,84 @@ jobs:
           path: |
             build/vcpkg_installed
             build/vcpkg_dynamic
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json') }}-arm64-osx-mixed-v1
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json') }}-${{ matrix.triplet }}-mixed-v1
 
       # CMake installs the static, permissive dependencies from the root
       # manifest. Keep the LGPL dylibs in a separate manifest/install tree:
       # a subsequent manifest install otherwise removes the other triplet.
       - name: Install macOS dynamic codec libraries
         run: |
-          "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
+          "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
             --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
+
+      - name: Configure
+        run: |
+          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION"
+                -DVCPKG_TARGET_TRIPLET="$TRIPLET"
+                -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
+          if [ "$MODE" = "stable" ]; then
+            args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
+          fi
+          cmake -S . -B build "${args[@]}"
+
+      - name: Save dependencies before packaging can fail
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Build app and test executables
+        run: |
+          cmake --build build --config Release
+          cmake --build build --config Release --target mediaviewer_app
+
+      - name: Unit tests
+        timeout-minutes: 20
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+
+      - name: Bundle policy
+        run: |
+          python3 tools/mac/check_plists.py
+          python3 tools/mac/test_macpack.py -v
+
+      # upload-artifact zips drop symlinks and modes; Sparkle.framework needs both.
+      - name: Archive the app
+        run: |
+          mkdir -p upload
+          tar -C build -cf "upload/MediaViewer-${{ matrix.arch }}.tar" MediaViewer.app
+
+      # No version suffix: publish only collects artifacts named *-<version>.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-${{ matrix.arch }}
+          path: upload/
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS universal disk image
+    needs: [prepare, macos-build]
+    runs-on: macos-14
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-app-*
+          path: apps
+          merge-multiple: true
 
       - name: Signing keychain
         if: inputs.mode == 'stable'
@@ -290,8 +366,8 @@ jobs:
           # keychain item from another executable can prompt on a headless runner.
           keyfile="$RUNNER_TEMP/sparkle.key"
           printf '%s' "$SPARKLE_KEY" > "$keyfile"
-          # Sparkle is fetched, hash-pinned, by the configure step below; the
-          # tool is needed now, so take the same archive.
+          # generate_appcast/generate_keys come from the same hash-pinned Sparkle
+          # archive the app builds embed (cmake/darwin-app.cmake).
           curl -sfL -o "$RUNNER_TEMP/Sparkle.tar.xz" https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
           echo "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192  $RUNNER_TEMP/Sparkle.tar.xz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/sparkle" && tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
@@ -302,38 +378,21 @@ jobs:
             exit 1
           fi
 
-      - name: Configure
+      - name: Join the arm64 and x86_64 apps
         run: |
-          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION"
-                -DVCPKG_TARGET_TRIPLET=arm64-osx
-                -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/arm64-osx-dynamic")
-          if [ "$MODE" = "stable" ]; then
-            args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
-          fi
-          cmake -S . -B build "${args[@]}"
-
-      - name: Save dependencies before packaging can fail
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            build/vcpkg_installed
-            build/vcpkg_dynamic
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
-
-      - name: Build app and test executables
-        run: |
-          cmake --build build --config Release
-          cmake --build build --config Release --target mediaviewer_app
-
-      - name: Unit tests
-        timeout-minutes: 20
-        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
-
-      - name: Bundle policy
-        run: |
-          python3 tools/mac/check_plists.py
-          python3 tools/mac/test_macpack.py -v
+          mkdir -p arm64 x86_64 build/universal
+          tar -xf apps/MediaViewer-arm64.tar -C arm64
+          tar -xf apps/MediaViewer-x64.tar -C x86_64
+          python3 tools/mac/lipo_merge.py --arm64 arm64/MediaViewer.app \
+            --x86_64 x86_64/MediaViewer.app --out build/universal/MediaViewer.app
+          app=build/universal/MediaViewer.app
+          for f in "$app/Contents/MacOS/MediaViewer" "$app"/Contents/Frameworks/*.dylib; do
+            archs="$(lipo -archs "$f")"
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) ;;
+              *) echo "$f is $archs, not universal" >&2; exit 1 ;;
+            esac
+          done
 
       - name: dmgbuild
         run: python3 -m pip install --break-system-packages -r tools/mac/requirements.txt
@@ -341,10 +400,10 @@ jobs:
       - name: Disk image
         timeout-minutes: 30
         run: |
-          args=(--app build/MediaViewer.app --out-dir build/release)
+          args=(--app build/universal/MediaViewer.app --out-dir build/release)
           if [ "$MODE" = "stable" ]; then
             args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
-                   --sparkle-bin build/_deps/sparkle-2.9.6/bin
+                   --sparkle-bin "$RUNNER_TEMP/sparkle/bin"
                    --sparkle-key-file "$RUNNER_TEMP/sparkle.key"
                    --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/")
           else

@@ -161,10 +161,14 @@ timeout with nothing in the log.
 
 ### macOS (Mac PRs 1–6)
 
-Apple Silicon, macOS 14+, CMake ≥ 3.28, vcpkg, a full Xcode install (Command Line
+Apple Silicon or Intel, macOS 14+, CMake ≥ 3.28, vcpkg, a full Xcode install (Command Line
 Tools alone are not enough — `swift build`'s SwiftUI target and `xcrun metal` both
-need it), Swift 6. Intel Macs are out of scope (D9). This path builds the native
-Mac app and its dynamic FFmpeg libraries; it does not build WinUI or the Windows lab.
+need it), Swift 6. Build natively on the Mac you are on: the snippets below use the
+`arm64-osx` triplets; on an Intel Mac use `x64-osx` and `x64-osx-dynamic` instead. The release
+is one universal app made by building both and joining them (RELEASING.md). Intel builds
+launch but the frame-pacing gate has not been measured on Intel hardware yet (plan/12,
+2026-09-24). This path builds the native Mac app and its dynamic FFmpeg libraries; it does
+not build WinUI or the Windows lab.
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped

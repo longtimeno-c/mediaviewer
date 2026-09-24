@@ -65,11 +65,13 @@ on Windows. No MoltenVK, no wgpu, no SPIR-V, no third shader language.
 | | Windows v1 | macOS (Milestone F) |
 |---|---|---|
 | OS | Windows 10 21H2+ | macOS 14+ |
-| CPU | x64 | Apple Silicon |
-| Deferred | Windows ARM64 | Intel Macs |
+| CPU | x64 | Apple Silicon and Intel (one universal app; D9 amended 2026-09-24) |
+| Deferred | Windows ARM64 | — |
 
-Intel Macs are a second GPU story for a dying install base. Windows ARM64 waits for
-the same reason: a second present / decode path, not a compile flag.
+Intel Macs were deferred as a second GPU story; the owner reversed that on 2026-09-24
+([12-decision-log.md](12-decision-log.md)). They are built and shipped, but the pacing gate
+(Rule 4) has only been measured on Apple Silicon: Intel is unverified until it is run on real
+Intel hardware. Windows ARM64 still waits: a second present / decode path, not a compile flag.
 
 ## Hostable-core rule — from PR 4, every remaining Windows PR
 

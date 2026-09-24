@@ -111,7 +111,7 @@
 
   "$comment-v1-pending": {
     "PR 2": "landed: libjpeg-turbo, libspng, lcms",
-    "PR 17 (osx)": "landed: permissive still codecs use the default arm64-osx triplet in this manifest. LGPL libheif[core], libde265, libraw and ffmpeg use tools/mac/dependencies/vcpkg.json with arm64-osx-dynamic and a separate install root. See RELEASING.md; do not add the LGPL codecs to this manifest's osx dependencies.",
+    "PR 17 (osx)": "landed: permissive still codecs use the default arm64-osx (or x64-osx on Intel) triplet in this manifest. LGPL libheif[core], libde265, libraw and ffmpeg use tools/mac/dependencies/vcpkg.json with arm64-osx-dynamic and a separate install root. See RELEASING.md; do not add the LGPL codecs to this manifest's osx dependencies.",
     "PR 18 (osx, folded-in PR 4)": "landed: sqlite3 on osx -- JPEG-512 thumbnail cache (image/thumb_mac.cpp), same spec jpg512.1 and schema as Windows (plan/12 2026-09-17).",
     "PR 4": "landed: sqlite3. JPEG-512 thumbs in the island; DirectXTex/BC7 waits until a thumb must be GPU-resident (plan/12 2026-09-07).",
     "PR 4-deferred": ["directxtex"],
