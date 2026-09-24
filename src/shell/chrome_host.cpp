@@ -294,6 +294,7 @@ std::int32_t chrome_host::probe_commands() const noexcept {
 
 void chrome_host::refresh_island_windows() noexcept {
   for (auto& hwnd : island_hwnds_) hwnd = nullptr;
+  for (auto& hwnd : pane_hwnds_) hwnd = nullptr;
   if (!loaded()) return;
   if (!island_window_) island_window_ = get_entry(L"IslandWindow");
   if (!island_window_) return;
@@ -307,6 +308,13 @@ void chrome_host::refresh_island_windows() noexcept {
     island_window_args args{island, 0, 0};
     if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
       island_hwnds_[island] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
+    }
+  }
+  // The pane islands are asked for by ids past the focus kinds (6 metadata, 7 tree).
+  for (int i = 0; i < 2; ++i) {
+    island_window_args args{6 + i, 0, 0};
+    if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
+      pane_hwnds_[i] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
     }
   }
 }
@@ -332,6 +340,9 @@ focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
     if (root && focus && (focus == root || ::IsChild(root, focus))) {
       return static_cast<focus_kind>(island);
     }
+  }
+  for (const HWND root : pane_hwnds_) {
+    if (root && focus && (focus == root || ::IsChild(root, focus))) return focus_kind::pane;
   }
   // A flyout's own popup window, or anything unrecognised: never the canvas,
   // so the router leaves traversal keys to XAML.
@@ -613,14 +624,14 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
 
 namespace {
 void show_panel(chrome_entry_fn fn, bool visible, int x, int y, int width, int height,
-                std::uint32_t dpi, int client_height) noexcept {
+                bool focus, int client_height) noexcept {
   chrome_panel_args args{};
   args.visible = visible ? 1 : 0;
   args.x = visible ? x : 0;
   args.y = visible ? y : client_height;
   args.width = visible ? width : 1;
   args.height = visible ? height : 1;
-  args.dpi = static_cast<std::int32_t>(dpi);
+  args.focus = visible && focus ? 1 : 0;
   (void)fn(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 }  // namespace
@@ -629,16 +640,16 @@ void show_panel(chrome_entry_fn fn, bool visible, int x, int y, int width, int h
 // pixels. Hidden, the pane parks one client-height below the top: `y + height`
 // is the bottom edge the caller measured, and anything at or past it is off screen.
 void chrome_host::show_meta_pane(bool visible, int x, int y, int width, int height,
-                                 std::uint32_t dpi) noexcept {
+                                 bool focus) noexcept {
   if (!panels_attached_ || !show_meta_pane_) return;
-  show_panel(show_meta_pane_, visible, x, y, width, height, dpi, y + height + 1);
+  show_panel(show_meta_pane_, visible, x, y, width, height, focus, y + height + 1);
   meta_visible_ = visible;
 }
 
 void chrome_host::show_folder_tree(bool visible, int x, int y, int width, int height,
-                                   std::uint32_t dpi) noexcept {
+                                   bool focus) noexcept {
   if (!panels_attached_ || !show_folder_tree_) return;
-  show_panel(show_folder_tree_, visible, x, y, width, height, dpi, y + height + 1);
+  show_panel(show_folder_tree_, visible, x, y, width, height, focus, y + height + 1);
   tree_visible_ = visible;
 }
 

@@ -106,7 +106,13 @@ public static partial class IslandHost
         public const int Gallery = 3;
         public const int Transport = 4;
         public const int Text = 5;
+        // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane").
+        public const int Pane = 6;
     }
+
+    // IslandWindow asks for the pane islands by these ids (past the focus kinds).
+    internal const int PaneMetaIsland = 6;
+    internal const int PaneTreeIsland = 7;
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
     // menu is a view of it, pushed in by ApplySettings so a T keypress and the
@@ -181,6 +187,8 @@ public static partial class IslandHost
                 FocusKind.Filmstrip => _filmstrip,
                 FocusKind.Gallery => _gallery,
                 FocusKind.Transport => _transport,
+                PaneMetaIsland => _metaPane,
+                PaneTreeIsland => _tree,
                 _ => null,
             };
             long hwnd = source?.SiteBridge is null
@@ -340,6 +348,7 @@ public static partial class IslandHost
                 if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
+                else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root)) kind = FocusKind.Pane;
             }
             Send(Command.FocusChanged, kind);
         }
