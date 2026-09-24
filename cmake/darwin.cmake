@@ -282,6 +282,8 @@ add_library(mv_meta STATIC
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
+  src/meta/tables.cpp
+  src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
   src/meta/internal.h

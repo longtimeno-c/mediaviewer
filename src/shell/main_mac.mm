@@ -663,8 +663,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (flags & NSEventModifierFlagOption) mods |= mv::shell::mod_alt;
   if (mods_out) *mods_out = mods;
 
-  NSString* base = event.charactersIgnoringModifiers;
-  const unichar c = base.length > 0 ? [base characterAtIndex:0] : 0;
+  NSString* ignored = event.charactersIgnoringModifiers;
+  const unichar c = ignored.length > 0 ? [ignored characterAtIndex:0] : 0;
   if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
     return static_cast<key>(static_cast<int>(key::f1) + static_cast<int>(c - NSF1FunctionKey));
   }
@@ -695,10 +695,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // Command / Control can turn `characters` into a control code; those keep
   // the ignored character.
   NSString* plain = [event charactersByApplyingModifiers:0];
-  const unichar base = plain.length > 0 ? [plain characterAtIndex:0] : c;
+  const unichar plainChar = plain.length > 0 ? [plain characterAtIndex:0] : c;
   const unichar produced = event.characters.length > 0 ? [event.characters characterAtIndex:0] : 0;
   const bool command = (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0;
-  return mv::shell::resolve_layout_symbol(base, c, produced, command, mods_out);
+  return mv::shell::resolve_layout_symbol(plainChar, c, produced, command, mods_out);
 }
 
 @interface MvMetalView : NSView <NSDraggingSource>

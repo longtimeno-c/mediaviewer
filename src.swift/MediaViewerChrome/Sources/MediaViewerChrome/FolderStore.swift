@@ -40,6 +40,20 @@ final class FolderCard: ObservableObject {
   @Published fileprivate(set) var searchStopped = false
   @Published fileprivate(set) var cover: CGImage?
   @Published fileprivate(set) var loaded = false
+
+  var status: String {
+    if !loaded { return "" }
+    if searchStopped { return "Search stopped" }
+    if mediaCount > 0 {
+      let items = mediaCount == 1 ? "1 item" : "\(mediaCount) items"
+      if subfolderCount == 0 { return items }
+      let folders = subfolderCount == 1 ? "1 folder" : "\(subfolderCount) folders"
+      return "\(items), \(folders)"
+    }
+    if photosInside { return "Photos inside" }
+    if subfolderCount > 0 { return "Folders only" }
+    return "Empty"
+  }
 }
 
 struct Crumb: Identifiable, Equatable {

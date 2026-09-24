@@ -145,20 +145,6 @@ private struct FolderStrip: View {
   }
 }
 
-private func folderStatus(_ card: FolderCard) -> String {
-  if !card.loaded { return "" }
-  if card.searchStopped { return "Search stopped" }
-  if card.mediaCount > 0 {
-    let items = card.mediaCount == 1 ? "1 item" : "\(card.mediaCount) items"
-    if card.subfolderCount == 0 { return items }
-    let folders = card.subfolderCount == 1 ? "1 folder" : "\(card.subfolderCount) folders"
-    return "\(items), \(folders)"
-  }
-  if card.photosInside { return "Photos inside" }
-  if card.subfolderCount > 0 { return "Folders only" }
-  return "Empty"
-}
-
 /// A child folder: its first photo as a cover (from the folder itself or, for a
 /// year of month folders, the first month that has one), name, and a count.
 private struct FolderTile: View {
@@ -189,7 +175,7 @@ private struct FolderTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .bottomLeading) {
           if card.loaded {
-            Text(folderStatus(card))
+            Text(card.status)
               .font(.caption2.weight(.medium))
               .padding(.horizontal, 6)
               .padding(.vertical, 2)
@@ -239,7 +225,7 @@ private struct FolderChip: View {
           .font(.caption)
           .lineLimit(1)
         if card.loaded {
-          Text(folderStatus(card))
+          Text(card.status)
             .font(.caption2)
             .foregroundStyle(.secondary)
             .lineLimit(1)
