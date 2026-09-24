@@ -187,7 +187,7 @@ struct chrome_panel_args {
   std::int32_t y;
   std::int32_t width;
   std::int32_t height;
-  std::int32_t dpi;
+  std::int32_t focus;  // non-zero: move keyboard focus into the pane (I, Ctrl+Shift+E)
 };
 
 static_assert(sizeof(chrome_panel_args) == 24, "keep in sync with ChromePanelArgs");
@@ -335,9 +335,9 @@ class chrome_host {
                                        std::uint32_t dpi) noexcept;
   [[nodiscard]] bool panels_attached() const noexcept { return panels_attached_; }
   void show_meta_pane(bool visible, int x, int y, int width, int height,
-                      std::uint32_t dpi) noexcept;
+                      bool focus = false) noexcept;
   void show_folder_tree(bool visible, int x, int y, int width, int height,
-                        std::uint32_t dpi) noexcept;
+                        bool focus = false) noexcept;
   [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
   [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
   // The record's tables, formatted once by the host; the pane re-renders from them.
@@ -455,6 +455,7 @@ class chrome_host {
   chrome_entry_fn shutdown_for_exit_ = nullptr;
   // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
   HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
+  HWND pane_hwnds_[2]{};  // metadata pane, folder tree (PR 9)
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

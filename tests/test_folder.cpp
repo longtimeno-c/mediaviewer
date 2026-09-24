@@ -10,6 +10,8 @@
 #include <string>
 #include <thread>
 
+#include <exiv2/exiv2.hpp>
+
 #include "fixtures.h"
 #include "io/paths.h"
 #include "mediaviewer/mediaviewer.h"
@@ -340,4 +342,95 @@ TEST_CASE("mv_list_subdirectories lists visible folders only, sorted", "[abi][fo
 
   // A directory that is not there is an I/O error, not an empty tree.
   CHECK(mv_list_subdirectories((root + "\\nope").c_str(), buf, sizeof(buf), &bytes) == MV_ERR_IO);
+}
+
+// PR 9: sort by EXIF date taken through the session. The files are named and
+// stamped so that name order, mtime order and date-taken order are all different:
+// if the date path were not used, the listing would stay in mtime order.
+namespace {
+
+std::vector<std::uint8_t> jpeg_taken_at(const char* stamp) {
+  const std::vector<std::uint8_t> rgb(16 * 16 * 3, 128);
+  auto jpeg = fixtures::jpeg_rgb(16, 16, rgb.data());
+  auto image = Exiv2::ImageFactory::open(jpeg.data(), jpeg.size());
+  Exiv2::ExifData exif;
+  exif["Exif.Photo.DateTimeOriginal"] = stamp;
+  image->setExifData(exif);
+  image->writeMetadata();
+  Exiv2::BasicIo& io = image->io();
+  io.open();
+  Exiv2::DataBuf buf = io.read(io.size());
+  return {buf.c_data(), buf.c_data() + buf.size()};
+}
+
+void write_taken(const std::wstring& dir, const wchar_t* name, const char* stamp, std::int64_t mtime) {
+  const auto bytes = jpeg_taken_at(stamp);
+  const std::wstring path = dir + L"\\" + name;
+  {
+    std::ofstream f(path, std::ios::binary);
+    REQUIRE(f.good());
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  // FILETIME is 100 ns ticks since 1601; `mtime` is seconds after the Unix epoch.
+  const std::uint64_t ticks = (static_cast<std::uint64_t>(mtime) + 11644473600ull) * 10000000ull;
+  FILETIME ft{static_cast<DWORD>(ticks & 0xFFFFFFFFu), static_cast<DWORD>(ticks >> 32)};
+  HANDLE h = ::CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  REQUIRE(h != INVALID_HANDLE_VALUE);
+  REQUIRE(::SetFileTime(h, nullptr, nullptr, &ft));
+  ::CloseHandle(h);
+}
+
+}  // namespace
+
+TEST_CASE("mv_folder_set_sort by date taken orders by EXIF, not by name or mtime",
+          "[abi][folder][sort][datetaken]") {
+  const auto dir = temp_dir();
+  // name a < b < c;  mtime a < b < c;  taken:  b (May 1) < c (May 2) < a (May 3)
+  write_taken(dir, L"a.jpg", "2024:05:03 09:00:00", 1'700'000'100);
+  write_taken(dir, L"b.jpg", "2024:05:01 09:00:00", 1'700'000'200);
+  write_taken(dir, L"c.jpg", "2024:05:02 09:00:00", 1'700'000'300);
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\a.jpg").c_str(), &job) ==
+          MV_OK);
+  mv_completion c{};
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+
+  const auto names = [&] {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(session.handle, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(session.handle, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  // The stamps are read on a background job and the listing re-sorts when they
+  // land, so the final order is polled for; the first apply is the mtime fallback.
+  const auto settles_to = [&](const std::string& want) {
+    for (int i = 0; i < 80; ++i) {
+      if (names() == want) return true;
+      std::this_thread::sleep_for(100ms);
+    }
+    return false;
+  };
+
+  CHECK(names() == "a.jpg b.jpg c.jpg ");  // name order to begin with
+  REQUIRE(mv_folder_set_sort(session.handle, 4) == MV_OK);  // date taken, ascending
+  CHECK(settles_to("b.jpg c.jpg a.jpg "));
+  uint32_t selected = 99;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  CHECK(selected == 2);  // a.jpg was open, and it is now last
+
+  REQUIRE(mv_folder_set_sort(session.handle, 4 | 8) == MV_OK);  // date taken, descending
+  CHECK(settles_to("a.jpg c.jpg b.jpg "));
+
+  // The other keys still work after date taken has filled the stamps.
+  REQUIRE(mv_folder_set_sort(session.handle, 1) == MV_OK);  // modified, ascending
+  CHECK(settles_to("a.jpg b.jpg c.jpg "));
+
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
 }

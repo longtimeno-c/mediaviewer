@@ -116,6 +116,9 @@ struct app_state {
   // (a pane hides under the gallery, fullscreen and Settings and comes back).
   bool meta_pane_visible = false;
   bool tree_visible = false;
+  // One-shot: the next layout moves keyboard focus into that pane (I / Ctrl+Shift+E).
+  bool focus_meta_next = false;
+  bool focus_tree_next = false;
   std::string current_dir;  // the open folder, for the tree's root
   mv::job_system jobs;
   mv::shell::meta_store meta;
@@ -721,20 +724,23 @@ void push_tree_root(app_state* app) noexcept {
 void set_meta_pane(app_state* app, bool on) noexcept {
   if (!app || app->meta_pane_visible == on) return;
   app->meta_pane_visible = on;
+  app->focus_meta_next = on;  // `I` focuses the pane (plan/16); Esc returns to the canvas
   apply_view_state(app);
   if (on) {
     request_metadata_now(app);
     push_meta_pane(app);
+  } else if (app->window) {
+    focus_canvas(app);
   }
-  if (app->window) focus_canvas(app);  // keys stay with the canvas
 }
 
 void set_folder_tree(app_state* app, bool on) noexcept {
   if (!app || app->tree_visible == on) return;
   app->tree_visible = on;
+  app->focus_tree_next = on;  // Ctrl+Shift+E shows and focuses (plan/16)
   push_tree_root(app);
   apply_view_state(app);
-  if (app->window) focus_canvas(app);
+  if (!on && app->window) focus_canvas(app);
 }
 
 // PR 9 sort. The session owns the order (the filmstrip, the gallery and the arrow
@@ -1085,6 +1091,8 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // how the native side learns that a listing landed.
       refresh_item_info(app);
       refresh_mark_state(app);
+      // The watcher fires this for a folder that gained or lost a subfolder too.
+      if (app->tree_visible) push_tree_root(app);
       apply_view_state(app);
       if (g_restore.gallery && arg > 0.0f) {
         g_restore.gallery = false;
@@ -1094,7 +1102,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_focus_changed: {
       const int kind = static_cast<int>(arg);
       if (kind >= static_cast<int>(mv::shell::focus_kind::command_bar) &&
-          kind <= static_cast<int>(mv::shell::focus_kind::text)) {
+          kind <= static_cast<int>(mv::shell::focus_kind::pane)) {
         app->island_focus = static_cast<mv::shell::focus_kind>(kind);
       }
       return;
@@ -1245,6 +1253,8 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.popup_open = app->popup_open;
   s.settings_open = app->settings_open;
   s.motion_playing = app->motion_playing;
+  // A shown pane is a level for Esc to walk out of (plan/16: crop, pane, gallery, ...).
+  s.pane_open = app->chrome.meta_pane_visible() || app->chrome.folder_tree_visible();
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
   return s;
@@ -1442,6 +1452,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::gallery:
       set_gallery(app, false);
       return;
+    case back_target::pane:
+      // Esc from the canvas closes what is open; the tree first (it is the
+      // outermost on the left), then the metadata pane.
+      if (app->tree_visible) set_folder_tree(app, false);
+      else set_meta_pane(app, false);
+      return;
     case back_target::popup:
       app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
       // Closing `?` / go-to / find must not leave the island HWND focused, or
@@ -1468,8 +1484,7 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       // a wake the welcome card only returns on the next mouse move.
       app->lab.wake();
       return;
-    // Slideshow, pane and crop land with their slices (6d, PR 8, PR 9);
-    // resolve_back cannot name them until their state exists.
+    // Crop lands with its slice (PR 10); resolve_back cannot name it yet.
     default:
       return;
   }
@@ -2153,8 +2168,10 @@ void layout_panels(app_state* app) noexcept {
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
   const bool want_meta = app->meta_pane_visible && !covered;
   const bool want_tree = app->tree_visible && !covered;
-  app->chrome.show_meta_pane(want_meta, width - side, top, side, span, dpi);
-  app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, dpi);
+  app->chrome.show_meta_pane(want_meta, width - side, top, side, span, app->focus_meta_next);
+  app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
+  if (want_meta) app->focus_meta_next = false;
+  if (want_tree) app->focus_tree_next = false;
   if (want_meta) push_meta_pane(app);
 }
 

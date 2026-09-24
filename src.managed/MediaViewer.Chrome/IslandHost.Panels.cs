@@ -6,6 +6,7 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using Windows.UI;
@@ -68,8 +69,10 @@ public static partial class IslandHost
             EnsureFocusHook();
             _metaPane = new DesktopWindowXamlSource();
             _metaPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _metaPane.TakeFocusRequested += OnTakeFocusRequested;
             _tree = new DesktopWindowXamlSource();
             _tree.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _tree.TakeFocusRequested += OnTakeFocusRequested;
             // Parked below the client area with no content until first shown: a
             // default full-client island would flash over the canvas.
             MoveAt(_metaPane, 0, args.ClientHeight, 1, 1);
@@ -148,6 +151,13 @@ public static partial class IslandHost
                 source.Content = build();
                 onShown();
             }
+            // `I` / Ctrl+Shift+E focus the pane (plan/16): the first focusable
+            // element takes it, arrows walk, and Esc returns to the canvas.
+            if (args.Focus != 0)
+            {
+                source.NavigateFocus(new XamlSourceFocusNavigationRequest(
+                    XamlSourceFocusNavigationReason.First));
+            }
             return 0;
         }
         catch (Exception ex)
@@ -169,7 +179,6 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = size,
             TextWrapping = TextWrapping.Wrap,
-            IsTextSelectionEnabled = true,
         };
         if (bold) t.FontWeight = FontWeights.SemiBold;
         if (maxLines > 0) t.MaxLines = maxLines;
@@ -185,6 +194,7 @@ public static partial class IslandHost
             BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 0, 8, 2),
             IsTabStop = false,
+            AllowFocusOnInteraction = false,
         };
         b.Click += (_, _) => Send(command);
         return b;
@@ -192,7 +202,13 @@ public static partial class IslandHost
 
     private static Grid PanelShell(string title, int closeCommand, out Grid body)
     {
-        var root = new Grid { Background = Brush(PanelBg), RequestedTheme = ElementTheme.Dark };
+        var root = new Grid
+        {
+            Background = Brush(PanelBg),
+            RequestedTheme = ElementTheme.Dark,
+            // No XY focus navigation: FocusManager.TryMoveFocus fail-fasts in these
+            // islands (0xC000027B), so the arrows are handled explicitly per pane.
+        };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var header = new Grid { Padding = new Thickness(14, 10, 6, 6) };
@@ -218,6 +234,9 @@ public static partial class IslandHost
     private static List<(string Label, string Value)> _metaSummary = new();
     private static List<TagRow> _metaTags = new();
     private static List<string> _metaStreamLines = new();
+    private static string _metaLast = "";
+    private static FakeInput? _metaSearch;
+    private static ScrollViewer? _metaScroll;
     private static bool _metaLoading;
     private static bool _metaIsClip;
     private static MetaTab _metaTab = MetaTab.Summary;
@@ -229,6 +248,7 @@ public static partial class IslandHost
 
     private static void DropMetaUi()
     {
+        _metaLast = "";
         _metaContent = null;
         _metaLoadingText = null;
         _metaTabs = null;
@@ -258,14 +278,24 @@ public static partial class IslandHost
         return root;
     }
 
-    private static void RenderMeta()
+    private static readonly List<Button> MetaTabButtons = new();
+
+    private static void RenderMeta(bool refocusTab = false)
     {
         if (_metaContent is null || _metaTabs is null) return;
+        // The record arrives after the pane is shown and this rebuilds the tab bar:
+        // if the keyboard was on a tab, it must still be on one afterwards, or the
+        // arrows go nowhere until the next Tab.
+        foreach (Button old in MetaTabButtons)
+        {
+            if (old.FocusState != FocusState.Unfocused) refocusTab = true;
+        }
         // A still has no streams: fall back if the tab it was on went away.
         if (!_metaIsClip && _metaTab == MetaTab.Streams) _metaTab = MetaTab.Summary;
         if (_metaLoadingText is not null) _metaLoadingText.Text = _metaLoading ? "reading…" : "";
 
         _metaTabs.Children.Clear();
+        MetaTabButtons.Clear();
         AddMetaTab("Summary", MetaTab.Summary);
         AddMetaTab("All tags", MetaTab.Tags);
         if (_metaIsClip) AddMetaTab("Streams", MetaTab.Streams);
@@ -276,6 +306,12 @@ public static partial class IslandHost
             MetaTab.Streams => BuildStreams(),
             _ => BuildSummary(),
         };
+        // Choosing a tab from the keyboard rebuilds the bar; keep the keyboard on it.
+        if (refocusTab)
+        {
+            int at = _metaTab == MetaTab.Summary ? 0 : _metaTab == MetaTab.Tags ? 1 : 2;
+            if (at < MetaTabButtons.Count) MetaTabButtons[at].Focus(FocusState.Keyboard);
+        }
     }
 
     private static void AddMetaTab(string label, MetaTab tab)
@@ -291,13 +327,35 @@ public static partial class IslandHost
             Background = Brush(on ? Hairline : Colors.Transparent),
             BorderThickness = new Thickness(0),
             Padding = new Thickness(10, 3, 10, 3),
-            IsTabStop = false,
+            AllowFocusOnInteraction = false,
         };
+        int index = MetaTabButtons.Count;
         b.Click += (_, _) =>
         {
             _metaTab = tab;
-            RenderMeta();
+            RenderMeta(refocusTab: true);
         };
+        // Left / Right walk the tabs, Down drops into the tab's content. Explicit,
+        // because directional focus alone did not cross the bar reliably.
+        b.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Right && index + 1 < MetaTabButtons.Count)
+            {
+                MetaTabButtons[index + 1].Focus(FocusState.Keyboard);
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Left && index > 0)
+            {
+                MetaTabButtons[index - 1].Focus(FocusState.Keyboard);
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Down && _metaTab == MetaTab.Tags)
+            {
+                _metaSearch?.Focus(FocusState.Keyboard);
+                e.Handled = true;
+            }
+        };
+        MetaTabButtons.Add(b);
         _metaTabs!.Children.Add(b);
     }
 
@@ -338,50 +396,72 @@ public static partial class IslandHost
         // Not a TextBox: that control fail-fasts in these islands (see FakeInput).
         var search = new FakeInput("Search tags and values") { Margin = new Thickness(10) };
         search.SetText(_metaQuery);
+        _metaSearch = search;
+        _metaScroll = null;
         host.Children.Add(search);
 
-        var list = new ListView
+        // A plain scrolling stack, not a ListView: clearing and refilling a ListView of
+        // elements from a key event fail-fasts in these islands. A tag list is at most
+        // a few thousand rows, and the search narrows it, so the rows are capped.
+        var list = new StackPanel { Padding = new Thickness(10, 0, 10, 10) };
+        var scroll = new ScrollViewer
         {
-            SelectionMode = ListViewSelectionMode.None,
-            IsItemClickEnabled = false,
-            Padding = new Thickness(6, 0, 6, 6),
+            Content = list,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
-        Grid.SetRow(list, 1);
-        host.Children.Add(list);
+        Grid.SetRow(scroll, 1);
+        host.Children.Add(scroll);
+        _metaScroll = scroll;
+        search.MoveDown += () => scroll.ChangeView(null, scroll.VerticalOffset + 90, null);
+        search.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Up) return;
+            if (scroll.VerticalOffset > 0) scroll.ChangeView(null, Math.Max(0, scroll.VerticalOffset - 90), null);
+            else if (MetaTabButtons.Count > 1) MetaTabButtons[1].Focus(FocusState.Keyboard);
+            e.Handled = true;
+        };
 
+        const int MaxRows = 400;
         void Fill()
         {
-            list.Items.Clear();
+            list.Children.Clear();
             if (_metaTags.Count == 0)
             {
-                list.Items.Add(Text(_metaLoading ? "Reading…" : "No metadata in this file", Body));
+                list.Children.Add(Text(_metaLoading ? "Reading…" : "No metadata in this file", Body));
                 return;
             }
-            string needle = _metaQuery.Trim().ToLowerInvariant();
+            string needle = _metaQuery.Trim();
             string? group = null;
             int shown = 0;
+            int matched = 0;
             foreach (TagRow t in _metaTags)
             {
                 if (needle.Length > 0 &&
                     !t.Label.Contains(needle, StringComparison.OrdinalIgnoreCase) &&
                     !t.Value.Contains(needle, StringComparison.OrdinalIgnoreCase) &&
                     !t.Raw.Contains(needle, StringComparison.OrdinalIgnoreCase)) continue;
+                matched++;
+                if (shown >= MaxRows) continue;
                 if (t.Group != group)
                 {
                     group = t.Group;
                     var header = Text(group, Body, UiFontSize, bold: true);
-                    header.Margin = new Thickness(4, 10, 0, 2);
-                    list.Items.Add(header);
+                    header.Margin = new Thickness(0, 10, 0, 2);
+                    list.Children.Add(header);
                 }
-                var cell = new StackPanel { Margin = new Thickness(4, 2, 4, 2) };
+                var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
                 cell.Children.Add(Text(t.Label, Title));
                 cell.Children.Add(Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3));
                 // The untranslated origin is always one hover away (plan/06).
                 ToolTipService.SetToolTip(cell, t.Raw);
-                list.Items.Add(cell);
+                list.Children.Add(cell);
                 shown++;
             }
-            if (shown == 0) list.Items.Add(Text("No tag matches", Body));
+            if (matched == 0) list.Children.Add(Text("No tag matches", Body));
+            else if (matched > shown)
+            {
+                list.Children.Add(Text($"{matched - shown} more: type to narrow the search", Body));
+            }
         }
 
         search.Changed += () =>
@@ -460,6 +540,12 @@ public static partial class IslandHost
             string props = Utf8(a.Properties, a.PropertiesLen);
             string streams = Utf8(a.Streams, a.StreamsLen);
 
+            // Native re-pushes on every layout; identical data must not rebuild the
+            // pane, which would drop the keyboard focus sitting on one of its rows.
+            string fingerprint = string.Concat(a.Loading.ToString(), "\u0001", summary, "\u0001", props, "\u0001", streams);
+            if (fingerprint == _metaLast) return 0;
+            _metaLast = fingerprint;
+
             _metaSummary = summary.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(l => l.Split('\t'))
                 .Select(f => (f[0], f.Length > 1 ? f[1] : ""))
@@ -498,6 +584,7 @@ public static partial class IslandHost
     {
         _treeList = null;
         _treeUp = null;
+        _treeRootNode = null;
     }
 
     private static UIElement BuildTree()
@@ -519,7 +606,53 @@ public static partial class IslandHost
         return root;
     }
 
-    private static Button FlatButton(UIElement content, Thickness padding)
+    // Keyboard-focusable (arrows walk the rows), but a mouse click never moves
+    // keyboard focus into the pane: the mouse user keeps the arrow keys on the canvas.
+    // The visible folder rows, top to bottom: the "Up to" button, then each open
+    // node's row and its expanded children. Arrows walk this list explicitly.
+    private static List<Button> TreeButtons()
+    {
+        var all = new List<Button>();
+        if (_treeUp?.Child is Button up) all.Add(up);
+        if (_treeList is not null)
+        {
+            foreach (UIElement node in _treeList.Children) CollectTreeButtons(node, all);
+        }
+        return all;
+    }
+
+    private static void CollectTreeButtons(UIElement node, List<Button> into)
+    {
+        if (node is not StackPanel sp || sp.Children.Count < 2) return;
+        if (sp.Children[0] is StackPanel row)
+        {
+            foreach (UIElement c in row.Children)
+            {
+                if (c is Button b && b.Tag is string tag && tag == "row") into.Add(b);
+            }
+        }
+        if (sp.Children[1] is StackPanel kids && kids.Visibility == Visibility.Visible)
+        {
+            foreach (UIElement k in kids.Children) CollectTreeButtons(k, into);
+        }
+    }
+
+    private static void TreeArrow(Button from, KeyRoutedEventArgs e)
+    {
+        int step = e.Key == Windows.System.VirtualKey.Down ? 1
+                 : e.Key == Windows.System.VirtualKey.Up ? -1 : 0;
+        if (step == 0) return;
+        List<Button> all = TreeButtons();
+        int at = all.IndexOf(from);
+        if (at >= 0 && at + step >= 0 && at + step < all.Count)
+        {
+            all[at + step].Focus(FocusState.Keyboard);
+            all[at + step].StartBringIntoView();
+        }
+        e.Handled = true;
+    }
+
+    private static Button FlatButton(UIElement content, Thickness padding, bool tabStop = true)
     {
         return new Button
         {
@@ -527,7 +660,8 @@ public static partial class IslandHost
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
             Padding = padding,
-            IsTabStop = false,  // keys stay with the canvas
+            IsTabStop = tabStop,
+            AllowFocusOnInteraction = false,
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
     }
@@ -550,67 +684,125 @@ public static partial class IslandHost
             Button up = FlatButton(
                 Text("↑  Up to " + (name.Length == 0 ? parent : name), Body), new Thickness(0, 2, 8, 2));
             up.Click += (_, _) => OpenTreePath(target);
+            up.KeyDown += (_, e) => TreeArrow(up, e);
             _treeUp.Child = up;
         }
         string label = Path.GetFileName(_treeRoot.TrimEnd('\\', '/'));
         // The open folder is the root, expanded, and shown as the current one.
-        _treeList.Children.Add(BuildTreeNode(label.Length == 0 ? _treeRoot : label, _treeRoot, 0,
-                                             current: true, expand: true));
+        _treeRootNode = new TreeNodeUi(label.Length == 0 ? _treeRoot : label, _treeRoot, 0, current: true);
+        _treeList.Children.Add(_treeRootNode.Node);
+        _treeRootNode.SetOpen(true);
     }
 
     // One folder: a row (expander glyph + name) and a children panel that is
-    // filled on first expand. The listing is one directory read on a pool
-    // thread; the rows are added back on the UI thread, so a slow disk never
-    // freezes the chrome (CLAUDE.md rule 1).
-    private static UIElement BuildTreeNode(string name, string path, int depth, bool current, bool expand)
+    // filled on first expand. The listing is one directory read on a pool thread;
+    // the rows are added back on the UI thread, so a slow disk never freezes the
+    // chrome (CLAUDE.md rule 1). Refresh() re-lists an already-listed folder and
+    // diffs it in place, so the tree follows the watcher without collapsing what
+    // the user opened or dropping the keyboard focus sitting on a row.
+    private sealed class TreeNodeUi
     {
-        var node = new StackPanel();
-        var children = new StackPanel { Visibility = Visibility.Collapsed };
-        bool loaded = false;
-        bool open = false;
+        public readonly string Path;
+        public readonly int Depth;
+        public readonly StackPanel Node = new();
+        public readonly StackPanel Children = new() { Visibility = Visibility.Collapsed };
+        private readonly Dictionary<string, TreeNodeUi> _kids = new(StringComparer.OrdinalIgnoreCase);
+        private readonly TextBlock _glyph;
+        private bool _open;
+        private bool _loaded;
 
-        var glyph = new TextBlock
+        public TreeNodeUi(string name, string path, int depth, bool current)
         {
-            Text = "▸", FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Body),
-            Width = 16, TextAlignment = TextAlignment.Center,
-        };
-        Button toggle = FlatButton(glyph, new Thickness(0, 2, 0, 2));
-        Button open_folder = FlatButton(
-            Text(name, current ? Title : Body, UiFontSize, bold: current), new Thickness(2, 2, 8, 2));
-        open_folder.Click += (_, _) => OpenTreePath(path);
+            Path = path;
+            Depth = depth;
+            _glyph = new TextBlock
+            {
+                Text = "▸", FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Body),
+                Width = 16, TextAlignment = TextAlignment.Center,
+            };
+            Button toggle = FlatButton(_glyph, new Thickness(0, 2, 0, 2), tabStop: false);
+            Button open_folder = FlatButton(
+                Text(name, current ? Title : Body, UiFontSize, bold: current), new Thickness(2, 2, 8, 2));
+            open_folder.Click += (_, _) => OpenTreePath(Path);
+            toggle.Click += (_, _) => SetOpen(!_open);
+            // Right opens a folder's children, Left closes them; Enter (the button's
+            // own click) opens the folder itself; Up / Down walk the visible rows.
+            open_folder.Tag = "row";
+            open_folder.KeyDown += (_, e) =>
+            {
+                if (e.Key == Windows.System.VirtualKey.Right && !_open) { SetOpen(true); e.Handled = true; }
+                else if (e.Key == Windows.System.VirtualKey.Left && _open) { SetOpen(false); e.Handled = true; }
+                else TreeArrow(open_folder, e);
+            };
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(depth * 14, 0, 0, 0),
+            };
+            row.Children.Add(toggle);
+            row.Children.Add(open_folder);
+            Node.Children.Add(row);
+            Node.Children.Add(Children);
+        }
 
-        void Toggle()
+        public void SetOpen(bool want)
         {
-            open = !open;
-            glyph.Text = open ? "▾" : "▸";
-            children.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-            if (!open || loaded) return;
-            loaded = true;
+            if (want == _open) return;
+            _open = want;
+            _glyph.Text = _open ? "▾" : "▸";
+            Children.Visibility = _open ? Visibility.Visible : Visibility.Collapsed;
+            if (_open && !_loaded)
+            {
+                _loaded = true;
+                List();
+            }
+        }
+
+        // Re-list a folder that has been listed before (the watcher saw a change).
+        public void Refresh()
+        {
+            if (_loaded) List();
+        }
+
+        private void List()
+        {
+            string dir = Path;
             var queue = _dispatcher?.DispatcherQueue;
             _ = Task.Run(() =>
             {
-                IReadOnlyList<(string Name, string Path)> subs = MediaViewerSession.ListSubdirectories(path);
-                queue?.TryEnqueue(() =>
-                {
-                    if (_treeList is null) return;  // the pane was closed meanwhile
-                    foreach ((string sub, string subPath) in subs)
-                    {
-                        children.Children.Add(BuildTreeNode(sub, subPath, depth + 1, false, false));
-                    }
-                    if (subs.Count == 0) glyph.Text = " ";  // a leaf: nothing to open
-                });
+                IReadOnlyList<(string Name, string Path)> subs = MediaViewerSession.ListSubdirectories(dir);
+                queue?.TryEnqueue(() => Apply(subs));
             });
         }
-        toggle.Click += (_, _) => Toggle();
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(depth * 14, 0, 0, 0) };
-        row.Children.Add(toggle);
-        row.Children.Add(open_folder);
-        node.Children.Add(row);
-        node.Children.Add(children);
-        if (expand) Toggle();
-        return node;
+        private void Apply(IReadOnlyList<(string Name, string Path)> subs)
+        {
+            if (_treeList is null) return;  // the pane was closed meanwhile
+            var order = subs.Select(x => x.Path).ToList();
+            var keep = new HashSet<string>(order, StringComparer.OrdinalIgnoreCase);
+            // Only what changed is touched: a row that stays keeps its place in the
+            // visual tree, and with it the keyboard focus and its expanded children.
+            foreach (string gone in _kids.Keys.Where(k => !keep.Contains(k)).ToList())
+            {
+                Children.Children.Remove(_kids[gone].Node);
+                _kids.Remove(gone);
+            }
+            for (int i = 0; i < subs.Count; i++)
+            {
+                if (_kids.ContainsKey(subs[i].Path)) continue;
+                var kid = new TreeNodeUi(subs[i].Name, subs[i].Path, Depth + 1, false);
+                _kids[subs[i].Path] = kid;
+                Children.Children.Insert(Math.Min(i, Children.Children.Count), kid.Node);
+            }
+            _glyph.Text = subs.Count == 0 ? " " : (_open ? "▾" : "▸");
+        }
     }
+
+    private static TreeNodeUi? _treeRootNode;
+
+    // The watcher saw the open folder change (a subfolder came or went): re-list
+    // the root and diff. Deeper folders are not watched, so they refresh when opened.
+    private static void RefreshTreeRoot() => _treeRootNode?.Refresh();
 
     // Choosing a folder opens it exactly as Open Folder does. Native asks for the
     // path with TakeTreePath: the command callback carries only a float.
@@ -653,7 +845,13 @@ public static partial class IslandHost
             string path = a.Utf8 == 0 || a.Length <= 0
                 ? ""
                 : Marshal.PtrToStringUTF8(checked((IntPtr)a.Utf8), a.Length) ?? "";
-            if (path == _treeRoot) return 0;
+            if (path == _treeRoot)
+            {
+                // Same folder pushed again: native saw the listing change, so a
+                // subfolder may have come or gone (io::directory_watcher).
+                if (_treeVisible) RefreshTreeRoot();
+                return 0;
+            }
             _treeRoot = path;
             if (_treeVisible) RebuildTreeRoot();
             return 0;
@@ -674,7 +872,7 @@ internal struct ChromePanelArgs
     public int Y;
     public int Width;
     public int Height;
-    public int Dpi;
+    public int Focus;
 }
 
 [StructLayout(LayoutKind.Sequential)]

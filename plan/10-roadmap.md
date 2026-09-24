@@ -379,6 +379,16 @@ platforms through the two-platform release flow (`RELEASING.md`,
 ## Milestone D — Viewer and editing updates (PR 9–12, both platforms)
 
 ### PR 9 — Metadata (read)
+*Status 2026-09-24: **Windows half landed** (the macOS half landed earlier); details and what was and was
+not measured are in [12](12-decision-log.md) 2026-09-24. Windows: pane, tree, sort menu, overlays, eyedropper and
+`Ctrl+C` in the running app; the tree opens and navigates from the keyboard and follows the watcher; ctest 520
+pass; PR 1's present-loop gate passes (`frametime.exe --seconds 60`: 0 drops, p99 17.05 ms, idle 0 presents).
+**Deviations from the text below, all recorded:** the panes float instead of insetting the canvas
+(`chrome_left_px` stays 0), and `I` focuses the pane rather than only toggling it. **Not verified on
+Windows:** PNG / HEIC / CR2-NEF-ARW / MP4 through the pane by hand (the `[meta]` tests cover the
+records; no RAW is in the corpus), and a quiet-machine lab soak (idle CPU with the chrome on is above the 1 %
+limit on this machine, on the pre-PR-9 build too). PR 10 may merge once macOS confirms its half.*
+
 **Shared:** Exiv2 + libavformat, one unified property model, per-stream video inspection,
 AF-point quads from maker notes, sort-by-date-taken in the folder model, and the
 eyedropper sample (a canvas-side read of the displayed texture). The info-overlay fill

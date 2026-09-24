@@ -820,3 +820,38 @@ TEST_CASE("3 toggles the runner view on the down edge without stealing image zoo
   s.game = false;
   CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
 }
+
+// PR 9 (plan/16 "Pane"): the metadata pane and the folder tree are a focus kind.
+// In-pane traversal belongs to XAML; Esc returns to the canvas; and a pane that is
+// merely shown is a level for Esc to walk out of.
+TEST_CASE("a focused pane owns its keys and Esc returns to the canvas", "[shell][router][pane]") {
+  key_router r;
+  auto s = still();
+  s.focus = focus_kind::pane;
+  s.pane_open = true;
+  // Arrows, Enter and letters are the pane's: none is a viewer command here.
+  for (const key k : {key::left, key::right, key::up, key::down, key::enter}) {
+    REQUIRE_FALSE(r.on_key(down(k), s).handled);
+  }
+  REQUIRE_FALSE(r.on_key(down(key::f11), s).handled);
+  // Esc leaves the pane for the canvas (and not the pane itself: focus first).
+  const auto out = r.on_key(down(key::escape), s);
+  REQUIRE(out.handled);
+  REQUIRE(out.command == command_id::back);
+  REQUIRE(out.back == back_target::canvas_focus);
+  // A held Esc does not walk out further.
+  REQUIRE_FALSE(r.on_key(rep(key::escape), s).handled);
+}
+
+TEST_CASE("Esc on the canvas closes a shown pane before the gallery or fullscreen", "[shell][router][pane]") {
+  key_router r;
+  auto s = still();
+  s.focus = focus_kind::canvas;
+  s.pane_open = true;
+  s.fullscreen = true;
+  const auto out = r.on_key(down(key::escape), s);
+  REQUIRE(out.handled);
+  REQUIRE(out.back == back_target::pane);  // plan/16: crop -> pane -> gallery -> fullscreen
+  s.pane_open = false;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::fullscreen);
+}

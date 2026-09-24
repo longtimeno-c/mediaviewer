@@ -441,8 +441,8 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
 | `Ctrl+G` | go to an item by its number in the folder |
 | `/` | find an item by name. With the filmstrip or gallery focused, just type |
-| `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9) |
-| `Ctrl+Shift+E` | folder tree, rooted at the open folder; click a folder to open it (PR 9) |
+| `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
+| `Ctrl+Shift+E` | folder tree, rooted at the open folder (PR 9). Focuses it: arrows walk, Right / Left open and close a folder, `Enter` opens it, `Esc` returns to the photo. It follows the folder as subfolders come and go |
 | `O` / `Shift+O` / `Shift+I` | info overlay with exposure lines / AF points / eyedropper (PR 9) |
 | `Ctrl+C` | copy the eyedropper colour if it is on, otherwise the marked (or current) file(s) |
 

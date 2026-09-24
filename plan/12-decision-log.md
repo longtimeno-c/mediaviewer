@@ -1572,3 +1572,39 @@ This closes the "still owed on Windows" lists above. What was built and the call
   The macOS build was not rebuilt after the `sort_order` move (no Mac available); the edit is
   mechanical (include path and namespace) but unproven there.
 
+### 2026-09-24 (last) — PR 9 Windows: checked against the plan's verify line, gaps closed
+
+Rechecking the Windows half against [10](10-roadmap.md)'s PR 9 verify line (rewritten on main for
+dual-track) found gaps in the first pass, now closed:
+
+- **"The folder tree opens from the keyboard and navigates without the mouse."** It could not: the
+  rows were deliberately not focusable. Now `Ctrl+Shift+E` shows **and focuses** the tree, and `I` focuses
+  the pane (plan/16). Up / Down walk the rows, Right / Left open and close a folder, Enter opens it (focus
+  returns to the canvas), Esc returns to the canvas, and a second Esc closes the pane (plan/16: Esc walks
+  out, crop -> pane -> gallery -> fullscreen). New `focus_kind::pane` in the router: a focused pane owns
+  its keys except Esc; `view_state.pane_open` is driven by the shown panes and `back_target::pane` closes
+  them. A mouse click on a pane control never moves keyboard focus into it, so a mouse user keeps the arrows
+  on the canvas. Router tests added.
+- **`FocusManager.TryMoveFocus` fail-fasts** in these islands (`0xC000027B`, found by bisecting a crash on
+  Down into the search box). Directional focus is therefore not used: the tab bar, the search box and the
+  tree handle Left / Right / Up / Down explicitly. Add it to the `TextBox` / `TreeView` list above.
+- **The tree follows the watcher.** The plan asks for folder-tree data that follows it. A listing change
+  of the open folder (the watcher fires on directory names too) re-lists the root and diffs the rows in
+  place, so expanded folders and the focused row survive. Deeper folders are not watched; they refresh when
+  opened.
+- **Date-taken sort had no end-to-end test.** Added: three JPEGs whose name, mtime and EXIF orders all differ,
+  through `mv_folder_set_sort`, including re-sort once the stamps land and back to another key.
+- **Pane re-render dropped keyboard focus** when the record arrived after `I`; the tab bar now restores focus
+  and identical pushes no longer rebuild the pane.
+
+**Present-loop gate, Windows.** `frametime.exe --seconds 60`: 3597 frames, 0 dropped, p99 17.05 ms at a
+16.68 ms refresh, idle 0 presents at 0.26 % CPU: PASS. A lab soak (`--pan-soak`, chrome on) with the metadata pane
+and the tree opened during it: 2398 frames, 0 dropped, 0 missed refreshes, p99 17.0 ms. That run fails
+the *idle CPU* limit (2.85 % against 1 %), but so does the same soak with no pane open (2.54 %) and the
+pre-PR-9 binary (1.99 %), on a machine that was not quiet: not attributable to the panes, and not a
+substitute for a quiet-machine run.
+
+**Still not verified on Windows:** PNG-with-XMP, HEIC, a RAW and an MP4 through the pane by hand (no RAW is in
+the corpus); the Streams tab on a real clip; a quiet-machine lab soak. **Shared with macOS, unchanged:**
+Canon AF sign, HEIC/RAW on real cameras. **macOS:** the `sort_order` move to `src/io` was not rebuilt on a Mac.
+
