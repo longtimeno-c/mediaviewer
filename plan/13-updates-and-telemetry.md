@@ -202,6 +202,10 @@ and FFmpeg DLLs that change rarely. A typical app-only update is a few MB agains
 payload. Without deltas, every bug fix is a full download and users disable updates.
 Do not ship Windows App SDK AI / ONNX / DirectML / WebView2: they are not a dependency,
 and they are currently the largest files in a framework-dependent publish.
+The one planned exception is the **optional local-search pack**
+([17-local-ai-search.md](17-local-ai-search.md)): a separate download installed from Settings
+on explicit opt-in, verified against the signed manifest, never part of the base installer or
+its updates. The packaging assert on the base tree stays.
 
 ### Staging and restart
 

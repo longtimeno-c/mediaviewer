@@ -1474,3 +1474,27 @@ Objective-C++ host code, the MSL/HLSL blit change and the CMake targets were not
 - **Metadata on re-encoded exports from HEIC / RAW / TIFF / WebP**: only JPEG (APP1) and PNG
   (eXIf, iTXt XMP) sources carry EXIF/XMP across; the others need an Exiv2 extraction path.
 - Tiled (> 64 MP) images: the D3D11 tile path ignores the map. Mac has no tiling yet.
+
+## 2026-09-24 — Local AI search planned (post-v1, proposed)
+
+The owner asked for local inference so a folder of video can be searched by keyframe/moment.
+[17-local-ai-search.md](17-local-ai-search.md) plans it as Milestone G (PRs 21–24), opt-in and
+post-v1; PR 8 is untouched. It narrows two earlier calls rather than reversing them:
+plan/16's "Face detect, AI cull, cloud albums" stays out (faces, culling and cloud are still
+excluded; local text/image-to-frame retrieval is what is added), and the 2026-09-20 / plan/13
+"do not ship ONNX/DirectML" stands for the **base installer** — inference ships only as a
+separate opt-in AI pack. **Open:** DirectML runs on D3D12, which CLAUDE.md says not to introduce;
+the owner must choose compute-only DML, CPU-only, or vendor EPs before PR 21
+(plan/17, *Open decisions*). Not implemented; no code lands until that is answered.
+
+**Amended 2026-09-24 (same day):** the owner wants face detection (as in iOS Photos), so plan/16's
+"Face detect" exclusion is lifted for a local-only, opt-in, deletable people index — PR 25 in
+plan/17, with stricter biometric handling than the frame index. AI culling and the
+DirectML/D3D12 question are still unanswered.
+
+**Settled 2026-09-24 (owner answers):** GPU inference uses **vendor providers** (OpenVINO,
+CUDA/TensorRT) as optional sub-packs with CPU always the fallback and a Settings toggle
+(Auto / provider / CPU-only) — **no DirectML, so no D3D12 and no CLAUDE.md change.** The whole
+feature is a downloadable extra installed from Settings, never in the base installer. AI
+culling was not requested and stays out. Recorded in plan/17 only, not as a numbered D-decision.
+Known gap: AMD GPUs run CPU until a provider exists.

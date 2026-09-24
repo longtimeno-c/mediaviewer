@@ -407,6 +407,30 @@ key; dragging the app to the Trash removes the Quick Look extension.
 
 ---
 
+## Milestone G — Local AI search (PR 21–25, post-v1, proposed)
+
+Windows-first, opt-in, and a **downloadable extra installed from Settings** — the base
+installer and updates never carry it. Full design, models, index, yield policy and verify
+lines: [17-local-ai-search.md](17-local-ai-search.md). Proposed 2026-09-24
+([12](12-decision-log.md)); not a D-decision. Every slice inherits PR 1's present-loop verify,
+re-run **while indexing**.
+
+- **PR 21 — Inference host and the AI pack.** `src/infer`, ORT CPU + a vendor provider,
+  signed pack download/verify, per-piece Install/Remove and an Auto / provider / CPU-only
+  toggle in Settings. Starts with a measured spike.
+- **PR 22 — Video sampler and index.** Keyframe sampling with gap limits, embedding dedupe,
+  resumable background `index.db`, yield-to-playback policy.
+- **PR 23 — Search and results.** Natural-language query ("man on broom") over photos and
+  video, results in the gallery island, Enter seeks to the moment, match markers on the
+  scrub bar, keyboard-complete.
+- **PR 24 — Find-similar, index management, hardening.**
+- **PR 25 — Faces.** Local, opt-in, deletable people index; stricter biometric handling.
+
+Numbers continue after Milestone F to avoid renumbering PRs 9–20. AI culling, cloud
+inference, and inference in the base installer stay out.
+
+---
+
 ## Further backlog — after the first feature updates
 
 Older specs use **v1.1** for this backlog. It remains deferred beyond its prerequisite
