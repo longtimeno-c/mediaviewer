@@ -26,7 +26,9 @@ per key-repeat is a bug, not a feature. The present-loop gate from PR 1 still ho
 | `?` overlay listing the **current mode's** bindings | |
 | Focus model that crosses canvas + XAML islands | |
 
-The Mac host (Milestone F) writes chrome twice (**D9**). Bindings live in the host; the
+The Mac host (Milestone F) writes chrome twice (**D9**). From PR 9 each row this table
+adds lands with a Mac default binding in the same PR (`⌘` for `Ctrl`; a chord wherever
+Windows assumes a numpad, e.g. rating is `⌘⇧0`–`5`). Bindings live in the host; the
 core exposes command *effects* through the existing ABI. Do not put Win32 virtual-key codes
 in `image/`, `player/`, `edit/`, or `meta/`.
 
@@ -67,7 +69,7 @@ because skip and shuttle are the same gesture at two durations, not to double th
 | **Pane** | Folder tree / metadata / adjust / jobs | In-pane traversal; `Esc` returns to canvas |
 | **Video** | Current item is a clip, playing or paused | Frame step when paused (`,` `.` and arrows); `J` `K` `L` transport |
 | **Slideshow** | After `F5` | Next on a timer; `Esc` leaves |
-| **Crop** | Adjust geometry (PR 10) | Nudge crop; `Enter` commits, `Esc` cancels |
+| **Crop** | Adjust geometry (PR 10): `Shift+C` on a still | Nudge crop; `Enter` commits, `Esc` cancels |
 
 `Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas. The gallery
 covers the canvas like an overlay, so it closes before the window-level states. It does not quit from a
@@ -131,15 +133,20 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `4` | Fill |
 | `+` `-` | Zoom toward centre when no cursor; toward cursor when there is one. In the gallery, enlarge / shrink thumbnails instead (`=` also enlarges): 24 DIP steps, 80–344 DIP, initially 152 DIP. Keep the selection visible and retain the chosen size for the session. Separate gallery commands in the shared table allow independent remapping |
 | `Ctrl+0` | Reset pan/zoom (not rating-0 — rating is `Ctrl+Shift+0` or numpad, see below) |
-| `H` / `V` | Flip horizontal / vertical |
-| `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 10), from the viewer, no edit pane required |
-| `I` | Metadata pane (PR 9) |
+| `H` / `V` | Flip horizontal / vertical (PR 10). On a JPEG, a lossless file write like `[` `]` |
+| `[` `]` | Rotate −90 / +90. Lossless JPEG when that is the only op (PR 10), from the viewer, no edit pane required. The preview turns at once; the file is rewritten 0.4 s after the last key, atomically, pixels untouched (plan/12 2026-09-24) |
+| `Shift+C` | Crop / straighten mode (PR 10; key chosen 2026-09-24 — `C` is clipping). See **Crop** below |
+| `Ctrl+Z` / `Ctrl+R` | Undo the last edit / reset edits to the original (PR 10; keys chosen 2026-09-24). A lossless rewrite already on disk is undone by the opposite turn |
+| `Ctrl+S` | Export the edits to a new file beside the original, `<name>-edit.jpg` (PR 10; key chosen 2026-09-24). Never overwrites |
+| `I` | Metadata pane (PR 9). Windows 2026-09-24: focuses the pane; Left / Right change tab, Down reaches the tag search (type to filter), `Esc` returns to the canvas and a second `Esc` closes it |
 | `E` | Adjust pane (PR 11) — **collides with `Q` `E` transport below, landed in 5c. PR 11 picks a different key; this row is not a claim on `E`.** |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
 | `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are tiles above the images: Up from the first row of images moves onto the tiles (same column), Left / Right / Up / Down move among them, `Enter` opens the tile, Down from the last tile row returns to the images |
 | `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder; the gallery breadcrumb grows upward so the way back down is one click. Not bound to Backspace, which is Previous |
-| `Ctrl+Shift+E` | Folder tree show/focus (PR 9) |
+| `Ctrl+Shift+E` | Folder tree show/focus (PR 9). Windows 2026-09-24: focuses the tree; Up / Down walk it, Right / Left open and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a second `Esc` closes it |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
+| `Shift+O` | AF-point quads from the maker notes already read (PR 9; the plan gave no key, chosen 2026-09-24). Off by default |
+| `Shift+I` | Eyedropper: one-pixel readout under the cursor, sRGB 8-bit + hex (PR 9; key chosen 2026-09-24). Stills only. `Ctrl/Cmd+C` while it is on copies the readout as `#RRGGBB  rgb(r, g, b)  x y`; with it off it copies the marked (or current / gallery-selected) file(s), the macOS start of PR 15's `CF_HDROP` twin |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |
 | `\` hold | Previous item for burst pick. Uses the five-slot GPU LRU ([04-image-pipeline.md](04-image-pipeline.md)); must not `mv_image_open` a replacement |
 | `;` | Play Live Photo / motion once, return to the still. Required: hover-to-play fails the no-mouse bar. PR 7: edge only (no hold-to-play); `;` again, `Esc` or any navigation also returns to the still, which comes back from the LRU. Plays with audio. No transport strip on a Live Photo stop |
@@ -182,6 +189,19 @@ opens its folder with that file selected. One folder dropped opens it; several f
 folder open it on the first; a mixed drop opens the first file's folder. If nothing exists, nothing
 opens and the app beeps. A watcher refresh keeps the current item selected; if it was removed the
 next one slides into its place (the previous one at the end).
+
+### Crop (PR 10)
+
+| Key | Command |
+|---|---|
+| Arrows | Move the crop rectangle 1 % of the frame |
+| `Shift` + arrows | Move its bottom-right corner (narrower / wider / shorter / taller) |
+| `,` `.` | Straighten −0.5° / +0.5° (±45°). An untouched rectangle follows the angle as its largest fit |
+| `[` `]` `H` `V` | Turn / flip with the draft carried along (no file write while cropping) |
+| `Enter` | Apply: the draft joins the edit stack |
+| `Esc` | Cancel the draft |
+
+`A` `D`, `G` and `Ctrl+O` do nothing while cropping: walking away would drop the draft.
 
 ### Rate (PR 12)
 
@@ -285,7 +305,7 @@ Chrome, in-memory, no decode.
 - **Status / title:** `filename — 3/247 — 6000×4000 — 95 % — ★★★`. Index and listing stats
   come from the folder model, not from the decoder.
 - **Sort (PR 4):** name, mtime, size, type. **EXIF date-taken waits for PR 9** so PR 4 does
-  not parse every file. Remember the user's sort.
+  not parse every file. Remember the user's sort. *(macOS 2026-09-24: the sort orders, including date taken, ship in the View ▸ Sort By menu. Date-taken keys are read once per file by one background job and the listing re-sorts in place when they land; a file with no stamp sorts by mtime. Windows 2026-09-24: the same five orders and a descending switch in View ▸ Sort by and in Settings, applied by the ABI session (`mv_folder_set_sort`) and saved as `[view] sort`.)*
 - **Filter:** all / photos / videos / RAW. In-memory flag on the listing. RAW flag is
   meaningful from PR 7.
 - **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item
@@ -353,7 +373,7 @@ Standard-viewer ideas that fail the speed bar, D4/D5, or "this is not a library"
 | Side-by-side compare workspace | v1.1. Hold-previous is the cheap cousin |
 | Burst-stack as one filmstrip item | Heuristic, can hide files. Live Photo / RAW+JPEG pairing is exact; burst grouping waits |
 | Print / contact sheet | v1.1. Not the hot path, but it is a week of print UI |
-| Card ingest with verify | v1.1. Adjacent product (Photo Mechanic). Watcher already sees files appear |
+| ~~Card ingest with verify~~ | **Moved to the Import add-on, PRs 16–19 (2026-09-24)** ([18-import.md](18-import.md)) |
 | GPS map, keywords, colour labels | v1.1 metadata |
 | Quick-export presets on one key | After PR 10 export exists and has been used |
 | PiP / compact overlay | v1.1. Second window is a second present path unless it is DWM-only |
@@ -376,11 +396,12 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 7 | RAW+JPEG pairing, Live Photo pairing (needs HEIC + video), filter: RAW, companion RAW+JPEG as one stop. Landed: `;` play motion, unbound Open RAW / Open JPEG rows, `Esc` ends motion first, RAW / LIVE tile badges. Filter: RAW is **not** in this slice |
 | 8 | Package the existing viewer; About and release setup, no new feature commands |
 | 9 | Folder tree, `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
-| 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops) |
+| 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops). Written for Windows and macOS 2026-09-24 with `Shift+C`, `Ctrl+S`, `Ctrl+Z`, `Ctrl+R` ([12](12-decision-log.md)) |
 | 11 | `E` pane, accurate RAW clipping, histogram |
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]` |
 | 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
+| 16–19 | Import add-on commands, present only while it is installed ([18-import.md](18-import.md#commands)). Base app, PR 16: `F8` across volumes deletes the source only after verify |
 
 **Verify (PR 6, additive with the existing line):** keyboard-only browse of a real folder —
 open, next/prev, zoom/fit/100 %, mark, copy-to a destination, delete to Recycle Bin,

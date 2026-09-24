@@ -31,6 +31,8 @@ final class SettingsStore: ObservableObject {
   @Published private(set) var flags: Int32 = 0
   @Published private(set) var rows: [KeyRow] = []
   @Published private(set) var captureRow: Int32 = -1
+  /// PR 9: packed sort order (bits 0-2 key, bit 3 descending), as sort_order.h.
+  @Published private(set) var sort: Int32 = 0
 
   private var timer: Timer?
   private var generation: UInt64 = .max
@@ -45,6 +47,9 @@ final class SettingsStore: ObservableObject {
     let v = mv_chrome_settings_visible()
     if v != visible { visible = v }
     guard v else { return }
+    // The menu can change the sort too, and that does not move the keys generation.
+    let sortNow = mv_chrome_sort_order()
+    if sortNow != sort { sort = sortNow }
     let g = mv_chrome_keys_generation()
     if g == generation { return }
     generation = g
@@ -97,6 +102,15 @@ final class SettingsStore: ObservableObject {
       generation = .max
       poll()
     }
+  }
+
+  var sortKey: Int {
+    get { Int(sort & 7) }
+    set { mv_chrome_set_sort_order((sort & 8) | Int32(newValue & 7)); sort = mv_chrome_sort_order() }
+  }
+  var sortDescending: Bool {
+    get { sort & 8 != 0 }
+    set { mv_chrome_set_sort_order(newValue ? sort | 8 : sort & ~8); sort = mv_chrome_sort_order() }
   }
 
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
@@ -176,6 +190,21 @@ struct SettingsView: View {
           .labelsHidden()
           .pickerStyle(.menu)
           .frame(width: 200)
+          Text("Sort folder by").font(MVTheme.font()).foregroundStyle(MVTheme.body)
+          Picker("", selection: Binding(get: { store.sortKey }, set: { store.sortKey = $0 })) {
+            Text("Name").tag(0)
+            Text("Date modified").tag(1)
+            Text("Size").tag(2)
+            Text("Type").tag(3)
+            Text("Date taken (EXIF)").tag(4)
+          }
+          .labelsHidden()
+          .pickerStyle(.menu)
+          .frame(width: 200)
+          Toggle(isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 })) {
+            Text("Descending").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+          }
+          .toggleStyle(.switch)
           Spacer()
         }
         .padding(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))

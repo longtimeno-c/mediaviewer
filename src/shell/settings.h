@@ -43,6 +43,9 @@ struct view_settings {
   bool wrap = true;
   bool sticky_zoom = false;
   std::uint8_t background = 0;  // 0 canvas, 1 gray, 2 white, 3 checkerboard
+  // PR 9: the folder sort, packed by io::pack_sort (key in bits 0-2, descending
+  // in bit 3). Not part of flags(): the chrome gets it beside them.
+  std::int32_t sort = 0;
 
   [[nodiscard]] std::int32_t flags() const noexcept {
     return (filmstrip_for_folder ? kSettingFilmstripFolder : 0) |

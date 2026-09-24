@@ -207,6 +207,60 @@ result<std::vector<subdir_entry>> scan_subdirs(std::string_view utf8_dir) {
   return out;
 }
 
+result<std::vector<subdir>> list_subdirectories(std::string_view utf8_dir) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  const std::wstring wide = wide_from_utf8(utf8_dir);
+  if (wide.empty()) return err(status::invalid_arg);
+
+  std::wstring glob = wide;
+  if (glob.back() != L'\\' && glob.back() != L'/') glob.push_back(L'\\');
+  glob.push_back(L'*');
+
+  WIN32_FIND_DATAW fd{};
+  HANDLE find = ::FindFirstFileExW(glob.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
+                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
+  if (find == INVALID_HANDLE_VALUE) return err(status::io);
+
+  std::vector<subdir> out;
+  std::vector<std::wstring> keys;  // UTF-16 sort keys, as in list_still_files
+  try {
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+      // Hidden and system directories ($Recycle.Bin, System Volume Information,
+      // AppData) are not places a camera dump lives. Dot-directories likewise.
+      if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
+      if (fd.cFileName[0] == L'.') continue;
+
+      subdir s;
+      s.name_utf8 = utf8_from_wide(fd.cFileName);
+      s.path_utf8 = join_utf8(utf8_dir, s.name_utf8);
+      out.push_back(std::move(s));
+      keys.emplace_back(fd.cFileName);
+    } while (::FindNextFileW(find, &fd));
+  } catch (const std::bad_alloc&) {
+    ::FindClose(find);
+    return err(status::out_of_memory);
+  }
+  ::FindClose(find);
+
+  try {
+    std::vector<std::uint32_t> order(out.size());
+    for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&keys](std::uint32_t a, std::uint32_t b) {
+      const int cmp = ::CompareStringOrdinal(keys[a].c_str(), -1, keys[b].c_str(), -1, TRUE);
+      if (cmp == 0) return keys[a] < keys[b];
+      return cmp == CSTR_LESS_THAN;
+    });
+    std::vector<subdir> sorted;
+    sorted.reserve(out.size());
+    for (std::uint32_t i : order) sorted.push_back(std::move(out[i]));
+    out = std::move(sorted);
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
+  return out;
+}
+
 result<bool> is_directory(std::string_view utf8_path) {
   if (utf8_path.empty()) return err(status::invalid_arg);
   const std::wstring wide = wide_from_utf8(utf8_path);

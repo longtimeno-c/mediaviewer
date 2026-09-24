@@ -145,6 +145,40 @@ result<std::vector<subdir_entry>> scan_subdirs(std::string_view utf8_dir) {
   return out;
 }
 
+result<std::vector<subdir>> list_subdirectories(std::string_view utf8_dir) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  const std::string dir_path(utf8_dir);
+  DIR* d = ::opendir(dir_path.c_str());
+  if (!d) return err(status::io);
+
+  const auto is_package = [](std::string_view name) {
+    for (const char* ext : {".app", ".photoslibrary", ".bundle", ".framework", ".lrdata"}) {
+      const std::string_view e(ext);
+      if (name.size() > e.size() && iequals_ascii(name.substr(name.size() - e.size()), e)) return true;
+    }
+    return false;
+  };
+
+  std::vector<subdir> out;
+  while (dirent* ent = ::readdir(d)) {
+    const std::string_view name(ent->d_name);
+    if (name == "." || name == ".." || name.empty() || name.front() == '.') continue;
+    if (is_package(name)) continue;
+    const std::string full = join_utf8(utf8_dir, name);
+    struct stat st{};
+    if (::stat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;  // follows symlinks
+#ifdef UF_HIDDEN
+    if (st.st_flags & UF_HIDDEN) continue;
+#endif
+    out.push_back({std::string(name), full});
+  }
+  ::closedir(d);
+  std::sort(out.begin(), out.end(), [](const subdir& a, const subdir& b) {
+    return less_casefold(a.name_utf8, b.name_utf8);
+  });
+  return out;
+}
+
 result<bool> is_directory(std::string_view utf8_path) {
   if (utf8_path.empty()) return err(status::invalid_arg);
   struct stat st{};

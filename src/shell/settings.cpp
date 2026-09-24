@@ -4,6 +4,8 @@
 // (shell/settings_store.h) -- none of them touch the disk on the calling thread.
 #include "shell/settings.h"
 
+#include "io/sort_order.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -64,6 +66,8 @@ view_settings load_view_settings(const settings_store& store) noexcept {
   s.sticky_zoom = doc->get_int(kView, "sticky_zoom", s.sticky_zoom ? 1 : 0) != 0;
   const int bg = doc->get_int(kView, "background", s.background);
   s.background = static_cast<std::uint8_t>(bg < 0 ? 0 : bg > 3 ? 3 : bg);
+  // Normalised, so a hand-edited or future value cannot leave an unknown key.
+  s.sort = io::pack_sort(io::unpack_sort(doc->get_int(kView, "sort", 0)));
   return s;
 }
 
@@ -74,6 +78,7 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     d.set(kView, "wrap", s.wrap ? "1" : "0");
     d.set(kView, "sticky_zoom", s.sticky_zoom ? "1" : "0");
     d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background & 3)));
+    d.set(kView, "sort", std::to_string(s.sort));
   });
 }
 

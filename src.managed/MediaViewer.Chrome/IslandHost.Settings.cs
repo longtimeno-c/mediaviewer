@@ -27,6 +27,8 @@ public static partial class IslandHost
     private static ToggleSwitch? _wrap;
     private static ToggleSwitch? _sticky;
     private static ComboBox? _background;
+    private static ComboBox? _sortKey;
+    private static ToggleSwitch? _sortDescending;
     private static int _capturingRow = -1;
     private static bool _updatingSettingsUi;
     private static bool _settingsVisible;
@@ -81,6 +83,36 @@ public static partial class IslandHost
             Send(Command.SetSettings, next);
         };
         view.Children.Add(_background);
+
+        view.Children.Add(Label("Sort folder by"));
+        _sortKey = new ComboBox
+        {
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            MinWidth = 200,
+        };
+        foreach (string name in SortNames) _sortKey.Items.Add(name);
+        _sortKey.SelectedIndex = Math.Clamp(_sortPacked & 7, 0, SortNames.Length - 1);
+        _sortKey.SelectionChanged += (_, _) =>
+        {
+            if (_updatingSettingsUi || _sortKey.SelectedIndex < 0) return;
+            Send(Command.SetSort, (_sortPacked & 8) | _sortKey.SelectedIndex);
+        };
+        view.Children.Add(_sortKey);
+        _sortDescending = new ToggleSwitch
+        {
+            Header = "Descending",
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            IsOn = (_sortPacked & 8) != 0,
+        };
+        _sortDescending.Toggled += (_, _) =>
+        {
+            if (_updatingSettingsUi) return;
+            Send(Command.SetSort, _sortDescending.IsOn ? _sortPacked | 8 : _sortPacked & ~8);
+        };
+        view.Children.Add(_sortDescending);
 
         var keysHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
         keysHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -346,6 +378,8 @@ public static partial class IslandHost
                 _background.SelectedIndex =
                     (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
             }
+            if (_sortKey is not null) _sortKey.SelectedIndex = Math.Clamp(_sortPacked & 7, 0, SortNames.Length - 1);
+            if (_sortDescending is not null) _sortDescending.IsOn = (_sortPacked & 8) != 0;
         }
         finally
         {

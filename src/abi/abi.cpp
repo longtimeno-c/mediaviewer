@@ -13,8 +13,10 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "abi/animation_session.h"
@@ -39,6 +41,8 @@
 #include "io/dir.h"
 #include "io/file.h"
 #include "io/pairing.h"
+#include "io/sort_order.h"
+#include "meta/meta.h"
 #include "io/paths.h"
 
 // The enum values on both sides of the line must stay numerically identical.
@@ -168,6 +172,19 @@ struct mv_session {
     std::unique_ptr<mv::image::gpu_image> gpu;
     mv_image_info info{};
   };
+
+  // PR 9 sort. `folder_listing` is the paired scan in scan order, kept so a new
+  // order (or a batch of date-taken stamps) re-applies without another disk
+  // scan. `date_stamps` is checked per (mtime, size): a rewritten file is read
+  // again, and a file with no stamp is remembered as such rather than retried.
+  struct date_stamp {
+    std::int64_t mtime_unix = 0;
+    std::uint64_t size = 0;
+    std::optional<std::int64_t> key;
+  };
+  std::atomic<std::int32_t> sort_packed{0};
+  std::vector<mv::io::listed_item> folder_listing;
+  std::unordered_map<std::string, date_stamp> date_stamps;
 
   std::mutex folder_mutex;
   std::vector<folder_item> folder_items;
@@ -807,10 +824,89 @@ void submit_prefetch(mv_session* session, uint32_t index, mv::generation gen) {
   }
 }
 
+void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> listed,
+                       bool changed);
+
+// Orders `listed` by the session's sort. Sorts the primaries with the shared
+// comparator and carries each pair along by path. Date taken consults the stamps
+// already read; a file without one sorts by its mtime (io/sort_order.h).
+void sort_listed(mv_session* session, std::vector<mv::io::listed_item>& listed) {
+  const mv::io::sort_order order = mv::io::unpack_sort(session->sort_packed.load());
+  std::vector<mv::io::dir_entry> primaries;
+  primaries.reserve(listed.size());
+  for (const auto& l : listed) primaries.push_back(l.primary);
+  mv::io::sort_entries(primaries, order, [session](const mv::io::dir_entry& e) {
+    std::lock_guard lock(session->folder_mutex);
+    const auto it = session->date_stamps.find(e.path_utf8);
+    if (it == session->date_stamps.end() || it->second.mtime_unix != e.mtime_unix ||
+        it->second.size != e.size) {
+      return std::optional<std::int64_t>{};
+    }
+    return it->second.key;
+  });
+  std::unordered_map<std::string, std::size_t> at;
+  at.reserve(listed.size());
+  for (std::size_t i = 0; i < listed.size(); ++i) at.emplace(listed[i].primary.path_utf8, i);
+  std::vector<mv::io::listed_item> sorted;
+  sorted.reserve(listed.size());
+  for (const auto& e : primaries) sorted.push_back(std::move(listed[at[e.path_utf8]]));
+  listed = std::move(sorted);
+}
+
+// Date taken needs a bounded read of every file. One background job fills the
+// stamps still missing, then re-applies the listing once. A second call for the
+// same listing finds nothing missing and does nothing, so this cannot loop.
+void resolve_date_stamps(mv_session* session) {
+  std::vector<mv::io::dir_entry> missing;
+  std::string dir;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    dir = session->folder_dir;
+    for (const auto& l : session->folder_listing) {
+      const auto it = session->date_stamps.find(l.primary.path_utf8);
+      if (it == session->date_stamps.end() || it->second.mtime_unix != l.primary.mtime_unix ||
+          it->second.size != l.primary.size) {
+        missing.push_back(l.primary);
+      }
+    }
+  }
+  if (missing.empty()) return;
+  (void)session->jobs.submit_at(
+      mv::background_generation,
+      [session, dir, missing = std::move(missing)](const mv::job_context&) -> status {
+        for (const auto& e : missing) {
+          const auto key = mv::meta::read_date_taken(e.path_utf8);
+          std::lock_guard lock(session->folder_mutex);
+          if (session->folder_dir != dir) return status::ok;  // the user moved on
+          session->date_stamps[e.path_utf8] = {e.mtime_unix, e.size, key};
+        }
+        std::vector<mv::io::listed_item> again;
+        {
+          std::lock_guard lock(session->folder_mutex);
+          if (session->folder_dir != dir) return status::ok;
+          again = session->folder_listing;
+        }
+        if (mv::io::unpack_sort(session->sort_packed.load()).key ==
+            mv::io::sort_key::date_taken) {
+          apply_folder_list(session, std::move(again), true);
+        }
+        return status::ok;
+      });
+}
+
 // `listed` is already paired (plan/16 speed rule 4: pairing happens at scan,
-// never per next), so every folder_items entry is one arrow-key stop.
+// never per next), so every folder_items entry is one arrow-key stop. It arrives
+// in scan order; this puts it in the session's sort order.
 void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> listed,
                        bool changed) {
+  {
+    std::lock_guard lock(session->folder_mutex);
+    session->folder_listing = listed;
+  }
+  sort_listed(session, listed);
+  if (mv::io::unpack_sort(session->sort_packed.load()).key == mv::io::sort_key::date_taken) {
+    resolve_date_stamps(session);
+  }
   std::string want;
   std::string previous_path;
   std::string previous_secondary;
@@ -1195,6 +1291,7 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
       std::lock_guard lock(session->folder_mutex);
       session->folder_dir = dir;
       session->folder_select_path = select;
+      session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_selected = 0;
     }
@@ -1228,6 +1325,72 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
         });
     if (id == mv::invalid_job) return status::internal;
     if (out_job_id) *out_job_id = id;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_set_sort(mv_session_t session, int32_t packed) {
+  return static_cast<mv_status>(guard("mv_folder_set_sort", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    // Normalise so a stray bit cannot be stored: unknown key -> name.
+    const auto order = mv::io::unpack_sort(packed);
+    const std::int32_t next = mv::io::pack_sort(order);
+    if (session->sort_packed.exchange(next) == next) return status::ok;
+    bool have = false;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      have = !session->folder_listing.empty();
+    }
+    if (!have) return status::ok;  // applies to the next open
+    const mv::job_id id = session->jobs.submit_at(
+        mv::background_generation, [session](const mv::job_context&) -> status {
+          std::vector<mv::io::listed_item> again;
+          {
+            std::lock_guard lock(session->folder_mutex);
+            again = session->folder_listing;
+          }
+          if (again.empty()) return status::ok;
+          apply_folder_list(session, std::move(again), true);
+          return status::ok;
+        });
+    return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_packed) {
+  return static_cast<mv_status>(guard("mv_folder_get_sort", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_packed != nullptr, "out_packed must not be null");
+    *out_packed = session->sort_packed.load();
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap,
+                                         uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_list_subdirectories", [&]() -> status {
+    MV_REQUIRE(utf8_dir != nullptr && utf8_dir[0] != '\0', "utf8_dir must not be empty");
+    auto dirs = mv::io::list_subdirectories(utf8_dir);
+    if (!dirs) return dirs.error();
+    const auto flat = [](std::string v) {
+      for (char& c : v) {
+        if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+      }
+      return v;
+    };
+    std::string out;
+    for (const auto& d : dirs.value()) out += flat(d.name_utf8) + "\t" + d.path_utf8 + "\n";
+    return copy_utf8(out, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path) {
+  return static_cast<mv_status>(guard("mv_folder_forget", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr && utf8_path[0] != '\0', "utf8_path must not be empty");
+    const std::string path(utf8_path);
+    std::lock_guard lock(session->lru_mutex);
+    std::erase_if(session->lru, [&](const mv_session::lru_slot& s) { return s.path == path; });
     return status::ok;
   }));
 }

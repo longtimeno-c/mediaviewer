@@ -94,7 +94,7 @@ struct jpeg_size {
     std::size_t max_bytes = kAnimationByteBudget);
 
 // RGBA8 in, JPEG bytes out. `quality` is 1–100. Used for the filmstrip cache
-// (plan/04 spec jpg512.1); not an export path.
+// (plan/04 spec jpg512.2); not an export path.
 [[nodiscard]] result<std::vector<std::uint8_t>> encode_jpeg_rgba(
     std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height, int quality);
 

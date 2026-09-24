@@ -25,9 +25,13 @@
 #include <atomic>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <new>
+#include <optional>
 #include <cwchar>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -39,10 +43,18 @@
 #include "shell/app_icon.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
+#include "canvas/refinement.h"
 #include "shell/chrome_host.h"
+#include "shell/edit_session.h"
+#include "shell/edit_view.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
+#include "core/job_system.h"
+#include "io/sort_order.h"
+#include "meta/meta.h"
+#include "meta/tables.h"
 #include "shell/marks.h"
+#include "shell/meta_store.h"
 #include "shell/open_request.h"
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
@@ -71,6 +83,12 @@ enum class open_mode { none, folder, image };
 
 // plan/16 §Focus: in fullscreen, ↓ at fit (or the bottom hot-edge) shows the
 // strips until navigation settles — this long after the last navigation.
+constexpr UINT_PTR kMetaTimerId = 0x7501;   // PR 9: pause before a metadata read
+constexpr UINT kMetaDebounceMs = 90;
+constexpr UINT kMsgMetaReady = WM_APP + 0x71;  // a metadata read finished (any thread posts)
+constexpr UINT_PTR kRotateTimerId = 0x7601;  // PR 10: the lossless write waits for the keys to stop
+constexpr UINT kRotateDebounceMs = 400;
+constexpr UINT kMsgEditJobDone = WM_APP + 0x72;  // a rotate write or an export finished (any thread posts)
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -100,6 +118,30 @@ constexpr UINT kUpdateConfirmMs = 10000;
 struct app_state {
   present_lab lab;
   input_snapshot input;
+  // PR 9. Reads run on `jobs`, never here (rule 1); the record is the one the
+  // overlays were last formatted from, so toggling them is not a file read.
+  // PR 9 panes. The wish is kept here; apply_view_state decides what is on screen
+  // (a pane hides under the gallery, fullscreen and Settings and comes back).
+  bool meta_pane_visible = false;
+  bool tree_visible = false;
+  // One-shot: the next layout moves keyboard focus into that pane (I / Ctrl+Shift+E).
+  bool focus_meta_next = false;
+  bool focus_tree_next = false;
+  std::string current_dir;  // the open folder, for the tree's root
+  mv::job_system jobs;
+  // PR 10 (plan/07, plan/16). `edits` owns every item's edit stack and crop
+  // mode; the render thread gets the geometry through input.edit, tagged with
+  // the item's path key and the view generation of the select that showed it.
+  mv::shell::edit_session edits;
+  std::string edit_path;
+  std::uint64_t edit_key = 0;
+  std::uint32_t edit_generation = 0;
+  std::uint64_t edit_size = 0;
+  std::int64_t edit_mtime = 0;
+  // The export dialog's last answer, preselected next time (pack_export).
+  std::int32_t export_choice = mv::shell::pack_export(mv::edit::export_options{});
+  mv::shell::meta_store meta;
+  std::shared_ptr<const mv::meta::metadata> meta_record;
   mv_session_t session = nullptr;
   bool tracking_mouse = false;
   bool chrome_enabled = true;
@@ -246,6 +288,8 @@ std::string utf8_from_wide(std::wstring_view wide) {
 }
 
 void apply_view_state(app_state* app) noexcept;
+void push_tree_root(app_state* app) noexcept;
+void push_meta_pane(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void focus_canvas(app_state* app) noexcept;
@@ -266,6 +310,8 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
                        &job_id);
   ++app->folder_token;
+  app->current_dir = dir;
+  push_tree_root(app);
   ++app->input.activity_seq;
   publish(app);
   apply_view_state(app);
@@ -578,6 +624,382 @@ void refresh_item_info(app_state* app) noexcept {
   app->input.item_name[cap - 1] = '\0';
 }
 
+// ---- PR 9: metadata for the overlays ---------------------------------------
+
+bool metadata_wanted(const app_state* app) noexcept {
+  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
+}
+
+// The selected item as the store keys it: path + mtime + size, from one stat.
+bool current_dir_entry(app_state* app, mv::io::dir_entry& out) {
+  const std::string utf8 = current_item_path(app);
+  if (utf8.empty()) return false;
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (n <= 1) return false;
+  std::wstring wide(static_cast<std::size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
+  WIN32_FILE_ATTRIBUTE_DATA fa{};
+  if (!::GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &fa)) return false;
+  ULARGE_INTEGER size{};
+  size.LowPart = fa.nFileSizeLow;
+  size.HighPart = fa.nFileSizeHigh;
+  ULARGE_INTEGER ft{};
+  ft.LowPart = fa.ftLastWriteTime.dwLowDateTime;
+  ft.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+  out.path_utf8 = utf8;
+  const std::size_t slash = utf8.find_last_of("\\/");
+  out.name_utf8 = slash == std::string::npos ? utf8 : utf8.substr(slash + 1);
+  out.size = size.QuadPart;
+  out.mtime_unix = static_cast<std::int64_t>(ft.QuadPart / 10000000ULL) - 11644473600LL;
+  return true;
+}
+
+// Pre-format everything the render thread will draw, once, here.
+void adopt_metadata(app_state* app, std::shared_ptr<const mv::meta::metadata> record) {
+  app->meta_record = record;
+  mv::shell::meta_overlay o;
+  const auto copy = [](char* dst, std::size_t cap, const std::string& src) {
+    const std::size_t n = std::min(src.size(), cap - 1);
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  copy(o.camera_line, sizeof(o.camera_line), mv::meta::overlay_camera_line(*record));
+  copy(o.exposure_line, sizeof(o.exposure_line), mv::meta::overlay_exposure_line(*record));
+  copy(o.date_line, sizeof(o.date_line), mv::meta::overlay_date_line(*record));
+  const auto af = mv::meta::displayed_af_points(*record);
+  for (std::size_t i = 0; i < af.size() && i < mv::shell::meta_overlay::kMaxAf; ++i) {
+    o.af[i][0] = af[i].x;
+    o.af[i][1] = af[i].y;
+    o.af[i][2] = af[i].w;
+    o.af[i][3] = af[i].h;
+    o.af[i][4] = af[i].in_focus ? 1.0f : 0.0f;
+    o.af_count = static_cast<std::uint8_t>(i + 1);
+  }
+  app->input.meta = o;
+  ++app->input.meta_seq;
+  ++app->input.activity_seq;
+  publish(app);
+  push_meta_pane(app);
+}
+
+// A cache hit is adopted at once; a miss submits one read on the pool and its
+// completion posts kMsgMetaReady back to this thread.
+void request_metadata_now(app_state* app) {
+  if (!app->window) return;
+  ::KillTimer(app->window, kMetaTimerId);
+  if (app->meta_record || !metadata_wanted(app)) return;
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry)) return;
+  const HWND hwnd = app->window;
+  auto record = app->meta.get(entry, app->jobs, [hwnd](std::string) {
+    ::PostMessageW(hwnd, kMsgMetaReady, 0, 0);
+  });
+  if (record) adopt_metadata(app, std::move(record));
+}
+
+void metadata_ready(app_state* app) {
+  if (app->meta_record || !metadata_wanted(app)) return;
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry)) return;
+  if (auto record = app->meta.peek(entry)) adopt_metadata(app, std::move(record));
+}
+
+// Selection moved: the old record is no longer the item on screen. The new one
+// is asked for only if something is showing metadata, and only after a pause, so
+// holding an arrow key queues no read for the images that flash past.
+void metadata_selection_changed(app_state* app) {
+  if (!app->window) return;
+  ::KillTimer(app->window, kMetaTimerId);
+  if (app->meta_record) {
+    app->meta_record.reset();
+    app->input.meta = mv::shell::meta_overlay{};
+    ++app->input.meta_seq;
+  }
+  if (metadata_wanted(app)) ::SetTimer(app->window, kMetaTimerId, kMetaDebounceMs, nullptr);
+  push_meta_pane(app);
+}
+
+// The pane shows the record already held: three text tables, formatted here once
+// per record. No record yet means "reading" while something is wanted, and the
+// pane renders its empty states. Never reads the file.
+void push_meta_pane(app_state* app) noexcept {
+  if (!app || !app->chrome.meta_pane_visible()) return;
+  if (app->meta_record) {
+    app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
+                              mv::meta::properties_table(*app->meta_record),
+                              mv::meta::streams_table(*app->meta_record));
+    return;
+  }
+  std::uint32_t count = 0;
+  const bool have = app->session && mv_folder_count(app->session, &count) == MV_OK && count > 0;
+  app->chrome.set_meta_data(have, {}, {}, {});
+}
+
+void push_tree_root(app_state* app) noexcept {
+  if (!app) return;
+  app->chrome.set_tree_root(app->current_dir);
+}
+
+void set_meta_pane(app_state* app, bool on) noexcept {
+  if (!app || app->meta_pane_visible == on) return;
+  app->meta_pane_visible = on;
+  app->focus_meta_next = on;  // `I` focuses the pane (plan/16); Esc returns to the canvas
+  apply_view_state(app);
+  if (on) {
+    request_metadata_now(app);
+    push_meta_pane(app);
+  } else if (app->window) {
+    focus_canvas(app);
+  }
+}
+
+void set_folder_tree(app_state* app, bool on) noexcept {
+  if (!app || app->tree_visible == on) return;
+  app->tree_visible = on;
+  app->focus_tree_next = on;  // Ctrl+Shift+E shows and focuses (plan/16)
+  push_tree_root(app);
+  apply_view_state(app);
+  if (!on && app->window) focus_canvas(app);
+}
+
+// PR 9 sort. The session owns the order (the filmstrip, the gallery and the arrow
+// keys all read one list); this persists it and tells the chrome what took effect.
+void set_sort(app_state* app, std::int32_t packed) noexcept {
+  if (!app || !app->session) return;
+  packed = mv::io::pack_sort(mv::io::unpack_sort(packed));
+  if (mv_folder_set_sort(app->session, packed) != MV_OK) return;
+  app->settings.sort = packed;
+  mv::shell::save_view_settings(app->settings);
+  app->chrome.apply_settings(chrome_flags(app), packed);
+}
+
+// Ctrl+C (plan/16): the eyedropper's readout when it is on and a pixel is under
+// the cursor; otherwise the marked files, else the current item (the selected
+// cell while the gallery is up) as CF_HDROP, pasteable in Explorer, Mail, chat.
+// A pair copies both halves, as F7 does. Never asks the user anything.
+bool set_clipboard(app_state* app, UINT format, HGLOBAL mem) {
+  if (!::OpenClipboard(app->window)) {
+    ::GlobalFree(mem);
+    return false;
+  }
+  ::EmptyClipboard();
+  const bool ok = ::SetClipboardData(format, mem) != nullptr;
+  if (!ok) ::GlobalFree(mem);  // the clipboard owns it only on success
+  ::CloseClipboard();
+  return ok;
+}
+
+bool copy_to_clipboard(app_state* app) {
+  if (!app || !app->window) return false;
+  if (app->input.eyedropper) {
+    const std::string text = app->lab.eyedropper_text();
+    if (!text.empty()) {
+      const int n = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+      if (n <= 1) return false;
+      HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) * sizeof(wchar_t));
+      if (!mem) return false;
+      auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
+      if (!dst) {
+        ::GlobalFree(mem);
+        return false;
+      }
+      ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, dst, n);
+      ::GlobalUnlock(mem);
+      return set_clipboard(app, CF_UNICODETEXT, mem);
+    }
+  }
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  if (targets.empty()) return false;
+  // DROPFILES, then each path as UTF-16 with a NUL, then one more NUL.
+  std::wstring list;
+  for (const std::string& utf8 : targets) {
+    const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (n <= 1) continue;
+    std::wstring wide(static_cast<std::size_t>(n), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
+    list.append(wide.c_str(), static_cast<std::size_t>(n));  // includes its NUL
+  }
+  if (list.empty()) return false;
+  list.push_back(L'\0');
+  const SIZE_T bytes = sizeof(DROPFILES) + list.size() * sizeof(wchar_t);
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+  if (!mem) return false;
+  auto* drop = static_cast<DROPFILES*>(::GlobalLock(mem));
+  if (!drop) {
+    ::GlobalFree(mem);
+    return false;
+  }
+  drop->pFiles = sizeof(DROPFILES);
+  drop->fWide = TRUE;
+  std::memcpy(reinterpret_cast<char*>(drop) + sizeof(DROPFILES), list.data(),
+              list.size() * sizeof(wchar_t));
+  ::GlobalUnlock(mem);
+  return set_clipboard(app, CF_HDROP, mem);
+}
+
+// ---- PR 10: edit stack, lossless rotate, crop, export ------------------------
+
+// What an edit job posts back (kMsgEditJobDone's LPARAM, owned by the handler).
+struct edit_job_result {
+  bool export_job = false;  // else a lossless rotate write
+  bool ok = false;
+  std::string path;         // the file written (rotate) or the source (export)
+};
+
+void publish_edit(app_state* app) noexcept {
+  app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+}
+
+void schedule_rotation_write(app_state* app) noexcept {
+  if (app->window) ::SetTimer(app->window, kRotateTimerId, kRotateDebounceMs, nullptr);
+}
+
+// The canvas is about to show the selected item (a select, a listing landing,
+// a reselect after a rewrite). The previous slot keeps its geometry for the
+// texture still on screen until the new pixels land (shell/edit_view.h).
+void edit_item_opened(app_state* app) {
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry)) {
+    if (app->edits.has_item()) {
+      app->edits.clear_item();
+      app->input.edit[1] = app->input.edit[0];
+      app->edit_path.clear();
+      app->edit_key = 0;
+      publish_edit(app);
+    }
+    return;
+  }
+  std::uint32_t generation = 0;
+  (void)mv_session_current_generation(app->session, &generation);
+  if (entry.path_utf8 == app->edit_path && entry.size == app->edit_size &&
+      entry.mtime_unix == app->edit_mtime && generation == app->edit_generation) {
+    return;  // the same bytes, the same select: nothing moved
+  }
+  app->input.edit[1] = app->input.edit[0];
+  app->edit_path = entry.path_utf8;
+  app->edit_size = entry.size;
+  app->edit_mtime = entry.mtime_unix;
+  app->edit_key = mv::canvas::item_key_for(entry.path_utf8.data(), entry.path_utf8.size());
+  app->edit_generation = generation;
+  mv::shell::edit_item e;
+  e.path = entry.path_utf8;
+  e.size = entry.size;
+  e.mtime = entry.mtime_unix;
+  // A hint: the write job probes the magic bytes and refuses anything else.
+  std::string ext;
+  if (const auto dot = entry.name_utf8.find_last_of('.'); dot != std::string::npos) {
+    ext = entry.name_utf8.substr(dot + 1);
+    for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  }
+  e.jpeg = ext == "jpg" || ext == "jpeg" || ext == "jpe";
+  std::uint32_t w = 0, h = 0;
+  if (app->lab.still_size(app->edit_key, &w, &h)) {
+    e.width = w;
+    e.height = h;
+  }
+  const bool carried_turn = app->edits.set_item(e);
+  publish_edit(app);
+  if (carried_turn) schedule_rotation_write(app);
+}
+
+void start_rotation_write(app_state* app) {
+  if (app->window) ::KillTimer(app->window, kRotateTimerId);
+  const std::optional<mv::shell::rotation_write> w = app->edits.take_pending_write();
+  if (!w) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [job = *w, hwnd](const mv::job_context&) -> mv::status {
+                        const mv::expected written = mv::shell::run_rotation_write(job);
+                        auto* r = new (std::nothrow) edit_job_result{false, static_cast<bool>(written), job.path};
+                        if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return written ? mv::status::ok : written.error();
+                      });
+}
+
+// Ctrl+S: the stack baked into "<name>-edit.jpg" beside the original (never
+// over it). `opt` comes from the export dialog, or the defaults without chrome.
+void start_export(app_state* app, const mv::edit::export_options& opt) {
+  if (app->edit_path.empty()) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, g = app->edits.export_geometry(), opt,
+                       hwnd](const mv::job_context&) -> mv::status {
+                        const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
+                        if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return out ? mv::status::ok : out.error();
+                      });
+}
+
+void folder_select(app_state* app, std::uint32_t index);
+bool video_mode(app_state* app) noexcept;
+
+void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
+  if (!r) return;
+  if (r->export_job) {
+    // The new file shows up through the folder watcher; only a failure speaks.
+    if (!r->ok) ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  app->edits.write_finished(r->ok);
+  if (!r->ok) {
+    ::MessageBeep(MB_ICONWARNING);
+    publish_edit(app);
+    ++app->input.activity_seq;
+    publish(app);
+    return;
+  }
+  // The navigation LRU still holds the old pixels under this path: drop them,
+  // then reselect so the rewritten file decodes (ABI 0.7).
+  (void)mv_folder_forget(app->session, r->path.c_str());
+  std::uint32_t selected = 0;
+  if (selected_index(app, selected) && current_item_path(app) == r->path) {
+    folder_select(app, selected);
+  }
+}
+
+bool run_edit_command(app_state* app, mv::shell::command_id command) {
+  // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
+  // single frame to turn.
+  if (app->mode == open_mode::none || app->edit_path.empty() || video_mode(app) ||
+      app->lab.animation() != mv::shell::animation_state::none) {
+    return false;
+  }
+  std::uint32_t w = 0, h = 0;
+  if (app->lab.still_size(app->edit_key, &w, &h)) {
+    app->edits.set_size(w, h);
+  } else if (command == mv::shell::command_id::crop_mode) {
+    ::MessageBeep(MB_ICONWARNING);  // no pixels yet: nothing to frame a crop against
+    return true;
+  }
+  switch (app->edits.run(command)) {
+    case mv::shell::edit_effect::none:
+      return true;
+    case mv::shell::edit_effect::refused:
+      ::MessageBeep(MB_ICONWARNING);
+      return true;
+    case mv::shell::edit_effect::redraw:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      return true;
+    case mv::shell::edit_effect::write_rotation:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      schedule_rotation_write(app);
+      return true;
+    case mv::shell::edit_effect::export_image:
+      if (app->chrome.attached()) {
+        app->chrome.show_export_dialog(app->export_choice);
+      } else {
+        start_export(app, mv::shell::unpack_export(app->export_choice));
+      }
+      return true;
+  }
+  return true;
+}
+
 void folder_select(app_state* app, std::uint32_t index) {
   if (!app || !app->session) return;
   // Any navigation bumps the generation, which retires a Live Photo's motion.
@@ -589,6 +1011,8 @@ void folder_select(app_state* app, std::uint32_t index) {
   if (mv_folder_select(app->session, index, &job) == MV_OK) {
     refresh_item_info(app);
     refresh_mark_state(app);
+    metadata_selection_changed(app);
+    edit_item_opened(app);
     // Navigation keeps a fullscreen reveal up; it hides once this settles.
     if (app->fullscreen_reveal && app->window) {
       ::SetTimer(app->window, kRevealTimerId, kRevealMs, nullptr);
@@ -709,7 +1133,7 @@ void toggle_filmstrip_setting(app_state* app) {
                                              : app->settings.filmstrip_for_folder;
   flag = !flag;
   mv::shell::save_view_settings(app->settings);
-  app->chrome.apply_settings(chrome_flags(app));
+  app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
   apply_view_state(app);
 }
 
@@ -767,7 +1191,11 @@ void chrome_on_command(void* ctx, int command, float arg) {
       toggle_filmstrip_setting(app);
       return;
     case mv::shell::chrome_cmd_set_settings:
-      app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
+      {
+        const std::int32_t keep_sort = app->settings.sort;
+        app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
+        app->settings.sort = keep_sort;
+      }
       mv::shell::save_view_settings(app->settings);
       mv::shell::app_settings().set_int(
           "update", "auto_check",
@@ -781,8 +1209,29 @@ void chrome_on_command(void* ctx, int command, float arg) {
       }
       app->input.sticky_zoom = app->settings.sticky_zoom;
       app->input.background = app->settings.background;
-      app->chrome.apply_settings(chrome_flags(app));
+      app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
       apply_view_state(app);
+      return;
+    case mv::shell::chrome_cmd_tree_open: {
+      // The island cannot pass a string through the callback; it parks the
+      // chosen folder and native pulls it (chrome_host::take_tree_path).
+      const std::string dir = app->chrome.take_tree_path();
+      if (dir.empty()) return;
+      app->mode = open_mode::folder;
+      app->gallery_visible = false;
+      {
+        const int n = ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0);
+        if (n <= 1) return;
+        std::wstring wide(static_cast<std::size_t>(n), 0);
+        ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, wide.data(), n);
+        wide.resize(static_cast<std::size_t>(n) - 1);
+        open_folder(app, wide, {});
+      }
+      if (app->window) focus_canvas(app);
+      return;
+    }
+    case mv::shell::chrome_cmd_set_sort:
+      set_sort(app, static_cast<std::int32_t>(arg));
       return;
     case mv::shell::chrome_cmd_rebind: {
       const int packed = static_cast<int>(arg);
@@ -820,11 +1269,20 @@ void chrome_on_command(void* ctx, int command, float arg) {
       apply_view_state(app);
       return;
     }
+    case mv::shell::chrome_cmd_export:
+      app->export_choice = static_cast<std::int32_t>(arg);
+      start_export(app, mv::shell::unpack_export(app->export_choice));
+      return;
     case mv::shell::chrome_cmd_folder_ready:
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
       refresh_item_info(app);
       refresh_mark_state(app);
+      // The watcher fires this for a folder that gained or lost a subfolder too.
+      if (app->tree_visible) push_tree_root(app);
+      edit_item_opened(app);
+      ++app->input.activity_seq;
+      publish(app);
       apply_view_state(app);
       if (g_restore.gallery && arg > 0.0f) {
         g_restore.gallery = false;
@@ -834,7 +1292,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_focus_changed: {
       const int kind = static_cast<int>(arg);
       if (kind >= static_cast<int>(mv::shell::focus_kind::command_bar) &&
-          kind <= static_cast<int>(mv::shell::focus_kind::text)) {
+          kind <= static_cast<int>(mv::shell::focus_kind::pane)) {
         app->island_focus = static_cast<mv::shell::focus_kind>(kind);
       }
       return;
@@ -985,6 +1443,9 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.popup_open = app->popup_open;
   s.settings_open = app->settings_open;
   s.motion_playing = app->motion_playing;
+  // A shown pane is a level for Esc to walk out of (plan/16: crop, pane, gallery, ...).
+  s.pane_open = app->chrome.meta_pane_visible() || app->chrome.folder_tree_visible();
+  s.crop = app->edits.crop_active();
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
   return s;
@@ -1182,6 +1643,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::gallery:
       set_gallery(app, false);
       return;
+    case back_target::pane:
+      // Esc from the canvas closes what is open; the tree first (it is the
+      // outermost on the left), then the metadata pane.
+      if (app->tree_visible) set_folder_tree(app, false);
+      else set_meta_pane(app, false);
+      return;
     case back_target::popup:
       app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
       // Closing `?` / go-to / find must not leave the island HWND focused, or
@@ -1200,6 +1667,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::fullscreen:
       set_fullscreen(app, false);
       return;
+    case back_target::crop:
+      app->edits.cancel_crop();
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      return;
     case back_target::game:
       app->game_on = false;
       ++app->input.game_exit_seq;
@@ -1208,8 +1681,7 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       // a wake the welcome card only returns on the next mouse move.
       app->lab.wake();
       return;
-    // Slideshow, pane and crop land with their slices (6d, PR 8, PR 9);
-    // resolve_back cannot name them until their state exists.
+    // Crop lands with its slice (PR 10); resolve_back cannot name it yet.
     default:
       return;
   }
@@ -1694,7 +2166,26 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case info_overlay:
       app->input.info_overlay = !app->input.info_overlay;
       refresh_item_info(app);
+      request_metadata_now(app);
       return set_level(app);
+    // PR 9: both read the record the store already holds; toggling them never
+    // reads the file (the verify line).
+    case af_points:
+      app->input.af_points = !app->input.af_points;
+      request_metadata_now(app);
+      return set_level(app);
+    case eyedropper:
+      app->input.eyedropper = !app->input.eyedropper;
+      return set_level(app);
+    case copy_clipboard:
+      return copy_to_clipboard(app);
+    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+      return run_edit_command(app, command);
     // Marks (plan/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -1788,8 +2279,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     // plan/12 2026-09-13: the tree island lands in PR 8. Its command, key and
     // chrome_left_px layout are here so the island maths is not retrofitted.
     case folder_tree:
-      MV_LOG_INFO("folder tree: lands in PR 8 (plan/12 2026-09-13)");
-      ::MessageBeep(MB_OK);
+      set_folder_tree(app, !app->tree_visible);
+      return true;
+    case folder_up:
+      return false;
+    case metadata_pane:
+      set_meta_pane(app, !app->meta_pane_visible);
       return true;
 
     // Host-side and cheap (plan/16): photographers park the viewer on a
@@ -1854,6 +2349,38 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   return run_command(app, routed.command);
 }
 
+// PR 9. The panes float over the canvas: the metadata pane on the right, the tree
+// on the left, both between the command bar and the bottom strips. Native owns the
+// maths (the island only moves), and none of it touches the canvas rectangle, so
+// opening one never refits the photo or the present path (plan/12 2026-09-24).
+void layout_panels(app_state* app) noexcept {
+  if (!app || !app->window || !app->chrome.panels_attached()) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  const int bar = mv::shell::chrome_bar_height_px(dpi);
+  int bottom = 0;
+  if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
+  if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
+  const int top = bar;
+  const int span = std::max(height - bar - bottom, 1);
+  // Hidden under the gallery (it covers the client), fullscreen chrome-off and
+  // Settings; the wish survives and the pane returns with them.
+  const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
+  const bool covered = app->gallery_visible || app->settings_open || chrome_hidden;
+  const int side = std::min(width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+  const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
+  const bool want_meta = app->meta_pane_visible && !covered;
+  const bool want_tree = app->tree_visible && !covered;
+  app->chrome.show_meta_pane(want_meta, width - side, top, side, span, app->focus_meta_next);
+  app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
+  if (want_meta) app->focus_meta_next = false;
+  if (want_tree) app->focus_tree_next = false;
+  if (want_meta) push_meta_pane(app);
+}
+
 void layout_chrome(app_state* app) noexcept {
   if (!app || !app->window || !app->chrome.attached()) return;
   RECT rc{};
@@ -1871,6 +2398,7 @@ void layout_chrome(app_state* app) noexcept {
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (app->chrome.transport_attached()) app->chrome.resize_transport(width, height, strip, dpi);
   if (app->chrome.gallery_attached()) app->chrome.resize_gallery(width, height, dpi);
+  layout_panels(app);
 }
 
 bool attach_chrome(app_state* app) {
@@ -1893,7 +2421,9 @@ bool attach_chrome(app_state* app) {
                                      rc.right - rc.left, height, dpi);
   (void)app->chrome.attach_gallery(app->window, app, &chrome_on_command, app->session,
                                    rc.right - rc.left, height, dpi);
-  app->chrome.apply_settings(chrome_flags(app));
+  (void)app->chrome.attach_panels(app->window, app, &chrome_on_command, app->session,
+                                  rc.right - rc.left, height, dpi);
+  app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
   // `?` and the palette read the same static table as the router (plan/16).
   publish_command_table(app);
   app->chrome.refresh_island_windows();
@@ -1961,6 +2491,7 @@ void apply_view_state(app_state* app) noexcept {
   } else if (want_transport) {
     app->chrome.resize_transport(width, height, strip, dpi);
   }
+  layout_panels(app);
   update_client_metrics(app, app->window);
   ++app->input.resize_seq;
   ++app->input.activity_seq;
@@ -2183,7 +2714,23 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                 reinterpret_cast<mv::shell::file_job_result*>(lparam)));
       return 0;
 
+    case kMsgEditJobDone:
+      on_edit_job_done(app, std::unique_ptr<edit_job_result>(reinterpret_cast<edit_job_result*>(lparam)));
+      return 0;
+
+    case kMsgMetaReady:
+      metadata_ready(app);
+      return 0;
+
     case WM_TIMER:
+      if (wparam == kRotateTimerId) {
+        start_rotation_write(app);
+        return 0;
+      }
+      if (wparam == kMetaTimerId) {
+        request_metadata_now(app);
+        return 0;
+      }
       if (wparam == kTitleTimerId) {
         update_title(app);
         // An update restart's zoom goes back once the still is on screen; a
@@ -2403,6 +2950,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // interop uses. If the shell ever reaches around the ABI, the two-language
   // boundary stops being tested by the thing that matters most.
   app_state app;
+  (void)app.jobs.start();
   app.chrome_enabled = chrome_enabled;
   // settings.ini was read once, at startup, by app_settings(). From here every
   // settings save is in memory; the file is written on the store's worker, and
@@ -2425,6 +2973,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::MessageBoxA(nullptr, mv_last_error_message(), "MediaViewer", MB_ICONERROR | MB_OK);
     return 2;
   }
+  // PR 9: the saved folder sort applies to every open from here on.
+  (void)mv_folder_set_sort(app.session, app.settings.sort);
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -2546,6 +3096,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   mv::shell::app_settings().stop();
   app.files.stop();
   app.lab.stop();
+  app.jobs.shutdown();
   const int code = app.lab.exit_code();
 
   mv_session_release(app.session);

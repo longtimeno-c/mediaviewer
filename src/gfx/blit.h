@@ -38,6 +38,16 @@ struct blit_params {
   float time_seconds = 0.0f;
   // One-pixel grid, drawn only at >= 400 % whatever this says.
   bool pixel_grid = true;
+  // PR 10 edit geometry, twin of blit_params_mac: output uv -> source uv
+  // (edit::placement::map).
+  float uv_map[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+  bool clip_to_source = false;
+  // The tile path's half (draw_tiles): the inverse map, and the source's
+  // full-resolution size (0 = image_w/h, i.e. unedited). Tiles are chosen and
+  // placed in the source's pixels and reach the screen through these.
+  float uv_inverse[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+  float source_w = 0.0f;
+  float source_h = 0.0f;
 };
 
 // One tile of a tiled pyramid (image/tiles.h), as the render thread draws it.

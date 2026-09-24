@@ -30,6 +30,7 @@ public static partial class IslandHost
         public const int GoTo = 3;
         public const int Find = 4;
         public const int Settings = 5;
+        public const int Export = 6;  // PR 10; ModeMask carries the last packed choice
     }
 
     private sealed class CommandRow
@@ -124,6 +125,7 @@ public static partial class IslandHost
                 PopupKind.Help => BuildHelp(args.ModeMask),
                 PopupKind.GoTo => BuildGoTo(out focusTarget),
                 PopupKind.Find => BuildFind(out focusTarget),
+                PopupKind.Export => BuildExport(args.ModeMask, out focusTarget),
                 _ => null,
             };
             if (content is null)
@@ -132,7 +134,9 @@ public static partial class IslandHost
                 return 1;
             }
 
-            _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find;
+            // The export dialog takes the arrows and Enter itself, like go-to's
+            // digits, so it reports text focus and the router yields.
+            _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find or PopupKind.Export;
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
@@ -545,6 +549,110 @@ public static partial class IslandHost
                 query = query[..^1];
                 Apply();
                 e.Handled = true;
+            }
+        };
+        focusTarget = panel;
+        return panel;
+    }
+
+    // PR 10 export dialog (plan/10: "export dialog in WinUI"). Keyboard-complete
+    // and TextBox-free (the 0xC000027B fail-fast): ↑ ↓ pick a row, ← → change
+    // it, Enter exports, Esc cancels. Clicking a value steps it. The answer goes
+    // back as one integer, the same packing the Mac sheet uses
+    // (shell/edit_session.h pack_export); native runs the export on its pool.
+    private static readonly string[] ExportFormats = { "JPEG", "PNG" };
+    private static readonly int[] ExportQualities = { 100, 95, 92, 85, 75, 60 };
+    private static readonly string[] ExportSizes = { "Full size", "3840 px", "2560 px", "2048 px", "1600 px", "1080 px" };
+    private static readonly string[] ExportPolicies = { "All metadata", "All but location (GPS)", "None" };
+
+    private static UIElement BuildExport(int lastChoice, out UIElement focusTarget)
+    {
+        int quality = lastChoice & 0x7F;
+        int format = (lastChoice >> 7) & 1;
+        int policy = Math.Clamp((lastChoice >> 8) & 3, 0, 2);
+        int size = Math.Clamp((lastChoice >> 10) & 7, 0, ExportSizes.Length - 1);
+        int qualityIndex = Array.IndexOf(ExportQualities, quality);
+        if (qualityIndex < 0) qualityIndex = 2;  // 92
+        int row = 0;
+        const int Rows = 4;
+
+        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), IsTabStop = true, MinWidth = 320 };
+        panel.Children.Add(Label("Export a copy", UiFontSize + 2));
+        panel.Children.Add(Label("Beside the original as name-edit; never overwrites.", UiFontSize, mute: true));
+        var rowLabels = new TextBlock[Rows];
+        string[] names = { "Format", "Quality", "Size", "Metadata" };
+        var grid = new Grid { ColumnSpacing = 16, RowSpacing = 4, Margin = new Thickness(0, 6, 0, 6) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        string ValueOf(int r) => r switch
+        {
+            0 => ExportFormats[format],
+            1 => format == 1 ? "(PNG is lossless)" : $"{ExportQualities[qualityIndex]}",
+            2 => ExportSizes[size],
+            _ => ExportPolicies[policy],
+        };
+        void Refresh()
+        {
+            for (int r = 0; r < Rows; ++r)
+            {
+                rowLabels[r].Text = (r == row ? "\u25C0  " : "    ") + ValueOf(r) + (r == row ? "  \u25B6" : "");
+                rowLabels[r].Foreground = Brush(r == row ? Title : Body);
+            }
+        }
+        void Step(int r, int delta)
+        {
+            switch (r)
+            {
+                case 0: format = (format + delta + 2) % 2; break;
+                case 1: if (format == 0) qualityIndex = Math.Clamp(qualityIndex - delta, 0, ExportQualities.Length - 1); break;
+                case 2: size = (size + delta + ExportSizes.Length) % ExportSizes.Length; break;
+                default: policy = (policy + delta + ExportPolicies.Length) % ExportPolicies.Length; break;
+            }
+            Refresh();
+        }
+        void Confirm()
+        {
+            int packed = ExportQualities[qualityIndex] | (format << 7) | (policy << 8) | (size << 10);
+            ClosePopup();
+            Send(Command.Export, packed);
+        }
+
+        for (int r = 0; r < Rows; ++r)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            TextBlock name = Label(names[r], UiFontSize, mute: true);
+            Grid.SetRow(name, r);
+            grid.Children.Add(name);
+            rowLabels[r] = Label("", UiFontSize);
+            int captured = r;
+            var value = FlatButton(rowLabels[r], new Thickness(0));
+            value.Click += (_, _) => { row = captured; Step(captured, 1); };
+            Grid.SetRow(value, r);
+            Grid.SetColumn(value, 1);
+            grid.Children.Add(value);
+        }
+        panel.Children.Add(grid);
+        panel.Children.Add(Label("\u2191 \u2193 choose   \u2190 \u2192 change   Enter export   Esc cancel", UiFontSize, mute: true));
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        var export = new Button { Content = "Export", IsTabStop = false };
+        export.Click += (_, _) => Confirm();
+        var cancel = new Button { Content = "Cancel", IsTabStop = false };
+        cancel.Click += (_, _) => ClosePopup();
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(export);
+        panel.Children.Add(buttons);
+        Refresh();
+
+        panel.KeyDown += (_, e) =>
+        {
+            switch (e.Key)
+            {
+                case Windows.System.VirtualKey.Up: row = (row + Rows - 1) % Rows; Refresh(); e.Handled = true; break;
+                case Windows.System.VirtualKey.Down: row = (row + 1) % Rows; Refresh(); e.Handled = true; break;
+                case Windows.System.VirtualKey.Left: Step(row, -1); e.Handled = true; break;
+                case Windows.System.VirtualKey.Right: Step(row, 1); e.Handled = true; break;
+                case Windows.System.VirtualKey.Enter: Confirm(); e.Handled = true; break;
             }
         };
         focusTarget = panel;

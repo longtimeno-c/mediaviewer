@@ -229,6 +229,44 @@ mv_status mv_folder_item_pair_path(mv_session_t, uint32_t index, char* utf8, uin
 - Copy, move, drag-out and Recycle Bin act on **both halves** of a paired stop; that
   expansion is host-side, the ABI only reports the pair.
 
+## PR 9 — sort and the folder tree (ABI 0.6)
+
+Minor bump, **no layout change**. The Windows folder listing is owned by the session, so the
+sort order is too: every consumer (filmstrip, gallery, arrow keys) reads one list.
+
+```c
+/* Packed: key in bits 0-2 (0 name, 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3.
+ * set re-sorts on a worker, keeps the current stop, pushes MV_COMPLETION_FOLDER_CHANGED. It also
+ * applies to every later mv_folder_open. Unknown key bits mean name. [any-thread][no-block] */
+mv_status mv_folder_set_sort(mv_session_t, int32_t packed);
+mv_status mv_folder_get_sort(mv_session_t, int32_t* out_packed);
+
+/* The folder tree's one directory read: "name\tpath\n" per visible subfolder, sorted. Worker
+ * threads only. Buffer rules as mv_folder_item_name; MV_ERR_IO if the directory cannot be read. */
+mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
+```
+
+- Date taken is read once per file (bounded prefix, background job) and remembered per
+  (path, mtime, size). Until a stamp is known the file sorts by mtime, and the listing re-sorts once
+  the stamps land, so the order is total while they arrive. A file with no stamp stays on mtime.
+- `mv_list_subdirectories` takes no session: it is a pure directory read, and the managed tree
+  calls it through `MediaViewerSession.ListSubdirectories`.
+
+## PR 10 — forgetting a rewritten file (ABI 0.7)
+
+Minor bump, **no layout change**. The viewer's lossless rotate rewrites the JPEG on disk; the
+navigation LRU is keyed by path, so without this a reselect republishes the old pixels.
+
+```c
+/* Drop `utf8_path`'s decoded pixels from the navigation LRU. MV_OK when it was not cached.
+ * Does not select, decode or touch the file. [any-thread][no-block] */
+mv_status mv_folder_forget(mv_session_t, const char* utf8_path);
+```
+
+Edits themselves never cross the ABI: the edit stack, crop mode and the lossless / export jobs
+live in `shell/edit_session` (shared with the Mac host), and the geometry reaches the render
+thread through the input snapshot, like every other view state.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

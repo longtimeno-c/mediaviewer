@@ -1149,7 +1149,7 @@ Build one or accept kill-switch-only on Mac, and log it. If the on-mount licence
 proves unreliable on macOS 14, fall back to a `Licence` file in the window + About, never
 an in-app accept modal.
 
-Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-pr-20).
+Detail in [13](13-updates-and-telemetry.md#macos-first-install--a-branded-disk-image-mac-pr-8).
 
 ## 2026-09-23 — PR 20 starts before PR 19's verify fully holds; calls made starting it
 
@@ -1359,3 +1359,365 @@ chrome strip and fits the existing gallery and keyboard model. The left **folder
 PR 9** (unchanged). A recursive flatten view is deferred: thumbnails, marks and relist are keyed to
 one open directory, so one listing spanning folders is a model change, not a view. Not a D-decision;
 no D1–D9 call is touched. Windows chrome follows on the shared core.
+
+## 2026-09-24 — D9 amended: PRs 9–15 are dual-track, Windows and macOS in the same PR
+
+**Owner's call.** Windows PRs 1–8 are in the tree and signed off (entry above). The owner
+reports the basic Mac setup (PRs 16–20) complete, and is now working on PR 9 onward for both
+platforms at the same time. **Reverses** D9's "Milestone F is five PRs, not a dual-track of
+4–15" and plan/10's "Mac … not a dual-track requirement for those updates" for PRs 9–15.
+Everything else in D9 stands: Mac is a host, not a UI port. One present path per OS. No
+Vulkan, MoltenVK, wgpu or SPIR-V. No `AVPlayer`. The ports stay narrow.
+
+**Why.** The column D9 rejected ("Windows and macOS in v1") was rejected because it would
+have delayed Windows v1 behind a Metal lab the Windows user did not need. That reason is
+gone: v1 is packaged and the Metal lab exists. Keeping a PR 9–15 Mac catch-up would leave
+the Mac a permanent release behind. It would also let `meta/` and `edit/` grow
+Windows-shaped before anyone built them on Darwin, the leak D9 exists to prevent.
+
+**Rules.** One PR number, one shared core change, a WinUI half and a SwiftUI half, HLSL and
+MSL twins in the same PR, a verify line on each platform, and both present-loop gates
+(PR 1 Windows, PR 16 Mac). A PR is done only when both halves hold, and PR N+1 does not start
+on either platform before that. PR 15's Mac half is only the twins PR 20 did not already land.
+
+**Carried, not closed by this entry:** the PR 19 real-iPhone HLG check; PR 20's Quick Look
+precedence, state across an update restart, and rollback; and Crashpad on Mac (still the
+owner's call: PR 17 or PR 20). None blocks PR 9 from starting. Crashpad must be settled
+before the first stable Mac release that carries PR 9's new decoders. **Still open:** whether
+Milestone G (AI search) follows the dual-track rule. It was proposed Windows-first, and a Mac
+half needs an ORT Core ML provider that plan/17 does not specify.
+
+Edited: plan/01 (D9), plan/10 (PR 9–15 rewritten with host halves), plan/15, plan/16,
+plan/06 (Mac atomic replace), plan/README, CLAUDE.md, README.
+
+## 2026-09-24 — Ingest with hash dedupe and verify: PR 26, out of the backlog
+
+**Owner's call.** "Card ingest with verify" was a v1.1 backlog row (plan/10, plan/16:
+"adjacent product"). The owner asked for duplicate skipping by content hash, not by name,
+and for faster sorting of a camera dump. It becomes **PR 26**, dual-track. It may start once
+PR 9 holds on both platforms and runs beside PRs 10–15 as its own lane, because it touches
+`io/` and the copy path, not `edit/` or `player/`.
+
+**What it is not.** It is not a faster copy engine: throughput is bounded by the card, bus
+and disk, and the OS copy is already close to that. The gains are: copying less (a
+size-then-BLAKE3-256 duplicate skip, with a cached destination hash index); no second pass
+for verification (hash on read, uncached read-back of the destination); overlapping the
+card read with the SSD write; parallel work only across different physical devices; and
+sorting on the way in (a fixed `YYYY/YYYY-MM-DD` layout from date taken).
+
+**Safety calls.** A name match is never a duplicate, and a name clash with different bytes
+is copied under a collision-safe name. `F8` across volumes deletes the source only after
+verify. Ingest never deletes from or erases a card. A volume arriving offers the pane and
+never starts a copy. RAW+JPEG and Live Photo pairs move as one unit. BLAKE3 is taken under
+CC0 (Apache-2.0 alone does not combine with GPL-2.0).
+
+**Still out:** filename templating (v1.1), a catalogue, library-wide duplicate finding,
+near-duplicate or burst grouping, backup to a second destination.
+
+## 2026-09-24 (later) — One PR number per feature: Mac 16–20 become the Mac halves of 1–8; Import is an add-on at 16–19; AI moves to 20–24
+
+**Owner's call.** The owner asked for the plan to show Mac and Windows in sync, as they now are,
+by renumbering into the order work actually happens. The state was checked in the repo, not
+assumed: `pr9-metadata-read-mac` carries PR 9 on both platforms (Mac ahead; Windows owes the
+XAML pane, tree island and sort menu), and `claude/compassionate-davinci-5fiwyz` has started
+the Mac half of PR 10.
+
+**Renumbering.** Old PR 16 → Mac PR 1. Old 17 → Mac PR 2 + 7. Old 18 → Mac PR 3 + 4 + 6.
+Old 19 → Mac PR 5. Old 20 → Mac PR 8 (plus the early Finder part of PR 15). Milestone F is
+therefore complete as the Mac halves of PRs 1–8, and both platforms are at PR 9. PRs 9–15 keep
+their numbers because 9 and 10 are in flight. The Import add-on takes 16–19 (Milestone G),
+superseding this morning's "PR 26 Ingest". Local AI search moves from 21–25 to 20–24 and becomes
+Milestone H. **Entries above this one, and branches and commits, keep the numbers they were
+written with.**
+
+**Sequencing wording changed to match practice.** From PR 9, PR N+1 does not *merge* until N
+holds on both platforms and both present-loop gates hold. A host half may start ahead on a
+branch, which the Mac half of PR 10 already has.
+
+**Import becomes an installable add-on** (owner request), like the AI pack: Settings →
+Add-ons, a signed manifest, verify before load, a per-user versioned folder, silent updates
+with the app, and sideloading. It has a native shared library behind a host function table,
+plus a chrome assembly (Windows) or `NSBundle` (Mac). It is absent from the base tree when not
+installed. Import builds this mechanism in PR 16. The AI pack (PR 20) reuses it instead of
+building its own. The base app keeps one safety fix regardless: `F8` across volumes deletes
+the source only after the copy is verified. The feature set widened at the owner's request
+("more features, better GUI"):
+- the Import window;
+- new-since-last-import;
+- presets, including per-card presets and opt-in auto-import;
+- a second destination from one read;
+- layouts and rename-on-import templates;
+- camera sidecars kept with their files;
+- library tools, including verify-a-folder.
+
+The backlog's "filename templating" is narrowed to renaming files already in a library. Full
+design: plan/18. Never offered: deleting from or formatting cards, overwriting destination
+files, uploading.
+
+## 2026-09-24 (later) — AI search is dual-track; Mac crash reporting goes in PR 11
+
+**Owner's calls, answering the two open questions from the renumbering entry above.**
+
+**AI search (PRs 20–24) is built on both platforms**, like every PR from 9. Mac runs the same
+ONNX model through ONNX Runtime's **Core ML provider** (Apple GPU / Neural Engine), with the
+CPU provider underneath. The Mac Compute toggle is Auto / Core ML / CPU only. Core ML is part of
+macOS, so there is no vendor sub-pack. The pack installs through PR 16's add-on mechanism,
+signed and notarized. Frame sampling on Mac uses a separate VideoToolbox decoder instance,
+never the playback one. Both present-loop gates hold while indexing. Indexes are local to one
+machine and never synced between platforms, because embeddings differ slightly per backend.
+The PR 20 spike measures how many of the model's operators Core ML covers; the rest fall back
+to CPU inside ORT.
+
+**Mac crash reporting goes in the Mac half of PR 11.** This settles the open question from the
+2026-09-23 PR 20 entry and the 2026-09-17 fold-in: the fold-in put Crashpad in old PR 17, and it
+never landed. The Mac half of PR 11 adds Crashpad out-of-process, the same scrub as Windows (no
+path, filename, username, pixels or EXIF), and a Swift/AppKit capture path tied to the native
+report by the correlation id. Its verify is a Mac canary scan. Until PR 11 lands, the Mac has
+no crash capture. A stable Mac release carrying PR 9's new parsers before then must say so in
+its notes.
+
+## 2026-09-24 — PR 9 (metadata read) starts on macOS before Windows PR 8 is verified
+
+**Sequencing, the owner's call.** PR 9 is a Milestone D update and plan/10 says PR N+1 waits
+for N's verify. The owner asked for PR 9 on macOS first, with Windows to follow on a
+Windows machine. Windows PR 8's clean-VM verify is not re-run by this change, and Mac has no
+numbered metadata PR (Milestone F stops at 20), so this is the Mac twin of Windows PR 9,
+recorded here rather than given a new number. PR 1's present-loop verify is untouched: no
+present-path code changed beyond three extra ImGui draws that only run when an overlay is on.
+
+**What landed (shared, portable).** `src/meta` (Exiv2 for EXIF/IPTC/XMP + maker notes,
+libavformat for container/stream/chapters, property model, summary rows, overlay lines, AF
+geometry), `shell/meta_store` (one read per (path, mtime, size), LRU, and a background
+date-taken scan) and `shell/sort_order` (name / mtime / size / type / date taken).
+`io::list_subdirectories` feeds the tree. Exiv2 is GPL-2.0 and dynamic-link only, added to the
+Mac dynamic manifest with `bmff`, `png`, `xmp` (without `xmp` a PNG's XMP is silently empty).
+
+**Calls made, so they are not re-decided by accident:**
+- **Panes float, they do not inset.** The Mac canvas maths has vertical insets only; a
+  horizontal one changes the blit and camera, i.e. the present path. The metadata pane
+  (right) and folder tree (left) overlay the canvas like the gallery. `chrome_left_px` stays
+  unused on Mac. Revisit only with a present-loop soak.
+- **New keys.** `I` pane (plan/16), plus `Shift+O` AF points and `Shift+I` eyedropper, which
+  plan/16 left unbound. Appended to the table so saved Settings indices hold.
+- **Metadata is read only while something shows it,** after a 90 ms pause, so arrow-key
+  scrubbing queues no reads. Toggling the pane, `O` or `Shift+O` reads the cached record, never
+  the file (unit-tested with an injected reader).
+- **Eyedropper** reads one texel of the CPU-visible source texture; not available on video.
+- **Sort** was name-only on both hosts (PR 4's other orders never shipped); the Mac now has all
+  five. Windows still has none.
+
+**Not verified, owed:**
+- **Canon AF-point Y sign.** `canon_af_points` treats AFInfo2 Y offsets as positive-down. No
+  Canon file is in the corpus, so a wrong sign would mirror quads vertically. Nikon, Sony,
+  Fujifilm and EXIF SubjectArea go through the same tested geometry; only SubjectArea was
+  checked on a real file (an iPhone JPEG).
+- **HEIC/RAW on real cameras.** HEIC is covered by the in-tree fixtures (dimensions,
+  orientation); no RAW metadata was exercised.
+- **Windows entirely.** `mv_meta` and its tests are in `CMakeLists.txt` and the vcpkg
+  manifest but have never been compiled with MSVC; the XAML pane, tree island and
+  Windows `list_subdirectories` do not exist yet. This is the Windows half of PR 9.
+
+### 2026-09-24 (later) — PR 9 Windows: native half built and tested under MSVC
+
+`mv_meta`, `meta_store`, `sort_order` and the metadata tests compile clean under `/W4 /WX` on
+MSVC 2022 with vcpkg `exiv2[bmff,png,xmp]` (no source changes were needed). Windows
+`io::list_subdirectories` added to `dir_win.cpp` (hidden/system and dot directories skipped,
+UTF-16 ordinal case-insensitive sort, one directory read). Full `ctest` from a fresh
+`build-pr9`: 514 pass, 0 fail (22 `[meta]` cases, 6 `[sort]`, frametime harness, broken corpus).
+**Still owed on Windows:** the XAML metadata pane, folder-tree island, sort UI, `O`/`Shift+O`
+overlay drawing, eyedropper, and the ABI calls that feed them (`chrome_left_px` is still 0).
+
+### 2026-09-24 (later still) — PR 9 Windows: overlays, eyedropper and Ctrl+C
+
+Windows now has what the Mac commits `ac62036` / `cb460a3` / `3a6f324` added that is not XAML:
+the info overlay's camera/exposure/date lines, AF quads, the "AF points: none recorded" and
+"Eyedropper: stills only / move the cursor" notes, the eyedropper, and `Ctrl+C`
+(`copy_clipboard`: the colour when the eyedropper has one, else the marked/current file(s) as
+`CF_HDROP`, pairs copied whole as F7 does). `meta_store` runs on an `app_state` job system;
+selection changes debounce 90 ms; completions post a window message.
+- **Eyedropper readback:** image textures are immutable, so one texel is copied to a 1x1 staging
+  texture and mapped with `D3D11_MAP_FLAG_DO_NOT_WAIT` on a later frame. The render thread never
+  waits on the GPU; the readout shows nothing until the copy has landed rather than a stale texel.
+  Only 8-bit RGBA textures are read.
+- **Not applicable on Windows:** the Mac tracking-area fix (Win32 already tracks the mouse) and
+  the tree-rooted-at-open-folder change (no tree yet).
+- **Checked live:** an EXIF-stamped JPEG shows its three lines under `O`; `Ctrl+C` returned
+  `#C9B4A1  rgb(201, 180, 161)  x1571 y1832` with the eyedropper on and the file path as a file
+  drop with it off. The frametime harness and full ctest still pass; the PR 1 60 s soak was not re-run.
+- **Still owed on Windows:** XAML metadata pane (`I`), folder-tree island, sort menu.
+
+## 2026-09-24 — PR 9 Windows half completed (pane, tree, sort, ABI 0.6)
+
+This closes the "still owed on Windows" lists above. What was built and the calls made:
+
+- **Panes float, on Windows too.** The metadata pane (right, 340 DIP) and folder tree (left,
+  280 DIP) are two more islands over the canvas, between the command bar and the bottom
+  strips. `usable_canvas` has a left inset (`chrome_left_px`) but no right one, and an inset would
+  change the blit and camera, i.e. the present path; the macOS host made the same call. So
+  `chrome_left_px` stays 0 and opening a pane never refits the photo. Both hide under the gallery,
+  Settings and chrome-off fullscreen and come back with them. Revisit only with a present-loop soak.
+- **No `TextBox`, no `TreeView`.** Both fail-fast (`0xC000027B`, `Microsoft.UI.Xaml.dll`) in these
+  islands: `TextBox` was already known, `TreeView` crashed on first show and was found the hard way.
+  The tag search reuses `FakeInput`; the tree is StackPanels and Buttons with its own expand. The
+  tag list is a `ListView` of plain elements and did not crash.
+- **Sort lives in the ABI session, not the shell.** The Windows listing is owned by
+  `mv_session`, so filmstrip, gallery and arrow keys all read one order. `io/sort_order` moved
+  from `src/shell` to `src/io` (namespace `mv::io`; the macOS host, tests and `darwin.cmake` were
+  updated to match) so `abi -> io` stays legal. New calls, **ABI 0.6**: `mv_folder_set_sort`,
+  `mv_folder_get_sort`, `mv_list_subdirectories` ([14](14-abi.md)). The session keeps the scanned
+  listing so a new order or a batch of date-taken stamps re-applies without a disk scan; date
+  stamps come from `meta::read_date_taken` on one background job, checked per (mtime, size).
+  Persisted as `[view] sort`; an unknown key normalises to name.
+- **Pane data is three text tables** (`meta/tables.h`, the same formats the Mac bridge documents),
+  pushed to the chrome when the record changes. The chrome never reads a file. The tree lists a
+  folder on a pool task through `mv_list_subdirectories`, never on the UI thread.
+- **Tree open crosses as a pull.** The command callback carries a float, so the island parks the
+  chosen path and native pulls it (`chrome_cmd_tree_open` then `TakeTreePath`).
+- **Checked live:** an EXIF-stamped JPEG populates Summary and All tags (missing fields show a dash);
+  the tree lists subfolders, and invoking one opens it; View ▸ Sort by ▸ Size wrote `sort=2` and the
+  ABI test shows the listing re-sorted with the current stop kept. Full `ctest`: 517 pass.
+- **Not verified:** PR 1's 60 s present-loop soak (the open D6 gate; only the frametime harness
+  ran); PNG, HEIC and MP4 through the Windows pane by hand; the Windows Streams tab on a real clip
+  (the table format is unit-tested); the Canon AF sign (unchanged from above); a clean-VM run.
+  The macOS build was not rebuilt after the `sort_order` move (no Mac available); the edit is
+  mechanical (include path and namespace) but unproven there.
+
+### 2026-09-24 (last) — PR 9 Windows: checked against the plan's verify line, gaps closed
+
+Rechecking the Windows half against [10](10-roadmap.md)'s PR 9 verify line (rewritten on main for
+dual-track) found gaps in the first pass, now closed:
+
+- **"The folder tree opens from the keyboard and navigates without the mouse."** It could not: the
+  rows were deliberately not focusable. Now `Ctrl+Shift+E` shows **and focuses** the tree, and `I` focuses
+  the pane (plan/16). Up / Down walk the rows, Right / Left open and close a folder, Enter opens it (focus
+  returns to the canvas), Esc returns to the canvas, and a second Esc closes the pane (plan/16: Esc walks
+  out, crop -> pane -> gallery -> fullscreen). New `focus_kind::pane` in the router: a focused pane owns
+  its keys except Esc; `view_state.pane_open` is driven by the shown panes and `back_target::pane` closes
+  them. A mouse click on a pane control never moves keyboard focus into it, so a mouse user keeps the arrows
+  on the canvas. Router tests added.
+- **`FocusManager.TryMoveFocus` fail-fasts** in these islands (`0xC000027B`, found by bisecting a crash on
+  Down into the search box). Directional focus is therefore not used: the tab bar, the search box and the
+  tree handle Left / Right / Up / Down explicitly. Add it to the `TextBox` / `TreeView` list above.
+- **The tree follows the watcher.** The plan asks for folder-tree data that follows it. A listing change
+  of the open folder (the watcher fires on directory names too) re-lists the root and diffs the rows in
+  place, so expanded folders and the focused row survive. Deeper folders are not watched; they refresh when
+  opened.
+- **Date-taken sort had no end-to-end test.** Added: three JPEGs whose name, mtime and EXIF orders all differ,
+  through `mv_folder_set_sort`, including re-sort once the stamps land and back to another key.
+- **Pane re-render dropped keyboard focus** when the record arrived after `I`; the tab bar now restores focus
+  and identical pushes no longer rebuild the pane.
+
+**Present-loop gate, Windows.** `frametime.exe --seconds 60`: 3597 frames, 0 dropped, p99 17.05 ms at a
+16.68 ms refresh, idle 0 presents at 0.26 % CPU: PASS. A lab soak (`--pan-soak`, chrome on) with the metadata pane
+and the tree opened during it: 2398 frames, 0 dropped, 0 missed refreshes, p99 17.0 ms. That run fails
+the *idle CPU* limit (2.85 % against 1 %), but so does the same soak with no pane open (2.54 %) and the
+pre-PR-9 binary (1.99 %), on a machine that was not quiet: not attributable to the panes, and not a
+substitute for a quiet-machine run.
+
+**Still not verified on Windows:** PNG-with-XMP, HEIC, a RAW and an MP4 through the pane by hand (no RAW is in
+the corpus); the Streams tab on a real clip; a quiet-machine lab soak. **Shared with macOS, unchanged:**
+Canon AF sign, HEIC/RAW on real cameras. **macOS:** the `sort_order` move to `src/io` was not rebuilt on a Mac.
+
+## 2026-09-24 — PR 10 (geometry edits + export), Windows and macOS
+
+Built on the PR 9 branch, against the dual-track PR 10 in [10](10-roadmap.md): one shared core
+change, two host halves. What was built, the calls made, and where it departs from the plan text.
+
+**Shared (core, both hosts).**
+- `src/edit`: the `EditStack` of POD ops (rotate / flip / crop / straighten / resize), folded to one
+  canonical geometry (D4 → straighten about the centre → crop → resize); undo = pop, reset = clear.
+  `place()` turns it into output sizes and an **affine output → source uv map**. That map is the
+  geometry op chain at viewport resolution: the blit samples through it, so a turn, flip, crop or
+  straighten costs nothing per frame and never re-decodes. HLSL (`gfx/blit.cpp`) and MSL
+  (`gfx/blit_metal.mm`) take it in the same change, line for line. The full-resolution chain runs
+  once, on the CPU, on export (`geometry.cpp`): exact pixel copies for rotate / flip / unscaled crop,
+  linear-light resampling otherwise. No FP16 working texture yet: geometry does not need one, and
+  the D6 working space arrives with PR 11's colour ops.
+- **Lossless JPEG** (`lossless_jpeg.cpp`). **Departs from the plan's "libjpeg-turbo `transupp`"**:
+  `transupp.c` is jpegtran's source file, not a library, and vcpkg's `libjpeg-turbo` does not install
+  it; vendoring it would add a second copy of libjpeg internals. The same algorithm (coefficient
+  rearrangement, transposed quant tables, swapped sampling factors) is written on libjpeg's public
+  coefficient API instead — platform-neutral, as the plan asks. **Perfect transforms only**: an edge
+  that would move a partial MCU into the frame is refused, never trimmed. MCU-aligned crop (top-left
+  on the output's iMCU grid, any size). Four quarter turns and two flips give back the original
+  pixels bit for bit in 4:2:0, 4:2:2 and 4:4:4.
+- **Display-path orientation for JPEG** (closes plan/12 2026-09-14 PR 7 row 4 for JPEG). Decode,
+  preview and thumbnails apply the EXIF orientation to the decoded raster; the file is untouched
+  (plan/04). RAW previews keep LibRaw's flip; TIFF / PNG / WebP orientation is still not applied.
+  Thumbnail spec `jpg512.1` → `jpg512.2`; `meta::display_orientation` reports JPEG as oriented.
+- **Export** (`export.cpp`): lossless when JPEG → JPEG with only rotate / flip / an aligned crop,
+  re-encode otherwise (JPEG or PNG). Always upright: EXIF Orientation 1, `PixelX/YDimension` = the
+  written size, `tiff:Orientation` in XMP = 1, a stale EXIF thumbnail unlinked. Metadata policy
+  all / minus GPS / none; ICC always kept. EXIF is patched **in place**, byte-level
+  (`codec/exif.cpp`), so maker notes with absolute offsets survive. "Minus GPS" zeroes the GPS IFD
+  and every value it points at; an XMP packet naming `exif:GPS*` is dropped whole. Output goes beside
+  the original as `<name>-edit.jpg` (`… (2)`), created exclusively.
+- **The io replace port, as named in the plan**: `io/replace.h` with `io/replace_win.cpp`
+  (`CREATE_NEW`; sibling temp + `FlushFileBuffers` + `ReplaceFileW`) and `io/replace_mac.cpp`
+  (`O_EXCL`; same-directory temp + `F_FULLFSYNC`, falling back to `fsync` where a filesystem refuses
+  it, + `rename`). PR 12's metadata writer uses the same port.
+- **Byte-identical exports on both platforms**: nothing time-, thread- or address-dependent reaches
+  the bytes (a test exports twice and compares), and both hosts link the same pinned vcpkg
+  libjpeg-turbo / libspng. The cross-machine comparison itself is a manual step of the verify.
+- `shell/edit_session`: the hosts' shared edit state — per-file stacks for the session, crop mode's
+  draft, the debounced one-at-a-time lossless write with turns carried across the rewrite — and
+  `shell/edit_view.h`, which both render threads use to match a texture to its geometry.
+
+**Windows half.** `main.cpp` drives `edit_session` (the commands, the 0.4 s write debounce on a
+`WM_TIMER`, jobs on the app's `job_system`, completion by window message). `present_lab.cpp` places
+the still through its geometry (the camera frames the edited size; refits when it changes), feeds
+the HLSL map, draws the crop overlay, hides AF quads on an edited image and maps the eyedropper
+through the edit. Geometry is tagged with the path's `item_key` plus the view generation of the
+select, so a rewritten file's new pixels are told from the old texture still on screen.
+**ABI 0.7**: `mv_folder_forget` drops a rewritten path from the navigation LRU (keyed by path, it
+would otherwise republish the old pixels). Export dialog: a flyout in the command-bar island
+(`PopupKind.Export`), TextBox-free (the 0xC000027B fail-fast), keyboard-complete.
+
+**macOS half.** The same, in `main_mac.mm` / `present_lab_mac.mm` (item-id tagging, since every Mac
+open has its own id). Export sheet: `ExportView.swift`, the twin of the Windows flyout.
+
+**Calls made, so they are not re-decided by accident:**
+- **`[` `]` `H` `V` on a JPEG rewrite that file** (the verify line; plan/04). Rule 5 is met by *what*
+  is written: only when the stack holds nothing but rotate / flip, only losslessly (coefficients
+  rearranged, or — when the frame is not MCU-aligned — the Orientation tag alone patched in place, or
+  a minimal EXIF APP1 added), atomically, after a 0.4 s debounce so `]]` is one half-turn write, one
+  write in flight, and only if the file is still the bytes the turn was made against. EXIF with no
+  Orientation entry on an unaligned frame is refused (growing IFD0 is PR 12's writer's job).
+- **Crop mode's on-screen part is drawn in the canvas overlay on both hosts**, not in WinUI / SwiftUI
+  chrome as the plan text puts it: the rectangle has to track the camera every frame, and drawing it
+  in an island would put per-frame geometry across the chrome boundary (the loupe and the AF quads
+  made the same call). Crop mode's keys go through the one command table.
+- **One packed integer for the export choice** (`pack_export`): the island's command callback carries
+  a float; the Mac bridge takes the same word, so the two dialogs cannot drift.
+- **Edit stacks live for the session only**, keyed by (path, size, mtime, rewrite epoch). The XMP
+  sidecar persistence plan/07 calls "truth" is PR 12's.
+- **New keys** (plan/16 gave only `[` `]`, `H` `V` and crop's Enter/Esc): `Shift+C` crop mode (`C` is
+  clipping), `Ctrl+S` export, `Ctrl+Z` undo edit, `Ctrl+R` reset edits; on Mac `⌘` for `Ctrl`. Crop
+  mode is `mode::crop`, the last bit of `mode_mask`: arrows move the rect 1 %, `Shift+arrows` resize
+  from the bottom-right, `,` `.` straighten ∓0.5°. A / D, G and `Ctrl+O` do nothing mid-crop.
+- **Crop and export wait for a rotation write in flight**; a relist that reopens the same bytes does
+  not leave crop mode.
+
+**Not verified, owed:**
+- **Nothing in either host was compiled in the session that wrote it** (Linux container: no MSVC,
+  no Xcode). The shared core and its suites build and pass there (gcc 13 + ASan/UBSan, clang 18 with
+  the Mac flags): `test_edit`, `test_edit_session`, the key-router suites. Windows CI is the first
+  MSVC build of the host half and of `test_abi_roundtrip`'s 0.7 case; the C# flyout and the Swift
+  sheet are unbuilt. PR 1's and Mac PR 1's present-loop gates were not re-run.
+- The Canon / Sony maker-note re-encode (below) on real camera files: the corpus has no RAW in git.
+
+**Closed the same day:**
+- **Re-encoded exports carry HEIC / TIFF / RAW / WebP metadata.** `meta::read_carried` builds the
+  EXIF block with Exiv2 from what it read, not by copying bytes: a TIFF's or a RAW's IFD0 describes
+  *its* pixels (strips, tiles, compression, sub-images, the thumbnail IFD, DNG private data), and
+  those tags are left out; Orientation is written as 1. Maker notes are kept while the block fits one
+  APP1 and dropped (not the whole block) when it would not. `edit/` and `meta/` are siblings, so
+  `shell::run_export` reads it and hands it to `edit::export_image`; the policy applies to it as to a
+  JPEG's own. Tested against Exiv2 0.28.3 (the vcpkg line) with WebP and TIFF fixtures written by
+  libwebp / libtiff + Exiv2, and the in-tree `iphone_like.heic` (Orientation 6 arrives as 1).
+- **An edited tiled (> 64 MP) image draws its tiles**, not just its overview. The tile shaders take
+  the inverse map and the source size (`gfx/blit.cpp` `vs_tile` / `ps_tile`): tile corners are source
+  pixels mapped to the output, and a pixel outside the edited output is discarded. The tiles are
+  chosen for the viewport seen from the source (`shell/edit_view.h` `view_in_source`: the centre
+  mapped back, the extent the box of the mapped corners). The Mac has no tiling yet, so there is no
+  MSL twin to change.

@@ -23,6 +23,9 @@ mode resolve_mode(const view_state& s) noexcept {
   if (s.focus == focus_kind::filmstrip || s.focus == focus_kind::gallery) {
     return mode::island;
   }
+  // Crop is a canvas mode (plan/16): it only exists on a still, and the
+  // host leaves it when the item changes.
+  if (s.crop && s.item == item_kind::still) return mode::crop;
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
@@ -128,6 +131,15 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   // PreviewKeyDown captures bindings; Esc cancels capture before closing it.
   // ContentPreTranslateMessage returning false does not mean XAML declined it.
   if (s.settings_open) return {};
+
+  // A focused pane owns its keys (arrows walk it, Enter opens); Esc returns to the
+  // canvas (plan/16 "Pane": in-pane traversal, Esc returns).
+  if (s.focus == focus_kind::pane) {
+    if (e.k == key::escape && e.mods == mod_none && !e.repeat) {
+      return {command_id::back, back_target::canvas_focus, true};
+    }
+    return {};
+  }
 
   // A text control owns every key except the one that leaves it.
   if (s.focus == focus_kind::text) {

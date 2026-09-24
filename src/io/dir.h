@@ -64,6 +64,17 @@ struct folder_summary {
 
 [[nodiscard]] result<bool> is_directory(std::string_view utf8_path);
 
+struct subdir {
+  std::string name_utf8;
+  std::string path_utf8;
+};
+
+// The immediate subdirectories of `utf8_dir` for the folder tree (PR 9): hidden
+// and package directories skipped, sorted case-insensitively by name. One
+// directory read, no recursion, so a tree node expands in one worker job.
+// Worker threads only. `status::io` if the directory cannot be opened.
+[[nodiscard]] result<std::vector<subdir>> list_subdirectories(std::string_view utf8_dir);
+
 // If `utf8_path` is a directory, returns it. If it is a file, returns the parent.
 [[nodiscard]] result<std::string> containing_dir(std::string_view utf8_path);
 

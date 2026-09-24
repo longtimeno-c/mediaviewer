@@ -270,10 +270,50 @@ TEST_CASE("visible gallery owns row navigation and Enter before focus moves", "[
   REQUIRE(r.on_key(down(key::f5), still()).command == command_id::slideshow_start);
   REQUIRE(r.on_key(down(key::f5), clip()).command == command_id::slideshow_start);
   // No default Enter binding can start fullscreen or a slideshow in any mode.
+  // PR 10: Enter also commits a crop, in crop mode only.
   for (const auto& b : default_bindings()) {
     if (b.k != key::enter || b.mods != mod_none) continue;
-    REQUIRE(b.command == command_id::gallery_open_selected);
+    REQUIRE((b.command == command_id::gallery_open_selected ||
+             (b.command == command_id::crop_commit && b.modes == kCrop)));
   }
+}
+
+TEST_CASE("PR 10: rotate, flip and crop mode route on a still", "[shell][router]") {
+  key_router r;
+  auto s = still();
+  REQUIRE(r.on_key(down(char_key('[')), s).command == command_id::rotate_ccw);
+  REQUIRE(r.on_key(down(char_key(']')), s).command == command_id::rotate_cw);
+  REQUIRE(r.on_key(down(char_key('H')), s).command == command_id::flip_horizontal);
+  REQUIRE(r.on_key(down(char_key('V')), s).command == command_id::flip_vertical);
+  // Edge only: a held `]` is one write, not a spin.
+  REQUIRE_FALSE(r.on_key(rep(char_key(']')), s).handled);
+  REQUIRE(r.on_key(down(char_key('C'), mod_shift), s).command == command_id::crop_mode);
+  REQUIRE(r.on_key(down(char_key('S'), mod_ctrl), s).command == command_id::export_image);
+  REQUIRE(r.on_key(down(char_key('Z'), mod_ctrl), s).command == command_id::undo_edit);
+  REQUIRE(r.on_key(down(char_key('R'), mod_ctrl), s).command == command_id::reset_edits);
+  // A clip keeps `[` `]` for trim (PR 13): nothing here yet.
+  REQUIRE_FALSE(r.on_key(down(char_key(']')), clip()).handled);
+
+  s.crop = true;
+  REQUIRE(resolve_mode(s) == mode::crop);
+  REQUIRE(r.on_key(down(key::left), s).command == command_id::crop_move_left);
+  REQUIRE(r.on_key(rep(key::down), s).command == command_id::crop_move_down);
+  REQUIRE(r.on_key(down(key::right, mod_shift), s).command == command_id::crop_wider);
+  REQUIRE(r.on_key(down(char_key('.')), s).command == command_id::straighten_cw);
+  REQUIRE(r.on_key(down(char_key(',')), s).command == command_id::straighten_ccw);
+  REQUIRE(r.on_key(down(key::enter), s).command == command_id::crop_commit);
+  REQUIRE(r.on_key(down(char_key(']')), s).command == command_id::rotate_cw);
+  // Walking away would discard the crop: A/D do nothing in crop mode.
+  REQUIRE_FALSE(r.on_key(down(char_key('D')), s).handled);
+  REQUIRE_FALSE(r.on_key(down(char_key('G')), s).handled);
+  // Esc walks out of crop first.
+  const route esc = r.on_key(down(key::escape), s);
+  REQUIRE(esc.command == command_id::back);
+  REQUIRE(esc.back == back_target::crop);
+  // Crop is a still's mode: a stale flag on a clip does not capture arrows.
+  auto c = clip();
+  c.crop = true;
+  REQUIRE(resolve_mode(c) == mode::video);
 }
 
 TEST_CASE("Space: next on a still, play/pause on a clip, pause in a slideshow", "[shell][router]") {
@@ -819,4 +859,39 @@ TEST_CASE("3 toggles the runner view on the down edge without stealing image zoo
   CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
   s.game = false;
   CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
+}
+
+// PR 9 (plan/16 "Pane"): the metadata pane and the folder tree are a focus kind.
+// In-pane traversal belongs to XAML; Esc returns to the canvas; and a pane that is
+// merely shown is a level for Esc to walk out of.
+TEST_CASE("a focused pane owns its keys and Esc returns to the canvas", "[shell][router][pane]") {
+  key_router r;
+  auto s = still();
+  s.focus = focus_kind::pane;
+  s.pane_open = true;
+  // Arrows, Enter and letters are the pane's: none is a viewer command here.
+  for (const key k : {key::left, key::right, key::up, key::down, key::enter}) {
+    REQUIRE_FALSE(r.on_key(down(k), s).handled);
+  }
+  REQUIRE_FALSE(r.on_key(down(key::f11), s).handled);
+  // Esc leaves the pane for the canvas (and not the pane itself: focus first).
+  const auto out = r.on_key(down(key::escape), s);
+  REQUIRE(out.handled);
+  REQUIRE(out.command == command_id::back);
+  REQUIRE(out.back == back_target::canvas_focus);
+  // A held Esc does not walk out further.
+  REQUIRE_FALSE(r.on_key(rep(key::escape), s).handled);
+}
+
+TEST_CASE("Esc on the canvas closes a shown pane before the gallery or fullscreen", "[shell][router][pane]") {
+  key_router r;
+  auto s = still();
+  s.focus = focus_kind::canvas;
+  s.pane_open = true;
+  s.fullscreen = true;
+  const auto out = r.on_key(down(key::escape), s);
+  REQUIRE(out.handled);
+  REQUIRE(out.back == back_target::pane);  // plan/16: crop -> pane -> gallery -> fullscreen
+  s.pane_open = false;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::fullscreen);
 }

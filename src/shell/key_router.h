@@ -17,6 +17,9 @@ enum class focus_kind : std::uint8_t {
   gallery = 3,
   transport = 4,
   text = 5,  // a XAML text control: keys belong to it; Esc blurs back
+  // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane" mode).
+  // In-pane traversal belongs to XAML; Esc walks back out to the canvas.
+  pane = 6,
 };
 
 enum class item_kind : std::uint8_t { none, still, clip, animation };
@@ -35,7 +38,7 @@ struct view_state {
   bool settings_open = false;  // the settings screen covers the canvas
   bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
   bool pane_open = false;  // PR 8+
-  bool crop = false;       // PR 9
+  bool crop = false;       // PR 10: crop mode on the canvas
   bool game = false;       // the empty-window runner is up (Space on an empty view)
 };
 

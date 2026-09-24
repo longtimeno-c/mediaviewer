@@ -480,7 +480,7 @@ internal struct ChromeShowArgs
 internal struct ChromeFlagsArgs
 {
     public int Flags;
-    public int Reserved;
+    public int Sort;
 }
 
 [StructLayout(LayoutKind.Sequential)]

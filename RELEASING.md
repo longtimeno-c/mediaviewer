@@ -206,7 +206,7 @@ the Actions build. It uses two pinned vcpkg manifests with separate install tree
 
 - Root `vcpkg.json`: static permissive libraries, installed by CMake as `arm64-osx`.
 - [`tools/mac/dependencies/vcpkg.json`](tools/mac/dependencies/vcpkg.json): dynamic
-  FFmpeg, libheif/libde265 and LibRaw, installed as `arm64-osx-dynamic` before CMake.
+  FFmpeg, libheif/libde265, LibRaw and Exiv2, installed as `arm64-osx-dynamic` before CMake.
 
 On an Apple Silicon Mac with Xcode and vcpkg, run from the repository root:
 

@@ -18,6 +18,8 @@
 #import <Sparkle/Sparkle.h>
 #endif
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -36,8 +38,13 @@
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
+#include "shell/edit_session.h"
+#include "shell/edit_view.h"
 #include "shell/folder_model_mac.h"
+#include "meta/meta.h"
 #include "shell/key_router.h"
+#include "shell/meta_store.h"
+#include "io/sort_order.h"
 #include "shell/settings.h"
 #include "shell/input_state.h"
 #include "shell/install_from_dmg_mac.h"
@@ -85,6 +92,14 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
     case folder_up:
+    // PR 9
+    case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
+    // PR 10
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
       return true;
     default:
       return false;
@@ -136,6 +151,8 @@ constexpr CGFloat kChromeBarHeightPoints = 48.0;  // Windows bar height
 // Filmstrip strip height, in points -- same conversion-to-backing-pixels
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
+constexpr CGFloat kMetaPaneWidthPoints = 360.0;  // PR 9 panes float over the canvas
+constexpr CGFloat kTreeWidthPoints = 280.0;
 
 // Declared in full (not just `@class`) because MvMetalView's own methods,
 // defined below, send it messages (navigatePrev etc.) -- a bare forward
@@ -155,8 +172,17 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 @property(nonatomic, strong) NSView* galleryHost;
 @property(nonatomic, strong) NSView* helpHost;
 @property(nonatomic, strong) NSView* settingsHost;
+// PR 10: the export sheet, built fresh each time it opens so it starts from
+// the last choice.
+@property(nonatomic, strong) NSView* exportHost;
 @property(nonatomic, strong) NSView* transportHost;
 @property(nonatomic, strong) NSLayoutConstraint* transportBottom;
+// PR 9: the metadata pane (right) and folder tree (left) float over the canvas like the
+// gallery does. Mac has no horizontal canvas inset yet (plan/12 2026-09-24).
+@property(nonatomic, strong) NSView* metaHost;
+@property(nonatomic, strong) NSView* treeHost;
+@property(nonatomic, strong) NSLayoutConstraint* metaBottom;
+@property(nonatomic, strong) NSLayoutConstraint* treeBottom;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -226,6 +252,10 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
 - (void)setSettingsVisible:(BOOL)visible;
+// PR 10 export sheet (ExportView.swift).
+- (int32_t)exportChoice;
+- (void)setExportVisible:(BOOL)visible;
+- (void)confirmExport:(int32_t)packed;
 - (int32_t)viewFlags;
 - (void)setViewFlags:(int32_t)flags;
 - (void)beginKeyCaptureForRow:(int)row;
@@ -271,6 +301,16 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 // restarts the app on its own.
 - (BOOL)updateReady;
 - (void)restartToUpdate;
+// PR 9
+- (BOOL)metaPaneVisible;
+- (BOOL)metaLoading;
+- (uint64_t)metaGeneration;
+- (std::shared_ptr<const mv::meta::metadata>)metaRecord;
+- (BOOL)treeVisible;
+- (NSString*)currentFolder;
+- (void)openFolderPath:(const char*)utf8_path;
+- (int32_t)sortOrder;
+- (void)setSortOrder:(int32_t)packed;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -468,6 +508,129 @@ extern "C" void mv_chrome_navigate_up(void) {
 extern "C" int32_t mv_chrome_folder_cursor(void) {
   return g_chrome_app ? static_cast<int32_t>([g_chrome_app folderCursor]) : -1;
 }
+// ---- PR 9 bridge: metadata pane, folder tree, sort -------------------------------
+namespace {
+
+// Tabs and newlines are the table's separators, so they cannot appear in values.
+std::string MvFlat(const std::string& s) {
+  std::string out = s;
+  for (char& c : out) {
+    if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+  }
+  return out;
+}
+
+int32_t MvCopyOut(const std::string& out, char* buf, int32_t size) {
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(out.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, out.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(out.size());
+}
+
+const char* MvOriginName(mv::meta::origin o) {
+  switch (o) {
+    case mv::meta::origin::exif: return "exif";
+    case mv::meta::origin::iptc: return "iptc";
+    case mv::meta::origin::xmp: return "xmp";
+    case mv::meta::origin::container: return "container";
+    case mv::meta::origin::computed: return "computed";
+  }
+  return "exif";
+}
+
+const char* MvKindName(mv::meta::stream_kind k) {
+  switch (k) {
+    case mv::meta::stream_kind::video: return "video";
+    case mv::meta::stream_kind::audio: return "audio";
+    case mv::meta::stream_kind::subtitle: return "subtitle";
+    case mv::meta::stream_kind::attachment: return "attachment";
+    case mv::meta::stream_kind::data: return "data";
+  }
+  return "data";
+}
+
+}  // namespace
+
+extern "C" uint64_t mv_chrome_meta_generation(void) {
+  return g_chrome_app ? [g_chrome_app metaGeneration] : 0;
+}
+extern "C" bool mv_chrome_meta_pane_visible(void) {
+  return g_chrome_app ? [g_chrome_app metaPaneVisible] == YES : false;
+}
+extern "C" bool mv_chrome_meta_loading(void) {
+  return g_chrome_app ? [g_chrome_app metaLoading] == YES : false;
+}
+extern "C" int32_t mv_chrome_meta_summary(char* buf, int32_t size) {
+  std::string out;
+  if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
+    for (const auto& row : mv::meta::summary_rows(*rec)) {
+      out += MvFlat(row.label) + "\t" + MvFlat(row.value) + "\n";
+    }
+  }
+  return MvCopyOut(out, buf, size);
+}
+extern "C" int32_t mv_chrome_meta_properties(char* buf, int32_t size) {
+  std::string out;
+  if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
+    for (const auto& p : rec->properties) {
+      out += std::string(MvOriginName(p.space)) + "\t" + MvFlat(p.group) + "\t" + MvFlat(p.label) +
+             "\t" + MvFlat(p.value) + "\t" + MvFlat(p.raw_tag) + "\n";
+    }
+  }
+  return MvCopyOut(out, buf, size);
+}
+extern "C" int32_t mv_chrome_meta_streams(char* buf, int32_t size) {
+  std::string out;
+  if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
+    for (const auto& st : rec->streams) {
+      out += "S\t" + std::to_string(st.index) + "\t" + MvKindName(st.kind) + "\t" + MvFlat(st.codec) + "\n";
+      for (const auto& f : st.fields) out += "F\t" + MvFlat(f.label) + "\t" + MvFlat(f.value) + "\n";
+    }
+    for (const auto& c : rec->chapters) {
+      out += "C\t" + std::to_string(c.start_ms) + "\t" + MvFlat(c.title) + "\n";
+    }
+  }
+  return MvCopyOut(out, buf, size);
+}
+
+extern "C" bool mv_chrome_tree_visible(void) {
+  return g_chrome_app ? [g_chrome_app treeVisible] == YES : false;
+}
+// [any-thread]: a directory read, called from Swift's background task.
+extern "C" int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size) {
+  if (!dir_utf8) return -1;
+  auto dirs = mv::io::list_subdirectories(dir_utf8);
+  if (!dirs) return -1;
+  std::string out;
+  for (const auto& d : dirs.value()) out += MvFlat(d.name_utf8) + "\t" + d.path_utf8 + "\n";
+  return MvCopyOut(out, buf, size);
+}
+extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
+  if (!g_chrome_app) return MvCopyOut("", buf, size);
+  return MvCopyOut(std::string([[g_chrome_app currentFolder] UTF8String]), buf, size);
+}
+extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
+  if (g_chrome_app && dir_utf8) [g_chrome_app openFolderPath:dir_utf8];
+}
+extern "C" int32_t mv_chrome_sort_order(void) {
+  return g_chrome_app ? [g_chrome_app sortOrder] : 0;
+}
+extern "C" void mv_chrome_set_sort_order(int32_t packed) {
+  if (g_chrome_app) [g_chrome_app setSortOrder:packed];
+}
+
+extern "C" int32_t mv_chrome_export_last_choice(void) {
+  return g_chrome_app ? [g_chrome_app exportChoice] : 0;
+}
+extern "C" void mv_chrome_export_confirm(int32_t packed) {
+  if (g_chrome_app) [g_chrome_app confirmExport:packed];
+}
+extern "C" void mv_chrome_export_cancel(void) {
+  if (g_chrome_app) [g_chrome_app setExportVisible:NO];
+}
+
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   g_gallery_columns = columns < 1 ? 1 : columns;
 }
@@ -701,13 +864,35 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self publish];
   if (self.lab) self.lab->wake();
 }
+// Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
+// why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
+// the render thread while the eyedropper is on.
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  for (NSTrackingArea* area in [self.trackingAreas copy]) [self removeTrackingArea:area];
+  [self addTrackingArea:[[NSTrackingArea alloc]
+                            initWithRect:NSZeroRect
+                                 options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                                         NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+                                   owner:self
+                                userInfo:nil]];
+}
+- (void)mouseExited:(NSEvent*)event {
+  (void)event;
+  self.snap->mouse_in_client = false;
+  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  [self publish];
+  if (self.snap->eyedropper && self.lab) self.lab->wake();
+}
 - (void)mouseMoved:(NSEvent*)event {
   const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
   const NSPoint backing = [self convertPointToBacking:p];
   self.snap->mouse_x = static_cast<float>(backing.x);
   self.snap->mouse_y = static_cast<float>(self.snap->height) - static_cast<float>(backing.y);
   self.snap->mouse_in_client = NSPointInRect(p, self.bounds);
+  if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
+  if (self.snap->eyedropper && self.lab) self.lab->wake();
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
@@ -827,6 +1012,27 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // _options.open_path, the same slot argv uses.
   BOOL _launched;
   BOOL _askedDefaultViewer;
+
+  // PR 9 (plan/06, plan/16). `_meta` owns every metadata read; the pane, the info
+  // overlay and the AF quads all read `_metaRecord`, so toggling any of them is a
+  // lookup and never a file read. A record is asked for only while something is
+  // showing it, and after a short pause so arrow-key scrubbing queues no reads.
+  mv::shell::meta_store _meta;
+  std::shared_ptr<const mv::meta::metadata> _metaRecord;
+  std::uint64_t _metaGeneration;
+  BOOL _metaPaneVisible;
+  BOOL _treeVisible;
+  NSTimer* _metaDebounce;
+  // PR 10 (plan/07, plan/16). `_edits` owns every item's edit stack and crop
+  // mode; the render thread gets the geometry through _snap.edit, tagged with
+  // the item id _lab.open_item returned (so a reload never borrows it).
+  mv::shell::edit_session _edits;
+  std::uint64_t _itemId;
+  NSTimer* _rotateDebounce;
+  BOOL _exportVisible;
+  int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
+  mv::io::sort_order _sort;
+  std::string _currentDir;
 #if MV_WITH_SPARKLE
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
@@ -1032,6 +1238,33 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     [self.helpHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
+  // PR 9: metadata pane (right) and folder tree (left). Both float over the canvas
+  // between the command bar and the filmstrip, hidden until `I` / Cmd+Shift+E. The
+  // canvas keeps its full width: a horizontal inset is a present-path change, and
+  // PR 1's present-loop verify has to keep holding (plan/12 2026-09-24).
+  self.metaHost = [MVChromeHost makeMetadataView];
+  self.metaHost.hidden = YES;
+  self.metaHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.metaHost];
+  self.metaBottom = [self.metaHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                               constant:-kFilmstripHeightPoints];
+  self.treeHost = [MVChromeHost makeFolderTreeView];
+  self.treeHost.hidden = YES;
+  self.treeHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.treeHost];
+  self.treeBottom = [self.treeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                               constant:-kFilmstripHeightPoints];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.metaHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    self.metaBottom,
+    [self.treeHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.treeHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.treeHost.widthAnchor constraintEqualToConstant:kTreeWidthPoints],
+    self.treeBottom,
+  ]];
+
 #if MV_WITH_SPARKLE
   // Started here, not at init: the updater's first check must not race the
   // window and lab coming up. Checks and downloads run in the background
@@ -1169,8 +1402,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // here, just clearing C++ containers), means a relist that lands for a
   // *different* folder in flight can never be mistaken for this one's.
   _wantSelectedPath = select_path;
+  _currentDir = dir;
   _items.clear();
   _index.reset(0);
+  _metaRecord.reset();
+  ++_metaGeneration;
 
   // folder_model::open() itself is real I/O -- opening, and maybe creating,
   // the thumbnail cache's SQLite file -- so it never runs on the UI thread
@@ -1217,12 +1453,18 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     const bool active = g_chrome_lab && g_chrome_lab->video_status_snapshot().active;
     if (self.transportHost.hidden == active) self.transportHost.hidden = !active;
   }
+  // Date-taken keys arriving on the pool re-sort the listing in place: the same
+  // items, the current one still selected, no image reload.
+  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken) {
+    [self resortKeepingSelection];
+  }
   if (!_folder.consume_changed()) return;
   _items = _folder.items();
   _subdirs = _folder.subfolders();
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
     _folderCursor = static_cast<NSInteger>(_subdirs.size()) - 1;
   }
+  [self sortItems];
   ++_listingGeneration;
 
   // Marks are kept by path specifically so they survive a relist that
@@ -1274,13 +1516,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   if (_items.empty()) {
     _wantSelectedPath.clear();
+    _edits.clear_item();
+    _itemId = 0;
+    [self publishEdit];
     _snap.item_index = 0;
     _snap.item_count = 0;
     _snap.item_name[0] = '\0';
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
-    _lab.open_item(entry.path_utf8);
+    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
@@ -1288,6 +1533,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     _snap.item_name[n] = '\0';
   }
   [self updateMarkSnapshot];
+  [self metadataSelectionChanged];
   [self publish];
 }
 
@@ -1630,6 +1876,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _filmstripVisible = visible;
   self.filmstripHost.hidden = !_filmstripVisible;
   self.transportBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints + 10.0 : 10.0);
+  self.metaBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints : 0.0);
+  self.treeBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints : 0.0);
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same
@@ -1835,6 +2083,9 @@ enum MvMenuCmd : NSInteger {
   kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
   kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
   kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
+  // PR 9
+  kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
+  kMenuSortDateTaken, kMenuSortDescending,
 };
 
 - (void)menuAction:(NSMenuItem*)item {
@@ -1865,6 +2116,21 @@ enum MvMenuCmd : NSInteger {
     case kMenuSettings: [self setSettingsVisible:!_settingsVisible]; break;
     case kMenuOverlay: [self runCommand:mv::shell::command_id::overlay back:mv::shell::back_target::none]; break;
     case kMenuReveal: [self runCommand:mv::shell::command_id::reveal_in_explorer back:mv::shell::back_target::none]; break;
+    case kMenuMetadata: [self runCommand:mv::shell::command_id::metadata_pane back:mv::shell::back_target::none]; break;
+    case kMenuFolderTree: [self runCommand:mv::shell::command_id::folder_tree back:mv::shell::back_target::none]; break;
+    case kMenuSortName: case kMenuSortModified: case kMenuSortSize: case kMenuSortType:
+    case kMenuSortDateTaken: {
+      mv::io::sort_order o = _sort;
+      o.key = static_cast<mv::io::sort_key>(cmd - kMenuSortName);
+      [self setSortOrder:mv::io::pack_sort(o)];
+      break;
+    }
+    case kMenuSortDescending: {
+      mv::io::sort_order o = _sort;
+      o.descending = !o.descending;
+      [self setSortOrder:mv::io::pack_sort(o)];
+      break;
+    }
   }
 }
 
@@ -1877,7 +2143,20 @@ enum MvMenuCmd : NSInteger {
   }
 #endif
   if (item.action != @selector(menuAction:)) return YES;
+  const NSInteger tag = item.tag;
+  if (tag >= kMenuSortName && tag <= kMenuSortDateTaken) {
+    item.state = (static_cast<NSInteger>(_sort.key) == tag - kMenuSortName) ? NSControlStateValueOn
+                                                                            : NSControlStateValueOff;
+    return [self hasFolder];
+  }
+  if (tag == kMenuSortDescending) {
+    item.state = _sort.descending ? NSControlStateValueOn : NSControlStateValueOff;
+    return [self hasFolder];
+  }
+  if (tag == kMenuMetadata) item.state = _metaPaneVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
   switch (static_cast<MvMenuCmd>(item.tag)) {
+    case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
       return YES;
     default:
@@ -1965,6 +2244,22 @@ enum MvMenuCmd : NSInteger {
   [view addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Metadata" cmd:kMenuMetadata key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Folder Tree"
+                cmd:kMenuFolderTree
+                key:@"e"
+               mods:NSEventModifierFlagCommand | NSEventModifierFlagShift
+             toMenu:view];
+  NSMenuItem* sortHolder = [view addItemWithTitle:@"Sort By" action:nil keyEquivalent:@""];
+  NSMenu* sortMenu = [[NSMenu alloc] initWithTitle:@"Sort By"];
+  sortHolder.submenu = sortMenu;
+  [self addMenuItem:@"Name" cmd:kMenuSortName key:@"" mods:0 toMenu:sortMenu];
+  [self addMenuItem:@"Date Modified" cmd:kMenuSortModified key:@"" mods:0 toMenu:sortMenu];
+  [self addMenuItem:@"Size" cmd:kMenuSortSize key:@"" mods:0 toMenu:sortMenu];
+  [self addMenuItem:@"Type" cmd:kMenuSortType key:@"" mods:0 toMenu:sortMenu];
+  [self addMenuItem:@"Date Taken" cmd:kMenuSortDateTaken key:@"" mods:0 toMenu:sortMenu];
+  [sortMenu addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Descending" cmd:kMenuSortDescending key:@"" mods:0 toMenu:sortMenu];
   [view addItem:[NSMenuItem separatorItem]];
   // The standard action (nil target -> the window via the responder chain):
   // AppKit titles it Enter/Exit Full Screen itself, and doesn't inject a
@@ -2122,6 +2417,8 @@ enum MvMenuCmd : NSInteger {
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
+  s.pane_open = _metaPaneVisible || _treeVisible;
+  s.crop = _edits.crop_active();
   return s;
 }
 
@@ -2136,6 +2433,15 @@ enum MvMenuCmd : NSInteger {
   if (_settingsVisible) {
     if (!up && k == key::escape && mods == mod_none && _captureRow < 0) {
       [self setSettingsVisible:NO];
+      return YES;
+    }
+    return NO;
+  }
+  // PR 10: the export sheet owns the keyboard while it is up (it is first
+  // responder; this only catches a key that still reached the canvas).
+  if (_exportVisible) {
+    if (!up && k == key::escape && mods == mod_none) {
+      [self setExportVisible:NO];
       return YES;
     }
     return NO;
@@ -2198,6 +2504,15 @@ enum MvMenuCmd : NSInteger {
         case mv::shell::back_target::popup: [self setHelpVisible:NO]; break;
         case mv::shell::back_target::settings: [self setSettingsVisible:NO]; break;
         case mv::shell::back_target::gallery: [self setGalleryVisible:NO]; break;
+        case mv::shell::back_target::crop:
+          _edits.cancel_crop();
+          [self publishEdit];
+          [self pokeSnapshot];
+          break;
+        case mv::shell::back_target::pane:
+          [self setMetaPaneVisible:NO];
+          [self setTreeVisible:NO];
+          break;
         case mv::shell::back_target::slideshow: [self leaveSlideshow]; break;
         case mv::shell::back_target::fullscreen: [self toggleFullscreen]; break;
         case mv::shell::back_target::game:
@@ -2286,8 +2601,360 @@ enum MvMenuCmd : NSInteger {
     case slideshow_pause: [self toggleSlideshowPause]; return YES;
     case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
     case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
+    // turning one on asks for the record if it is not already here, and never
+    // reads the file a second time.
+    case info_overlay:
+      _snap.info_overlay = !_snap.info_overlay;
+      if (_snap.info_overlay) [self requestMetadataNow];
+      [self pokeSnapshot];
+      return YES;
+    case af_points:
+      _snap.af_points = !_snap.af_points;
+      if (_snap.af_points) [self requestMetadataNow];
+      [self pokeSnapshot];
+      return YES;
+    case eyedropper:
+      _snap.eyedropper = !_snap.eyedropper;
+      [self pokeSnapshot];
+      return YES;
+    case copy_clipboard: {
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      // Eyedropper on and a pixel under the cursor: that colour.
+      if (_snap.eyedropper) {
+        const std::string text = _lab.eyedropper_text();
+        if (!text.empty()) {
+          [board clearContents];
+          [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+          return YES;
+        }
+      }
+      // Otherwise the file(s): the marks, else the current item, which is the selected
+      // cell while the gallery is up. Pasteable in Finder, Mail, Messages.
+      NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+      for (const auto& entry : [self markedOrCurrentEntries]) {
+        [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
+      }
+      if (urls.count == 0) return NO;
+      [board clearContents];
+      return [board writeObjects:urls] ? YES : NO;
+    }
+    case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
+    case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
+    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+      return [self runEditCommand:command];
     default: return NO;
   }
+}
+
+// ---- PR 10: edit stack, lossless rotate, crop, export ---------------------------
+
+// A new item (or the same file reopened) is on its way to the canvas. The old
+// item's geometry moves to slot 1 so its texture keeps it until the new
+// pixels land; slot 0 is the new item's.
+- (void)editItemOpened:(const mv::io::dir_entry&)entry item:(std::uint64_t)item {
+  _snap.edit[1] = _snap.edit[0];
+  _itemId = item;
+  mv::shell::edit_item e;
+  e.path = entry.path_utf8;
+  e.size = entry.size;
+  e.mtime = entry.mtime_unix;
+  // A hint: the write job probes the magic bytes and refuses anything else.
+  NSString* ext = [[NSString stringWithUTF8String:entry.name_utf8.c_str()] pathExtension].lowercaseString;
+  e.jpeg = [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] || [ext isEqualToString:@"jpe"];
+  const bool carried_turn = _edits.set_item(e);
+  [self publishEdit];
+  if (carried_turn) [self scheduleRotationWrite];
+}
+
+- (void)publishEdit {
+  _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+}
+
+- (BOOL)runEditCommand:(mv::shell::command_id)command {
+  // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
+  // single frame to turn.
+  if (_items.empty() || [self currentItemIsVideo] || _lab.anim_active()) return NO;
+  std::uint32_t w = 0, h = 0;
+  if (_lab.still_size(_itemId, &w, &h)) _edits.set_size(w, h);
+  else if (command == mv::shell::command_id::crop_mode) {
+    NSBeep();  // no pixels yet: nothing to frame a crop against
+    return YES;
+  }
+  switch (_edits.run(command)) {
+    case mv::shell::edit_effect::none: return YES;
+    case mv::shell::edit_effect::refused: NSBeep(); return YES;
+    case mv::shell::edit_effect::redraw:
+      [self publishEdit];
+      [self pokeSnapshot];
+      return YES;
+    case mv::shell::edit_effect::write_rotation:
+      [self publishEdit];
+      [self pokeSnapshot];
+      [self scheduleRotationWrite];
+      return YES;
+    case mv::shell::edit_effect::export_image:
+      [self setExportVisible:YES];
+      return YES;
+  }
+  return YES;
+}
+
+// `[` `]` `H` `V` on a JPEG: the preview has already turned. The file is
+// rewritten once the keys stop (a quick `]]` is one half-turn write), on the
+// pool, never the main thread (plan/16 speed rule 2).
+- (void)scheduleRotationWrite {
+  [_rotateDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _rotateDebounce = [NSTimer scheduledTimerWithTimeInterval:0.4
+                                                    repeats:NO
+                                                      block:^(NSTimer* timer) {
+                                                        (void)timer;
+                                                        [weakSelf startRotationWrite];
+                                                      }];
+}
+
+- (void)startRotationWrite {
+  _rotateDebounce = nil;
+  const std::optional<mv::shell::rotation_write> w = _edits.take_pending_write();
+  if (!w) return;
+  const mv::shell::rotation_write job = *w;
+  const std::string path = job.path;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [job, path, weakSelf](const mv::job_context&) -> mv::status {
+    const mv::expected written = mv::shell::run_rotation_write(job);
+    const bool ok = static_cast<bool>(written);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf rotationWriteFinished:ok path:path];
+    });
+    return ok ? mv::status::ok : written.error();
+  });
+}
+
+- (void)rotationWriteFinished:(bool)ok path:(const std::string&)path {
+  _edits.write_finished(ok);
+  if (!ok) {
+    NSBeep();
+    [self publishEdit];
+    [self pokeSnapshot];
+    return;
+  }
+  // The file changed under the listing: refresh its size / mtime (the edit
+  // key) the way the folder scan would, then reopen it if it is on screen.
+  struct stat st{};
+  if (::stat(path.c_str(), &st) == 0) {
+    for (auto& entry : _items) {
+      if (entry.path_utf8 != path) continue;
+      entry.size = static_cast<std::uint64_t>(st.st_size);
+      entry.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
+    }
+  }
+  if (!_items.empty() && _index.current() < _items.size() &&
+      _items[_index.current()].path_utf8 == path) {
+    [self selectIndex:_index.current()];
+  }
+}
+
+- (int32_t)exportChoice {
+  return _exportChoice != 0 ? _exportChoice : mv::shell::pack_export(mv::edit::export_options{});
+}
+
+- (void)setExportVisible:(BOOL)visible {
+  if (visible == _exportVisible) return;
+  _exportVisible = visible;
+  if (visible) {
+    [self cancelKeyHolds];
+    NSView* container = self.window.contentView;
+    self.exportHost = [MVChromeHost makeExportView];
+    self.exportHost.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.exportHost];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.exportHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+      [self.exportHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+      [self.exportHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+      [self.exportHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    ]];
+    [self.window makeFirstResponder:self.exportHost];
+  } else {
+    [self.exportHost removeFromSuperview];
+    self.exportHost = nil;
+    [self.window makeFirstResponder:self.view];
+  }
+}
+
+- (void)confirmExport:(int32_t)packed {
+  _exportChoice = packed;
+  [self setExportVisible:NO];
+  [self exportCurrentItem:mv::shell::unpack_export(packed)];
+}
+
+// Cmd+S opens the sheet (ExportView.swift); its choice lands here as options:
+// the stack baked into "<name>-edit.jpg" (or .png) beside the original, never
+// over it and never over an earlier export.
+- (void)exportCurrentItem:(const mv::edit::export_options&)options {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::edit::geometry g = _edits.export_geometry();
+  const mv::edit::export_options opt = options;
+  _jobs.submit_at(mv::background_generation, [path, g, opt](const mv::job_context&) -> mv::status {
+    const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+    const bool ok = static_cast<bool>(out);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!ok) NSBeep();
+    });
+    return ok ? mv::status::ok : out.error();
+  });
+}
+
+// ---- PR 9: metadata, folder tree, sort ------------------------------------------
+
+- (BOOL)metadataWanted {
+  return _metaPaneVisible || _snap.info_overlay || _snap.af_points;
+}
+
+// Selection moved: the old record is no longer the item on screen. The new one is
+// asked for only if something is showing metadata, and only after a pause, so
+// holding an arrow key queues no read for the images that flash past.
+- (void)metadataSelectionChanged {
+  [_metaDebounce invalidate];
+  _metaDebounce = nil;
+  if (_metaRecord) _metaRecord.reset();
+  ++_metaGeneration;
+  _snap.meta = mv::shell::meta_overlay{};
+  if (_items.empty() || ![self metadataWanted]) return;
+  _metaDebounce = [NSTimer scheduledTimerWithTimeInterval:0.09
+                                                   target:self
+                                                 selector:@selector(requestMetadataNow)
+                                                 userInfo:nil
+                                                  repeats:NO];
+}
+
+// Asks for the current item's record: a cache hit is adopted at once; a miss
+// submits one read on the pool and the completion hops back to the main thread.
+- (void)requestMetadataNow {
+  [_metaDebounce invalidate];
+  _metaDebounce = nil;
+  if (_metaRecord || _items.empty() || _index.current() >= _items.size()) return;
+  const mv::io::dir_entry entry = _items[_index.current()];
+  MvLabApp* app = self;
+  auto record = _meta.get(entry, _jobs, [app](std::string path) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [app metadataArrived:path];
+    });
+  });
+  if (record) [self adoptMetadata:record];
+}
+
+- (void)metadataArrived:(const std::string&)path {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const mv::io::dir_entry& entry = _items[_index.current()];
+  if (entry.path_utf8 != path || _metaRecord) return;  // navigated on, or already adopted
+  if (auto record = _meta.peek(entry)) [self adoptMetadata:record];
+}
+
+- (void)adoptMetadata:(std::shared_ptr<const mv::meta::metadata>)record {
+  _metaRecord = record;
+  ++_metaGeneration;
+  // Pre-format everything the render thread will draw, once, here.
+  mv::shell::meta_overlay o;
+  const auto copy = [](char* dst, std::size_t cap, const std::string& src) {
+    const std::size_t n = std::min(src.size(), cap - 1);
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  copy(o.camera_line, sizeof(o.camera_line), mv::meta::overlay_camera_line(*record));
+  copy(o.exposure_line, sizeof(o.exposure_line), mv::meta::overlay_exposure_line(*record));
+  copy(o.date_line, sizeof(o.date_line), mv::meta::overlay_date_line(*record));
+  const auto af = mv::meta::displayed_af_points(*record);
+  for (std::size_t i = 0; i < af.size() && i < mv::shell::meta_overlay::kMaxAf; ++i) {
+    o.af[i][0] = af[i].x;
+    o.af[i][1] = af[i].y;
+    o.af[i][2] = af[i].w;
+    o.af[i][3] = af[i].h;
+    o.af[i][4] = af[i].in_focus ? 1.0f : 0.0f;
+    o.af_count = static_cast<std::uint8_t>(i + 1);
+  }
+  _snap.meta = o;
+  [self pokeSnapshot];
+}
+
+- (BOOL)metaPaneVisible { return _metaPaneVisible; }
+- (BOOL)metaLoading {
+  return [self metadataWanted] && !_metaRecord && !_items.empty();
+}
+- (uint64_t)metaGeneration { return _metaGeneration; }
+- (std::shared_ptr<const mv::meta::metadata>)metaRecord { return _metaRecord; }
+
+- (void)setMetaPaneVisible:(BOOL)visible {
+  if (visible == _metaPaneVisible) return;
+  _metaPaneVisible = visible;
+  self.metaHost.hidden = !visible;
+  ++_metaGeneration;
+  if (visible) [self requestMetadataNow];
+  // Keys stay with the canvas: arrows still browse while the pane is up.
+  [self.window makeFirstResponder:self.view];
+}
+
+- (BOOL)treeVisible { return _treeVisible; }
+- (void)setTreeVisible:(BOOL)visible {
+  if (visible == _treeVisible) return;
+  _treeVisible = visible;
+  self.treeHost.hidden = !visible;
+  [self.window makeFirstResponder:self.view];
+}
+- (NSString*)currentFolder {
+  return [NSString stringWithUTF8String:_currentDir.c_str()];
+}
+- (void)openFolderPath:(const char*)utf8_path {
+  if (![self openEntryPath:utf8_path]) NSBeep();
+}
+
+// Sort. `sortItems` orders `_items` for a fresh listing; `resortKeepingSelection`
+// re-orders the same listing when the order (or the date keys) change, keeping the
+// current item current without reloading its image.
+- (void)sortItems {
+  mv::shell::meta_store* store = &_meta;
+  mv::io::sort_entries(_items, _sort, [store](const mv::io::dir_entry& e) {
+    return store->date_key(e);
+  });
+  if (_sort.key == mv::io::sort_key::date_taken && !_items.empty()) {
+    // One background scan fills the keys; the listing re-sorts when it lands.
+    _meta.resolve_date_keys(_items, _jobs, {});
+  }
+}
+
+- (void)resortKeepingSelection {
+  if (_items.empty()) return;
+  const std::size_t at = std::min(_index.current(), _items.size() - 1);
+  const std::string current = _items[at].path_utf8;
+  [self sortItems];
+  std::size_t now = 0;
+  for (std::size_t i = 0; i < _items.size(); ++i) {
+    if (_items[i].path_utf8 == current) {
+      now = i;
+      break;
+    }
+  }
+  _index.reset(_items.size(), now);
+  _wantSelectedPath = current;
+  _snap.item_index = static_cast<std::uint32_t>(now);
+  ++_listingGeneration;
+  [self updateMarkSnapshot];
+  [self publish];
+}
+
+- (int32_t)sortOrder { return mv::io::pack_sort(_sort); }
+- (void)setSortOrder:(int32_t)packed {
+  const mv::io::sort_order next = mv::io::unpack_sort(packed);
+  if (next.key == _sort.key && next.descending == _sort.descending) return;
+  _sort = next;
+  [[NSUserDefaults standardUserDefaults] setInteger:packed forKey:@"mv.sort"];
+  [self resortKeepingSelection];
 }
 
 // ---- Settings -----------------------------------------------------------------
@@ -2348,6 +3015,7 @@ static NSString* const kDefaultsKeys = @"mv.keys";
     }
   }
   _router.rebuild(mv::shell::live_bindings());
+  _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);

@@ -112,10 +112,10 @@ the running version, the GPL, a link to the GitHub repo, `THIRD-PARTY.md`, and t
 **LGPL source offer for this build** — not a frozen snapshot from v1.0
 ([11-licensing.md](11-licensing.md)).
 
-## macOS first install — a branded disk image (PR 20)
+## macOS first install — a branded disk image (Mac PR 8)
 
 Same idea as the Windows wizard, in the Mac idiom: a short, branded first meeting, once,
-then silent updates. It lands with **PR 20** (Milestone F, **D9**), not in PR 8, and
+then silent updates. It is the **Mac half of PR 8** (built as old PR 20, **D9**), and
 nothing here changes what PR 8 ships. Recorded in [12](12-decision-log.md) 2026-09-23.
 
 | | First install | Every later update |
@@ -160,7 +160,7 @@ disk-image volume icon, Dock, and document icons for the UTIs. Not a second logo
 interrupt, restart when the user chooses, preserve state, staged rollout, minimum version /
 kill switch. The appcast is **EdDSA-signed** and checked against a key pinned in the app,
 like the Velopack manifest. Sparkle keeps no previous version, so "fails to start twice
-→ roll back" has no Mac mechanism yet. **Open for PR 20:** build it, or accept
+→ roll back" has no Mac mechanism yet. **Open for Mac PR 8:** build it, or accept
 kill-switch-only on Mac and log that call.
 
 **What Sparkle installs** is a zip of the stapled app, never the disk image: the licence
@@ -173,7 +173,7 @@ bundle, so it goes with it. What stays behind is the thumbnail cache
 (`~/Library/Caches/MediaViewer`) and preferences (`~/Library/Preferences/<bundle id>.plist`).
 A removal command is not needed.
 
-No per-machine / enterprise variant in PR 20.
+No per-machine / enterprise variant in Mac PR 8.
 
 ## Mechanics
 
@@ -260,6 +260,11 @@ dying and writes the minidump regardless.
 
 Given that decoders parse hostile input ([09-build-and-test.md](09-build-and-test.md)), this is not
 a nicety. It is how you find out which camera's RAW variant crashes.
+
+**macOS:** the same Crashpad handler and the same scrub, landing in the **Mac half of PR 11**
+(owner, 2026-09-24). It was planned for old PR 17 and never landed. The second capture path on
+Mac is Swift/AppKit (an uncaught `NSException`, a Swift runtime trap) instead of .NET, tied to
+the native report by the same correlation id.
 
 ## Two capture paths, because D1 gave you two languages
 
