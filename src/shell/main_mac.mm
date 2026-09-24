@@ -22,6 +22,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
+#include <optional>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -33,11 +35,16 @@
 
 #include "core/job_system.h"
 #include "core/trace.h"
+#include "edit/histogram.h"
+#include "image/linear.h"
 #include "io/collision_name.h"
+#include "io/file.h"
 #include "io/dir.h"
+#include "shell/adjust_pane.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
+#include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
 #include "shell/folder_model_mac.h"
@@ -63,6 +70,16 @@
 // link error against the Swift side.
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
+
+#include <cstddef>
+
+// PR 11: the Swift pane reads shell::adjust_view through its C twin.
+static_assert(sizeof(mv_adjust_view) == sizeof(mv::shell::adjust_view));
+static_assert(offsetof(mv_adjust_view, values) == offsetof(mv::shell::adjust_view, values));
+static_assert(offsetof(mv_adjust_view, clip_high) == offsetof(mv::shell::adjust_view, clip_high));
+static_assert(offsetof(mv_adjust_view, histogram_valid) ==
+              offsetof(mv::shell::adjust_view, histogram_valid));
+static_assert(offsetof(mv_adjust_view, bins) == offsetof(mv::shell::adjust_view, bins));
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -100,6 +117,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
+    // PR 11
+    case adjust_pane:
       return true;
     default:
       return false;
@@ -206,6 +225,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* treeHost;
 @property(nonatomic, strong) NSLayoutConstraint* metaBottom;
 @property(nonatomic, strong) NSLayoutConstraint* treeBottom;
+// PR 11: the adjust pane, on the metadata pane's edge (one at a time).
+@property(nonatomic, strong) NSView* adjustHost;
+@property(nonatomic, strong) NSLayoutConstraint* adjustBottom;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -334,6 +356,14 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)openFolderPath:(const char*)utf8_path;
 - (int32_t)sortOrder;
 - (void)setSortOrder:(int32_t)packed;
+// PR 11
+- (BOOL)adjustVisible;
+- (void)setAdjustVisible:(BOOL)visible;
+- (uint64_t)adjustGeneration;
+- (mv::shell::adjust_view)adjustView;
+- (void)adjustSet:(int32_t)param value:(float)value;
+- (void)adjustReset;
+- (void)adjustBlur;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -353,6 +383,7 @@ extern "C" bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_bu
 }
 extern "C" void mv_chrome_select_index(int32_t index) {
   if (!g_chrome_app || index < 0) return;
+  (void)mv::shell::crash::note_native_call();
   [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
 }
 extern "C" void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback) {
@@ -363,6 +394,7 @@ extern "C" void mv_chrome_request_thumb(int32_t index) {
   [g_chrome_app requestThumbAtIndex:index];
 }
 extern "C" void mv_chrome_menu(int32_t cmd) {
+  (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
 }
 extern "C" bool mv_chrome_settings_visible(void) {
@@ -638,6 +670,7 @@ extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   return MvCopyOut(std::string([[g_chrome_app currentFolder] UTF8String]), buf, size);
 }
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
+  (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && dir_utf8) [g_chrome_app openFolderPath:dir_utf8];
 }
 extern "C" int32_t mv_chrome_sort_order(void) {
@@ -651,10 +684,38 @@ extern "C" int32_t mv_chrome_export_last_choice(void) {
   return g_chrome_app ? [g_chrome_app exportChoice] : 0;
 }
 extern "C" void mv_chrome_export_confirm(int32_t packed) {
+  (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app confirmExport:packed];
 }
 extern "C" void mv_chrome_export_cancel(void) {
   if (g_chrome_app) [g_chrome_app setExportVisible:NO];
+}
+
+extern "C" bool mv_chrome_adjust_visible(void) {
+  return g_chrome_app && [g_chrome_app adjustVisible];
+}
+extern "C" uint64_t mv_chrome_adjust_generation(void) {
+  return g_chrome_app ? [g_chrome_app adjustGeneration] : 0;
+}
+extern "C" bool mv_chrome_adjust_view(mv_adjust_view* out) {
+  if (!g_chrome_app || !out) return false;
+  const mv::shell::adjust_view v = [g_chrome_app adjustView];
+  std::memcpy(out, &v, sizeof(*out));
+  return true;
+}
+extern "C" void mv_chrome_adjust_set(int32_t param, float value) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustSet:param value:value];
+}
+extern "C" void mv_chrome_adjust_reset(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustReset];
+}
+extern "C" void mv_chrome_adjust_close(void) {
+  if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
+}
+extern "C" void mv_chrome_adjust_blur(void) {
+  if (g_chrome_app) [g_chrome_app adjustBlur];
 }
 
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
@@ -1065,6 +1126,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   NSTimer* _rotateDebounce;
   BOOL _exportVisible;
   int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
+  // PR 11 (plan/07, plan/16). The adjust pane's state and the preview-sized
+  // FP16 working image the histogram reduces (the render thread holds its own
+  // GPU copy). `_adjustGen` cancels a build for an item the user has left.
+  mv::shell::adjust_pane _adjust;
+  std::shared_ptr<const mv::image::linear_image> _working;
+  std::atomic<mv::generation> _adjustGen;
+  std::uint64_t _adjustViewGeneration;
+  NSTimer* _histogramDebounce;
   mv::io::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
@@ -1080,6 +1149,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     _slideshowIntervalSeconds = 4.0;  // plan/16 Slideshow table's default
     _filmstripVisible = YES;
     _captureRow = -1;
+    // PR 11: generation 0 is "never cancelled" (core/job_system.h); a build's
+    // context must start at a real view intent.
+    _adjustGen.store(1, std::memory_order_relaxed);
   }
   return self;
 }
@@ -1291,6 +1363,19 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [container addSubview:self.treeHost];
   self.treeBottom = [self.treeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                constant:-kFilmstripHeightPoints];
+  // PR 11: the adjust pane, same edge and width as the metadata pane.
+  self.adjustHost = [MVChromeHost makeAdjustView];
+  self.adjustHost.hidden = YES;
+  self.adjustHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.adjustHost];
+  self.adjustBottom = [self.adjustHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                                   constant:-kFilmstripHeightPoints];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.adjustHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.adjustHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.adjustHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    self.adjustBottom,
+  ]];
   [NSLayoutConstraint activateConstraints:@[
     [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
@@ -1335,6 +1420,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
   g_chrome_app = self;
+  [self scheduleChromeCrashTest];
 
   _snap.window_visible = YES;
   _snap.window_active = YES;
@@ -2684,7 +2770,7 @@ enum MvMenuCmd : NSInteger {
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
-  s.pane_open = _metaPaneVisible || _treeVisible;
+  s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible();
   s.crop = _edits.crop_active();
   return s;
 }
@@ -2734,6 +2820,9 @@ enum MvMenuCmd : NSInteger {
 
 - (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
   using enum mv::shell::command_id;
+  // PR 11 (plan/13): every command is a native call with its own id, so a
+  // chrome exception or a crash in the work it starts carries the same one.
+  (void)mv::shell::crash::note_native_call();
   const bool clip = [self currentItemIsVideo];
   const bool anim = !clip && _lab.anim_active();
   switch (command) {
@@ -2780,6 +2869,7 @@ enum MvMenuCmd : NSInteger {
         case mv::shell::back_target::pane:
           [self setMetaPaneVisible:NO];
           [self setTreeVisible:NO];
+          [self setAdjustVisible:NO];
           break;
         case mv::shell::back_target::slideshow: [self leaveSlideshow]; break;
         case mv::shell::back_target::fullscreen: [self toggleFullscreen]; break;
@@ -2918,7 +3008,12 @@ enum MvMenuCmd : NSInteger {
       [board clearContents];
       return [board writeObjects:urls] ? YES : NO;
     }
-    case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
+    case metadata_pane:
+      if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
+      [self setMetaPaneVisible:!_metaPaneVisible];
+      return YES;
+    // PR 11 (plan/16 Pane): ⇧A shows the adjust pane and focuses it.
+    case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
     // PR 10 geometry, crop mode and export (plan/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
@@ -2949,6 +3044,7 @@ enum MvMenuCmd : NSInteger {
   const bool carried_turn = _edits.set_item(e);
   [self publishEdit];
   if (carried_turn) [self scheduleRotationWrite];
+  [self adjustItemChanged:mv::shell::is_video_name(entry.path_utf8) ? 0 : item];
 }
 
 - (void)publishEdit {
@@ -2971,11 +3067,13 @@ enum MvMenuCmd : NSInteger {
     case mv::shell::edit_effect::redraw:
       [self publishEdit];
       [self pokeSnapshot];
+      [self adjustColourChanged];  // undo / reset may have moved a slider
       return YES;
     case mv::shell::edit_effect::write_rotation:
       [self publishEdit];
       [self pokeSnapshot];
       [self scheduleRotationWrite];
+      [self adjustColourChanged];
       return YES;
     case mv::shell::edit_effect::export_image:
       [self setExportVisible:YES];
@@ -3079,15 +3177,226 @@ enum MvMenuCmd : NSInteger {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
   const mv::edit::geometry g = _edits.export_geometry();
+  const mv::edit::colour c = _edits.colour();
   const mv::edit::export_options opt = options;
-  _jobs.submit_at(mv::background_generation, [path, g, opt](const mv::job_context&) -> mv::status {
-    const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+  _jobs.submit_at(mv::background_generation, [path, g, c, opt](const mv::job_context&) -> mv::status {
+    const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
     const bool ok = static_cast<bool>(out);
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!ok) NSBeep();
     });
     return ok ? mv::status::ok : out.error();
   });
+}
+
+// ---- PR 11: macOS crash reporting, the verify's chrome crashes ----------------
+
+// MV_CRASH_TEST=nsexception | swift_trap (crash_reporter_mac.h). Inert unless
+// set. Two seconds after launch, from a run-loop timer — inside AppKit's own
+// event handling, where an exception used to be swallowed — as a native call
+// with its own correlation id, which the chrome report and the dump both carry.
+- (void)scheduleChromeCrashTest {
+  const std::string kind = mv::shell::crash::armed_chrome_test();
+  if (kind.empty()) return;
+  MV_LOG_WARN("crash: MV_CRASH_TEST=%s armed; the app will crash in 2 s", kind.c_str());
+  const bool trap = kind == "swift_trap";
+  [NSTimer scheduledTimerWithTimeInterval:2.0
+                                  repeats:NO
+                                    block:^(NSTimer* timer) {
+                                      (void)timer;
+                                      (void)mv::shell::crash::note_native_call();
+                                      if (trap) [MVChromeHost crashTestSwiftTrap];
+                                      else [MVChromeHost crashTestException];
+                                    }];
+}
+
+// ---- PR 11: colour adjusts, the adjust pane, the FP16 working image -----------
+
+- (BOOL)adjustStill {
+  return !_items.empty() && _index.current() < _items.size() && ![self currentItemIsVideo] &&
+         !_lab.anim_active() && _itemId != 0;
+}
+
+- (BOOL)adjustVisible { return _adjust.visible() ? YES : NO; }
+- (uint64_t)adjustGeneration { return _adjustViewGeneration; }
+- (mv::shell::adjust_view)adjustView { return _adjust.view(_edits.colour()); }
+- (void)bumpAdjustView { ++_adjustViewGeneration; }
+
+// Read, develop (a RAW: LibRaw's linear 16-bit develop — plan/07 waits for it,
+// never the embedded preview), downscale to the preview edge, upload as an
+// immutable RGBA16Float texture — all on the pool (rule 1). The same _jobs the
+// lab's decode uses, so it is drained before the Metal device goes away.
+- (void)startWorkingBuild:(std::uint64_t)token {
+  _working.reset();
+  _lab.drop_working();
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const std::string path = _items[_index.current()].path_utf8;
+  const std::uint64_t item = _itemId;
+  const mv::generation gen = _adjustGen.load(std::memory_order_relaxed);
+  std::atomic<mv::generation>* current = &_adjustGen;
+  mv::shell::present_lab_mac* lab = &_lab;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, item, gen, current, lab, token,
+                                              weakSelf](const mv::job_context&) -> mv::status {
+    const mv::job_context ctx(0, gen, current, 0);
+    std::shared_ptr<const mv::image::linear_image> working;
+    bool ok = false;
+    bool from_raw = false;
+    mv::status st = mv::status::ok;
+    auto bytes = mv::io::read_all(path);
+    if (!bytes) {
+      st = bytes.error();
+    } else if (auto full = mv::image::decode_linear(*bytes, &ctx); !full) {
+      st = full.error();
+    } else if (auto preview = mv::image::downsample(*full, mv::image::kWorkingPreviewEdge, &ctx);
+               !preview) {
+      st = preview.error();
+    } else if (ctx.cancelled()) {
+      st = mv::status::cancelled;
+    } else {
+      from_raw = preview->from_raw;
+      ok = lab->upload_working(*preview, item);
+      if (ok) working = std::make_shared<const mv::image::linear_image>(std::move(preview).value());
+      else st = mv::status::internal;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf workingLanded:token ok:ok fromRaw:from_raw working:working];
+    });
+    return st;
+  });
+}
+
+- (void)workingLanded:(std::uint64_t)token
+                   ok:(bool)ok
+              fromRaw:(bool)fromRaw
+              working:(std::shared_ptr<const mv::image::linear_image>)working {
+  if (_adjust.working_landed(token, ok, fromRaw)) {
+    _working = std::move(working);
+    [self scheduleHistogram];
+  }
+  [self bumpAdjustView];
+}
+
+- (void)adjustBuildIf:(std::optional<std::uint64_t>)token {
+  if (token) {
+    _adjustGen.fetch_add(1, std::memory_order_relaxed);
+    [self startWorkingBuild:*token];
+  }
+}
+
+- (void)adjustItemChanged:(std::uint64_t)item {
+  const bool has_colour = _edits.has_item() && !_edits.colour().identity();
+  const auto before = _adjust.readiness();
+  const std::optional<std::uint64_t> token = _adjust.set_item(item, has_colour);
+  if (_adjust.readiness() == mv::shell::adjust_readiness::none &&
+      before != mv::shell::adjust_readiness::none) {
+    _adjustGen.fetch_add(1, std::memory_order_relaxed);
+    _working.reset();
+    _lab.drop_working();
+  }
+  [self adjustBuildIf:token];
+  [self bumpAdjustView];
+}
+
+- (void)adjustColourChanged {
+  const bool has_colour = _edits.has_item() && !_edits.colour().identity();
+  [self adjustBuildIf:_adjust.colour_changed(has_colour)];
+  [self scheduleHistogram];
+  [self bumpAdjustView];
+}
+
+- (void)scheduleHistogram {
+  _adjust.histogram_dirty();
+  [_histogramDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _histogramDebounce = [NSTimer scheduledTimerWithTimeInterval:0.12
+                                                       repeats:NO
+                                                         block:^(NSTimer* timer) {
+                                                           (void)timer;
+                                                           [weakSelf startHistogram];
+                                                         }];
+}
+
+- (void)startHistogram {
+  _histogramDebounce = nil;
+  if (!_working) return;
+  const std::optional<std::uint64_t> token = _adjust.take_histogram_request();
+  if (!token) return;
+  const std::shared_ptr<const mv::image::linear_image> working = _working;
+  const mv::edit::adjust_uniforms u = mv::edit::uniforms_of(_edits.colour());
+  const std::uint64_t t = *token;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [working, u, t, weakSelf](const mv::job_context&) -> mv::status {
+    auto h = mv::edit::compute_histogram(*working, u);
+    if (!h) return h.error();
+    const mv::edit::histogram hist = *h;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf histogramLanded:t histogram:hist];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)histogramLanded:(std::uint64_t)token histogram:(const mv::edit::histogram&)h {
+  if (_adjust.histogram_landed(token, h)) [self bumpAdjustView];
+}
+
+- (void)setAdjustVisible:(BOOL)visible {
+  if (visible && ![self adjustStill]) {
+    NSBeep();  // nothing to adjust: a clip, an animation, an empty window
+    return;
+  }
+  if ((visible ? true : false) == _adjust.visible()) {
+    if (visible) [self.window makeFirstResponder:self.adjustHost];
+    return;
+  }
+  if (visible && _metaPaneVisible) [self setMetaPaneVisible:NO];
+  const bool has_colour = _edits.has_item() && !_edits.colour().identity();
+  [self adjustBuildIf:_adjust.show(visible, has_colour)];
+  if (!visible && !has_colour) {
+    // Nothing on the canvas needs the working image now; a reopen rebuilds it.
+    _adjustGen.fetch_add(1, std::memory_order_relaxed);
+    _working.reset();
+    _lab.drop_working();
+    _adjust.working_dropped();
+  }
+  self.adjustHost.hidden = !visible;
+  [self bumpAdjustView];
+  if (visible) {
+    [self scheduleHistogram];
+    [self.window makeFirstResponder:self.adjustHost];
+  } else {
+    [self.window makeFirstResponder:self.view];
+  }
+}
+
+// A slider moved. Disabled until the working image is ready; a late one is ignored.
+- (void)adjustSet:(int32_t)param value:(float)value {
+  if (param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  if (_edits.set_adjust(static_cast<mv::edit::adjust_param>(param), value) !=
+      mv::shell::edit_effect::redraw) {
+    return;
+  }
+  [self publishEdit];
+  [self pokeSnapshot];
+  // No generation bump: the pane already shows the value it sent. The
+  // histogram follows when the slider settles.
+  const bool has_colour = !_edits.colour().identity();
+  [self adjustBuildIf:_adjust.colour_changed(has_colour)];
+  [self scheduleHistogram];
+}
+
+- (void)adjustReset {
+  if (![self adjustStill]) return;
+  if (_edits.reset_adjust() != mv::shell::edit_effect::redraw) return;
+  [self publishEdit];
+  [self pokeSnapshot];
+  [self adjustColourChanged];
+}
+
+- (void)adjustBlur {
+  [self.window makeFirstResponder:self.view];
 }
 
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------
@@ -3525,6 +3834,10 @@ int main(int argc, char** argv) {
     }
     options.start_animating = !saw_static;
   }
+
+  // PR 11 (plan/13): Crashpad out of process, and the NSException capture,
+  // before anything else can crash. Never waits on the handler's report scan.
+  (void)mv::shell::crash::start();
 
   @autoreleasepool {
     [NSApplication sharedApplication];

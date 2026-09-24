@@ -264,6 +264,20 @@ def copy_sparkle(framework: Path, app: Path) -> None:
         xpc_link.unlink()
 
 
+CRASHPAD_HANDLER = "crashpad_handler"
+
+
+def copy_crashpad_handler(src: Path, app: Path) -> Path:
+    """Contents/Helpers/crashpad_handler: Apple's place for a helper tool the
+    app launches (crash_reporter_mac.mm looks there first)."""
+    helpers = app / "Contents" / "Helpers"
+    helpers.mkdir(parents=True, exist_ok=True)
+    dst = helpers / CRASHPAD_HANDLER
+    shutil.copyfile(src, dst)
+    dst.chmod(0o755)
+    return dst
+
+
 def cmd_assemble(args: argparse.Namespace) -> None:
     app = Path(args.app)
     if app.exists():
@@ -296,10 +310,16 @@ def cmd_assemble(args: argparse.Namespace) -> None:
     if args.sparkle:
         copy_sparkle(Path(args.sparkle), app)
 
-    bundle_dylibs(app, [
+    roots = [
         (main_exe, "@executable_path/../Frameworks"),
         (appex_exe, "@executable_path/../../../../Frameworks"),
-    ], [args.dylib_dir])
+    ]
+    # PR 11: Crashpad's out-of-process handler (plan/13), a helper tool.
+    if args.crashpad_handler:
+        handler = copy_crashpad_handler(Path(args.crashpad_handler), app)
+        roots.append((handler, "@executable_path/../Frameworks"))
+
+    bundle_dylibs(app, roots, [args.dylib_dir])
 
     sign_app(app, identity="-", appex_entitlements=Path(args.appex_entitlements), hardened=False)
     print(f"macpack: {app} (ad-hoc signed; `macpack.py release` for a shippable build)")
@@ -339,6 +359,9 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool)
         codesign(version / "Autoupdate", identity, hardened)
         codesign(version / "Updater.app", identity, hardened, preserve_entitlements=True)
         codesign(sparkle, identity, hardened)
+    handler = app / "Contents" / "Helpers" / CRASHPAD_HANDLER
+    if handler.exists():
+        codesign(handler, identity, hardened)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
     codesign(app, identity, hardened)
@@ -462,6 +485,7 @@ def main(argv: list[str]) -> None:
     a.add_argument("--font", required=True)
     a.add_argument("--dylib-dir", required=True)
     a.add_argument("--sparkle")
+    a.add_argument("--crashpad-handler", help="vcpkg's tools/crashpad/crashpad_handler (PR 11)")
     a.set_defaults(func=cmd_assemble)
 
     r = sub.add_parser("release", help="sign, notarize, disk image, update archive, appcast")

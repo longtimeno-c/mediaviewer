@@ -17,6 +17,9 @@
 // - Auto-bright stays on (dcraw default, 1 % clip). A fixed white point is
 //   visibly darker than the camera's own JPEG, which is the pop the verify
 //   line forbids; auto-bright lands much closer (still somewhat brighter).
+// - PR 11: decode_raw_linear is the same develop at 16 bits with a linear
+//   curve (the edit working space, D6), so the adjust pane's pixels are the
+//   viewer's pixels before the sRGB curve and the 8-bit rounding.
 // - Demosaic defaults to PPG — see default_options() for the numbers.
 #include "codec/raw_internal.h"
 
@@ -498,8 +501,13 @@ result<raster> preview_impl(std::span<const std::uint8_t> bytes, const job_conte
   return out;
 }
 
-result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context* ctx,
-                         const raw_detail::raw_options& opt) {
+// dcraw_process with the viewer's settings, in one of two encodings: 8-bit
+// with the sRGB tone curve (the viewer's full decode), or 16-bit linear
+// (PR 11: the edit working space, D6). Everything else — white balance,
+// matrix, demosaic, auto-bright, highlight clip, flip — is the same, so the
+// two agree up to the transfer curve and the bit depth.
+result<processed_image> develop(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                                const raw_detail::raw_options& opt, bool linear16) {
   if (ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
   if (!looks_like_raw(bytes)) return err(status::unsupported_format);
   const raw_threads threads(opt.thread_limit);
@@ -523,9 +531,14 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   p.use_camera_wb = 1;
   p.use_camera_matrix = 1;
   p.output_color = 1;  // sRGB primaries
-  p.output_bps = 8;
-  p.gamm[0] = 1.0 / 2.4;  // sRGB transfer (dcraw's default is BT.709 0.45/4.5)
-  p.gamm[1] = 12.92;
+  p.output_bps = linear16 ? 16 : 8;
+  if (linear16) {
+    p.gamm[0] = 1.0;  // linear: dcraw's curve with power 1 and no toe
+    p.gamm[1] = 1.0;
+  } else {
+    p.gamm[0] = 1.0 / 2.4;  // sRGB transfer (dcraw's default is BT.709 0.45/4.5)
+    p.gamm[1] = 12.92;
+  }
   p.highlight = 0;  // clip
   p.no_auto_bright = opt.auto_bright ? 0 : 1;
   p.user_qual = static_cast<int>(opt.quality);
@@ -571,18 +584,29 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   const double mem_ms = elapsed_ms();
   if (opt.timings) opt.timings->mem_ms = mem_ms;
   if (!img) return err(mem_ec != LIBRAW_SUCCESS ? map_libraw(mem_ec) : status::out_of_memory);
-  if (img->type != LIBRAW_IMAGE_BITMAP || img->bits != 8 || (img->colors != 3 && img->colors != 1)) {
+  const int bits = linear16 ? 16 : 8;
+  if (img->type != LIBRAW_IMAGE_BITMAP || img->bits != bits ||
+      (img->colors != 3 && img->colors != 1)) {
     return err(status::unsupported_format);
   }
   const std::uint32_t w = img->width;
   const std::uint32_t h = img->height;
-  const auto colors = static_cast<std::size_t>(img->colors);
+  const auto colors = static_cast<std::uint64_t>(img->colors);
   if (w == 0 || h == 0 || w > kMaxDim || h > kMaxDim ||
       static_cast<std::uint64_t>(w) * h > kMaxPixels ||
-      img->data_size < static_cast<std::uint64_t>(w) * h * colors) {
+      img->data_size < static_cast<std::uint64_t>(w) * h * colors * (bits / 8)) {
     return err(status::corrupt);
   }
-  lr.recycle();  // drop the 16-bit working image before the RGBA allocation
+  lr.recycle();  // drop the 16-bit working image before the caller's allocation
+  return img;
+}
+
+result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                         const raw_detail::raw_options& opt) {
+  MV_TRY(processed_image img, develop(bytes, ctx, opt, false));
+  const std::uint32_t w = img->width;
+  const std::uint32_t h = img->height;
+  const auto colors = static_cast<std::size_t>(img->colors);
 
   raster out;
   try {
@@ -615,6 +639,45 @@ result<raster> full_impl(std::span<const std::uint8_t> bytes, const job_context*
   out.intent = transfer_intent::display_referred;
   out.tagged_srgb = true;
   if (opt.timings) opt.timings->pack_ms = elapsed_ms();
+  return out;
+}
+
+result<raster16> linear_impl(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                             const raw_detail::raw_options& opt) {
+  MV_TRY(processed_image img, develop(bytes, ctx, opt, true));
+  const std::uint32_t w = img->width;
+  const std::uint32_t h = img->height;
+  const auto colors = static_cast<std::size_t>(img->colors);
+
+  raster16 out;
+  try {
+    out.rgba.resize(static_cast<std::size_t>(w) * h * 4);
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
+  // LibRaw writes host-endian 16-bit samples; the buffer is only byte-aligned.
+  const std::uint8_t* src = img->data;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    if ((y & 255) == 0 && ctx != nullptr && ctx->cancelled()) return err(status::cancelled);
+    const std::uint8_t* s = src + static_cast<std::size_t>(y) * w * colors * 2;
+    std::uint16_t* d = out.rgba.data() + static_cast<std::size_t>(y) * w * 4;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      std::uint16_t v[3];
+      if (colors == 3) {
+        std::memcpy(v, s + static_cast<std::size_t>(x) * 6, 6);
+      } else {
+        std::memcpy(v, s + static_cast<std::size_t>(x) * 2, 2);
+        v[1] = v[2] = v[0];
+      }
+      d[x * 4 + 0] = v[0];
+      d[x * 4 + 1] = v[1];
+      d[x * 4 + 2] = v[2];
+      d[x * 4 + 3] = 65535;
+    }
+  }
+  out.width = w;
+  out.height = h;
+  out.format = format_family::raw;
   return out;
 }
 
@@ -697,6 +760,17 @@ result<raster> decode_raw_with(std::span<const std::uint8_t> bytes, const job_co
   }
 }
 
+result<raster16> decode_raw_linear_with(std::span<const std::uint8_t> bytes,
+                                        const job_context* ctx, const raw_options& opt) {
+  try {
+    return linear_impl(bytes, ctx, opt);
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  } catch (...) {
+    return err(status::internal);
+  }
+}
+
 result<raster> decode_raw_preview_with(std::span<const std::uint8_t> bytes,
                                        const job_context* ctx, const raw_options& opt) {
   try {
@@ -719,6 +793,10 @@ result<raster> decode_raw(std::span<const std::uint8_t> bytes, const job_context
   auto opt = raw_detail::default_options();
   opt.thread_limit = thread_limit;
   return raw_detail::decode_raw_with(bytes, ctx, opt);
+}
+
+result<raster16> decode_raw_linear(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+  return raw_detail::decode_raw_linear_with(bytes, ctx, raw_detail::default_options());
 }
 
 }  // namespace mv::codec

@@ -139,7 +139,7 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `Ctrl+Z` / `Ctrl+R` | Undo the last edit / reset edits to the original (PR 10; keys chosen 2026-09-24). A lossless rewrite already on disk is undone by the opposite turn |
 | `Ctrl+S` | Export the edits to a new file beside the original, `<name>-edit.jpg` (PR 10; key chosen 2026-09-24). Never overwrites |
 | `I` | Metadata pane (PR 9). Windows 2026-09-24: focuses the pane; Left / Right change tab, Down reaches the tag search (type to filter), `Esc` returns to the canvas and a second `Esc` closes it |
-| `E` | Adjust pane (PR 11) — **collides with `Q` `E` transport below, landed in 5c. PR 11 picks a different key; this row is not a claim on `E`.** |
+| `Shift+A` | Adjust pane (PR 11; `⇧A` on Mac). Not `E`: that is the clip transport (`Q` `E`, 5c), as this row used to warn. Shows the pane and focuses its first slider; again (or the pane's close button) hides it. Stills only |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
 | `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are big tiles when the folder holds only folders, and one row above the photos when it holds both. Up from the first photo row moves onto that row, Left / Right move among them, `Enter` opens the tile, Down returns to the photos. `/` on that row finds a tile by the start of its name |
 | `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder and selects the folder you just left. The path stays on screen, including while a photo is open; a long middle collapses until asked for. Not bound to Backspace, which is Previous |
@@ -399,7 +399,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 8 | Package the existing viewer; About and release setup, no new feature commands |
 | 9 | Folder tree, `I` pane, `O` overlay fills exposure, AF points, eyedropper, sort by date taken |
 | 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops). Written for Windows and macOS 2026-09-24 with `Shift+C`, `Ctrl+S`, `Ctrl+Z`, `Ctrl+R` ([12](12-decision-log.md)) |
-| 11 | `E` pane, accurate RAW clipping, histogram |
+| 11 | `Shift+A` adjust pane (not `E`, which is the clip transport), accurate RAW clipping, histogram |
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]` |
 | 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |

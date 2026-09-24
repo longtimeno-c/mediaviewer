@@ -66,6 +66,7 @@ public static partial class IslandHost
 
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
+            DisposeSource(ref _adjustPane);
             EnsureFocusHook();
             _metaPane = new DesktopWindowXamlSource();
             _metaPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
@@ -73,12 +74,18 @@ public static partial class IslandHost
             _tree = new DesktopWindowXamlSource();
             _tree.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             _tree.TakeFocusRequested += OnTakeFocusRequested;
+            // PR 11: the adjust pane, on the same right edge as the metadata pane.
+            _adjustPane = new DesktopWindowXamlSource();
+            _adjustPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _adjustPane.TakeFocusRequested += OnTakeFocusRequested;
             // Parked below the client area with no content until first shown: a
             // default full-client island would flash over the canvas.
             MoveAt(_metaPane, 0, args.ClientHeight, 1, 1);
             MoveAt(_tree, 0, args.ClientHeight, 1, 1);
+            MoveAt(_adjustPane, 0, args.ClientHeight, 1, 1);
             _metaPaneVisible = false;
             _treeVisible = false;
+            _adjustPaneVisible = false;
             return 0;
         }
         catch (Exception ex)
@@ -96,10 +103,13 @@ public static partial class IslandHost
         {
             _metaPaneVisible = false;
             _treeVisible = false;
+            _adjustPaneVisible = false;
             DropMetaUi();
             DropTreeUi();
+            DropAdjustUi();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
+            DisposeSource(ref _adjustPane);
             return 0;
         }
         catch (Exception ex)

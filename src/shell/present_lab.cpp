@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "abi/native.h"
 #include "codec/format.h"
@@ -216,8 +217,82 @@ void present_lab::refine_fade_tick(double elapsed) noexcept {
   if (now > refine_fade_drops_at_start_) refine_fade_dropped_ += now - refine_fade_drops_at_start_;
 }
 
+bool present_lab::upload_working(const image::linear_image& img, std::uint64_t item,
+                                 std::uint32_t generation) noexcept {
+  if (!img.valid() || item == 0) return false;
+  gfx::com_ptr<ID3D11Device> device;
+  {
+    std::lock_guard<std::mutex> lock(upload_device_mutex_);
+    device = upload_device_;
+  }
+  if (!device) return false;
+  D3D11_TEXTURE2D_DESC td{};
+  td.Width = img.width;
+  td.Height = img.height;
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  // FP16 linear, not _SRGB: the blit reads linear light straight from it,
+  // exactly what the 8-bit texture's _SRGB view hands the same shader.
+  td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_IMMUTABLE;
+  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA init{};
+  init.pSysMem = img.rgba.data();
+  init.SysMemPitch = img.width * 8;
+  gfx::com_ptr<ID3D11Texture2D> tex;
+  if (FAILED(device->CreateTexture2D(&td, &init, tex.GetAddressOf()))) return false;
+  auto made = std::unique_ptr<working_texture>(new (std::nothrow) working_texture{});
+  if (!made) return false;
+  if (FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, made->srv.GetAddressOf()))) {
+    return false;
+  }
+  made->device = device.Get();
+  made->width = img.width;
+  made->height = img.height;
+  made->item = item;
+  made->generation = generation;
+  {
+    std::lock_guard<std::mutex> lock(working_mutex_);
+    working_incoming_ = std::move(made);
+    working_drop_ = false;
+  }
+  wake();
+  return true;
+}
+
+void present_lab::drop_working() noexcept {
+  {
+    std::lock_guard<std::mutex> lock(working_mutex_);
+    working_incoming_.reset();
+    working_drop_ = true;
+  }
+  wake();
+}
+
+bool present_lab::take_working() noexcept {
+  std::unique_lock<std::mutex> lock(working_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) return false;  // a worker is handing one over: next frame
+  bool changed = false;
+  if (working_drop_) {
+    changed = working_ != nullptr;
+    working_.reset();
+    working_drop_ = false;
+  }
+  if (working_incoming_) {
+    working_ = std::move(working_incoming_);
+    changed = true;
+  }
+  return changed;
+}
+
 expected present_lab::rebuild_device() noexcept {
   if (warmed_up_) measurement_valid_ = false;
+  working_.reset();  // PR 11: textures of the old device
+  {
+    std::lock_guard<std::mutex> lock(upload_device_mutex_);
+    upload_device_.Reset();
+  }
   if (imgui_ready_) {
     ImGui_ImplDX11_Shutdown();
     imgui_ready_ = false;
@@ -259,6 +334,10 @@ expected present_lab::rebuild_device() noexcept {
   if (session_) {
     const status st = mv::abi::attach_device(session_, device_.d3d());
     if (st != status::ok) return err(st);
+  }
+  {
+    std::lock_guard<std::mutex> lock(upload_device_mutex_);
+    upload_device_ = device_.d3d();
   }
 
   if (!ImGui_ImplDX11_Init(device_.d3d(), device_.context())) return err(status::internal);
@@ -590,14 +669,18 @@ void present_lab::render_thread_main() noexcept {
         }
       }
     }
+    // PR 11: a working texture handed over (or dropped) is one more frame.
+    if (take_working()) redraw = true;
     // PR 10: the edit geometry of the still on screen changed (a turn, a
     // committed crop, crop mode's draft). A new picture size refits, as a new
-    // item would; an overlay-only change just redraws.
+    // item would; an overlay-only change just redraws — and so does a colour
+    // change (PR 11): new uniforms, no decode, no refit.
     if (current_image_ && !current_video_.texture) {
       const edit_view* edit_slot = edit_for(*current_image_);
       const edit_view edit_now = edit_slot ? *edit_slot : edit_view{};
       const bool edit_moved = !same_geometry(edit_now, applied_edit_);
-      if (edit_moved || !same_overlay(edit_now, applied_edit_)) {
+      if (edit_moved || !same_overlay(edit_now, applied_edit_) ||
+          !same_adjust(edit_now, applied_edit_)) {
         const edit::placement edit_before =
             place_through(applied_edit_.item != 0 ? &applied_edit_ : nullptr,
                           current_image_->width, current_image_->height);
@@ -1043,6 +1126,13 @@ void present_lab::render_thread_main() noexcept {
       for (int i = 0; i < 6; ++i) bp.uv_inverse[i] = shown_inverse.m[i];
       bp.source_w = static_cast<float>(shown->width);
       bp.source_h = static_cast<float>(shown->height);
+      // PR 11: the colour kernel's uniforms, and the FP16 working texture in
+      // place of the 8-bit one when it has landed for this still. Until then
+      // the same kernel runs on the 8-bit texture, so the edit never flashes
+      // off while the working image builds.
+      apply_adjust(shown_edit, bp);
+      const working_texture* working =
+          (!show_previous && shown != anim_frame_.get()) ? working_for(shown_edit) : nullptr;
       if (show_previous && (shown_w != media_width() || shown_h != media_height())) {
         // A same-size burst keeps the camera so the pick is like for like; a
         // different frame is shown whole rather than at the wrong crop.
@@ -1070,7 +1160,7 @@ void present_lab::render_thread_main() noexcept {
       if (fade_from_ && !fade_.active(elapsed)) fade_from_.reset();
       const bool fade_now = is_current && fade_from_ && fade_from_->srv;
       const float fade_alpha = fade_now ? fade_.alpha(elapsed) : 1.0f;
-      const bool tiled = is_current && shown->tiles;
+      const bool tiled = is_current && shown->tiles && !working;
       if (tiled) {
         // Tiles live in the source's pixels. The camera looks at the edited
         // output, so an edited image asks for the tiles under the same
@@ -1104,6 +1194,13 @@ void present_lab::render_thread_main() noexcept {
         }
         gfx::blit_params cp = p;
         cp.opacity = fade_alpha;
+        if (working) {
+          gfx::blit_params wp = cp;
+          wp.texture_w = static_cast<float>(working->width);
+          wp.texture_h = static_cast<float>(working->height);
+          blitter_.draw(device_.context(), working->srv.Get(), wp);
+          return;  // the working image is the whole picture: no refine base, no tiles
+        }
         blitter_.draw(device_.context(), shown->srv.Get(), cp);
         if (is_current && refine_base_ && refine_base_->srv) {
           gfx::blit_params rp = cp;

@@ -31,6 +31,7 @@
 #include "gfx/pacer.h"
 #include "gfx/swapchain.h"
 #include "image/gpu_image.h"
+#include "image/linear.h"
 #include "image/tiles.h"
 #include "mediaviewer/mediaviewer.h"
 #include "shell/dino_game.h"
@@ -128,6 +129,17 @@ class present_lab {
     return *w > 0 && *h > 0;
   }
 
+  // PR 11: the FP16 working texture (image/linear.h, D6) of the still being
+  // adjusted. [worker thread] Creates an immutable R16G16B16A16_FLOAT texture
+  // from `img` on the render thread's device (free-threaded, created with
+  // D3D11_SUBRESOURCE_DATA — plan/02) and queues it for the edit_view slot
+  // (`item`, `generation`). False when there is no device or the create
+  // failed. The render thread picks it up with a try_lock: it never waits.
+  [[nodiscard]] bool upload_working(const image::linear_image& img, std::uint64_t item,
+                                    std::uint32_t generation) noexcept;
+  // [any-thread][no-block] Releases it: the item changed, or nothing needs it.
+  void drop_working() noexcept;
+
   // [any-thread][no-block] The animated item's state, as of the last frame.
   [[nodiscard]] animation_state animation() const noexcept {
     return static_cast<animation_state>(anim_state_.load(std::memory_order_relaxed));
@@ -222,6 +234,30 @@ class present_lab {
     return place_through(edit_for(img), img.width, img.height);
   }
   void draw_crop_overlay(const input_snapshot& snapshot) noexcept;
+  // PR 11 working texture. `working_` is render-thread only; the other three
+  // are the hand-over, under a mutex the render thread only ever try_locks.
+  struct working_texture {
+    gfx::com_ptr<ID3D11ShaderResourceView> srv;
+    ID3D11Device* device = nullptr;  // identity only: a rebuilt device drops it
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint64_t item = 0;
+    std::uint32_t generation = 0;
+  };
+  std::unique_ptr<working_texture> working_;
+  std::mutex working_mutex_;
+  std::unique_ptr<working_texture> working_incoming_;
+  bool working_drop_ = false;
+  bool take_working() noexcept;  // render thread: true when what it draws changed
+  // The working texture if it belongs to `ev` (the shown still's slot).
+  [[nodiscard]] const working_texture* working_for(const edit_view* ev) const noexcept {
+    if (!working_ || !ev || ev->item == 0) return nullptr;
+    if (working_->item != ev->item || working_->generation != ev->generation) return nullptr;
+    return working_->device == device_.d3d() ? working_.get() : nullptr;
+  }
+  // The device workers upload on. Copied (AddRef) under the lock, used after it.
+  std::mutex upload_device_mutex_;
+  gfx::com_ptr<ID3D11Device> upload_device_;
   // Records the still that just became current: its slot, and its size for
   // still_size(). Called wherever current_image_ takes a published image.
   void note_still_landed() noexcept;

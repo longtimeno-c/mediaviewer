@@ -8,6 +8,10 @@
 //               the DCT coefficients are rearranged (lossless_jpeg.h).
 //   re-encode — everything else: decode, geometry on the CPU (geometry.h),
 //               encode (encode.h).
+//   bake      — PR 11: any colour adjust: the FP16 working image
+//               (image::decode_linear — for a RAW, LibRaw's linear develop),
+//               geometry and the colour kernel at full resolution
+//               (edit/bake.h), encoded as sRGB.
 // Either way the output is upright: EXIF Orientation = 1, EXIF pixel
 // dimensions = the written size, tiff:Orientation in XMP = 1.
 //
@@ -23,6 +27,7 @@
 
 #include "core/job_system.h"
 #include "core/result.h"
+#include "edit/adjust.h"
 #include "edit/edit_stack.h"
 #include "edit/encode.h"
 #include "edit/metadata_policy.h"
@@ -53,6 +58,12 @@ struct export_result {
 // are siblings). Ignored for JPEG and PNG sources, which are read here.
 [[nodiscard]] result<export_result> export_image(std::span<const std::uint8_t> source,
                                                  const geometry& g, const export_options& opt,
+                                                 const job_context* ctx = nullptr,
+                                                 const metadata_blobs* carried = nullptr);
+// PR 11: with colour adjusts. An identity `c` is exactly the overload above.
+[[nodiscard]] result<export_result> export_image(std::span<const std::uint8_t> source,
+                                                 const geometry& g, const colour& c,
+                                                 const export_options& opt,
                                                  const job_context* ctx = nullptr,
                                                  const metadata_blobs* carried = nullptr);
 

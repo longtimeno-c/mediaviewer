@@ -194,6 +194,7 @@ add_library(mv::core ALIAS mv_core)
 # ---------------------------------------------------------------------------
 add_library(mv_gfx STATIC
   src/gfx/device.cpp
+  src/gfx/adjust_kernel.h
   src/gfx/pacer.cpp
   src/gfx/swapchain.cpp
   src/gfx/blit.cpp
@@ -329,6 +330,9 @@ find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 add_library(mv_image STATIC
   src/image/colour.cpp
+  src/image/linear.cpp
+  src/image/linear.h
+  src/image/half.h
   src/image/pipeline.cpp
   src/image/upload.cpp
   src/image/tiles.cpp
@@ -438,8 +442,17 @@ add_library(mv::meta ALIAS mv_meta)
 # MCU-aligned crop on libjpeg's coefficient API, and the JPEG / PNG export
 # encoders. Pure C++ over codec + io + core: no GPU, no platform header (D9);
 # the preview is the blit's output -> source map (gfx/blit*.h).
+# PR 11: colour adjusts (adjust.*), the one-source shader kernel
+# (gfx/adjust_kernel.h, pasted into both blits), the full-resolution bake over the
+# FP16 working image (image/linear.h) and the histogram reduction.
 # ---------------------------------------------------------------------------
 add_library(mv_edit STATIC
+  src/edit/adjust.cpp
+  src/edit/adjust.h
+  src/edit/bake.cpp
+  src/edit/bake.h
+  src/edit/histogram.cpp
+  src/edit/histogram.h
   src/edit/edit_stack.cpp
   src/edit/edit_stack.h
   src/edit/geometry.cpp
@@ -453,7 +466,7 @@ add_library(mv_edit STATIC
   src/edit/metadata_policy.h
 )
 target_link_libraries(mv_edit
-  PUBLIC mv_core mv_codec
+  PUBLIC mv_core mv_codec mv_image
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
 add_library(mv::edit ALIAS mv_edit)
 
@@ -522,6 +535,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/edit_session.cpp
   src/shell/edit_session.h
   src/shell/edit_view.h
+  src/shell/adjust_pane.cpp
+  src/shell/adjust_pane.h
   src/shell/open_request.cpp
   src/shell/open_request.h
   src/shell/slideshow.h
@@ -756,6 +771,9 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
+    tests/test_adjust.cpp
+    src/shell/adjust_pane.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp

@@ -57,7 +57,14 @@ class byte_guard {
 // --- text rules --------------------------------------------------------------
 
 constexpr std::string_view kModuleExt[] = {"dll", "exe", "sys", "drv", "ocx", "cpl",
-                                           "winmd", "pdb", "mui", "node", "efi"};
+                                           "winmd", "pdb", "mui", "node", "efi",
+                                           // PR 11, macOS: shared libraries, plug-ins, symbols
+                                           "dylib", "so", "bundle", "appex", "dsym"};
+// PR 11, macOS: the roots under which a POSIX absolute path can name a user's
+// files. /System/Library, /usr/lib and /Applications hold none and are left
+// alone (a module list full of them is what symbolication needs).
+constexpr std::string_view kPosixRoots[] = {"Users", "Volumes", "private", "var", "tmp",
+                                            "home", "Network", "mnt", "media"};
 // D5 camera-dump set, RAW variants, companions, and the video containers.
 constexpr std::string_view kMediaExt[] = {
     "jpg", "jpeg", "jpe", "jfif", "png", "apng", "bmp", "dib", "gif", "tif", "tiff", "webp",
@@ -82,6 +89,10 @@ bool path_unit(std::uint32_t u) noexcept {
   }
 }
 bool filename_unit(std::uint32_t u) noexcept { return path_unit(u) && !is_sep(u) && u != ':'; }
+// Unrooted fragments treat a space as prose, not as part of a component.
+// "My Photos/trip" still loses "Photos/trip"; a space must not glue a path
+// onto the words around it ("canary and https://…", " /Users/…").
+bool fragment_unit(std::uint32_t u) noexcept { return filename_unit(u) && u != ' '; }
 
 // A run of code units of one width over a byte span.
 class units {
@@ -111,6 +122,7 @@ class units {
     }
     return true;
   }
+  [[nodiscard]] std::size_t byte_offset(std::size_t k) const noexcept { return base_ + k * width_; }
 
  private:
   std::span<std::uint8_t> bytes_;
@@ -183,35 +195,119 @@ bool component_is_identity(const units& u, std::size_t b, std::size_t e,
   return false;
 }
 
-// Returns end of path run starting at k, or k when there is no path here.
-std::size_t path_at(const units& u, std::size_t k) noexcept {
+// A rooted path starting at k: `end` is past its last unit, or k when there
+// is none. `keep` is where masking starts for a data path (the drive or share
+// prefix, or a POSIX path's first component, "/Users/"); `walk` is where a
+// module path's components start ("C:\", "/").
+struct rooted_path {
+  std::size_t end = 0;
+  std::size_t keep = 0;
+  std::size_t walk = 0;
+  bool posix = false;
+};
+
+rooted_path path_at(const units& u, std::size_t k) noexcept {
   const std::size_t n = u.size();
-  if (k > 0 && is_alnum(u.at(k - 1))) return k;
+  rooted_path p{k, k, k, false};
+  if (k > 0 && is_alnum(u.at(k - 1))) return p;
   std::size_t root = 0;
   if (k + 3 < n && is_alpha(u.at(k)) && u.at(k + 1) == ':' && is_sep(u.at(k + 2))) {
     root = 3;
   } else if (k + 3 < n && u.at(k) == '\\' && u.at(k + 1) == '\\' &&
              (filename_unit(u.at(k + 2)) || u.at(k + 2) == '?' || u.at(k + 2) == '.')) {
     root = 2;
+  } else if (u.at(k) == '/' && (k == 0 || (!path_unit(u.at(k - 1)) || u.at(k - 1) == ' ' ||
+                                           u.at(k - 1) == '=' || u.at(k - 1) == '(' ||
+                                           u.at(k - 1) == '\'' || u.at(k - 1) == ','))) {
+    // PR 11, macOS: "/Users/<name>/...", "/Volumes/<card>/...", "/private/var/...".
+    // Not "//" (a URL's authority) and not a relative "a/b".
+    for (const auto r : kPosixRoots) {
+      if (k + 2 + r.size() < n && u.equals_ci(k + 1, r) && u.at(k + 1 + r.size()) == '/' &&
+          path_unit(u.at(k + 2 + r.size())) && !is_sep(u.at(k + 2 + r.size()))) {
+        root = 2 + r.size();
+        p.posix = true;
+        break;
+      }
+    }
+    if (root == 0) return p;
   } else {
-    return k;
+    return p;
   }
   std::size_t e = k + root;
-  if (root == 2 && e < n && u.at(e) == '?') ++e;  // \\?\ prefix
+  if (!p.posix && root == 2 && e < n && u.at(e) == '?') ++e;  // \\?\ prefix
   while (e < n && path_unit(u.at(e))) ++e;
-  return e > k + root ? e : k;
+  if (e <= k + root) return p;
+  p.end = e;
+  p.keep = k + root;
+  p.walk = p.posix ? k + 1 : k + root;
+  return p;
+}
+
+// A macOS module has no extension of its own inside a bundle:
+// "…/MediaViewer.app/Contents/MacOS/MediaViewer", "…/Sparkle.framework/Versions/B/Sparkle".
+bool posix_bundle_module(const units& u, std::size_t b, std::size_t e) noexcept {
+  for (std::size_t i = b; i + 1 < e; ++i) {
+    if (u.at(i) != '.') continue;
+    if (u.equals_ci(i, ".app/contents/") || u.equals_ci(i, ".framework/") ||
+        u.equals_ci(i, ".appex/contents/") || u.equals_ci(i, ".bundle/contents/")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool byte_in(const std::vector<interval>& spans, std::uint64_t off) noexcept {
+  for (const auto& s : spans) {
+    if (off >= s.begin && off < s.end) return true;
+  }
+  return false;
+}
+
+// An unrooted "comp/comp(/comp)*" starting at a component boundary. `end` is
+// past the last component, or `k` when there is no such run. `mask` is false
+// for a relative "./" or "../" run and for the authority of a "://" URL — the
+// caller still skips those, so the tail ("a/b" inside a URL) is not a fresh run.
+// One component is not a run: a bare folder name has nothing that marks it as
+// a path, and masking every token would destroy the stack.
+void unrooted_run(const units& u, std::size_t k, std::size_t* end, bool* mask) noexcept {
+  *end = k;
+  *mask = false;
+  const std::size_t n = u.size();
+  if (k >= n || !fragment_unit(u.at(k))) return;
+  auto component_end = [&](std::size_t b) {
+    std::size_t e = b;
+    while (e < n && (e - b) < 255 && fragment_unit(u.at(e))) ++e;
+    return e;
+  };
+  const std::size_t first_end = component_end(k);
+  if (first_end == k) return;
+  const bool relative = (first_end - k == 1 && u.at(k) == '.') ||
+                        (first_end - k == 2 && u.at(k) == '.' && u.at(k + 1) == '.');
+  std::size_t e = first_end;
+  int comps = 1;
+  while (comps < 32 && e + 1 < n && is_sep(u.at(e)) && !is_sep(u.at(e + 1))) {
+    const std::size_t next = component_end(e + 1);
+    if (next == e + 1) break;
+    e = next;
+    ++comps;
+  }
+  if (comps < 2) return;
+  const bool url = k >= 3 && u.at(k - 3) == ':' && is_sep(u.at(k - 2)) && is_sep(u.at(k - 1));
+  *end = e;
+  *mask = !relative && !url;
 }
 
 void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
-                 scrub_report& report) {
+                 const std::vector<interval>* stack_files, scrub_report& report) {
   const std::size_t n = u.size();
   std::size_t k = 0;
   while (k < n) {
     const std::uint32_t c = u.at(k);
 
-    // 1. Rooted paths.
-    if (c == '\\' || c == ':' || is_alpha(c)) {
-      std::size_t e = path_at(u, k);
+    // 1. Rooted paths (Windows drive / UNC; PR 11: POSIX under a user root).
+    if (c == '\\' || c == ':' || c == '/' || is_alpha(c)) {
+      const rooted_path rp = path_at(u, k);
+      std::size_t e = rp.end;
       if (e > k) {
         std::size_t last = k;
         for (std::size_t i = k; i < e; ++i) {
@@ -229,11 +325,13 @@ void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
         for (std::size_t i = e; i > last; --i) {
           if (u.at(i - 1) == '.') { dot = i - 1; break; }
         }
-        const bool module = dot < e && ext_in(u, dot + 1, e, kModuleExt);
-        const std::size_t root_end = (u.at(k + 1) == ':') ? k + 3 : k + 2;
+        const bool module = (dot < e && ext_in(u, dot + 1, e, kModuleExt)) ||
+                            (rp.posix && posix_bundle_module(u, k, e));
+        const std::size_t root_end = module ? rp.walk : rp.keep;
         if (module) {
           // Keep the layout for symbolication; drop the profile name and any
-          // identity token standing as a component.
+          // identity token standing as a component. ("Users" is a component
+          // on both systems: C:\Users\name, /Users/name.)
           std::size_t b = root_end;
           bool after_users = false;
           for (std::size_t i = root_end; i <= e; ++i) {
@@ -255,6 +353,32 @@ void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
         }
         k = e;
         continue;
+      }
+    }
+
+    // 1b. Unrooted multi-component runs. In a dump, only thread-stack bytes:
+    // a system module path lives outside the stack and must keep its text.
+    // `stack_files == nullptr` is the plain-text path (an exception reason),
+    // where every byte is in scope. A URL or a relative run is skipped whole
+    // so its tail is not masked as its own run.
+    if ((k == 0 || !fragment_unit(u.at(k - 1))) && fragment_unit(c)) {
+      std::size_t e = k;
+      bool do_mask = false;
+      unrooted_run(u, k, &e, &do_mask);
+      if (e > k) {
+        const bool on_stack = stack_files == nullptr || byte_in(*stack_files, u.byte_offset(k));
+        if (do_mask && on_stack) {
+          for (std::size_t j = k; j < e; ++j) {
+            if (!is_sep(u.at(j))) u.mask(j);
+          }
+          ++report.paths_masked;
+          k = e;
+          continue;
+        }
+        if (!do_mask) {
+          k = e;
+          continue;
+        }
       }
     }
 
@@ -293,12 +417,13 @@ void scrub_units(units& u, const std::vector<identity_units>& ids, bool wide,
 }
 
 void scrub_all_encodings(std::span<std::uint8_t> bytes, const byte_guard* guard,
-                         const std::vector<identity_units>& ids, scrub_report& report) {
+                         const std::vector<identity_units>& ids,
+                         const std::vector<interval>& stack_files, scrub_report& report) {
   units narrow(bytes, 0, 1, guard);
-  scrub_units(narrow, ids, false, report);
+  scrub_units(narrow, ids, false, &stack_files, report);
   for (std::size_t parity = 0; parity < 2; ++parity) {
     units wide(bytes, parity, 2, guard);
-    scrub_units(wide, ids, true, report);
+    scrub_units(wide, ids, true, &stack_files, report);
   }
 }
 
@@ -413,9 +538,25 @@ scrub_report scrub_minidump(std::span<std::uint8_t> dump, const scrub_options& o
     }
   }
 
+  // File offsets of captured bytes that sit inside a thread stack. The
+  // unrooted-fragment rule is limited to these; everything else was either
+  // zeroed above or is structural (module list, contexts).
+  std::vector<interval> stack_files;
+  for (const auto& r : ranges) {
+    if (r.rva >= d.size() || r.size == 0) continue;
+    const std::uint64_t size = std::min<std::uint64_t>(r.size, d.size() - r.rva);
+    for (const auto& st : stacks) {
+      const std::uint64_t begin = std::max(r.va, st.begin);
+      const std::uint64_t end = std::min(r.va + size, st.end);
+      if (begin >= end) continue;
+      const std::uint64_t file = r.rva + (begin - r.va);
+      stack_files.push_back({file, file + (end - begin)});
+    }
+  }
+
   // 2. Text everywhere else.
   const auto ids = prepare_identities(options);
-  scrub_all_encodings(dump, &guard, ids, report);
+  scrub_all_encodings(dump, &guard, ids, stack_files, report);
 
   // Marker last, directly (the header is guarded against the text pass).
   dump[kHeaderChecksumOffset] = static_cast<std::uint8_t>(kScrubMarker);
@@ -430,7 +571,7 @@ std::string scrub_text(std::string text, const scrub_options& options) {
   const auto ids = prepare_identities(options);
   std::span<std::uint8_t> bytes(reinterpret_cast<std::uint8_t*>(text.data()), text.size());
   units narrow(bytes, 0, 1, nullptr);
-  scrub_units(narrow, ids, false, report);
+  scrub_units(narrow, ids, false, nullptr, report);
   return text;
 }
 

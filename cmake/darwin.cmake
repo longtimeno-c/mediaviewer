@@ -55,6 +55,7 @@ target_link_libraries(mv_core PRIVATE "-framework Foundation")
 add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
+  src/gfx/adjust_kernel.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
@@ -210,6 +211,9 @@ find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 add_library(mv_image STATIC
   src/image/colour.cpp
+  src/image/linear.cpp
+  src/image/linear.h
+  src/image/half.h
   src/image/pipeline.cpp
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
@@ -312,8 +316,17 @@ add_library(mv::meta ALIAS mv_meta)
 # MCU-aligned crop on libjpeg's coefficient API, and the JPEG / PNG export
 # encoders. Pure C++ over codec + io + core: no GPU, no platform header (D9);
 # the preview is the blit's output -> source map (gfx/blit*.h).
+# PR 11: colour adjusts, the one-source kernel both blits paste in
+# (gfx/adjust_kernel.h), the
+# full-resolution bake over the FP16 working image, the histogram.
 # ---------------------------------------------------------------------------
 add_library(mv_edit STATIC
+  src/edit/adjust.cpp
+  src/edit/adjust.h
+  src/edit/bake.cpp
+  src/edit/bake.h
+  src/edit/histogram.cpp
+  src/edit/histogram.h
   src/edit/edit_stack.cpp
   src/edit/edit_stack.h
   src/edit/geometry.cpp
@@ -327,7 +340,7 @@ add_library(mv_edit STATIC
   src/edit/metadata_policy.h
 )
 target_link_libraries(mv_edit
-  PUBLIC mv_core mv_codec
+  PUBLIC mv_core mv_codec mv_image
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
 add_library(mv::edit ALIAS mv_edit)
 
@@ -375,6 +388,9 @@ add_library(mv_shell STATIC
   src/shell/edit_session.cpp
   src/shell/edit_session.h
   src/shell/edit_view.h
+  # PR 11: the adjust pane's state (readiness, tokens, histogram), shared.
+  src/shell/adjust_pane.cpp
+  src/shell/adjust_pane.h
 )
 target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit)
 add_library(mv::shell ALIAS mv_shell)
@@ -434,8 +450,17 @@ add_custom_target(mv_swift_chrome_build
 # PR 16 instrument frametime drives, a bare binary) and MediaViewer (PR 20,
 # the executable inside MediaViewer.app, with MV_APP_BUNDLE and, given a key,
 # Sparkle).
+# PR 11 (plan/10: Mac crash reporting, owed since old PR 17): Crashpad, out of
+# process, with the Windows host's privacy scrub. Crashpad is Apache-2.0 and
+# static, from the root manifest's arm64-osx install like the permissive codecs.
+find_package(crashpad CONFIG REQUIRED)
+
 set(MV_MAC_HOST_SOURCES
   src/shell/main_mac.mm
+  src/shell/crash_reporter_mac.mm
+  src/shell/crash_reporter_mac.h
+  src/shell/minidump_scrub.cpp
+  src/shell/minidump_scrub.h
   src/shell/present_lab_mac.mm
   src/shell/present_lab_mac.h
   src/shell/install_from_dmg_mac.mm
@@ -447,6 +472,7 @@ set(MV_MAC_HOST_SOURCES
 )
 set_source_files_properties(
   src/shell/main_mac.mm
+  src/shell/crash_reporter_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -462,6 +488,7 @@ function(mv_mac_host target)
     mv_io
     mv_player
     imgui::imgui
+    crashpad::crashpad
     "${MV_SWIFT_CHROME_LIB}"
     "-framework Foundation"
     "-framework AppKit"
@@ -471,7 +498,13 @@ function(mv_mac_host target)
     "-framework DiskArbitration"
     "-framework UniformTypeIdentifiers"
     "-framework SwiftUI"
-    "-framework Combine")
+    "-framework Combine"
+    # PR 11: Crashpad's macOS client (audit tokens, IOKit registry reads) and
+    # the computer name for the scrub's identity list.
+    "-framework SystemConfiguration"
+    "-framework IOKit"
+    "-framework Security"
+    bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
   # Same string Windows reads from VERSIONINFO (CMakeLists.txt project(VERSION)).
@@ -485,6 +518,21 @@ add_custom_command(TARGET mediaviewer_lab POST_BUILD
           "${CMAKE_SOURCE_DIR}/assets/fonts/CozetteVector.ttf"
           "$<TARGET_FILE_DIR:mediaviewer_lab>/CozetteVector.ttf"
   COMMENT "Copy CozetteVector.ttf beside mediaviewer_lab")
+
+# PR 11: crashpad_handler runs out of process. Beside mediaviewer_lab for the
+# lab; macpack.py puts it in MediaViewer.app/Contents/Helpers.
+set(MV_CRASHPAD_HANDLER "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad/crashpad_handler")
+if(EXISTS "${MV_CRASHPAD_HANDLER}")
+  add_custom_command(TARGET mediaviewer_lab POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MV_CRASHPAD_HANDLER}" "$<TARGET_FILE_DIR:mediaviewer_lab>/crashpad_handler"
+    # vcpkg installs the handler without +x; crash_reporter_mac.mm requires X_OK.
+    COMMAND chmod 755 "$<TARGET_FILE_DIR:mediaviewer_lab>/crashpad_handler"
+    COMMENT "Copy crashpad_handler beside mediaviewer_lab")
+else()
+  message(WARNING "crashpad_handler not found at ${MV_CRASHPAD_HANDLER}; "
+                  "the lab and MediaViewer.app will run without native crash reporting")
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/darwin-app.cmake")
 
@@ -539,6 +587,11 @@ if(MV_BUILD_TESTS)
     tests/test_edit.cpp
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
+    # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
+    tests/test_adjust.cpp
+    # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
+    tests/test_minidump_scrub.cpp
+    src/shell/minidump_scrub.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

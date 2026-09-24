@@ -44,6 +44,9 @@ struct raw_options {
 
 [[nodiscard]] result<raster> decode_raw_with(std::span<const std::uint8_t> bytes,
                                              const job_context* ctx, const raw_options& opt);
+[[nodiscard]] result<raster16> decode_raw_linear_with(std::span<const std::uint8_t> bytes,
+                                                     const job_context* ctx,
+                                                     const raw_options& opt);
 [[nodiscard]] result<raster> decode_raw_preview_with(std::span<const std::uint8_t> bytes,
                                                      const job_context* ctx,
                                                      const raw_options& opt);

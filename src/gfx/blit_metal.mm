@@ -3,7 +3,10 @@
 
 #import <Metal/Metal.h>
 
+#include <string>
+
 #include "core/trace.h"
+#include "gfx/adjust_kernel.h"
 
 namespace mv::gfx {
 namespace {
@@ -12,7 +15,9 @@ namespace {
 // sample_catmull/background_at/sample_filtered/image_px_at/finish/ps_main.
 // Buffer(0) here is the Camera cbuffer's register(b0) twin (plan/15 binding
 // note); no Tile buffer — the tiled path is not ported in PR 17.
-constexpr const char kMsl[] = R"(
+// PR 11: the source is kMslHead, the colour kernel's own tokens
+// (gfx/adjust_kernel.h — the HLSL twin pastes the same text), then kMsl.
+constexpr const char kMslHead[] = R"(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -34,8 +39,14 @@ struct Camera {
   // corners in crop mode). The identity leaves every pixel as before.
   float4 map0;
   float4 map1;
+  // PR 11 colour adjust (edit::adjust_uniforms a0 / a1); adj1.w > 0.5 runs
+  // mv_adjust, which never reads adj1.w itself.
+  float4 adj0;
+  float4 adj1;
 };
+)";
 
+constexpr const char kMsl[] = R"(
 struct VSOut { float4 pos [[position]]; };
 
 vertex VSOut vs_main(uint id [[vertex_id]]) {
@@ -95,6 +106,8 @@ static float2 image_px_at(constant Camera& cam, float2 screen) {
 }
 
 static float4 finish(constant Camera& cam, float4 c, float2 screen, float2 image_px) {
+  // PR 11: the edit's colour, in linear light, before anything is composited.
+  if (cam.adj1.w > 0.5) c.rgb = mv_adjust(c.rgb, cam.adj0, cam.adj1);
   float3 bg = background_at(cam, screen);
   float3 rgb = mix(bg, c.rgb, saturate(c.a));
 
@@ -143,9 +156,11 @@ struct alignas(16) camera_cb {
   float background, clipping, time, grid;
   float map0[4];
   float map1[4];
+  float adj0[4];
+  float adj1[4];
 };
 
-static_assert(sizeof(camera_cb) == 96, "keep in sync with the MSL Camera struct");
+static_assert(sizeof(camera_cb) == 128, "keep in sync with the MSL Camera struct");
 
 }  // namespace
 
@@ -158,7 +173,8 @@ expected blitter_mac::create(void* mtl_device, std::uint64_t pixel_format) noexc
   id<MTLDevice> device = (__bridge id<MTLDevice>)mtl_device;
 
   NSError* compile_error = nil;
-  id<MTLLibrary> library = [device newLibraryWithSource:@(kMsl)
+  const std::string source = std::string(kMslHead) + kernel::kAdjustKernelText + "\n" + kMsl;
+  id<MTLLibrary> library = [device newLibraryWithSource:@(source.c_str())
                                                   options:nil
                                                     error:&compile_error];
   if (!library) {
@@ -270,6 +286,11 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
   cb.map1[1] = p.uv_map[4];
   cb.map1[2] = p.uv_map[5];
   cb.map1[3] = 0.0f;
+  for (int i = 0; i < 4; ++i) {
+    cb.adj0[i] = p.adjust0[i];
+    cb.adj1[i] = p.adjust1[i];
+  }
+  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
 
   [encoder setRenderPipelineState:pso];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];

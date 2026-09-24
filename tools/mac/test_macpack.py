@@ -175,6 +175,34 @@ class BundleCheckTests(unittest.TestCase):
         self.assertEqual(len(problems), 2)
 
 
+class CrashpadHandlerTests(unittest.TestCase):
+    """PR 11: the handler is a helper tool, signed inside-out before the app."""
+
+    def test_handler_lands_in_helpers_and_is_signed_before_the_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "crashpad_handler"
+            src.write_bytes(b"\xcf\xfa\xed\xfe")
+            app = root / "MediaViewer.app"
+            (app / "Contents" / "Frameworks").mkdir(parents=True)
+            dst = macpack.copy_crashpad_handler(src, app)
+            self.assertEqual(dst, app / "Contents" / "Helpers" / "crashpad_handler")
+            self.assertTrue(dst.exists())
+            self.assertTrue(dst.stat().st_mode & 0o111)
+            signed = []
+            with patch.object(macpack, "codesign", side_effect=lambda p, *a, **k: signed.append(p)), \
+                 patch.object(macpack, "run"):
+                macpack.sign_app(app, "-", Path("QuickLook.entitlements"), hardened=True)
+            self.assertIn(dst, signed)
+            self.assertLess(signed.index(dst), signed.index(app))
+
+    def test_assemble_accepts_the_handler_option(self):
+        with patch.object(macpack, "cmd_assemble") as assemble:
+            macpack.main(["assemble", "--app", "a", "--exe", "e", "--appex-exe", "x",
+                          "--info-plist", "i", "--appex-plist", "p", "--appex-entitlements", "q",
+                          "--icon-png", "c", "--font", "f", "--dylib-dir", "d",
+                          "--crashpad-handler", "h"])
+        self.assertEqual(assemble.call_args[0][0].crashpad_handler, "h")
 class UniversalFeedTests(unittest.TestCase):
     def test_universal_app_with_arch_restriction_fails(self):
         self.assertIsNotNone(macpack.universal_feed_problem(
@@ -259,7 +287,6 @@ class LipoMergeTests(unittest.TestCase):
         warnings, out = self._merge({"Contents/_CodeSignature/CodeResources": b"a"},
                                     {"Contents/_CodeSignature/CodeResources": b"b"})
         self.assertEqual(warnings, [])
-
 
 if __name__ == "__main__":
     unittest.main()

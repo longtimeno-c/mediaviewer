@@ -320,6 +320,37 @@ filter.
   `tools/minidump-scan.ps1` (procedure in README).
 - **Upload (PR 8).** Must read scrubbed dumps from the database. Never give the handler a URL.
 
+### As built in PR 11 (macOS)
+
+Written 2026-09-24; not yet built or verified on a Mac ([12](12-decision-log.md), PR 11).
+
+- **Capture.** `crashpad_handler` in `MediaViewer.app/Contents/Helpers` (signed inside-out by
+  `tools/mac/macpack.py`), or beside `mediaviewer_lab`. Started synchronously at the top of
+  `main()` (Crashpad has no asynchronous start on macOS), restartable. Database:
+  `~/Library/Application Support/MediaViewer/Crashes`. No URL, uploads disabled, indirect memory
+  off, forwarding to ReportCrash off.
+- **Annotations.** The same eight `mv_decode_N` slots and `mv_last_call_cid`, read straight from
+  `core/crash_context` (no ABI DLL on Mac). Every routed command and every mutating chrome bridge
+  call stamps a fresh correlation id; a still's decode job carries the id of the call that opened it.
+- **Scrub.** The Windows scrub, unchanged in structure, now also masks POSIX paths under `/Users`,
+  `/Volumes`, `/private`, `/var`, `/tmp`, `/home`, … while keeping module layout (`.dylib`,
+  `.app/Contents/…`, `.framework/…`) with only the user component masked. Thread-stack bytes also
+  lose an unrooted run of two or more components — a rooted path whose prefix a later frame
+  overwrote — while a `://` URL and a relative `./` or `../` run stay. Identities: short and
+  full user name, the Sharing computer name, the host name. The rewrite copies the dump's
+  extended attributes onto the replacement, because the Mac Crashpad database stores report
+  metadata there; a plain rename drops it and the next launch logs that it cannot read the report.
+- **Chrome path.** `NSApplicationCrashOnExceptions` is on. AppKit still catches an exception raised
+  in event handling and calls `-[NSApplication reportException:]`, which traps in
+  `_crashOnException:` and does not call `NSUncaughtExceptionHandler`. That method and the uncaught
+  handler both write one scrubbed text report to `Crashes/chrome/<ms>-cid<id>-nsexception.txt` and
+  set an `mv_exception` annotation before the trap, so Crashpad's dump carries the same
+  `mv_last_call_cid`. A Swift trap is a Mach exception (`EXC_BREAKPOINT`): Crashpad records the
+  dump. The runtime's "Index out of range" text is not in it. ReportCrash forwarding stays off,
+  so Apple does not keep an unscrubbed copy either.
+- **Verify.** `tools/mac/crash_canary.py make` / `scan` (the twins of `make-crash-raw.ps1` and
+  `minidump-scan.ps1`); `MV_CRASH_TEST=decode | nsexception | swift_trap`. README has the steps.
+
 ---
 
 # Part 3 — Telemetry

@@ -246,6 +246,16 @@ enum class command_id : std::uint16_t {
   folder_up,        // Ctrl/Cmd+Up, open the enclosing folder. Appended so the ids above keep their values.
   folder_prev,      // Ctrl/Cmd+Left, open the previous sibling folder
   folder_next,      // Ctrl/Cmd+Right, open the next sibling folder
+  // PR 11 (plan/16 Pane: adjust). Appended; every id above keeps its value.
+  adjust_pane,         // Shift+A: show / hide the adjust pane, focus its first slider
+  // Island-only, keyless: the pane's sliders post their value as the command's
+  // float argument, one id per parameter (edit::adjust_param order).
+  adjust_exposure,
+  adjust_contrast,
+  adjust_saturation,
+  adjust_temperature,
+  adjust_tint,
+  adjust_reset,        // the pane's Reset button: every slider back to 0, one undo step
   count
 };
 

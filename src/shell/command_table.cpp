@@ -199,6 +199,10 @@ constexpr binding kBindings[] = {
     // the gallery, Left / Right already move among the tiles.
     row(key::left, mod_ctrl, kBrowse | kVideo, edge, folder_prev),
     row(key::right, mod_ctrl, kBrowse | kVideo, edge, folder_next),
+    // PR 11. plan/16 leaves `E` to the clip transport (Q / E) and asks PR 11
+    // for another key: the Shift twin of `A`djust, as PR 9 / 10 did for O, I
+    // and C. Stills only; the pane's own close button sends the same id.
+    row(C('A'), mod_shift, kBrowse, edge, adjust_pane),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -319,6 +323,13 @@ constexpr command_info kCommands[] = {
     {folder_up, "Up one folder"},
     {folder_prev, "Previous folder"},
     {folder_next, "Next folder"},
+    {adjust_pane, "Adjust pane"},
+    {adjust_exposure, "Adjust: exposure", true},
+    {adjust_contrast, "Adjust: contrast", true},
+    {adjust_saturation, "Adjust: saturation", true},
+    {adjust_temperature, "Adjust: temperature", true},
+    {adjust_tint, "Adjust: tint", true},
+    {adjust_reset, "Adjust: reset", true},
 };
 
 const char* named_key(key k) noexcept {

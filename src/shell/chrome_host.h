@@ -13,6 +13,7 @@
 #include <string>
 
 #include "core/result.h"
+#include "shell/adjust_pane.h"
 #include "shell/commands.h"
 #include "shell/key_router.h"
 
@@ -112,6 +113,11 @@ static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle
 static_assert(static_cast<int>(command_id::folder_tree) == 78);
 static_assert(static_cast<int>(command_id::metadata_pane) == 92);
 static_assert(static_cast<int>(command_id::folder_up) == 115);
+// PR 11: the adjust pane's close button and its sliders (arg = the value).
+static_assert(static_cast<int>(command_id::adjust_pane) == 118);
+static_assert(static_cast<int>(command_id::adjust_exposure) == 119);
+static_assert(static_cast<int>(command_id::adjust_tint) == 123);
+static_assert(static_cast<int>(command_id::adjust_reset) == 124);
 static_assert(chrome_cmd_tree_open >= kCommandCount && chrome_cmd_set_sort >= kCommandCount);
 static_assert(chrome_cmd_export >= kCommandCount);
 static_assert(chrome_cmd_open_subfolder >= kCommandCount && chrome_cmd_gallery_columns >= kCommandCount);
@@ -376,6 +382,21 @@ class chrome_host {
   // The folder the user chose in the tree ("" if none pending).
   [[nodiscard]] std::string take_tree_path() noexcept;
 
+  // PR 11: the adjust pane, a third panel island on the right (it and the
+  // metadata pane share that edge; the host shows one at a time). Optional
+  // like the other panes: an older chrome without it makes these no-ops.
+  void show_adjust_pane(bool visible, int x, int y, int width, int height,
+                        bool focus = false) noexcept;
+  [[nodiscard]] bool adjust_pane_visible() const noexcept {
+    return panels_attached_ && adjust_visible_;
+  }
+  // Readiness, slider values, histogram and clipping (shell/adjust_pane.h),
+  // as one blittable struct; the pane re-renders from it.
+  // Shown with `focus`, the first slider takes the keyboard (Shift+A); the
+  // island reports it as pane focus, so the arrows are the slider's and Esc
+  // returns to the canvas, like the metadata pane.
+  void set_adjust_view(const adjust_view& view) noexcept;
+
   // The playback transport: a bottom strip, its content centred, shown only
   // while a clip is open. `filmstrip_px` is how much bottom chrome is already
   // spoken for, so the two strips stack instead of overlapping.
@@ -473,6 +494,8 @@ class chrome_host {
   chrome_entry_fn set_meta_data_ = nullptr;
   chrome_entry_fn set_tree_root_ = nullptr;
   chrome_entry_fn take_tree_path_ = nullptr;
+  chrome_entry_fn show_adjust_pane_ = nullptr;
+  chrome_entry_fn set_adjust_view_ = nullptr;
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn apply_browse_ = nullptr;
@@ -488,6 +511,7 @@ class chrome_host {
   bool panels_attached_ = false;
   bool meta_visible_ = false;
   bool tree_visible_ = false;
+  bool adjust_visible_ = false;
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   chrome_entry_fn shutdown_for_exit_ = nullptr;

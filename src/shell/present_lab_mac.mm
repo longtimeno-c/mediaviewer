@@ -31,12 +31,14 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <new>
 #include <thread>
 #include <vector>
 
 #include <imgui.h>
 #include <imgui_impl_metal.h>
 
+#include "core/crash_context.h"
 #include "core/trace.h"
 #include "gfx/pace_json.h"
 #include "image/pipeline_mac.h"
@@ -169,10 +171,14 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
 
   void* mtl_device = device_.native_device();
   std::atomic<image::gpu_image_mac*>* pending = &pending_image_;
+  // PR 11 (plan/13): the decode carries the id of the call that opened it, so a
+  // crash in it names that call in its mv_decode_N slot (Windows: the ABI).
+  const std::uint64_t cid = *crash_context::last_call_address();
 
   options_.jobs->submit(
-      [this, path = std::move(path_utf8), mtl_device, pending,
-       item_id](const job_context& ctx) -> status {
+      [this, path = std::move(path_utf8), mtl_device, pending, item_id,
+       cid](const job_context& ctx) -> status {
+        const crash_context::correlation_scope correlation(cid);
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) return status::io;
         // One sized read: a byte-at-a-time istreambuf_iterator copy of a
@@ -594,6 +600,40 @@ void present_lab_mac::stop() noexcept {
 void present_lab_mac::wake() noexcept {
   wake_flag_.store(true, std::memory_order_release);
   g_wait_cv.notify_all();
+}
+
+bool present_lab_mac::upload_working(const image::linear_image& img, std::uint64_t item) noexcept {
+  if (item == 0 || !img.valid()) return false;
+  void* mtl_device = device_.native_device();
+  if (!mtl_device) return false;
+  auto up = image::upload_linear(mtl_device, img);
+  if (!up) return false;
+  auto* made = new (std::nothrow) working_texture_mac{};
+  if (!made) return false;
+  made->image = std::move(up).value();
+  made->item = item;
+  delete pending_working_.exchange(made);
+  wake();
+  return true;
+}
+
+void present_lab_mac::drop_working() noexcept {
+  delete pending_working_.exchange(nullptr);
+  drop_working_.store(true, std::memory_order_release);
+  wake();
+}
+
+bool present_lab_mac::take_working() noexcept {
+  bool changed = false;
+  if (drop_working_.exchange(false, std::memory_order_acq_rel)) {
+    changed = working_ != nullptr;
+    working_.reset();
+  }
+  if (working_texture_mac* w = pending_working_.exchange(nullptr)) {
+    working_.reset(w);
+    changed = true;
+  }
+  return changed;
 }
 
 // PR 9. Everything here reads `snapshot.meta` (published by the UI thread when
@@ -1020,14 +1060,18 @@ void present_lab_mac::render_thread_main() noexcept {
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
 
+        // PR 11: a working texture handed over (or dropped) is one more frame.
+        if (take_working()) redraw = true;
         // PR 10: the edit geometry of the still on screen changed (a turn, a
         // committed crop, crop mode's draft). A new picture size refits, as a
-        // new item would; an overlay-only change just redraws.
+        // new item would; an overlay-only change just redraws — and so does a
+        // colour change (PR 11): new uniforms, no decode, no refit.
         if (current_image_ && !video_frame_) {
           const edit_view* ev = edit_for(current_image_->item_id);
           const edit_view now = ev ? *ev : edit_view{};
           const bool geometry_changed = !same_geometry(now, applied_edit_);
-          if (geometry_changed || !same_overlay(now, applied_edit_)) {
+          if (geometry_changed || !same_overlay(now, applied_edit_) ||
+              !same_adjust(now, applied_edit_)) {
             float before_w = 0.0f, before_h = 0.0f;
             {
               const edit::geometry g = geometry_of(applied_edit_);
@@ -1371,6 +1415,16 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.clip_to_source = ev && ev->keep_frame;
           bp.background = snapshot.background & 3;
           bp.time_seconds = static_cast<float>(elapsed);
+          // PR 11: the colour kernel's uniforms, and the FP16 working texture
+          // in place of the 8-bit one once it has landed for this still; until
+          // then the same kernel runs on the 8-bit texture.
+          apply_adjust(ev, bp);
+          const bool use_working = !anim_frame_ && working_ && ev && ev->item != 0 &&
+                                   working_->item == ev->item && working_->image.texture;
+          if (use_working) {
+            bp.texture_w = static_cast<float>(working_->image.texture_width);
+            bp.texture_h = static_cast<float>(working_->image.texture_height);
+          }
           if (fade_from_ && !anim_frame_) {
             auto base = bp;
             // The preview covers the full image's output rectangle and uses
@@ -1381,7 +1435,9 @@ void present_lab_mac::render_thread_main() noexcept {
             bp.opacity = fade_.alpha(elapsed);
           }
           blitter_.draw((__bridge void*)enc,
-                        anim_frame_ ? anim_frame_->texture : current_image_->texture, bp);
+                        use_working ? working_->image.texture
+                                    : (anim_frame_ ? anim_frame_->texture : current_image_->texture),
+                        bp);
         }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
@@ -1443,6 +1499,8 @@ void present_lab_mac::render_thread_main() noexcept {
     fade_from_.reset();
     fade_.cancel();
     delete pending_image_.exchange(nullptr);
+    working_.reset();  // PR 11: before device_.destroy()
+    delete pending_working_.exchange(nullptr);
     // Joins the animation decode thread before device_.destroy() below, the
     // same ordering reason submit_image_load's job must finish first: its
     // make_texture_fn closure holds the raw MTLDevice pointer.

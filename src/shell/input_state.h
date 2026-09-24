@@ -50,6 +50,12 @@ struct edit_view {
   bool keep_frame = false;                   // crop mode: whole frame, no auto-crop
   bool crop_overlay = false;                 // crop mode: draw the draft rect
   float overlay[4] = {0.0f, 0.0f, 1.0f, 1.0f};  // normalised to the output frame
+  // PR 11: the item's colour adjust as the blit's uniforms
+  // (edit::adjust_uniforms a0 / a1). `adjust` false = no colour op: the blit
+  // skips the kernel. A change is a redraw, never a refit or a decode.
+  bool adjust = false;
+  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
 };
 
 struct input_snapshot {
