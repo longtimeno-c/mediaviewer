@@ -197,6 +197,7 @@ enum class command_id : std::uint16_t {
   open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
   mute,         // Shift+M (plan/16 Video): toggle the clip's audio
   game_toggle_3d,  // 3 in the empty-window runner only
+  folder_up,       // PR 26: Ctrl/Cmd+Up, open the enclosing folder
   count
 };
 

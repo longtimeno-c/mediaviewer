@@ -136,7 +136,8 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `I` | Metadata pane (PR 9) |
 | `E` | Adjust pane (PR 11) — **collides with `Q` `E` transport below, landed in 5c. PR 11 picks a different key; this row is not a claim on `E`.** |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
-| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it |
+| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are tiles above the images: Up from the first row of images moves onto the tiles (same column), Left / Right / Up / Down move among them, `Enter` opens the tile, Down from the last tile row returns to the images |
+| `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder; the gallery breadcrumb grows upward so the way back down is one click. Not bound to Backspace, which is Previous |
 | `Ctrl+Shift+E` | Folder tree show/focus (PR 9) |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
 | Hold `Z` | Loupe: 100 % around a keyboard-nudgeable point (or last cursor). Same texture, camera change, no decode |

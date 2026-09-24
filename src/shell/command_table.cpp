@@ -153,6 +153,9 @@ constexpr binding kBindings[] = {
     // Append: Settings persists the existing row indices.
     row(key::space, mod_none, kRunner, edge, next),
     row(C('3'), mod_none, kRunner, edge, game_toggle_3d),
+    // PR 26: up one folder (Finder's Cmd+Up). Only meaningful with a folder open
+    // that has a parent; the host answers "not handled" otherwise.
+    row(key::up, mod_ctrl, kViewing, edge, folder_up),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -247,6 +250,7 @@ constexpr command_info kCommands[] = {
     {mute, "Mute"},
     {open_jpeg, "Open JPEG of pair"},
     {game_toggle_3d, "Runner: toggle 3D view"},
+    {folder_up, "Up one folder"},
 };
 
 const char* named_key(key k) noexcept {

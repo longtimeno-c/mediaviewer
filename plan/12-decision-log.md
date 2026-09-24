@@ -1349,3 +1349,13 @@ CUDA/TensorRT) as optional sub-packs with CPU always the fallback and a Settings
 feature is a downloadable extra installed from Settings, never in the base installer. AI
 culling was not requested and stays out. Recorded in plan/17 only, not as a numbered D-decision.
 Known gap: AMD GPUs run CPU until a provider exists.
+
+## 2026-09-24 — Multi-folder browsing is PR 26 (folder tiles + breadcrumb), not the tree
+
+The owner opens a NAS root organised by year and got an empty viewer: listing was one directory
+deep. Options weighed: folder tiles + breadcrumb, a left tree, a recursive sectioned gallery, all
+three. Chosen: **tiles + breadcrumb + `Ctrl/Cmd+Up`** (PR 26, Milestone H), because it needs no new
+chrome strip and fits the existing gallery and keyboard model. The left **folder-tree island stays
+PR 9** (unchanged). A recursive flatten view is deferred: thumbnails, marks and relist are keyed to
+one open directory, so one listing spanning folders is a model change, not a view. Not a D-decision;
+no D1–D9 call is touched. Windows chrome follows on the shared core.

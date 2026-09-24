@@ -132,6 +132,34 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 bool mv_chrome_update_ready(void);
 void mv_chrome_restart_to_update(void);
 
+// Multi-folder browsing (plan/10 PR 26). The open folder's child folders are
+// shown as tiles above its images; the breadcrumb runs from the highest folder
+// reached to the one on screen. All [main-thread]. Folder tiles are keyed by
+// their full path, which survives a relist.
+int32_t mv_chrome_subfolder_count(void);
+// Copies the folder's full UTF-8 path; false if `index` is out of range.
+bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t out_buf_size);
+// Navigates into the child folder (a fresh listing; the trail keeps its root).
+void mv_chrome_open_subfolder(int32_t index);
+// Asks for the tile's item count, folder count and cover thumbnail. Result via
+// the callback below, always on the main thread. Never blocks.
+void mv_chrome_request_folder_summary(int32_t index);
+// `ok` is false on failure or when the host moved to another folder first;
+// `cover_thumb_path_utf8` is NULL when the folder has no media to cover it.
+typedef void (*mv_chrome_folder_summary_fn)(const char* folder_path_utf8, bool ok,
+                                            int32_t media_count, int32_t subfolder_count,
+                                            const char* cover_thumb_path_utf8);
+void mv_chrome_set_folder_summary_callback(mv_chrome_folder_summary_fn callback);
+// Breadcrumb: root … current. `mv_chrome_crumb_path` copies the full path
+// (the last component is the label); false if out of range.
+int32_t mv_chrome_crumb_count(void);
+bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size);
+void mv_chrome_open_crumb(int32_t index);
+bool mv_chrome_can_go_up(void);
+void mv_chrome_navigate_up(void);
+// The gallery's keyboard position while on a folder tile; -1 when on images.
+int32_t mv_chrome_folder_cursor(void);
+
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.
 // [main-thread]

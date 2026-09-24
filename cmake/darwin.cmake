@@ -170,6 +170,7 @@ add_library(mv::codec ALIAS mv_codec)
 # ---------------------------------------------------------------------------
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
+  src/io/dir_tree.cpp
   src/io/file_mac.cpp
   src/io/paths_mac.cpp
   src/io/dir.h
@@ -285,6 +286,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
+  src/shell/browse_path.h
   # The one key router and command table, shared with Windows (plan/16): the
   # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
   # translates virtual keys. Pure C++, no platform header.
@@ -424,6 +426,8 @@ if(MV_BUILD_TESTS)
     tests/test_frametime_report.cpp
     tests/test_dino_game.cpp
     tests/test_browse_index.cpp
+    tests/test_browse_path.cpp
+    tests/test_dir_tree.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
@@ -448,6 +452,7 @@ if(MV_BUILD_TESTS)
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
+    mv_io
     mv_gfx
     mv_shell
     mv_codec

@@ -427,6 +427,35 @@ inference, and inference in the base installer stay out.
 
 ---
 
+## Milestone H — Multi-folder browsing (PR 26)
+
+### PR 26 — Folder tiles, breadcrumb, up
+A camera dump is one folder; a NAS or an organised library is a tree (`2024/06/…`). Opening
+the root used to list only its direct files, so a root of year folders looked empty. Now the
+gallery shows the open folder's **child folders as tiles** above its images: a cover
+(first photo of the folder, or of the first descendant that has one — bounded to depth 3 /
+48 directories so a NAS root never turns into a crawl), name, and an item/folder count.
+Click or `Enter` opens a tile; a **breadcrumb** runs from the highest folder reached to the
+one on screen; **`Ctrl/Cmd+Up`** goes up. A folder that holds only folders opens the gallery
+on its own. Synology `@eaDir`, `#recycle`, `$RECYCLE.BIN` and dot-folders are never tiles;
+names sort naturally (`Trip 2` < `Trip 10`).
+
+Shared native core first: `io::list_subfolders` / `summarize_dir` (portable, `dir_tree.cpp`,
+platform primitive `scan_subdirs`), `shell::browse_path` (trail arithmetic, header-only),
+`command_id::folder_up`. Then chrome, twice (D1): **SwiftUI first**; the WinUI gallery
+follows as its own slice on the same core (the Windows `scan_subdirs` is written but not yet
+built). Not here: a recursive "flatten" view with per-folder headers (needs per-folder thumb
+provenance in one listing), and the left folder-tree island, which stays PR 9.
+
+**Verify:** open a root whose only contents are subfolders → the gallery opens on folder tiles
+with covers and counts, no file I/O on the UI thread; click through three levels, the
+breadcrumb and `Ctrl/Cmd+Up` walk back; a mixed folder shows tiles above images and Up/Down
+crosses between them in the same column; keyboard-only (`Ctrl/Cmd+Up`, arrows, `Enter`, `Esc`)
+reaches every folder; `test_dir_tree` and `test_browse_path` pass; PR 1's present-loop verify
+still holds.
+
+---
+
 ## Further backlog — after the first feature updates
 
 Older specs use **v1.1** for this backlog. It remains deferred beyond its prerequisite

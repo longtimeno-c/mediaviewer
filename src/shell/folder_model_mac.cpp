@@ -48,6 +48,7 @@ void folder_model::close() noexcept {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->dir.clear();
     state_->items.clear();
+    state_->subdirs.clear();
   }
   // Jobs already submitted to `jobs_` (relist/thumb) keep their own
   // std::shared_ptr<shared_state> and finish safely against it; this object
@@ -57,6 +58,16 @@ void folder_model::close() noexcept {
 std::vector<io::dir_entry> folder_model::items() const {
   std::lock_guard<std::mutex> lock(state_->mutex);
   return state_->items;
+}
+
+std::vector<io::subdir_entry> folder_model::subfolders() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->subdirs;
+}
+
+std::string folder_model::directory() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->dir;
 }
 
 std::size_t folder_model::item_count() const noexcept {
@@ -88,14 +99,44 @@ void folder_model::relist_async() {
                    [state = state_, dir_copy](const job_context&) -> status {
                      auto listed = io::list_still_files(dir_copy);
                      if (!listed) return listed.error();
+                     // A folder whose subfolders cannot be read still shows its
+                     // files: the tiles are additive.
+                     std::vector<io::subdir_entry> subdirs;
+                     if (auto subs = io::list_subfolders(dir_copy)) subdirs = std::move(subs).value();
                      {
                        std::lock_guard<std::mutex> lock(state->mutex);
                        // The directory may have changed again (or closed)
                        // while this job was queued or running.
                        if (state->dir != dir_copy) return status::cancelled;
                        state->items = std::move(listed).value();
+                       state->subdirs = std::move(subdirs);
                      }
                      state->changed.store(true, std::memory_order_release);
+                     return status::ok;
+                   });
+}
+
+void folder_model::request_summary(std::string dir_utf8, summary_ready_fn on_ready) {
+  if (!jobs_) {
+    if (on_ready) on_ready(std::move(dir_utf8), false, {});
+    return;
+  }
+  // Same staleness rule as request_thumb: a tile asked for in one folder must
+  // not report into the next one the user has already navigated to.
+  const std::uint64_t requested_generation = state_->generation.load(std::memory_order_acquire);
+  jobs_->submit_at(background_generation,
+                   [state = state_, dir = std::move(dir_utf8), on_ready = std::move(on_ready),
+                    requested_generation](const job_context&) -> status {
+                     if (state->generation.load(std::memory_order_acquire) != requested_generation) {
+                       if (on_ready) on_ready(dir, false, {});
+                       return status::cancelled;
+                     }
+                     auto summary = io::summarize_dir(dir);
+                     if (!summary) {
+                       if (on_ready) on_ready(dir, false, {});
+                       return summary.error();
+                     }
+                     if (on_ready) on_ready(dir, true, std::move(summary).value());
                      return status::ok;
                    });
 }
