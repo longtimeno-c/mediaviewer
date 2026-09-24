@@ -75,15 +75,16 @@ Pages, in order. Do not add more.
 6. **Finish.** Primary button: **Launch MediaViewer**. Secondary links: **GitHub**
    (`https://github.com/longtimeno-c/mediaviewer`) and **Licence**. Do not auto-open the
    repo, and do not pre-tick "Star us" / "Open GitHub".
+   The default-app setup checkbox is **on** (user request, 2026-09-24). It opens Windows
+   Default Apps for the user to confirm associations for supported photos and videos;
+   unticking it skips that step. Silent installs do not open Settings.
 
 **Not in the wizard** — these are in-app, once, later:
 
-- Default photo viewer (PR 15: after the first successful still open).
 - Telemetry (first-run screen in the app, default off, no pre-ticked box).
 
-A "set as default" checkbox on page 4 would silently fight `UserChoice` and would ask
-before the user has seen a single photo. A telemetry checkbox in setup is the same dark
-pattern the first-run screen exists to avoid. Do not stack either with the licence page.
+The default-app option never writes `UserChoice`; Windows owns the confirmation.
+Telemetry remains separate from setup and the licence page.
 
 Uninstall is Inno's uninstaller, registered under Apps & features. It removes the Start Menu and desktop
 shortcuts and the install directory (including leftover `app-*` folders). PR 8 ships
@@ -143,9 +144,13 @@ What the disk image holds. Do not add more.
    (`https://github.com/longtimeno-c/mediaviewer`) and the licence live in About. Do not
    auto-open the repo.
 
-**Not in the install** — same rule as Windows, in-app and once, later:
+First launch shows the default-viewer setup sheet with **Use MediaViewer for all supported
+photos and videos** checked (user request, 2026-09-24). Continue applies the selected
+choice through macOS; unticking it or Not Now leaves existing defaults alone. The choice
+is not shown again on updates, and the app menu keeps the command available later.
 
-- "Open with" / default viewer (PR 20: after the first successful still open).
+**Not in the install** — in-app and once, separately:
+
 - Telemetry (first-run screen in the app, default off, no pre-ticked box).
 
 **Icon.** The same mark as the Windows `.ico`, as one `.icns` (16–1024, @1x and @2x): app,
@@ -315,8 +320,8 @@ One screen on first run, a real choice, no dark pattern, no pre-ticked box, and 
 turns it off later and actually does. For an app whose whole job is looking at people's private
 photos, anything else is a betrayal of the use case — and it will be the thing people write about.
 
-Do not follow it with a second modal. The default-photo-viewer prompt in
-[09](09-build-and-test.md) waits until after this choice, on the next successful still open.
+Keep telemetry separate from the default-viewer setup described above; do not stack
+their prompts. Telemetry remains off unless the user explicitly enables it.
 
 **Be honest that the update check itself is a network call.** It reveals IP, version, and rough
 timing even with telemetry off. Say so in the privacy note, and offer a setting to disable

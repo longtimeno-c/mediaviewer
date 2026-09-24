@@ -12,11 +12,13 @@ Windows Authenticode is optional; the Windows update-manifest key is required fo
 
 [Release](.github/workflows/release.yml) is manual. Pushes and tags do not start packaging
 or publishing. [CI](.github/workflows/ci.yml) handles ordinary push/PR validation.
+The workflow reads the version already committed in `CMakeLists.txt`; it does not
+bump the version, commit changes, or push them for you.
 
-1. Commit and push the desired source to `main`; let CI pass first.
-2. For each stable release, increase `project(mediaviewer VERSION x.y.z ...)` in
+1. For each stable release, increase `project(mediaviewer VERSION x.y.z ...)` in
    `CMakeLists.txt`. Both platforms use that exact version, including the Mac build number.
    App versions must be strictly numeric (`0.1.2`, not `0.1.2-beta`).
+2. Commit and push that version change with the desired source to `main`; let CI pass first.
 3. Open **Actions → Release → Run workflow**, select `main`, and choose:
 
 | Mode | Result | Credentials |
@@ -174,6 +176,10 @@ each platform and an upgrade from the previous stable before announcing a releas
 - Build/upload failed: rerun failed jobs while the successful jobs' artifacts still exist.
   An interrupted upload leaves a draft the same source commit can resume. Review/remove
   unexpected extra draft assets before retrying. Published assets are never clobbered.
+- Publish returned 404 after uploading: GitHub's release-by-tag endpoint may not expose
+  an unpublished draft. The publisher uses the authenticated, paginated release list
+  to locate drafts, verifies their source commit and complete asset set, then publishes.
+  A completed draft can be recovered without rebuilding; keep its original source commit.
 - After changing source or workflow files, push the fix and start a **new** workflow
   run. Re-running an old run still builds its original commit.
 - Version already published: bump CMake and release again; do not reuse stable tags.

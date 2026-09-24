@@ -15,6 +15,24 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
 
+class DraftLookupTests(unittest.TestCase):
+    def test_finds_draft_on_later_page_without_published_tag_endpoint(self):
+        draft = {'id': 42, 'tag_name': 'v0.1.1', 'draft': True}
+        pages = [[{'tag_name': 'v0.1.0', 'draft': False}], [draft]]
+        with patch.object(release, 'gh', return_value=json.dumps(pages)) as cli:
+            self.assertEqual(release.release_by_tag('owner/repo', 'v0.1.1'), draft)
+        cli.assert_called_once_with('api', '--paginate', '--slurp', 'repos/owner/repo/releases?per_page=100')
+
+    def test_missing_release_returns_none(self):
+        with patch.object(release, 'gh', return_value='[[]]'):
+            self.assertIsNone(release.release_by_tag('owner/repo', 'v0.1.1'))
+
+    def test_authentication_failure_is_not_treated_as_missing_release(self):
+        with patch.object(release, 'gh', side_effect=subprocess.CalledProcessError(1, 'gh', stderr='HTTP 403')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.release_by_tag('owner/repo', 'v0.1.1')
+
+
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -27,6 +45,7 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, self.env, clear=True).start()
         patch.object(release, 'project_version', return_value='0.1.1').start()
+        self.lookup = patch.object(release, 'release_by_tag', return_value=None).start()
         for name in ('MediaViewer-0.1.1-Setup.exe', 'MediaViewer-0.1.1.dmg'):
             (self.folder / name).write_bytes(b'test installer')
 
@@ -61,7 +80,8 @@ class ReleaseTests(unittest.TestCase):
             cli.assert_not_called()
 
     def test_published_release_is_never_overwritten(self):
-        with patch.object(release, 'api_optional', return_value={'draft': False}), patch.object(release, 'gh') as cli:
+        self.lookup.return_value = {'draft': False}
+        with patch.object(release, 'gh') as cli:
             with self.assertRaisesRegex(ValueError, 'Refusing to overwrite'):
                 release.publish(self.folder)
             cli.assert_not_called()
@@ -81,6 +101,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_preview_publishes_only_after_upload_verification_without_latest(self):
         calls = []
+        self.lookup.side_effect = lambda *_: self.uploaded_draft() if calls else None
         def cli(*args):
             calls.append(args)
             if args[0] == 'api':
@@ -133,7 +154,7 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
 
     def test_stable_cannot_move_latest_backwards(self):
         self.stable_assets()
-        with patch.object(release, 'api_optional', side_effect=[None, None, {'tag_name': 'v0.1.2'}]), patch.object(release, 'gh') as cli:
+        with patch.object(release, 'api_optional', side_effect=[None, {'tag_name': 'v0.1.2'}]), patch.object(release, 'gh') as cli:
             with self.assertRaisesRegex(ValueError, 'must exceed'):
                 release.publish(self.folder)
             cli.assert_not_called()
@@ -141,6 +162,7 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
     def test_stable_publishes_complete_feed_as_latest(self):
         self.stable_assets()
         calls = []
+        self.lookup.side_effect = lambda *_: self.uploaded_draft() if calls else None
         def cli(*args):
             calls.append(args)
             if args[0] == 'api':
@@ -151,6 +173,36 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             release.publish(self.folder)
         self.assertIn('--latest=true', calls[-1])
         self.assertIn('--prerelease=false', calls[-1])
+
+
+    def uploaded_draft(self):
+        return {'draft': True, 'target_commitish': 'abc123', 'assets': [
+            {'name': p.name, 'size': p.stat().st_size} for p in self.folder.iterdir()
+            if p.name != 'release-notes.md']}
+
+    def test_retry_resumes_same_commit_draft_without_creating_another_release(self):
+        self.lookup.side_effect = lambda *_: self.uploaded_draft()
+        with patch.object(release, 'api_optional', return_value=None), patch.object(release, 'gh') as cli:
+            release.publish(self.folder)
+        commands = [call.args[:2] for call in cli.call_args_list]
+        self.assertEqual(commands, [('release', 'upload'), ('release', 'edit')])
+
+    def test_draft_from_different_commit_is_never_overwritten(self):
+        self.lookup.return_value = {'draft': True, 'target_commitish': 'different'}
+        with patch.object(release, 'gh') as cli, self.assertRaisesRegex(ValueError, 'another commit'):
+            release.publish(self.folder)
+        cli.assert_not_called()
+
+    def test_extra_uploaded_asset_leaves_draft_unpublished(self):
+        def lookup(*_):
+            result = self.uploaded_draft()
+            result['assets'].append({'name': 'unexpected.exe', 'size': 100})
+            return result
+        self.lookup.side_effect = lookup
+        with patch.object(release, 'api_optional', return_value=None), patch.object(release, 'gh') as cli:
+            with self.assertRaisesRegex(ValueError, 'leaving draft unpublished'):
+                release.publish(self.folder)
+        self.assertNotIn(('release', 'edit'), [call.args[:2] for call in cli.call_args_list])
 
 
 if __name__ == '__main__':

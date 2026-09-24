@@ -1326,7 +1326,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (void)refreshFolderIfChanged {
-  if (!_askedDefaultViewer && _options.soak_seconds <= 0.0 && _lab.stills_shown() > 0) {
+  if (!_askedDefaultViewer && _options.soak_seconds <= 0.0) {
     [self askDefaultViewerOnce];
   }
   // The transport strip belongs to a clip: shown while one is on screen (the
@@ -2038,24 +2038,31 @@ enum MvMenuCmd : NSInteger {
   NSBeep();
 }
 
-// plan/13: "Default photo viewer ... after the first successful still open",
-// once, in-app, never in the installer. A sheet, not a modal: the canvas keeps
-// presenting. "Not Now" is final; the app menu keeps the command for later.
+// First-launch setup: the default-viewer checkbox starts on, but is applied
+// only after Continue. Existing choices are preserved across updates; the app
+// menu keeps the command available later. The canvas keeps presenting.
 - (void)askDefaultViewerOnce {
+  if (!self.window || self.window.attachedSheet) return;
   _askedDefaultViewer = YES;
   [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"MVAskedDefaultViewer"];
-  if (!self.window || self.window.attachedSheet) return;
   NSAlert* alert = [[NSAlert alloc] init];
-  alert.messageText = @"Open photos and videos with MediaViewer?";
+  alert.messageText = @"Set up MediaViewer";
   alert.informativeText =
       @"MediaViewer can be the app that opens JPEG, PNG, HEIC, RAW, MP4, MOV and the other "
       @"photo and video formats it reads when you double-click them in Finder. You can "
-      @"change this later in the MediaViewer menu.";
-  [alert addButtonWithTitle:@"Make Default"];
+      @"untick the option below or change this later in the MediaViewer menu.";
+  NSButton* makeDefault = [NSButton checkboxWithTitle:@"Use MediaViewer for all supported photos and videos"
+                                              target:nil action:nullptr];
+  makeDefault.state = NSControlStateValueOn;
+  [makeDefault sizeToFit];
+  alert.accessoryView = makeDefault;
+  [alert addButtonWithTitle:@"Continue"];
   [alert addButtonWithTitle:@"Not Now"];
   [alert beginSheetModalForWindow:self.window
                 completionHandler:^(NSModalResponse response) {
-                  if (response == NSAlertFirstButtonReturn) [self makeDefaultViewer];
+                  if (response == NSAlertFirstButtonReturn && makeDefault.state == NSControlStateValueOn) {
+                    [self makeDefaultViewer];
+                  }
                 }];
 }
 
