@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 6
+#define MV_ABI_VERSION_MINOR 7
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -332,6 +332,13 @@ MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_p
  * read. */
 MV_API mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap,
                                                 uint32_t* out_bytes);
+
+/* 0.7 (PR 10). The file at `utf8_path` changed on disk (a lossless rotate
+ * rewrote it): drop its decoded pixels from the navigation LRU, so the next
+ * mv_folder_select of it decodes the new bytes instead of republishing the
+ * old texture. A path that is not cached is fine (MV_OK). Does not select,
+ * decode or touch the file. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path);
 
 /* -------------------------------------------------------------------------
  * PR 5 — video. plan/05-video-pipeline.md, plan/14-abi.md.

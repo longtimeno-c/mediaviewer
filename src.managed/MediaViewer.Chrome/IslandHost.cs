@@ -64,6 +64,9 @@ public static partial class IslandHost
         // SetSort: arg is the packed order (key in bits 0-2, descending in bit 3).
         public const int TreeOpen = 1004;
         public const int SetSort = 1005;
+        // PR 10: the export dialog was confirmed; arg is the packed choice
+        // (edit_session.h pack_export). Cancel sends nothing.
+        public const int Export = 1006;
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -84,7 +87,7 @@ public static partial class IslandHost
                 Open, Fit, OneToOne, ZoomIn, ZoomOut, ZoomPreset, Overlay, SelectItem, Prev, Next,
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
-                UpdateRestart, TreeOpen, SetSort,
+                UpdateRestart, TreeOpen, SetSort, Export,
             };
             unchecked
             {

@@ -26,13 +26,17 @@ constexpr binding row(key k, std::uint8_t mods, mode_mask modes, repeat_policy p
 
 constexpr key C(char c) noexcept { return char_key(c); }
 
+// Crop mode (PR 10) owns its keys: walking the folder mid-crop would throw
+// the crop away, so A/D stop there; Esc, `?`, F3, fullscreen still work.
+constexpr mode_mask kNotCrop = kAllModes & static_cast<mode_mask>(~kCrop);
+
 constexpr binding kBindings[] = {
     // Browse. A/D walk the folder in every mode, including on a clip and with
     // the filmstrip focused (the strip only handles its own arrows).
     row(key::left, mod_none, kWalk, repeat, prev),
     row(key::right, mod_none, kWalk, repeat, next),
-    row(C('A'), mod_none, kAllModes, repeat, prev),
-    row(C('D'), mod_none, kAllModes, repeat, next),
+    row(C('A'), mod_none, kNotCrop, repeat, prev),
+    row(C('D'), mod_none, kNotCrop, repeat, next),
     row(key::backspace, mod_none, kWalk, repeat, prev),
     // Space is next on a still, play/pause on a clip or animation, pause in a
     // slideshow. It is never the lab sweep.
@@ -54,8 +58,8 @@ constexpr binding kBindings[] = {
     row(key::down, mod_none, kGallery, repeat, gallery_down),
     row(key::left, mod_none, kGallery, repeat, prev),
     row(key::right, mod_none, kGallery, repeat, next),
-    row(C('O'), mod_ctrl, kAllModes, edge, open),
-    row(C('O'), mod_ctrl | mod_shift, kAllModes, edge, open_folder),
+    row(C('O'), mod_ctrl, kNotCrop, edge, open),
+    row(C('O'), mod_ctrl | mod_shift, kNotCrop, edge, open_folder),
     row(C('E'), mod_ctrl, kAllModes, edge, reveal_in_explorer),
     row(C('W'), mod_ctrl, kAllModes, edge, close_window),
 
@@ -79,7 +83,7 @@ constexpr binding kBindings[] = {
     row(key::right, mod_shift, kBrowse | kVideo, repeat, pan_right),
     row(key::f3, mod_none, kAllModes, edge, overlay),
     row(C('R'), mod_none, kViewing, edge, reset_stats),
-    row(C('G'), mod_none, kAllModes, edge, toggle_gallery),
+    row(C('G'), mod_none, kNotCrop, edge, toggle_gallery),
     row(C('T'), mod_none, kAllModes, edge, toggle_filmstrip),
     row(C('B'), mod_none, kViewing, edge, cycle_background),
     row(C('S'), mod_none, kBrowse | kVideo | kIsland, edge, sticky_zoom),
@@ -129,9 +133,9 @@ constexpr binding kBindings[] = {
     // Help and find. The Ctrl+K palette was dropped (plan/12 2026-09-13): a
     // TextBox in the island flyout fail-fasts, and bound keys never reach it.
     row(C('?'), mod_none, kAllModes, edge, help),
-    row(C(','), mod_ctrl, kAllModes, edge, open_settings),
+    row(C(','), mod_ctrl, kNotCrop, edge, open_settings),
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
-    row(C('E'), mod_ctrl | mod_shift, kAllModes, edge, folder_tree),
+    row(C('E'), mod_ctrl | mod_shift, kNotCrop, edge, folder_tree),
     // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
     // with the filmstrip or gallery focused, plain typing jumps by name.
     row(C('/'), mod_none, kBrowse | kVideo, edge, typeahead),
@@ -163,6 +167,29 @@ constexpr binding kBindings[] = {
     // Ctrl+C (plan/16): with the eyedropper on it copies the colour; otherwise it
     // copies the marked (or current / gallery-selected) files.
     row(C('C'), mod_ctrl, kViewing, edge, copy_clipboard),
+    // PR 10 (plan/16 View, Crop mode). Appended. `[` `]` H V act on a still in
+    // browse (a clip takes `[` `]` for trim in PR 13); on a JPEG with nothing
+    // else in its stack they rewrite the file losslessly, no pane needed.
+    row(C('['), mod_none, kBrowse | kCrop, edge, rotate_ccw),
+    row(C(']'), mod_none, kBrowse | kCrop, edge, rotate_cw),
+    row(C('H'), mod_none, kBrowse | kCrop, edge, flip_horizontal),
+    row(C('V'), mod_none, kBrowse | kCrop, edge, flip_vertical),
+    // Shift+C: C is clipping; the Shift twin, as PR 9 did for O and I.
+    row(C('C'), mod_shift, kBrowse, edge, crop_mode),
+    row(key::enter, mod_none, kCrop, edge, crop_commit),
+    row(key::left, mod_none, kCrop, repeat, crop_move_left),
+    row(key::right, mod_none, kCrop, repeat, crop_move_right),
+    row(key::up, mod_none, kCrop, repeat, crop_move_up),
+    row(key::down, mod_none, kCrop, repeat, crop_move_down),
+    row(key::left, mod_shift, kCrop, repeat, crop_narrower),
+    row(key::right, mod_shift, kCrop, repeat, crop_wider),
+    row(key::up, mod_shift, kCrop, repeat, crop_shorter),
+    row(key::down, mod_shift, kCrop, repeat, crop_taller),
+    row(C(','), mod_none, kCrop, repeat, straighten_ccw),
+    row(C('.'), mod_none, kCrop, repeat, straighten_cw),
+    row(C('S'), mod_ctrl, kBrowse, edge, export_image),
+    row(C('Z'), mod_ctrl, kBrowse | kCrop, edge, undo_edit),
+    row(C('R'), mod_ctrl, kBrowse | kCrop, edge, reset_edits),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -261,6 +288,25 @@ constexpr command_info kCommands[] = {
     {af_points, "AF points"},
     {eyedropper, "Eyedropper"},
     {copy_clipboard, "Copy"},
+    {rotate_ccw, "Rotate left"},
+    {rotate_cw, "Rotate right"},
+    {flip_horizontal, "Flip horizontal"},
+    {flip_vertical, "Flip vertical"},
+    {crop_mode, "Crop / straighten"},
+    {crop_commit, "Apply crop"},
+    {crop_move_left, "Crop: move left"},
+    {crop_move_right, "Crop: move right"},
+    {crop_move_up, "Crop: move up"},
+    {crop_move_down, "Crop: move down"},
+    {crop_narrower, "Crop: narrower"},
+    {crop_wider, "Crop: wider"},
+    {crop_shorter, "Crop: shorter"},
+    {crop_taller, "Crop: taller"},
+    {straighten_ccw, "Straighten left"},
+    {straighten_cw, "Straighten right"},
+    {export_image, "Export…"},
+    {undo_edit, "Undo edit"},
+    {reset_edits, "Reset edits"},
 };
 
 const char* named_key(key k) noexcept {

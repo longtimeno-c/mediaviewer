@@ -81,11 +81,12 @@ formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump sc
 Mac PR 3 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
 ported): a command bar, a bottom filmstrip, and a full-grid gallery overlay, all driven
 by an FSEvents-backed folder model and a JPEG-512 SQLite thumbnail cache sharing
-Windows' `jpg512.1` spec, lazy-loading thumbnails so a large folder doesn't stall the
+Windows' `jpg512` spec (now `.2`, PR 10), lazy-loading thumbnails so a large folder doesn't stall the
 scroll. Real folder navigation (argv, drag-and-drop-in, arrow keys and the rest of
 plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscreen,
 a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
-It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane with a summary card, a searchable tree of every EXIF/IPTC/XMP tag and, for clips, a per-stream inspector; `O` adds camera, exposure and date lines to the on-canvas info; `Shift+O` draws AF points; `Shift+I` is a one-pixel eyedropper; `⌘⇧E` shows a folder tree; View ▸ Sort By adds date taken. It does **not** yet handle rating/metadata *writes* (PR 12) or RAW-pairing UI. On Windows the same features are in: `I` (or View ▸ Metadata pane) opens the pane on the right, `Ctrl+Shift+E` (or View ▸ Folder tree) the folder tree on the left rooted at the open folder, `O` adds the camera/exposure/date lines, `Shift+O` draws AF points, `Shift+I` is the eyedropper, and `Ctrl+C` copies the eyedropper colour (or, with it off, the marked/current file(s) as a file drop). View ▸ Sort by and Settings offer name, date modified, size, type and EXIF date taken, ascending or descending; the choice is saved. Both panes float over the photo, so opening one never refits it. A
+It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane with a summary card, a searchable tree of every EXIF/IPTC/XMP tag and, for clips, a per-stream inspector; `O` adds camera, exposure and date lines to the on-canvas info; `Shift+O` draws AF points; `Shift+I` is a one-pixel eyedropper; `⌘⇧E` shows a folder tree; View ▸ Sort By adds date taken. It does **not** yet handle rating/metadata *writes* (PR 12) or RAW-pairing UI. On Windows the same features are in: `I` (or View ▸ Metadata pane) opens the pane on the right, `Ctrl+Shift+E` (or View ▸ Folder tree) the folder tree on the left rooted at the open folder, `O` adds the camera/exposure/date lines, `Shift+O` draws AF points, `Shift+I` is the eyedropper, and `Ctrl+C` copies the eyedropper colour (or, with it off, the marked/current file(s) as a file drop). View ▸ Sort by and Settings offer name, date modified, size, type and EXIF date taken, ascending or descending; the choice is saved. Both panes float over the photo, so opening one never refits it.
+On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. Neither host half has been compiled yet — see [plan/12](plan/12-decision-log.md) 2026-09-24.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -456,6 +457,17 @@ first; turn that off under Settings.
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
+
+**Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
+original is only ever rewritten by a lossless JPEG rotate / flip.
+
+| Key | Does |
+|---|---|
+| `[` / `]` | rotate left / right. On a JPEG with no other edit, the file is rewritten losslessly 0.4 s after the last press |
+| `H` / `V` | flip horizontal / vertical (same lossless rule) |
+| `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
+| `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
+| `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
 
 Keys go through one router and one table (`src/shell/commands.h`,
 [plan/16](plan/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
@@ -1063,12 +1075,18 @@ uninstall is marked in `tools/package/mediaviewer.iss`.
 ```
 src/core        job system, result<T>, lock-free rings, ETW
 src/io          whole-file reads, directory listing + watcher, copy/move that never
-                overwrites, Recycle Bin (Windows impl)
+                overwrites, Recycle Bin (Windows impl), the replace port for edited
+                pixels (replace_win / replace_mac: never-overwrite export, atomic swap)
 src/codec       JPEG / PNG / BMP / GIF / WebP / TIFF / ICO / HEIC / AVIF / RAW,
                 APNG walker, frame-at-a-time animation sources, magic-byte probe,
                 HEIC-only OS-codec probe (WIC, os_decode_win.cpp)
 src/image       LCMS colour (8-bit display LUT; sRGB copy-through), CPU mips,
                 immutable GPU upload, JPEG-512 thumbs
+src/meta        EXIF / IPTC / XMP (Exiv2) + container / stream (libavformat) read
+                model, summary rows, AF geometry (PR 9)
+src/edit        EditStack + geometry (the blit's output -> source map), lossless
+                JPEG rotate / flip / MCU crop, JPEG / PNG export with a metadata
+                policy (PR 10)
 src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom
 src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
 src/abi         the flat C ABI — the top of the native graph; animation session

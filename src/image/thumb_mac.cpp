@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Darwin twin of image/thumb.cpp. Same on-disk cache spec (jpg512.1) and
+// Darwin twin of image/thumb.cpp. Same on-disk cache spec (jpg512.2) and
 // SQLite schema; two differences from the Windows file: POSIX '/' path
 // joining instead of thumb.cpp's hardcoded '\\', and decode_bytes_mac()
 // (PR 17, JPEG/PNG/BMP) instead of decode_bytes()'s full codec::decode()
@@ -13,6 +13,7 @@
 #include <sqlite3.h>
 
 #include "codec/decode.h"
+#include "codec/orient.h"
 #include "codec/format.h"
 #include "image/pipeline.h"
 #include "image/pipeline_mac.h"
@@ -238,7 +239,7 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
       }
     }
     for (int attempt : {denom, 1}) {
-      auto raster = codec::decode_jpeg(src_bytes, ctx, attempt);
+      auto raster = codec::decode_jpeg_display(src_bytes, ctx, attempt);
       if (!raster) {
         if (raster.error() == status::cancelled) return err(status::cancelled);
         continue;

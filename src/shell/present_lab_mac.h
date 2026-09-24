@@ -22,6 +22,7 @@
 #include "gfx/video_blit_metal.h"
 #include "abi/animation_session.h"
 #include "codec/anim.h"
+#include "edit/edit_stack.h"
 #include "image/gpu_image_mac.h"
 #include "player/media_source.h"
 #include "shell/dino_game.h"
@@ -63,7 +64,18 @@ class present_lab_mac {
   // the newer selection. Only folder navigation should call this — thumbnail
   // and relist jobs (folder_model_mac) stay on background_generation and are
   // unaffected by the bump.
-  void open_item(std::string path_utf8) noexcept;
+  // Returns the item id the images of this open will carry (PR 10: the UI tags
+  // edit geometry with it, input_state.h edit_view).
+  std::uint64_t open_item(std::string path_utf8) noexcept;
+
+  // [any-thread] PR 10: the full-resolution size of the still on screen, if it
+  // belongs to `item`. What the edit session constrains a crop against.
+  [[nodiscard]] bool still_size(std::uint64_t item, std::uint32_t* w, std::uint32_t* h) const noexcept {
+    if (item == 0 || shown_item_.load(std::memory_order_acquire) != item) return false;
+    *w = shown_w_.load(std::memory_order_relaxed);
+    *h = shown_h_.load(std::memory_order_relaxed);
+    return *w > 0 && *h > 0;
+  }
 
   // [any-thread] What the SwiftUI transport strip shows. Published by the render
   // thread through atomics; `active` is false when no clip is on screen.
@@ -129,6 +141,16 @@ class present_lab_mac {
   // three draw bytes the UI thread already published in `snapshot.meta`; none of
   // them touches a file or the metadata store (plan/16).
   void draw_photo_overlays(const input_snapshot& snapshot) noexcept;
+  // [render-thread] PR 10 edit geometry. The snapshot's slot for `item`, or
+  // null; the placement of `img` through it (identity when there is none).
+  [[nodiscard]] const edit_view* edit_for(std::uint64_t item) const noexcept;
+  [[nodiscard]] edit::placement place_image(const image::gpu_image_mac& img) const noexcept;
+  void draw_crop_overlay(const input_snapshot& snapshot) noexcept;
+  edit_view edit_slots_[2];      // copied from the snapshot each iteration
+  edit_view applied_edit_{};     // what the current still was last fitted with
+  std::atomic<std::uint64_t> shown_item_{0};
+  std::atomic<std::uint32_t> shown_w_{0};
+  std::atomic<std::uint32_t> shown_h_{0};
  public:
   // [any-thread] What the eyedropper last read, ready for the clipboard; empty when
   // the cursor is off the picture or the eyedropper is off.

@@ -38,7 +38,7 @@ struct view_state {
   bool settings_open = false;  // the settings screen covers the canvas
   bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
   bool pane_open = false;  // PR 8+
-  bool crop = false;       // PR 9
+  bool crop = false;       // PR 10: crop mode on the canvas
   bool game = false;       // the empty-window runner is up (Space on an empty view)
 };
 

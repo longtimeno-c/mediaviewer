@@ -414,6 +414,11 @@ identically on both platforms. The folder tree opens from the keyboard and navig
 the mouse. The present-loop gate for each platform still holds with the pane open.
 
 ### PR 10 — Geometry edits + export
+*Status 2026-09-24: shared core and **both host halves written** on the PR 9 branch; the core is
+unit-tested, the Windows and macOS host halves await their first compile and each platform's verify
+run — see [12](12-decision-log.md) (which also records where this departs from the text below:
+`transupp`, and crop mode's overlay living in the canvas).*
+
 **Shared:** `EditStack`, rotate/flip/crop/straighten/resize op chain, export with a
 metadata preservation policy, **lossless JPEG** rotate and MCU-aligned crop (libjpeg-turbo
 `transupp`, platform-neutral). Atomic output (write a new file, never touch the original)

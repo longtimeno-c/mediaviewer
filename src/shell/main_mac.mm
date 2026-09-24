@@ -18,6 +18,8 @@
 #import <Sparkle/Sparkle.h>
 #endif
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -35,6 +37,8 @@
 #include "io/dir.h"
 #include "shell/browse_index.h"
 #include "shell/commands.h"
+#include "shell/edit_session.h"
+#include "shell/edit_view.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
@@ -88,6 +92,12 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
+    // PR 10
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
       return true;
     default:
       return false;
@@ -159,6 +169,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* galleryHost;
 @property(nonatomic, strong) NSView* helpHost;
 @property(nonatomic, strong) NSView* settingsHost;
+// PR 10: the export sheet, built fresh each time it opens so it starts from
+// the last choice.
+@property(nonatomic, strong) NSView* exportHost;
 @property(nonatomic, strong) NSView* transportHost;
 @property(nonatomic, strong) NSLayoutConstraint* transportBottom;
 // PR 9: the metadata pane (right) and folder tree (left) float over the canvas like the
@@ -236,6 +249,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
 - (void)setSettingsVisible:(BOOL)visible;
+// PR 10 export sheet (ExportView.swift).
+- (int32_t)exportChoice;
+- (void)setExportVisible:(BOOL)visible;
+- (void)confirmExport:(int32_t)packed;
 - (int32_t)viewFlags;
 - (void)setViewFlags:(int32_t)flags;
 - (void)beginKeyCaptureForRow:(int)row;
@@ -550,6 +567,16 @@ extern "C" int32_t mv_chrome_sort_order(void) {
 }
 extern "C" void mv_chrome_set_sort_order(int32_t packed) {
   if (g_chrome_app) [g_chrome_app setSortOrder:packed];
+}
+
+extern "C" int32_t mv_chrome_export_last_choice(void) {
+  return g_chrome_app ? [g_chrome_app exportChoice] : 0;
+}
+extern "C" void mv_chrome_export_confirm(int32_t packed) {
+  if (g_chrome_app) [g_chrome_app confirmExport:packed];
+}
+extern "C" void mv_chrome_export_cancel(void) {
+  if (g_chrome_app) [g_chrome_app setExportVisible:NO];
 }
 
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
@@ -934,6 +961,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
+  // PR 10 (plan/07, plan/16). `_edits` owns every item's edit stack and crop
+  // mode; the render thread gets the geometry through _snap.edit, tagged with
+  // the item id _lab.open_item returned (so a reload never borrows it).
+  mv::shell::edit_session _edits;
+  std::uint64_t _itemId;
+  NSTimer* _rotateDebounce;
+  BOOL _exportVisible;
+  int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
   mv::io::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
@@ -1388,13 +1423,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   if (_items.empty()) {
     _wantSelectedPath.clear();
+    _edits.clear_item();
+    _itemId = 0;
+    [self publishEdit];
     _snap.item_index = 0;
     _snap.item_count = 0;
     _snap.item_name[0] = '\0';
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
-    _lab.open_item(entry.path_utf8);
+    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
@@ -2153,6 +2191,7 @@ enum MvMenuCmd : NSInteger {
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
   s.pane_open = _metaPaneVisible || _treeVisible;
+  s.crop = _edits.crop_active();
   return s;
 }
 
@@ -2167,6 +2206,15 @@ enum MvMenuCmd : NSInteger {
   if (_settingsVisible) {
     if (!up && k == key::escape && mods == mod_none && _captureRow < 0) {
       [self setSettingsVisible:NO];
+      return YES;
+    }
+    return NO;
+  }
+  // PR 10: the export sheet owns the keyboard while it is up (it is first
+  // responder; this only catches a key that still reached the canvas).
+  if (_exportVisible) {
+    if (!up && k == key::escape && mods == mod_none) {
+      [self setExportVisible:NO];
       return YES;
     }
     return NO;
@@ -2227,6 +2275,11 @@ enum MvMenuCmd : NSInteger {
         case mv::shell::back_target::popup: [self setHelpVisible:NO]; break;
         case mv::shell::back_target::settings: [self setSettingsVisible:NO]; break;
         case mv::shell::back_target::gallery: [self setGalleryVisible:NO]; break;
+        case mv::shell::back_target::crop:
+          _edits.cancel_crop();
+          [self publishEdit];
+          [self pokeSnapshot];
+          break;
         case mv::shell::back_target::pane:
           [self setMetaPaneVisible:NO];
           [self setTreeVisible:NO];
@@ -2352,8 +2405,174 @@ enum MvMenuCmd : NSInteger {
     }
     case metadata_pane: [self setMetaPaneVisible:!_metaPaneVisible]; return YES;
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
+    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+      return [self runEditCommand:command];
     default: return NO;
   }
+}
+
+// ---- PR 10: edit stack, lossless rotate, crop, export ---------------------------
+
+// A new item (or the same file reopened) is on its way to the canvas. The old
+// item's geometry moves to slot 1 so its texture keeps it until the new
+// pixels land; slot 0 is the new item's.
+- (void)editItemOpened:(const mv::io::dir_entry&)entry item:(std::uint64_t)item {
+  _snap.edit[1] = _snap.edit[0];
+  _itemId = item;
+  mv::shell::edit_item e;
+  e.path = entry.path_utf8;
+  e.size = entry.size;
+  e.mtime = entry.mtime_unix;
+  // A hint: the write job probes the magic bytes and refuses anything else.
+  NSString* ext = [[NSString stringWithUTF8String:entry.name_utf8.c_str()] pathExtension].lowercaseString;
+  e.jpeg = [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] || [ext isEqualToString:@"jpe"];
+  const bool carried_turn = _edits.set_item(e);
+  [self publishEdit];
+  if (carried_turn) [self scheduleRotationWrite];
+}
+
+- (void)publishEdit {
+  _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+}
+
+- (BOOL)runEditCommand:(mv::shell::command_id)command {
+  // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
+  // single frame to turn.
+  if (_items.empty() || [self currentItemIsVideo] || _lab.anim_active()) return NO;
+  std::uint32_t w = 0, h = 0;
+  if (_lab.still_size(_itemId, &w, &h)) _edits.set_size(w, h);
+  else if (command == mv::shell::command_id::crop_mode) {
+    NSBeep();  // no pixels yet: nothing to frame a crop against
+    return YES;
+  }
+  switch (_edits.run(command)) {
+    case mv::shell::edit_effect::none: return YES;
+    case mv::shell::edit_effect::refused: NSBeep(); return YES;
+    case mv::shell::edit_effect::redraw:
+      [self publishEdit];
+      [self pokeSnapshot];
+      return YES;
+    case mv::shell::edit_effect::write_rotation:
+      [self publishEdit];
+      [self pokeSnapshot];
+      [self scheduleRotationWrite];
+      return YES;
+    case mv::shell::edit_effect::export_image:
+      [self setExportVisible:YES];
+      return YES;
+  }
+  return YES;
+}
+
+// `[` `]` `H` `V` on a JPEG: the preview has already turned. The file is
+// rewritten once the keys stop (a quick `]]` is one half-turn write), on the
+// pool, never the main thread (plan/16 speed rule 2).
+- (void)scheduleRotationWrite {
+  [_rotateDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _rotateDebounce = [NSTimer scheduledTimerWithTimeInterval:0.4
+                                                    repeats:NO
+                                                      block:^(NSTimer* timer) {
+                                                        (void)timer;
+                                                        [weakSelf startRotationWrite];
+                                                      }];
+}
+
+- (void)startRotationWrite {
+  _rotateDebounce = nil;
+  const std::optional<mv::shell::rotation_write> w = _edits.take_pending_write();
+  if (!w) return;
+  const mv::shell::rotation_write job = *w;
+  const std::string path = job.path;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [job, path, weakSelf](const mv::job_context&) -> mv::status {
+    const mv::expected written = mv::shell::run_rotation_write(job);
+    const bool ok = static_cast<bool>(written);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf rotationWriteFinished:ok path:path];
+    });
+    return ok ? mv::status::ok : written.error();
+  });
+}
+
+- (void)rotationWriteFinished:(bool)ok path:(const std::string&)path {
+  _edits.write_finished(ok);
+  if (!ok) {
+    NSBeep();
+    [self publishEdit];
+    [self pokeSnapshot];
+    return;
+  }
+  // The file changed under the listing: refresh its size / mtime (the edit
+  // key) the way the folder scan would, then reopen it if it is on screen.
+  struct stat st{};
+  if (::stat(path.c_str(), &st) == 0) {
+    for (auto& entry : _items) {
+      if (entry.path_utf8 != path) continue;
+      entry.size = static_cast<std::uint64_t>(st.st_size);
+      entry.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
+    }
+  }
+  if (!_items.empty() && _index.current() < _items.size() &&
+      _items[_index.current()].path_utf8 == path) {
+    [self selectIndex:_index.current()];
+  }
+}
+
+- (int32_t)exportChoice {
+  return _exportChoice != 0 ? _exportChoice : mv::shell::pack_export(mv::edit::export_options{});
+}
+
+- (void)setExportVisible:(BOOL)visible {
+  if (visible == _exportVisible) return;
+  _exportVisible = visible;
+  if (visible) {
+    [self cancelKeyHolds];
+    NSView* container = self.window.contentView;
+    self.exportHost = [MVChromeHost makeExportView];
+    self.exportHost.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.exportHost];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.exportHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+      [self.exportHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+      [self.exportHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+      [self.exportHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    ]];
+    [self.window makeFirstResponder:self.exportHost];
+  } else {
+    [self.exportHost removeFromSuperview];
+    self.exportHost = nil;
+    [self.window makeFirstResponder:self.view];
+  }
+}
+
+- (void)confirmExport:(int32_t)packed {
+  _exportChoice = packed;
+  [self setExportVisible:NO];
+  [self exportCurrentItem:mv::shell::unpack_export(packed)];
+}
+
+// Cmd+S opens the sheet (ExportView.swift); its choice lands here as options:
+// the stack baked into "<name>-edit.jpg" (or .png) beside the original, never
+// over it and never over an earlier export.
+- (void)exportCurrentItem:(const mv::edit::export_options&)options {
+  if (_items.empty() || _index.current() >= _items.size()) return;
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::edit::geometry g = _edits.export_geometry();
+  const mv::edit::export_options opt = options;
+  _jobs.submit_at(mv::background_generation, [path, g, opt](const mv::job_context&) -> mv::status {
+    const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+    const bool ok = static_cast<bool>(out);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!ok) NSBeep();
+    });
+    return ok ? mv::status::ok : out.error();
+  });
 }
 
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------

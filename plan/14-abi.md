@@ -252,6 +252,21 @@ mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap,
 - `mv_list_subdirectories` takes no session: it is a pure directory read, and the managed tree
   calls it through `MediaViewerSession.ListSubdirectories`.
 
+## PR 10 — forgetting a rewritten file (ABI 0.7)
+
+Minor bump, **no layout change**. The viewer's lossless rotate rewrites the JPEG on disk; the
+navigation LRU is keyed by path, so without this a reselect republishes the old pixels.
+
+```c
+/* Drop `utf8_path`'s decoded pixels from the navigation LRU. MV_OK when it was not cached.
+ * Does not select, decode or touch the file. [any-thread][no-block] */
+mv_status mv_folder_forget(mv_session_t, const char* utf8_path);
+```
+
+Edits themselves never cross the ABI: the edit stack, crop mode and the lossless / export jobs
+live in `shell/edit_session` (shared with the Mac host), and the geometry reaches the render
+thread through the input snapshot, like every other view state.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

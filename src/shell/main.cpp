@@ -26,6 +26,8 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <new>
+#include <optional>
 #include <cwchar>
 #include <cstdio>
 #include <cstdlib>
@@ -41,7 +43,10 @@
 #include "shell/app_icon.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
+#include "canvas/refinement.h"
 #include "shell/chrome_host.h"
+#include "shell/edit_session.h"
+#include "shell/edit_view.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
@@ -81,6 +86,9 @@ enum class open_mode { none, folder, image };
 constexpr UINT_PTR kMetaTimerId = 0x7501;   // PR 9: pause before a metadata read
 constexpr UINT kMetaDebounceMs = 90;
 constexpr UINT kMsgMetaReady = WM_APP + 0x71;  // a metadata read finished (any thread posts)
+constexpr UINT_PTR kRotateTimerId = 0x7601;  // PR 10: the lossless write waits for the keys to stop
+constexpr UINT kRotateDebounceMs = 400;
+constexpr UINT kMsgEditJobDone = WM_APP + 0x72;  // a rotate write or an export finished (any thread posts)
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -121,6 +129,17 @@ struct app_state {
   bool focus_tree_next = false;
   std::string current_dir;  // the open folder, for the tree's root
   mv::job_system jobs;
+  // PR 10 (plan/07, plan/16). `edits` owns every item's edit stack and crop
+  // mode; the render thread gets the geometry through input.edit, tagged with
+  // the item's path key and the view generation of the select that showed it.
+  mv::shell::edit_session edits;
+  std::string edit_path;
+  std::uint64_t edit_key = 0;
+  std::uint32_t edit_generation = 0;
+  std::uint64_t edit_size = 0;
+  std::int64_t edit_mtime = 0;
+  // The export dialog's last answer, preselected next time (pack_export).
+  std::int32_t export_choice = mv::shell::pack_export(mv::edit::export_options{});
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
   mv_session_t session = nullptr;
@@ -818,6 +837,169 @@ bool copy_to_clipboard(app_state* app) {
   return set_clipboard(app, CF_HDROP, mem);
 }
 
+// ---- PR 10: edit stack, lossless rotate, crop, export ------------------------
+
+// What an edit job posts back (kMsgEditJobDone's LPARAM, owned by the handler).
+struct edit_job_result {
+  bool export_job = false;  // else a lossless rotate write
+  bool ok = false;
+  std::string path;         // the file written (rotate) or the source (export)
+};
+
+void publish_edit(app_state* app) noexcept {
+  app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+}
+
+void schedule_rotation_write(app_state* app) noexcept {
+  if (app->window) ::SetTimer(app->window, kRotateTimerId, kRotateDebounceMs, nullptr);
+}
+
+// The canvas is about to show the selected item (a select, a listing landing,
+// a reselect after a rewrite). The previous slot keeps its geometry for the
+// texture still on screen until the new pixels land (shell/edit_view.h).
+void edit_item_opened(app_state* app) {
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry)) {
+    if (app->edits.has_item()) {
+      app->edits.clear_item();
+      app->input.edit[1] = app->input.edit[0];
+      app->edit_path.clear();
+      app->edit_key = 0;
+      publish_edit(app);
+    }
+    return;
+  }
+  std::uint32_t generation = 0;
+  (void)mv_session_current_generation(app->session, &generation);
+  if (entry.path_utf8 == app->edit_path && entry.size == app->edit_size &&
+      entry.mtime_unix == app->edit_mtime && generation == app->edit_generation) {
+    return;  // the same bytes, the same select: nothing moved
+  }
+  app->input.edit[1] = app->input.edit[0];
+  app->edit_path = entry.path_utf8;
+  app->edit_size = entry.size;
+  app->edit_mtime = entry.mtime_unix;
+  app->edit_key = mv::canvas::item_key_for(entry.path_utf8.data(), entry.path_utf8.size());
+  app->edit_generation = generation;
+  mv::shell::edit_item e;
+  e.path = entry.path_utf8;
+  e.size = entry.size;
+  e.mtime = entry.mtime_unix;
+  // A hint: the write job probes the magic bytes and refuses anything else.
+  std::string ext;
+  if (const auto dot = entry.name_utf8.find_last_of('.'); dot != std::string::npos) {
+    ext = entry.name_utf8.substr(dot + 1);
+    for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  }
+  e.jpeg = ext == "jpg" || ext == "jpeg" || ext == "jpe";
+  std::uint32_t w = 0, h = 0;
+  if (app->lab.still_size(app->edit_key, &w, &h)) {
+    e.width = w;
+    e.height = h;
+  }
+  const bool carried_turn = app->edits.set_item(e);
+  publish_edit(app);
+  if (carried_turn) schedule_rotation_write(app);
+}
+
+void start_rotation_write(app_state* app) {
+  if (app->window) ::KillTimer(app->window, kRotateTimerId);
+  const std::optional<mv::shell::rotation_write> w = app->edits.take_pending_write();
+  if (!w) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [job = *w, hwnd](const mv::job_context&) -> mv::status {
+                        const mv::expected written = mv::shell::run_rotation_write(job);
+                        auto* r = new (std::nothrow) edit_job_result{false, static_cast<bool>(written), job.path};
+                        if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return written ? mv::status::ok : written.error();
+                      });
+}
+
+// Ctrl+S: the stack baked into "<name>-edit.jpg" beside the original (never
+// over it). `opt` comes from the export dialog, or the defaults without chrome.
+void start_export(app_state* app, const mv::edit::export_options& opt) {
+  if (app->edit_path.empty()) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, g = app->edits.export_geometry(), opt,
+                       hwnd](const mv::job_context&) -> mv::status {
+                        const mv::result<std::string> out = mv::shell::run_export(path, g, opt);
+                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
+                        if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return out ? mv::status::ok : out.error();
+                      });
+}
+
+void folder_select(app_state* app, std::uint32_t index);
+bool video_mode(app_state* app) noexcept;
+
+void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
+  if (!r) return;
+  if (r->export_job) {
+    // The new file shows up through the folder watcher; only a failure speaks.
+    if (!r->ok) ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  app->edits.write_finished(r->ok);
+  if (!r->ok) {
+    ::MessageBeep(MB_ICONWARNING);
+    publish_edit(app);
+    ++app->input.activity_seq;
+    publish(app);
+    return;
+  }
+  // The navigation LRU still holds the old pixels under this path: drop them,
+  // then reselect so the rewritten file decodes (ABI 0.7).
+  (void)mv_folder_forget(app->session, r->path.c_str());
+  std::uint32_t selected = 0;
+  if (selected_index(app, selected) && current_item_path(app) == r->path) {
+    folder_select(app, selected);
+  }
+}
+
+bool run_edit_command(app_state* app, mv::shell::command_id command) {
+  // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
+  // single frame to turn.
+  if (app->mode == open_mode::none || app->edit_path.empty() || video_mode(app) ||
+      app->lab.animation() != mv::shell::animation_state::none) {
+    return false;
+  }
+  std::uint32_t w = 0, h = 0;
+  if (app->lab.still_size(app->edit_key, &w, &h)) {
+    app->edits.set_size(w, h);
+  } else if (command == mv::shell::command_id::crop_mode) {
+    ::MessageBeep(MB_ICONWARNING);  // no pixels yet: nothing to frame a crop against
+    return true;
+  }
+  switch (app->edits.run(command)) {
+    case mv::shell::edit_effect::none:
+      return true;
+    case mv::shell::edit_effect::refused:
+      ::MessageBeep(MB_ICONWARNING);
+      return true;
+    case mv::shell::edit_effect::redraw:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      return true;
+    case mv::shell::edit_effect::write_rotation:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      schedule_rotation_write(app);
+      return true;
+    case mv::shell::edit_effect::export_image:
+      if (app->chrome.attached()) {
+        app->chrome.show_export_dialog(app->export_choice);
+      } else {
+        start_export(app, mv::shell::unpack_export(app->export_choice));
+      }
+      return true;
+  }
+  return true;
+}
+
 void folder_select(app_state* app, std::uint32_t index) {
   if (!app || !app->session) return;
   // Any navigation bumps the generation, which retires a Live Photo's motion.
@@ -830,6 +1012,7 @@ void folder_select(app_state* app, std::uint32_t index) {
     refresh_item_info(app);
     refresh_mark_state(app);
     metadata_selection_changed(app);
+    edit_item_opened(app);
     // Navigation keeps a fullscreen reveal up; it hides once this settles.
     if (app->fullscreen_reveal && app->window) {
       ::SetTimer(app->window, kRevealTimerId, kRevealMs, nullptr);
@@ -1086,6 +1269,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
       apply_view_state(app);
       return;
     }
+    case mv::shell::chrome_cmd_export:
+      app->export_choice = static_cast<std::int32_t>(arg);
+      start_export(app, mv::shell::unpack_export(app->export_choice));
+      return;
     case mv::shell::chrome_cmd_folder_ready:
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
@@ -1093,6 +1280,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
       refresh_mark_state(app);
       // The watcher fires this for a folder that gained or lost a subfolder too.
       if (app->tree_visible) push_tree_root(app);
+      edit_item_opened(app);
+      ++app->input.activity_seq;
+      publish(app);
       apply_view_state(app);
       if (g_restore.gallery && arg > 0.0f) {
         g_restore.gallery = false;
@@ -1255,6 +1445,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.motion_playing = app->motion_playing;
   // A shown pane is a level for Esc to walk out of (plan/16: crop, pane, gallery, ...).
   s.pane_open = app->chrome.meta_pane_visible() || app->chrome.folder_tree_visible();
+  s.crop = app->edits.crop_active();
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
   return s;
@@ -1475,6 +1666,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::fullscreen:
       set_fullscreen(app, false);
+      return;
+    case back_target::crop:
+      app->edits.cancel_crop();
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
       return;
     case back_target::game:
       app->game_on = false;
@@ -1982,6 +2179,13 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     case copy_clipboard:
       return copy_to_clipboard(app);
+    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+      return run_edit_command(app, command);
     // Marks (plan/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -2508,11 +2712,19 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                 reinterpret_cast<mv::shell::file_job_result*>(lparam)));
       return 0;
 
+    case kMsgEditJobDone:
+      on_edit_job_done(app, std::unique_ptr<edit_job_result>(reinterpret_cast<edit_job_result*>(lparam)));
+      return 0;
+
     case kMsgMetaReady:
       metadata_ready(app);
       return 0;
 
     case WM_TIMER:
+      if (wparam == kRotateTimerId) {
+        start_rotation_write(app);
+        return 0;
+      }
       if (wparam == kMetaTimerId) {
         request_metadata_now(app);
         return 0;

@@ -33,6 +33,25 @@ struct meta_overlay {
   float af[kMaxAf][5] = {};
 };
 
+// PR 10: the edit geometry for one opened item, as the render thread needs it
+// (edit::geometry flattened to POD). The render thread places it against the
+// texture it actually holds, so the UI never needs the decoded size to turn a
+// picture. `item` names the image the geometry belongs to: the id
+// present_lab_mac::open_item returned on Mac, the path's item_key on Windows,
+// where `generation` (the session's view generation after the select) tells a
+// rewritten file's new pixels from the old texture still on screen.
+// shell/edit_view.h matches a texture to a slot.
+struct edit_view {
+  std::uint64_t item = 0;  // 0 = no geometry
+  std::uint32_t generation = 0;
+  std::int8_t d4[4] = {1, 0, 0, 1};
+  float straighten = 0.0f;
+  float crop[4] = {0.0f, 0.0f, 1.0f, 1.0f};  // x, y, w, h in the straightened frame
+  bool keep_frame = false;                   // crop mode: whole frame, no auto-crop
+  bool crop_overlay = false;                 // crop mode: draw the draft rect
+  float overlay[4] = {0.0f, 0.0f, 1.0f, 1.0f};  // normalised to the output frame
+};
+
 struct input_snapshot {
   // Client-area size in physical pixels, and the DPI scale to divide by for
   // layout. PerMonitorV2, so both change on WM_DPICHANGED.
@@ -87,6 +106,10 @@ struct input_snapshot {
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
   meta_overlay meta;
+  // PR 10: [0] is the item on the canvas, [1] the one before it. A lossless
+  // rotate reloads the file under a new item id; until its pixels land the
+  // old texture keeps the old geometry, so the turn never flashes back.
+  edit_view edit[2];
   // Bumped by the UI thread whenever `meta` is replaced, so an idle render
   // thread draws one frame for it (the struct is too big to compare).
   std::uint32_t meta_seq = 0;

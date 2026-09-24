@@ -149,6 +149,11 @@ add_library(mv_codec STATIC
   src/codec/avif.cpp
   src/codec/raw.cpp
   src/codec/raw_internal.h
+  src/codec/exif.cpp
+  src/codec/exif.h
+  src/codec/orient.cpp
+  src/codec/orient.h
+  src/codec/orientation.h
   src/codec/os_decode_mac.cpp
   src/codec/os_decode.h
   src/codec/crash_test_hook.cpp
@@ -171,6 +176,8 @@ add_library(mv::codec ALIAS mv_codec)
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
   src/io/file_mac.cpp
+  src/io/replace_mac.cpp
+  src/io/replace.h
   src/io/paths_mac.cpp
   src/io/dir.h
   src/io/file.h
@@ -270,6 +277,7 @@ find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
   src/meta/still.cpp
+  src/meta/carried.cpp
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
@@ -283,6 +291,31 @@ target_link_libraries(mv_meta
   PUBLIC mv_core
   PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
+
+# ---------------------------------------------------------------------------
+# mv_edit -- PR 10 (plan/07): the EditStack and its geometry ops, the
+# full-resolution CPU evaluation for export, lossless JPEG rotate / flip /
+# MCU-aligned crop on libjpeg's coefficient API, and the JPEG / PNG export
+# encoders. Pure C++ over codec + io + core: no GPU, no platform header (D9);
+# the preview is the blit's output -> source map (gfx/blit*.h).
+# ---------------------------------------------------------------------------
+add_library(mv_edit STATIC
+  src/edit/edit_stack.cpp
+  src/edit/edit_stack.h
+  src/edit/geometry.cpp
+  src/edit/geometry.h
+  src/edit/lossless_jpeg.cpp
+  src/edit/lossless_jpeg.h
+  src/edit/encode.cpp
+  src/edit/encode.h
+  src/edit/export.cpp
+  src/edit/export.h
+  src/edit/metadata_policy.h
+)
+target_link_libraries(mv_edit
+  PUBLIC mv_core mv_codec
+  PRIVATE JPEG::JPEG ${MV_SPNG_TARGET})
+add_library(mv::edit ALIAS mv_edit)
 
 # playprobe -- headless pipeline check (tools/playprobe): decoder actually used,
 # presenter counters, drift slope. Not shipped.
@@ -323,8 +356,12 @@ add_library(mv_shell STATIC
   src/io/sort_order.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
+  # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
+  src/shell/edit_session.cpp
+  src/shell/edit_session.h
+  src/shell/edit_view.h
 )
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta)
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit)
 add_library(mv::shell ALIAS mv_shell)
 
 find_package(imgui CONFIG REQUIRED)
@@ -479,11 +516,16 @@ if(MV_BUILD_TESTS)
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
     tests/test_meta_store.cpp
+    # PR 10: edit stack, lossless JPEG, export, the edit session.
+    tests/test_edit.cpp
+    tests/test_edit_session.cpp
+    tests/test_export_carried.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
     mv_gfx
     mv_shell
+    mv_edit
     mv_codec
     mv_image
     mv_player

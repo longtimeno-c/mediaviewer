@@ -54,9 +54,12 @@ result<metadata> read(std::string_view utf8_path) {
   }
 
   const bool raw = family == codec::format_family::raw || codec::looks_like_raw(*prefix);
-  detail::read_still(*prefix, raw, out);
+  // RAW (LibRaw's flip) and, from PR 10, JPEG (codec/orient.h) reach the
+  // screen already rotated by their EXIF orientation.
+  const bool oriented = raw || family == codec::format_family::jpeg;
+  detail::read_still(*prefix, oriented, out);
   if (out.properties.empty() && prefix->size() >= kPrefixBytes) {
-    if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, raw, out);
+    if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, oriented, out);
   }
   return out;
 }

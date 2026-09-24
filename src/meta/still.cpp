@@ -349,7 +349,9 @@ std::vector<af_point> find_af_points(const Exiv2::ExifData& e, const summary& s)
   return {};
 }
 
-std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
+}  // namespace
+
+std::unique_ptr<Exiv2::Image> open_image(std::span<const std::uint8_t> bytes) {
   // Exiv2 initialises its XMP parser lazily and that is not safe to race; the
   // metadata jobs run on the pool, so do it exactly once, up front. Never
   // terminated: the process owns it until exit.
@@ -364,9 +366,13 @@ std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
   return image;
 }
 
+namespace {
+std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
+  return open_image(bytes);
+}
 }  // namespace
 
-void read_still(std::span<const std::uint8_t> bytes, bool is_raw, metadata& out) noexcept {
+void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out) noexcept {
   try {
     auto image = open(bytes);
     if (!image) return;
@@ -379,7 +385,7 @@ void read_still(std::span<const std::uint8_t> bytes, bool is_raw, metadata& out)
     for (const auto& d : xmp) add_property(out, origin::xmp, d, &exif);
 
     fill_summary(exif, xmp, *image, out);
-    out.display_orientation = is_raw ? out.s.orientation : 1;
+    out.display_orientation = decoder_orients ? out.s.orientation : 1;
     out.af_points = find_af_points(exif, out.s);
   } catch (...) {
     // A damaged tag table: keep whatever was read before it.

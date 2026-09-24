@@ -7,6 +7,7 @@
 #include <sqlite3.h>
 
 #include "codec/decode.h"
+#include "codec/orient.h"
 #include "codec/format.h"
 #include "image/pipeline.h"
 #include "io/file.h"
@@ -243,7 +244,7 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
       }
     }
     for (int attempt : {denom, 1}) {
-      auto raster = codec::decode_jpeg(src_bytes, ctx, attempt);
+      auto raster = codec::decode_jpeg_display(src_bytes, ctx, attempt);
       if (!raster) {
         if (raster.error() == status::cancelled) return err(status::cancelled);
         continue;
