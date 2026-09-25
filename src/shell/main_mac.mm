@@ -40,6 +40,7 @@
 #include "image/linear.h"
 #include "io/collision_name.h"
 #include "io/file.h"
+#include "io/replace.h"
 #include "io/dir.h"
 #include "io/file_port.h"
 #include "io/verified_copy.h"
@@ -304,6 +305,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // is the symmetric case -- dragging the displayed item to Finder/another
 // app). nil when nothing is open.
 - (NSString*)currentItemPathForDrag;
+- (NSFilePromiseProvider*)flattenedPromiseForDrag;  // PR 15: ⌘⌥-drag, nil on a clip
 
 // Filmstrip/gallery follow-up (plan/12 2026-09-17): -selectIndex: is already
 // defined below (folder_model relist / navigateNext etc all call it as a
@@ -1019,6 +1021,57 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   return mv::shell::resolve_layout_symbol(plainChar, c, produced, command, mods_out);
 }
 
+// PR 15: ⌘⌥-drag hands out the edited copy (⌘⌥C's twin, plan/10 PR 15) as a
+// file promise. The bake happens only if a drop asks for it, on this queue,
+// never the main thread (rule 1), and writes straight to where the drop
+// wants the file.
+@interface MvFlattenPromise : NSObject <NSFilePromiseProviderDelegate>
+- (instancetype)initWithPath:(const std::string&)path
+                    geometry:(const mv::edit::geometry&)g
+                      colour:(const mv::edit::colour&)c;
+@end
+
+@implementation MvFlattenPromise {
+  std::string _path;
+  mv::edit::geometry _geometry;
+  mv::edit::colour _colour;
+  NSOperationQueue* _queue;
+}
+- (instancetype)initWithPath:(const std::string&)path
+                    geometry:(const mv::edit::geometry&)g
+                      colour:(const mv::edit::colour&)c {
+  if ((self = [super init])) {
+    _path = path;
+    _geometry = g;
+    _colour = c;
+    _queue = [[NSOperationQueue alloc] init];
+    _queue.qualityOfService = NSQualityOfServiceUserInitiated;
+  }
+  return self;
+}
+- (NSString*)filePromiseProvider:(NSFilePromiseProvider*)provider fileNameForType:(NSString*)fileType {
+  (void)provider;
+  (void)fileType;
+  return [NSString stringWithUTF8String:mv::shell::flattened_file_name(_path).c_str()] ?: @"edited.png";
+}
+- (NSOperationQueue*)operationQueueForFilePromiseProvider:(NSFilePromiseProvider*)provider {
+  (void)provider;
+  return _queue;
+}
+- (void)filePromiseProvider:(NSFilePromiseProvider*)provider
+          writePromiseToURL:(NSURL*)url
+          completionHandler:(void (^)(NSError* _Nullable))done {
+  (void)provider;
+  auto png = mv::shell::render_flattened_png(_path, _geometry, _colour);
+  const char* dest = url.fileSystemRepresentation;
+  if (!png || !dest || !mv::io::write_new(dest, png.value())) {
+    done([NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteUnknownError userInfo:nil]);
+    return;
+  }
+  done(nil);
+}
+@end
+
 @interface MvMetalView : NSView <NSDraggingSource>
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
 @property(nonatomic, assign) mv::shell::input_snapshot* snap;
@@ -1142,6 +1195,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // modifier rather than any mouseDown+move, because mouseDragged: already
   // means "pan" for every existing gesture -- overloading the same bare
   // click-drag would make an accidental small drag-out fire on every pan.
+  const bool edited = (event.modifierFlags & NSEventModifierFlagOption) != 0;
+  if ((event.modifierFlags & NSEventModifierFlagCommand) && edited && self.app) {
+    if (NSFilePromiseProvider* promise = [self.app flattenedPromiseForDrag]) {
+      NSDraggingItem* dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter:promise];
+      const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+      dragItem.draggingFrame = NSMakeRect(p.x - 16, p.y - 16, 32, 32);
+      [self beginDraggingSessionWithItems:@[ dragItem ] event:event source:self];
+      return;
+    }
+  }
   if ((event.modifierFlags & NSEventModifierFlagCommand) && self.app) {
     NSString* path = [self.app currentItemPathForDrag];
     if (path) {
@@ -2055,6 +2118,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (_items.empty() || _index.current() >= _items.size()) return nil;
   const std::string& path = _items[_index.current()].path_utf8;
   return [NSString stringWithUTF8String:path.c_str()];
+}
+
+- (NSFilePromiseProvider*)flattenedPromiseForDrag {
+  if (_items.empty() || _index.current() >= _items.size() || [self currentItemIsVideo] ||
+      _lab.anim_active()) {
+    return nil;
+  }
+  MvFlattenPromise* writer = [[MvFlattenPromise alloc] initWithPath:_items[_index.current()].path_utf8
+                                                           geometry:_edits.export_geometry()
+                                                             colour:_edits.colour()];
+  NSFilePromiseProvider* promise =
+      [[NSFilePromiseProvider alloc] initWithFileType:UTTypePNG.identifier delegate:writer];
+  promise.userInfo = writer;  // the delegate is weak; this keeps it for the drag
+  return promise;
 }
 
 - (std::vector<mv::io::dir_entry>)markedOrCurrentEntries {

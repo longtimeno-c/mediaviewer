@@ -193,6 +193,14 @@ inline constexpr int kExportLongEdgeCount =
 // folder holds one file). Pixels + ICC only: nothing from the EXIF rides along
 // into a chat window the user pasted into. `png` is the same bytes, for the
 // clipboard's image flavour. Worker thread only.
+// The PNG bytes alone, for a destination the caller owns (the Mac's
+// drag-out file promise writes them where the drop asked). Worker thread only.
+[[nodiscard]] result<std::vector<std::uint8_t>> render_flattened_png(std::string_view source_path,
+                                                                     const edit::geometry& g,
+                                                                     const edit::colour& c = {});
+// "IMG_0001.HEIC" -> "IMG_0001-edit.png": the flattened copy's file name.
+[[nodiscard]] std::string flattened_file_name(std::string_view source_path);
+
 struct flattened_copy {
   std::string path;
   std::vector<std::uint8_t> png;

@@ -3509,6 +3509,7 @@ bool copy_paths_to_clipboard(app_state* app) {
 
 struct flatten_job_result {
   bool ok = false;
+  bool for_drag = false;  // Ctrl+Alt+drag: start a file drag of it, not a clipboard copy
   std::string path;
   std::vector<std::uint8_t> png;
 };
@@ -3516,7 +3517,7 @@ struct flatten_job_result {
 // Ctrl+Alt+C: the still as the canvas shows it, edits baked, as a PNG. The
 // bake is a full-resolution export, so it runs on the pool (rule 1) and lands
 // in kMsgFlattenDone. Stills only; a clip's frame is PR 14's frame export.
-bool start_flatten(app_state* app) {
+bool start_flatten(app_state* app, bool for_drag = false) {
   if (!app || !app->window || app->edit_path.empty() || video_mode(app) ||
       app->lab.animation() != mv::shell::animation_state::none) {
     return false;
@@ -3524,9 +3525,10 @@ bool start_flatten(app_state* app) {
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [path = app->edit_path, g = app->edits.export_geometry(),
-                       c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
+                       c = app->edits.colour(), hwnd, for_drag](const mv::job_context&) -> mv::status {
                         mv::result<mv::shell::flattened_copy> out = mv::shell::run_flatten(path, g, c);
                         auto* r = new (std::nothrow) flatten_job_result{};
+                        if (r) r->for_drag = for_drag;
                         if (r && out) {
                           r->ok = true;
                           r->path = std::move(out->path);
@@ -3542,6 +3544,21 @@ bool start_flatten(app_state* app) {
 // browser) in one clipboard open.
 void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   if (!r) return;
+  // Ctrl+Alt+drag (plan/09 "drag an edited copy directly into another app"):
+  // the bake ran on the pool while the button was held; the drag starts
+  // now, of the baked file, if it still is. Let go early and nothing happens.
+  // The file is dragged as CF_HDROP rather than a CFSTR_FILECONTENTS stream,
+  // which a drop target reads through this thread at drop time: waiting for
+  // a full-resolution bake there would block the UI thread (rule 1).
+  if (r->for_drag) {
+    const int button = ::GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+    if (!r->ok) {
+      ::MessageBeep(MB_ICONWARNING);
+    } else if (app && app->window && (::GetAsyncKeyState(button) & 0x8000) != 0) {
+      begin_file_drag(app->window, r->path);
+    }
+    return;
+  }
   static const UINT cf_png = ::RegisterClipboardFormatW(L"PNG");
   if (!r->ok || cf_png == 0 ||
       !set_clipboard(app, {clip_format{CF_HDROP, hdrop_to_global({r->path})},
@@ -4642,7 +4659,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           app->input.mouse_down[0] = false;
           ::ReleaseCapture();
           publish(app);
-          begin_file_drag(hwnd, current_item_path(app));
+          // PR 15: Ctrl+Alt+drag drags the edited copy (Ctrl+Alt+C's twin);
+          // a plain drag stays the original.
+          const bool edited = (::GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                              (::GetKeyState(VK_MENU) & 0x8000) != 0;
+          if (!edited || !start_flatten(app, true)) begin_file_drag(hwnd, current_item_path(app));
           return 0;
         }
       }
