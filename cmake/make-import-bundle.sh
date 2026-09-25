@@ -10,7 +10,10 @@ set -eu
 build="$1"
 bundle="$2"
 version="$3"
-lib=$(find "$build" -name 'libImportChrome.dylib' -type f | head -n 1)
+# Not the DWARF companion in libImportChrome.dylib.dSYM, which has the same
+# name: install_name_tool rejects it ("string table not at the end of the
+# file"), and it is not a loadable library.
+lib=$(find "$build" -name 'libImportChrome.dylib' -type f -not -path '*.dSYM/*' | head -n 1)
 if [ -z "$lib" ]; then
   echo "make-import-bundle: libImportChrome.dylib not found under $build" >&2
   exit 1

@@ -7,6 +7,7 @@
 
 #include <mediaviewer/mediaviewer_import.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -161,7 +162,7 @@ struct rig {
   }
 
   std::string preset(const std::string& extra = "") const {
-    return R"({"name":"Test","destination":")" + utf8(dest()) + R"(","eject_after":false)" + extra +
+    return R"({"name":"Test","destination":")" + json_path(dest()) + R"(","eject_after":false)" + extra +
            "}";
   }
 
@@ -394,8 +395,8 @@ TEST_CASE("cancel stops at a unit boundary and leaves no temporary", "[import][e
 TEST_CASE("a backup destination is written from the same read", "[import][engine]") {
   rig r;
   r.make_card();
-  const std::string backup = utf8(r.dir / "Backup");
-  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + backup + R"(")"));
+  const fs::path backup = r.dir / "Backup";
+  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + json_path(backup) + R"(")"));
   r.run(pid);
   REQUIRE(list_tree(r.dest()) == list_tree(backup));
   REQUIRE(r.wrap.copies == 9);  // one copy call (one card read) per file
@@ -410,13 +411,13 @@ TEST_CASE("a file the backup could not take is taken back from the main destinat
           "[import][engine]") {
   rig r;
   r.make_card();
-  const std::string backup = utf8(r.dir / "Backup");
+  const fs::path backup = r.dir / "Backup";
   // The first file verifies on the main destination but fails twice on the
   // backup: the unit is failed, and neither destination keeps any of it, so
   // Retry failed finds the names free and writes both.
   r.wrap.fault_target = 1;
   r.wrap.before_copy = [&](int n) { r.wrap.fault_times = n == 0 ? 2 : 0; };
-  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + backup + R"(")"));
+  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + json_path(backup) + R"(")"));
   const auto job = r.run(pid);
   REQUIRE(r.progress(job).state == MV_IMPORT_JOB_FAILED);
   REQUIRE(r.progress(job).units_failed == 1);
@@ -450,8 +451,8 @@ TEST_CASE("a duplicate already in the library still goes to a backup that lacks 
   const auto library = list_tree(r.dest());
   REQUIRE(library.size() == 9);
 
-  const std::string backup = utf8(r.dir / "Backup");
-  const std::string with_backup = r.preset(R"(,"backup":")" + backup + R"(")");
+  const fs::path backup = r.dir / "Backup";
+  const std::string with_backup = r.preset(R"(,"backup":")" + json_path(backup) + R"(")");
   auto [p2, pl2] = r.plan(r.card(), with_backup);
   REQUIRE(totals(pl2, "duplicates") == 5);
   REQUIRE(totals(pl2, "backup_only") == 5);
@@ -473,7 +474,7 @@ TEST_CASE("a duplicate already in the library still goes to a backup that lacks 
 
   // Clearing the selection clears the backup work too. (The card is
   // "imported before" now, so "new only" would select nothing: take all.)
-  const std::string again = utf8(r.dir / "Backup2");
+  const std::string again = json_path(r.dir / "Backup2");
   auto [p4, pl4] =
       r.plan(r.card(), r.preset(R"(,"selection":"all","backup":")" + again + R"(")"));
   REQUIRE(totals(pl4, "backup_only") == 5);
@@ -487,8 +488,8 @@ TEST_CASE("resume copies only the destination a crash left without the file",
           "[import][engine]") {
   rig r;
   r.make_card();
-  const std::string backup = utf8(r.dir / "Backup");
-  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + backup + R"(")"));
+  const fs::path backup = r.dir / "Backup";
+  auto [pid, pl] = r.plan(r.card(), r.preset(R"(,"backup":")" + json_path(backup) + R"(")"));
   const fs::path gone = r.dir / "pulled";
   r.wrap.before_copy = [&](int n) {
     if (n == 3) fs::rename(r.card(), gone);
@@ -558,7 +559,7 @@ TEST_CASE("library-wide duplicate scope skips files kept in other folders", "[im
   r.make_card();
   auto [pid, pl] = r.plan(r.card(), r.preset());
   r.run(pid);
-  const std::string other = utf8(r.dir / "Other");
+  const std::string other = json_path(r.dir / "Other");
   const std::string to_other = R"({"name":"T2","destination":")" + other + R"(","eject_after":false,"selection":"all")";
   auto [p1, a] = r.plan(r.card(), to_other + R"(,"scope":"library"})");
   REQUIRE(totals(a, "selected_units") == 0);
@@ -605,11 +606,11 @@ TEST_CASE("auto-import fires only for the card it was enabled on", "[import][eng
     r.eng->on_volume(0, utf8(root));
     r.eng->wait_idle();
     std::lock_guard lock(r.events_m);
-    for (const auto& e : r.events) {
-      if (e.kind == MV_ADDON_EVENT_VOLUME_ARRIVED) return e;
-    }
-    FAIL("no arrival event");
-    return mv_addon_event{};
+    const auto e = std::find_if(r.events.begin(), r.events.end(), [](const mv_addon_event& x) {
+      return x.kind == MV_ADDON_EVENT_VOLUME_ARRIVED;
+    });
+    REQUIRE(e != r.events.end());
+    return *e;
   };
   const auto plain = arrival(r.card());
   REQUIRE(plain.payload == MV_IMPORT_ARRIVAL_OPEN);
@@ -633,7 +634,7 @@ TEST_CASE("the viewer's marks import their whole units", "[import][engine]") {
   rig r;
   r.make_card();
   const std::string marks =
-      "[\"" + utf8(r.card() / "DCIM/100CANON/IMG_0001.JPG") + "\"]";
+      "[\"" + json_path(r.card() / "DCIM/100CANON/IMG_0001.JPG") + "\"]";
   // Ctrl+Shift+F7: the last preset.
   REQUIRE(r.eng->save_preset(r.preset()));
   auto scan = r.eng->scan_files({utf8(r.card() / "DCIM/100CANON/IMG_0001.JPG")});

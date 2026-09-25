@@ -626,19 +626,24 @@ and deviations: [18 "Implementation notes"](18-import.md#implementation-notes-20
 
 **Both platforms** (owner, 2026-09-24), like every PR from 9. Opt-in, and a **downloadable
 add-on installed from Settings** through PR 16's add-on mechanism. The base installer,
-disk image and updates never carry it. Windows runs ONNX Runtime on CPU plus the vendor
+disk image and updates never carry it. The optional installed components may total up to
+**3 GB** (the search index is separate user data), allowing a larger embedding model when the
+measured recall justifies it. Windows runs ONNX Runtime on CPU plus the vendor
 providers. Mac runs ONNX Runtime with the **Core ML provider** (Apple GPU / Neural Engine),
 CPU underneath. Full design, models, index, yield policy and verify
-lines: [17-local-ai-search.md](17-local-ai-search.md). Proposed 2026-09-24
+lines: [17-local-ai-search.md](17-local-ai-search.md). Proposed 2026-09-24, amended 2026-09-25
 ([12](12-decision-log.md)); not a D-decision. Every slice inherits PR 1's present-loop verify,
 re-run **while indexing**.
 
 - **PR 20 — Inference host and the AI pack.** `src/infer`, ORT CPU + a vendor provider,
   signed pack download/verify, per-piece Install/Remove and an Auto / provider / CPU-only
-  toggle in Settings. Starts with a measured spike.
+  toggle in Settings. The measured spike compares the ViT-B/32 floor with at least one larger
+  licence-clean tower and enforces the 3 GB installed-size ceiling.
 - **PR 21 — Video sampler and index.** Keyframe sampling with gap limits, embedding dedupe,
-  resumable background `index.db`, yield-to-playback policy.
-- **PR 22 — Search and results.** Natural-language query ("man on broom") over photos and
+  remembered folder-tree roots, incremental/resumable background `index.db`, an **Index this
+  folder and subfolders** action, live progress/ETA, yield-to-playback policy, and recorded
+  300,000-asset photo-heavy and mixed-library completion ranges.
+- **PR 22 — Search and results.** Natural-language query ("guy on a skateboard") over photos and
   video, results in the gallery island, Enter seeks to the moment, match markers on the
   scrub bar, keyboard-complete.
 - **PR 23 — Find-similar, index management, hardening.**
@@ -652,7 +657,7 @@ half and a verify line on each, and both present-loop gates hold **while indexin
 
 ---
 
-## Milestone H — Multi-folder browsing (PR 26)
+## Standalone PR 26 — Multi-folder browsing
 
 ### PR 26 — Folder tiles, breadcrumb, up
 A camera dump is one folder; a NAS or an organised library is a tree (`2024/06/…`). Opening

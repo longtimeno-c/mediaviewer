@@ -216,6 +216,8 @@ jobs:
 
   # One native build per architecture: each has its own vcpkg triplet and
   # dylibs, and the Intel tests run on Intel. `macos` below joins the two apps.
+  # The legs run in parallel: separate runners, separate cache keys (the
+  # triplet is in the key), and `macos` already waits for both.
   macos-build:
     name: macOS ${{ matrix.arch }} app
     needs: prepare
@@ -224,7 +226,6 @@ jobs:
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
           - { arch: arm64, runner: macos-15, triplet: arm64-osx, experimental: false }
@@ -266,7 +267,8 @@ jobs:
       # a subsequent manifest install otherwise removes the other triplet.
       - name: Install macOS dynamic codec libraries
         run: |
-          brew install libomp nasm ninja
+          # libsodium (Import add-on) builds through autoreconf in vcpkg.
+          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \

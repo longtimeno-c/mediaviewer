@@ -1296,6 +1296,23 @@ them.
 - Fuzz CI confirmation that the two re-enabled harnesses no longer die at 0xC0000142.
   (Included in the sign-off; the CI harness list stays as is.)
 
+## 2026-09-25 — fuzz_decode and fuzz_animation re-excluded from the gating fuzz step
+
+The provisional re-enable (2026-09-24) did not hold: CI run 36106997040 on `main` shows both
+harnesses exiting `0xC0000142` before libFuzzer ran a unit, first launch and relaunch, while
+the other eleven fuzzed a full 60 s each. The owner sign-off of 2026-09-24 covered this item
+without CI evidence; this run is the evidence, and it says no.
+
+**Call:** as the 2026-09-24 entry directs — out of the gating list, still built. They now run
+alone in a separate `continue-on-error` step (30 s each), so each CI run records whether they
+start on the runner without the two taking the other eleven's result down. That step running
+them *first and alone* also tests the "last harnesses of a long run" / resource-exhaustion
+theory: if they still die there, it is not ordering. Still open; diagnose on the runner.
+
+**Result (CI run 36131675547, same day):** run first and alone for 30 s, `fuzz_decode` still
+exits `0xC0000142` on launch and relaunch. Ordering and resource exhaustion are ruled out; the
+cause is in what the process loads on that image.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
@@ -2088,3 +2105,28 @@ Windows run.** It follows the to-do above; nothing reverses a D-decision.
 - **Owed on Windows:** MSVC `/W4 /WX` + clang-cl on `main.cpp`, `chrome_host.*` and the shared PR 12
   code; `test_chrome_host` (the checksum now covers 1012 / 1013; Probe checks `ChromeMetaEditArgs`);
   a Windows kill-mid-write test; the verify line and the PR 1 present-loop gate with a write in flight.
+
+## 2026-09-25 — Milestone H may use 3 GB for search quality; folder-tree indexes persist
+
+**Owner's call.** The 250 MB limit belongs to the base viewer, not to the optional Local search
+add-on. The supported installed AI components — Core model and runtime, one selected provider,
+and Faces when installed — may total up to **3 GB**. The search `index.db` and existing thumbnail
+cache are user data and are outside that ceiling. CI rejects an oversized supported pack
+combination and the installer refuses it. The base installer and PR 8 packaging assertion do not
+change.
+
+ViT-B/32 remains the quality floor, not the target. PR 20 compares it with at least one larger,
+licence-clean SigLIP-so400m / ViT-L/14-class tower and chooses by labelled-query recall,
+throughput and the 3 GB ceiling. The intended experience includes natural phrases such as
+"guy on a skateboard"; minimising the optional download is secondary to a material recall gain.
+
+Indexing is explicit and persistent. With the Core pack installed, an open folder offers **Index
+this folder** and **Index this folder and subfolders**. Chosen roots are stored in `index.db`;
+later launches scan only new/changed/removed files and resume partial video work rather than
+rebuilding the tree. Progress includes measured rate and an ETA range. PR 21 records completion
+ranges for a representative 300,000-asset photo-heavy library and a separately described mixed
+photo/video library; no fixed duration is promised before that measurement.
+
+The 2026-09-24 multi-folder entry called PR 26 "Milestone H" before the later renumbering assigned
+that name to AI search. PR 26 remains folder tiles/breadcrumb/up, but is now labelled a standalone
+PR so Milestone H is unambiguous.

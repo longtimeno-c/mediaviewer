@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// WebP (still and animated) via libwebp (BSD-3). WebPAnimDecoder handles both —
-// a still is a one-frame animation — composites onto the canvas itself, and
-// hands back straight-alpha RGBA one frame at a time with cumulative
-// timestamps. Rewind is WebPAnimDecoderReset.
+// WebP (still and animated) via libwebp (BSD-3). A still decodes straight into
+// the raster with WebPDecodeRGBAInto. An animation goes through
+// WebPAnimDecoder, which composites onto the canvas itself and hands back
+// straight-alpha RGBA one frame at a time with cumulative timestamps. Rewind
+// is WebPAnimDecoderReset.
 #include "codec/decode.h"
 
 #include <webp/decode.h>
@@ -10,12 +11,19 @@
 
 #include <algorithm>
 #include <new>
+#include <vector>
 
 namespace mv::codec {
 namespace {
 
 constexpr std::uint32_t kMaxDim = 16383;  // the format's own limit
 constexpr std::uint64_t kMaxPixels = 256ull * 1000ull * 1000ull;
+// WebPAnimDecoder keeps its canvas and a previous-frame copy, and next()
+// copies each frame out: three canvases live at once. A quarter of the still
+// limit keeps an animation's working set under what one maximum still costs.
+// fuzz_webp found a 1 KB animation declaring 15359x16383 (251 MP, under the
+// still limit) that reached 3.5 GB.
+constexpr std::uint64_t kMaxAnimatedPixels = kMaxPixels / 4;
 
 class webp_source final : public animation_source {
  public:
@@ -48,7 +56,7 @@ class webp_source final : public animation_source {
       WebPDemuxDelete(probe);
       if (declared_w == 0 || declared_h == 0) return err(status::corrupt);
       if (declared_w > kMaxDim || declared_h > kMaxDim ||
-          static_cast<std::uint64_t>(declared_w) * declared_h > kMaxPixels) {
+          static_cast<std::uint64_t>(declared_w) * declared_h > kMaxAnimatedPixels) {
         return err(status::unsupported_format);
       }
     }
@@ -69,7 +77,8 @@ class webp_source final : public animation_source {
       return err(status::corrupt);
     }
     if (anim.canvas_width > kMaxDim || anim.canvas_height > kMaxDim ||
-        static_cast<std::uint64_t>(anim.canvas_width) * anim.canvas_height > kMaxPixels) {
+        static_cast<std::uint64_t>(anim.canvas_width) * anim.canvas_height >
+            kMaxAnimatedPixels) {
       return err(status::unsupported_format);
     }
     info_.width = anim.canvas_width;
@@ -131,11 +140,56 @@ class webp_source final : public animation_source {
   std::uint32_t next_index_ = 0;
 };
 
+std::vector<std::uint8_t> webp_icc(std::span<const std::uint8_t> bytes) {
+  std::vector<std::uint8_t> icc;
+  const WebPData data{bytes.data(), bytes.size()};
+  if (WebPDemuxer* demux = WebPDemux(&data)) {
+    WebPChunkIterator chunk;
+    if (WebPDemuxGetChunk(demux, "ICCP", 1, &chunk)) {
+      icc.assign(chunk.chunk.bytes, chunk.chunk.bytes + chunk.chunk.size);
+      WebPDemuxReleaseChunkIterator(&chunk);
+    }
+    WebPDemuxDelete(demux);
+  }
+  return icc;
+}
+
+// One buffer, the raster itself: WebPAnimDecoder would hold a canvas and a
+// previous-frame copy for a still too.
+result<raster> decode_still(std::span<const std::uint8_t> bytes, const WebPBitstreamFeatures& f,
+                            const job_context* ctx) {
+  if (f.width <= 0 || f.height <= 0) return err(status::corrupt);
+  const auto w = static_cast<std::uint32_t>(f.width);
+  const auto h = static_cast<std::uint32_t>(f.height);
+  if (w > kMaxDim || h > kMaxDim || static_cast<std::uint64_t>(w) * h > kMaxPixels) {
+    return err(status::unsupported_format);
+  }
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  raster out;
+  out.width = w;
+  out.height = h;
+  out.format = format_family::webp;
+  out.intent = transfer_intent::display_referred;
+  out.rgba.resize(static_cast<std::size_t>(w) * h * 4);
+  if (!WebPDecodeRGBAInto(bytes.data(), bytes.size(), out.rgba.data(), out.rgba.size(),
+                          static_cast<int>(w * 4))) {
+    return err(status::corrupt);
+  }
+  out.icc = webp_icc(bytes);
+  return out;
+}
+
 }  // namespace
 
 result<raster> decode_webp(std::span<const std::uint8_t> bytes, const job_context* ctx) {
   if (probe(bytes) != format_family::webp) return err(status::unsupported_format);
   try {
+    WebPBitstreamFeatures features;
+    if (WebPGetFeatures(bytes.data(), bytes.size(), &features) != VP8_STATUS_OK) {
+      return err(status::corrupt);
+    }
+    if (!features.has_animation) return decode_still(bytes, features, ctx);
+    // An animation's still is its first composited frame.
     webp_source source(bytes, nullptr);
     if (auto opened = source.open(); !opened) return err(opened.error());
     canvas_frame frame;

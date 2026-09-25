@@ -37,7 +37,7 @@ Read in order:
 | [14-abi.md](14-abi.md) | The C ABI between the C# shell and the C++ core — specified, not just named |
 | [15-platforms.md](15-platforms.md) | Windows v1, hostable core from PR 4, macOS as Milestone F, dual-track from PR 9 — **D9**. Not a UI-only port. |
 | [16-commands.md](16-commands.md) | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. |
-| [17-local-ai-search.md](17-local-ai-search.md) | Post-v1, proposed: local, opt-in AI search over photos and video keyframes, plus faces. A Settings-installed extra, never in the base installer. |
+| [17-local-ai-search.md](17-local-ai-search.md) | Post-v1, proposed: local, opt-in AI search over photos and video keyframes, plus faces. Persistent folder-tree indexes; up to 3 GB of optional installed AI components, never in the base installer. |
 | [18-import.md](18-import.md) | Import add-on (PRs 16–19): card/folder copy with content-hash duplicate skip, verify, date folders, backup, resume. Also how add-ons install. |
 | [19-voice.md](19-voice.md) | Voice query add-on (PRs 27–28): on-device speech-to-text and a spoken count, over Local search, as its own Settings install. |
 

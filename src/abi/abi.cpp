@@ -935,7 +935,7 @@ void submit_folder_summary(mv_session* session, uint32_t index) {
   const auto correlation = mv::abi::current_correlation_id();
   (void)session->jobs.submit_at(
       mv::background_generation,
-      [session, path, index, folder_gen](const mv::job_context& ctx) -> status {
+      [session, path, folder_gen](const mv::job_context& ctx) -> status {
         const auto stale = [&] {
           return session->folder_generation.load(std::memory_order_relaxed) != folder_gen;
         };

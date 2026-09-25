@@ -1,6 +1,9 @@
 {
-  "$comment": "The libraw overlay parallelises LibRaw 0.22.2's serial colour loops and forces OpenMP on Apple. The pinned baseline port is otherwise unchanged.",
+  "$comment": "The libraw overlay parallelises LibRaw 0.22.2's serial colour loops and forces OpenMP on Apple. The pinned baseline port is otherwise unchanged. The x64-windows overlay triplet turns off compiler tracking so every Windows CI image shares one dependency cache.",
   "overlay-ports": [
     "tools/vcpkg/ports"
+  ],
+  "overlay-triplets": [
+    "tools/vcpkg/triplets"
   ]
 }

@@ -34,14 +34,22 @@ runs:
       run: |
         ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
         "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> $env:GITHUB_ENV
+        # vcpkg folds its host tools (CMake, PowerShell) into every package
+        # ABI. windows-latest mixes image versions whose tools differ, so a
+        # job on the other image rebuilt every port inside Configure and hit
+        # the job limit. vcpkg's own pinned tools are the same on every image.
+        "VCPKG_FORCE_DOWNLOADED_BINARIES=1" >> $env:GITHUB_ENV
 
     # One key for every Windows toolchain. The manifest builds the x64-windows
     # triplet with the image's MSVC; clang-cl and ASan compile our code, not
-    # these ports. The -msvc suffix is the entry CI already filled — keep it so
-    # a run does not discard that tree and rebuild FFmpeg.
+    # these ports. The key covers the overlay ports and triplets as well as the
+    # manifest. The overlay triplet disables compiler tracking and the pinned
+    # host tools above do the rest, so a runner on a different image version
+    # reuses the tree instead of rebuilding it. -pinned-tools: trees from
+    # before the pin have different ABIs and must not be restored.
     - name: Restore installed packages
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: build/vcpkg_installed
-        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
+        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'tools/vcpkg/**') }}-msvc-pinned-tools

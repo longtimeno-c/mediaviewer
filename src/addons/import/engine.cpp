@@ -949,9 +949,9 @@ void engine::run_job(const std::shared_ptr<job>& j) {
         // Per destination, not per target: a backup-only or resumed row
         // lists fewer targets than the job has destinations.
         for (const std::string& root : row.target_roots) {
-          const auto d = static_cast<std::size_t>(
+          const auto di = static_cast<std::size_t>(
               std::find(j->dest_roots.begin(), j->dest_roots.end(), root) - j->dest_roots.begin());
-          if (d < MV_IMPORT_MAX_DESTINATIONS) j->prog.bytes_verified[d] += row.size;
+          if (di < MV_IMPORT_MAX_DESTINATIONS) j->prog.bytes_verified[di] += row.size;
         }
         copied_now.push_back(order[k]);
         continue;

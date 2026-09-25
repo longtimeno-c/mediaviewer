@@ -1,6 +1,6 @@
 # 17 — Local AI search (video moments and photos)
 
-**Status: proposed 2026-09-24, post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
+**Status: proposed 2026-09-24, amended 2026-09-25, post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
 Nothing here changes the PR 1–8 viewer. It is an opt-in add-on that arrives as a separate
 component, after the viewer ships.
 
@@ -37,7 +37,9 @@ These are earlier decisions the feature would touch. They are recorded in
 2. **`13-updates-and-telemetry.md` and the 2026-09-20 log entry say do not ship ONNX/DirectML.**
    That was about the *base installer* (36 % of the payload for a viewer that did no inference).
    It stands. The AI pack is a **separate optional download**; the base installer stays < 250 MB
-   and PR 8's packaging assert still fails if ORT/DML appear in the base tree.
+   and PR 8's packaging assert still fails if ORT/DML appear in the base tree. The optional AI
+   installation has its own **3 GB installed-size ceiling**; that ceiling does not relax the base
+   viewer's limit.
 3. **CLAUDE.md: "Do not introduce … D3D12."** Avoided: the plan uses vendor providers, not
    DirectML (which runs on D3D12), so the rule is untouched. See *Runtime*.
 
@@ -48,9 +50,14 @@ shared vector space; search is a dot product. This is the only class of model th
 "search video by a sentence" cheap: frames are embedded **once at index time**, queries embed
 ~10 ms at search time.
 
-- **Candidates:** SigLIP (Apache-2.0) and OpenAI CLIP ViT-B/32 (MIT), exported to ONNX.
-  ViT-B/32-class at 224 px is the size/quality floor; go larger only if the eval set (PR 22)
-  shows the recall gain is worth the indexing time.
+- **Quality target:** ordinary descriptions such as "guy on a skateboard" must retrieve the
+  relevant photo or video moment even when the wording is not a stored tag. This semantic
+  retrieval is the reason to spend more than the smallest workable model.
+- **Candidates:** SigLIP and OpenAI CLIP-family checkpoints exported to ONNX. ViT-B/32-class at
+  224 px is the **quality floor, not the intended default**. PR 20 compares it with at least one
+  larger, licence-clean SigLIP-so400m / ViT-L/14-class tower and selects the best recall that fits
+  the 3 GB installation ceiling and has acceptable measured indexing throughput. A larger model
+  is allowed to win; the eval, not download minimisation, decides.
 - **Weights licence is a gate, not a footnote.** The app is GPL-2.0-or-later; weights are data,
   but redistribution terms still bind. CI check: the pack manifest names the licence for every
   model file, and non-commercial / research-only weights fail the build. Some LAION-trained and
@@ -118,13 +125,19 @@ page, signed manifest, verify-before-load, per-user versioned folder, silent upd
 sideloading. The AI pack adds its sub-packs and model files. It does not build a second
 installer.
 
-- **The whole feature is a downloadable extra, installed from Settings** (owner call
-  2026-09-24) — because it adds hundreds of MB. Settings → **Local search** shows what is
+- **The whole feature is a downloadable extra, installed from Settings** (owner calls
+  2026-09-24 and 2026-09-25) — it may use up to **3 GB installed** so model quality is not held
+  to the base viewer's 250 MB budget. Settings → **Local search** shows what is
   installed, the size of each piece, and **Install / Remove** for each: *Core* (ORT + CPU +
   image/text model), *Faces* (PR 24), and one sub-pack per vendor provider. Remove deletes the
   files and offers to delete the index. Nothing about it appears elsewhere in the UI until the
   core pack is installed; the base app, installer and update size never include it.
-- Downloaded on **explicit opt-in** ("Install local search — downloads ~N MB") from the same
+- The **3 GB ceiling** covers the Core pack, the one selected vendor-provider sub-pack, and Faces
+  when Faces is installed. `index.db` and the existing thumbnail cache are user data and do not
+  count toward it. The signed manifest declares download and installed sizes per piece; CI rejects
+  a supported combination over the ceiling, and the installer refuses a manifest that would
+  exceed it. Do not silently install every hardware provider.
+- Downloaded on **explicit opt-in** ("Install local search — downloads ~N GB, uses ~N GB") from the same
   signed release channel as updates ([13](13-updates-and-telemetry.md)). Contents:
   `onnxruntime.dll`, provider DLLs, the model files, `manifest.json` (versions, SHA-256,
   licence per file). Provider sub-packs are offered based on detected hardware, never
@@ -174,9 +187,13 @@ New SQLite file `%LocalAppData%\MediaViewer\ai\index.db` (Mac: `~/Library/Applic
 ```
 assets(id, path, mtime, size, kind, spec, state, indexed_at)        -- key: (path, mtime, size, spec)
 frames(asset_id, pts_ms, pts_tb, flags, thumb_ref, emb BLOB)        -- emb = fp16 or int8 vector
+roots(id, path, scope, enabled, last_scan_at)                        -- remembered index locations
 meta(model_id, dim, spec, ...)
 ```
 
+- **Folder roots persist.** Choosing "this folder" or "this folder and below" writes a `roots`
+  row. Reopening the app or that folder does not rebuild it: a watcher plus a startup delta scan
+  queues only new, changed or removed assets. The user can pause, rescan or remove each root.
 - Keyed like the thumbnail cache: change `(path, mtime, size)` or the model `spec` and the row is
   stale and re-queued. No content hashing pass over a camera dump.
 - `thumb_ref` points into the **existing JPEG-512 cache** (`jpg512.1`) — a result tile is a
@@ -215,7 +232,14 @@ Reuse, do not grow a router or a second present path ([16-commands.md](16-comman
   `search.open` (a query box, keyboard-focus), `search.similar`, `search.next_match` /
   `search.prev_match` (within a clip). Key assignment is done then, against the live table, so
   it cannot collide. Everything reachable without the mouse, per 16's verify.
+- When an unindexed folder is open and the Core pack is installed, Local search offers
+  **Index this folder** and **Index this folder and subfolders**. The recursive action is also
+  available from the folder toolbar/menu. It adds a remembered root, starts background work,
+  and makes that scope searchable as results commit; the user does not have to wait for the
+  entire tree before trying a query.
 - A visible **indexing status** (progress, pause/resume, "paused — playing video"). Never a modal.
+  It shows assets/frames completed, the active root, measured rate and an ETA range. For a very
+  large tree the ETA must be based on completed work, not a hard-coded claim.
 
 ## Not hurting the viewer
 
@@ -234,7 +258,8 @@ whose entire selling point is smoothness.
   measured, not assumed (see verify).
 - **Memory:** cap decoded-frame and tensor memory; the index scan matrix is mapped, not copied.
   Counted against the budgets in [02-architecture.md](02-architecture.md).
-- **Disk:** the index has a size cap and per-folder delete. Show its size in Settings.
+- **Disk:** the index has a size cap and per-folder delete. Show its size in Settings. This cap is
+  separate from the 3 GB installed add-on ceiling.
 
 ## ABI
 
@@ -243,7 +268,7 @@ line ([14-abi.md](14-abi.md)). Sketch only; the header is written in PR 20:
 
 ```
 mv_ai_pack_status / mv_ai_pack_install(progress cb via completion queue)
-mv_index_start(folder, scope) / mv_index_pause / mv_index_status
+mv_index_start(folder, scope) / mv_index_root_remove / mv_index_pause / mv_index_status
 mv_search_query(text | frame) -> job id ; results arrive as completions
 mv_search_result_get(job, i) -> { asset id, pts_ms, score }
 ```
@@ -262,24 +287,34 @@ present-loop gates (Windows PR 1, Mac PR 1) hold **while indexing**.
 
 ### PR 20 — Inference host and the AI pack
 `src/infer` (`IEmbedder`), ORT CPU + first vendor provider (OpenVINO or CUDA, by what the dev box has), pack manifest/verify/download/install as **per-piece Install/Remove in Settings**, the Auto/provider/CPU-only toggle, opt-in
-flow, settings page. **No indexing, no UI beyond the opt-in.** A short spike first: measure
-image-tower throughput on CPU and the available vendor provider on the dev box and record it here; those numbers, not the
-guesses in this doc, size everything after.
+flow, settings page. **No indexing, no UI beyond the opt-in.** A short spike first compares the
+ViT-B/32 floor with at least one larger licence-clean tower: measure labelled-query recall,
+image-tower throughput, model/download/installed size and Core ML operator coverage, then record
+the selected checkpoint and precision here. Those numbers, not guesses in this doc, size
+everything after. Prefer the better model up to the 3 GB ceiling when the recall gain is real.
 
 **Verify (both platforms):** a fixed set of test images embeds to vectors within tolerance of the reference
 (PyTorch/ORT-Python) outputs on CPU and on each platform's accelerated provider (the vendor
 provider on Windows, Core ML on Mac); the Mac base app bundle is unchanged with the pack absent; a text query ranks a small labelled image set
 correctly; **base installer and base install tree are byte-identical to PR 8's with the pack
 absent** and the packaging assert still fails if ORT or provider DLLs land in the base tree; tampering with a
-pack file or manifest is refused; the download request contains no identifier; both present-loop gates hold with the pack installed and idle.
+pack file or manifest is refused; CI and install both refuse any supported installed combination
+over 3 GB; the download request contains no identifier; both present-loop gates hold with the
+pack installed and idle; the selected model retrieves the PR 20 labelled examples, including
+"guy on a skateboard", at the recorded target.
 
 ### PR 21 — Video sampler and index
 Keyframe sampler with min/max gap, HDR tone-map, embedding dedupe, `index.db`, background queue,
-resume, stale detection, yield policy, indexing status.
+remembered folder roots, incremental rescan, resume, stale detection, yield policy, indexing
+status, and the **Index this folder and subfolders** action.
 
 **Verify:** a 1-hour 4K HEVC clip indexes to completion in a recorded time; killing the process
 mid-way and restarting resumes without re-doing committed frames; editing/replacing a file
-re-queues it; **playing a different 4K clip and panning photos while indexing runs stays at 0
+re-queues it; reopening a remembered tree queues only its delta; a fresh and an incremental run
+publish measured assets/frames per second and an ETA on the target CPU and accelerated hardware.
+Record a measured completion range for a representative **300,000-asset** photo-heavy library and
+a separately described mixed photo/video library; until that benchmark exists the plan makes no
+fixed time promise. **Playing a different 4K clip and panning photos while indexing runs stays at 0
 dropped frames** (`tools/frametime` soak with indexing active, not just idle); the pause-on-
 playback policy visibly triggers; the index contains no data from an HDR clip that is clearly
 wrong (tone-mapped, not washed out); minidump from a forced crash mid-index contains no path,
@@ -288,7 +323,8 @@ filename, embedding or pixel data.
 ### PR 22 — Search and results
 Query box, brute-force scan, per-clip grouping, results in the gallery (both hosts), jump-to-moment,
 match markers on the scrub bar, folder/kind scope, min-score cutoff. Photos indexed too. The
-16-commands rows land here.
+16-commands rows land here. Natural-language cases include "guy on a skateboard", not only
+single-object nouns or exact metadata.
 
 **Verify:** on a **labelled eval set** (a folder of real camera-dump clips and photos with known
 moments, kept out of git like the RAW corpus) recall@10 meets a target set from PR 20's numbers
@@ -335,8 +371,9 @@ faces are indexing.
    as optional sub-packs, CPU always the fallback, a Settings toggle for Auto / provider /
    CPU-only. No DirectML, so no CLAUDE.md change. Remaining risks: NVIDIA redistribution
    licence vs the GPL, and AMD GPUs running CPU (see *Runtime*).
-2. **Model** (SigLIP vs CLIP, size, multilingual) — decided by the PR 20 spike + eval set, with
-   the weights-licence gate above.
+2. **Exact model** (SigLIP vs CLIP and multilingual support) — decided by the PR 20 spike + eval
+   set, with the weights-licence gate above. **Settled 2026-09-25:** ViT-B/32 is only the floor;
+   quality may use the full 3 GB optional-install budget.
 3. ~~**Is this a D10?**~~ **Settled 2026-09-24: no.** It stays a plan/17 proposal plus the
    decision-log entry; it is not a numbered D-decision.
 
