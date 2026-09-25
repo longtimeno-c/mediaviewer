@@ -1,5 +1,5 @@
 /* Copyright (C) 2026 longtimeno-c
-/* SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * MediaViewer add-ons — the host function table and the add-on entry point
  * (plan/18-import.md "What an add-on is, technically"; plan/14-abi.md rules).

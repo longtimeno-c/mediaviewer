@@ -7,6 +7,7 @@
 
 #include "codec/decode.h"
 #include "codec/format.h"
+#include "codec/orient.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
 

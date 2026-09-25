@@ -1,5 +1,5 @@
 /* Copyright (C) 2026 longtimeno-c
-/* SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * MediaViewer core — the flat C ABI between the C# shell and the C++ core.
  *

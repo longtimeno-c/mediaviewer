@@ -1,5 +1,5 @@
 /* Copyright (C) 2026 longtimeno-c
-/* SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Crash-report context (plan/13 Part 2). The host registers these addresses
  * with its out-of-process crash reporter as annotations. The core never links
