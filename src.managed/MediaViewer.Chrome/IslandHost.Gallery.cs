@@ -289,6 +289,8 @@ public static partial class IslandHost
             _galleryStack = null;
             _breadcrumbBar = null;
             _upButton = null;
+            _rootButton = null;
+            _pathCurrent = null;
             _crumbTrail = null;
             _photosHeader = null;
             _galleryEmpty = null;

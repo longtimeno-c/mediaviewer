@@ -270,6 +270,7 @@ struct PathBar: View {
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
           .truncationMode(.middle)
+          .frame(maxWidth: 240, alignment: .leading)
           .layoutPriority(1)
           .help(crumbs.last?.path ?? current.name)
       }
