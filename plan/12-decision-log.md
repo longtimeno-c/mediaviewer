@@ -1972,3 +1972,28 @@ branch; it does **not** merge before 15, and it is not done until both platforms
 - Review fixes that change no call: a hidden file or link beside an add-on is refused; a member that
   fails on one destination removes what it wrote on the other; the UI thread no longer reads
   `import.db`; the host table's volume-watch deadlock. See the PR.
+
+## 2026-09-25 — Milestone H may use 3 GB for search quality; folder-tree indexes persist
+
+**Owner's call.** The 250 MB limit belongs to the base viewer, not to the optional Local search
+add-on. The supported installed AI components — Core model and runtime, one selected provider,
+and Faces when installed — may total up to **3 GB**. The search `index.db` and existing thumbnail
+cache are user data and are outside that ceiling. CI rejects an oversized supported pack
+combination and the installer refuses it. The base installer and PR 8 packaging assertion do not
+change.
+
+ViT-B/32 remains the quality floor, not the target. PR 20 compares it with at least one larger,
+licence-clean SigLIP-so400m / ViT-L/14-class tower and chooses by labelled-query recall,
+throughput and the 3 GB ceiling. The intended experience includes natural phrases such as
+"guy on a skateboard"; minimising the optional download is secondary to a material recall gain.
+
+Indexing is explicit and persistent. With the Core pack installed, an open folder offers **Index
+this folder** and **Index this folder and subfolders**. Chosen roots are stored in `index.db`;
+later launches scan only new/changed/removed files and resume partial video work rather than
+rebuilding the tree. Progress includes measured rate and an ETA range. PR 21 records completion
+ranges for a representative 300,000-asset photo-heavy library and a separately described mixed
+photo/video library; no fixed duration is promised before that measurement.
+
+The 2026-09-24 multi-folder entry called PR 26 "Milestone H" before the later renumbering assigned
+that name to AI search. PR 26 remains folder tiles/breadcrumb/up, but is now labelled a standalone
+PR so Milestone H is unambiguous.
