@@ -1309,6 +1309,10 @@ start on the runner without the two taking the other eleven's result down. That 
 them *first and alone* also tests the "last harnesses of a long run" / resource-exhaustion
 theory: if they still die there, it is not ordering. Still open; diagnose on the runner.
 
+**Result (CI run 36131675547, same day):** run first and alone for 30 s, `fuzz_decode` still
+exits `0xC0000142` on launch and relaunch. Ordering and resource exhaustion are ruled out; the
+cause is in what the process loads on that image.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
