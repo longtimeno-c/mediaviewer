@@ -24,6 +24,8 @@ endif()
 set(MV_MAC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx")
 set(MV_MAC_DYNAMIC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx-dynamic")
 
+# vcpkg builds the dependencies for the same target: tools/vcpkg/triplets/*-osx.cmake
+# and tools/mac/triplets/openmp-dynamic.cmake. Change all three together.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
 set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)

@@ -196,24 +196,35 @@ public struct CommandBarView: View {
 }
 
 /// The trail from the highest folder reached to the one on screen. The current
-/// name stays pinned; a long middle collapses to "…" until it is asked for.
+/// name stays pinned; a long middle becomes an ancestor menu. Up and Root stay outside the scroller.
 /// Visible whenever a folder is open, including while a photo is on the canvas.
 struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
-  @State private var expanded = false
 
   var body: some View {
     let crumbs = store.crumbs
     let shown = display(crumbs)
     HStack(spacing: 4) {
       Button { store.navigateUp() } label: {
-        Image(systemName: "chevron.up")
-          .font(.system(size: 11, weight: .semibold))
+        Label("Up", systemImage: "arrow.up")
       }
       .buttonStyle(.borderless)
+      .fixedSize()
       .disabled(!store.canGoUp)
-      .help("Up one folder (\u{2318}\u{2191})")
+      .help("Open the enclosing folder (⌘↑)")
+      .accessibilityLabel("Up one folder")
       .foregroundStyle(store.canGoUp ? MVTheme.title : MVTheme.body.opacity(0.4))
+
+      Button { store.openCrumb(0) } label: {
+        Label("Root", systemImage: "folder")
+      }
+      .buttonStyle(.borderless)
+      .fixedSize()
+      .disabled(crumbs.count < 2)
+      .help(crumbs.first.map { "Return to browsing root: " + $0.path } ?? "No folder open")
+      .accessibilityLabel("Return to browsing root")
+      .foregroundStyle(crumbs.count > 1 ? MVTheme.title : MVTheme.body.opacity(0.4))
+      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 6)
 
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 4) {
@@ -224,15 +235,25 @@ struct PathBar: View {
                 .foregroundStyle(MVTheme.body)
             }
             if crumb.isEllipsis {
-              Button("…") { expanded = true }
-                .buttonStyle(.borderless)
-                .foregroundStyle(MVTheme.title)
-                .help("Show the whole path")
+              Menu {
+                ForEach(crumbs.dropFirst().dropLast(2)) { ancestor in
+                  Button(ancestor.name) { store.openCrumb(ancestor.index) }
+                    .help(ancestor.path)
+                }
+              } label: { Text("…") }
+              .menuStyle(.borderlessButton)
+              .fixedSize()
+              .foregroundStyle(MVTheme.title)
+              .help("Open a parent folder")
+              .accessibilityLabel("Hidden parent folders")
             } else {
               Button(crumb.name) { store.openCrumb(crumb.index) }
                 .buttonStyle(.borderless)
                 .foregroundStyle(MVTheme.title)
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 160)
+                .help(crumbs.first(where: { $0.index == crumb.index })?.path ?? crumb.name)
             }
           }
         }
@@ -249,7 +270,9 @@ struct PathBar: View {
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
           .truncationMode(.middle)
+          .frame(maxWidth: 240, alignment: .leading)
           .layoutPriority(1)
+          .help(crumbs.last?.path ?? current.name)
       }
       Spacer(minLength: 0)
     }
@@ -257,11 +280,10 @@ struct PathBar: View {
     .padding(.horizontal, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(MVTheme.canvas)
-    .onChange(of: store.crumbs) { _, _ in expanded = false }
   }
 
   private func display(_ crumbs: [Crumb]) -> [PathPiece] {
-    if expanded || crumbs.count <= 4 {
+    if crumbs.count <= 4 {
       return crumbs.map {
         PathPiece(id: $0.index, index: $0.index, name: $0.name, isEllipsis: false)
       }
@@ -282,3 +304,4 @@ private struct PathPiece: Identifiable {
   let name: String
   let isEllipsis: Bool
 }
+

@@ -312,6 +312,16 @@ Calls made while building it (none reverses a D-decision; logged in [12](12-deci
   unmeasured there.
 - **Priority:** background waits between buffers while the present loop is presenting (Windows
   `mv_present_set_busy` from the lab, Mac `g_present_busy` from the Metal loop); fast never waits.
+- **Published by the release workflow (2026-09-25).** The first release after the merge (v0.1.3)
+  carried no add-on, so Settings offered "Install Import, 3 MB" and the download 404'd. With
+  `tools/package/release-addon.patch` applied to `release.yml` (it could not be pushed without the
+  `workflow` scope), a stable run builds, signs and packs both platforms' add-on (`addon-pack.py --require-pinned-key`;
+  Mac: `macpack.py addon`, Developer ID + notarization), at the release version, and `publish`
+  refuses a stable release without it (`MV_RELEASE_ADDONS=1`, set by the patched workflow). Settings reads the signed manifest when it opens and offers
+  Install, with the archive's real size, only when it verifies for the running app; otherwise it
+  says Import is not published yet, or needs a newer MediaViewer. The card hint appears only when
+  there is something to install, and a card reaching the network waits on the automatic
+  update-check switch (plan/13), like the update check.
 
 Known gaps against this spec, owed before it merges:
 

@@ -395,6 +395,40 @@ def notarize(path: Path, profile: str) -> None:
                          "`xcrun notarytool log <id>` has the reasons")
 
 
+def sign_addon(addon: Path, identity: str) -> list[Path]:
+    """Developer ID-sign an add-on folder (plan/18 "Mac chrome"): every loose
+    dylib, then every bundle, inside out. The app loads it under library
+    validation, so it must carry the app's Team ID. Returns what it signed."""
+    signed: list[Path] = []
+    for dylib in sorted(addon.glob("*.dylib")):
+        codesign(dylib, identity, hardened=True)
+        signed.append(dylib)
+    for bundle in sorted(addon.glob("*.bundle")):
+        codesign(bundle, identity, hardened=True)
+        signed.append(bundle)
+    if not signed:
+        raise SystemExit(f"macpack: nothing to sign in {addon}")
+    for item in signed:
+        run(["codesign", "--verify", "--strict", "--verbose=2", str(item)])
+    return signed
+
+
+def cmd_addon(args: argparse.Namespace) -> None:
+    """Sign an add-on folder and, unless skipped, notarize it. tools/package/
+    addon-pack.py then packs it with ditto, which keeps the signatures."""
+    addon = Path(args.dir)
+    if not addon.is_dir():
+        raise SystemExit(f"macpack: add-on folder {addon} not found")
+    sign_addon(addon, args.identity)
+    if args.skip_notarize:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "addon-notarize.zip"
+        run(["ditto", "-c", "-k", str(addon), str(archive)])
+        notarize(archive, args.notary_profile)
+    print(f"macpack: add-on signed and notarized: {addon}")
+
+
 def make_dmg(app: Path, out: Path, volume_name: str) -> None:
     settings = REPO_ROOT / "packaging" / "macos" / "dmg_settings.py"
     run([sys.executable, "-m", "dmgbuild", "-s", str(settings),
@@ -519,8 +553,16 @@ def main(argv: list[str]) -> None:
                    help="Sparkle phased rollout interval (plan/13 staged rollout)")
     r.set_defaults(func=cmd_release)
 
+    d = sub.add_parser("addon", help="sign (and notarize) an add-on folder before addon-pack.py packs it")
+    d.add_argument("--dir", required=True, help="the joined build/addons/<id> folder")
+    d.add_argument("--identity", default=os.environ.get("MV_SIGN_IDENTITY"),
+                   help='"Developer ID Application: …" (or $MV_SIGN_IDENTITY); the app\'s Team ID')
+    d.add_argument("--notary-profile", default=os.environ.get("MV_NOTARY_PROFILE"))
+    d.add_argument("--skip-notarize", action="store_true", help="local dry run only")
+    d.set_defaults(func=cmd_addon)
+
     args = parser.parse_args(argv)
-    if args.command == "release":
+    if args.command in ("release", "addon"):
         if not args.identity:
             parser.error("--identity (or MV_SIGN_IDENTITY) is required")
         if not args.skip_notarize and not args.notary_profile:

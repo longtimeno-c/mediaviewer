@@ -61,12 +61,48 @@ def prepare():
     print(f'{mode}: {version} ({tag})')
 
 
+# The optional Import add-on (plan/18), one signed package per platform. The
+# apps fetch it from releases/latest, so once the release workflow packs it
+# (MV_RELEASE_ADDONS=1) every stable release must carry it.
+ADDON_PLATFORMS = ('win-x64', 'macos')
+
+
+def addons_required(mode):
+    return mode == 'stable' and os.environ.get('MV_RELEASE_ADDONS') == '1'
+
+
+def addon_asset_names(platform):
+    base = f'mediaviewer-addon-import-{platform}'
+    return [base + '.zip', base + '.json', base + '.json.sig']
+
+
+def validate_addon(folder, version, platform):
+    """Shape only; the signature is the app's to check (addon-pack.py packed
+    it with --require-pinned-key)."""
+    zip_name, manifest_name, sig_name = addon_asset_names(platform)
+    manifest = json.loads((folder / manifest_name).read_text())
+    if manifest.get('id') != 'import' or manifest.get('platform') != platform:
+        raise ValueError(f'Add-on manifest id/platform mismatch: {manifest_name}')
+    if manifest.get('version') != version:
+        raise ValueError(f'Add-on version {manifest.get("version")} is not the release version: {manifest_name}')
+    if (folder / sig_name).stat().st_size != 64:
+        raise ValueError(f'Invalid add-on signature length: {sig_name}')
+    archive = manifest.get('archive') or {}
+    path = folder / zip_name
+    if archive.get('path') != zip_name or path.stat().st_size != archive.get('size') or \
+            hashlib.sha256(path.read_bytes()).hexdigest() != archive.get('sha256'):
+        raise ValueError(f'Add-on archive does not match its signed manifest: {zip_name}')
+
+
 def validate_assets(folder, version, mode, repo, tag):
     names = [f'MediaViewer-{version}-Setup.exe', f'MediaViewer-{version}.dmg']
     if mode == 'stable':
         names += [f'MediaViewer-{version}-full.nupkg', 'RELEASES', 'releases.win.json',
                   'assets.win.json', 'mediaviewer-manifest.json', 'mediaviewer-manifest.json.sig',
                   f'MediaViewer-{version}.zip', 'appcast.xml']
+        if addons_required(mode):
+            for platform in ADDON_PLATFORMS:
+                names += addon_asset_names(platform)
     for name in names:
         path = folder / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -77,6 +113,9 @@ def validate_assets(folder, version, mode, repo, tag):
             raise ValueError('Windows manifest version/channel mismatch')
         if (folder / 'mediaviewer-manifest.json.sig').stat().st_size != 64:
             raise ValueError('Invalid Windows signature length')
+        if addons_required(mode):
+            for platform in ADDON_PLATFORMS:
+                validate_addon(folder, version, platform)
         for package in manifest['packages']:
             name = package['file']
             if Path(name).name != name or '/' in name or '\\' in name:

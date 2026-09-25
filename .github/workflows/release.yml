@@ -93,7 +93,7 @@ jobs:
         uses: ./.github/actions/windows-vcpkg
 
       - name: Configure
-        run: cmake -S . -B build -A x64
+        run: cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION"
 
       - name: Save dependencies before packaging can fail
         if: steps.vcpkg.outputs.cache-hit != 'true'
@@ -190,6 +190,46 @@ jobs:
         if: inputs.mode == 'stable'
         run: dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- verify-release dist/releases
 
+      # The Import add-on (plan/18): built beside the app, never in it, and
+      # published as its own signed download on the same release. The apps
+      # fetch it from releases/latest, so every stable release carries it.
+      - name: Find the Import add-on build
+        id: addon
+        if: inputs.mode == 'stable'
+        run: |
+          $dll = Get-ChildItem build/addons/import -Recurse -Filter mv_import.dll | Select-Object -First 1
+          if (-not $dll) { throw 'mv_import.dll was not built' }
+          "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the Import add-on's binaries
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ steps.addon.outputs.dir }}
+          files-folder-filter: dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Pack the Import add-on
+        if: inputs.mode == 'stable'
+        env:
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          ADDON_DIR: ${{ steps.addon.outputs.dir }}
+        run: |
+          python -m pip install --disable-pip-version-check -r tools/package/requirements.txt
+          if ($LASTEXITCODE) { throw 'pip install failed' }
+          python tools/package/addon-pack.py pack --platform win-x64 --src $env:ADDON_DIR `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'add-on packing failed' }
+
       - name: Collect release assets
         run: |
           New-Item -ItemType Directory -Force upload | Out-Null
@@ -198,6 +238,7 @@ jobs:
             Copy-Item dist/releases/*.nupkg upload
             Copy-Item dist/releases/RELEASES, dist/releases/releases.win.json, dist/releases/assets.win.json upload
             Copy-Item dist/releases/mediaviewer-manifest.json, dist/releases/mediaviewer-manifest.json.sig upload
+            Copy-Item dist/addon/mediaviewer-addon-import-win-x64.zip, dist/addon/mediaviewer-addon-import-win-x64.json, dist/addon/mediaviewer-addon-import-win-x64.json.sig upload
           }
 
       - uses: actions/upload-artifact@v4
@@ -260,7 +301,7 @@ jobs:
           path: |
             build/vcpkg_installed
             build/vcpkg_dynamic
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake') }}-${{ matrix.triplet }}-mixed-v2
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake') }}-${{ matrix.triplet }}-mixed-v2
 
       # CMake installs the static, permissive dependencies from the root
       # manifest. Keep the LGPL dylibs in a separate manifest/install tree:
@@ -293,7 +334,7 @@ jobs:
 
       - name: Configure
         run: |
-          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION"
+          args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION" -DMV_IMPORT_VERSION="$VERSION"
                 -G Ninja
                 -DVCPKG_TARGET_TRIPLET="$TRIPLET"
                 -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
@@ -330,6 +371,8 @@ jobs:
         run: |
           mkdir -p upload
           tar -C build -cf "upload/MediaViewer-${{ matrix.arch }}.tar" MediaViewer.app
+          # The Import add-on, joined and signed in `macos` like the app.
+          tar -C build/addons/import -cf "upload/ImportAddon-${{ matrix.arch }}.tar" libmv_import.dylib Import.bundle
 
       # No version suffix: publish only collects artifacts named *-<version>.
       - uses: actions/upload-artifact@v4
@@ -369,9 +412,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           SPARKLE_KEY: ${{ secrets.MV_SPARKLE_PRIVATE_KEY }}
+          MANIFEST_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
         run: |
           set -euo pipefail
           umask 077
+          # The add-on manifest's Ed25519 key (the update key, plan/18).
+          printf '%s' "$MANIFEST_KEY" > "$RUNNER_TEMP/release.key"
           kc="$RUNNER_TEMP/mv-signing.keychain-db"
           kcpw="$(openssl rand -hex 16)"
           echo "::add-mask::$kcpw"
@@ -448,6 +494,29 @@ jobs:
             cp "build/release/updates/MediaViewer-$VERSION.zip" build/release/updates/appcast.xml upload/
           fi
 
+      - name: Import add-on (join, sign, notarize, pack)
+        if: inputs.mode == 'stable'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p addon/arm64 build/addons
+          tar -xf apps/ImportAddon-arm64.tar -C addon/arm64
+          if [[ -f apps/ImportAddon-x64.tar ]]; then
+            mkdir -p addon/x86_64
+            tar -xf apps/ImportAddon-x64.tar -C addon/x86_64
+            python3 tools/mac/lipo_merge.py --arm64 addon/arm64 --x86_64 addon/x86_64 --out build/addons/import
+          else
+            cp -R addon/arm64 build/addons/import
+          fi
+          python3 tools/mac/macpack.py addon --dir build/addons/import \
+            --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+          python3 -m pip install --break-system-packages -r tools/package/requirements.txt
+          python3 tools/package/addon-pack.py pack --platform macos --src build/addons/import \
+            --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
+          cp build/release/addon/mediaviewer-addon-import-macos.zip \
+             build/release/addon/mediaviewer-addon-import-macos.json \
+             build/release/addon/mediaviewer-addon-import-macos.json.sig upload/
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ needs.prepare.outputs.version }}
@@ -459,7 +528,7 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/mv-signing.keychain-db" || true
-          rm -f "$RUNNER_TEMP/id.p12" "$RUNNER_TEMP/sparkle.key"
+          rm -f "$RUNNER_TEMP/id.p12" "$RUNNER_TEMP/sparkle.key" "$RUNNER_TEMP/release.key"
 
   publish:
     name: Publish both installers together
@@ -480,6 +549,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ inputs.mode }}
+          # The jobs above pack the Import add-on; publish requires it (stable).
+          MV_RELEASE_ADDONS: '1'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: python3 tools/package/github-release.py publish release-assets
