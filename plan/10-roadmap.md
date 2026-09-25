@@ -23,7 +23,7 @@ Mac are both at PR 9.** The order from here is:
 | 12 | Metadata (write) | both | Planned |
 | 13 | Two-path trim | both | **Written ahead on a branch** (2026-09-25): shared core tested on Linux; both host halves written, first MSVC / Xcode builds and every hardware verify owed. Does not merge before 12 ([12](12-decision-log.md) 2026-09-25) |
 | 14 | Extract & remux | both | **Written with 13**, same state |
-| 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
+| 15 | OS integration (Explorer; the remaining Finder twins) | both | **Started 2026-09-25** on a branch from PRs 13–14: keyboard twins, recents, media controls. Handlers, windows-as-tabs, drag-out and the Spotlight importer to come |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
@@ -548,6 +548,21 @@ palette. Everything is in the core; the hosts only add UI.
 **Verify (both platforms):** each operation round-trips; lossless rotate does not re-encode.
 
 ### PR 15 — OS integration
+*Status 2026-09-25: started on `pr15-os-integration` (from PR 13–14's branch). Scope calls:
+tabs are OS-grouped windows, and the Spotlight importer is built ([12](12-decision-log.md)
+2026-09-25). **Landed on the branch, both hosts:** `Ctrl+Shift+C` / `⌘⇧C` copy path,
+`Ctrl+Alt+C` / `⌘⌥C` the still flattened to a PNG in the app's own `clipboard` folder (file +
+image flavour, pixels and ICC only), `Ctrl+Shift+S` / `⌘⇧S` Share (`IDataTransferManager`
+through the chrome, `NSSharingServicePicker`), recent folders in the jump list / Dock menu,
+the taskbar's thumbnail transport buttons, and Now Playing / `MPRemoteCommandCenter` on the
+Mac. The process and its shortcuts share one AppUserModelID (`MediaViewer.Viewer`) so the
+pinned button, the window and the jump list are one entry. macOS half built and the shared
+tests pass on macOS; the Windows half awaits its first MSVC / clang-cl build in CI.
+**Still to do:** the out-of-process thumbnail + property handlers, single instance with
+windows grouped as tabs and `Ctrl+Tab`, drag-out of the flattened view
+(`CFSTR_FILEDESCRIPTOR`, `NSFilePromiseProvider`), the Spotlight importer, and both
+platforms' verify lines.*
+
 *Status 2026-09-25: **not started.** PR 8's installer registers the `ProgId`s and `OpenWithProgids`
 (a partial overlap with the Windows half below), and Windows already has SMTC transport from PR 5;
 the out-of-process thumbnail / property handlers, the jump list, tabs, drag-out, Share and the Mac

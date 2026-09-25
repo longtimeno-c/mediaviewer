@@ -455,6 +455,9 @@ add_library(mv_shell STATIC
   src/shell/trim_state.h
   src/abi/clip_session.cpp
   src/abi/clip_session.h
+  # PR 15: recent folders (Dock menu), copy-path text, shared with Windows.
+  src/shell/os_integration.cpp
+  src/shell/os_integration.h
 )
 target_include_directories(mv_shell PUBLIC src/abi/include)
 target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_clip)
@@ -567,6 +570,7 @@ function(mv_mac_host target)
     "-framework CoreServices"
     "-framework DiskArbitration"
     "-framework UniformTypeIdentifiers"
+    "-framework MediaPlayer"  # PR 15: Now Playing / MPRemoteCommandCenter
     "-framework SwiftUI"
     "-framework Combine"
     # PR 11: Crashpad's macOS client (audit tokens, IOKit registry reads) and
@@ -695,6 +699,8 @@ if(MV_BUILD_TESTS)
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
+    # PR 15: recent folders, copy path.
+    tests/test_os_integration.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

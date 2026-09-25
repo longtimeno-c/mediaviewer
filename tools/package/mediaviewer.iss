@@ -128,10 +128,13 @@ Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-2.0-or-la
 ; shortcut into current\ or app-1.2.3\ would break on the next update. The icon
 ; is the stub's own, set by `vpk pack --icon` from assets/icon/mediaviewer.ico,
 ; so the shortcut, the taskbar and the running window are one mark.
+; AppUserModelID (PR 15) is the one the process sets (main.cpp kAppUserModelId):
+; without it the stub's shortcut and the process it starts are two taskbar
+; entries, and the jump list's recent folders belong to neither.
 Name: "{userprograms}\{#MvAppName}"; Filename: "{app}\MediaViewer.exe"; \
-  IconFilename: "{app}\MediaViewer.exe"; Tasks: startmenu
+  IconFilename: "{app}\MediaViewer.exe"; AppUserModelID: "MediaViewer.Viewer"; Tasks: startmenu
 Name: "{userdesktop}\{#MvAppName}"; Filename: "{app}\MediaViewer.exe"; \
-  IconFilename: "{app}\MediaViewer.exe"; Tasks: desktopicon
+  IconFilename: "{app}\MediaViewer.exe"; AppUserModelID: "MediaViewer.Viewer"; Tasks: desktopicon
 
 [Registry]
 ; File associations (plan/09 "Windows integration"). REGISTER, never take: Windows
@@ -256,6 +259,9 @@ Type: files; Name: "{app}\Update.exe"
 Type: files; Name: "{app}\sq.version"
 Type: files; Name: "{app}\*.log"
 Type: files; Name: "{app}\settings.ini"
+; PR 15: Ctrl+Alt+C's flattened copy (io::clipboard_dir), always under
+; %LocalAppData%, wherever the app itself was installed.
+Type: filesandordirs; Name: "{localappdata}\MediaViewer\clipboard"
 ; Only if nothing the user put there remains.
 Type: dirifempty; Name: "{app}"
 

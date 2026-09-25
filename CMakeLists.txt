@@ -40,7 +40,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.3
+  VERSION 0.1.4
   DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
 
@@ -613,6 +613,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/trim_state.h
   src/shell/open_request.cpp
   src/shell/open_request.h
+  src/shell/os_integration.cpp
+  src/shell/os_integration.h
   src/shell/slideshow.h
   src/shell/navigation.h
   src/shell/settings.cpp
@@ -884,6 +886,7 @@ if(MV_BUILD_TESTS)
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
+    tests/test_os_integration.cpp
     tests/test_slideshow.cpp
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
@@ -905,6 +908,7 @@ if(MV_BUILD_TESTS)
     src/shell/key_router.cpp
     src/shell/file_jobs.cpp
     src/shell/open_request.cpp
+    src/shell/os_integration.cpp
     src/shell/settings.cpp
     src/shell/settings_store.cpp
     src/shell/update_guard.cpp

@@ -92,6 +92,14 @@ void save_destinations(settings_store& store, const std::vector<std::string>& li
 [[nodiscard]] std::vector<std::string> load_destinations() noexcept;
 void save_destinations(const std::vector<std::string>& list) noexcept;
 
+// PR 15: the jump list's recent folders, most recent first, at most
+// kMaxRecentFolders (os_integration.h, which also owns the MRU rule). Local
+// only, like the destinations: a jump list never leaves the machine.
+[[nodiscard]] std::vector<std::string> load_recent_folders(const settings_store& store) noexcept;
+void save_recent_folders(settings_store& store, const std::vector<std::string>& list) noexcept;
+[[nodiscard]] std::vector<std::string> load_recent_folders() noexcept;
+void save_recent_folders(const std::vector<std::string>& list) noexcept;
+
 // Pure: the list after `utf8_dir` was used. Moves it to the front, drops an
 // earlier spelling of the same folder (Windows paths ignore ASCII case and a
 // trailing separator), and keeps at most `max`.

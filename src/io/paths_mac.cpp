@@ -20,6 +20,7 @@ namespace {
 std::mutex g_mu;
 std::string g_override;
 std::string g_addons_override;
+std::string g_clipboard_override;
 
 std::string home_dir() {
   if (const char* home = std::getenv("HOME"); home && home[0] == '/') return home;
@@ -75,6 +76,24 @@ result<std::string> addons_dir() {
   const std::string app = support + "/MediaViewer";
   const std::string dir = app + "/Add-ons";
   if (!ensure_dir(support) || !ensure_dir(app) || !ensure_dir(dir)) return err(status::io);
+  return dir;
+}
+
+void set_clipboard_dir_override(std::string_view utf8_dir) {
+  std::lock_guard lock(g_mu);
+  g_clipboard_override.assign(utf8_dir);
+}
+
+result<std::string> clipboard_dir() {
+  {
+    std::lock_guard lock(g_mu);
+    if (!g_clipboard_override.empty()) return g_clipboard_override;
+  }
+  const std::string home = home_dir();
+  if (home.empty()) return err(status::io);
+  const std::string app = home + "/Library/Caches/MediaViewer";
+  const std::string dir = app + "/Clipboard";
+  if (!ensure_dir(app) || !ensure_dir(dir)) return err(status::io);
   return dir;
 }
 

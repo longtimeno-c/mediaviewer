@@ -271,6 +271,8 @@ expected chrome_host::load() noexcept {
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
+  // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
+  share_files_ = get_entry(L"ShareFiles");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -745,6 +747,19 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   args.kind = static_cast<std::int32_t>(kind);
   args.mode_mask = mode_mask;
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+bool chrome_host::share_files(HWND window, const std::string& paths_json) noexcept {
+  if (!attached_ || !share_files_ || !window || paths_json.empty()) return false;
+  // { int64 hwnd; int32 byte count; int32 reserved; UTF-8 JSON }, mirrored by
+  // IslandHost.ShareFiles.
+  std::vector<std::uint8_t> buf(16 + paths_json.size());
+  const auto hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
+  const auto len = static_cast<std::int32_t>(paths_json.size());
+  std::memcpy(buf.data(), &hwnd, 8);
+  std::memcpy(buf.data() + 8, &len, 4);
+  std::memcpy(buf.data() + 16, paths_json.data(), paths_json.size());
+  return share_files_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) noexcept {

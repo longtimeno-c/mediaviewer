@@ -23,9 +23,11 @@
 
 #include <cmath>
 #include <atomic>
+#include <initializer_list>
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <cwchar>
@@ -65,6 +67,7 @@
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
 #include "shell/open_request.h"
+#include "shell/os_integration.h"
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
@@ -104,6 +107,16 @@ constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Le
 constexpr UINT_PTR kHistogramTimerId = 0x7701;
 constexpr UINT kHistogramDebounceMs = 120;
 constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
+// PR 15 (plan/10 "OS integration").
+constexpr UINT kMsgFlattenDone = WM_APP + 0x75;     // Ctrl+Alt+C's bake finished (any thread posts)
+constexpr UINT kMsgJumpListPruned = WM_APP + 0x76;  // folders the user removed from the jump list
+constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
+constexpr UINT kThumbPlay = 0x5102;
+constexpr UINT kThumbNext = 0x5103;
+// One identity for the process, its shortcuts (mediaviewer.iss [Icons]) and
+// its jump list, so the pinned button, the running window and the recent
+// folders are one taskbar entry. Never change it: pins are keyed on it.
+constexpr wchar_t kAppUserModelId[] = L"MediaViewer.Viewer";
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -257,6 +270,15 @@ struct app_state {
   mv::shell::mark_set marks;
   mv::shell::file_jobs files;
   std::vector<std::string> destinations;  // F7 / F8, most recent first
+  // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
+  std::vector<std::string> recent_folders;
+  // PR 15: the taskbar thumbnail toolbar (prev / play-pause / next). Created
+  // when Explorer says the button exists; `thumb_state` is what it shows:
+  // -1 not yet, 0 a still (play disabled), 1 a paused clip, 2 a playing one.
+  UINT taskbar_created_msg = 0;
+  ITaskbarList3* taskbar = nullptr;
+  HICON thumb_icons[4]{};  // prev, play, pause, next
+  int thumb_state = -1;
   std::uint64_t folder_token = 0;         // bumped per folder open
   // plan/16 slideshow, a mode: order and interval in `show`, advancing through
   // the same folder_select as browse.
@@ -394,6 +416,7 @@ void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
+void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
@@ -455,6 +478,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
     if (!navigation) {
       app->mode = open_mode::folder;
       app->gallery_visible = false;
+      note_recent_folder(app, utf8);
     } else {
       app->mode = open_mode::folder;
     }
@@ -473,6 +497,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
     publish(app);
     return;
   }
+  note_recent_folder(app, utf8_from_wide(wide_path.substr(0, slash)));
   open_folder(app, wide_path.substr(0, slash), wide_path);
 }
 
@@ -912,64 +937,104 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
 // the cursor; otherwise the marked files, else the current item (the selected
 // cell while the gallery is up) as CF_HDROP, pasteable in Explorer, Mail, chat.
 // A pair copies both halves, as F7 does. Never asks the user anything.
-bool set_clipboard(app_state* app, UINT format, HGLOBAL mem) {
-  if (!::OpenClipboard(app->window)) {
-    ::GlobalFree(mem);
-    return false;
+struct clip_format {
+  UINT format = 0;
+  HGLOBAL mem = nullptr;
+};
+
+// Every format goes on in one open, so a paste target sees them together
+// (Ctrl+Alt+C offers a file and the PNG). The clipboard owns each block only
+// once SetClipboardData took it; the rest are freed here.
+bool set_clipboard(app_state* app, std::initializer_list<clip_format> formats) {
+  // A block that could not be built leaves the clipboard as it was.
+  const bool complete = std::all_of(formats.begin(), formats.end(),
+                                    [](const clip_format& f) { return f.mem != nullptr; });
+  const bool opened = complete && app && app->window && ::OpenClipboard(app->window);
+  if (opened) ::EmptyClipboard();
+  bool ok = opened;
+  for (const clip_format& f : formats) {
+    if (!f.mem) continue;
+    if (!opened || ::SetClipboardData(f.format, f.mem) == nullptr) {
+      ::GlobalFree(f.mem);
+      ok = false;
+    }
   }
-  ::EmptyClipboard();
-  const bool ok = ::SetClipboardData(format, mem) != nullptr;
-  if (!ok) ::GlobalFree(mem);  // the clipboard owns it only on success
-  ::CloseClipboard();
+  if (opened) ::CloseClipboard();
   return ok;
 }
 
-bool copy_to_clipboard(app_state* app) {
-  if (!app || !app->window) return false;
-  if (app->input.eyedropper) {
-    const std::string text = app->lab.eyedropper_text();
-    if (!text.empty()) {
-      const int n = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-      if (n <= 1) return false;
-      HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) * sizeof(wchar_t));
-      if (!mem) return false;
-      auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
-      if (!dst) {
-        ::GlobalFree(mem);
-        return false;
-      }
-      ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, dst, n);
-      ::GlobalUnlock(mem);
-      return set_clipboard(app, CF_UNICODETEXT, mem);
-    }
+bool set_clipboard(app_state* app, UINT format, HGLOBAL mem) {
+  return set_clipboard(app, {clip_format{format, mem}});
+}
+
+// CF_UNICODETEXT of a UTF-8 string. Null for an empty one.
+HGLOBAL text_to_global(const std::string& utf8) {
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (n <= 1) return nullptr;
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) * sizeof(wchar_t));
+  if (!mem) return nullptr;
+  auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
+  if (!dst) {
+    ::GlobalFree(mem);
+    return nullptr;
   }
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
-  if (targets.empty()) return false;
-  // DROPFILES, then each path as UTF-16 with a NUL, then one more NUL.
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, dst, n);
+  ::GlobalUnlock(mem);
+  return mem;
+}
+
+// CF_HDROP: DROPFILES, then each path as UTF-16 with a NUL, then one more NUL.
+HGLOBAL hdrop_to_global(const std::vector<std::string>& paths) {
   std::wstring list;
-  for (const std::string& utf8 : targets) {
+  for (const std::string& utf8 : paths) {
     const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
     if (n <= 1) continue;
     std::wstring wide(static_cast<std::size_t>(n), L'\0');
     ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
     list.append(wide.c_str(), static_cast<std::size_t>(n));  // includes its NUL
   }
-  if (list.empty()) return false;
+  if (list.empty()) return nullptr;
   list.push_back(L'\0');
   const SIZE_T bytes = sizeof(DROPFILES) + list.size() * sizeof(wchar_t);
   HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
-  if (!mem) return false;
+  if (!mem) return nullptr;
   auto* drop = static_cast<DROPFILES*>(::GlobalLock(mem));
   if (!drop) {
     ::GlobalFree(mem);
-    return false;
+    return nullptr;
   }
   drop->pFiles = sizeof(DROPFILES);
   drop->fWide = TRUE;
   std::memcpy(reinterpret_cast<char*>(drop) + sizeof(DROPFILES), list.data(),
               list.size() * sizeof(wchar_t));
   ::GlobalUnlock(mem);
-  return set_clipboard(app, CF_HDROP, mem);
+  return mem;
+}
+
+// Raw bytes for a registered format ("PNG": Office, browsers, Paint, chat apps).
+HGLOBAL bytes_to_global(const std::vector<std::uint8_t>& bytes) {
+  if (bytes.empty()) return nullptr;
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+  if (!mem) return nullptr;
+  void* dst = ::GlobalLock(mem);
+  if (!dst) {
+    ::GlobalFree(mem);
+    return nullptr;
+  }
+  std::memcpy(dst, bytes.data(), bytes.size());
+  ::GlobalUnlock(mem);
+  return mem;
+}
+
+bool copy_to_clipboard(app_state* app) {
+  if (!app || !app->window) return false;
+  if (app->input.eyedropper) {
+    const std::string text = app->lab.eyedropper_text();
+    if (!text.empty()) return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
+  }
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  if (targets.empty()) return false;
+  return set_clipboard(app, CF_HDROP, hdrop_to_global(targets));
 }
 
 // ---- PR 10: edit stack, lossless rotate, crop, export ------------------------
@@ -3140,6 +3205,340 @@ void motion_tick(app_state* app) noexcept {
   }
 }
 
+// ---- PR 15: OS integration (plan/10 "OS integration", plan/16 View) ---------
+
+// Ctrl+Shift+C: the marked (else current) path(s) as text, one per line. A
+// pair gives both halves, as Ctrl+C does.
+bool copy_paths_to_clipboard(app_state* app) {
+  if (!app) return false;
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const std::string text = mv::shell::paths_as_text(targets, "\r\n");
+  if (text.empty()) return false;
+  return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
+}
+
+struct flatten_job_result {
+  bool ok = false;
+  std::string path;
+  std::vector<std::uint8_t> png;
+};
+
+// Ctrl+Alt+C: the still as the canvas shows it, edits baked, as a PNG. The
+// bake is a full-resolution export, so it runs on the pool (rule 1) and lands
+// in kMsgFlattenDone. Stills only; a clip's frame is PR 14's frame export.
+bool start_flatten(app_state* app) {
+  if (!app || !app->window || app->edit_path.empty() || video_mode(app) ||
+      app->lab.animation() != mv::shell::animation_state::none) {
+    return false;
+  }
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, g = app->edits.export_geometry(),
+                       c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
+                        mv::result<mv::shell::flattened_copy> out = mv::shell::run_flatten(path, g, c);
+                        auto* r = new (std::nothrow) flatten_job_result{};
+                        if (r && out) {
+                          r->ok = true;
+                          r->path = std::move(out->path);
+                          r->png = std::move(out->png);
+                        }
+                        if (r && !::PostMessageW(hwnd, kMsgFlattenDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return out ? mv::status::ok : out.error();
+                      });
+  return true;
+}
+
+// The file (Explorer, Mail, chat) and the PNG itself (Office, Paint, a
+// browser) in one clipboard open.
+void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
+  if (!r) return;
+  static const UINT cf_png = ::RegisterClipboardFormatW(L"PNG");
+  if (!r->ok || cf_png == 0 ||
+      !set_clipboard(app, {clip_format{CF_HDROP, hdrop_to_global({r->path})},
+                           clip_format{cf_png, bytes_to_global(r->png)}})) {
+    ::MessageBeep(MB_ICONWARNING);
+  }
+}
+
+// Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
+// share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
+bool share_targets(app_state* app) {
+  if (!app || !app->window) return false;
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  if (targets.empty()) return false;
+  mv::json::writer w;
+  w.begin_array();
+  for (const std::string& t : targets) w.string(t);
+  w.end_array();
+  return app->chrome.share_files(app->window, w.str());
+}
+
+// The command line a jump list entry runs: the folder, quoted. A trailing
+// backslash ("D:\") is doubled, or CommandLineToArgvW reads `\"` as a quote.
+std::wstring jump_list_arguments(const std::string& utf8_dir) {
+  std::wstring dir = wide_from_utf8(utf8_dir);
+  if (!dir.empty() && dir.back() == L'\\') dir.push_back(L'\\');
+  return L"\"" + dir + L"\"";
+}
+
+// The jump list's "Recent folders" (the Dock menu's twin). Worker thread:
+// CommitList writes the list into the user's profile. Returns the folders the
+// user removed from the list since the last commit: Windows refuses a
+// category that adds one back, so the caller drops them from the recents.
+std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, const std::wstring& exe) {
+  static std::mutex one_at_a_time;
+  const std::lock_guard lock(one_at_a_time);
+  std::vector<std::string> pruned;
+  const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  ICustomDestinationList* list = nullptr;
+  IObjectArray* removed = nullptr;
+  IObjectCollection* items = nullptr;
+  IObjectArray* array = nullptr;
+  UINT min_slots = 0;
+  if (SUCCEEDED(::CoCreateInstance(CLSID_DestinationList, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&list))) &&
+      SUCCEEDED(list->SetAppID(kAppUserModelId)) &&
+      SUCCEEDED(list->BeginList(&min_slots, IID_PPV_ARGS(&removed))) &&
+      SUCCEEDED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&items)))) {
+    std::vector<std::wstring> removed_args;
+    UINT removed_count = 0;
+    if (removed && SUCCEEDED(removed->GetCount(&removed_count))) {
+      for (UINT i = 0; i < removed_count; ++i) {
+        IShellLinkW* link = nullptr;
+        if (FAILED(removed->GetAt(i, IID_PPV_ARGS(&link))) || !link) continue;
+        wchar_t args[2 * MAX_PATH]{};
+        if (SUCCEEDED(link->GetArguments(args, static_cast<int>(std::size(args))))) {
+          removed_args.emplace_back(args);
+        }
+        link->Release();
+      }
+    }
+    SHSTOCKICONINFO folder_icon{};
+    folder_icon.cbSize = sizeof(folder_icon);
+    const bool have_icon = SUCCEEDED(::SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICONLOCATION, &folder_icon));
+    const std::vector<std::string> labels = mv::shell::recent_folder_labels(folders);
+    UINT added = 0;
+    for (std::size_t i = 0; !exe.empty() && i < folders.size(); ++i) {
+      const std::wstring args = jump_list_arguments(folders[i]);
+      if (std::find(removed_args.begin(), removed_args.end(), args) != removed_args.end()) {
+        pruned.push_back(folders[i]);
+        continue;
+      }
+      IShellLinkW* link = nullptr;
+      if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
+        continue;
+      }
+      (void)link->SetPath(exe.c_str());
+      (void)link->SetArguments(args.c_str());
+      (void)link->SetDescription(wide_from_utf8(folders[i]).c_str());  // the tooltip
+      if (have_icon) (void)link->SetIconLocation(folder_icon.szPath, folder_icon.iIcon);
+      // The entry's label is its PKEY_Title (FMTID_SummaryInformation, pid 2),
+      // spelled out here so neither propkey.h's data symbols nor
+      // propvarutil.h's shlwapi-backed helpers join the link.
+      static constexpr PROPERTYKEY kTitle = {
+          {0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
+      const std::wstring label = wide_from_utf8(labels[i]);
+      IPropertyStore* props = nullptr;
+      PROPVARIANT title{};
+      bool titled = false;
+      const std::size_t bytes = (label.size() + 1) * sizeof(wchar_t);
+      if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props)))) {
+        title.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc(bytes));
+        if (title.pwszVal) {
+          title.vt = VT_LPWSTR;
+          std::memcpy(title.pwszVal, label.c_str(), bytes);
+          titled = SUCCEEDED(props->SetValue(kTitle, title)) && SUCCEEDED(props->Commit());
+          (void)::PropVariantClear(&title);
+        }
+      }
+      if (props) props->Release();
+      if (titled && SUCCEEDED(items->AddObject(link))) ++added;
+      link->Release();
+    }
+    if (added > 0 && SUCCEEDED(items->QueryInterface(IID_PPV_ARGS(&array)))) {
+      (void)list->AppendCategory(L"Recent folders", array);
+    }
+    if (FAILED(list->CommitList())) MV_LOG_WARN("jump list: CommitList failed");
+  }
+  if (array) array->Release();
+  if (items) items->Release();
+  if (removed) removed->Release();
+  if (list) list->Release();
+  if (SUCCEEDED(com)) ::CoUninitialize();
+  return pruned;
+}
+
+// The exe a jump list entry starts: the install's root stub, which survives
+// updates (mediaviewer.iss [Icons] points there for the same reason); a dev
+// build has no stub and uses itself.
+std::wstring jump_list_exe() {
+  if (g_install.installed()) return g_install.root + L"\\MediaViewer.exe";
+  wchar_t exe[2 * MAX_PATH]{};
+  const DWORD n = ::GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+  return n > 0 && n < std::size(exe) ? std::wstring(exe, n) : std::wstring();
+}
+
+void publish_jump_list(app_state* app) {
+  if (!app || !app->window) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [folders = app->recent_folders, exe = jump_list_exe(), hwnd](const mv::job_context&) -> mv::status {
+                        std::vector<std::string> pruned = build_jump_list(folders, exe);
+                        if (pruned.empty()) return mv::status::ok;
+                        auto* r = new (std::nothrow) std::vector<std::string>(std::move(pruned));
+                        if (r && !::PostMessageW(hwnd, kMsgJumpListPruned, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+// A folder opened from Explorer, the jump list, Open, a drop or argv counts;
+// walking siblings or the tree does not (open_path's `navigation`).
+void note_recent_folder(app_state* app, const std::string& utf8_dir) {
+  if (!app || utf8_dir.empty()) return;
+  std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_folders, utf8_dir);
+  if (next == app->recent_folders) return;
+  app->recent_folders = std::move(next);
+  mv::shell::save_recent_folders(app->recent_folders);
+  publish_jump_list(app);
+}
+
+void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string>> pruned) {
+  if (!app || !pruned) return;
+  const std::size_t before = app->recent_folders.size();
+  std::erase_if(app->recent_folders, [&](const std::string& f) {
+    return std::find(pruned->begin(), pruned->end(), f) != pruned->end();
+  });
+  if (app->recent_folders.size() != before) mv::shell::save_recent_folders(app->recent_folders);
+}
+
+// The taskbar thumbnail toolbar's glyphs, drawn at the small-icon size: white
+// on transparent, as the taskbar expects. 0 previous, 1 play, 2 pause, 3 next.
+HICON make_thumb_icon(int glyph, int size) noexcept {
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+  bi.bmiHeader.biWidth = size;
+  bi.bmiHeader.biHeight = -size;  // top-down
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HBITMAP colour = ::CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ::ReleaseDC(nullptr, screen);
+  if (!colour || !bits) return nullptr;
+  HDC dc = ::CreateCompatibleDC(nullptr);
+  HGDIOBJ old_bitmap = ::SelectObject(dc, colour);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(WHITE_BRUSH));
+  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+  const int m = size / 4;  // margin
+  const int bar = std::max(2, size / 8);
+  const int mid = size / 2;
+  switch (glyph) {
+    case 0: {  // |<
+      (void)::Rectangle(dc, m, m, m + bar + 1, size - m + 1);
+      const POINT tri[] = {{size - m, m}, {size - m, size - m}, {m + bar, mid}};
+      (void)::Polygon(dc, tri, 3);
+      break;
+    }
+    case 1: {  // >
+      const POINT tri[] = {{m, m}, {m, size - m}, {size - m, mid}};
+      (void)::Polygon(dc, tri, 3);
+      break;
+    }
+    case 2: {  // ||
+      const int w = std::max(2, (size - 2 * m) / 3);
+      (void)::Rectangle(dc, m, m, m + w + 1, size - m + 1);
+      (void)::Rectangle(dc, size - m - w, m, size - m + 1, size - m + 1);
+      break;
+    }
+    default: {  // >|
+      const POINT tri[] = {{m, m}, {m, size - m}, {size - m - bar, mid}};
+      (void)::Polygon(dc, tri, 3);
+      (void)::Rectangle(dc, size - m - bar, m, size - m + 1, size - m + 1);
+      break;
+    }
+  }
+  ::GdiFlush();
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_bitmap);
+  ::DeleteDC(dc);
+  // GDI leaves alpha at 0: every drawn (white) pixel becomes opaque.
+  auto* px = static_cast<std::uint32_t*>(bits);
+  for (int i = 0; i < size * size; ++i) {
+    if (px[i] & 0x00FFFFFFu) px[i] = 0xFFFFFFFFu;
+  }
+  HBITMAP mask = ::CreateBitmap(size, size, 1, 1, nullptr);
+  ICONINFO info{};
+  info.fIcon = TRUE;
+  info.hbmMask = mask;
+  info.hbmColor = colour;
+  HICON icon = mask ? ::CreateIconIndirect(&info) : nullptr;
+  if (mask) ::DeleteObject(mask);
+  ::DeleteObject(colour);
+  return icon;
+}
+
+// What the toolbar shows, from the clip state the title tick already reads.
+void update_thumb_bar(app_state* app) {
+  if (!app || !app->taskbar || !app->window) return;
+  std::uint32_t state = MV_PLAY_STOPPED;
+  if (app->session) (void)mv_video_state(app->session, &state);
+  const int want = state == MV_PLAY_STOPPED ? 0 : (state == MV_PLAY_PLAYING ? 2 : 1);
+  if (want == app->thumb_state) return;
+  THUMBBUTTON play{};
+  play.dwMask = THB_ICON | THB_TOOLTIP | THB_FLAGS;
+  play.iId = kThumbPlay;
+  play.hIcon = app->thumb_icons[want == 2 ? 2 : 1];
+  (void)::wcscpy_s(play.szTip, want == 2 ? L"Pause" : L"Play");
+  play.dwFlags = want == 0 ? THBF_DISABLED : THBF_ENABLED;
+  if (SUCCEEDED(app->taskbar->ThumbBarUpdateButtons(app->window, 1, &play))) app->thumb_state = want;
+}
+
+// "TaskbarButtonCreated": Explorer made (or remade, after it restarted) the
+// button, so the toolbar is added now.
+void on_taskbar_button_created(app_state* app) {
+  if (!app || !app->window) return;
+  if (!app->taskbar) {
+    if (FAILED(::CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&app->taskbar))) ||
+        FAILED(app->taskbar->HrInit())) {
+      if (app->taskbar) app->taskbar->Release();
+      app->taskbar = nullptr;
+      return;
+    }
+  }
+  const UINT dpi = ::GetDpiForWindow(app->window);
+  const int size = ::GetSystemMetricsForDpi(SM_CXSMICON, dpi ? dpi : 96);
+  for (int i = 0; i < 4; ++i) {
+    if (!app->thumb_icons[i]) app->thumb_icons[i] = make_thumb_icon(i, size);
+  }
+  THUMBBUTTON buttons[3]{};
+  const UINT ids[] = {kThumbPrev, kThumbPlay, kThumbNext};
+  const HICON icons[] = {app->thumb_icons[0], app->thumb_icons[1], app->thumb_icons[3]};
+  const wchar_t* tips[] = {L"Previous", L"Play", L"Next"};
+  for (int i = 0; i < 3; ++i) {
+    buttons[i].dwMask = THB_ICON | THB_TOOLTIP | THB_FLAGS;
+    buttons[i].iId = ids[i];
+    buttons[i].hIcon = icons[i];
+    (void)::wcscpy_s(buttons[i].szTip, tips[i]);
+    buttons[i].dwFlags = i == 1 ? THBF_DISABLED : THBF_ENABLED;
+  }
+  app->thumb_state = -1;
+  if (SUCCEEDED(app->taskbar->ThumbBarAddButtons(app->window, 3, buttons))) update_thumb_bar(app);
+}
+
+void release_taskbar(app_state* app) noexcept {
+  if (!app) return;
+  if (app->taskbar) app->taskbar->Release();
+  app->taskbar = nullptr;
+  for (HICON& icon : app->thumb_icons) {
+    if (icon) ::DestroyIcon(icon);
+    icon = nullptr;
+  }
+}
+
 // Command effects. A switch over a dense enum is the jump table plan/16 asks
 // for. Returning false means "not applicable here" and sends the key on to the
 // island — Q/E on a still, or a command whose slice has not landed yet.
@@ -3410,6 +3809,13 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     case copy_clipboard:
       return copy_to_clipboard(app);
+    // PR 15 (plan/16 View): the keyboard twins of drag-out.
+    case copy_path:
+      return copy_paths_to_clipboard(app);
+    case copy_flattened:
+      return start_flatten(app);
+    case share:
+      return share_targets(app);
     // PR 10 geometry, crop mode and export (plan/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -3850,6 +4256,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
   app_state* app = state_from(hwnd);
   if (!app) return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  if (app->taskbar_created_msg != 0 && msg == app->taskbar_created_msg) {
+    on_taskbar_button_created(app);
+    return 0;
+  }
 
   switch (msg) {
     case WM_SIZE: {
@@ -4036,6 +4446,30 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_edit_job_done(app, std::unique_ptr<edit_job_result>(reinterpret_cast<edit_job_result*>(lparam)));
       return 0;
 
+    case kMsgFlattenDone:
+      on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
+      return 0;
+
+    case kMsgJumpListPruned:
+      on_jump_list_pruned(app, std::unique_ptr<std::vector<std::string>>(
+                                   reinterpret_cast<std::vector<std::string>*>(lparam)));
+      return 0;
+
+    // PR 15: the taskbar thumbnail toolbar.
+    case WM_COMMAND:
+      if (HIWORD(wparam) == THBN_CLICKED) {
+        using enum mv::shell::command_id;
+        switch (LOWORD(wparam)) {
+          case kThumbPrev: (void)run_command(app, prev); break;
+          case kThumbPlay: (void)run_command(app, play_pause); break;
+          case kThumbNext: (void)run_command(app, next); break;
+          default: break;
+        }
+        update_thumb_bar(app);
+        return 0;
+      }
+      break;
+
     case kMsgAdjustJobDone:
       on_adjust_job_done(app, std::unique_ptr<adjust_job_result>(reinterpret_cast<adjust_job_result*>(lparam)));
       return 0;
@@ -4068,6 +4502,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           push_browse_state(app);
         }
         update_title(app);
+        update_thumb_bar(app);
         // An update restart's zoom goes back once the still is on screen; a
         // preset before the decode lands would be replaced by the fit.
         if (g_restore.zoom_percent > 0 && app->lab.showing_still()) {
@@ -4141,6 +4576,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_DESTROY:
+      release_taskbar(app);
       app->chrome.detach();
       ::PostQuitMessage(0);
       return 0;
@@ -4275,6 +4711,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   // WinUI islands require an STA. GetOpenFileName wants one too.
   (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  // PR 15: before the first window, so its taskbar button, the Start / pinned
+  // shortcuts (mediaviewer.iss) and the jump list are one entry.
+  (void)::SetCurrentProcessExplicitAppUserModelID(kAppUserModelId);
 
   lab_options options;
   std::wstring parse_error;
@@ -4313,6 +4752,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.background = app.settings.background;
   app.destinations = mv::shell::load_destinations();
+  app.recent_folders = mv::shell::load_recent_folders();
+  // The toolbar is added when Explorer reports the button, not before.
+  app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   for (const auto& o : mv::shell::load_key_overrides()) {
     (void)mv::shell::rebind_live(o.row, static_cast<mv::shell::key>(o.k), o.mods);
   }

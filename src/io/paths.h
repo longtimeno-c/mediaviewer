@@ -21,6 +21,12 @@ void set_thumb_cache_dir_override(std::string_view utf8_dir);
 [[nodiscard]] result<std::string> addons_dir();
 void set_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
+// PR 15: where Ctrl+Alt+C / ⌘⌥C writes the flattened copy it puts on the
+// clipboard (%LocalAppData%\MediaViewer\clipboard, ~/Library/Caches/
+// MediaViewer/Clipboard). Never the browsed folder. Created if missing.
+[[nodiscard]] result<std::string> clipboard_dir();
+void set_clipboard_dir_override(std::string_view utf8_dir);  // tests; empty restores
+
 // Import's default destination (plan/18 "Painless by default"):
 // Pictures\MediaViewer / ~/Pictures/MediaViewer. Not created here; the
 // first import creates it.

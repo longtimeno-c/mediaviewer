@@ -2118,3 +2118,32 @@ Jobs pane cancel, and PR 1's present-loop gate. macOS: the first Xcode / SwiftPM
 (Activity Monitor / `powermetrics`) and "no software encoder is linked" (`nm` of the FFmpeg dylibs for
 `libx264` / `libx265`); the Mac PR 1 Metal gate. Both: `MediaViewerClipJob` signed and shipped
 (the Windows payload picks it up by name; `macpack.py --clipjob` puts it in Contents/Helpers).
+
+## 2026-09-25 — PR 15 scope: tabs are OS-tabbed windows; the Spotlight importer is in
+
+Two calls the roadmap left open for PR 15, answered by the owner when the slice started.
+
+- **"Single instance with tabs" means one process, a window per viewer, grouped by the OS.**
+  A second open from Explorer / Finder goes to the running instance (named pipe on Windows;
+  Launch Services already routes it on the Mac) and opens a **new window** there. macOS groups
+  those windows with `NSWindow` tabbing (`tabbingMode` preferred, one `tabbingIdentifier`);
+  Windows shows separate top-level windows, and `Ctrl+Tab` / `⌃Tab` walks them in both hosts.
+  Rejected: one window holding several viewer states behind an in-app tab strip. It is the
+  bigger rewrite, and it would mean several documents contending for one swapchain. Both hosts
+  keep **one present path per OS** (D2, D9), and each window owns its own swapchain / layer.
+  The viewer state that is global today (`App` in `main.cpp`, `MvLabApp` in `main_mac.mm`)
+  becomes per window; the device, decoder pools, thumb store and settings stay process-wide.
+  Every extra window is inside the present-loop gates: both PR 1 soaks run with two windows open.
+- **The Spotlight importer is built.** An `.mdimporter` in `Contents/Library/Spotlight` is the
+  twin of the Explorer property handler. It is out of process by construction (`mdworker`), links
+  the shared `meta/` read model only, never a decoder, and fills the standard
+  `kMDItem*` keys (dimensions, capture date, camera, lens, exposure, GPS, duration, codec) for the
+  D5 formats Spotlight does not already index, RAW first. Its verify joins the macOS line:
+  `mdimport -t -d2` on a CR3 prints the keys, and `mdls` shows them after a Finder copy.
+  Dragging the app to the Trash still removes every extension.
+- **One AppUserModelID, `MediaViewer.Viewer`, from PR 15 on.** The Start / desktop shortcuts
+  start the root stub, which starts `current\MediaViewer.exe`. Without an explicit id those are
+  two taskbar identities, so a pinned button and the running window did not group, and a jump
+  list has nowhere stable to live. The process sets it before its first window, the wizard's
+  shortcuts carry it (`mediaviewer.iss` [Icons]), and the jump list is committed under it. It is
+  never renamed: pins are keyed on it. Jump list entries start the root stub, as the shortcuts do.

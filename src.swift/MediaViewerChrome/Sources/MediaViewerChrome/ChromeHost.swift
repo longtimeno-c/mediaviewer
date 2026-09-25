@@ -49,6 +49,11 @@ public final class MVChromeHost: NSObject {
     host(HelpView())
   }
 
+  /// `?` opened: the sheet re-reads the live table (Settings may have remapped).
+  @MainActor @objc public static func reloadHelp() {
+    HelpStore.shared.reload()
+  }
+
   @objc public static func makeSettingsView() -> NSView {
     host(SettingsView())
   }

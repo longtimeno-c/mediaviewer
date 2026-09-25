@@ -230,6 +230,13 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_ctrl, kVideo | kTrim, edge, clip_tools),
     row(C('B'), mod_ctrl, kVideo | kTrim, edge, clip_split),
     row(C('X'), mod_ctrl, kTrim, edge, trim_remove_middle),
+    // PR 15 (plan/16 View): the keyboard twins of drag-out. Appended. Ctrl+C
+    // copies the file(s); the Shift twin their path(s); Ctrl+Alt+C what the
+    // canvas shows with the edits baked (stills: a clip's frame is PR 14's
+    // frame export). Ctrl+Shift+S is Share; Ctrl+S stays Export / clip tools.
+    row(C('C'), mod_ctrl | mod_shift, kViewing, edge, copy_path),
+    row(C('C'), mod_ctrl | mod_alt, kBrowse, edge, copy_flattened),
+    row(C('S'), mod_ctrl | mod_shift, kViewing, edge, share),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -372,6 +379,9 @@ constexpr command_info kCommands[] = {
     {clip_tools, "Clip tools…"},
     {clip_split, "Split clip at playhead"},
     {trim_remove_middle, "Trim: remove in–out"},
+    {copy_path, "Copy path"},
+    {copy_flattened, "Copy edited image"},
+    {share, "Share…"},
 };
 
 const char* named_key(key k) noexcept {

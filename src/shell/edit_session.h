@@ -176,4 +176,17 @@ inline constexpr int kExportLongEdgeCount =
                                              const edit::export_options& opt,
                                              const edit::colour& c = {});
 
+// PR 15, Ctrl+Alt+C / ⌘⌥C (plan/16 View): the still with its stack baked, as a
+// PNG, for the clipboard. Written to io::clipboard_dir() — never beside the
+// original — as "<name>-edit.png", replacing the previous flattened copy (the
+// folder holds one file). Pixels + ICC only: nothing from the EXIF rides along
+// into a chat window the user pasted into. `png` is the same bytes, for the
+// clipboard's image flavour. Worker thread only.
+struct flattened_copy {
+  std::string path;
+  std::vector<std::uint8_t> png;
+};
+[[nodiscard]] result<flattened_copy> run_flatten(std::string_view source_path, const edit::geometry& g,
+                                                 const edit::colour& c = {});
+
 }  // namespace mv::shell

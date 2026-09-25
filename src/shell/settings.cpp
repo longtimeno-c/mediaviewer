@@ -5,6 +5,7 @@
 #include "shell/settings.h"
 
 #include "io/sort_order.h"
+#include "shell/os_integration.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -15,6 +16,7 @@ namespace {
 
 constexpr char kView[] = "view";
 constexpr char kDestinations[] = "destinations";
+constexpr char kRecent[] = "recent";
 constexpr char kKeys[] = "keys";
 constexpr char kCrash[] = "crash";
 
@@ -106,6 +108,30 @@ void save_destinations(settings_store& store, const std::vector<std::string>& li
   });
 }
 
+std::vector<std::string> load_recent_folders(const settings_store& store) noexcept {
+  try {
+    std::vector<std::string> out;
+    const auto doc = store.snapshot();
+    if (!doc) return out;
+    for (std::size_t i = 0; i < kMaxRecentFolders; ++i) {
+      const std::string* v = doc->find(kRecent, "f" + std::to_string(i));
+      if (v && !v->empty()) out.push_back(*v);
+    }
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+
+void save_recent_folders(settings_store& store, const std::vector<std::string>& list) noexcept {
+  store.update([&](settings_doc& d) {
+    d.erase_prefix(kRecent, "f");
+    for (std::size_t i = 0; i < kMaxRecentFolders && i < list.size(); ++i) {
+      if (!list[i].empty()) d.set(kRecent, "f" + std::to_string(i), list[i]);
+    }
+  });
+}
+
 std::vector<key_override> load_key_overrides(const settings_store& store) noexcept {
   try {
     std::vector<key_override> out;
@@ -164,6 +190,8 @@ view_settings load_view_settings() noexcept { return load_view_settings(app_sett
 void save_view_settings(const view_settings& s) noexcept { save_view_settings(app_settings(), s); }
 std::vector<std::string> load_destinations() noexcept { return load_destinations(app_settings()); }
 void save_destinations(const std::vector<std::string>& list) noexcept { save_destinations(app_settings(), list); }
+std::vector<std::string> load_recent_folders() noexcept { return load_recent_folders(app_settings()); }
+void save_recent_folders(const std::vector<std::string>& list) noexcept { save_recent_folders(app_settings(), list); }
 crash_settings load_crash_settings() noexcept { return load_crash_settings(app_settings()); }
 void save_crash_consent(bool accepted) noexcept { save_crash_consent(app_settings(), accepted); }
 

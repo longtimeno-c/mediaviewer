@@ -12,6 +12,7 @@
 
 #include "edit/encode.h"
 #include "edit/lossless_jpeg.h"
+#include "io/paths.h"
 #include "io/replace.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
@@ -274,6 +275,48 @@ TEST_CASE("the I/O jobs rotate in place and export beside the original", "[shell
   REQUIRE(lo);
   CHECK(lo->width == 24);
   CHECK(lo->height == 32);
+}
+
+TEST_CASE("a flattened copy is a PNG in the app's own folder, one at a time", "[shell][edit][io]") {
+  temp_dir src;
+  temp_dir clip;
+  mv::io::set_clipboard_dir_override((clip.path / "Clipboard").string());
+  const fs::path p = src.path / "IMG_0004.jpg";
+  const auto bytes = jpeg_bytes(64, 48);
+  {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 0.5f, 0.5f};
+  auto a = mv::shell::run_flatten(p.string(), g);
+  REQUIRE(a);
+  CHECK(fs::path(a->path).filename() == "IMG_0004-edit.png");
+  CHECK(fs::path(a->path).parent_path() == clip.path / "Clipboard");
+  // PNG signature, then IHDR: width and height big-endian at 16 and 20.
+  REQUIRE(a->png.size() > 24);
+  CHECK(a->png[1] == 'P');
+  auto be32 = [&](std::size_t at) {
+    return (std::uint32_t{a->png[at]} << 24) | (std::uint32_t{a->png[at + 1]} << 16) |
+           (std::uint32_t{a->png[at + 2]} << 8) | std::uint32_t{a->png[at + 3]};
+  };
+  CHECK(be32(16) == 32);
+  CHECK(be32(20) == 24);
+  // Pixels only: no EXIF chunk rides into whatever it is pasted into.
+  const std::string text(a->png.begin(), a->png.end());
+  CHECK(text.find("eXIf") == std::string::npos);
+  CHECK(fs::file_size(a->path) == a->png.size());
+  // The browsed folder is untouched: still only the original.
+  CHECK(std::distance(fs::directory_iterator(src.path), fs::directory_iterator{}) == 1);
+
+  // The next copy replaces the last; the folder never grows.
+  const fs::path q = src.path / "IMG_0005.jpg";
+  fs::copy_file(p, q);
+  auto b = mv::shell::run_flatten(q.string(), {});
+  REQUIRE(b);
+  CHECK_FALSE(fs::exists(a->path));
+  CHECK(std::distance(fs::directory_iterator(clip.path / "Clipboard"), fs::directory_iterator{}) == 1);
+  mv::io::set_clipboard_dir_override("");
 }
 
 TEST_CASE("the export dialog's choice round-trips through one small integer", "[shell][edit]") {
