@@ -59,6 +59,7 @@ final class FolderCard: ObservableObject {
 struct Crumb: Identifiable, Equatable {
   let index: Int
   let name: String
+  let path: String
   var id: Int { index }
 }
 
@@ -206,7 +207,7 @@ final class FolderStore: ObservableObject {
     for i in 0..<Int(mv_chrome_crumb_count()) {
       guard let path = Self.string({ mv_chrome_crumb_path(Int32(i), $0, $1) }) else { continue }
       let leaf = URL(fileURLWithPath: path).lastPathComponent
-      freshCrumbs.append(Crumb(index: i, name: leaf.isEmpty ? path : leaf))
+      freshCrumbs.append(Crumb(index: i, name: leaf.isEmpty ? path : leaf, path: path))
     }
     if freshCrumbs != crumbs { crumbs = freshCrumbs }
     let up = mv_chrome_can_go_up()
@@ -395,3 +396,4 @@ private func folderSummaryTrampoline(
       coverThumbPath: cover)
   }
 }
+

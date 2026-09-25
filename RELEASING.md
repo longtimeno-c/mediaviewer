@@ -162,24 +162,43 @@ one set per platform, signed with the **same** Ed25519 key as the update manifes
 | `mediaviewer-addon-import-<platform>.json` and `.json.sig` | Signed add-on manifest (every file's SHA-256, size, licence; host API range; the archive) |
 | `mediaviewer-addon-import-<platform>.zip` | The add-on's files and nothing else |
 
-`<platform>` is `win-x64` or `macos` (one universal add-on, like the app). Build the app, then (the key file holds the private
-key, hex; never commit it or echo it into a log):
+`<platform>` is `win-x64` or `macos` (one universal add-on, like the app).
+
+> **Owner step, once:** the workflow half of this ships as `tools/package/release-addon.patch`
+> (the change was made from a session without the GitHub `workflow` scope). Apply it with
+> `git apply tools/package/release-addon.patch`, commit `.github/workflows/release.yml`, and delete
+> the patch. Until then releases carry no add-on and Settings says Import is not published yet.
+
+With the patch applied, a **stable** run of the
+release workflow builds, signs and packs both, and `publish` refuses a stable release without them
+(the apps fetch the add-on from `releases/latest`, so a release that lacks it would leave Settings
+with nothing to install). The add-on's version is the release version (`-DMV_IMPORT_VERSION`), so
+each release's add-on is newer than the last. Preview and artifacts runs do not pack add-ons.
+
+- **Windows:** `mv_import.dll` and `MediaViewer.Import.Chrome.dll` are Authenticode-signed when
+  Trusted Signing is configured, then `addon-pack.py pack --require-pinned-key` signs the manifest
+  with `MV_MANIFEST_SIGNING_KEY` and fails if that key is not the one the app pins.
+- **macOS:** each architecture's `build/addons/import` is joined with `lipo_merge.py`, then
+  `tools/mac/macpack.py addon` signs `libmv_import.dylib` and `Import.bundle` with the app's
+  Developer ID (same Team ID: the app loads them under library validation) and notarizes them,
+  and `addon-pack.py pack --platform macos --require-pinned-key` packs it with `ditto`, so the
+  signatures survive.
+
+To pack by hand (the key file holds the private key, hex; never commit it or echo it into a log):
 
 ```
+python3 -m pip install -r tools/package/requirements.txt
 python3 tools/package/addon-pack.py pack --platform win-x64 --src build/addons/import/Release \
-    --version 1.0.0 --key <key-file> --out dist/
+    --version 1.0.0 --key <key-file> --out dist/ --require-pinned-key
 python3 tools/package/addon-pack.py verify dist/mediaviewer-addon-import-win-x64.json \
     --public-key 0451bfecfb6a26d9058fb09cfa7a9305dcf1cea7c87221e9185b0038b1cc908c
+python3 tools/mac/macpack.py addon --dir build/addons/import --identity "Developer ID Application: …" \
+    --notary-profile <profile>      # macOS, before packing with --platform macos
 ```
 
-On the Mac, build on both architectures and join the add-on trees as for the app
-(`python3 tools/mac/lipo_merge.py --arm64 build-arm64/addons/import --x86_64 build-x64/addons/import
---out build/addons/import`), then `codesign` `build/addons/import/libmv_import.dylib` and
-`Import.bundle` with the app's Developer ID (same Team ID: the app loads them under library validation) **before** packing, pack
-with `--platform macos` (the archive is made with `ditto`, so signatures survive), and
-notarize the zip like the app's. The add-on version is `MV_IMPORT_VERSION` in `cmake/import.cmake`.
-The release workflow does not pack add-ons yet; until it does this is a manual step, and an
-app release without add-on assets simply offers no Import download.
+Settings → Add-ons reads the signed manifest when it opens and offers **Install** only when it
+verifies for that app; otherwise it says Import is not published yet, or that it needs a newer
+MediaViewer.
 
 Both updaters use this repository's `/releases/latest/download/`. Keep both feeds on every
 stable release: installers alone do not update existing users. Smoke-test an install on

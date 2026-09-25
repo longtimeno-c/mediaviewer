@@ -3,6 +3,8 @@ using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.System;
@@ -32,6 +34,7 @@ public static partial class IslandHost
     private static int _capturingRow = -1;
     private static bool _updatingSettingsUi;
     private static bool _settingsVisible;
+    private static bool _settingsKeyboard;
     private static Button? _captureButton;
     private static Button? _cancelCapture;
     private static TextBlock? _captureHint;
@@ -50,29 +53,27 @@ public static partial class IslandHost
     private static Grid BuildSettingsScreen()
     {
         KeyButtons.Clear();
-        var view = new StackPanel { Spacing = 12, Padding = new Thickness(20, 16, 20, 16), Width = 320 };
-        view.Children.Add(Heading("View"));
-        _stripFolder = SettingsToggle("Filmstrip when opening a folder", SettingFlag.FilmstripForFolder);
-        _stripImage = SettingsToggle("Filmstrip when opening an image", SettingFlag.FilmstripForImage);
-        _wrap = SettingsToggle("Wrap at the end of the folder", SettingFlag.Wrap);
-        _sticky = SettingsToggle("Sticky zoom (keep pan and zoom on next)", SettingFlag.StickyZoom);
-        view.Children.Add(_stripFolder);
-        view.Children.Add(_stripImage);
-        view.Children.Add(_wrap);
-        view.Children.Add(_sticky);
-        AddUpdateSettingsRow(view);     // PR 8 updater (IslandHost.Update.cs)
-        AddTelemetrySettingsRow(view);  // PR 8 telemetry (IslandHost.Telemetry.cs)
-        AddAddonsSettingsRow(view);     // Milestone G add-ons (IslandHost.Addons.cs)
-        view.Children.Add(Label("Canvas background"));
+        var view = new StackPanel { Spacing = 8, Padding = new Thickness(24, 12, 24, 24), MaxWidth = 800,
+            HorizontalAlignment = HorizontalAlignment.Stretch };
+        view.Children.Add(SettingsSection("Filmstrip"));
+        _stripFolder = SettingsToggle("When opening a folder", SettingFlag.FilmstripForFolder);
+        _stripImage = SettingsToggle("When opening an image", SettingFlag.FilmstripForImage);
+        _wrap = SettingsToggle("Wrap at the end", SettingFlag.Wrap);
+        _sticky = SettingsToggle("Keep pan and zoom", SettingFlag.StickyZoom);
+        view.Children.Add(SettingsRow("When opening a folder", "Show thumbnails below the viewer.", _stripFolder));
+        view.Children.Add(SettingsRow("When opening an image", "Show nearby images from the same folder.", _stripImage));
+        view.Children.Add(SettingsSection("Browsing"));
+        view.Children.Add(SettingsRow("Wrap at the end", "Continue from the last item to the first.", _wrap));
+        view.Children.Add(SettingsRow("Keep pan and zoom", "Keep your view position when moving to the next item.", _sticky));
         _background = new ComboBox
         {
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Foreground = Brush(Title),
-            MinWidth = 200,
+            Width = 180,
         };
         _background.Items.Add("Dark");
-        _background.Items.Add("Gray");
+        _background.Items.Add("Grey");
         _background.Items.Add("White");
         _background.Items.Add("Checkerboard");
         _background.SelectedIndex = (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
@@ -83,15 +84,13 @@ public static partial class IslandHost
                        ((_background.SelectedIndex & 3) << SettingFlag.BackgroundShift);
             Send(Command.SetSettings, next);
         };
-        view.Children.Add(_background);
 
-        view.Children.Add(Label("Sort folder by"));
         _sortKey = new ComboBox
         {
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Foreground = Brush(Title),
-            MinWidth = 200,
+            Width = 180,
         };
         foreach (string name in SortNames) _sortKey.Items.Add(name);
         _sortKey.SelectedIndex = Math.Clamp(_sortPacked & 7, 0, SortNames.Length - 1);
@@ -100,10 +99,9 @@ public static partial class IslandHost
             if (_updatingSettingsUi || _sortKey.SelectedIndex < 0) return;
             Send(Command.SetSort, (_sortPacked & 8) | _sortKey.SelectedIndex);
         };
-        view.Children.Add(_sortKey);
+        view.Children.Add(SettingsRow("Sort folder by", "Applies to the gallery and filmstrip.", _sortKey));
         _sortDescending = new ToggleSwitch
         {
-            Header = "Descending",
             FontFamily = UiFont,
             FontSize = UiFontSize,
             IsOn = (_sortPacked & 8) != 0,
@@ -113,12 +111,20 @@ public static partial class IslandHost
             if (_updatingSettingsUi) return;
             Send(Command.SetSort, _sortDescending.IsOn ? _sortPacked | 8 : _sortPacked & ~8);
         };
-        view.Children.Add(_sortDescending);
+        view.Children.Add(SettingsRow("Descending order", "Reverse the selected sort order.", _sortDescending));
+        view.Children.Add(SettingsSection("Appearance"));
+        view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
+        view.Children.Add(SettingsSection("Updates and privacy"));
+        AddUpdateSettingsRow(view);
+        AddTelemetrySettingsRow(view);
+        var addons = new StackPanel { Spacing = 8, Margin = new Thickness(0, 20, 0, 0) };
+        AddAddonsSettingsRow(addons);
+        view.Children.Add(addons);
 
         var keysHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
         keysHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         keysHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var keysTitle = Heading("Keyboard");
+        var keysTitle = Heading("Keyboard shortcuts");
         Grid.SetColumn(keysTitle, 0);
         keysHeader.Children.Add(keysTitle);
         Button reset = SettingsButton("Reset to default", () =>
@@ -133,7 +139,7 @@ public static partial class IslandHost
         // No TextBox: that control fail-fasts in this island (0xC000027B).
         FakeInput filter = new FakeInput(FilterPrompt)
         {
-            Margin = new Thickness(12, 0, 20, 8),
+            Margin = new Thickness(0, 0, 0, 8),
         };
         filter.Changed += () => SetKeyFilter(filter.Text);
         filter.MoveDown += FocusFirstVisibleKey;
@@ -157,7 +163,7 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        var keysCol = new Grid();
+        var keysCol = new Grid { Padding = new Thickness(24), MaxWidth = 900 };
         keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         keysCol.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -168,21 +174,43 @@ public static partial class IslandHost
         Grid.SetRow(keyScroll, 2);
         keysCol.Children.Add(keyScroll);
 
-        var split = new Grid
+        var viewScroll = new ScrollViewer
         {
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
+            Content = view,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
         };
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(view, 0);
-        split.Children.Add(view);
-        var rule = new Border { Background = Brush(Hairline), Width = 1, Margin = new Thickness(0, 8, 0, 8) };
-        Grid.SetColumn(rule, 1);
-        split.Children.Add(rule);
-        Grid.SetColumn(keysCol, 2);
-        split.Children.Add(keysCol);
+        var content = new Grid();
+        content.Children.Add(viewScroll);
+        content.Children.Add(keysCol);
+
+        var header = new Grid { Padding = new Thickness(24, 16, 24, 16), ColumnSpacing = 24 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var title = Heading("Settings");
+        title.FontSize = 24;
+        header.Children.Add(title);
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var generalTab = new ToggleButton { Content = "General", FontFamily = UiFont, FontSize = UiFontSize };
+        var keysTab = new ToggleButton { Content = "Keyboard shortcuts", FontFamily = UiFont, FontSize = UiFontSize };
+        tabs.Children.Add(generalTab);
+        tabs.Children.Add(keysTab);
+        Grid.SetColumn(tabs, 1);
+        header.Children.Add(tabs);
+        void SelectCategory(bool keyboard, bool focus)
+        {
+            CancelKeyCapture(restoreFocus: false);
+            _settingsKeyboard = keyboard;
+            generalTab.IsChecked = !keyboard;
+            keysTab.IsChecked = keyboard;
+            viewScroll.Visibility = keyboard ? Visibility.Collapsed : Visibility.Visible;
+            keysCol.Visibility = keyboard ? Visibility.Visible : Visibility.Collapsed;
+            SetCaptureHint(keyboard ? CaptureInstructions : "Changes are saved automatically.");
+            if (focus) FocusSettings();
+        }
+        generalTab.Click += (_, _) => SelectCategory(false, true);
+        keysTab.Click += (_, _) => SelectCategory(true, true);
 
         var footer = new Grid
         {
@@ -192,7 +220,7 @@ public static partial class IslandHost
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        footer.Children.Add(SettingsButton("Close  Esc", () => Send(Command.OpenSettings)));
+        footer.Children.Add(SettingsButton("Done", () => Send(Command.OpenSettings)));
         _captureHint = new TextBlock
         {
             Text = CaptureInstructions,
@@ -215,16 +243,19 @@ public static partial class IslandHost
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(split, 0);
-        root.Children.Add(split);
+        root.Children.Add(header);
+        Grid.SetRow(content, 1);
+        root.Children.Add(content);
         var footRule = new Border { Background = Brush(Hairline), Height = 1, VerticalAlignment = VerticalAlignment.Top };
-        Grid.SetRow(footRule, 1);
+        Grid.SetRow(footRule, 2);
         root.Children.Add(footRule);
-        Grid.SetRow(footer, 1);
+        Grid.SetRow(footer, 2);
         root.Children.Add(footer);
         root.IsTabStop = true;
+        SelectCategory(_settingsKeyboard, false);
         return root;
     }
 
@@ -245,16 +276,55 @@ public static partial class IslandHost
         FontSize = UiFontSize,
     };
 
+    private static TextBlock SettingsSection(string title)
+    {
+        var heading = Heading(title);
+        heading.Margin = new Thickness(0, 16, 0, 4);
+        return heading;
+    }
+
+    private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control)
+    {
+        var row = new Grid { Padding = new Thickness(14), ColumnSpacing = 24,
+            Background = Brush(ColorHelper.FromArgb(255, 42, 44, 52)), CornerRadius = new CornerRadius(8) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var name = Label(title);
+        name.Foreground = Brush(Title);
+        name.TextWrapping = TextWrapping.Wrap;
+        var description = Label(detail);
+        description.FontSize = 12;
+        description.TextWrapping = TextWrapping.Wrap;
+        labels.Children.Add(name);
+        labels.Children.Add(description);
+        row.Children.Add(labels);
+        if (control is ToggleSwitch toggle)
+        {
+            toggle.Header = null;
+            toggle.OnContent = "";
+            toggle.OffContent = "";
+            toggle.MinWidth = 0;
+            toggle.Width = 48;
+        }
+        control.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetName(control, title);
+        AutomationProperties.SetHelpText(control, detail);
+        Grid.SetColumn(control, 1);
+        row.Children.Add(control);
+        return row;
+    }
+
     private static ToggleSwitch SettingsToggle(string header, int flag)
     {
         var toggle = new ToggleSwitch
         {
-            Header = header,
             IsOn = HasFlag(flag),
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Foreground = Brush(Title),
         };
+        AutomationProperties.SetName(toggle, header);
         toggle.Toggled += (_, _) =>
         {
             if (_updatingSettingsUi) return;
@@ -326,7 +396,7 @@ public static partial class IslandHost
             if (hwnd != IntPtr.Zero) SetFocus(hwnd);
         }
         if (_capturingRow >= 0) _captureButton?.Focus(FocusState.Keyboard);
-        else if (_keyFilterInput is not null) _keyFilterInput.Focus(FocusState.Keyboard);
+        else if (_settingsKeyboard && _keyFilterInput is not null) _keyFilterInput.Focus(FocusState.Keyboard);
         else _stripFolder?.Focus(FocusState.Programmatic);
     }
 
@@ -346,7 +416,7 @@ public static partial class IslandHost
         if (_capturingRow >= 0) return;
         if (e.Key == VirtualKey.Escape)
         {
-            if (_keyFilter.Length > 0)
+            if (_settingsKeyboard && _keyFilter.Length > 0)
             {
                 SetKeyFilter("");
                 e.Handled = true;
@@ -399,15 +469,17 @@ public static partial class IslandHost
             if (KeyButtons.TryGetValue(row.Row, out Button? existing))
             {
                 SetButtonText(existing, _capturingRow == row.Row ? "Press shortcut…" : KeysForRow(row.Row));
+                if (existing.Parent is Grid existingLine) existingLine.Tag = row.Name + " " + KeysForRow(row.Row);
                 continue;
             }
             int captured = row.Row;
-            var line = new Grid { Margin = new Thickness(12, 2, 20, 2) };
+            var line = new Grid { Margin = new Thickness(0, 4, 0, 4), ColumnSpacing = 16 };
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
             var name = new TextBlock
             {
                 Text = row.Name,
+                TextWrapping = TextWrapping.Wrap,
                 Foreground = Brush(Title),
                 FontFamily = UiFont,
                 FontSize = UiFontSize,
@@ -425,6 +497,7 @@ public static partial class IslandHost
                 if (_cancelCapture is not null) _cancelCapture.Visibility = Visibility.Visible;
                 _captureButton.Focus(FocusState.Keyboard);
             });
+            AutomationProperties.SetName(bind, "Change shortcut for " + row.Name);
             bind.HorizontalAlignment = HorizontalAlignment.Stretch;
             bind.BorderThickness = new Thickness(1);
             bind.BorderBrush = Brush(Hairline);
@@ -538,7 +611,7 @@ public static partial class IslandHost
         _captureButton = null;
         if (previous is not null) SetButtonText(previous, KeysForRow(row));
         if (_cancelCapture is not null) _cancelCapture.Visibility = Visibility.Collapsed;
-        SetCaptureHint(CaptureInstructions);
+        SetCaptureHint(_settingsKeyboard ? CaptureInstructions : "Changes are saved automatically.");
         if (restoreFocus) previous?.Focus(FocusState.Keyboard);
     }
 
@@ -597,3 +670,4 @@ public static partial class IslandHost
         };
     }
 }
+

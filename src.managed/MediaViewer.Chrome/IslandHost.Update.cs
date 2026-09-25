@@ -105,7 +105,7 @@ public static partial class IslandHost
         };
         ToolTipService.SetToolTip(_autoUpdate,
             "Asks GitHub for a newer version at launch and every 6 hours. The request reveals your IP address and app version, nothing about your files.");
-        view.Children.Add(_autoUpdate);
+        view.Children.Add(SettingsRow("Automatic update checks", "Ask GitHub for new versions at launch and every six hours.", _autoUpdate));
     }
 
     private static void RefreshUpdateSettingsRow()
@@ -162,3 +162,4 @@ public static partial class IslandHost
         }
     }
 }
+

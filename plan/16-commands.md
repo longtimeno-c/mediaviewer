@@ -144,7 +144,7 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `Shift+A` | Adjust pane (PR 11; `⇧A` on Mac). Not `E`: that is the clip transport (`Q` `E`, 5c), as this row used to warn. Shows the pane and focuses its first slider; again (or the pane's close button) hides it. Stills only |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
 | `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are big tiles when the folder holds only folders, and one row above the photos when it holds both. Up from the first photo row moves onto that row, Left / Right move among them, `Enter` opens the tile, Down returns to the photos. `/` on that row finds a tile by the start of its name |
-| `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder and selects the folder you just left. The path stays on screen, including while a photo is open; a long middle collapses until asked for. Not bound to Backspace, which is Previous |
+| `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder and selects the folder you just left. The path stays on screen, including while a photo is open; a long middle opens a menu of hidden ancestors. Labelled Up and Root buttons remain outside the scrolling trail on both hosts; Root opens the first breadcrumb (the highest folder reached). Not bound to Backspace, which is Previous |
 | `Ctrl+Left` / `Ctrl+Right` (`⌘←` `⌘→` on Mac) | Previous / next folder beside the one open (PR 26), while a photo is open. The gallery keeps plain Left / Right for its tiles |
 | `Ctrl+Shift+E` | Folder tree show/focus (PR 9). Windows 2026-09-24: focuses the tree; Up / Down walk it, Right / Left open and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a second `Esc` closes it |
 | `O` | On-canvas info overlay (filename, index, exposure triangle once PR 9 can fill it) |
@@ -448,3 +448,4 @@ cross the line.
 
 Pixels still do not cross ([14-abi.md](14-abi.md)). `?` is chrome.
 )
+

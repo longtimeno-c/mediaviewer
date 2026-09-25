@@ -53,6 +53,32 @@ jobs:
       - name: Licence policy
         run: ./tools/licence-check.ps1
 
+  # Build both chrome hosts directly, without waiting for the codec toolchain.
+  # SwiftPM's static library needs the bridge declarations, not a linked core.
+  mac-chrome:
+    name: SwiftUI chrome
+    if: github.event_name != 'schedule'
+    runs-on: macos-14
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --package-path src.swift/MediaViewerChrome -c release
+
+  windows-chrome:
+    name: WinUI chrome
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet build src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj -c Release
+
   mac-packaging:
     name: Release tooling and macOS bundle policy
     runs-on: ubuntu-latest
@@ -391,3 +417,4 @@ jobs:
           name: broken-corpus-full-${{ github.run_id }}
           path: broken-dump/
           if-no-files-found: ignore
+

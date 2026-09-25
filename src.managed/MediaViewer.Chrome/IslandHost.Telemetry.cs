@@ -150,7 +150,7 @@ public static partial class IslandHost
             "Decode failures by format, crash-free sessions, frame timing and hardware-decode "
             + "availability. Never a path, filename, thumbnail or EXIF. Turning it off deletes "
             + "the install id and anything not yet sent.");
-        view.Children.Add(_telemetry);
+        view.Children.Add(SettingsRow("Send anonymous diagnostics", "Optional. Turning this off deletes the install ID and unsent diagnostics.", _telemetry));
     }
 
     private static void RefreshTelemetrySettingsRow()
@@ -158,3 +158,4 @@ public static partial class IslandHost
         if (_telemetry is not null) _telemetry.IsOn = HasFlag(SettingFlag.Telemetry);
     }
 }
+
