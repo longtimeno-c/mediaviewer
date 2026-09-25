@@ -253,6 +253,91 @@ folder or network share treated as a first-class source.
 folders skips them with library scope on. Verify-a-folder flags a file flipped by one bit on
 disk and passes an untouched one.
 
+## Implementation notes (2026-09-24)
+
+Built on a branch ahead of PRs 11–15 (roadmap state in [10](10-roadmap.md#milestone-g--import-add-on-pr-1619-both-platforms)).
+Where it lives:
+
+| Piece | Code |
+|---|---|
+| Verified copy, BLAKE3, file / volume ports (both OSes) | `src/io/verified_copy.*`, `content_hash.*`, `file_port*.cpp`, `volume_{win,mac}.cpp` |
+| F8 across volumes, verify-before-delete | `src/io/file_ops_win.cpp`, `src/shell/main_mac.mm` |
+| Add-on host: manifest check, store, loader, host table | `src/addon/`, C header `mediaviewer_addon.h` |
+| The Import add-on (`mv_import`, links SQLite only) | `src/addons/import/`, C header `mediaviewer_import.h` (`mv.import.1`) |
+| Windows chrome | `IslandHost.Addons.cs` (Settings, download, hint, loading), `MediaViewer.Import.Chrome` (the window), `abi/addon_abi.cpp` |
+| Mac chrome | `AddonsView.swift` (Settings, download, hint), `src.swift/ImportChrome` → `Import.bundle`, `src/shell/addons_mac.mm` |
+| Packing and signing | `tools/package/addon-pack.py`, cross-checked by `tools/addon-verify` |
+| Tests | `tests/test_import_engine.cpp`, `test_verified_copy.cpp`, `test_addon_manifest.cpp`, `test_import_naming.cpp`, `test_json.cpp`, `test_content_hash.cpp`, `tools/package/test_addon_pack.py`; the headless build is `cmake/portable` |
+
+Calls made while building it (none reverses a D-decision; logged in [12](12-decision-log.md)):
+
+- **One signing key for add-ons on both platforms: the update-manifest Ed25519 key.** The C++ core
+  checks it (libsodium), so Windows and Mac share one verifier; the Mac bundle is additionally
+  Developer ID-signed for library validation. The same key is pinned in `src/addon/manifest.cpp`
+  and `UpdateKeys.cs`; a test checks they agree.
+- **Downloads are two fixed release assets per platform** — `mediaviewer-addon-import-<platform>.json`
+  (+ `.sig`) and the `.zip` it names — fetched by the chrome; the core verifies the manifest before
+  the archive is requested, the archive's size and SHA-256 before it is opened, and every file (and
+  that there is nothing extra) before install **and at every load**.
+- **Card memory and the library index key on the volume-relative path**, so "new since last import"
+  holds whether the card is scanned from its root or a subfolder.
+- **A unit is all-or-nothing.** If one member fails, the members already written for that unit are
+  removed and the whole unit is reported. A crash between members is resumable: verified members
+  stay done.
+- **Type folders keep units together**: a RAW+JPEG pair goes under `RAW`, a clip under `Video`.
+- **`{seq}` is committed when a job starts**, so a cancelled import leaves a gap, never a repeat.
+- **"One writer per physical destination"** is a per-device lock held for each file; two cards to one
+  disk alternate file by file instead of interleaving writes.
+- **Interrupted, not failed**: when a copy fails and the source or destination root is gone, the job
+  stops as *interrupted* with the rest pending; the app lists it at next open with **Resume**.
+- **Temporaries are `<final>.mvtmp`** (then `.mvtmp2` …), removed on cancel, failure and resume.
+- **Duplicates are decided per destination.** A unit whose content the main destination (or, at
+  library scope, the library) already holds is skipped there and reported with what it matched,
+  but a backup destination that lacks it still gets it, so the backup mirrors the card. It follows
+  the selection rules as if it were not a duplicate. A copy on the backup drive does not count as
+  "in the library" for the main destination.
+- **A member is all-or-nothing across destinations too.** If one destination fails, the copy the
+  other destination verified is removed; resume after a crash between the two renames keeps the
+  destination that holds matching bytes and copies only the missing one.
+- **No add-on downgrades.** Install refuses a signed manifest older than a working installed
+  version; the same version again is a repair. An installed copy that is tampered or needs a newer
+  app does not block an older one.
+- **The Mac card watch uses DiskArbitration's mount callbacks** (the C API NSWorkspace sits on) so
+  `io/` stays free of Objective-C; the base app's one-time hint uses NSWorkspace itself.
+- **Key clash in the window:** plan text gives Enter to both "start" and "open in viewer". Enter
+  starts unless a tile has focus (then it opens that file); Ctrl+Enter / ⌘Return always starts.
+- **The Mac add-on is universal** (arm64 + x86_64, platform `macos`), following D9's 2026-09-24
+  amendment for the app: both architectures' `addons/import` trees are joined with
+  `tools/mac/lipo_merge.py` before signing and packing. Like the app on Intel, it builds but is
+  unmeasured there.
+- **Priority:** background waits between buffers while the present loop is presenting (Windows
+  `mv_present_set_busy` from the lab, Mac `g_present_busy` from the Metal loop); fast never waits.
+
+Known gaps against this spec, owed before it merges:
+
+- **Clip tiles show ▶ without a poster** in the Import grid (thumbnails come from the stills cache;
+  posters need the player, which the add-on host does not reach yet).
+- **Mac finish notification is a beep** until the app asks for notification permission
+  (UNUserNotificationCenter); Windows uses an app notification where the unpackaged app has an
+  AUMID, else the window's summary.
+- **The Import window is not yet measured** at 2,000 files; the grid uses virtualising containers
+  (GridView / LazyVGrid) and lazy thumbnails, but "scrolls without a hitch" is a hardware line.
+
+PR 16–19 verify lines, where each stands:
+
+| Verify line | State |
+|---|---|
+| Base install byte-identical with the add-on absent; no Import command | By construction (the add-on is a separate artefact; commands gated) and unit-tested (store writes nothing, commands absent from the table); the install-tree diff is a release-machine check |
+| Tampered file or manifest refused; request carries no identifier | Tested in C++ and against the Python packer; the GET is fixed URLs with no query or cookies |
+| Every destination hash matches; time within 10 % of the OS copy (64 GB) | Hash: tested. Timing: **hardware** |
+| Re-import writes zero bytes, destination not re-read; renamed files skipped; one changed byte → safe name | Tested (copy and hash counters) |
+| Fault injection detected, retried, reported; unplug + resume re-copies only unverified; F8 never removes an unverified source | Tested (fault hook, card pulled mid-job); F8 path is the same verified copy. Real unplug: **hardware** |
+| Both present-loop gates hold while importing | **Hardware**, both platforms |
+| Insert → window → one key imports → eject; closing keeps it running; ETA within 20 % at 10 s | Written on both hosts; **hardware** |
+| One card read → two verified copies | Tested (one copy call and one read per file) |
+| Rename identical on Windows and Mac; auto-import only for its card, never deletes; preview matches disk | Tested (pure naming functions; auto-import; preview vs files on disk) |
+| Library scope skips files kept elsewhere; verify-a-folder flags a one-bit flip | Tested |
+
 ## Not in Import
 
 Any cloud or upload; a catalogue, albums or keywords database; near-duplicate or burst

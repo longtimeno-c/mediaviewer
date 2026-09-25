@@ -154,6 +154,33 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `appcast.xml` | Signed Sparkle feed |
 | `SHA256SUMS.txt` | Download checksums |
 
+Add-ons (Milestone G, [plan/18](plan/18-import.md)) publish beside the app on the same release,
+one set per platform, signed with the **same** Ed25519 key as the update manifest:
+
+| Asset | Purpose |
+|---|---|
+| `mediaviewer-addon-import-<platform>.json` and `.json.sig` | Signed add-on manifest (every file's SHA-256, size, licence; host API range; the archive) |
+| `mediaviewer-addon-import-<platform>.zip` | The add-on's files and nothing else |
+
+`<platform>` is `win-x64` or `macos` (one universal add-on, like the app). Build the app, then (the key file holds the private
+key, hex; never commit it or echo it into a log):
+
+```
+python3 tools/package/addon-pack.py pack --platform win-x64 --src build/addons/import/Release \
+    --version 1.0.0 --key <key-file> --out dist/
+python3 tools/package/addon-pack.py verify dist/mediaviewer-addon-import-win-x64.json \
+    --public-key 0451bfecfb6a26d9058fb09cfa7a9305dcf1cea7c87221e9185b0038b1cc908c
+```
+
+On the Mac, build on both architectures and join the add-on trees as for the app
+(`python3 tools/mac/lipo_merge.py --arm64 build-arm64/addons/import --x86_64 build-x64/addons/import
+--out build/addons/import`), then `codesign` `build/addons/import/libmv_import.dylib` and
+`Import.bundle` with the app's Developer ID (same Team ID: the app loads them under library validation) **before** packing, pack
+with `--platform macos` (the archive is made with `ditto`, so signatures survive), and
+notarize the zip like the app's. The add-on version is `MV_IMPORT_VERSION` in `cmake/import.cmake`.
+The release workflow does not pack add-ons yet; until it does this is a manual step, and an
+app release without add-on assets simply offers no Import download.
+
 Both updaters use this repository's `/releases/latest/download/`. Keep both feeds on every
 stable release: installers alone do not update existing users. Smoke-test an install on
 each platform and an upgrade from the previous stable before announcing a release.

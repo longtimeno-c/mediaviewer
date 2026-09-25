@@ -11,6 +11,7 @@
 #include <string>
 
 #include "io/collision_name.h"
+#include "io/verified_copy.h"
 
 namespace mv::io {
 namespace {
@@ -46,13 +47,6 @@ std::wstring_view file_name_of(std::wstring_view path) noexcept {
 
 bool path_taken(const std::wstring& path) noexcept {
   return ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-}
-
-bool file_size(const std::wstring& path, ULONGLONG& out) noexcept {
-  WIN32_FILE_ATTRIBUTE_DATA data{};
-  if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return false;
-  out = (static_cast<ULONGLONG>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
-  return true;
 }
 
 // Whether `file` already lives in `dir` (full paths, ASCII case and trailing
@@ -104,15 +98,17 @@ attempt move_to(const std::wstring& src, const std::wstring& dest) noexcept {
   if (exists_error(e)) return attempt::exists;
   if (e != ERROR_NOT_SAME_DEVICE) return attempt::failed;
 
-  // Across volumes: copy, check the copy is whole, and only then let the
-  // source go. Any failure leaves the source and removes the copy.
-  const attempt copied = copy_to(src, dest);
-  if (copied != attempt::done) return copied;
-  ULONGLONG src_size = 0;
-  ULONGLONG dest_size = 0;
-  if (!file_size(src, src_size) || !file_size(dest, dest_size) || src_size != dest_size) {
-    ::DeleteFileW(dest.c_str());
-    return attempt::failed;
+  // Across volumes: a verified copy -- hashed while read, flushed, read back
+  // uncached, compared, renamed into place -- and only then let the source go
+  // (plan/18: F8 never removes an unverified source). Any failure leaves the
+  // source where it was and no partial copy behind.
+  const std::string targets[] = {utf8_from_wide(dest)};
+  const auto copied = verified_copy(utf8_from_wide(src), targets, copy_options{});
+  if (!copied) return attempt::failed;
+  switch (copied->targets[0].outcome) {
+    case copy_target_outcome::verified: break;
+    case copy_target_outcome::name_taken: return attempt::exists;
+    default: return attempt::failed;
   }
   if (!::DeleteFileW(src.c_str())) {
     // The source is locked or read-only: a move that leaves two copies is not

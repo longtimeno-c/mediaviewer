@@ -58,6 +58,7 @@
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
+#include "core/json.h"
 #include "shell/marks.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
@@ -1879,6 +1880,24 @@ void chrome_on_command(void* ctx, int command, float arg) {
       apply_view_state(app);
       return;
     }
+    case mv::shell::chrome_cmd_open_path: {
+      // Import's Enter: open a card file in the viewer (culling before
+      // copying). The path is parked like the tree's (take_tree_path).
+      const std::string path = app->chrome.take_tree_path();
+      if (path.empty()) return;
+      const int n = ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+      if (n <= 1) return;
+      std::wstring wide(static_cast<std::size_t>(n), 0);
+      ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), n);
+      wide.resize(static_cast<std::size_t>(n) - 1);
+      open_path(app, wide);
+      return;
+    }
+    case mv::shell::chrome_cmd_addon_state:
+      // The chrome installed, loaded, or removed the Import add-on.
+      mv::shell::set_addon_commands_available(arg != 0.0f);
+      app->chrome.set_command_table(mv::shell::describe_commands());
+      return;
     case mv::shell::chrome_cmd_export:
       app->export_choice = static_cast<std::int32_t>(arg);
       start_export(app, mv::shell::unpack_export(app->export_choice));
@@ -2840,6 +2859,33 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case open_settings:
       set_settings_open(app, !app->settings_open);
       return true;
+    // Milestone G: Import's commands exist only while it is installed; with
+    // it absent the key falls through as if unbound (plan/18).
+    case open_import: {
+      if (!mv::shell::addon_commands_available()) return false;
+      // The viewer's marks ride along for the window's "Marked in viewer"
+      // selection (plan/18 "Selection"). None marked: an empty list.
+      mv::json::writer w;
+      w.begin_array();
+      if (!app->marks.empty()) {
+        for (const std::string& t : expand_pair_targets(app, app->marks.targets({}))) w.string(t);
+      }
+      w.end_array();
+      app->chrome.show_import(0, w.str());
+      return true;
+    }
+    case import_now: {
+      if (!mv::shell::addon_commands_available()) return false;
+      const auto targets =
+          expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+      if (targets.empty()) return false;
+      mv::json::writer w;
+      w.begin_array();
+      for (const std::string& t : targets) w.string(t);
+      w.end_array();
+      app->chrome.show_import(1, w.str());
+      return true;
+    }
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;

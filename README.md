@@ -223,7 +223,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
 | **Video trim** | Cut clips losslessly at keyframes, or re-encode with hardware encoders; extract a frame or the audio |
 | **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
-| **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume |
+| **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. Written on a branch ([plan/18](plan/18-import.md)); platform builds and hardware verify still owed |
 | **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
 | **Voice search** (optional add-on) | Speak the query; speech runs on-device |
 | **macOS** | The same core with a native Metal and SwiftUI app; it already builds, browses and plays video, and is being brought to parity |
@@ -649,6 +649,17 @@ dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaView
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
+
+# Milestone G: the Import add-on's suite (built with the core, both platforms)
+ctest --test-dir build -C Release -R import_ --output-on-failure
+
+# ...and the same engine headless on Linux or any POSIX machine (the
+# portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
+# tools/portable/vcpkg.json, or the system):
+#   cmake -S cmake/portable -B build-portable \
+#     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+#     -DVCPKG_MANIFEST_DIR=tools/portable
+#   cmake --build build-portable && ctest --test-dir build-portable
 
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only

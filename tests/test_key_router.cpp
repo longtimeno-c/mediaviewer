@@ -669,7 +669,22 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     pos = end + 1;
     ++lines;
   }
-  REQUIRE(lines >= default_bindings().size());
+  // Import's two rows are absent while the add-on is (plan/18).
+  REQUIRE(lines + 2 >= default_bindings().size());
+}
+
+TEST_CASE("Import's commands exist only while the add-on is installed", "[shell][router]") {
+  using mv::shell::command_id;
+  mv::shell::set_addon_commands_available(false);
+  const std::string absent = mv::shell::describe_commands();
+  REQUIRE(absent.find("\tImport") == std::string::npos);
+  mv::shell::set_addon_commands_available(true);
+  const std::string present = mv::shell::describe_commands();
+  REQUIRE(present.find("\tImport…\tCtrl+Shift+I\t") != std::string::npos);
+  REQUIRE(present.find("\tImport marked now\tCtrl+Shift+F7\t") != std::string::npos);
+  mv::shell::set_addon_commands_available(false);
+  REQUIRE(mv::shell::is_addon_command(command_id::open_import));
+  REQUIRE_FALSE(mv::shell::is_addon_command(command_id::copy_to));
 }
 
 TEST_CASE("Esc closes an open popup before anything else", "[shell][router]") {

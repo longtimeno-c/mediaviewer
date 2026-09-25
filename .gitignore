@@ -98,3 +98,8 @@ PR5UInotes.txt
 *.cer
 *.certSigningRequest
 *.p12
+
+# Stray tool output that must never be committed: pip wheels downloaded into
+# the tree, and the registry Mono's msbuild writes beside a project on Linux.
+*.whl
+.mono/

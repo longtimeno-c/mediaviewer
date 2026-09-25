@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/present_lab_mac.h"
+#include "shell/present_busy.h"
 #include "shell/video_report.h"
 #include "shell/edit_view.h"
 #include "shell/dino_draw.h"
@@ -1212,6 +1213,7 @@ void present_lab_mac::render_thread_main() noexcept {
         req.elapsed_seconds = elapsed;
         req.last_input_time = last_input_time_;
         const auto decision = gfx::decide_present(req);
+        mv::shell::g_present_busy.store(decision.live, std::memory_order_relaxed);
 
         CAMetalDisplayLink* live_link = (__bridge CAMetalDisplayLink*)display_link_;
         if (!decision.wants_frame) {

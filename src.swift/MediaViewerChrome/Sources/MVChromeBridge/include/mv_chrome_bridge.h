@@ -245,6 +245,24 @@ int32_t mv_chrome_export_last_choice(void);
 void mv_chrome_export_confirm(int32_t packed);
 void mv_chrome_export_cancel(void);
 
+// Milestone G add-ons (plan/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
+// Strings follow mv_chrome_command_table's rule: returns the length needed,
+// writes at most `size` bytes NUL-terminated. [worker-thread] where noted:
+// those hash files and must not run on the main actor.
+int32_t mv_addons_state_json(char* buf, int32_t size);                 // [worker]
+int32_t mv_addons_check_manifest(const uint8_t* manifest, int32_t manifest_len,
+                                 const uint8_t* sig, int32_t sig_len, char* buf, int32_t size);
+int32_t mv_addons_sha256(const char* path, char* buf, int32_t size);   // [worker]
+int32_t mv_addons_make_staging(char* buf, int32_t size);
+bool mv_addons_install(const char* staged_dir);                        // [worker]
+bool mv_addons_load(void);                                             // [main-thread]
+bool mv_addons_remove(bool keep_data);                                 // [main-thread]
+bool mv_addons_loaded(void);
+void mv_addons_open_import(void);
+int32_t mv_addons_status(char* buf, int32_t size);
+bool mv_addons_hint_pending(void);
+void mv_addons_hint_done(bool never_again);
+
 // ---- PR 11: adjust pane (plan/10 "SwiftUI adjust pane", plan/07) -------------
 //
 // The twin of the Windows adjust pane (IslandHost.Adjust.cs). The host owns the

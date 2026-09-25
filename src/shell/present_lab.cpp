@@ -16,6 +16,8 @@
 #include <cstring>
 #include <new>
 
+#include <mediaviewer/mediaviewer_addon.h>
+
 #include "abi/native.h"
 #include "codec/format.h"
 #include "core/trace.h"
@@ -992,6 +994,9 @@ void present_lab::render_thread_main() noexcept {
     const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
                       pan_tail || blinkies || anim_live_ || fading;
     live_presenting_ = live;
+    // plan/18 "Priority": a background import waits between buffers while
+    // this loop is presenting frames. One relaxed store; never blocks.
+    mv_present_set_busy(live ? 1u : 0u);
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || options_.present_when_inactive ||
                           snapshot.window_active);

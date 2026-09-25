@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <vector>
 
 #include "core/trace.h"
 
@@ -264,6 +265,9 @@ expected chrome_host::load() noexcept {
   // PR 11, optional the same way.
   show_adjust_pane_ = get_entry(L"ShowAdjustPane");
   set_adjust_view_ = get_entry(L"SetAdjustView");
+
+  // Optional (Milestone G): a chrome without the Import hand-off still loads.
+  show_import_ = get_entry(L"ShowImport");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -725,6 +729,17 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   args.kind = static_cast<std::int32_t>(kind);
   args.mode_mask = mode_mask;
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) noexcept {
+  if (!attached_ || !show_import_) return;
+  // { int32 kind; int32 byte count; UTF-8 JSON }, mirrored by IslandHost.ShowImport.
+  std::vector<std::uint8_t> buf(8 + paths_json.size());
+  const auto len = static_cast<std::int32_t>(paths_json.size());
+  std::memcpy(buf.data(), &kind, 4);
+  std::memcpy(buf.data() + 4, &len, 4);
+  if (!paths_json.empty()) std::memcpy(buf.data() + 8, paths_json.data(), paths_json.size());
+  (void)show_import_(buf.data(), static_cast<std::int32_t>(buf.size()));
 }
 
 void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {
