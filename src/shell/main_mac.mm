@@ -1408,6 +1408,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // _options.open_path, the same slot argv uses.
   BOOL _launched;
   BOOL _askedDefaultViewer;
+  // The setup sheet waits for the installer lookup (plan/13): a mounted
+  // MediaViewer disk or a left-over .dmg adds the eject-and-Trash checkbox.
+  BOOL _installerChecked;
+  mv::shell::installer_leftover _installer;
 
   // PR 9 (plan/06, plan/16). `_meta` owns every metadata read; the pane, the info
   // overlay and the AF quads all read `_metaRecord`, so toggling any of them is a
@@ -1825,8 +1829,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if (_options.open_path.empty()) _options.open_path = resume.fileSystemRepresentation;
   }
   _askedDefaultViewer = [defaults boolForKey:@"MVAskedDefaultViewer"];
+  _installerChecked = _askedDefaultViewer;
+  if (!_askedDefaultViewer) {
+    mv::shell::find_installer_leftover(^(mv::shell::installer_leftover found) {
+      self->_installer = found;
+      self->_installerChecked = YES;
+    });
+  }
 #else
   _askedDefaultViewer = YES;  // the lab never asks
+  _installerChecked = YES;
 #endif
   _launched = YES;
   if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
@@ -1984,7 +1996,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (void)refreshFolderIfChanged {
-  if (!_askedDefaultViewer && _options.soak_seconds <= 0.0) {
+  if (!_askedDefaultViewer && _installerChecked && _options.soak_seconds <= 0.0) {
     [self askDefaultViewerOnce];
   }
   // The transport strip belongs to a clip: shown while one is on screen (the
@@ -3084,6 +3096,8 @@ enum MvMenuCmd : NSInteger {
 // First-launch setup: the default-viewer checkbox starts on, but is applied
 // only after Continue. Existing choices are preserved across updates; the app
 // menu keeps the command available later. The canvas keeps presenting.
+// After a drag install a second checkbox, also on, ejects the MediaViewer
+// disk if it is still mounted and moves the .dmg to the Trash (plan/13).
 - (void)askDefaultViewerOnce {
   if (!self.window || self.window.attachedSheet) return;
   _askedDefaultViewer = YES;
@@ -3099,14 +3113,56 @@ enum MvMenuCmd : NSInteger {
   makeDefault.state = NSControlStateValueOn;
   [makeDefault sizeToFit];
   alert.accessoryView = makeDefault;
+
+  const mv::shell::installer_leftover leftover = _installer;
+  NSButton* tidy = nil;
+  if (leftover.any()) {
+    NSString* dmg = leftover.image.empty() ? nil : @(leftover.image.c_str()).lastPathComponent;
+    NSString* title =
+        leftover.mount.empty()
+            ? [NSString stringWithFormat:@"Move the installer (%@) to the Trash", dmg]
+        : dmg == nil ? @"Eject the MediaViewer installer disk"
+                     : [NSString stringWithFormat:@"Eject the installer disk and move %@ to the Trash", dmg];
+    tidy = [NSButton checkboxWithTitle:title target:nil action:nullptr];
+    tidy.state = NSControlStateValueOn;
+    [tidy sizeToFit];
+    NSStackView* stack = [NSStackView stackViewWithViews:@[ makeDefault, tidy ]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 8;
+    stack.frame = NSMakeRect(0, 0, std::max(makeDefault.frame.size.width, tidy.frame.size.width),
+                             makeDefault.frame.size.height + tidy.frame.size.height + 8);
+    alert.accessoryView = stack;
+  }
   [alert addButtonWithTitle:@"Continue"];
   [alert addButtonWithTitle:@"Not Now"];
   [alert beginSheetModalForWindow:self.window
                 completionHandler:^(NSModalResponse response) {
-                  if (response == NSAlertFirstButtonReturn && makeDefault.state == NSControlStateValueOn) {
+                  const bool go = response == NSAlertFirstButtonReturn;
+                  if (go && makeDefault.state == NSControlStateValueOn) {
                     [self makeDefaultViewer];
                   }
+                  if (go && tidy != nil && tidy.state == NSControlStateValueOn) {
+                    mv::shell::clean_up_installer(leftover, ^(bool ok) {
+                      if (!ok) [self installerCleanUpFailed];
+                    });
+                  } else {
+                    mv::shell::forget_installer_leftover();
+                  }
                 }];
+}
+
+// Finder or a Terminal can hold the disk; say so once, and leave it be.
+- (void)installerCleanUpFailed {
+  if (!self.window || self.window.attachedSheet) return;
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"The installer could not be tidied up";
+  alert.informativeText =
+      @"The MediaViewer disk is still in use, or the installer could not be moved to the "
+      @"Trash. Eject the disk in Finder and drag the .dmg to the Trash yourself; "
+      @"MediaViewer is installed either way.";
+  [alert addButtonWithTitle:@"OK"];
+  [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
 // The type list is read back from our own Info.plist, so the prompt, Finder's

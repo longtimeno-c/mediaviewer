@@ -78,6 +78,9 @@ Pages, in order. Do not add more.
    The default-app setup checkbox is **on** (user request, 2026-09-24). It opens Windows
    Default Apps for the user to confirm associations for supported photos and videos;
    unticking it skips that step. Silent installs do not open Settings.
+   **Delete the installer** (`MediaViewer-x.y.z-Setup.exe`) is also **on** (user request,
+   2026-09-25): once the wizard has closed, the downloaded setup file is deleted. Unticking
+   it keeps the file; silent installs never delete it.
 
 **Not in the wizard** — these are in-app, once, later:
 
@@ -148,6 +151,14 @@ First launch shows the default-viewer setup sheet with **Use MediaViewer for all
 photos and videos** checked (user request, 2026-09-24). Continue applies the selected
 choice through macOS; unticking it or Not Now leaves existing defaults alone. The choice
 is not shown again on updates, and the app menu keeps the command available later.
+
+When our installer disk is still mounted after a drag install, or the `.dmg` a
+move-to-Applications relaunch came from is still there, the same sheet adds **Eject the
+installer disk and move MediaViewer-x.y.z.dmg to the Trash**, also checked (user request,
+2026-09-25; the twin of the Windows Finish page's delete box). Continue ejects, then moves the
+`.dmg` to the Trash (never a permanent delete); a disk in use is left mounted with a one-line
+note. The lookup (`hdiutil info`) runs off the main thread, and nothing is offered while the
+app itself is running from, or translocated off, the disk image.
 
 **Not in the install** — in-app and once, separately:
 

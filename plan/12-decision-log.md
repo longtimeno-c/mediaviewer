@@ -2314,3 +2314,17 @@ the owner split it out.
   this morning's model unchanged: one process, a window per viewer, grouped by the OS.
 - **Verify lines amended:** macOS "a second open of a file goes to the running instance as a tab"
   becomes "…goes to the running instance and opens in its window"; Windows gains the same check.
+
+## 2026-09-25 — First install tidies up its installer, both platforms
+
+The owner asked that installing leave no installer behind. This adds one checkbox to each
+first-install finish in plan/13 and no page to either. **Windows:** the Inno Finish page gets
+**Delete the installer (…-Setup.exe) when Setup closes**, on; a hidden `cmd` deletes
+`{srcexe}` once Setup has exited (the file is locked until then), and silent installs skip it.
+**Mac:** the first-launch setup sheet gets **Eject the installer disk and move the .dmg to the
+Trash**, on, shown only when the disk is still mounted or the `.dmg` a move-to-Applications
+relaunch remembered is still there. It uses the Trash rather than a delete because that is how a
+Mac user throws a `.dmg` away; Windows deletes because Setup has no Recycle Bin call without
+PowerShell. A disk image cannot run code when the app is dragged out of it, so the Mac check
+lives in the app, not the image. Nothing is offered while the app is running from, or
+translocated off, the image.

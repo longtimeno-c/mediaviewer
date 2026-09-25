@@ -121,6 +121,14 @@ Filename: "{#MvRepoUrl}"; Description: "Visit the project on GitHub"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
 Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-2.0-or-later)"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
+; Deletes the downloaded setup .exe once this wizard has closed (user request,
+; 2026-09-25; the Mac twin is the setup sheet's eject-and-Trash box). Pre-ticked;
+; unticking keeps the file. The entry itself runs nothing: its BeforeInstall
+; records the tick, and DeinitializeSetup starts the delete, because the file is
+; locked until Setup has exited. Silent installs never delete it.
+Filename: "{cmd}"; Parameters: "/c exit 0"; \
+  Description: "Delete the installer ({code:InstallerFileName}) when Setup closes"; \
+  Flags: nowait postinstall skipifsilent runhidden; BeforeInstall: NoteDeleteInstaller
 
 [Icons]
 ; Both point at the root stub, which plan/13 makes the stable target: it never
@@ -284,6 +292,9 @@ Type: dirifempty; Name: "{app}"
 const
   VelopackUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaViewer';
 
+var
+  DeleteInstaller: Boolean;
+
 procedure RemoveVelopackUninstallEntry;
 begin
   if RegKeyExists(HKEY_CURRENT_USER, VelopackUninstallKey) then
@@ -312,6 +323,34 @@ begin
   if ResultCode <> 0 then
     RaiseException('The MediaViewer payload installer failed with code '
                    + IntToStr(ResultCode) + '.');
+end;
+
+(* The Finish page's "Delete the installer" box (see [Run]). *)
+function InstallerFileName(Param: String): String;
+begin
+  Result := ExtractFileName(ExpandConstant('{srcexe}'));
+end;
+
+procedure NoteDeleteInstaller;
+begin
+  DeleteInstaller := True;
+end;
+
+(* Setup's own .exe stays locked until this process and its launcher have
+   exited, so a hidden cmd retries for up to ~20 s and stops as soon as the
+   file is gone. Only runs after the box was ticked on a finished install. *)
+procedure DeinitializeSetup;
+var
+  Installer: String;
+  ResultCode: Integer;
+begin
+  if not DeleteInstaller then
+    Exit;
+  Installer := ExpandConstant('{srcexe}');
+  Exec(ExpandConstant('{cmd}'),
+       '/c for /l %i in (1,1,10) do (ping -n 3 127.0.0.1 >nul & del /f /q "' + Installer +
+       '" 2>nul & if not exist "' + Installer + '" exit /b 0)',
+       '', SW_HIDE, ewNoWait, ResultCode);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
