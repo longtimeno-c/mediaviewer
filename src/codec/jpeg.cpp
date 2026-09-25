@@ -13,6 +13,13 @@ namespace {
 
 constexpr std::uint32_t kMaxDim = 65535;
 constexpr std::uint64_t kMaxPixels = 256ull * 1000ull * 1000ull;
+// libjpeg's own working memory, separate from the raster we allocate. It is
+// sized from the *source* dimensions inside jpeg_start_decompress, before our
+// output-size check can run, so a 292-byte header declaring 56528x18759 cost
+// 2.1 GB at 1:1 and 6.9 GB at 1/4 (fuzz_jpeg, CI run 36159301248). With a
+// budget libjpeg fails the decode instead. 512 MB covers a 160 MP progressive
+// 4:2:0 file at every scale (measured); baseline files need far less.
+constexpr long kMaxLibjpegMemory = 512L * 1024 * 1024;
 constexpr int kMaxIccChunks = 256;
 
 struct jpeg_error_trap {
@@ -112,6 +119,7 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   }
 
   jpeg_create_decompress(&cinfo);
+  cinfo.mem->max_memory_to_use = kMaxLibjpegMemory;
   jpeg_mem_src(&cinfo, const_cast<unsigned char*>(bytes.data()),
                static_cast<unsigned long>(bytes.size()));
   jpeg_save_markers(&cinfo, JPEG_APP0 + 2, 0xFFFF);
@@ -222,6 +230,7 @@ result<jpeg_size> jpeg_dimensions(std::span<const std::uint8_t> bytes) {
   }
 
   jpeg_create_decompress(&cinfo);
+  cinfo.mem->max_memory_to_use = kMaxLibjpegMemory;
   jpeg_mem_src(&cinfo, const_cast<unsigned char*>(bytes.data()),
                static_cast<unsigned long>(bytes.size()));
   if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {

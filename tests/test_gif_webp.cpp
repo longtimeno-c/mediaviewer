@@ -255,6 +255,37 @@ TEST_CASE("WebP hostile canvas dimensions are refused before allocation", "[code
   CHECK(anim.error() == mv::status::unsupported_format);
 }
 
+TEST_CASE("an animated WebP canvas is capped below the still limit", "[codec][webp]") {
+  // fuzz_webp: a 1 KB animation declaring 15359x16383 (251 MP, under the still
+  // limit) reached 3.5 GB — libwebp's canvas, its previous-frame copy, and the
+  // frame copied out. Animations are capped at a quarter of the still limit.
+  auto bytes = make_animated_webp(0);
+  REQUIRE(std::memcmp(bytes.data() + 12, "VP8X", 4) == 0);
+  // VP8X: canvas width and height minus one, 24-bit little endian, at 24 and 27.
+  const std::uint32_t w1 = 15359 - 1, h1 = 16383 - 1;
+  for (int i = 0; i < 3; ++i) {
+    bytes[24 + i] = static_cast<std::uint8_t>(w1 >> (8 * i));
+    bytes[27 + i] = static_cast<std::uint8_t>(h1 >> (8 * i));
+  }
+
+  auto still = decode_webp(bytes);
+  REQUIRE_FALSE(still);
+  CHECK(still.error() == mv::status::unsupported_format);
+
+  auto anim = open_webp_animation(std::make_shared<const std::vector<std::uint8_t>>(bytes));
+  REQUIRE_FALSE(anim);
+  CHECK(anim.error() == mv::status::unsupported_format);
+}
+
+TEST_CASE("a still WebP decodes straight to RGBA with its alpha", "[codec][webp]") {
+  auto still = decode_webp(make_still_webp());
+  REQUIRE(still);
+  REQUIRE(still->width == 2);
+  REQUIRE(still->height == 2);
+  REQUIRE(still->rgba.size() == 2u * 2u * 4u);
+  REQUIRE(pixel(still->rgba, 2, 1, 1) == std::array<std::uint8_t, 4>{0, 255, 0, 255});
+}
+
 TEST_CASE("an animation source yields one frame at a time and rewinds", "[codec][anim]") {
   // 200 frames, alternating red / green: decoded on demand, never all at once.
   std::vector<gif_frame_spec> frames(200);

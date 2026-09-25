@@ -30,6 +30,16 @@ std::string parent_rel(std::string_view rel) {
 
 bool is_sep(char c) { return c == '/' || c == '\\'; }
 
+// A path with either separator, for matching a caller's path against what the
+// walk returns: on Windows `C:\card\DCIM/100CANON/x.JPG` and the walk's
+// all-backslash spelling are the same file.
+std::string sep_key(std::string p) {
+  for (char& c : p) {
+    if (c == '\\') c = '/';
+  }
+  return p;
+}
+
 // `path` relative to `root`, '/'-separated; the file name if not under it.
 std::string relative_to(const std::string& root, const std::string& path) {
   std::size_t n = root.size();
@@ -211,7 +221,7 @@ result<scan_result> scan_files(const host& h, library_index& idx,
   std::set<std::string> wanted;
   std::map<std::string, std::string> dirs;  // folder path -> its rel from the volume
   for (const std::string& p : paths) {
-    wanted.insert(p);
+    wanted.insert(sep_key(p));
     const auto slash = p.find_last_of("/\\");
     if (slash == std::string::npos) continue;
     const std::string dir = p.substr(0, slash == 0 ? 1 : slash);
@@ -239,7 +249,7 @@ result<scan_result> scan_files(const host& h, library_index& idx,
     group_units(h, s.files, folder, units);
     for (unit& u : units) {
       const bool keep = std::any_of(u.files.begin(), u.files.end(), [&](std::uint32_t i) {
-        return wanted.count(s.files[i].path) != 0;
+        return wanted.count(sep_key(s.files[i].path)) != 0;
       });
       if (keep) s.units.push_back(std::move(u));
     }

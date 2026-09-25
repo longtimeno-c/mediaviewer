@@ -1296,6 +1296,23 @@ them.
 - Fuzz CI confirmation that the two re-enabled harnesses no longer die at 0xC0000142.
   (Included in the sign-off; the CI harness list stays as is.)
 
+## 2026-09-25 — fuzz_decode and fuzz_animation re-excluded from the gating fuzz step
+
+The provisional re-enable (2026-09-24) did not hold: CI run 36106997040 on `main` shows both
+harnesses exiting `0xC0000142` before libFuzzer ran a unit, first launch and relaunch, while
+the other eleven fuzzed a full 60 s each. The owner sign-off of 2026-09-24 covered this item
+without CI evidence; this run is the evidence, and it says no.
+
+**Call:** as the 2026-09-24 entry directs — out of the gating list, still built. They now run
+alone in a separate `continue-on-error` step (30 s each), so each CI run records whether they
+start on the runner without the two taking the other eleven's result down. That step running
+them *first and alone* also tests the "last harnesses of a long run" / resource-exhaustion
+theory: if they still die there, it is not ordering. Still open; diagnose on the runner.
+
+**Result (CI run 36131675547, same day):** run first and alone for 30 s, `fuzz_decode` still
+exits `0xC0000142` on launch and relaunch. Ordering and resource exhaustion are ruled out; the
+cause is in what the process loads on that image.
+
 ## How to use this file
 
 Add a row when a decision changes, with the reason — not just the new value. If a decision here is
