@@ -540,7 +540,7 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
-| `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
+| `Ctrl+,` | Settings: **General** has grouped preferences with aligned switches and automatic saving; **Keyboard shortcuts** has the searchable remapping list. Both pages scroll independently of the header and Done button. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
 | `Ctrl+G` | go to an item by its number in the folder |
 | `/` | find an item by name. With the filmstrip or gallery focused, just type |
 | `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
@@ -553,7 +553,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers, counts, and a path bar (middle collapses to `…`) stay on screen, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers, counts, and a path bar stay on screen. Labelled **Up** and **Root** buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
@@ -625,7 +625,13 @@ files beside it. Whether the filmstrip comes with it is a preference: **Settings
 *Filmstrip when opening a folder* (on by default) and *Filmstrip when opening an image* (off),
 persisted to `%LocalAppData%\MediaViewer\settings.ini` (also wrap, sticky zoom, canvas
 background, and key remaps). `T` toggles the one for the mode you are in. Both take
-effect immediately — no restart. The Settings screen is where those defaults live.
+effect immediately — no restart. The Settings screen groups these defaults under General,
+with switches aligned on the right and descriptions on the left. Keyboard shortcuts has
+its own searchable tab, so neither page is squeezed into a narrow column. Both platforms
+keep the header and Done button visible while the content scrolls.
+
+For the settings and path-bar smoke checks on Windows and macOS, see
+[the UI verification checklist](docs/settings-navigation-verify.md).
 
 ## Test
 
@@ -1290,3 +1296,4 @@ modify an original; nothing about a user's files leaves the machine; never requi
 codec pack.
 GPL-2.0-or-later, see [LICENSE](LICENSE). Bundled libraries and their licences are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md). Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.
+
