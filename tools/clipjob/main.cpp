@@ -45,10 +45,13 @@ void say(const std::string& line) {
   std::fflush(stdout);
 }
 
+#if defined(MV_CLIPJOB_TEST_HOOKS)
+// Test hooks only; the shipped helper reads no environment switches.
 bool env_on(const char* name) {
   const char* v = std::getenv(name);
   return v != nullptr && v[0] == '1';
 }
+#endif
 
 void on_progress(void*, double f) noexcept {
   const int parts = static_cast<int>(f * 10000.0 + 0.5);
