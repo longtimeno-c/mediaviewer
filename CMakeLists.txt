@@ -952,6 +952,9 @@ if(MV_BUILD_TESTS)
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
   target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options)
   target_include_directories(mv_clipjob_test PRIVATE src)
+  # The hooks reach clip::detail through clip_internal.h, which includes FFmpeg;
+  # mv_clip keeps those headers PRIVATE.
+  target_include_directories(mv_clipjob_test SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
   target_compile_definitions(mv_clipjob_test PRIVATE MV_CLIPJOB_TEST_HOOKS=1)
   mv_asan_runtime_beside(mv_clipjob_test)
   target_compile_definitions(mv_tests PRIVATE MV_CLIPJOB_PATH="$<TARGET_FILE:mv_clipjob_test>")
