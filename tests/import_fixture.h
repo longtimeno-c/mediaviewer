@@ -20,6 +20,16 @@ inline std::string utf8(const fs::path& p) {
   return std::string(u.begin(), u.end());
 }
 
+// A path as the body of a JSON string: Windows separators are backslashes.
+inline std::string json_path(const fs::path& p) {
+  std::string out;
+  for (const char c : utf8(p)) {
+    if (c == '\\' || c == '"') out += '\\';
+    out += c;
+  }
+  return out;
+}
+
 class scratch_dir {
  public:
   explicit scratch_dir(const char* tag) {
@@ -74,7 +84,12 @@ inline std::vector<std::uint8_t> pattern(std::size_t size, std::uint32_t seed) {
 
 inline void set_mtime(const fs::path& p, std::int64_t unix_seconds) {
   const auto sys = std::chrono::system_clock::time_point(std::chrono::seconds(unix_seconds));
+  // Apple's libc++ has no clock_cast; MSVC's file_clock has no from_sys.
+#if defined(_LIBCPP_VERSION)
+  const auto ft = std::chrono::file_clock::from_sys(sys);
+#else
   const auto ft = std::chrono::clock_cast<std::chrono::file_clock>(sys);
+#endif
   fs::last_write_time(p, ft);
 }
 
