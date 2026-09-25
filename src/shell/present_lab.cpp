@@ -439,8 +439,13 @@ void present_lab::render_thread_main() noexcept {
     if (snapshot.game_exit_seq != seen_game_exit_seq_) {
       seen_game_exit_seq_ = snapshot.game_exit_seq;
       if (!sweep_mode_ && game_.active()) {
+        // The outro presents until the welcome card is back; from game over
+        // that restarts the loop, so the idle gap is not scored as a stall.
+        if (game_.state() == dino_game::phase::over && options_.soak_seconds == 0.0)
+          pacer_.reset_window();
+        last_game_elapsed_ = 0.0;  // no catch-up step for the time spent dead
         game_.leave();
-        animating_ = false;
+        animating_ = game_.state() == dino_game::phase::outro;
         redraw = true;
       }
     }
@@ -1638,7 +1643,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   // look like it had not opened at all.
   if (current_image_ || current_video_.texture || video_open_) {
     if (!sweep_mode_ && game_.active()) {  // a file opened over the runner
-      game_.leave();
+      game_.leave_now();
       animating_ = false;
     }
     return;
@@ -1677,7 +1682,8 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
     last_game_elapsed_ = elapsed_seconds;
     game_.set_view_width(w / (3.0f * scale));
     game_.update(dt);
-    if (game_.state() == dino_game::phase::over) animating_ = false;  // idle again: nothing moves
+    // Game over or the outro finished: idle again, nothing moves.
+    if (game_.state() == dino_game::phase::over || !game_.active()) animating_ = false;
     draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, welcome_alpha(game_));
     draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale);
     return;

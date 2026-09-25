@@ -39,28 +39,7 @@ std::string trim(std::string s) {
   return s;
 }
 
-// Exiv2 hands back arbitrary bytes for ASCII tags; only valid UTF-8 may reach
-// the UI (Swift's String(cString:) would replace, C#'s would too, but the
-// tree search should not see the mess).
-std::string sanitise(std::string s) {
-  std::string out;
-  out.reserve(s.size());
-  for (std::size_t i = 0; i < s.size();) {
-    const auto c = static_cast<unsigned char>(s[i]);
-    std::size_t len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
-    bool ok = len != 0 && i + len <= s.size();
-    for (std::size_t k = 1; ok && k < len; ++k) ok = (static_cast<unsigned char>(s[i + k]) & 0xC0) == 0x80;
-    if (c < 0x20 && c != '\t' && c != '\n') ok = false;
-    if (ok) {
-      out.append(s, i, len);
-      i += len;
-    } else {
-      out += '?';
-      ++i;
-    }
-  }
-  return out;
-}
+std::string sanitise(std::string s) { return sanitise_utf8(std::move(s)); }
 
 // Every Exiv2 datum type prints through the EXIF table (a few Exif print
 // functions read sibling tags), so the context is always the ExifData.
@@ -288,6 +267,11 @@ void fill_summary(const Exiv2::ExifData& e, const Exiv2::XmpData& x, Exiv2::Imag
   }
   const std::int64_t o = int_of(e, "Exif.Image.Orientation", 1);
   s.orientation = (o >= 1 && o <= 8) ? static_cast<std::uint8_t>(o) : 1;
+
+  // PR 12: what the pane shows and the writer changes.
+  const field_state f = read_fields(e, x, comment_order_of(image));
+  s.rating = f.rating.value_or(0);
+  s.comment = f.comment.value_or(std::string{});
 }
 
 // SubjectArea is the one standard AF-ish tag (EXIF 2.3); vendor notes below are
@@ -351,7 +335,7 @@ std::vector<af_point> find_af_points(const Exiv2::ExifData& e, const summary& s)
 
 }  // namespace
 
-std::unique_ptr<Exiv2::Image> open_image(std::span<const std::uint8_t> bytes) {
+void ensure_exiv2() {
   // Exiv2 initialises its XMP parser lazily and that is not safe to race; the
   // metadata jobs run on the pool, so do it exactly once, up front. Never
   // terminated: the process owns it until exit.
@@ -360,6 +344,10 @@ std::unique_ptr<Exiv2::Image> open_image(std::span<const std::uint8_t> bytes) {
     Exiv2::XmpParser::initialize();
     Exiv2::LogMsg::setLevel(Exiv2::LogMsg::mute);  // its messages can name paths (rule 6)
   });
+}
+
+std::unique_ptr<Exiv2::Image> open_image(std::span<const std::uint8_t> bytes) {
+  ensure_exiv2();
   auto image = Exiv2::ImageFactory::open(bytes.data(), bytes.size());
   if (!image) return nullptr;
   image->readMetadata();

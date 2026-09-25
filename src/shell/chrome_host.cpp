@@ -265,6 +265,8 @@ expected chrome_host::load() noexcept {
   // PR 11, optional the same way.
   show_adjust_pane_ = get_entry(L"ShowAdjustPane");
   set_adjust_view_ = get_entry(L"SetAdjustView");
+  // PR 12, optional the same way: without it the pane shows no rating controls.
+  set_meta_edit_ = get_entry(L"SetMetaEdit");
   // PR 13 / 14, optional the same way.
   show_jobs_pane_ = get_entry(L"ShowJobsPane");
   set_trim_ = get_entry(L"SetTrim");
@@ -714,14 +716,39 @@ void chrome_host::set_tree_root(const std::string& utf8_dir) noexcept {
 }
 
 std::string chrome_host::take_tree_path() noexcept {
-  if (!panels_attached_ || !take_tree_path_) return {};
-  char buf[4096]{};
-  chrome_table_args args{};
-  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf));
-  args.length = static_cast<std::int32_t>(sizeof(buf));
-  const int n = take_tree_path_(&args, static_cast<std::int32_t>(sizeof(args)));
-  if (n <= 0 || n >= static_cast<int>(sizeof(buf))) return {};
-  return std::string(buf, static_cast<std::size_t>(n));
+  std::string out;
+  return take_parked_text(out) ? out : std::string{};
+}
+
+bool chrome_host::take_parked_text(std::string& out) noexcept {
+  out.clear();
+  if (!panels_attached_ || !take_tree_path_) return false;
+  // A path, or a comment of at most meta::kMaxCommentBytes; a longer one does
+  // not fit and is refused (-1) rather than cut.
+  try {
+    std::string buf(16384, '\0');
+    chrome_table_args args{};
+    args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
+    args.length = static_cast<std::int32_t>(buf.size());
+    const int n = take_tree_path_(&args, static_cast<std::int32_t>(sizeof(args)));
+    if (n < 0 || n >= static_cast<int>(buf.size())) return false;
+    buf.resize(static_cast<std::size_t>(n));
+    out = std::move(buf);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+void chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
+                                std::int32_t flags) noexcept {
+  if (!panels_attached_ || !set_meta_edit_) return;
+  chrome_meta_edit_args args{};
+  args.comment = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(comment.data()));
+  args.comment_len = static_cast<std::int32_t>(comment.size());
+  args.rating = rating;
+  args.flags = flags;
+  (void)set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::apply_rate(float rate) noexcept {

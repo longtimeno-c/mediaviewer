@@ -21,6 +21,14 @@ void set_thumb_cache_dir_override(std::string_view utf8_dir);
 [[nodiscard]] result<std::string> addons_dir();
 void set_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
+// PR 12: where "revert metadata" keeps the prior value of the fields a write
+// changed (plan/06 "Undo"): %LocalAppData%\MediaViewer\metadata-snapshots on
+// Windows, ~/Library/Application Support/MediaViewer/Metadata Snapshots on
+// Mac. Per-user, local, never uploaded (rule 6); created if missing. Not a
+// cache: nothing may purge it behind the user's back.
+[[nodiscard]] result<std::string> metadata_snapshot_dir();
+void set_metadata_snapshot_dir_override(std::string_view utf8_dir);  // tests; empty restores
+
 // Import's default destination (plan/18 "Painless by default"):
 // Pictures\MediaViewer / ~/Pictures/MediaViewer. Not created here; the
 // first import creates it.

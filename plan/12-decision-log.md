@@ -1990,6 +1990,122 @@ branch; it does **not** merge before 15, and it is not done until both platforms
   fails on one destination removes what it wrote on the other; the UI thread no longer reads
   `import.db`; the host table's volume-watch deadlock. See the PR.
 
+
+## 2026-09-25 — PR 12 (metadata write): shared core and the macOS half
+
+Branch `pr12-metadata-write`, cut from `main` after PR 11 and Milestone G merged. **Windows half not
+started** (the owner builds it on another machine, on this branch). Nothing reverses a D-decision.
+
+**Shared core (`src/meta`, `src/io`, `src/shell`).**
+- `meta::write` / `revert` / `write_target_for` (`write.h`). Fields: rating (1–5, −1 rejected, 0 or
+  clear removes every rating tag, so "unrated" is an absent tag), orientation, user comment.
+- **In place only for a plain JPEG.** Exiv2 rewrites it, then the result is verified before the swap
+  (see plan/06 "As built"). The swap is the PR 10 `io::replace_atomic`. A JPEG Exiv2 will not rewrite
+  cleanly falls back to the sidecar for rating / comment (never for orientation, which the display
+  reads only from the file).
+- **A maker note Exiv2 understands is compared value for value** (`Exif.Canon.*`, …); its raw blob
+  legitimately moves when the block is laid out again, and its internal offsets move with it. One it
+  does not understand must come back byte for byte. The plan's "byte-for-byte across the corpus" is
+  therefore *value for value for decoded notes, byte for byte for opaque ones and for a rating-only
+  write (the EXIF segment is not touched at all)*. Tested on the five RAW cameras' EXIF carried into a
+  JPEG: all five preserved.
+- **Rating is XMP-only**, mirrored into `Exif.Image.Rating` / `RatingPercent` only where present.
+- **Comment** is the EXIF `UserComment` (ASCII, else UNICODE/UCS-2 in the block's byte order) plus
+  XMP `exif:UserComment`. Encoded and decoded by hand (`fields.cpp`): Exiv2 hands a file's value back
+  as opaque bytes and its own comment type needs iconv, which differs per platform.
+- **Sidecar** `IMG_1234.xmp` beside the file, merged with any existing one; a sidecar that is not XMP
+  is never overwritten (`corrupt`); a sidecar left empty is deleted. A sidecar beside a JPEG that is
+  written in place is kept in step (it wins on read, so a stale one would hide the new value). Because
+  the sidecar name is the stem, RAW+JPEG and HEIC+MOV pairs share one — rating either rates both once
+  the sidecar exists. That is left as is.
+- **Snapshot** = the prior value of the three fields (all this writer can change) plus whether a
+  sidecar existed, in `io::metadata_snapshot_dir()` (`%LocalAppData%\MediaViewer\metadata-snapshots`,
+  `~/Library/Application Support/MediaViewer/Metadata Snapshots`), taken before the first write per
+  file per session, and a write with no way back is not made. **Departs from the plan**, which says
+  "the original metadata block": restoring the three fields cannot clobber a change made elsewhere.
+- **New in `io`:** `write_new_atomic` (a new sidecar appears whole or not at all — a half sidecar would
+  poison every later write), `metadata_snapshot_dir`.
+- **Not writable in place, on purpose:** PNG / WebP (the checked rewrite is JPEG-only), TIFF, HEIC.
+- `shell::meta_writer` (host-shared queue: coalescing, one write at a time, optimistic state),
+  `edit_session::metadata_rewritten` (a rating rewrites a JPEG's bytes but not its pixels, so the
+  item's edits are re-keyed instead of lost), `meta_store::invalidate` (a sidecar write leaves the
+  file's own stamp alone; a read that began before a write cannot cache the old record).
+- **Keys.** `key::numpad0..9`; commands `set_rating_0..5` (ids appended after `import_now`) on numpad
+  `0`–`5` and `Ctrl+Shift+0`–`5`; **new, not in plan/16:** `edit_comment` on `Ctrl+I`. `X` (reject
+  mark) and `U` are not built. **`F2` rename** (plan/16 lists it in the PR 12 row) is a file rename,
+  not a metadata write, and is not in the roadmap's PR 12 text: **not built, needs a call.**
+- Rating spam writes the last value once (0.25 s debounce); a comment writes on Return or blur.
+
+**macOS half.** `main_mac.mm` (keypad translation, the queue, completion, the command-bar notice),
+`MetadataView.swift` (stars, comment field, Revert), `NoticeStore.swift`, C bridge functions in
+`mv_chrome_bridge.h`. A lossless rotation and a metadata write of the same JPEG never overlap.
+
+**Verified.** `mv_tests` (macOS, Apple Silicon): writer, sidecar, snapshot / revert, SIGKILL mid-write
+(24 rounds on a JPEG, 40 on a new sidecar: the file is always whole), the five-camera corpus, queue,
+router and edit-session cases. The Mac app was driven with real keystrokes on a scratch copy: keypad
+`2` and `5`, `⌘⇧1` and keypad `0` wrote, changed and cleared `xmp:Rating` in the JPEG.
+
+**Not verified, owed.**
+- Everything Windows: `main.cpp`, the WinUI pane, VK_NUMPAD → `key::numpad*`, MSVC `/W4 /WX` on
+  `replace_win.cpp`, `paths_win.cpp`, `meta/*.cpp`, the new tests (the two kill tests are POSIX-only;
+  a Windows kill test would need a child process), and `io::write_new_atomic`'s `MoveFileExW`.
+- Both platforms' hardware verify lines and both present-loop gates with a write in flight.
+- Comment editing by keyboard on Mac was built, not exercised. `Ctrl+I` → field focus is untested.
+- **`⌘⇧3` / `⌘⇧4` / `⌘⇧5` never reach the app** (system screenshot shortcuts). The plan makes this
+  chord the Mac's primary; the keypad is the only path until the shortcuts are disabled or the owner
+  picks another chord.
+- Cross-platform read-back is argued (same code, deterministic bytes: tested) but not run across two
+  machines.
+
+**Windows to-do.** Translate `VK_NUMPAD0..9` (`VK_NUMPAD` when NumLock is on) to `key::numpad0..9`;
+handle `set_rating_*` and `edit_comment` in `main.cpp` with a `meta_writer`, a debounce timer, the
+same completion steps as `metaWriteFinished` in `main_mac.mm` (invalidate the store, re-stat the file,
+`edit_session::metadata_rewritten`, refresh the record) and the rotation / metadata mutual exclusion;
+add the commands to the island's enum and probe hash; the pane's rating and comment. The pane's
+comment field is the hard part: a `TextBox` in an island fail-fasts (0xC000027B), so it needs the
+workaround the go-to / find flyouts use, or a native edit control.
+
+### 2026-09-25 — PR 12: the Windows half, written, not compiled
+
+Written on a Mac with no Windows toolchain: **nothing below has been through MSVC, the .NET build or a
+Windows run.** It follows the to-do above; nothing reverses a D-decision.
+
+- **Keys.** `translate_key` maps `VK_NUMPAD0..9` to `key::numpad0..9` (NumLock on; with it off
+  Windows sends Insert / End / arrows, which keep their meaning). The rest of the keypad stays unbound.
+- **`main.cpp`.** `set_rating_*`, `edit_comment`, a `meta_writer` on `jobs`, a 250 ms rating debounce
+  (`kMetaWriteTimerId`), `kMsgMetaWriteDone`. The completion follows `metaWriteFinished`: invalidate the
+  store, re-key the item's edits, refresh the record, say where it landed. **Different from the Mac:**
+  the file's size and mtime before and after are taken *on the worker* around the write
+  (`io::stat_path`), so the UI thread never stats the file. The rotation and metadata writes wait for
+  each other in both directions.
+- **Notice.** Windows has no command-bar notice; "★★★★☆", "— IMG_1234.xmp" and the failures go in
+  the title's status line for 3 s (`update_title`), the line plan/16 already puts there.
+- **Pane (`IslandHost.Panels.cs`).** Stars, a comment field and "Revert metadata" above the tabs,
+  so they are there on every tab. Native pushes them (`SetMetaEdit`, `chrome_meta_edit_args`, 24 bytes,
+  optional like the other pane entries) on every pane push. The stars post `set_rating_0..5`;
+  Revert is `chrome_cmd_meta_revert` (1013); the comment is `chrome_cmd_meta_comment` (1012) with the
+  text parked for `TakeTreePath`, as Import's open-path does. `chrome_host::take_parked_text` tells
+  "nothing readable" from "" (which clears), and its buffer grew to 16 KiB for a 4 KiB comment.
+- **The comment field is a `FakeInput`**, the settings / find stand-in, not a `TextBox` (0xC000027B).
+  Return saves and returns to the canvas; leaving the field by mouse saves; **Esc drops the edit**:
+  native's `blur_text` pushes `kMetaEditDropDraft` *before* it moves focus, so the field has already
+  gone back to the file's value when its LostFocus runs. `FakeInput` is single-line with no caret
+  movement (Backspace, Ctrl+A); a multi-line comment from another app shows but edits as one line.
+- **Writes at exit (both hosts).** A rating inside its 250 ms debounce, a comment queued behind
+  another write, or a rotation inside its own debounce was lost when the window closed: the pool drops
+  jobs that have not started. Now each host takes that work on its UI thread as it exits
+  (`edit_session::take_pending_write`, `meta_writer::drain_for_exit`), joins the pool, then writes it
+  in order: rotation first, since it refuses bytes a metadata write has changed. Windows does it after
+  the message loop (the window is gone); Mac on `-applicationShouldTerminate:`'s background block
+  (it already joins the pool there). The in-flight *metadata* job is included and may run twice, which
+  is harmless because it sets absolute values; an in-flight *rotation* is not repeated because a turn
+  is relative. A rotation the pool dropped before it started is still lost.
+- **Fixed, not PR 12:** `kBrowseTimerId` was `0x7701`, the same as `kHistogramTimerId`, which
+  `WM_TIMER` checks first, so `--browse-soak` never ticked. Now `0x7901`.
+- **Owed on Windows:** MSVC `/W4 /WX` + clang-cl on `main.cpp`, `chrome_host.*` and the shared PR 12
+  code; `test_chrome_host` (the checksum now covers 1012 / 1013; Probe checks `ChromeMetaEditArgs`);
+  a Windows kill-mid-write test; the verify line and the PR 1 present-loop gate with a write in flight.
+
 ## 2026-09-25 — Milestone H may use 3 GB for search quality; folder-tree indexes persist
 
 **Owner's call.** The 250 MB limit belongs to the base viewer, not to the optional Local search

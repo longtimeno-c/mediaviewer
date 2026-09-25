@@ -97,6 +97,15 @@ class edit_session {
   // brings every slider back.
   [[nodiscard]] edit_effect reset_adjust();
 
+  // PR 12. A metadata write (rating, comment, orientation tag) landed on
+  // `path`: the bytes changed (size, mtime), the pixels did not. Moves the
+  // stack keyed by the old identity to the new one so a crop draft, colour
+  // adjusts and pending turns survive the rewrite, and updates the current
+  // item so a lossless rotation still checks against the bytes now on disk.
+  // Unknown identity: nothing to move, nothing done.
+  void metadata_rewritten(const std::string& path, std::uint64_t old_size, std::int64_t old_mtime,
+                          std::uint64_t new_size, std::int64_t new_mtime);
+
   // Called when the host's debounce fires. Null while a write is in flight or
   // when there is nothing to write (the turns cancelled out, a crop joined).
   [[nodiscard]] std::optional<rotation_write> take_pending_write();
@@ -112,6 +121,8 @@ class edit_session {
 
  private:
   [[nodiscard]] std::uint64_t key() const noexcept;
+  [[nodiscard]] std::uint64_t key_for(const std::string& path, std::uint64_t size,
+                                      std::int64_t mtime) const noexcept;
   [[nodiscard]] edit::edit_stack& current();
   [[nodiscard]] edit::size2 frame() const noexcept;  // displayed size through the stack's turns
   [[nodiscard]] bool wants_write() const;

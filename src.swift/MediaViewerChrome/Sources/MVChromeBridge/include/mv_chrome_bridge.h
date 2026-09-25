@@ -216,6 +216,40 @@ int32_t mv_chrome_meta_summary(char* buf, int32_t size);
 int32_t mv_chrome_meta_properties(char* buf, int32_t size);
 int32_t mv_chrome_meta_streams(char* buf, int32_t size);
 
+// ---- PR 12: rating, comment, revert (plan/06 "Writing", plan/16 Rate) ---------
+//
+// The pane's star row, its comment field and its Revert button. The keys 0-5
+// go through the command table like every other key; these are the pointer
+// and the text field. A change is queued in the host's write queue and lands on
+// the I/O pool (a JPEG in place, everything else in an XMP sidecar); none of it
+// touches a file on the main thread. [main-thread]
+//
+// The rating as the pane should draw it: a change still waiting to be written
+// counts, so a star clicked or a key pressed shows at once. -1 rejected, 0..5.
+int32_t mv_chrome_meta_rating(void);
+// The comment as UTF-8, newlines kept (the summary table flattens them). A
+// change still waiting counts. Returns the length needed, like the tables.
+int32_t mv_chrome_meta_comment(char* buf, int32_t size);
+// True when an item is open, so there is something to rate or comment.
+bool mv_chrome_meta_can_edit(void);
+// True when a write to the current item has landed this session, so "revert
+// metadata" has a snapshot to go back to.
+bool mv_chrome_meta_can_revert(void);
+void mv_chrome_meta_set_rating(int32_t stars);          // 0 clears
+void mv_chrome_meta_set_comment(const char* utf8);      // "" clears
+void mv_chrome_meta_revert(void);
+// Ctrl+I (edit_comment) shows the pane and asks for the comment field to take
+// keyboard focus; the sequence moves each time, so Swift focuses once per ask.
+uint64_t mv_chrome_meta_focus_seq(void);
+// Hands the keyboard back to the canvas (Esc or Return in the comment field).
+void mv_chrome_meta_blur(void);
+
+// One line for the command bar: what a key or a click just did ("★★★★☆  saved",
+// "Could not save the rating"). The generation moves when the text changes; the
+// text is empty once it has been up long enough. Returns the length needed.
+uint64_t mv_chrome_notice_generation(void);
+int32_t mv_chrome_notice_text(char* buf, int32_t size);
+
 // Folder tree. `mv_chrome_list_subdirectories` does a directory read, so call it
 // from a background task, never from the main actor. [any-thread] Writes
 // "name\tpath" lines; returns the length needed, or -1 if `dir` cannot be read.

@@ -37,6 +37,9 @@ enum class key : std::uint16_t {
   up,
   down,
   f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
+  // PR 12 (plan/16 Rate): the numeric keypad's digits, apart from the number
+  // row, which stays zoom. Appended so every value above keeps its number.
+  numpad0, numpad1, numpad2, numpad3, numpad4, numpad5, numpad6, numpad7, numpad8, numpad9,
   count
 };
 
@@ -263,6 +266,16 @@ enum class command_id : std::uint16_t {
   // while the Import add-on is installed (set_addon_commands_available).
   open_import,      // Ctrl+Shift+I: the Import window
   import_now,       // Ctrl+Shift+F7: import the marked / current file(s), last preset
+  // PR 12 (plan/16 Rate). Appended; every id above keeps its value. Numpad
+  // 0-5 or Ctrl+Shift+0-5 (Cmd+Shift on a Mac, which has no keypad on a laptop).
+  // 0 clears the rating. Written to the file, or its sidecar, on the I/O pool.
+  set_rating_0,
+  set_rating_1,
+  set_rating_2,
+  set_rating_3,
+  set_rating_4,
+  set_rating_5,
+  edit_comment,  // Ctrl+I: show the metadata pane and put the keyboard in its comment field
   // PR 13 (plan/16 Video and trim, plan/08). Appended; every id above keeps its value.
   trim_mode,           // Ctrl+T on a clip: arm / disarm trim
   trim_in,             // `[` in trim: in marker at the playhead
@@ -282,6 +295,12 @@ enum class command_id : std::uint16_t {
 };
 
 inline constexpr int kCommandCount = static_cast<int>(command_id::count);
+
+// set_rating_0..5 -> 0..5, else -1.
+[[nodiscard]] constexpr int rating_of_command(command_id id) noexcept {
+  const int v = static_cast<int>(id) - static_cast<int>(command_id::set_rating_0);
+  return v >= 0 && v <= 5 ? v : -1;
+}
 
 [[nodiscard]] constexpr bool is_reserved_notification(int id) noexcept {
   return id == 15 || id == 16 || id == 18 || id == 19 || id == 20;

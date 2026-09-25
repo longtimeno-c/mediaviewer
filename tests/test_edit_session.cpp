@@ -354,3 +354,38 @@ TEST_CASE("the geometry map inverts exactly", "[shell][edit][tiles]") {
     }
   }
 }
+
+TEST_CASE("a metadata-only rewrite keeps the item's edits", "[shell][edit][meta]") {
+  // PR 12: a rating or comment rewrites a JPEG's bytes, not its pixels. The
+  // stack is keyed by (path, size, mtime), so the host tells the session.
+  edit_session s;
+  s.set_item(jpeg_item(1000, 1));
+  s.set_size(600, 400);
+  REQUIRE(s.run(command_id::flip_horizontal) == edit_effect::write_rotation);
+
+  s.metadata_rewritten("/photos/IMG_0001.JPG", 1000, 1, 1180, 5);
+  // The same file at its new identity still has its stack...
+  s.set_item(jpeg_item(1180, 5));
+  s.set_size(600, 400);
+  REQUIRE(s.stack() != nullptr);
+  CHECK_FALSE(s.export_geometry().orient.identity());
+  // ...and a lossless rotation now checks against the bytes that are there.
+  const auto w = s.take_pending_write();
+  REQUIRE(w);
+  CHECK(w->size == 1180);
+}
+
+TEST_CASE("a metadata rewrite of a file that is not open moves its stack too", "[shell][edit][meta]") {
+  edit_session s;
+  s.set_item(jpeg_item(1000, 1));
+  s.set_size(600, 400);
+  REQUIRE(s.set_adjust(mv::edit::adjust_param::contrast, 0.25f) == edit_effect::redraw);
+  // The user has walked to another file; the write on the first one lands late.
+  edit_item other = jpeg_item(500, 9);
+  other.path = "/photos/IMG_0002.JPG";
+  s.set_item(other);
+  s.metadata_rewritten("/photos/IMG_0001.JPG", 1000, 1, 1100, 7);
+  s.set_item(jpeg_item(1100, 7));
+  REQUIRE(s.stack() != nullptr);
+  CHECK_FALSE(s.colour().identity());
+}
