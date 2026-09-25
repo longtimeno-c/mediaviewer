@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/result.h"
 #include "meta/write.h"
@@ -72,6 +73,13 @@ class meta_writer {
 
   // The last failure, once (for a beep and a toast).
   [[nodiscard]] std::optional<meta_outcome> take_failure();
+
+  // Exit: everything not known to have landed, in the order it must run, and
+  // the queue left empty. The in-flight job comes first: the pool drops a job
+  // that has not started when it shuts down, and a write sets absolute values,
+  // so running one that did land again changes nothing. The host takes this on
+  // its UI thread, joins the pool, then runs the jobs (run_meta_job) in order.
+  [[nodiscard]] std::vector<meta_job> drain_for_exit();
 
  private:
   struct entry {

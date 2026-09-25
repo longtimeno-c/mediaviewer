@@ -123,6 +123,32 @@ TEST_CASE("empty requests are ignored and a revert outranks what was queued", "[
   CHECK_FALSE(next->revert);
 }
 
+TEST_CASE("exit drains the running job first, then the queue, and leaves it empty", "[meta][writer]") {
+  meta_writer w;
+  w.submit("/a.jpg", rating_fields(2));
+  const auto running = w.take_next();
+  REQUIRE(running);
+  // Still inside the debounce: never taken by the host.
+  w.submit("/a.jpg", rating_fields(5));
+  w.submit("/b.jpg", mv::shell::comment_fields("late"));
+  w.submit_revert("/c.jpg");
+
+  const auto jobs = w.drain_for_exit();
+  REQUIRE(jobs.size() == 4);
+  CHECK(jobs[0].path == "/a.jpg");
+  CHECK(jobs[0].fields.rating.value == 2);  // may not have started: runs again, harmlessly
+  CHECK(jobs[1].path == "/a.jpg");
+  CHECK(jobs[1].fields.rating.value == 5);  // the newer value lands last
+  CHECK(jobs[2].path == "/b.jpg");
+  CHECK(jobs[2].fields.comment.value == "late");
+  CHECK(jobs[3].path == "/c.jpg");
+  CHECK(jobs[3].revert);
+
+  CHECK_FALSE(w.in_flight());
+  CHECK_FALSE(w.has_pending());
+  CHECK(w.drain_for_exit().empty());
+}
+
 TEST_CASE("the pool job writes through the snapshot store and reports where it landed", "[meta][writer]") {
   namespace fs = std::filesystem;
   const fs::path dir = fs::temp_directory_path() / "mv_writer_queue_job";

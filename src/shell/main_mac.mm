@@ -4065,6 +4065,20 @@ static NSString* const kDefaultsKeys = @"mv.keys";
   (void)sender;
   if (_terminating) return NSTerminateLater;
   _terminating = true;
+  // PR 12: writes the user asked for and has not seen land -- a rating inside
+  // its 0.25 s debounce, a comment queued behind another write, a rotation
+  // inside its 0.4 s debounce. Taken here, on the main thread that owns the
+  // queues, and written below once the pool has finished the write it is
+  // running (a second write to one file must not overlap it). The rotation
+  // goes first: it refuses bytes a metadata write has changed, while a
+  // metadata write applies to whatever orientation it finds. A rotation
+  // already in flight is not repeated (a turn is relative; a rating is not).
+  [_rotateDebounce invalidate];
+  _rotateDebounce = nil;
+  [_metaWriteDebounce invalidate];
+  _metaWriteDebounce = nil;
+  std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
+  std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
   // device_.destroy() on the render thread -- shutdown() drains queued jobs
@@ -4073,6 +4087,11 @@ static NSString* const kDefaultsKeys = @"mv.keys";
   // time this method runs, so nothing user-visible waits on it.
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     _jobs.shutdown();
+    if (exitTurn && !mv::shell::run_rotation_write(*exitTurn)) MV_LOG_WARN("exit: rotation write failed");
+    for (const mv::shell::meta_job& job : exitMeta) {
+      const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
+      if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
+    }
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,
     // -[NSApplication terminate:] spins a nested run loop in a mode that does

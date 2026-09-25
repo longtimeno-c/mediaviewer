@@ -140,7 +140,9 @@ constexpr UINT_PTR kUpdateConfirmTimerId = 0x7301;
 constexpr UINT kUpdateConfirmMs = 10000;
 // --browse-soak: time the arrow from one still to the next. A UI-thread tick
 // only chooses the next index; the render thread records the present.
-constexpr UINT_PTR kBrowseTimerId = 0x7701;
+// Not 0x7701: that is kHistogramTimerId, checked first in WM_TIMER, which ate
+// every soak tick.
+constexpr UINT_PTR kBrowseTimerId = 0x7901;
 constexpr UINT kBrowseTickMs = 50;
 constexpr ULONGLONG kBrowseDwellMs = 3000;
 constexpr ULONGLONG kBrowseStepTimeoutMs = 20000;
@@ -4407,6 +4409,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
                       static_cast<long long>(completions[i].payload));
         }
         if (n < 64) break;
+      }
+    }
+  }
+
+  // PR 12: writes the user asked for and has not seen land — a rating inside
+  // its 250 ms debounce, a comment queued behind another write, a rotation
+  // inside its own debounce. The window is gone, so nothing waits on them now:
+  // take them, let the pool finish the write it is running (a second write to
+  // the same file must not overlap it), then write them here, in order. The
+  // rotation goes first: it refuses bytes a metadata write has changed, while
+  // a metadata write applies to whatever orientation it finds. A rotation
+  // already in flight is not repeated (a turn is relative; a rating is not).
+  {
+    const std::optional<mv::shell::rotation_write> turn = app.edits.take_pending_write();
+    const std::vector<mv::shell::meta_job> meta_jobs = app.meta_writer.drain_for_exit();
+    if (turn || !meta_jobs.empty()) {
+      app.jobs.shutdown();
+      if (turn && !mv::shell::run_rotation_write(*turn)) MV_LOG_WARN("exit: rotation write failed");
+      for (const mv::shell::meta_job& job : meta_jobs) {
+        const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
+        if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
       }
     }
   }

@@ -2074,6 +2074,17 @@ Windows run.** It follows the to-do above; nothing reverses a D-decision.
   native's `blur_text` pushes `kMetaEditDropDraft` *before* it moves focus, so the field has already
   gone back to the file's value when its LostFocus runs. `FakeInput` is single-line with no caret
   movement (Backspace, Ctrl+A); a multi-line comment from another app shows but edits as one line.
+- **Writes at exit (both hosts).** A rating inside its 250 ms debounce, a comment queued behind
+  another write, or a rotation inside its own debounce was lost when the window closed: the pool drops
+  jobs that have not started. Now each host takes that work on its UI thread as it exits
+  (`edit_session::take_pending_write`, `meta_writer::drain_for_exit`), joins the pool, then writes it
+  in order: rotation first, since it refuses bytes a metadata write has changed. Windows does it after
+  the message loop (the window is gone); Mac on `-applicationShouldTerminate:`'s background block
+  (it already joins the pool there). The in-flight *metadata* job is included and may run twice, which
+  is harmless because it sets absolute values; an in-flight *rotation* is not repeated because a turn
+  is relative. A rotation the pool dropped before it started is still lost.
+- **Fixed, not PR 12:** `kBrowseTimerId` was `0x7701`, the same as `kHistogramTimerId`, which
+  `WM_TIMER` checks first, so `--browse-soak` never ticked. Now `0x7901`.
 - **Owed on Windows:** MSVC `/W4 /WX` + clang-cl on `main.cpp`, `chrome_host.*` and the shared PR 12
   code; `test_chrome_host` (the checksum now covers 1012 / 1013; Probe checks `ChromeMetaEditArgs`);
   a Windows kill-mid-write test; the verify line and the PR 1 present-loop gate with a write in flight.

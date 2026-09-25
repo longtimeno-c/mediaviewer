@@ -62,6 +62,22 @@ std::optional<meta_job> meta_writer::take_next() {
   return j;
 }
 
+std::vector<meta_job> meta_writer::drain_for_exit() {
+  std::vector<meta_job> jobs;
+  jobs.reserve(pending_.size() + 1);
+  if (in_flight_) jobs.push_back(std::move(*in_flight_));
+  in_flight_.reset();
+  for (entry& e : pending_) {
+    meta_job j;
+    j.path = std::move(e.path);
+    j.fields = std::move(e.fields);
+    j.revert = e.revert;
+    jobs.push_back(std::move(j));
+  }
+  pending_.clear();
+  return jobs;
+}
+
 void meta_writer::finished(const meta_outcome& outcome) {
   in_flight_.reset();
   if (!outcome.ok) failure_ = outcome;
