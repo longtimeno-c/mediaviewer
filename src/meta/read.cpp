@@ -8,6 +8,7 @@
 #include "codec/format.h"
 #include "io/file.h"
 #include "meta/internal.h"
+#include "meta/write.h"
 
 namespace mv::meta {
 namespace {
@@ -50,6 +51,7 @@ result<metadata> read(std::string_view utf8_path) {
     // Not a still we know: a clip, or a file with nothing to say. Either way
     // the answer is a (possibly empty) metadata, not an error.
     (void)detail::read_clip(utf8_path, out);  // false = nothing to say
+    detail::overlay_sidecar(utf8_path, out);
     return out;
   }
 
@@ -61,6 +63,7 @@ result<metadata> read(std::string_view utf8_path) {
   if (out.properties.empty() && prefix->size() >= kPrefixBytes) {
     if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, oriented, out);
   }
+  detail::overlay_sidecar(utf8_path, out);
   return out;
 }
 

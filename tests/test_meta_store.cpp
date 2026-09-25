@@ -213,3 +213,59 @@ TEST_CASE("sort order round-trips through settings", "[sort]") {
   }
   CHECK(unpack_sort(7).key == sort_key::name);  // out-of-range key is name, not UB
 }
+
+TEST_CASE("invalidate drops a path's records whatever their mtime and size", "[meta][store]") {
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(2)));
+  std::atomic<int> reads{0};
+  mv::shell::meta_store store(
+      [&](std::string_view p) {
+        ++reads;
+        return fake_read(p);
+      },
+      [](std::string_view) { return std::optional<std::int64_t>{}; });
+  gate g;
+  const auto a = entry("a.jpg", 1, 10);
+  const auto b = entry("b.jpg", 1, 10);
+  REQUIRE(store.get(a, jobs, [&](std::string) { g.open(); }) == nullptr);
+  REQUIRE(store.get(b, jobs, [&](std::string) { g.open(); }) == nullptr);
+  REQUIRE(g.wait_for(2));
+  REQUIRE(store.peek(a));
+
+  // A sidecar write changes nothing about the file's own stamp.
+  store.invalidate("/dir/a.jpg");
+  CHECK_FALSE(store.peek(a));
+  CHECK(store.peek(b));  // another path is untouched
+  REQUIRE(store.get(a, jobs, [&](std::string) { g.open(); }) == nullptr);
+  REQUIRE(g.wait_for(3));
+  CHECK(store.peek(a));
+  CHECK(reads == 3);
+}
+
+TEST_CASE("a read that began before a write landed does not cache the old record", "[meta][store]") {
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(2)));
+  gate started, release, done;
+  std::atomic<int> reads{0};
+  mv::shell::meta_store store(
+      [&](std::string_view p) {
+        const int n = ++reads;
+        if (n == 1) {
+          started.open();
+          release.wait_for(1);  // hold the first read while the write "lands"
+        }
+        return fake_read(p);
+      },
+      [](std::string_view) { return std::optional<std::int64_t>{}; });
+  const auto a = entry("a.jpg", 1, 10);
+  REQUIRE(store.get(a, jobs, [&](std::string) { done.open(); }) == nullptr);
+  REQUIRE(started.wait_for(1));
+  store.invalidate("/dir/a.jpg");
+  release.open();
+  REQUIRE(done.wait_for(1));
+  CHECK_FALSE(store.peek(a));  // the stale record was dropped, not kept
+  // The `ready` that fired makes the UI ask again, and this time it sticks.
+  REQUIRE(store.get(a, jobs, [&](std::string) { done.open(); }) == nullptr);
+  REQUIRE(done.wait_for(2));
+  CHECK(store.peek(a));
+}

@@ -46,6 +46,15 @@ private func readTable(_ fetch: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) 
     .map { $0.split(separator: "\t", omittingEmptySubsequences: false) }
 }
 
+/// Reads one of the host's plain strings (two calls, like `readTable`).
+private func readText(_ fetch: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> String {
+  let needed = Int(fetch(nil, 0))
+  guard needed > 0 else { return "" }
+  var buf = [CChar](repeating: 0, count: needed + 1)
+  _ = buf.withUnsafeMutableBufferPointer { fetch($0.baseAddress, Int32($0.count)) }
+  return String(cString: buf)
+}
+
 @MainActor
 final class MetadataStore: ObservableObject {
   static let shared = MetadataStore()
@@ -56,6 +65,16 @@ final class MetadataStore: ObservableObject {
   @Published private(set) var properties: [MetaProperty] = []
   @Published private(set) var streams: [MetaStream] = []
   @Published private(set) var chapters: [MetaChapter] = []
+
+  // PR 12 (plan/06 "Writing"): what the pane edits. The host owns the truth; a
+  // change is queued there and lands on its I/O pool. These mirror it, and a
+  // change still waiting to be written already counts.
+  @Published private(set) var rating = 0  // -1 rejected, 0 none, 1...5
+  @Published private(set) var comment = ""
+  @Published private(set) var canEdit = false
+  @Published private(set) var canRevert = false
+  /// Moves when Ctrl+I asks for the comment field; the view focuses it once per ask.
+  @Published private(set) var focusSeq: UInt64 = 0
 
   private var generation: UInt64 = .max
   private var timer: Timer?
@@ -76,11 +95,28 @@ final class MetadataStore: ObservableObject {
     guard nowVisible else { return }  // closed: no parsing, no work
     let isLoading = mv_chrome_meta_loading()
     if isLoading != loading { loading = isLoading }
+    // Cheap host reads, every tick: a star clicked or a key pressed shows at once.
+    let stars = Int(mv_chrome_meta_rating())
+    if stars != rating { rating = stars }
+    let editable = mv_chrome_meta_can_edit()
+    if editable != canEdit { canEdit = editable }
+    let revertible = mv_chrome_meta_can_revert()
+    if revertible != canRevert { canRevert = revertible }
+    let text = readText { mv_chrome_meta_comment($0, $1) }
+    if text != comment { comment = text }
+    let focus = mv_chrome_meta_focus_seq()
+    if focus != focusSeq { focusSeq = focus }
+
     let g = mv_chrome_meta_generation()
     guard g != generation else { return }
     generation = g
     reload()
   }
+
+  func setRating(_ stars: Int) { mv_chrome_meta_set_rating(Int32(stars)) }
+  func setComment(_ text: String) { text.withCString { mv_chrome_meta_set_comment($0) } }
+  func revert() { mv_chrome_meta_revert() }
+  func blur() { mv_chrome_meta_blur() }
 
   private func reload() {
     summary = readTable { mv_chrome_meta_summary($0, $1) }.enumerated().map { i, f in

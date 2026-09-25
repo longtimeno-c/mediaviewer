@@ -20,6 +20,7 @@ namespace {
 std::mutex g_mu;
 std::string g_override;
 std::string g_addons_override;
+std::string g_snapshot_override;
 
 std::string home_dir() {
   if (const char* home = std::getenv("HOME"); home && home[0] == '/') return home;
@@ -74,6 +75,25 @@ result<std::string> addons_dir() {
   const std::string support = home + "/Library/Application Support";
   const std::string app = support + "/MediaViewer";
   const std::string dir = app + "/Add-ons";
+  if (!ensure_dir(support) || !ensure_dir(app) || !ensure_dir(dir)) return err(status::io);
+  return dir;
+}
+
+void set_metadata_snapshot_dir_override(std::string_view utf8_dir) {
+  std::lock_guard lock(g_mu);
+  g_snapshot_override.assign(utf8_dir);
+}
+
+result<std::string> metadata_snapshot_dir() {
+  {
+    std::lock_guard lock(g_mu);
+    if (!g_snapshot_override.empty()) return g_snapshot_override;
+  }
+  const std::string home = home_dir();
+  if (home.empty()) return err(status::io);
+  const std::string support = home + "/Library/Application Support";
+  const std::string app = support + "/MediaViewer";
+  const std::string dir = app + "/Metadata Snapshots";
   if (!ensure_dir(support) || !ensure_dir(app) || !ensure_dir(dir)) return err(status::io);
   return dir;
 }

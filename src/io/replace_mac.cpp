@@ -43,6 +43,24 @@ expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> byt
   return {};
 }
 
+expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  const std::string path(utf8_path);
+  std::string temp;
+  int fd = -1;
+  for (int attempt = 0; attempt < 100 && fd < 0; ++attempt) {
+    temp = path + ".mvtmp" + std::to_string(::getpid()) + "-" + std::to_string(attempt);
+    fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+  }
+  if (fd < 0) return err(status::io);
+  const bool ok = write_fd(fd, bytes);
+  // link(2) fails with EEXIST rather than replacing, which is what "new" means;
+  // the temporary is unlinked either way.
+  const bool linked = ::close(fd) == 0 && ok && ::link(temp.c_str(), path.c_str()) == 0;
+  ::unlink(temp.c_str());
+  return linked ? expected{} : expected{err(status::io)};
+}
+
 expected replace_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
   const std::string path(utf8_path);

@@ -63,6 +63,12 @@ struct summary {
   std::int64_t date_taken_key = 0;
   // EXIF orientation as stored (1..8, 1 when absent).
   std::uint8_t orientation = 1;
+  // PR 12: what the file (or its XMP sidecar, which wins) says. 1..5 stars,
+  // -1 rejected, 0 unrated (no tag). The comment is EXIF UserComment, else
+  // XMP exif:UserComment, else empty; UTF-8, newlines kept (the pane's table
+  // flattens them for display; the edit field reads this one).
+  int rating = 0;
+  std::string comment;
 };
 
 // An AF area in the stored pixel grid, normalised to 0..1 with a top-left

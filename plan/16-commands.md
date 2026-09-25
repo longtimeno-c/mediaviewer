@@ -225,7 +225,16 @@ the next / previous source, `Ctrl+J` / `⌘J` ejects, `Esc` closes the window an
 |---|---|
 | Numpad `0`–`5` | Rating. No numpad: `Ctrl+Shift+0`–`Ctrl+Shift+5` |
 | `U` | Unflag / clear colour label (label write is v1.1; `U` is a no-op until then) |
-| `X` | Reject mark (convenience for `Insert` + next). Does not delete |
+| `X` | Reject mark (convenience for `Insert` + next). Does not delete. **Not built in PR 12** (a mark, not a metadata write; see 12) |
+| `Ctrl+I` (`⌘I`) | Edit comment (PR 12): shows the metadata pane and puts the keyboard in its comment field. `Return` saves, `Esc` drops the edit; both return to the canvas |
+
+Rating keys write the item on screen only (a batch is v1.1), in browse, video, island and gallery
+modes, not in a slideshow or crop mode. A JPEG is rewritten in place; anything else gets an XMP
+sidecar. The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a sidecar took it).
+**macOS: `⌘⇧3`, `⌘⇧4` and `⌘⇧5` are the system's screenshot shortcuts and never reach the app**
+unless they are turned off in System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ Screenshots; the
+keypad works regardless. Remapping in Settings is the way round it until the owner picks another
+chord.
 
 ### Video (PR 5c) and trim (PR 13)
 

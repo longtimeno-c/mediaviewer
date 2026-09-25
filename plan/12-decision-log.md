@@ -1972,3 +1972,78 @@ branch; it does **not** merge before 15, and it is not done until both platforms
 - Review fixes that change no call: a hidden file or link beside an add-on is refused; a member that
   fails on one destination removes what it wrote on the other; the UI thread no longer reads
   `import.db`; the host table's volume-watch deadlock. See the PR.
+
+
+## 2026-09-25 — PR 12 (metadata write): shared core and the macOS half
+
+Branch `pr12-metadata-write`, cut from `main` after PR 11 and Milestone G merged. **Windows half not
+started** (the owner builds it on another machine, on this branch). Nothing reverses a D-decision.
+
+**Shared core (`src/meta`, `src/io`, `src/shell`).**
+- `meta::write` / `revert` / `write_target_for` (`write.h`). Fields: rating (1–5, −1 rejected, 0 or
+  clear removes every rating tag, so "unrated" is an absent tag), orientation, user comment.
+- **In place only for a plain JPEG.** Exiv2 rewrites it, then the result is verified before the swap
+  (see plan/06 "As built"). The swap is the PR 10 `io::replace_atomic`. A JPEG Exiv2 will not rewrite
+  cleanly falls back to the sidecar for rating / comment (never for orientation, which the display
+  reads only from the file).
+- **A maker note Exiv2 understands is compared value for value** (`Exif.Canon.*`, …); its raw blob
+  legitimately moves when the block is laid out again, and its internal offsets move with it. One it
+  does not understand must come back byte for byte. The plan's "byte-for-byte across the corpus" is
+  therefore *value for value for decoded notes, byte for byte for opaque ones and for a rating-only
+  write (the EXIF segment is not touched at all)*. Tested on the five RAW cameras' EXIF carried into a
+  JPEG: all five preserved.
+- **Rating is XMP-only**, mirrored into `Exif.Image.Rating` / `RatingPercent` only where present.
+- **Comment** is the EXIF `UserComment` (ASCII, else UNICODE/UCS-2 in the block's byte order) plus
+  XMP `exif:UserComment`. Encoded and decoded by hand (`fields.cpp`): Exiv2 hands a file's value back
+  as opaque bytes and its own comment type needs iconv, which differs per platform.
+- **Sidecar** `IMG_1234.xmp` beside the file, merged with any existing one; a sidecar that is not XMP
+  is never overwritten (`corrupt`); a sidecar left empty is deleted. A sidecar beside a JPEG that is
+  written in place is kept in step (it wins on read, so a stale one would hide the new value). Because
+  the sidecar name is the stem, RAW+JPEG and HEIC+MOV pairs share one — rating either rates both once
+  the sidecar exists. That is left as is.
+- **Snapshot** = the prior value of the three fields (all this writer can change) plus whether a
+  sidecar existed, in `io::metadata_snapshot_dir()` (`%LocalAppData%\MediaViewer\metadata-snapshots`,
+  `~/Library/Application Support/MediaViewer/Metadata Snapshots`), taken before the first write per
+  file per session, and a write with no way back is not made. **Departs from the plan**, which says
+  "the original metadata block": restoring the three fields cannot clobber a change made elsewhere.
+- **New in `io`:** `write_new_atomic` (a new sidecar appears whole or not at all — a half sidecar would
+  poison every later write), `metadata_snapshot_dir`.
+- **Not writable in place, on purpose:** PNG / WebP (the checked rewrite is JPEG-only), TIFF, HEIC.
+- `shell::meta_writer` (host-shared queue: coalescing, one write at a time, optimistic state),
+  `edit_session::metadata_rewritten` (a rating rewrites a JPEG's bytes but not its pixels, so the
+  item's edits are re-keyed instead of lost), `meta_store::invalidate` (a sidecar write leaves the
+  file's own stamp alone; a read that began before a write cannot cache the old record).
+- **Keys.** `key::numpad0..9`; commands `set_rating_0..5` (ids appended after `import_now`) on numpad
+  `0`–`5` and `Ctrl+Shift+0`–`5`; **new, not in plan/16:** `edit_comment` on `Ctrl+I`. `X` (reject
+  mark) and `U` are not built. **`F2` rename** (plan/16 lists it in the PR 12 row) is a file rename,
+  not a metadata write, and is not in the roadmap's PR 12 text: **not built, needs a call.**
+- Rating spam writes the last value once (0.25 s debounce); a comment writes on Return or blur.
+
+**macOS half.** `main_mac.mm` (keypad translation, the queue, completion, the command-bar notice),
+`MetadataView.swift` (stars, comment field, Revert), `NoticeStore.swift`, C bridge functions in
+`mv_chrome_bridge.h`. A lossless rotation and a metadata write of the same JPEG never overlap.
+
+**Verified.** `mv_tests` (macOS, Apple Silicon): writer, sidecar, snapshot / revert, SIGKILL mid-write
+(24 rounds on a JPEG, 40 on a new sidecar: the file is always whole), the five-camera corpus, queue,
+router and edit-session cases. The Mac app was driven with real keystrokes on a scratch copy: keypad
+`2` and `5`, `⌘⇧1` and keypad `0` wrote, changed and cleared `xmp:Rating` in the JPEG.
+
+**Not verified, owed.**
+- Everything Windows: `main.cpp`, the WinUI pane, VK_NUMPAD → `key::numpad*`, MSVC `/W4 /WX` on
+  `replace_win.cpp`, `paths_win.cpp`, `meta/*.cpp`, the new tests (the two kill tests are POSIX-only;
+  a Windows kill test would need a child process), and `io::write_new_atomic`'s `MoveFileExW`.
+- Both platforms' hardware verify lines and both present-loop gates with a write in flight.
+- Comment editing by keyboard on Mac was built, not exercised. `Ctrl+I` → field focus is untested.
+- **`⌘⇧3` / `⌘⇧4` / `⌘⇧5` never reach the app** (system screenshot shortcuts). The plan makes this
+  chord the Mac's primary; the keypad is the only path until the shortcuts are disabled or the owner
+  picks another chord.
+- Cross-platform read-back is argued (same code, deterministic bytes: tested) but not run across two
+  machines.
+
+**Windows to-do.** Translate `VK_NUMPAD0..9` (`VK_NUMPAD` when NumLock is on) to `key::numpad0..9`;
+handle `set_rating_*` and `edit_comment` in `main.cpp` with a `meta_writer`, a debounce timer, the
+same completion steps as `metaWriteFinished` in `main_mac.mm` (invalidate the store, re-stat the file,
+`edit_session::metadata_rewritten`, refresh the record) and the rotation / metadata mutual exclusion;
+add the commands to the island's enum and probe hash; the pane's rating and comment. The pane's
+comment field is the hard part: a `TextBox` in an island fail-fasts (0xC000027B), so it needs the
+workaround the go-to / find flyouts use, or a native edit control.
