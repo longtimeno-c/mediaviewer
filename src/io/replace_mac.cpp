@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // POSIX half of the io replace port (io/replace.h). macOS in the product; the
 // Linux core test build uses it too.
 #include "io/replace.h"

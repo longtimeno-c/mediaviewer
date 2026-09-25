@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Darwin / Apple Silicon host (PR 16–20). Included from the root
 # CMakeLists.txt and then returns, so none of the Windows targets are defined.
@@ -780,4 +781,4 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-2.0-or-later")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-3.0-or-later")

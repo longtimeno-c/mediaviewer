@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # libFuzzer harnesses, one per decoder entry point (PR 7, plan/09: "libFuzzer
 # harness per decoder against the corpus, run in CI nightly").

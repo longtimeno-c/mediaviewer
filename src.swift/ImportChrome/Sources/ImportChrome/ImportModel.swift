@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Import window's model over the mv.import.1 table (mediaviewer_import.h),
 // the Mac twin of ImportWindow.cs. Calls marked [no-block] in the header run
 // on the main actor; the ones that read files or import.db run detached.

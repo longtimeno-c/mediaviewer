@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Image blit, Metal twin of gfx/blit.cpp's HLSL (plan/15 "Shaders": hand-written
 // HLSL/MSL twins, same algorithm, register binding documented in a comment).
 // Single-texture path only — the tiled-pyramid path (vs_tile/ps_tile) is PR 4/7

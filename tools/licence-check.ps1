@@ -1,8 +1,9 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The licence gate from plan/11-licensing.md's PR 1 checklist.
 #
-# MediaViewer is GPL-2.0-or-later, which makes Exiv2, FFmpeg, libheif, libde265
+# MediaViewer is GPL-3.0-or-later, which makes Exiv2, FFmpeg, libheif, libde265
 # and LibRaw all compliant. It does NOT make everything permissible: two
 # categories are still forbidden, for reasons that have nothing to do with our
 # own licence.
@@ -188,8 +189,23 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
 $licensePath = Join-Path $RepoRoot 'LICENSE'
 if (-not (Test-Path $licensePath)) {
     Add-Violation 'missing LICENSE' 'The repository has no LICENSE file.'
-} elseif ((Get-Content -Raw -LiteralPath $licensePath) -notmatch 'GNU GENERAL PUBLIC LICENSE') {
-    Add-Violation 'unexpected LICENSE' 'LICENSE is not the GPL text the plan settled on.'
+} else {
+    $licenseText = Get-Content -Raw -LiteralPath $licensePath
+    if ($licenseText -notmatch 'GNU GENERAL PUBLIC LICENSE\s+Version 3,') {
+        Add-Violation 'unexpected LICENSE' 'LICENSE is not the GNU GPL version 3 text the plan settled on (plan/12, 2026-09-25).'
+    }
+}
+
+if (-not (Test-Path (Join-Path $RepoRoot 'NOTICE'))) {
+    Add-Violation 'missing NOTICE' 'plan/11 requires NOTICE (copyright line, licence, pointer to THIRD-PARTY.md) beside LICENSE.'
+}
+
+$rootManifest = Join-Path $RepoRoot 'vcpkg.json'
+if (Test-Path $rootManifest) {
+    $declared = (Get-Content -Raw -LiteralPath $rootManifest | ConvertFrom-Json).license
+    if ($declared -ne 'GPL-3.0-or-later') {
+        Add-Violation 'app licence not GPL-3.0-or-later' "vcpkg.json declares '$declared'. plan/11: the app is GPL-3.0-or-later."
+    }
 }
 
 if (-not (Test-Path (Join-Path $RepoRoot 'THIRD-PARTY.md'))) {

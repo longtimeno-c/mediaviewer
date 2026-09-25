@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5a - NV12/P010 -> RGB with the stream's real matrix, plus HLG/PQ -> SDR
 // tone-mapping. Lives in gfx/ because gfx may not include player.
 //

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Reviewer tests for the PR 6 key router: the cases a table-driven router gets
 // wrong when two keys are held at once, and an exhaustive sweep that proves no
 // (key, mods, mode, edge) input can produce an out-of-range or half-bound route.

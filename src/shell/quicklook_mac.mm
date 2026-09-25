@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Finder thumbnails for the D5 still set (PR 20, plan/15): the principal class
 // of MediaViewerThumbnails.appex, a Quick Look thumbnail extension.
 //

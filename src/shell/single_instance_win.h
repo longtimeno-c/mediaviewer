@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 15 (plan/09 "Single-instance ... named pipe hands the path to the running
 // instance, overridable"; plan/12 2026-09-25): a second MediaViewer started
 // by the same user (Explorer, the jump list, a shortcut) hands its paths to

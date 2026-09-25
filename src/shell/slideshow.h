@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Slideshow as a mode (plan/16 "Slideshow"). No transition pass: "next" is the
 // same navigation command as browse, on a timer, so prefetch and the
 // generation counter stay in play. This is the pure part — order, interval,

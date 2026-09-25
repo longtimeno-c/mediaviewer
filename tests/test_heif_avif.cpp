@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and the D3 OS-codec
 // probe. Fixtures are tiny generated files in tests/data/{heif,avif}/ (see
 // tests/data/README.md); real iPhone samples are fetched, not committed, and

@@ -168,7 +168,7 @@ decoded pixels back over shared memory. This is what browsers do and it converts
 
 ## Distribution
 
-Direct download only. The app is GPL-2.0-or-later; Store MSIX is off the table
+Direct download only. The app is GPL-3.0-or-later; Store MSIX is off the table
 ([11-licensing.md](11-licensing.md)).
 
 **First install:** a signed **Inno Setup** wizard, per-user, no UAC, branded with the app

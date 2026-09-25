@@ -2328,3 +2328,30 @@ Mac user throws a `.dmg` away; Windows deletes because Setup has no Recycle Bin 
 PowerShell. A disk image cannot run code when the app is dragged out of it, so the Mac check
 lives in the app, not the image. Nothing is offered while the app is running from, or
 translocated off, the image.
+
+## 2026-09-25 (later) — app licence moves to GPL-3.0-or-later
+
+**Decision.** The app licence changes from GPL-2.0-or-later to **GPL-3.0-or-later**. The reason
+is attribution: GPLv3 defines "Appropriate Legal Notices" for interactive user interfaces
+(§0, §5(d)), which is what the About flyout is. It is still copyleft. Nothing else changes.
+
+- **Allowed by the licence:** preserve copyright notices, ship `LICENSE` + `NOTICE`, mark
+  modified files, show the legal notices in the UI. **Not added, and not addable:** "credit us on
+  your website / store listing", "keep the name MediaViewer", any selling ban (GPL §10, "no
+  further restrictions"). The name and icon are a trademark request in the README only.
+- **Unchanged:** the selling model (forks may charge), dual-licensing (none), telemetry, updater,
+  pricing, and **the Store is still not a goal**. FFmpeg stays LGPL-only, dynamic, no
+  `--enable-gpl`; no LibRaw GPL demosaic pack; Exiv2 stays under the GPL (upstream is "GPL-2.0
+  or later", so it combines with a GPL-3.0 app); `THIRD-PARTY.md` stays.
+- **Side effect:** Apache-2.0 components (the Crashpad client) are now compatible outright; the
+  2026-09-14 note that a binary was "conveyed under GPL-3.0 terms" is now just the licence.
+- **Holder:** `Copyright (C) 2026 longtimeno-c`, the handle already used in the repo URL and
+  commit history; no legal name appears anywhere in the tree. The owner may replace it with a
+  legal name in one search-and-replace.
+- **Done in this change:** `LICENSE` (GPLv3), new `NOTICE`, copyright + SPDX header on every
+  first-party source file, About on both platforms (copyright line, "Licensed under GNU GPL v3
+  or later", links to `LICENSE`, `NOTICE`, `THIRD-PARTY.md`), `NOTICE` shipped beside `LICENSE`
+  in the Windows payload and the macOS bundle, version resources / `Info.plist` /
+  installer strings, and `tools/licence-check.ps1` (asserts GPLv3 `LICENSE`, `NOTICE`, and
+  `vcpkg.json` = GPL-3.0-or-later; the FFmpeg LGPL checks are untouched).
+- **Superseded, kept as history:** the 2026-09-06 "App licence: GPL-2.0-or-later" row above.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The pixel half of the JPEG-512 thumbnail (image/thumb.h make_thumb_rgba),
 // in its own translation unit: the Explorer thumbnail handler (shellext/)
 // links this and nothing of the SQLite cache in thumb.cpp.

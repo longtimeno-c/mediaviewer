@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  SPDX-License-Identifier: GPL-2.0-or-later
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
   MediaViewerSpotlight.mdimporter (PR 15, plan/12 2026-09-25): Spotlight
   fields for the D5 clip containers macOS does not index itself (Matroska,
   WebM, AVI, MPEG-TS). Stills are not claimed: the system Image importer

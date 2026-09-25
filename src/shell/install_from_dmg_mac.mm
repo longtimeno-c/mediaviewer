@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Move-to-Applications and eject, for a launch straight from the DMG. The
 // original on the image is never modified (rule 5): the app is copied, the copy
 // is launched, and a detached shell detaches the image once this process exits

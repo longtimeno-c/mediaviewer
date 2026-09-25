@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Preview → full without a visible pop (plan/04, "Progressive display", step 4).
 //
 // A still reaches the render thread more than once: a first-pixel preview (JPEG

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // mv_crash_context — the core's crash-context table, handed to the host.
 // Separate TU so abi.cpp (shared by several PR 7 slices) is not touched.
 #include "mediaviewer/mediaviewer_crash.h"

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The in-window command bar. Styled to match the Windows island bar
 // (IslandHost.cs): the canvas colour, CozetteVector 16 pt, flat text buttons
 // with a faint hover wash, dark flyouts with a hairline border, and a hairline
@@ -84,6 +85,19 @@ private func aboutVersionLine() -> String {
   return "Version \(String(cString: buf))"
 }
 
+/// Opens a file bundled in Contents/Resources (macpack.py puts LICENSE.txt,
+/// NOTICE.txt and THIRD-PARTY.md there); if it is not there — a bare `swift
+/// run` — the same file on GitHub. Part of the About flyout, which is the
+/// GPLv3 "Appropriate Legal Notices" (plan/11).
+private func openLegalFile(_ name: String, github: String) {
+  if let url = Bundle.main.resourceURL?.appendingPathComponent(name),
+     FileManager.default.fileExists(atPath: url.path) {
+    NSWorkspace.shared.open(url)
+  } else if let url = URL(string: "https://github.com/longtimeno-c/mediaviewer/blob/main/" + github) {
+    NSWorkspace.shared.open(url)
+  }
+}
+
 /// A bar button that opens a dark flyout beneath it.
 private struct BarFlyout<Content: View>: View {
   let title: String
@@ -155,10 +169,22 @@ public struct CommandBarView: View {
             Text(aboutVersionLine())
               .font(MVTheme.font())
               .foregroundStyle(MVTheme.body)
-            Text("Licensed GPL-2.0-or-later")
+            Text("Copyright (C) 2026 longtimeno-c")
               .font(MVTheme.font())
               .foregroundStyle(MVTheme.body)
               .padding(.top, 6)
+            Text("Licensed under GNU GPL v3 or later")
+              .font(MVTheme.font())
+              .foregroundStyle(MVTheme.body)
+            FlyoutItem(title: "Licence (GPL-3.0-or-later)") {
+              openLegalFile("LICENSE.txt", github: "LICENSE")
+            }
+            FlyoutItem(title: "Notice") {
+              openLegalFile("NOTICE.txt", github: "NOTICE")
+            }
+            FlyoutItem(title: "Third-party notices") {
+              openLegalFile("THIRD-PARTY.md", github: "THIRD-PARTY.md")
+            }
             Text("Everything works from the keyboard. Press ? for the shortcuts of what you are doing.")
               .font(MVTheme.font())
               .foregroundStyle(MVTheme.title)

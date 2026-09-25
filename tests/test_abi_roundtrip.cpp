@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The PR 1 ABI deliverable, exercised: "a header, an mv_guard, one call, a
 // SafeHandle, and a completion drain — proving the shape end to end before

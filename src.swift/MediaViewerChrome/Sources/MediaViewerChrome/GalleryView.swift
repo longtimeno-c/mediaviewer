@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 18's gallery (plan/10-roadmap.md, folded-in Windows PR 4, plan/12
 // 2026-09-17): "a full-client thumbnail grid... a click opens it in the
 // viewer" (plan/16-commands.md's `G` row). `G` toggles visibility and `Esc`

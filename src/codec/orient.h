@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Display-path orientation (plan/04: "Apply EXIF/container orientation on the
 // display path, never as a surprise 90° pixel rotate of the original").
 //

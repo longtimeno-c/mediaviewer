@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Single-producer / single-consumer ring of POD messages.
 //
 // plan/02-architecture.md: "Communication is exclusively single-producer/

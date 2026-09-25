@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 11 — the colour-adjust kernel, written once.
 //
 // plan/10 PR 11: "HLSL and MSL twins that disagree fail the PR." Rather than

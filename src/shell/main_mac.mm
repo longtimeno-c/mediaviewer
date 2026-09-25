@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // AppKit host for the Metal present lab. PR 16/17 built the canvas; PR 18
 // adds the SwiftUI command bar hosted alongside it (plan/10, plan/15 —
 // "the canvas is not ported to SwiftUI"). MvMetalView keeps covering the

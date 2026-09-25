@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # PR 20: MediaViewer.app, its Quick Look thumbnail extension, and Sparkle 2.
 # Included from cmake/darwin.cmake after the host sources are defined.

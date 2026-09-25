@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Typed views over settings.ini. Every read here is the in-memory document and
 // every save is a coalesced write on the store's persist worker
 // (shell/settings_store.h) -- none of them touch the disk on the calling thread.

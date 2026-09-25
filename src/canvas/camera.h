@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Pan/zoom camera. 1.0 zoom is 100 % (one image pixel per screen pixel).
 // Pan is the image pixel sitting at the window centre.
 #pragma once

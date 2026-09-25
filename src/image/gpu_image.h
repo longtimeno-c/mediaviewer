@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Immutable GPU texture produced on a decode worker
 // (plan/02: CreateTexture2D + D3D11_SUBRESOURCE_DATA, never Map on the
 // immediate context).

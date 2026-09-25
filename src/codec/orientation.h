@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The eight EXIF orientations as a group (D4), shared by the display path
 // (codec/orient.cpp), the edit stack (edit/) and the lossless JPEG transform.
 //

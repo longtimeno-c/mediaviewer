@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  SPDX-License-Identifier: GPL-2.0-or-later
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
   MediaViewer.app (PR 20, plan/15). Configured by cmake/darwin.cmake.
 
   Document types are the D5 still set plus the D5 video containers, at
@@ -50,7 +51,7 @@
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>GPL-2.0-or-later. https://github.com/longtimeno-c/mediaviewer</string>
+  <string>Copyright (C) 2026 longtimeno-c. Licensed under GPL-3.0-or-later. https://github.com/longtimeno-c/mediaviewer</string>
 
   <key>CFBundleDocumentTypes</key>
   <array>

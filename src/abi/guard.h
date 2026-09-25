@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // mv_guard — the exception boundary.
 //
 // plan/14-abi.md: "No exception may cross the boundary. An exception escaping

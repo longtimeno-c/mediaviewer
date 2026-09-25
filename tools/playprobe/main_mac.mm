@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // playprobe -- headless PR 19 pipeline check on a real Mac.
 //
 // Opens a clip on the system MTLDevice, plays it against a 60 Hz timer (the

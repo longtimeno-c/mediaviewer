@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // WebP (still and animated) via libwebp (BSD-3). A still decodes straight into
 // the raster with WebPDecodeRGBAInto. An animation goes through
 // WebPAnimDecoder, which composites onto the canvas itself and hands back

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """MediaViewer.app packaging (PR 20, plan/13 "macOS first install", plan/15).
 
   macpack.py assemble ...   build/MediaViewer.app, ad-hoc signed (CMake's
@@ -298,6 +299,7 @@ def cmd_assemble(args: argparse.Namespace) -> None:
     shutil.copyfile(args.font, contents / "Resources" / Path(args.font).name)
     # The licence and third-party notices ship with the binary they describe.
     shutil.copyfile(REPO_ROOT / "LICENSE", contents / "Resources" / "LICENSE.txt")
+    shutil.copyfile(REPO_ROOT / "NOTICE", contents / "Resources" / "NOTICE.txt")
     shutil.copyfile(REPO_ROOT / "THIRD-PARTY.md", contents / "Resources" / "THIRD-PARTY.md")
     shutil.copyfile(REPO_ROOT / "assets" / "licenses" / "llvm-openmp.txt",
                     contents / "Resources" / "llvm-openmp.txt")

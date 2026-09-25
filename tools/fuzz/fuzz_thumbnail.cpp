@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // libFuzzer harness: the Explorer thumbnail handler's entry point (PR 15,
 // plan/09: "Fuzz the handler entry points specifically, not just the
 // decoders behind them"). shellext::render_thumbnail is everything

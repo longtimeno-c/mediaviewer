@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // MediaViewerClipJob: runs one clip job for the viewer's queue, out of
 // process (plan/08 "Execution & UX"; protocol in src/edit/clip_wire.h).
 //

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Pure helpers behind the metadata read model: no Exiv2, no FFmpeg, no I/O.
 #include <algorithm>
 #include <cmath>

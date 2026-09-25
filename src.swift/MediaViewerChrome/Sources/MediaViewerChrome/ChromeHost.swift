@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The one thing src/shell/main_mac.mm (ObjC++) needs from Swift: a plain
 // NSView hosting the command bar. Building the app target with
 // `-emit-objc-header-path` generates MediaViewerChrome-Swift.h, which

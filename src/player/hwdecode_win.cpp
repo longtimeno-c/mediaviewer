@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5a - D3D11VA hardware decode. Windows port (D9 / plan/15-platforms.md).
 //
 // OWNER: mediaviewer-48 (5a). This is the ONLY file in player/ permitted to

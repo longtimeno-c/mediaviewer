@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9 verify (plan/10): a JPEG with EXIF, a PNG with XMP, a HEIC and an MP4
 // all populate; missing metadata renders as empty fields, never an error.
 // Fixtures are built in the test — nothing here needs a corpus.

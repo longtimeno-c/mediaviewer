@@ -1,3 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Python tools for `tools/mac/macpack.py release` (macOS only). Pinned.
 dmgbuild==1.6.7

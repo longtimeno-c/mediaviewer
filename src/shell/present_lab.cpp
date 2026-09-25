@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/present_lab.h"
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"

@@ -1,5 +1,6 @@
 // swift-tools-version: 5.9
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Milestone G (plan/18): the Import add-on's Mac chrome. Built as a dynamic
 // library that cmake/darwin.cmake wraps into Import.bundle (principal class

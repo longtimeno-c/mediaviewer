@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5b — headless A/V clock/selection diagnostic. No swapchain, draw, or
 // display present occurs here. Its counters cannot certify video smoothness.
 //

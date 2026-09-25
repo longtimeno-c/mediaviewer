@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The command table: host keys, modes, command ids, and the default map.
 //
 // plan/16-commands.md: one router, one table. Dispatch is an array index, not a

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The clock's behaviour against a FAKE endpoint.
 //
 // Two of the three clauses in PR 5b's verify line — "unplugging the audio device

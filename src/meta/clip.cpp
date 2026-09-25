@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Clip metadata through libavformat: container facts, one inspector record per
 // stream (video / audio / subtitle / attachment), chapters and tags. FFmpeg is
 // already the video pipeline (plan/05), so this reads in-process rather than

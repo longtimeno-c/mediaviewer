@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10 — the host's edit state, shared by both hosts (plan/16 "Crop" mode,
 // `[` `]` from the viewer; plan/07 EditStack).
 //

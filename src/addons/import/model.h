@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Import add-on's data model (plan/18-import.md "The engine").
 //
 // A *unit* is what is copied, verified, skipped and sorted together: one file,

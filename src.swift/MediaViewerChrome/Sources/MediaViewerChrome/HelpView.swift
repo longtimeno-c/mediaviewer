@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // `?` cheat sheet (plan/16-commands.md "`?`"): a chrome overlay over the
 // canvas listing the current bindings. Generated from the live command table
 // (mv_chrome_command_table: the shared table, limited to what this host runs,

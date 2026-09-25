@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The pacer is the thing that decides whether PR 1's verify line holds, so its
 // arithmetic is tested rather than trusted. The GPU-facing half (DXGI frame

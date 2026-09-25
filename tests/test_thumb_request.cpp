@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 15: the Explorer thumbnail handler's portable half (shellext/thumb_request).
 // The COM wrapper is Windows-only; everything it decides is decided here.
 #include <catch2/catch_test_macros.hpp>

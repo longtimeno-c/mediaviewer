@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later
+/* Copyright (C) 2026 longtimeno-c
+/* SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The Import add-on's interface to the chrome (plan/18-import.md), obtained
  * with mv_addon_api.query(addon, MV_IMPORT_INTERFACE). Both chromes call it:

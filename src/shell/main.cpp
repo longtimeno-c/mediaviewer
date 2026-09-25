@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // MediaViewer present lab — the Win32 entry point.
 //
 // This is the top-level window described in plan/02-architecture.md's shell/

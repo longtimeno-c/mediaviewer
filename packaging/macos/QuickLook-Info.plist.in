@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  SPDX-License-Identifier: GPL-2.0-or-later
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
   MediaViewerThumbnails.appex: Finder thumbnails for the D5 still set (PR 20).
   A Quick Look thumbnail extension runs in its own sandboxed process, never in
   Finder. A decoder that crashes on a corrupt file takes down that process

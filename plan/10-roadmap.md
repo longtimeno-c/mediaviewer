@@ -206,7 +206,7 @@ A **short first-install wizard** (Inno Setup) that lays down a **per-user** Velo
 under `%LocalAppData%\MediaViewer`, then **Velopack** for every later update (staged
 rollout, signed manifest, rollback). Azure Trusted Signing on the wizard, the binaries,
 and the update manifest. About dialog + `THIRD-PARTY.md` + per-release LGPL source offer.
-Store MSIX is **not** a channel — the app is GPL-2.0-or-later ([11](11-licensing.md)).
+Store MSIX is **not** a channel — the app is GPL-3.0-or-later ([11](11-licensing.md)).
 Full design, including the wizard pages: [13-updates-and-telemetry.md](13-updates-and-telemetry.md).
 
 The wizard is the one-time download-and-setup. Updates never re-open it. It does **not**

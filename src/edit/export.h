@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10 export (plan/07 "Export"): the edit stack baked at full resolution
 // into a *new* file (rule 5 — the original is never the target), with a
 // metadata preservation policy.

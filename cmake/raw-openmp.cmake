@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # LibRaw is built by vcpkg with OpenMP. Use the same runtime to bound its
 # worker teams. On Windows vcpkg builds LibRaw with MSVC even in clang-cl CI;
 # linking LLVM's runtime there would control a different thread pool.

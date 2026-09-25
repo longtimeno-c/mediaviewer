@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The snapshot the UI thread publishes and the render thread consumes.
 //
 // plan/02-architecture.md: "The UI thread publishes a state snapshot; the

@@ -94,8 +94,16 @@ The keys below come from the command table specified in
 [plan/16-commands.md](plan/16-commands.md); press `?` in the app for the ones
 that apply to what you are doing.
 
-**Licence: GPL-2.0-or-later** ([LICENSE](LICENSE)). Settled in PR 1; the reasoning is in
-[plan/11-licensing.md](plan/11-licensing.md).
+**Licence: GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE](NOTICE)). Settled in PR 1 as
+GPL-2.0-or-later and moved to GPL-3.0-or-later on 2026-09-25; the reasoning is in
+[plan/11-licensing.md](plan/11-licensing.md) and [plan/12-decision-log.md](plan/12-decision-log.md).
+Nothing about selling or distributing it changed.
+
+**Attribution.** Copyright (C) 2026 longtimeno-c. Copies and forks must keep the copyright
+notices, `LICENSE`, `NOTICE` and the in-app legal notices (About: copyright line, licence line,
+links to `LICENSE`, `NOTICE` and `THIRD-PARTY.md`). They may charge money for it, as the GPL
+allows. Please do not present a fork as the original MediaViewer: the name and icon are a
+trademark request, not a licence term.
 
 ---
 
@@ -818,7 +826,7 @@ The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, wit
 UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
 for every update, which is how update mechanisms stop working
 ([plan/13](plan/13-updates-and-telemetry.md)). There is no Microsoft Store channel — the
-app is GPL-2.0-or-later ([plan/11](plan/11-licensing.md)).
+app is GPL-3.0-or-later ([plan/11](plan/11-licensing.md)).
 
 First install is an Inno Setup wizard; every later update is Velopack, in the background,
 never re-opening the wizard.
@@ -1321,6 +1329,6 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
-GPL-2.0-or-later, see [LICENSE](LICENSE). Bundled libraries and their licences are listed in
+GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE). Bundled libraries and their licences are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md). Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.
 

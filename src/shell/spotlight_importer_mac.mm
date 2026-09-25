@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 15: MediaViewerSpotlight.mdimporter, the Mac twin of the Explorer
 // property handler (plan/10 PR 15, plan/12 2026-09-25). A CFPlugIn Spotlight
 // importer for the D5 clip containers macOS does not index (Matroska, WebM,

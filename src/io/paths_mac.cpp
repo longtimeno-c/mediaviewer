@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Darwin twin of paths_win.cpp: the process-wide thumbnail cache lives under
 // ~/Library/Caches/MediaViewer/thumbs, never in the folder being browsed
 // (browsing must not write into a user's photo folder, and the cached

@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Pin vcpkg to vcpkg.json's builtin-baseline and restore the one installed tree
 # shared by every Windows job. Callers that miss the cache must install and
 # save it themselves; this action never writes the cache, so a failing test

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // On-disk JPEG-512 thumbnail cache. Spec jpg512.2 (plan/04, plan/12 2026-09-07;
 // .2 since PR 10: JPEG thumbs carry the EXIF orientation, so .1 rows regenerate).
 #pragma once

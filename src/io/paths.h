@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Process-wide cache locations. UTF-8. Windows impl is paths_win.cpp (D9).
 #pragma once
 

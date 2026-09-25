@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9 — metadata read model (plan/06-metadata.md).
 //
 // One vocabulary for the UI: EXIF / IPTC / XMP from Exiv2, container and

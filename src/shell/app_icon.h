@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Shared between mediaviewer.rc and main.cpp. Resource 1 is the first icon in
 // the exe, which is the one Explorer and shortcuts show for it.

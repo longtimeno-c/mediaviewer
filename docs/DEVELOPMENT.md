@@ -102,7 +102,7 @@ The keys below come from the command table specified in
 [plan/16-commands.md](../plan/16-commands.md); press `?` in the app for the ones
 that apply to what you are doing.
 
-**Licence: GPL-2.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
+**Licence: GPL-3.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
 [plan/11-licensing.md](../plan/11-licensing.md).
 
 ---
@@ -680,7 +680,7 @@ The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, wit
 UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
 for every update, which is how update mechanisms stop working
 ([plan/13](../plan/13-updates-and-telemetry.md)). There is no Microsoft Store channel — the
-app is GPL-2.0-or-later ([plan/11](../plan/11-licensing.md)).
+app is GPL-3.0-or-later ([plan/11](../plan/11-licensing.md)).
 
 First install is an Inno Setup wizard; every later update is Velopack, in the background,
 never re-opening the wizard.

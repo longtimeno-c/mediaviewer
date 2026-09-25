@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Clip editing: PR 13 (two-path trim) and PR 14 (extract & remux).
 // plan/08-video-editing.md, plan/10 Milestone E, D7.
 //

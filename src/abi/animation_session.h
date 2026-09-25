@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Animated GIF / APNG / WebP playback feed (plan/04 "Animation").
 //
 // One decode thread per session pulls frames from a codec::animation_source

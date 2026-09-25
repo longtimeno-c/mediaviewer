@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Tiled pyramid for large images (plan/04, "Tiled pyramid for large images").
 //
 // Above ~64 MP — or wider/taller than the 16384 texture limit — a still is not

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Loads the C# WinUI chrome and attaches a DesktopWindowXamlSource island.
 //
 // plan/10 PR 3, D1 amendment: the Win32 window and D3D11 swapchain stay the

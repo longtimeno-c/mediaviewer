@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PR 11 macOS crash-reporting verify (plan/10 PR 11, "Verify (macOS, crash
 reporting)"): the Mac twin of tools/make-crash-raw.ps1 and
 tools/minidump-scan.ps1, in Python like the rest of tools/mac.

@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The stock x64-osx triplet, pinned to the app's deployment target.
 #
 # Without it vcpkg builds for the runner SDK's default (macOS 15 on the

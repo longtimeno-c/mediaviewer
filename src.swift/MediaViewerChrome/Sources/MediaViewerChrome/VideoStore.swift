@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 19: the SwiftUI-side mirror of the clip on screen. The render thread owns
 // the clip and publishes its status; this polls it (plain integer reads, the same
 // cadence FolderStore uses) and posts commands back through the bridge.

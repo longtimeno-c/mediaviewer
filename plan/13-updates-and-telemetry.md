@@ -27,7 +27,7 @@ by completely different mechanisms. Pick a **primary** rather than building both
 | Reaches non-Store users | No | Awkward | Yes |
 
 **Call: the signed installer with your own updater is the primary channel.** Two reasons — the
-app **is** GPL-2.0-or-later, which is a poor fit for Store terms, and a media app needs to
+app **is** GPL-3.0-or-later, which is a poor fit for Store terms, and a media app needs to
 ship codec fixes the day they land, not after a review queue. Store MSIX is not a secondary
 channel ([11-licensing.md](11-licensing.md)).
 
@@ -67,7 +67,7 @@ Pages, in order. Do not add more.
 
 1. **Welcome.** App icon, name, one line: a viewer for a camera dump — photos and video in
    one folder.
-2. **Licence.** GPL-2.0-or-later, scroll + accept. Required, not a skippable link.
+2. **Licence.** GPL-3.0-or-later, scroll + accept. Required, not a skippable link.
 3. **Location.** The LocalAppData default, editable. No "install for all users" checkbox.
 4. **Options.** Start Menu shortcut **on**. Desktop shortcut **off**. That is the whole
    page.
@@ -137,7 +137,7 @@ What the disk image holds. Do not add more.
 1. **Window.** App icon, an Applications alias, a background with the name and the same
    one line as the Windows welcome page: a viewer for a camera dump — photos and video in
    one folder.
-2. **Licence.** GPL-2.0-or-later as the image's licence agreement, shown on mount with
+2. **Licence.** GPL-3.0-or-later as the image's licence agreement, shown on mount with
    Agree / Disagree — the equivalent of the wizard's required licence page. If our build
    tooling cannot make macOS 14 show it reliably, fall back to a `Licence` file in the
    window plus About. Never an in-app accept modal before the first photo.

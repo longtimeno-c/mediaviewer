@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // APNG (PNG family). libspng decodes still PNG and ignores acTL / fcTL / fdAT,
 // so the animation chunks are walked here and each frame is handed back to the
 // still decoder as a standalone PNG (IHDR sized to the frame, the colour and

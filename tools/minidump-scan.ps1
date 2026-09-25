@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Scans a minidump (or any file) for things that must never leave the machine
 # (rule 6, plan/13 Part 2): paths, filenames, folder names, the username, and

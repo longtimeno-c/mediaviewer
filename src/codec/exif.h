@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Byte-level EXIF (TIFF) access for the few things the geometry slice has to
 // read or change without a metadata library: the Orientation tag, the pixel
 // dimensions, and the GPS IFD (PR 10, plan/07 "Export", plan/04).

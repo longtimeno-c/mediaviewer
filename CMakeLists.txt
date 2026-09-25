@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # MediaViewer — native core + present lab.
 #
@@ -734,9 +735,10 @@ add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer-256.png"
           "${CMAKE_SOURCE_DIR}/LICENSE"
+          "${CMAKE_SOURCE_DIR}/NOTICE"
           "${CMAKE_SOURCE_DIR}/THIRD-PARTY.md"
           "$<TARGET_FILE_DIR:mediaviewer_lab>"
-  COMMENT "Copy About assets (icon PNG, LICENSE, THIRD-PARTY.md) beside mediaviewer_lab")
+  COMMENT "Copy About assets (icon PNG, LICENSE, NOTICE, THIRD-PARTY.md) beside mediaviewer_lab")
 
 # PR 3: publish the C# WinUI chrome beside the lab so hostfxr can load it.
 # The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
@@ -1137,4 +1139,4 @@ if(MV_FUZZ)
   add_subdirectory(tools/fuzz)
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-2.0-or-later (plan/11)")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-3.0-or-later (plan/11)")

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The default map (plan/16-commands.md "Default map"). FastStone / IrfanView
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"

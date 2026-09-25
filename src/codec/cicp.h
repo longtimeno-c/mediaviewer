@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // CICP (ITU-T H.273) colour descriptions — a HEIF `nclx` box, an AV1 sequence
 // header — turned into what the colour stage already understands (plan/04
 // "Color", D6):

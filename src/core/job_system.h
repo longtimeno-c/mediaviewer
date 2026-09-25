@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The MPMC job queue and its worker pool.
 //
 // plan/02-architecture.md: one MPMC job queue, N = cores-2 workers, and

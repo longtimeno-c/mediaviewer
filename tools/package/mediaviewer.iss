@@ -1,4 +1,5 @@
-; SPDX-License-Identifier: GPL-2.0-or-later
+; Copyright (C) 2026 longtimeno-c
+; SPDX-License-Identifier: GPL-3.0-or-later
 ;
 ; MediaViewer first-install wizard (PR 8, plan/13 Part 1 "First install").
 ;
@@ -104,7 +105,7 @@ Name: "desktopicon"; Description: "Create a Desktop shortcut"; GroupDescription:
 ; longer exists. Measured on vpk 1.2.0, not assumed.
 ;
 ; The licence texts are not installed to {app} either: the payload already
-; carries LICENSE and THIRD-PARTY.md into current\, which is where About reads
+; carries LICENSE, NOTICE and THIRD-PARTY.md into current\, which is where About reads
 ; them from, and a second copy at {app} would be the one that goes stale.
 Source: "{#MvPayloadSetup}"; Flags: dontcopy
 
@@ -119,7 +120,7 @@ Filename: "{app}\MediaViewer.exe"; Description: "Launch {#MvAppName}"; \
 Filename: "ms-settings:defaultapps?registeredAppUser=MediaViewer";   Description: "Choose MediaViewer as the default for all supported photos and videos (opens Settings)";   Flags: nowait postinstall skipifsilent shellexec
 Filename: "{#MvRepoUrl}"; Description: "Visit the project on GitHub"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
-Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-2.0-or-later)"; \
+Filename: "{app}\current\LICENSE"; Description: "Read the licence (GPL-3.0-or-later)"; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
 ; Deletes the downloaded setup .exe once this wizard has closed (user request,
 ; 2026-09-25; the Mac twin is the setup sheet's eject-and-Trash box). Pre-ticked;
