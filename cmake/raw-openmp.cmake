@@ -12,6 +12,9 @@ if(WIN32)
     set_target_properties(OpenMP::OpenMP_CXX PROPERTIES
                           INTERFACE_LINK_LIBRARIES "${MV_VCOMP_LIBRARY}")
   endif()
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/clang-cl-shim")
+  endif()
   # A developer machine has this in System32; a clean machine may not.
   # Package the redistributable alongside the codecs (never copy System32).
   set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
