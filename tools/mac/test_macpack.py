@@ -4,6 +4,7 @@
 on Linux). The otool samples are the formats Apple's cctools print."""
 from __future__ import annotations
 
+import os
 import sys
 import argparse
 import tempfile
@@ -173,6 +174,56 @@ class BundleCheckTests(unittest.TestCase):
                                                "@rpath/libmissing.dylib"]}
         problems = macpack.check_bundle_refs(refs, {"libheif.1.dylib"})
         self.assertEqual(len(problems), 2)
+
+
+class AddonSigningTests(unittest.TestCase):
+    """Milestone G: the Import add-on is signed with the app's identity (library
+    validation) and notarized before addon-pack.py packs it."""
+
+    def _addon(self, root: Path) -> Path:
+        addon = root / "import"
+        (addon / "Import.bundle" / "Contents" / "MacOS").mkdir(parents=True)
+        (addon / "Import.bundle" / "Contents" / "MacOS" / "Import").write_bytes(b"\xca\xfe\xba\xbe")
+        (addon / "libmv_import.dylib").write_bytes(b"\xca\xfe\xba\xbe")
+        return addon
+
+    def test_dylib_and_bundle_are_signed_and_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            addon = self._addon(Path(tmp))
+            signed, ran = [], []
+            with patch.object(macpack, "codesign", side_effect=lambda p, *a, **k: signed.append(p)), \
+                 patch.object(macpack, "run", side_effect=lambda cmd, **k: ran.append(cmd)):
+                macpack.sign_addon(addon, "Developer ID Application: Test (TEAM)")
+            self.assertEqual(signed, [addon / "libmv_import.dylib", addon / "Import.bundle"])
+            verified = [c[-1] for c in ran if c[:2] == ["codesign", "--verify"]]
+            self.assertEqual(verified, [str(p) for p in signed])
+
+    def test_empty_folder_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(macpack, "codesign"), patch.object(macpack, "run"):
+                with self.assertRaises(SystemExit):
+                    macpack.sign_addon(Path(tmp), "-")
+
+    def test_addon_command_notarizes_unless_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            addon = self._addon(Path(tmp))
+            for skip, calls in ((True, 0), (False, 1)):
+                with patch.object(macpack, "sign_addon") as sign, patch.object(macpack, "run"), \
+                     patch.object(macpack, "notarize") as notarize:
+                    argv = ["addon", "--dir", str(addon), "--identity", "Developer ID Application: T"]
+                    argv += ["--skip-notarize"] if skip else ["--notary-profile", "p"]
+                    macpack.main(argv)
+                    sign.assert_called_once()
+                    self.assertEqual(notarize.call_count, calls)
+
+    def test_addon_command_requires_identity_and_profile(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MV_SIGN_IDENTITY", None)
+            os.environ.pop("MV_NOTARY_PROFILE", None)
+            with self.assertRaises(SystemExit):
+                macpack.main(["addon", "--dir", "x"])
+            with self.assertRaises(SystemExit):
+                macpack.main(["addon", "--dir", "x", "--identity", "I"])
 
 
 class CrashpadHandlerTests(unittest.TestCase):

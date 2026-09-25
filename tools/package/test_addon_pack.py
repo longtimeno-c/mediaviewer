@@ -125,6 +125,15 @@ class AddonPackTest(unittest.TestCase):
         hex_cpp = "".join(f"{int(b, 16):02x}" for b in re.findall(r"0x([0-9a-fA-F]{2})", block))
         self.assertEqual(hex_cpp, hex_cs)
 
+    def test_release_refuses_a_key_the_app_does_not_pin(self):
+        with self.assertRaises(ValueError):
+            addon_pack.main(["pack", "--platform", "win-x64", "--src", str(self.src), "--version", "1.2.3",
+                             "--key", str(self.key_file), "--out", str(self.out), "--require-pinned-key"])
+        self.assertFalse(self.out.exists() and any(self.out.iterdir()))
+
+    def test_pinned_key_reads_the_updater_key(self):
+        self.assertRegex(addon_pack.pinned_public_key_hex(), r"^[0-9a-f]{64}$")
+
     def test_missing_file_fails_the_pack(self):
         (self.src / "mv_import.dll").unlink()
         with self.assertRaises(FileNotFoundError):
