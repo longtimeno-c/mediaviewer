@@ -27,6 +27,19 @@ final class VideoStore: ObservableObject {
   /// While the thumb is held, the strip shows (and seeks to) this, not the clip.
   @Published var scrubMs: Int64?
 
+  // PR 13: trim mode on the scrub bar (shell/trim_state.h via the bridge).
+  // Nanoseconds; -1 = unset. Re-read only when the host's trim generation moves.
+  @Published private(set) var trimArmed = false
+  @Published private(set) var trimPreviewing = false
+  @Published private(set) var trimDurationNs: Int64 = 0
+  @Published private(set) var trimInNs: Int64 = -1
+  @Published private(set) var trimOutNs: Int64 = -1
+  @Published private(set) var trimCutInNs: Int64 = -1
+  @Published private(set) var trimCutOutNs: Int64 = -1
+  @Published private(set) var trimKeyframesNs: [Int64] = []
+  @Published private(set) var trimLabel = ""
+  private var trimGeneration: UInt64 = .max
+
   private var timer: Timer?
 
   private init() {
@@ -48,7 +61,37 @@ final class VideoStore: ObservableObject {
     if isMuted != muted { muted = isMuted }
     if rate != rateX100 { rateX100 = rate }
     if draggingVolume == nil, vol != volume { volume = vol }
+    pollTrim()
   }
+
+  private func pollTrim() {
+    let g = mv_chrome_trim_generation()
+    guard g != trimGeneration else { return }
+    trimGeneration = g
+    var v = mv_trim_view()
+    guard mv_chrome_trim_view(&v) else { return }
+    trimArmed = v.armed != 0
+    trimPreviewing = v.previewing != 0
+    trimDurationNs = v.duration_ns
+    trimInNs = v.in_ns
+    trimOutNs = v.out_ns
+    trimCutInNs = v.cut_in_ns
+    trimCutOutNs = v.cut_out_ns
+    if v.index_ready != 0 && v.keyframe_count > 0 {
+      var kf = [Int64](repeating: 0, count: Int(v.keyframe_count))
+      let n = kf.withUnsafeMutableBufferPointer { mv_chrome_trim_keyframes($0.baseAddress, v.keyframe_count) }
+      trimKeyframesNs = Array(kf.prefix(Int(min(n, v.keyframe_count))))
+    } else {
+      trimKeyframesNs = []
+    }
+    let need = mv_chrome_trim_label(nil, 0)
+    var buf = [CChar](repeating: 0, count: Int(max(need, 1)))
+    _ = mv_chrome_trim_label(&buf, Int32(buf.count))
+    trimLabel = String(cString: buf)
+  }
+
+  /// A command-table id, as its key would run it (the trim buttons).
+  func run(_ command: Int32) { mv_chrome_run_command(command) }
 
   func toggle() { mv_chrome_video_toggle() }
   func skip(_ ms: Int64) { mv_chrome_video_skip(ms) }

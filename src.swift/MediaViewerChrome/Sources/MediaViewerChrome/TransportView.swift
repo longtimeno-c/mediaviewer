@@ -25,6 +25,46 @@ private struct VolumeSliderRow: View {
   }
 }
 
+/// Command-table ids (src/shell/commands.h; chrome_host.h pins them).
+enum TrimCommand {
+  static let keyframe: Int32 = 132
+  static let reencode: Int32 = 133
+}
+
+/// Trim over the scrubber (plan/08: "show the keyframe grid on the timeline so
+/// the snapping is visible and expected rather than surprising").
+private struct TrimMarks: View {
+  @ObservedObject private var store = VideoStore.shared
+  // The system slider's track sits about half a knob in from its frame.
+  private let inset: CGFloat = 10
+
+  var body: some View {
+    Canvas { ctx, size in
+      guard store.trimArmed, store.trimDurationNs > 0 else { return }
+      let span = max(size.width - 2 * inset, 1)
+      func x(_ t: Int64) -> CGFloat {
+        inset + span * CGFloat(min(max(Double(t) / Double(store.trimDurationNs), 0), 1))
+      }
+      if store.trimCutInNs >= 0, store.trimCutOutNs > store.trimCutInNs {
+        let a = x(store.trimCutInNs), b = x(store.trimCutOutNs)
+        ctx.fill(Path(CGRect(x: a, y: 0, width: max(1, b - a), height: size.height)),
+                 with: .color(Color.orange.opacity(0.25)))
+      }
+      var last: CGFloat = -10
+      for k in store.trimKeyframesNs {
+        let px = x(k)
+        if px - last < 2 { continue }  // one tick per two points on a long clip
+        last = px
+        ctx.fill(Path(CGRect(x: px, y: size.height - 5, width: 1, height: 5)),
+                 with: .color(Color.secondary.opacity(0.8)))
+      }
+      for m in [store.trimInNs, store.trimOutNs] where m >= 0 {
+        ctx.fill(Path(CGRect(x: x(m) - 1, y: 0, width: 2, height: size.height)), with: .color(.orange))
+      }
+    }
+  }
+}
+
 struct TransportView: View {
   @ObservedObject private var store = VideoStore.shared
 
@@ -51,8 +91,23 @@ struct TransportView: View {
           set: { store.scrub(to: Int64($0)) }),
         in: 0...Double(duration),
         onEditingChanged: { editing in if !editing { store.endScrub() } })
+        // PR 13: the keyframe grid, the kept range and the markers, drawn over
+        // the track (not hit-testable, so the thumb still drags).
+        .overlay { TrimMarks().allowsHitTesting(false) }
       Text(Self.clock(store.durationMs)).monospacedDigit().font(.caption)
         .frame(minWidth: 40, alignment: .leading)
+
+      if store.trimArmed {
+        Text(store.trimPreviewing ? store.trimLabel + " · previewing" : store.trimLabel)
+          .font(.caption).monospacedDigit()
+          .foregroundStyle(Color.orange)
+          .lineLimit(1)
+        // The keyed commands for the mouse: Return / ⇧Return in trim mode.
+        Button("Save") { store.run(TrimCommand.keyframe) }
+          .help("Keyframe trim: instant, no re-encode (Return)")
+        Button("Save exact") { store.run(TrimCommand.reencode) }
+          .help("Frame-accurate re-encode on the hardware encoder; slower (⇧Return)")
+      }
 
       Menu {
         ForEach(VideoStore.speeds, id: \.self) { rate in

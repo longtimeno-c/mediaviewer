@@ -572,11 +572,17 @@ ctest --test-dir build -C Release -R import_ --output-on-failure
 
 # ...and the same engine headless on Linux or any POSIX machine (the
 # portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
-# tools/portable/vcpkg.json, or the system):
+# tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
+# installed (pkg-config) it also builds the PR 13 / 14 clip suites,
+# mv_clip_tests and mv_trim_tests:
 #   cmake -S cmake/portable -B build-portable \
 #     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
 #     -DVCPKG_MANIFEST_DIR=tools/portable
 #   cmake --build build-portable && ctest --test-dir build-portable
+#   build-portable/bin/mv_clip_tests "[bench]"   # keyframe trim of a ~1 GB MP4 (or MV_CLIP_BENCH_FILE)
+
+# PR 13 / 14 clip editing: the same suites inside the Windows / Mac mv_tests
+ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only

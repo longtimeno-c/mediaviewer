@@ -20,6 +20,7 @@
     "inside the render thread's ImGui context. src/shell/input_state.h feeds",
     "ImGui from the published snapshot instead - plan/02 threading model."
   ],
+  "$comment-ffmpeg-encoders": "PR 13: ffmpeg nvcodec / qsv / amf are the hardware encoders Path 2 re-encodes on (src/edit/hwencode_win.cpp; the port's --enable-mediafoundation adds h264_mf); webp is libwebp_anim for PR 14's clip -> WebP. All LGPL-clean: no x264/x265, no gpl/nonfree (plan/11, tools/licence-check.ps1).",
   "dependencies": [
     {
       "name": "imgui",
@@ -50,7 +51,7 @@
     {
       "name": "ffmpeg",
       "default-features": false,
-      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"],
+      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d", "nvcodec", "qsv", "amf", "webp"],
       "platform": "windows"
     },
     "catch2",

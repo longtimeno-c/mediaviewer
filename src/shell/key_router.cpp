@@ -26,6 +26,8 @@ mode resolve_mode(const view_state& s) noexcept {
   // Crop is a canvas mode (plan/16): it only exists on a still, and the
   // host leaves it when the item changes.
   if (s.crop && s.item == item_kind::still) return mode::crop;
+  // Trim is a clip mode (plan/08, plan/16): it layers over video.
+  if (s.trim && s.item == item_kind::clip && !s.slideshow) return mode::trim;
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
@@ -45,6 +47,7 @@ back_target resolve_back(const view_state& s) noexcept {
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.
   if (s.crop) return back_target::crop;
+  if (s.trim) return back_target::trim;
   if (s.pane_open) return back_target::pane;
   // The gallery covers the canvas like an overlay, so it goes before the
   // window-level states (plan/16 "Esc walks out").
@@ -200,6 +203,11 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     view_state under = s;
     under.loupe_held = false;
     b = lookup(e.k, e.mods, resolve_mode(under));
+  }
+  if (!b && m == mode::trim) {
+    // Trim layers over video like the loupe over browse: the transport keys
+    // keep working while the markers are set (plan/08 "preview the cut").
+    b = lookup(e.k, e.mods, mode::video);
   }
   if (!b) return {};
 

@@ -1,8 +1,8 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 62fbbec..85c4281 100644
+index 62fbbec..9648a0a 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -64,6 +64,64 @@ jobs:
+@@ -64,6 +64,72 @@ jobs:
        - run: python3 tools/mac/check_plists.py
        - run: python3 tools/mac/test_macpack.py -v
        - run: python3 tools/package/test_github_release.py -v
@@ -11,10 +11,12 @@ index 62fbbec..85c4281 100644
 +  # copy, built headless on Linux (cmake/portable) with the pinned vcpkg
 +  # baseline, under ASan + UBSan. Includes the add-on packer's cross-check
 +  # against the C++ verifier. The Windows and Mac legs run the same suite
-+  # (mv_import_tests) inside their own builds.
++  # (mv_import_tests) inside their own builds. Milestone E (PR 13 / 14): the
++  # clip core (trim, extract, remux, job queue) and the trim mode model, the
++  # same test files the Windows and Mac mv_tests build.
 +  # ---------------------------------------------------------------------------
 +  portable-core:
-+    name: Import engine (portable core, Linux, ASan)
++    name: Portable core (Import engine, clip editing; Linux, ASan)
 +    if: ${{ github.event_name != 'schedule' }}
 +    runs-on: ubuntu-latest
 +    defaults:
@@ -44,11 +46,17 @@ index 62fbbec..85c4281 100644
 +
 +      # libsodium's vcpkg port builds with autotools on Linux. The packer test
 +      # needs `cryptography`; Ubuntu's own package, since the system Python
-+      # refuses `pip install --user` (PEP 668).
++      # refuses `pip install --user` (PEP 668). PR 13 / 14: FFmpeg, libspng and
++      # libjpeg for the clip core's suite (mv_clip_tests, mv_trim_tests). The
++      # distro FFmpeg is a test dependency only; the product FFmpeg is the
++      # pinned LGPL vcpkg port (tools/licence-check.ps1), and the clip tests
++      # write their fixtures with FFmpeg's own MPEG-4 / MP2 encoders.
 +      - name: Build tools
 +        run: |
 +          sudo apt-get update
-+          sudo apt-get install -y --no-install-recommends autoconf automake libtool pkg-config python3-cryptography
++          sudo apt-get install -y --no-install-recommends autoconf automake libtool pkg-config python3-cryptography \
++            libavformat-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libswresample-dev \
++            libspng-dev libjpeg-turbo8-dev
 +
 +      - name: Configure
 +        run: |

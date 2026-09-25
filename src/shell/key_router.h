@@ -39,6 +39,7 @@ struct view_state {
   bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 10: crop mode on the canvas
+  bool trim = false;       // PR 13: trim armed on the current clip
   bool game = false;       // the empty-window runner is up (Space on an empty view)
 };
 
@@ -52,6 +53,7 @@ enum class back_target : std::uint8_t {
   popup,
   motion,  // stop a Live Photo's motion and return to the still
   crop,
+  trim,  // PR 13: disarm trim (markers kept for the clip until it changes)
   pane,
   gallery,
   settings,

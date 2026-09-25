@@ -21,8 +21,8 @@ Mac are both at PR 9.** The order from here is:
 | **10** | Geometry edits + export | both | Mac half started on a branch; waits for PR 9 before merging |
 | 11 | Colour adjusts, plus Mac crash reporting | both | **Written on a branch** on top of PR 10; core tested, both host halves await their first compile and each platform's verify ([12](12-decision-log.md) 2026-09-24, PR 11) |
 | 12 | Metadata (write) | both | Planned |
-| 13 | Two-path trim | both | Planned |
-| 14 | Extract & remux | both | Planned |
+| 13 | Two-path trim | both | **Written ahead on a branch** (2026-09-25): shared core tested on Linux; both host halves written, first MSVC / Xcode builds and every hardware verify owed. Does not merge before 12 ([12](12-decision-log.md) 2026-09-25) |
+| 14 | Extract & remux | both | **Written with 13**, same state |
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
@@ -507,6 +507,16 @@ back identically on the other (the same file, or its XMP sidecar, copied across)
 ## Milestone E — Video and OS integration updates (PR 13–15, both platforms)
 
 ### PR 13 — Two-path trim
+*Status 2026-09-25: **written ahead of PR 12**, as one change with PR 14 — the owner's request, on the
+understanding that PR 15 had landed (it has not; see below). Shared core `src/edit/clip*` + the encode
+port `edit/hwencode_{win,mac,none}.cpp`, ABI 0.10 (`mediaviewer_clip.h`), trim mode `shell/trim_state`
+on both hosts, the WinUI transport overlay + Jobs pane and their SwiftUI twins. Proved on Linux: the
+core suites (keyframe trim proportional and on the grid, Path 2 frame-accurate through a software
+test encoder, source untouched, cancel leaves nothing; a 968 MB keyframe trim in 1.0 s). Owed: the
+first MSVC and Xcode builds, the hardware-encoder runs, both present-loop gates. Departures (jobs
+in-process rather than a child process — an open owner call — FFmpeg's hardware wrappers as the
+encode port, audio stream-copied on Path 2): [12](12-decision-log.md) 2026-09-25.*
+
 **Shared:** in/out model, keyframe index for the scrub-bar grid, Path 1 keyframe trim
 (FFmpeg stream copy, platform-neutral), the cancellable job queue and the A–B loop preview.
 **Smart cut is v1.1** (D7).
@@ -525,6 +535,10 @@ modified**; cancelling leaves no partial output. On Mac, the re-encode shows Vid
 active, and no software encoder is linked.
 
 ### PR 14 — Extract & remux
+*Status 2026-09-25: written with PR 13 (same branch, same state). Each operation round-trips in the
+core suite; frame / GIF / WebP pixels are sRGB (HDR tone-mapped, P3 converted); GIF is a two-pass
+palette over two decodes; the Windows flyout and the Mac sheet share one packed answer.*
+
 **Shared:** lossless rotate (container matrix, no re-encode), split, remove-middle,
 MKV ↔ MP4 remux, frame → PNG/JPEG, audio extract, and clip → GIF/WebP with a two-pass
 palette. Everything is in the core; the hosts only add UI.
@@ -534,6 +548,11 @@ palette. Everything is in the core; the hosts only add UI.
 **Verify (both platforms):** each operation round-trips; lossless rotate does not re-encode.
 
 ### PR 15 — OS integration
+*Status 2026-09-25: **not started.** PR 8's installer registers the `ProgId`s and `OpenWithProgids`
+(a partial overlap with the Windows half below), and Windows already has SMTC transport from PR 5;
+the out-of-process thumbnail / property handlers, the jump list, tabs, drag-out, Share and the Mac
+twins (Dock menu, `NSWindow` tabbing, Now Playing, file-promise drag-out, Share) are all owed.*
+
 The Mac already has part of this from Mac PR 8: UTIs, the "Open with" registration, Quick Look
 in a separate process, and the first-launch default-viewer sheet. So this PR's Mac half is
 smaller, and **not** a redo of Mac PR 8.

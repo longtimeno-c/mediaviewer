@@ -14,7 +14,7 @@ namespace MediaViewer.Interop;
 /// thread calls must return without I/O, decode, or lock contention. Opening an
 /// image is a request that returns a job id, never a call that decodes first.
 /// </remarks>
-public sealed class MediaViewerSession : IDisposable
+public sealed partial class MediaViewerSession : IDisposable
 {
     public MvVideoInfo VideoInfo { get { ThrowIfFailed(NativeMethods.mv_video_get_info(_handle, out var value)); return value; } }
     public long VideoPosition { get { ThrowIfFailed(NativeMethods.mv_video_position(_handle, out var value)); return value; } }

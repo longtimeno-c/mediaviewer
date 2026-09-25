@@ -5,6 +5,7 @@
   "license": "GPL-2.0-or-later",
   "$comment": "Install with arm64-osx-dynamic (Apple Silicon) or x64-osx-dynamic (Intel) into a separate install root. Keep the baseline in sync with the root manifest and release workflow. LGPL codecs must remain dynamically linked.",
   "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+  "$comment-ffmpeg-encoders": "PR 14: ffmpeg webp is libwebp_anim for clip -> WebP. VideoToolbox (PR 13's Path 2, src/edit/hwencode_mac.cpp) is enabled by the port on Darwin.",
   "dependencies": [
     {
       "name": "libheif",
@@ -14,7 +15,7 @@
     {
       "name": "ffmpeg",
       "default-features": false,
-      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d"]
+      "features": ["avcodec", "avformat", "avfilter", "swresample", "swscale", "dav1d", "webp"]
     },
     {
       "name": "exiv2",

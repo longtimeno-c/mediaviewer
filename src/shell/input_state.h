@@ -150,6 +150,15 @@ struct input_snapshot {
   std::uint32_t video_seek_seq = 0;
   std::int64_t video_seek_ms = 0;
   bool video_seek_exact = true;
+  // PR 13: a seek to an exact nanosecond (a keyframe, trim's in point); used
+  // instead of video_seek_ms when >= 0. A keyframe at 433.333 ms sought as
+  // 433 ms would show the frame before it.
+  std::int64_t video_seek_ns = -1;
+  // PR 13: the A-B loop trim previews with (plan/08 "Preview the cut").
+  // Edge-triggered like the seek pair; b < 0 clears it.
+  std::uint32_t video_loop_seq = 0;
+  std::int64_t video_loop_a_ns = 0;
+  std::int64_t video_loop_b_ns = -1;
 
   bool window_visible = true;
   bool window_active = true;

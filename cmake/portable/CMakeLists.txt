@@ -134,3 +134,52 @@ if(Python3_FOUND)
   set_tests_properties(addon_pack PROPERTIES
     ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
 endif()
+
+# ---- PR 13 / 14: the clip core (edit/clip*), when FFmpeg is present ------------
+# Stream-copy trim, the Path 2 re-encode loop (driven by a software encoder in
+# the tests only), extract and remux, and the job queue. hwencode_none.cpp:
+# a Linux runner has no hardware encoder, so the product Path 2 reports
+# unsupported_format there, as it would on a machine without one.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(MV_FFMPEG QUIET IMPORTED_TARGET
+    libavformat libavcodec libavfilter libavutil libswscale libswresample)
+  pkg_check_modules(MV_SPNG QUIET IMPORTED_TARGET spng)
+  find_package(JPEG QUIET)
+endif()
+if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
+  add_library(mv_clip STATIC
+    "${MV_ROOT}/src/edit/clip_common.cpp"
+    "${MV_ROOT}/src/edit/clip_copy.cpp"
+    "${MV_ROOT}/src/edit/clip_encode.cpp"
+    "${MV_ROOT}/src/edit/clip_run.cpp"
+    "${MV_ROOT}/src/edit/clip_jobs.cpp"
+    "${MV_ROOT}/src/edit/hwencode_none.cpp"
+    "${MV_ROOT}/src/edit/encode.cpp"
+  )
+  target_include_directories(mv_clip PUBLIC "${MV_ROOT}/src")
+  target_link_libraries(mv_clip PUBLIC mv_io mv_project_options PkgConfig::MV_FFMPEG
+    PRIVATE PkgConfig::MV_SPNG JPEG::JPEG)
+
+  add_executable(mv_clip_tests
+    "${MV_ROOT}/tests/test_clip.cpp"
+    "${MV_ROOT}/tests/test_clip_session.cpp"
+    "${MV_ROOT}/src/abi/clip_session.cpp")
+  target_link_libraries(mv_clip_tests PRIVATE mv_clip PkgConfig::MV_SPNG ${MV_CATCH2_TARGET})
+  target_include_directories(mv_clip_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests"
+    "${MV_ROOT}/src/abi/include")
+  add_test(NAME mv_clip_tests COMMAND mv_clip_tests)
+
+  # The host-side trim model and the command table rows it adds (shell/ code
+  # with no window: both hosts drive it).
+  add_executable(mv_trim_tests
+    "${MV_ROOT}/tests/test_trim_state.cpp"
+    "${MV_ROOT}/src/shell/trim_state.cpp"
+    "${MV_ROOT}/src/shell/command_table.cpp"
+    "${MV_ROOT}/src/shell/key_router.cpp")
+  target_link_libraries(mv_trim_tests PRIVATE mv_clip ${MV_CATCH2_TARGET})
+  target_include_directories(mv_trim_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
+  add_test(NAME mv_trim_tests COMMAND mv_trim_tests)
+else()
+  message(STATUS "FFmpeg / libspng / libjpeg not found: the PR 13/14 clip tests are not built")
+endif()

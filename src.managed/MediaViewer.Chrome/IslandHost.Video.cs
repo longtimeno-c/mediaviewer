@@ -104,13 +104,14 @@ public static partial class IslandHost
 
     public static int ShowTransport(IntPtr arg, int sizeBytes) => ShowIsland(
         arg, sizeBytes, _transport, BuildTransport,
-        onShown: () => UpdateVideoControls(),
+        onShown: () => { UpdateVideoControls(); RenderTrim(); },
         onHidden: () =>
         {
             _seek = null;
             _play = null;
             _videoTime = null;
             _audioTracks = null;
+            DropTrimUi();
         });
 
     public static int DetachTransport(IntPtr arg, int sizeBytes)
@@ -126,6 +127,7 @@ public static partial class IslandHost
             _play = null;
             _videoTime = null;
             _audioTracks = null;
+            DropTrimUi();
             _videoActive = false;
             return 0;
         }
@@ -215,8 +217,11 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Center,
         };
         row.Children.Add(_play);
-        row.Children.Add(_seek);
+        // PR 13: trim's markers, keyframe grid and kept range over the scrubber,
+        // and its label and save buttons after the clock (IslandHost.Clip.cs).
+        row.Children.Add(WrapSeekForTrim(_seek));
         row.Children.Add(_videoTime);
+        row.Children.Add(BuildTrimBar());
         row.Children.Add(more);
 
         var root = new Grid

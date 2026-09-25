@@ -207,6 +207,29 @@ constexpr binding kBindings[] = {
     // Milestone G: only while the Import add-on is installed (plan/18).
     row(C('I'), mod_ctrl | mod_shift, kViewing, edge, open_import),
     row(key::f7, mod_ctrl | mod_shift, kViewing, edge, import_now),
+    // PR 13 (plan/16 "Video and trim", plan/08). Appended. Trim mode layers
+    // over video (key_router.cpp), so Space, J K L, Q E and , . keep driving
+    // the clip; these rows are only what trim adds or takes over. `[` `]` are
+    // the markers here and nothing on a clip otherwise. Ctrl+Left / Right are
+    // the keyframe walk plan/16 names, which in video stay folder nav.
+    row(C('T'), mod_ctrl, kVideo | kTrim, edge, trim_mode),
+    row(C('['), mod_none, kTrim, edge, trim_in),
+    row(C(']'), mod_none, kTrim, edge, trim_out),
+    row(key::backspace, mod_none, kTrim, edge, trim_clear),
+    // The Mac's delete key is `del` (it has no Backspace), and in trim mode
+    // Delete falling through to video would move the clip being trimmed to
+    // the Trash. Both keys clear the markers here instead.
+    row(key::del, mod_none, kTrim, edge, trim_clear),
+    row(C('P'), mod_none, kTrim, edge, trim_preview),
+    row(key::enter, mod_none, kTrim, edge, trim_keyframe),
+    row(key::enter, mod_shift, kTrim, edge, trim_reencode),
+    row(key::left, mod_ctrl, kTrim, repeat, keyframe_prev),
+    row(key::right, mod_ctrl, kTrim, repeat, keyframe_next),
+    row(C('J'), mod_ctrl, kViewing | kTrim, edge, jobs_pane),
+    // PR 14. Ctrl+S is Export on a still; on a clip it opens the clip tools.
+    row(C('S'), mod_ctrl, kVideo | kTrim, edge, clip_tools),
+    row(C('B'), mod_ctrl, kVideo | kTrim, edge, clip_split),
+    row(C('X'), mod_ctrl, kTrim, edge, trim_remove_middle),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -336,6 +359,19 @@ constexpr command_info kCommands[] = {
     {adjust_reset, "Adjust: reset", true},
     {open_import, "Import…"},
     {import_now, "Import marked now"},
+    {trim_mode, "Trim clip"},
+    {trim_in, "Trim: in marker"},
+    {trim_out, "Trim: out marker"},
+    {trim_clear, "Trim: clear markers"},
+    {trim_preview, "Trim: preview the cut"},
+    {trim_keyframe, "Trim: save (keyframe, instant)"},
+    {trim_reencode, "Trim: save (re-encode, frame-accurate, slower)"},
+    {keyframe_prev, "Previous keyframe"},
+    {keyframe_next, "Next keyframe"},
+    {jobs_pane, "Jobs"},
+    {clip_tools, "Clip tools…"},
+    {clip_split, "Split clip at playhead"},
+    {trim_remove_middle, "Trim: remove in–out"},
 };
 
 const char* named_key(key k) noexcept {

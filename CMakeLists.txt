@@ -486,6 +486,33 @@ target_link_libraries(mv_edit
 add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
+# mv_clip -- PR 13 / 14 (plan/08): two-path trim, extract & remux, and the
+# clip job queue. Module `edit` in the dependency graph (src/edit/clip*), a
+# separate library only because it links FFmpeg and mv_edit does not. The
+# encode port's Windows half lists the hardware encoders (hwencode_win.cpp);
+# FFmpeg is dynamic and LGPL (tools/licence-check.ps1). cmake/portable builds
+# the same sources with hwencode_none.cpp for the Linux core tests.
+# ---------------------------------------------------------------------------
+add_library(mv_clip STATIC
+  src/edit/clip.h
+  src/edit/clip_internal.h
+  src/edit/clip_common.cpp
+  src/edit/clip_copy.cpp
+  src/edit/clip_encode.cpp
+  src/edit/clip_run.cpp
+  src/edit/clip_jobs.cpp
+  src/edit/clip_jobs.h
+  src/edit/hwencode.h
+  src/edit/hwencode_win.cpp
+)
+target_include_directories(mv_clip SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_clip PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_clip
+  PUBLIC mv_core mv_io
+  PRIVATE mv_edit ${FFMPEG_LIBRARIES})
+add_library(mv::clip ALIAS mv_clip)
+
+# ---------------------------------------------------------------------------
 # Milestone G: the add-on host (mv_addon, in the base app) and the Import
 # add-on (mv_import, built beside it and packed separately; never installed
 # with the app). cmake/import.cmake.
@@ -523,12 +550,15 @@ add_library(mediaviewer_core SHARED
   src/abi/include/mediaviewer/mediaviewer.h
   src/abi/include/mediaviewer/mediaviewer_addon.h
   src/abi/include/mediaviewer/mediaviewer_import.h
+  src/abi/include/mediaviewer/mediaviewer_clip.h
+  src/abi/clip_session.cpp
+  src/abi/clip_session.h
 )
 target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_clip)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -565,6 +595,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/edit_view.h
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
+  src/shell/trim_state.cpp
+  src/shell/trim_state.h
   src/shell/open_request.cpp
   src/shell/open_request.h
   src/shell/slideshow.h
@@ -596,6 +628,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
   mv_meta
   mv_edit
+  mv_clip
   mv_gfx
   mv_canvas
   mv_io
@@ -817,6 +850,12 @@ if(MV_BUILD_TESTS)
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
+    # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
+    tests/test_clip.cpp
+    tests/test_clip_session.cpp
+    tests/test_trim_state.cpp
+    src/abi/clip_session.cpp
+    src/shell/trim_state.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
@@ -875,6 +914,7 @@ if(MV_BUILD_TESTS)
     mv_canvas
     mv_meta
     mv_edit
+    mv_clip
     Exiv2::exiv2lib
     ${FFMPEG_LIBRARIES}
     mediaviewer_core

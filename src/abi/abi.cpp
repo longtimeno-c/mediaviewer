@@ -3,6 +3,7 @@
 // and does its real work inside mv::abi::guard.
 
 #include "mediaviewer/mediaviewer.h"
+#include "mediaviewer/mediaviewer_clip.h"
 
 #include <windows.h>
 
@@ -21,6 +22,7 @@
 
 #include "abi/addon_bridge.h"
 #include "abi/animation_session.h"
+#include "abi/clip_session.h"
 #include "abi/folder_reselect.h"
 #include "codec/decode.h"
 #include "image/colour.h"
@@ -68,6 +70,11 @@ static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the 
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
+static_assert(sizeof(mv_clip_request) == 40, "mv_clip_request layout is part of the ABI");
+static_assert(offsetof(mv_clip_request, in_ns) == 8, "mv_clip_request layout is part of the ABI");
+static_assert(sizeof(mv_clip_progress) == 368, "mv_clip_progress layout is part of the ABI");
+static_assert(offsetof(mv_clip_progress, title_utf8) == 48, "mv_clip_progress layout is part of the ABI");
+static_assert(MV_COMPLETION_CLIP_INDEX == MV_COMPLETION_FOLDER_SUMMARY + 1, "clip completion kinds follow");
 static_assert(static_cast<int>(mv::io::pair_kind::none) == MV_PAIR_NONE, "mv_pair_kind drift");
 static_assert(static_cast<int>(mv::io::pair_kind::raw_jpeg) == MV_PAIR_RAW_JPEG, "mv_pair_kind drift");
 static_assert(static_cast<int>(mv::io::pair_kind::live_photo) == MV_PAIR_LIVE_PHOTO,
@@ -138,6 +145,10 @@ struct mv_session {
   std::mutex completion_mutex;
   std::vector<mv_completion> completions;
   HANDLE completion_event = nullptr;
+  // PR 13 / 14: the clip job queue and keyframe index (mediaviewer_clip.h).
+  // Created in mv_session_create once the completion event exists; reset
+  // first in release, so its workers' last completions have somewhere to go.
+  std::unique_ptr<mv::abi::clip_session> clip;
 
   std::mutex device_mutex;
   mv::gfx::com_ptr<ID3D11Device> device;
@@ -1191,6 +1202,9 @@ mv_status MV_CALL mv_session_create(const mv_session_config* config, mv_session_
     }
 
     session->completions.reserve(256);
+    mv_session* raw_session = session.get();
+    session->clip = std::make_unique<mv::abi::clip_session>(
+        [raw_session](const mv_completion& c) { raw_session->push_completion(c); });
 
     const status started = session->jobs.start(workers);
     if (started != status::ok) {
@@ -1217,7 +1231,10 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     MV_REQUIRE(valid(session), "session must not be null");
     if (session->ref_count.fetch_sub(1, std::memory_order_acq_rel) != 1) return status::ok;
 
-    // Watcher first: its callback submits jobs. Then join the pool.
+    // Clip jobs first: cancelling one removes its temporary, and its last
+    // completion needs the event still open. Then the watcher (its callback
+    // submits jobs), then the pool.
+    session->clip.reset();
     session->watcher.stop();
     session->jobs.shutdown();
     session->thumbs.close();
@@ -2102,3 +2119,88 @@ void push_addon_completion(mv_session_t session, const mv_completion& c) noexcep
 }
 
 }  // namespace mv::abi
+
+// ---------------------------------------------------------------------------
+// PR 13 / 14 -- clip editing (mediaviewer_clip.h). abi/clip_session does the
+// work; these check arguments and translate.
+// ---------------------------------------------------------------------------
+extern "C" {
+
+mv_status MV_CALL mv_clip_index_request(mv_session_t session, const char* utf8_path,
+                                        uint64_t* out_request_id) {
+  return static_cast<mv_status>(guard("mv_clip_index_request", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr && utf8_path[0] != '\0', "utf8_path must not be empty");
+    MV_REQUIRE(out_request_id != nullptr, "out_request_id must not be null");
+    return session->clip->request_index(utf8_path, *out_request_id);
+  }));
+}
+
+mv_status MV_CALL mv_clip_index_get(mv_session_t session, uint64_t request_id, int64_t* keyframes_ns,
+                                    uint32_t cap, uint32_t* out_count, int64_t* out_duration_ns) {
+  return static_cast<mv_status>(guard("mv_clip_index_get", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(keyframes_ns != nullptr || cap == 0, "keyframes_ns is null with a capacity");
+    return session->clip->index_get(request_id, keyframes_ns, cap, out_count, out_duration_ns);
+  }));
+}
+
+mv_status MV_CALL mv_clip_submit(mv_session_t session, const char* utf8_source, const mv_clip_request* request,
+                                 uint64_t* out_job_id) {
+  return static_cast<mv_status>(guard("mv_clip_submit", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(utf8_source != nullptr && utf8_source[0] != '\0', "utf8_source must not be empty");
+    MV_REQUIRE(request != nullptr, "request must not be null");
+    MV_REQUIRE(out_job_id != nullptr, "out_job_id must not be null");
+    return session->clip->submit(utf8_source, *request, *out_job_id);
+  }));
+}
+
+mv_status MV_CALL mv_clip_cancel(mv_session_t session, uint64_t job_id) {
+  return static_cast<mv_status>(guard("mv_clip_cancel", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    return session->clip->cancel(job_id);
+  }));
+}
+
+mv_status MV_CALL mv_clip_retry(mv_session_t session, uint64_t job_id, uint64_t* out_job_id) {
+  return static_cast<mv_status>(guard("mv_clip_retry", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(out_job_id != nullptr, "out_job_id must not be null");
+    return session->clip->retry(job_id, *out_job_id);
+  }));
+}
+
+mv_status MV_CALL mv_clip_jobs(mv_session_t session, uint64_t* ids, uint32_t cap, uint32_t* out_count) {
+  return static_cast<mv_status>(guard("mv_clip_jobs", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(ids != nullptr || cap == 0, "ids is null with a capacity");
+    return session->clip->jobs(ids, cap, out_count);
+  }));
+}
+
+mv_status MV_CALL mv_clip_job_progress(mv_session_t session, uint64_t job_id, mv_clip_progress* out_progress) {
+  return static_cast<mv_status>(guard("mv_clip_job_progress", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(out_progress != nullptr, "out_progress must not be null");
+    return session->clip->progress(job_id, *out_progress);
+  }));
+}
+
+mv_status MV_CALL mv_clip_job_output(mv_session_t session, uint64_t job_id, uint32_t index, char* utf8,
+                                     uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_clip_job_output", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    return session->clip->output(job_id, index, utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_clip_clear_finished(mv_session_t session) {
+  return static_cast<mv_status>(guard("mv_clip_clear_finished", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    session->clip->clear_finished();
+    return status::ok;
+  }));
+}
+
+}  // extern "C"

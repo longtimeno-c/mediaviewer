@@ -44,6 +44,8 @@
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
 #include "shell/adjust_pane.h"
+#include "abi/clip_session.h"
+#include "shell/trim_state.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
@@ -132,6 +134,10 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case undo_edit: case reset_edits:
     // PR 11
     case adjust_pane:
+    // PR 13 / 14
+    case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
+    case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
+    case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
       return true;
     // Milestone G: only while the Import add-on is loaded (plan/18).
     case open_import: case import_now:
@@ -244,6 +250,11 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // PR 11: the adjust pane, on the metadata pane's edge (one at a time).
 @property(nonatomic, strong) NSView* adjustHost;
 @property(nonatomic, strong) NSLayoutConstraint* adjustBottom;
+// PR 13 / 14: the Jobs pane (the same edge again, one at a time) and the clip
+// tools sheet (built fresh per open, like the export sheet).
+@property(nonatomic, strong) NSView* jobsHost;
+@property(nonatomic, strong) NSLayoutConstraint* jobsBottom;
+@property(nonatomic, strong) NSView* clipToolsHost;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -378,6 +389,19 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (uint64_t)adjustGeneration;
 - (mv::shell::adjust_view)adjustView;
 - (void)adjustSet:(int32_t)param value:(float)value;
+// PR 13 / 14 (plan/08): trim mode, clip tools, Jobs pane. The bridge reads
+// these; the state is MvLabApp's.
+- (uint64_t)trimGeneration;
+- (const mv::shell::trim_state&)trim;
+- (BOOL)clipToolsVisible;
+- (void)setClipToolsVisible:(BOOL)visible;
+- (int32_t)clipToolFlags;
+- (void)confirmClipTool:(int32_t)packed;
+- (BOOL)jobsVisible;
+- (void)setJobsVisible:(BOOL)visible;
+- (uint64_t)jobsGeneration;
+- (mv::abi::clip_session*)clipJobs;
+- (void)jobsBlur;
 - (void)adjustReset;
 - (void)adjustBlur;
 @end
@@ -519,6 +543,7 @@ extern "C" void mv_chrome_video_skip(int64_t delta_ms) {
 extern "C" void mv_chrome_video_seek(int64_t position_ms, bool exact) {
   if (!g_chrome_snap) return;
   g_chrome_snap->video_seek_ms = position_ms;
+  g_chrome_snap->video_seek_ns = -1;
   g_chrome_snap->video_seek_exact = exact;
   ++g_chrome_snap->video_seek_seq;
   MvPublishVideoInput();
@@ -732,6 +757,143 @@ extern "C" void mv_chrome_adjust_close(void) {
 }
 extern "C" void mv_chrome_adjust_blur(void) {
   if (g_chrome_app) [g_chrome_app adjustBlur];
+}
+
+// ---- PR 13 / 14 ---------------------------------------------------------------
+namespace {
+int32_t MvCopyText(const std::string& text, char* buf, int32_t size) {
+  if (buf != nullptr && size > 0) {
+    const std::size_t n = std::min(text.size(), static_cast<std::size_t>(size - 1));
+    std::memcpy(buf, text.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(text.size() + 1);
+}
+}  // namespace
+
+extern "C" void mv_chrome_run_command(int32_t command_id) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || command_id <= 0 || command_id >= mv::shell::kCommandCount) return;
+  if (mv::shell::is_reserved_notification(command_id) || mv::shell::is_retired_command(command_id)) return;
+  [g_chrome_app runCommand:static_cast<mv::shell::command_id>(command_id) back:mv::shell::back_target::none];
+}
+extern "C" uint64_t mv_chrome_trim_generation(void) {
+  return g_chrome_app ? [g_chrome_app trimGeneration] : 0;
+}
+extern "C" bool mv_chrome_trim_view(mv_trim_view* out) {
+  if (!g_chrome_app || !out) return false;
+  const mv::shell::trim_state& t = [g_chrome_app trim];
+  const mv::edit::clip::range cut = t.keyframe_range();
+  *out = mv_trim_view{};
+  out->armed = t.armed() ? 1 : 0;
+  out->index_ready = t.index_ready() ? 1 : 0;
+  out->previewing = t.previewing() ? 1 : 0;
+  out->keyframe_count = static_cast<int32_t>(t.keyframes().size());
+  out->duration_ns = t.duration_ns();
+  out->in_ns = t.in_ns();
+  out->out_ns = t.out_ns();
+  out->cut_in_ns = t.has_marker() ? cut.in_ns : -1;
+  out->cut_out_ns = t.has_marker() ? cut.out_ns : -1;
+  return true;
+}
+extern "C" int32_t mv_chrome_trim_keyframes(int64_t* out, int32_t cap) {
+  if (!g_chrome_app) return 0;
+  const auto& kf = [g_chrome_app trim].keyframes();
+  if (out != nullptr && cap > 0) std::copy_n(kf.begin(), std::min<std::size_t>(kf.size(), cap), out);
+  return static_cast<int32_t>(kf.size());
+}
+extern "C" int32_t mv_chrome_trim_label(char* buf, int32_t size) {
+  if (!g_chrome_app) return MvCopyText({}, buf, size);
+  const mv::shell::trim_state& t = [g_chrome_app trim];
+  return MvCopyText(t.armed() ? t.label() : std::string(), buf, size);
+}
+extern "C" bool mv_chrome_clip_tools_visible(void) {
+  return g_chrome_app && [g_chrome_app clipToolsVisible];
+}
+extern "C" int32_t mv_chrome_clip_tool_flags(void) {
+  return g_chrome_app ? [g_chrome_app clipToolFlags] : 0;
+}
+extern "C" void mv_chrome_clip_tool_confirm(int32_t packed) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app confirmClipTool:packed];
+}
+extern "C" void mv_chrome_clip_tool_cancel(void) {
+  if (g_chrome_app) [g_chrome_app setClipToolsVisible:NO];
+}
+extern "C" bool mv_chrome_jobs_visible(void) {
+  return g_chrome_app && [g_chrome_app jobsVisible];
+}
+extern "C" uint64_t mv_chrome_jobs_generation(void) {
+  return g_chrome_app ? [g_chrome_app jobsGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_jobs(uint64_t* ids, int32_t cap) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  if (!jobs) return 0;
+  std::uint32_t count = 0;
+  if (jobs->jobs(nullptr, 0, &count) != mv::status::ok || count == 0) return 0;
+  std::vector<std::uint64_t> all(count);
+  if (jobs->jobs(all.data(), count, &count) != mv::status::ok) return 0;
+  all.resize(std::min<std::size_t>(count, all.size()));
+  std::reverse(all.begin(), all.end());  // newest first
+  if (ids != nullptr && cap > 0) std::copy_n(all.begin(), std::min<std::size_t>(all.size(), cap), ids);
+  return static_cast<int32_t>(all.size());
+}
+extern "C" bool mv_chrome_job_info(uint64_t id, mv_chrome_job* out) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  mv_clip_progress p{};
+  if (!jobs || !out || jobs->progress(id, p) != mv::status::ok) return false;
+  *out = mv_chrome_job{};
+  out->id = p.job_id;
+  out->state = static_cast<int32_t>(p.state);
+  out->op = static_cast<int32_t>(p.op);
+  out->fraction = p.fraction;
+  out->elapsed_ms = p.elapsed_ms;
+  out->eta_ms = p.eta_ms;
+  out->error = static_cast<int32_t>(p.error);
+  out->output_count = static_cast<int32_t>(p.output_count);
+  return true;
+}
+extern "C" int32_t mv_chrome_job_text(uint64_t id, int32_t which, char* buf, int32_t size) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  if (!jobs) return MvCopyText({}, buf, size);
+  if (which == 2) {
+    char path[4096];
+    std::uint32_t bytes = 0;
+    if (jobs->output(id, 0, path, sizeof(path), &bytes) != mv::status::ok) return MvCopyText({}, buf, size);
+    return MvCopyText(path, buf, size);
+  }
+  mv_clip_progress p{};
+  if (jobs->progress(id, p) != mv::status::ok) return MvCopyText({}, buf, size);
+  return MvCopyText(which == 0 ? p.title_utf8 : p.source_name_utf8, buf, size);
+}
+extern "C" void mv_chrome_job_cancel(uint64_t id) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  if (jobs) (void)jobs->cancel(id);
+}
+extern "C" void mv_chrome_job_retry(uint64_t id) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  std::uint64_t again = 0;
+  if (jobs) (void)jobs->retry(id, again);
+}
+extern "C" void mv_chrome_job_reveal(uint64_t id) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  if (!jobs) return;
+  char path[4096];
+  std::uint32_t bytes = 0;
+  if (jobs->output(id, 0, path, sizeof(path), &bytes) != mv::status::ok) return;
+  NSString* p = [NSString stringWithUTF8String:path];
+  if (!p) return;
+  [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:p] ]];
+}
+extern "C" void mv_chrome_jobs_clear_finished(void) {
+  mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
+  if (jobs) jobs->clear_finished();
+}
+extern "C" void mv_chrome_jobs_close(void) {
+  if (g_chrome_app) [g_chrome_app setJobsVisible:NO];
+}
+extern "C" void mv_chrome_jobs_blur(void) {
+  if (g_chrome_app) [g_chrome_app jobsBlur];
 }
 
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
@@ -1146,6 +1308,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // FP16 working image the histogram reduces (the render thread holds its own
   // GPU copy). `_adjustGen` cancels a build for an item the user has left.
   mv::shell::adjust_pane _adjust;
+  // PR 13 / 14 (plan/08). `_trim` is trim mode over the clip on screen (shared
+  // with Windows); `_clipJobs` is the clip job queue and keyframe index the
+  // Windows ABI also drives, its completions hopped to the main queue.
+  mv::shell::trim_state _trim;
+  std::unique_ptr<mv::abi::clip_session> _clipJobs;
+  std::uint64_t _trimIndexRequest;
+  std::uint64_t _trimGeneration;
+  std::uint64_t _jobsGeneration;
+  BOOL _jobsVisible;
+  BOOL _clipToolsVisible;
   std::shared_ptr<const mv::image::linear_image> _working;
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
@@ -1403,6 +1575,30 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     [self.adjustHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
     self.adjustBottom,
   ]];
+  // PR 13 / 14: the Jobs pane, same edge and width again (one at a time).
+  self.jobsHost = [MVChromeHost makeJobsView];
+  self.jobsHost.hidden = YES;
+  self.jobsHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.jobsHost];
+  self.jobsBottom = [self.jobsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                               constant:-kFilmstripHeightPoints];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.jobsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.jobsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.jobsHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    self.jobsBottom,
+  ]];
+  // The clip job queue. Its completions arrive on its workers and hop to the
+  // main queue here (plan/14: the core never calls the host's dispatcher).
+  {
+    MvLabApp* __weak weakClip = self;
+    _clipJobs = std::make_unique<mv::abi::clip_session>([weakClip](const mv_completion& c) {
+      const mv_completion copy = c;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakClip clipCompletion:copy];
+      });
+    });
+  }
   [NSLayoutConstraint activateConstraints:@[
     [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
@@ -1720,6 +1916,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
 - (void)selectIndex:(std::size_t)new_index {
   _index.reset(_items.size(), new_index);
+  [self trimItemChanged];
 
   if (_items.empty()) {
     _wantSelectedPath.clear();
@@ -2815,8 +3012,9 @@ enum MvMenuCmd : NSInteger {
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
-  s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible();
+  s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible;
   s.crop = _edits.crop_active();
+  s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
   return s;
 }
 
@@ -2841,6 +3039,14 @@ enum MvMenuCmd : NSInteger {
   if (_exportVisible) {
     if (!up && k == key::escape && mods == mod_none) {
       [self setExportVisible:NO];
+      return YES;
+    }
+    return NO;
+  }
+  // PR 14: the clip tools sheet likewise.
+  if (_clipToolsVisible) {
+    if (!up && k == key::escape && mods == mod_none) {
+      [self setClipToolsVisible:NO];
       return YES;
     }
     return NO;
@@ -2911,10 +3117,12 @@ enum MvMenuCmd : NSInteger {
           [self publishEdit];
           [self pokeSnapshot];
           break;
+        case mv::shell::back_target::trim: [self setTrimArmed:NO]; break;
         case mv::shell::back_target::pane:
           [self setMetaPaneVisible:NO];
           [self setTreeVisible:NO];
           [self setAdjustVisible:NO];
+          [self setJobsVisible:NO];
           break;
         case mv::shell::back_target::slideshow: [self leaveSlideshow]; break;
         case mv::shell::back_target::fullscreen: [self toggleFullscreen]; break;
@@ -3069,10 +3277,16 @@ enum MvMenuCmd : NSInteger {
     }
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
+      if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
       [self setMetaPaneVisible:!_metaPaneVisible];
       return YES;
     // PR 11 (plan/16 Pane): ⇧A shows the adjust pane and focuses it.
     case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
+    // PR 13 / 14 (plan/08, plan/16 "Video and trim").
+    case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
+    case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
+    case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
+      return [self runClipCommand:command];
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
     // PR 10 geometry, crop mode and export (plan/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
@@ -3227,6 +3441,295 @@ enum MvMenuCmd : NSInteger {
   _exportChoice = packed;
   [self setExportVisible:NO];
   [self exportCurrentItem:mv::shell::unpack_export(packed)];
+}
+
+// ---- PR 13 / 14: trim mode, the clip tools and the Jobs pane (plan/08) --------
+// The twin of main.cpp's block of the same name. Trim is host state over the
+// clip on screen (shell/trim_state.h); the keyframe index and every job run in
+// the core (abi/clip_session over edit/clip). Nothing here reads the file or
+// waits on a job (rule 1).
+
+- (std::string)currentClipPath {
+  if (![self currentItemIsVideo]) return {};
+  return _items[_index.current()].path_utf8;
+}
+
+- (std::int64_t)clipPositionNs {
+  const auto st = _lab.video_status_snapshot();
+  return st.active ? std::max<std::int64_t>(0, st.position_ns) : 0;
+}
+
+- (void)seekClipNs:(std::int64_t)t {
+  _snap.video_seek_ns = std::max<std::int64_t>(0, t);
+  _snap.video_seek_ms = _snap.video_seek_ns / 1'000'000;
+  _snap.video_seek_exact = true;
+  ++_snap.video_seek_seq;
+  [self pokeSnapshot];
+}
+
+- (void)bumpTrim {
+  ++_trimGeneration;
+}
+
+// P: the A-B loop over exactly what Path 1 will write; off clears it.
+- (void)applyTrimPreview {
+  if (_trim.previewing()) {
+    const mv::edit::clip::range r = _trim.keyframe_range();
+    _snap.video_loop_a_ns = r.in_ns;
+    _snap.video_loop_b_ns = r.out_ns;
+  } else {
+    _snap.video_loop_a_ns = 0;
+    _snap.video_loop_b_ns = -1;
+  }
+  ++_snap.video_loop_seq;
+  [self pokeSnapshot];
+}
+
+// The selection moved: trim and its markers belong to the clip that was left.
+- (void)trimItemChanged {
+  if (_trim.path().empty()) return;
+  const std::size_t i = _index.current();
+  if (i < _items.size() && _items[i].path_utf8 == _trim.path()) return;
+  _trim.forget();
+  _trimIndexRequest = 0;
+  [self bumpTrim];
+}
+
+- (BOOL)setTrimArmed:(BOOL)on {
+  if (on) {
+    const std::string path = [self currentClipPath];
+    const auto st = _lab.video_status_snapshot();
+    if (path.empty() || !st.active || !_clipJobs) return NO;
+    const bool fresh = path != _trim.path();
+    _trim.arm(path, st.duration_ms * 1'000'000);
+    // The grid is read once per clip on a worker; it lands in -clipCompletion:.
+    if ((fresh || !_trim.index_ready()) && _trimIndexRequest == 0) {
+      std::uint64_t id = 0;
+      if (_clipJobs->request_index(path, id) == mv::status::ok) _trimIndexRequest = id;
+    }
+  } else {
+    const bool looping = _trim.previewing();
+    _trim.disarm();
+    if (looping) [self applyTrimPreview];
+  }
+  [self bumpTrim];
+  return YES;
+}
+
+- (void)clipCompletion:(mv_completion)c {
+  if (!_clipJobs) return;
+  if (c.kind == MV_COMPLETION_CLIP_INDEX) {
+    if (c.job_id != _trimIndexRequest) return;
+    _trimIndexRequest = 0;
+    std::uint32_t count = 0;
+    std::int64_t duration = 0;
+    if (_clipJobs->index_get(c.job_id, nullptr, 0, &count, &duration) != mv::status::ok) return;
+    std::vector<std::int64_t> keyframes(count);
+    if (count > 0 &&
+        _clipJobs->index_get(c.job_id, keyframes.data(), count, &count, &duration) != mv::status::ok) {
+      return;
+    }
+    keyframes.resize(std::min<std::size_t>(count, keyframes.size()));
+    _trim.set_index(_trim.path(), std::move(keyframes), duration);
+    if (_trim.previewing()) [self applyTrimPreview];
+    [self bumpTrim];
+  } else if (c.kind == MV_COMPLETION_CLIP_JOB) {
+    ++_jobsGeneration;
+  }
+}
+
+// Queues a job and shows the Jobs pane (without taking the keyboard); the
+// pane is where it is cancelled (plan/08: never a modal progress dialog).
+- (BOOL)submitClipJob:(const mv::edit::clip::request&)r {
+  if (!_clipJobs || r.source.empty()) return NO;
+  mv_clip_request q{};
+  q.struct_size = sizeof(q);
+  q.op = static_cast<std::uint32_t>(r.kind);
+  q.in_ns = r.in_ns;
+  q.out_ns = r.out_ns;
+  namespace clip = mv::edit::clip;
+  switch (r.kind) {
+    case clip::op::rotate: q.option = r.rotate_degrees == 270 ? 2u : r.rotate_degrees == 180 ? 3u : 1u; break;
+    case clip::op::remux: q.option = r.remux == clip::remux_target::mkv ? 2u : 1u; break;
+    case clip::op::frame: q.option = r.frame == clip::frame_format::jpeg ? 2u : 1u; break;
+    case clip::op::audio:
+      q.option = r.audio == clip::audio_format::wav ? 2u : r.audio == clip::audio_format::flac ? 3u : 1u;
+      break;
+    case clip::op::animation: q.option = r.animation == clip::anim_format::webp ? 2u : 1u; break;
+    default: break;
+  }
+  std::uint64_t job = 0;
+  if (_clipJobs->submit(r.source, q, job) != mv::status::ok) {
+    NSBeep();
+    return YES;
+  }
+  ++_jobsGeneration;
+  if (!_jobsVisible) [self setJobsVisible:YES focus:NO];
+  return YES;
+}
+
+- (BOOL)runClipCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  namespace clip = mv::edit::clip;
+  const bool clip_on = [self currentItemIsVideo] && _lab.video_status_snapshot().active;
+  switch (command) {
+    case trim_mode: return [self setTrimArmed:!(_trim.armed() && clip_on)];
+    case trim_in:
+    case trim_out: {
+      if (!_trim.armed()) return NO;
+      const std::int64_t at = [self clipPositionNs];
+      if (command == trim_in) _trim.mark_in(at);
+      else _trim.mark_out(at);
+      if (_trim.previewing()) [self applyTrimPreview];
+      [self bumpTrim];
+      return YES;
+    }
+    case trim_clear: {
+      if (!_trim.armed()) return NO;
+      const bool looping = _trim.previewing();
+      _trim.clear();
+      if (looping) [self applyTrimPreview];
+      [self bumpTrim];
+      return YES;
+    }
+    case trim_preview: {
+      if (!_trim.armed()) return NO;
+      if (!_trim.has_marker() && !_trim.previewing()) {
+        NSBeep();  // nothing to preview: set `[` or `]` first
+        return YES;
+      }
+      const bool on = _trim.toggle_preview();
+      [self applyTrimPreview];
+      if (on) {
+        [self seekClipNs:_trim.keyframe_range().in_ns];
+        if (!_lab.video_status_snapshot().playing) {
+          ++_snap.anim_toggle_seq;  // Space's edge: play
+          [self pokeSnapshot];
+        }
+      }
+      [self bumpTrim];
+      return YES;
+    }
+    case trim_keyframe:
+    case trim_reencode:
+    case trim_remove_middle: {
+      if (!_trim.armed()) return NO;
+      if (!_trim.has_marker()) {
+        NSBeep();
+        return YES;
+      }
+      const clip::op kind = command == trim_keyframe   ? clip::op::trim_keyframe
+                            : command == trim_reencode ? clip::op::trim_reencode
+                                                       : clip::op::remove_middle;
+      return [self submitClipJob:_trim.request(kind)];
+    }
+    case keyframe_prev:
+    case keyframe_next: {
+      if (!_trim.armed() || !_trim.index_ready()) return NO;
+      const std::int64_t at = [self clipPositionNs];
+      const std::int64_t to = command == keyframe_prev ? _trim.prev_keyframe(at) : _trim.next_keyframe(at);
+      if (to != at) [self seekClipNs:to];
+      return YES;
+    }
+    case jobs_pane: [self setJobsVisible:!_jobsVisible]; return YES;
+    case clip_tools:
+      if (!clip_on) return NO;
+      [self setClipToolsVisible:YES];
+      return YES;
+    case clip_split: {
+      if (!clip_on) return NO;
+      clip::request r;
+      if (!mv::shell::clip_tool_request(mv::shell::pack_clip_choice(clip::op::split, 0), [self currentClipPath],
+                                        [self clipPositionNs], &_trim, r)) {
+        return NO;
+      }
+      return [self submitClipJob:r];
+    }
+    default: return NO;
+  }
+}
+
+- (uint64_t)trimGeneration {
+  return _trimGeneration;
+}
+- (const mv::shell::trim_state&)trim {
+  return _trim;
+}
+- (mv::abi::clip_session*)clipJobs {
+  return _clipJobs.get();
+}
+- (uint64_t)jobsGeneration {
+  return _jobsGeneration;
+}
+- (BOOL)jobsVisible {
+  return _jobsVisible;
+}
+
+- (void)setJobsVisible:(BOOL)visible {
+  [self setJobsVisible:visible focus:visible];
+}
+
+- (void)setJobsVisible:(BOOL)visible focus:(BOOL)focus {
+  if (visible == _jobsVisible) {
+    if (visible && focus) [self.window makeFirstResponder:self.jobsHost];
+    return;
+  }
+  // One right-edge pane at a time (the metadata and adjust panes' edge).
+  if (visible && _metaPaneVisible) [self setMetaPaneVisible:NO];
+  if (visible && _adjust.visible()) [self setAdjustVisible:NO];
+  _jobsVisible = visible;
+  self.jobsHost.hidden = !visible;
+  ++_jobsGeneration;
+  if (visible && focus) [self.window makeFirstResponder:self.jobsHost];
+  else if (!visible) [self.window makeFirstResponder:self.view];
+}
+
+- (void)jobsBlur {
+  [self.window makeFirstResponder:self.view];
+}
+
+- (BOOL)clipToolsVisible {
+  return _clipToolsVisible;
+}
+
+- (int32_t)clipToolFlags {
+  std::int32_t flags = mv::shell::kClipFlagHasVideo | mv::shell::kClipFlagHasAudio;
+  if (_trim.has_marker() && _trim.path() == [self currentClipPath]) flags |= mv::shell::kClipFlagHasRange;
+  return flags;
+}
+
+- (void)setClipToolsVisible:(BOOL)visible {
+  if (visible == _clipToolsVisible) return;
+  _clipToolsVisible = visible;
+  if (visible) {
+    [self cancelKeyHolds];
+    NSView* container = self.window.contentView;
+    self.clipToolsHost = [MVChromeHost makeClipToolsView];
+    self.clipToolsHost.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.clipToolsHost];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.clipToolsHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+      [self.clipToolsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+      [self.clipToolsHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+      [self.clipToolsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    ]];
+    [self.window makeFirstResponder:self.clipToolsHost];
+  } else {
+    [self.clipToolsHost removeFromSuperview];
+    self.clipToolsHost = nil;
+    [self.window makeFirstResponder:self.view];
+  }
+}
+
+- (void)confirmClipTool:(int32_t)packed {
+  [self setClipToolsVisible:NO];
+  mv::edit::clip::request r;
+  if (![self currentItemIsVideo] ||
+      !mv::shell::clip_tool_request(packed, [self currentClipPath], [self clipPositionNs], &_trim, r)) {
+    NSBeep();
+    return;
+  }
+  (void)[self submitClipJob:r];
 }
 
 // Cmd+S opens the sheet (ExportView.swift); its choice lands here as options:
@@ -3410,6 +3913,7 @@ enum MvMenuCmd : NSInteger {
     return;
   }
   if (visible && _metaPaneVisible) [self setMetaPaneVisible:NO];
+  if (visible && _jobsVisible) [self setJobsVisible:NO];
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.show(visible, has_colour)];
   if (!visible && !has_colour) {
@@ -3790,6 +4294,9 @@ static NSString* const kDefaultsKeys = @"mv.keys";
   // so both run on a background queue; the window is already closed by the
   // time this method runs, so nothing user-visible waits on it.
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    // PR 13 / 14: running clip jobs are cancelled and their temporaries
+    // removed (no partial output); joins the queue's workers.
+    _clipJobs.reset();
     _jobs.shutdown();
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,

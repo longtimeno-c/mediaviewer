@@ -1997,3 +1997,100 @@ photo/video library; no fixed duration is promised before that measurement.
 The 2026-09-24 multi-folder entry called PR 26 "Milestone H" before the later renumbering assigned
 that name to AI search. PR 26 remains folder tiles/breadcrumb/up, but is now labelled a standalone
 PR so Milestone H is unambiguous.
+
+## 2026-09-25 — Milestone E: PR 13 (two-path trim) and PR 14 (extract & remux), both platforms
+
+**Built ahead of PR 12.** The owner asked for Milestone E's PR 13 and 14 believing PR 15 had
+already landed. It has not: PR 8's installer registers the `ProgId`s, but no out-of-process
+`IThumbnailProvider` / property handler, jump list or Mac Dock menu / window tabs exist, and PR 12
+(metadata write) is not written either. So, as the dual-track rule allows for Import (Milestone G),
+PRs 13 and 14 are written as **one change on a branch**; they do not merge before PR 12's verify holds
+on both platforms. PR 15 remains to be done.
+
+**Where it lives.** One shared core in `src/edit/clip*` (module `edit`, its own library `mv_clip`
+because it links FFmpeg and `mv_edit` does not): `clip_common` (open, the player's timeline origin,
+the keyframe index, snapping, staged output), `clip_copy` (every stream-copy operation),
+`clip_encode` (every decode path), `clip_run` (request → range → staged output → publish) and
+`clip_jobs` (the cancellable queue). The encode port is `edit/hwencode.h` with `hwencode_win.cpp`,
+`hwencode_mac.cpp` and `hwencode_none.cpp` (the headless Linux build). The ABI is a companion header,
+`mediaviewer_clip.h` (ABI 0.10), implemented by the portable `abi/clip_session`, which the **Mac
+host reuses directly** (shell → abi is a legal edge) so both hosts drive one queue implementation.
+Host-side trim mode is `shell/trim_state` (shared), with `mode::trim` in the router.
+
+**Calls made while building it:**
+
+- **The encode port lists FFmpeg's hardware wrappers**, not direct OS APIs: Windows `h264_nvenc`,
+  `h264_qsv`, `h264_amf`, `h264_mf` (and the `hevc_*` twins); macOS `h264_videotoolbox` /
+  `hevc_videotoolbox`, which *are* `VTCompressionSession`. One transcode loop then serves both
+  platforms. `vcpkg.json` gains ffmpeg `nvcodec`, `qsv`, `amf` and `webp`; the Mac dynamic manifest
+  gains `webp`. The pinned port enables only `h264_qsv` (no `hevc_qsv`); the list falls through.
+  The core refuses any encoder FFmpeg does not mark hardware or hybrid, and `libx26*` by name,
+  whatever a port lists; `tools/licence-check.ps1` now also rejects gpl / nonfree / x264 / x265 /
+  fdk-aac in FFmpeg's **feature list**, not only as dependency names.
+- **Path 2 keeps HEVC as HEVC** when a hardware HEVC encoder opens (10-bit stays 10-bit where the
+  encoder takes P010), else H.264; colour tags and the display matrix are carried. **Audio is stream-
+  copied** (no software AAC encoder, plan/11), so Path 2's audio edges are packet-accurate, not
+  sample-accurate.
+- **Jobs run in-process** on the queue's own worker, not in a child process as plan/08's
+  "Execution & UX" suggests. Cancellation is a flag checked per packet plus FFmpeg's AVIO interrupt
+  callback; outputs go to a hidden `.<name>.mvpart` sibling and are published with
+  `io::rename_no_replace`, so a cancel, a failure or a quit leaves nothing (tested). What is lost is
+  crash isolation for a GPU driver's encoder. **Open, for the owner:** move `trim_reencode` into a
+  helper process before PR 13 ships to users, or accept in-process. Not decided silently.
+- **Decode inside a job is software**, on the job's thread — never the player's D3D11VA /
+  VideoToolbox decoder on the render device, whose surface pool the canvas presents from (plan/05).
+- **The keyframe grid reads every video packet** (other streams discarded, nothing decoded).
+  `AVDISCARD_NONKEY` would skip non-key samples in MOV, but MOV then attaches the wrong composition
+  offset to every later keyframe when there are B-frames — found by `test_clip`'s B-frame cases.
+  Measured: probe + keyframe trim of a 968 MB MP4 in 1.0 s (warm page cache, Linux).
+- **Snapping.** Path 1: `in` → the keyframe at or before it, `out` → the keyframe at or after it, so
+  the output contains the request; the A–B preview (`P`) loops exactly that range. Split and
+  remove-middle snap each edge to the **nearest** keyframe. Open-GOP leading pictures of the first
+  kept GOP are dropped rather than written undecodable.
+- **Names.** `<name>_trimmed.<ext>` (both paths), `_rotated`, `_part1` / `_part2`, `_cut`,
+  `_frame_<m-ss.mmm>.png|jpg`, `_audio.<ext>` (the copy's box follows the codec: `.m4a`, `.mp3`,
+  `.opus`, `.flac`, `.wav`, else `.mka`), and a remux keeps the stem with the new extension. A taken
+  name gets ` (2)`, as copy/move do. Beside the source; never over it (rule 5).
+- **Frame and GIF/WebP pixels are sRGB.** PQ / HLG go through `codec::cicp::hdr_to_sdr` (the CPU twin
+  of the video shader's tone map); SDR P3 / BT.2020 are converted to BT.709 in linear light; BT.709 /
+  601 / unspecified are the sRGB-encoded convention the still path uses. The display matrix is
+  applied to the pixels (PNG, GIF and WebP carry no orientation).
+- **GIF is two real passes** (decode for `palettegen`, decode again for `paletteuse`) so a minute of
+  frames is never held in memory; WebP is `libwebp_anim`. More than 60 s is refused; with no markers
+  the tool takes 5 s from the playhead.
+- **Keys** (plan/16 amended in this change). `Ctrl+T` / `⌘T` arms trim on a clip; in trim `[` `]` set
+  the markers, `P` previews, `Enter` saves Path 1, `Shift+Enter` Path 2, `Ctrl+X` removes in–out,
+  `Ctrl+←` / `Ctrl+→` walk keyframes (they stay folder navigation outside trim), `Backspace` **and
+  `Delete`** clear the markers — `Delete` falling through to video would have sent the clip being
+  trimmed to the Trash / Recycle Bin, and the Mac has no Backspace. `Ctrl+J` / `⌘J` is the Jobs
+  pane, `Ctrl+S` / `⌘S` on a clip the clip tools (Export on a still), `Ctrl+B` / `⌘B` split at the
+  playhead. Trim is `mode::trim`, which layers over video like the loupe over browse, so the
+  transport keys keep working; `mode_mask` widened to 16 bits for it.
+- **Windows:** the island owns the completion drain, so a `CLIP_INDEX` completion is forwarded to
+  native as `chrome_cmd_clip_index`; the Jobs pane polls the ABI itself. An update restart waits for
+  running clip jobs, as it waits for a playing clip. **macOS:** the render thread gains an A–B loop
+  and a nanosecond seek through the input snapshot (a keyframe sought in milliseconds lands a frame
+  early); the clip tools sheet offers audio extraction without knowing whether the clip has audio
+  (the job then fails with its reason).
+
+**What is proved, and where.** The shared core, the clip session behind the ABI and the trim model:
+`mv_clip_tests` (17 cases, 429 assertions, synthetic MP4 / MKV / MOV with and without B-frames,
+written in-process with FFmpeg's own MPEG-4 / MP2 encoders) and `mv_trim_tests`, on Linux under GCC,
+ASan + UBSan, and the job queue under TSan; the key-router suites still pass. The PR 13 verify lines
+they walk: keyframe trim is proportional (output share within ±15 % of the range's frame share,
+0.2600 vs 0.2601 on the 968 MB file) and snaps to the grid; Path 2 is frame-accurate (exactly the
+requested frames, first and last checked by content) — driven with a software encoder through a test
+hook, since CI has no GPU encoder; the source is byte-identical after every operation; a cancel at
+30 % leaves only the source in the folder, for trim, re-encode, split and GIF. PR 14: each operation
+round-trips (MP4 → MKV → MP4 keeps every video packet byte-for-byte; lossless rotate writes the new
+matrix with identical packets; split halves and remove-middle joins decode to the expected frames).
+The C# chrome and Interop compile (`dotnet build`, 0 warnings); `main.cpp`, `abi.cpp` and
+`chrome_host.cpp` pass a MinGW-w64 syntax check against Windows headers.
+
+**Owed, per platform.** Windows: the first MSVC / clang-cl build of the host half and `mv_tests` with
+the new suites; the vcpkg rebuild with the new FFmpeg features; the verify on hardware — a 1 GB
+keyframe trim in seconds, a Path 2 trim on NVENC / Quick Sync / AMF / MF checked frame-accurate, the
+Jobs pane cancel, and PR 1's present-loop gate. macOS: the first Xcode / SwiftPM build of
+`main_mac.mm` and the Swift views; the same verify, plus "the re-encode shows VideoToolbox active"
+(Activity Monitor / `powermetrics`) and "no software encoder is linked" (`nm` of the FFmpeg dylibs for
+`libx264` / `libx265`); the Mac PR 1 Metal gate. Both: the child-process question above.

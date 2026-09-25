@@ -68,6 +68,12 @@ enum chrome_command : int {
   // Milestone G. Open a file in the viewer (Import's Enter); native pulls the
   // path with take_tree_path, as for the tree.
   chrome_cmd_open_path = 1011,
+  // PR 14. The clip tools flyout was confirmed; arg is the packed choice
+  // (shell/trim_state.h pack_clip_choice). Cancel sends nothing.
+  chrome_cmd_clip_tool = 1012,
+  // PR 13. The island drained MV_COMPLETION_CLIP_INDEX (the island owns the
+  // drain); arg is the request id, which native reads with mv_clip_index_get.
+  chrome_cmd_clip_index = 1013,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -81,6 +87,7 @@ enum class chrome_popup : std::int32_t {
   find = 4,
   settings = 5,
   export_image = 6,  // PR 10; mode_mask carries the last packed choice to preselect
+  clip_tools = 7,    // PR 14; mode_mask carries clip flags (trim_state.h kClipFlag*)
 };
 
 struct chrome_popup_args {
@@ -129,6 +136,13 @@ static_assert(chrome_cmd_export >= kCommandCount);
 static_assert(chrome_cmd_open_subfolder >= kCommandCount && chrome_cmd_gallery_columns >= kCommandCount);
 static_assert(chrome_cmd_addon_state >= kCommandCount);
 static_assert(chrome_cmd_open_path >= kCommandCount);
+static_assert(chrome_cmd_clip_tool >= kCommandCount && chrome_cmd_clip_index >= kCommandCount);
+// PR 13 / 14: the jobs pane's close button and the trim chips send these.
+static_assert(static_cast<int>(command_id::trim_mode) == 127);
+static_assert(static_cast<int>(command_id::trim_keyframe) == 132);
+static_assert(static_cast<int>(command_id::trim_reencode) == 133);
+static_assert(static_cast<int>(command_id::jobs_pane) == 136);
+static_assert(static_cast<int>(command_id::clip_tools) == 137);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -149,7 +163,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_reset_keys, chrome_cmd_update_restart, chrome_cmd_tree_open,
       chrome_cmd_set_sort, chrome_cmd_export, chrome_cmd_open_subfolder, chrome_cmd_open_crumb,
       chrome_cmd_gallery_columns,
-      chrome_cmd_addon_state, chrome_cmd_open_path};
+      chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_clip_tool, chrome_cmd_clip_index};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -218,6 +232,27 @@ struct chrome_panel_args {
 };
 
 static_assert(sizeof(chrome_panel_args) == 24, "keep in sync with ChromePanelArgs");
+
+// PR 13: trim mode on the transport's scrub bar (shell/trim_state.h). Times in
+// ns on the player's timeline; -1 = unset. `cut_*` is what Path 1 will write
+// (the keyframe-snapped range). Pointers are valid for the call only.
+struct chrome_trim_args {
+  std::int32_t armed;
+  std::int32_t index_ready;
+  std::int64_t duration_ns;
+  std::int64_t in_ns;
+  std::int64_t out_ns;
+  std::int64_t cut_in_ns;
+  std::int64_t cut_out_ns;
+  std::uint64_t keyframes;  // const int64_t*
+  std::int32_t keyframe_count;
+  std::int32_t label_len;
+  std::uint64_t label_utf8;  // trim_state::label()
+  std::int32_t previewing;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_trim_args) == 80, "keep in sync with ChromeTrimArgs");
 
 // The metadata pane's three tables (meta/tables.h), valid for the call only.
 struct chrome_meta_args {
@@ -406,6 +441,15 @@ class chrome_host {
   // returns to the canvas, like the metadata pane.
   void set_adjust_view(const adjust_view& view) noexcept;
 
+  // PR 13 / 14: the Jobs pane, a fourth panel island on the right edge (the
+  // host shows one right pane at a time). The pane polls the clip job queue
+  // through the ABI itself. Optional like the other panes.
+  void show_jobs_pane(bool visible, int x, int y, int width, int height, bool focus = false) noexcept;
+  [[nodiscard]] bool jobs_pane_visible() const noexcept { return panels_attached_ && jobs_visible_; }
+  // PR 13: trim mode's markers, keyframe grid and label on the scrub bar.
+  // Optional: an older chrome ignores it.
+  void set_trim(const chrome_trim_args& args) noexcept;
+
   // The playback transport: a bottom strip, its content centred, shown only
   // while a clip is open. `filmstrip_px` is how much bottom chrome is already
   // spoken for, so the two strips stack instead of overlapping.
@@ -510,6 +554,8 @@ class chrome_host {
   chrome_entry_fn take_tree_path_ = nullptr;
   chrome_entry_fn show_adjust_pane_ = nullptr;
   chrome_entry_fn set_adjust_view_ = nullptr;
+  chrome_entry_fn show_jobs_pane_ = nullptr;  // PR 13 / 14
+  chrome_entry_fn set_trim_ = nullptr;        // PR 13
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn apply_browse_ = nullptr;
@@ -526,6 +572,7 @@ class chrome_host {
   bool meta_visible_ = false;
   bool tree_visible_ = false;
   bool adjust_visible_ = false;
+  bool jobs_visible_ = false;
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   chrome_entry_fn shutdown_for_exit_ = nullptr;

@@ -270,11 +270,13 @@ TEST_CASE("visible gallery owns row navigation and Enter before focus moves", "[
   REQUIRE(r.on_key(down(key::f5), still()).command == command_id::slideshow_start);
   REQUIRE(r.on_key(down(key::f5), clip()).command == command_id::slideshow_start);
   // No default Enter binding can start fullscreen or a slideshow in any mode.
-  // PR 10: Enter also commits a crop, in crop mode only.
+  // PR 10: Enter also commits a crop, in crop mode only. PR 13: and saves a
+  // keyframe trim, in trim mode only.
   for (const auto& b : default_bindings()) {
     if (b.k != key::enter || b.mods != mod_none) continue;
     REQUIRE((b.command == command_id::gallery_open_selected ||
-             (b.command == command_id::crop_commit && b.modes == kCrop)));
+             (b.command == command_id::crop_commit && b.modes == kCrop) ||
+             (b.command == command_id::trim_keyframe && b.modes == kTrim)));
   }
 }
 
@@ -291,7 +293,7 @@ TEST_CASE("PR 10: rotate, flip and crop mode route on a still", "[shell][router]
   REQUIRE(r.on_key(down(char_key('S'), mod_ctrl), s).command == command_id::export_image);
   REQUIRE(r.on_key(down(char_key('Z'), mod_ctrl), s).command == command_id::undo_edit);
   REQUIRE(r.on_key(down(char_key('R'), mod_ctrl), s).command == command_id::reset_edits);
-  // A clip keeps `[` `]` for trim (PR 13): nothing here yet.
+  // A clip keeps `[` `]` for trim (PR 13): nothing until trim is armed.
   REQUIRE_FALSE(r.on_key(down(char_key(']')), clip()).handled);
 
   s.crop = true;

@@ -31,6 +31,7 @@ public static partial class IslandHost
         public const int Find = 4;
         public const int Settings = 5;
         public const int Export = 6;  // PR 10; ModeMask carries the last packed choice
+        public const int ClipTools = 7;  // PR 14; ModeMask carries trim_state.h kClipFlag*
     }
 
     private sealed class CommandRow
@@ -126,6 +127,7 @@ public static partial class IslandHost
                 PopupKind.GoTo => BuildGoTo(out focusTarget),
                 PopupKind.Find => BuildFind(out focusTarget),
                 PopupKind.Export => BuildExport(args.ModeMask, out focusTarget),
+                PopupKind.ClipTools => BuildClipTools(args.ModeMask, out focusTarget),
                 _ => null,
             };
             if (content is null)
@@ -136,7 +138,8 @@ public static partial class IslandHost
 
             // The export dialog takes the arrows and Enter itself, like go-to's
             // digits, so it reports text focus and the router yields.
-            _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find or PopupKind.Export;
+            _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find or PopupKind.Export
+                or PopupKind.ClipTools;
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
