@@ -223,7 +223,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
 | **Video trim** | Cut clips losslessly at keyframes, or re-encode with hardware encoders; extract a frame or the audio |
 | **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
-| **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. Written on a branch ([plan/18](plan/18-import.md)); platform builds and hardware verify still owed |
+| **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
 | **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
 | **Voice search** (optional add-on) | Speak the query; speech runs on-device |
 | **macOS** | The same core with a native Metal and SwiftUI app; it already builds, browses and plays video, and is being brought to parity |

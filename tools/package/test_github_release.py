@@ -123,7 +123,7 @@ class ReleaseTests(unittest.TestCase):
             cli.assert_not_called()
 
     def stable_assets(self):
-        os.environ.update(MODE='stable', TAG='v0.1.1')
+        os.environ.update(MODE='stable', TAG='v0.1.1', MV_RELEASE_ADDONS='1')
         for name in ('MediaViewer-0.1.1-full.nupkg', 'RELEASES', 'releases.win.json',
                      'assets.win.json', 'MediaViewer-0.1.1.zip'):
             (self.folder / name).write_bytes(b'payload')
@@ -132,6 +132,13 @@ class ReleaseTests(unittest.TestCase):
              'sha256': hashlib.sha256(b'payload').hexdigest()}]}
         (self.folder / 'mediaviewer-manifest.json').write_text(json.dumps(manifest))
         (self.folder / 'mediaviewer-manifest.json.sig').write_bytes(b'x' * 64)
+        for platform in release.ADDON_PLATFORMS:
+            base = f'mediaviewer-addon-import-{platform}'
+            (self.folder / (base + '.zip')).write_bytes(b'addon')
+            (self.folder / (base + '.json')).write_text(json.dumps({
+                'id': 'import', 'platform': platform, 'version': '0.1.1',
+                'archive': {'path': base + '.zip', 'size': 5, 'sha256': hashlib.sha256(b'addon').hexdigest()}}))
+            (self.folder / (base + '.json.sig')).write_bytes(b's' * 64)
         (self.folder / 'appcast.xml').write_text('''<!-- sparkle-signatures: fixture -->
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
 <enclosure url="https://github.com/owner/repo/releases/download/v0.1.1/MediaViewer-0.1.1.zip"
@@ -144,6 +151,43 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 release.publish(self.folder)
             cli.assert_not_called()
+
+    def test_stable_needs_the_import_addon_for_both_platforms(self):
+        self.stable_assets()
+        (self.folder / 'mediaviewer-addon-import-macos.zip').unlink()
+        with patch.object(release, 'gh') as cli:
+            with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-import-macos.zip'):
+                release.publish(self.folder)
+            cli.assert_not_called()
+
+    def test_addons_are_not_required_until_the_workflow_packs_them(self):
+        self.stable_assets()
+        os.environ.pop('MV_RELEASE_ADDONS')
+        for platform in release.ADDON_PLATFORMS:
+            for name in release.addon_asset_names(platform):
+                (self.folder / name).unlink()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any(n.startswith('mediaviewer-addon-') for n in names))
+
+    def test_stable_rejects_addon_archive_that_does_not_match_its_manifest(self):
+        self.stable_assets()
+        (self.folder / 'mediaviewer-addon-import-win-x64.zip').write_bytes(b'other')
+        with self.assertRaisesRegex(ValueError, 'Add-on archive does not match'):
+            release.publish(self.folder)
+
+    def test_stable_rejects_addon_from_another_version(self):
+        self.stable_assets()
+        m = self.folder / 'mediaviewer-addon-import-macos.json'
+        m.write_text(m.read_text().replace('"0.1.1"', '"0.1.0"'))
+        with self.assertRaisesRegex(ValueError, 'not the release version'):
+            release.publish(self.folder)
+
+    def test_stable_uploads_the_addon(self):
+        self.stable_assets()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for platform in release.ADDON_PLATFORMS:
+            for name in release.addon_asset_names(platform):
+                self.assertIn(name, names)
 
     def test_stable_rejects_appcast_pointing_to_another_release(self):
         self.stable_assets()

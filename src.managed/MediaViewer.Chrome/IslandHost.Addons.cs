@@ -45,6 +45,16 @@ public static partial class IslandHost
 
     private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded);
 
+    // Whether the release channel has an Import this build can install. Only
+    // a manifest that verifies counts: the button never offers a download that
+    // does not exist or that the core would refuse.
+    private enum OfferKind { Unknown, Checking, Available, NotPublished, NeedsNewerApp, Unreachable }
+    private sealed record AddonOffer(OfferKind Kind, long ArchiveSize);
+
+    private static AddonOffer _importOffer = new(OfferKind.Unknown, 0);
+    private static bool _offerProbeRunning;
+    private static bool _hintAfterProbe;
+
     private static readonly HttpClient AddonHttp = CreateAddonClient();
 
     private static HttpClient CreateAddonClient()
@@ -274,9 +284,88 @@ public static partial class IslandHost
         if (e.Event == MvAddonEvent.VolumeArrived && e.Payload == 1 && !_importState.Installed &&
             !ImportHintDismissed())
         {
-            ShowImportHint(true);
+            OfferImportHint();
         }
     }
+
+    // Only when there is something to install. Checking the channel is a
+    // network call like the update check, so it waits on the same switch:
+    // with automatic checks off, a card arriving never reaches the network
+    // and Import is offered from Settings only.
+    private static void OfferImportHint()
+    {
+        if (_importOffer.Kind == OfferKind.Available)
+        {
+            ShowImportHint(true);
+            return;
+        }
+        if (!HasFlag(SettingFlag.UpdateAutoCheck)) return;
+        if (_importOffer.Kind is OfferKind.NotPublished or OfferKind.NeedsNewerApp) return;
+        _hintAfterProbe = true;
+        ProbeImportOffer();
+    }
+
+    /// <summary>Fetches the signed manifest (two small GETs of fixed URLs, like
+    /// the update check) and has the core verify it. UI thread in and out.</summary>
+    private static void ProbeImportOffer()
+    {
+        if (_offerProbeRunning) return;
+        _offerProbeRunning = true;
+        _importOffer = new AddonOffer(OfferKind.Checking, 0);
+        RefreshAddonRow();
+        _ = Task.Run(async () =>
+        {
+            AddonOffer offer = await ReadImportOffer().ConfigureAwait(false);
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                _offerProbeRunning = false;
+                _importOffer = offer;
+                if (_hintAfterProbe)
+                {
+                    _hintAfterProbe = false;
+                    if (offer.Kind == OfferKind.Available && !_importState.Installed && !ImportHintDismissed())
+                    {
+                        ShowImportHint(true);
+                    }
+                }
+                RefreshAddonRow();
+            });
+        });
+    }
+
+    // Worker.
+    private static async Task<AddonOffer> ReadImportOffer()
+    {
+        try
+        {
+            byte[]? manifest = await GetBytes(AddonChannelBase + ".json").ConfigureAwait(false);
+            byte[]? sig = manifest is null ? null : await GetBytes(AddonChannelBase + ".json.sig").ConfigureAwait(false);
+            if (manifest is null || sig is null) return new AddonOffer(OfferKind.NotPublished, 0);
+            using JsonDocument check = JsonDocument.Parse(AddonNative.CheckManifest(manifest, sig));
+            JsonElement root = check.RootElement;
+            if (root.GetProperty("ok").GetBoolean())
+            {
+                return new AddonOffer(OfferKind.Available, root.GetProperty("archive").GetProperty("size").GetInt64());
+            }
+            // A signed Import for a newer host API; anything else that does not
+            // verify is, to this build, nothing to offer.
+            return new AddonOffer(root.GetProperty("why").GetString() == "needs_update"
+                ? OfferKind.NeedsNewerApp : OfferKind.NotPublished, 0);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            return new AddonOffer(OfferKind.Unreachable, 0);
+        }
+        catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            return new AddonOffer(OfferKind.NotPublished, 0);
+        }
+    }
+
+    private static string DownloadSize(long bytes) =>
+        $"{Math.Max(1, (long)Math.Round(bytes / (1024.0 * 1024.0)))} MB";
 
     // ---- the one-time hint -----------------------------------------------------
 
@@ -292,7 +381,7 @@ public static partial class IslandHost
     private static StackPanel BuildImportHint()
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        _importHint = TextButton("Card inserted — install Import (3 MB)?", () =>
+        _importHint = TextButton("Card inserted — install Import?", () =>
         {
             ShowImportHint(false);
             StartImportInstall();
@@ -333,6 +422,10 @@ public static partial class IslandHost
     private static void ShowImportHint(bool show)
     {
         if (_importHint is null || _importHintDismiss is null) return;
+        if (show && _importHint.Content is TextBlock text)
+        {
+            text.Text = $"Card inserted — install Import ({DownloadSize(_importOffer.ArchiveSize)})?";
+        }
         Visibility v = show ? Visibility.Visible : Visibility.Collapsed;
         _importHint.Visibility = v;
         _importHintDismiss.Visibility = v;
@@ -349,6 +442,16 @@ public static partial class IslandHost
         view.Children.Add(_addonRow);
         view.Children.Add(_addonStatus);
         RefreshAddonRow();
+        // Opening Settings asks the channel, whatever the automatic-check
+        // switch says: the person is looking at what can be installed.
+        if (!_importState.Installed) ProbeImportOffer();
+    }
+
+    private static TextBlock WrappedLabel(string text)
+    {
+        TextBlock t = Label(text);
+        t.TextWrapping = TextWrapping.Wrap;
+        return t;
     }
 
     private static void SetAddonStatus(string text)
@@ -367,7 +470,26 @@ public static partial class IslandHost
         _addonRow.Children.Add(about);
         if (!_importState.Installed)
         {
-            _addonRow.Children.Add(SettingsButton("Install Import, 3 MB", StartImportInstall));
+            switch (_importOffer.Kind)
+            {
+                case OfferKind.Available:
+                    _addonRow.Children.Add(SettingsButton($"Install Import, {DownloadSize(_importOffer.ArchiveSize)}",
+                        StartImportInstall));
+                    break;
+                case OfferKind.NotPublished:
+                    _addonRow.Children.Add(WrappedLabel("Import is not published for download yet. It will be offered here once a release carries it."));
+                    break;
+                case OfferKind.NeedsNewerApp:
+                    _addonRow.Children.Add(WrappedLabel("The published Import needs a newer MediaViewer. Update MediaViewer, then install it."));
+                    break;
+                case OfferKind.Unreachable:
+                    _addonRow.Children.Add(WrappedLabel("Could not reach the download server."));
+                    _addonRow.Children.Add(SettingsButton("Try again", ProbeImportOffer));
+                    break;
+                default:
+                    _addonRow.Children.Add(WrappedLabel("Checking for Import…"));
+                    break;
+            }
             return;
         }
         string line = _importState.State switch
@@ -440,6 +562,11 @@ public static partial class IslandHost
                 await DownloadAndInstallImport().ConfigureAwait(false);
                 message = "Import installed.";
             }
+            catch (ImportNotPublishedException)
+            {
+                message = "";
+                DispatcherQueueControllerTryEnqueue(() => _importOffer = new AddonOffer(OfferKind.NotPublished, 0));
+            }
             catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
                                            or InvalidDataException or TaskCanceledException or JsonException)
             {
@@ -466,9 +593,9 @@ public static partial class IslandHost
     private static async Task DownloadAndInstallImport()
     {
         byte[] manifest = await GetBytes(AddonChannelBase + ".json").ConfigureAwait(false)
-                          ?? throw new HttpRequestException("no manifest");
+                          ?? throw new ImportNotPublishedException();
         byte[] sig = await GetBytes(AddonChannelBase + ".json.sig").ConfigureAwait(false)
-                     ?? throw new InvalidDataException("no signature");
+                     ?? throw new ImportNotPublishedException();
         using JsonDocument check = JsonDocument.Parse(AddonNative.CheckManifest(manifest, sig));
         JsonElement root = check.RootElement;
         if (!root.GetProperty("ok").GetBoolean())
@@ -517,6 +644,9 @@ public static partial class IslandHost
             try { if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true); } catch (IOException) { }
         }
     }
+
+    // The channel has no Import (a 404): the row says so rather than blaming the connection.
+    private sealed class ImportNotPublishedException : Exception { }
 
     private static async Task<byte[]?> GetBytes(string url)
     {
