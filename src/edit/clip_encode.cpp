@@ -334,6 +334,12 @@ void rotate_rgba(std::vector<std::uint8_t>& px, int& w, int& h, int clockwise) {
     const int rc = avcodec_receive_packet(enc, pkt);
     if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) return {};
     if (rc < 0) return err(status::internal);
+    // Some encoders (mpeg4, several hardware wrappers) leave duration 0. The
+    // MP4 / MOV muxer then ends the edit list at the last frame's start and
+    // every player hides that frame.
+    if (pkt->duration <= 0 && enc->codec_type == AVMEDIA_TYPE_VIDEO && enc->framerate.num > 0) {
+      pkt->duration = av_rescale_q(1, av_inv_q(enc->framerate), enc->time_base);
+    }
     av_packet_rescale_ts(pkt, enc->time_base, ost->time_base);
     pkt->stream_index = ost->index;
     if (av_interleaved_write_frame(out, pkt) < 0) return err(status::io);

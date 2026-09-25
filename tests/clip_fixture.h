@@ -45,6 +45,11 @@ inline bool drain(AVCodecContext* enc, AVFormatContext* out, AVStream* st, AVPac
     const int rc = avcodec_receive_packet(enc, pkt);
     if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) return true;
     if (rc < 0) return false;
+    // mpeg4 leaves duration 0; without it the MP4 muxer's edit list hides the
+    // last frame (the product's drain_encoder does the same).
+    if (pkt->duration <= 0 && enc->codec_type == AVMEDIA_TYPE_VIDEO && enc->framerate.num > 0) {
+      pkt->duration = av_rescale_q(1, av_inv_q(enc->framerate), enc->time_base);
+    }
     av_packet_rescale_ts(pkt, enc->time_base, st->time_base);
     pkt->stream_index = st->index;
     if (av_interleaved_write_frame(out, pkt) < 0) return false;

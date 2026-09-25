@@ -61,7 +61,14 @@ void on_progress(void*, double f) noexcept {
 #if defined(MV_CLIPJOB_TEST_HOOKS)
   // Tests of the queue's recovery: a helper that crashes, or one that hangs
   // and ignores the cancel, mid-job. Compiled into the test build only.
-  if (env_on("MV_CLIPJOB_TEST_CRASH")) std::abort();
+  if (env_on("MV_CLIPJOB_TEST_CRASH")) {
+#if defined(_WIN32)
+    // The debug CRT's abort() opens a modal "abort() has been called" box and
+    // WER may hold the process; either leaves the job "running" on a CI runner.
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    std::abort();
+  }
   if (env_on("MV_CLIPJOB_TEST_HANG")) {
     for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
   }

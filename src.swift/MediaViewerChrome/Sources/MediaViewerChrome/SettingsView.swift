@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The Settings screen (plan/16 "Settings"), laid out like the Windows one
-// (IslandHost.Settings.cs): view preferences on the left, the remappable key
-// table on the right, a footer with Close. Native owns every value -- this view
+// (IslandHost.Settings.cs): grouped General preferences and a separate keyboard
+// shortcuts tab, with a persistent Done footer. Native owns every value -- this view
 // reads the flags and the live command table through the bridge and posts
 // changes back, so the keys, `?` and this list cannot drift.
 import Combine
@@ -119,18 +119,44 @@ final class SettingsStore: ObservableObject {
   func close() { mv_chrome_menu(18) }
 }
 
+// A separate label column keeps every switch on the same trailing edge,
+// including rows whose descriptions wrap at smaller window sizes.
+private struct SettingsRow<Content: View>: View {
+  let title: String
+  let detail: String
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    HStack(spacing: 24) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text(title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
+        Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      content()
+        .labelsHidden()
+        .accessibilityLabel(title)
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+  }
+}
+
 private struct SettingsToggle: View {
   let title: String
+  let detail: String
   let bit: Int32
   @ObservedObject var store: SettingsStore
   var body: some View {
-    Toggle(isOn: Binding(
-      get: { store.flags & bit != 0 },
-      set: { store.setFlag(bit, $0) })
-    ) {
-      Text(title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
+    SettingsRow(title: title, detail: detail) {
+      Toggle(title, isOn: Binding(
+        get: { store.flags & bit != 0 },
+        set: { store.setFlag(bit, $0) }))
+        .toggleStyle(.switch)
+        .fixedSize()
     }
-    .toggleStyle(.switch)
   }
 }
 
@@ -147,8 +173,8 @@ private struct SettingsButtonStyle: ButtonStyle {
     configuration.label
       .font(MVTheme.font())
       .foregroundStyle(MVTheme.title)
-      .padding(.horizontal, 12).padding(.vertical, 5)
-      .background(RoundedRectangle(cornerRadius: 4)
+      .padding(.horizontal, 12).padding(.vertical, 7)
+      .background(RoundedRectangle(cornerRadius: 6)
         .fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.08)))
       .contentShape(Rectangle())
   }
@@ -157,112 +183,151 @@ private struct SettingsButtonStyle: ButtonStyle {
 struct SettingsView: View {
   @ObservedObject private var store = SettingsStore.shared
   @State private var filter = ""
+  @State private var keyboard = false
 
   private var shown: [KeyRow] {
     let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
     if q.isEmpty { return store.rows }
-    return store.rows.filter { $0.name.lowercased().contains(q) || $0.keys.lowercased().contains(q) }
+    return store.rows.filter {
+      $0.name.lowercased().contains(q) || $0.keys.lowercased().contains(q)
+        || SettingsStore.macLabel($0.keys).lowercased().contains(q)
+    }
   }
 
   private var hint: String {
-    store.captureRow >= 0
+    if !keyboard { return "Changes are saved automatically." }
+    return store.captureRow >= 0
       ? "Press the new shortcut, or Esc to cancel."
-      : "Choose a shortcut, then press its replacement. Esc cancels. Conflicts swap shortcuts."
+      : "Choose a shortcut to change it. Conflicts swap shortcuts."
   }
 
-  var body: some View {
-    VStack(spacing: 0) {
-      HStack(alignment: .top, spacing: 0) {
-        // View
-        VStack(alignment: .leading, spacing: 12) {
-          Text("View").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
-          SettingsToggle(title: "Filmstrip when opening a folder", bit: SettingsStore.filmstripFolder, store: store)
-          SettingsToggle(title: "Filmstrip when opening an image", bit: SettingsStore.filmstripImage, store: store)
-          SettingsToggle(title: "Wrap at the end of the folder", bit: SettingsStore.wrap, store: store)
-          SettingsToggle(title: "Sticky zoom (keep pan and zoom on next)", bit: SettingsStore.stickyZoom, store: store)
-          Text("Canvas background").font(MVTheme.font()).foregroundStyle(MVTheme.body)
-          Picker("", selection: Binding(get: { store.background }, set: { store.background = $0 })) {
-            Text("Dark").tag(0)
-            Text("Gray").tag(1)
-            Text("White").tag(2)
-            Text("Checkerboard").tag(3)
-          }
-          .labelsHidden()
-          .pickerStyle(.menu)
-          .frame(width: 200)
-          Text("Sort folder by").font(MVTheme.font()).foregroundStyle(MVTheme.body)
-          Picker("", selection: Binding(get: { store.sortKey }, set: { store.sortKey = $0 })) {
+  private func section(_ title: String) -> some View {
+    Text(title).font(MVTheme.font(16)).fontWeight(.semibold)
+      .foregroundStyle(MVTheme.title).padding(.top, 12)
+  }
+
+  private var preferences: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 8) {
+        section("Filmstrip")
+        SettingsToggle(title: "When opening a folder", detail: "Show thumbnails below the viewer.",
+                       bit: SettingsStore.filmstripFolder, store: store)
+        SettingsToggle(title: "When opening an image", detail: "Show nearby images from the same folder.",
+                       bit: SettingsStore.filmstripImage, store: store)
+        section("Browsing")
+        SettingsToggle(title: "Wrap at the end", detail: "Continue from the last item to the first.",
+                       bit: SettingsStore.wrap, store: store)
+        SettingsToggle(title: "Keep pan and zoom", detail: "Keep your view position when moving to the next item.",
+                       bit: SettingsStore.stickyZoom, store: store)
+        SettingsRow(title: "Sort folder by", detail: "Applies to the gallery and filmstrip.") {
+          Picker("Sort folder by", selection: Binding(get: { store.sortKey }, set: { store.sortKey = $0 })) {
             Text("Name").tag(0)
             Text("Date modified").tag(1)
             Text("Size").tag(2)
             Text("Type").tag(3)
             Text("Date taken (EXIF)").tag(4)
           }
-          .labelsHidden()
-          .pickerStyle(.menu)
-          .frame(width: 200)
-          Toggle(isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 })) {
-            Text("Descending").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-          }
-          .toggleStyle(.switch)
-          // Milestone G (AddonsView.swift).
-          AddonsSection().padding(.top, 8)
-          Spacer()
+          .pickerStyle(.menu).frame(width: 180)
         }
-        .padding(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))
-        .frame(width: 360, alignment: .leading)
-
-        Rectangle().fill(MVTheme.hairline).frame(width: 1)
-
-        // Keys
-        VStack(alignment: .leading, spacing: 8) {
-          HStack {
-            Text("Keyboard shortcuts").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
-            Spacer()
-            SettingsButton(title: "Reset to default") { store.resetKeys() }
-          }
-          TextField("Search commands or keys", text: $filter)
-            .textFieldStyle(.roundedBorder)
-            .font(MVTheme.font())
-            .onExitCommand { store.close() }
-          ScrollView {
-            LazyVStack(spacing: 0) {
-              ForEach(shown) { row in
-                HStack {
-                  Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
-                  Spacer()
-                  Button(store.captureRow == row.row ? "Press shortcut…"
-                         : (row.keys.isEmpty ? "Unbound" : SettingsStore.macLabel(row.keys))) {
-                    store.beginCapture(row.row)
-                  }
-                  .buttonStyle(SettingsButtonStyle())
-                }
-                .padding(.vertical, 3)
-                Rectangle().fill(MVTheme.hairline.opacity(0.5)).frame(height: 1)
-              }
-              if shown.isEmpty {
-                Text("No matching shortcuts").font(MVTheme.font()).foregroundStyle(MVTheme.body)
-                  .padding(.top, 12)
-              }
-            }
-          }
+        SettingsRow(title: "Descending order", detail: "Reverse the selected sort order.") {
+          Toggle("Descending order", isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 }))
+            .toggleStyle(.switch).fixedSize()
         }
-        .padding(EdgeInsets(top: 16, leading: 20, bottom: 12, trailing: 20))
-        .frame(maxWidth: .infinity, alignment: .leading)
+        section("Appearance")
+        SettingsRow(title: "Canvas background", detail: "The area behind your photos and videos.") {
+          Picker("Canvas background", selection: Binding(get: { store.background }, set: { store.background = $0 })) {
+            Text("Dark").tag(0)
+            Text("Grey").tag(1)
+            Text("White").tag(2)
+            Text("Checkerboard").tag(3)
+          }
+          .pickerStyle(.menu).frame(width: 180)
+        }
+        AddonsSection().padding(.top, 20)
       }
+      .padding(.horizontal, 24).padding(.bottom, 24)
+      .frame(maxWidth: 800)
+      .frame(maxWidth: .infinity)
+    }
+  }
+
+  private var shortcuts: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("Keyboard shortcuts").font(MVTheme.font(18)).foregroundStyle(MVTheme.title)
+        Spacer()
+        SettingsButton(title: "Reset to default") { store.resetKeys() }
+      }
+      TextField("Search commands or keys", text: $filter)
+        .textFieldStyle(.roundedBorder)
+        .font(MVTheme.font())
+        .onExitCommand {
+          if store.captureRow >= 0 { store.cancelCapture() }
+          else if !filter.isEmpty { filter = "" }
+          else { store.close() }
+        }
+      ScrollView {
+        LazyVStack(spacing: 0) {
+          ForEach(shown) { row in
+            HStack(spacing: 16) {
+              Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
+                .frame(maxWidth: .infinity, alignment: .leading)
+              Button {
+                store.beginCapture(row.row)
+              } label: {
+                Text(store.captureRow == row.row ? "Press shortcut…"
+                     : (row.keys.isEmpty ? "Unbound" : SettingsStore.macLabel(row.keys)))
+                  .frame(width: 160)
+              }
+              .buttonStyle(SettingsButtonStyle())
+              .accessibilityLabel("Change shortcut for " + row.name)
+            }
+            .padding(.vertical, 6)
+            Rectangle().fill(MVTheme.hairline.opacity(0.5)).frame(height: 1)
+          }
+          if shown.isEmpty {
+            Text("No matching shortcuts").font(MVTheme.font()).foregroundStyle(MVTheme.body)
+              .padding(.top, 16)
+          }
+        }
+      }
+    }
+    .padding(24)
+    .frame(maxWidth: 900)
+    .frame(maxWidth: .infinity)
+  }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack(spacing: 24) {
+        Text("Settings").font(MVTheme.font(24)).foregroundStyle(MVTheme.title)
+        Spacer(minLength: 0)
+        Picker("Settings category", selection: $keyboard) {
+          Text("General").tag(false)
+          Text("Keyboard shortcuts").tag(true)
+        }
+        .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320)
+      }
+      .padding(.horizontal, 24).padding(.vertical, 18)
+      Rectangle().fill(MVTheme.hairline).frame(height: 1)
+      Group {
+        if keyboard { shortcuts } else { preferences }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       HStack(spacing: 12) {
-        SettingsButton(title: "Close  Esc") { store.close() }
-        Text(hint).font(MVTheme.font()).foregroundStyle(MVTheme.body)
+        Text(hint).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         Spacer()
         if store.captureRow >= 0 {
           SettingsButton(title: "Cancel change") { store.cancelCapture() }
         }
+        SettingsButton(title: "Done") { store.close() }
       }
-      .padding(.horizontal, 20).padding(.vertical, 10)
+      .padding(.horizontal, 24).padding(.vertical, 12)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(MVTheme.canvas)
     .preferredColorScheme(.dark)
+    .onChange(of: keyboard) { _, _ in store.cancelCapture() }
   }
 }

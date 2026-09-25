@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,25 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def pinned_public_key_hex() -> str:
+    """The key every app build trusts (UpdateKeys.ProductionPublicKeyHex; the
+    native copy in src/addon/manifest.cpp is tested to agree)."""
+    cs = (ROOT / "src.managed/MediaViewer.Updater/UpdateKeys.cs").read_text()
+    m = re.search(r'ProductionPublicKeyHex\s*=\s*"([0-9a-f]{64})"', cs)
+    if not m:
+        raise ValueError("ProductionPublicKeyHex not found in UpdateKeys.cs")
+    return m[1]
+
+
+def public_key_hex(key) -> str:
+    from cryptography.hazmat.primitives import serialization
+    return key.public_key().public_bytes(serialization.Encoding.Raw,
+                                         serialization.PublicFormat.Raw).hex()
 
 
 def load_private_key(path: Path):
@@ -133,9 +153,12 @@ def build_manifest(platform: str, version: str, files: list, archive: Path) -> b
 
 
 def pack(args) -> Path:
-    import re
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", args.version):
         raise ValueError("version must be x.y.z")
+    key = load_private_key(Path(args.key))
+    # A release signed with any other key is refused by every app; fail here.
+    if args.require_pinned_key and public_key_hex(key) != pinned_public_key_hex():
+        raise ValueError("the signing key is not the pinned update key (UpdateKeys.cs)")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     base = f"mediaviewer-addon-{ADDON_ID}-{args.platform}"
@@ -146,7 +169,6 @@ def pack(args) -> Path:
     archive = out / (base + ".zip")
     make_archive(stage, archive, args.platform)
     manifest = build_manifest(args.platform, args.version, files, archive)
-    key = load_private_key(Path(args.key))
     (out / (base + ".json")).write_bytes(manifest)
     (out / (base + ".json.sig")).write_bytes(key.sign(manifest))
     shutil.rmtree(stage)
@@ -185,6 +207,8 @@ def main(argv=None) -> int:
     p.add_argument("--version", required=True)
     p.add_argument("--key", required=True, help="file holding the Ed25519 private key, hex")
     p.add_argument("--out", required=True)
+    p.add_argument("--require-pinned-key", action="store_true",
+                   help="fail unless the key is the one the app pins (release builds)")
     v = sub.add_parser("verify")
     v.add_argument("manifest")
     v.add_argument("--public-key", required=True, help="32-byte Ed25519 public key, hex")
