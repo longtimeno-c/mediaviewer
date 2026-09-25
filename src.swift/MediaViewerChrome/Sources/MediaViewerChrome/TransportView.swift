@@ -42,8 +42,12 @@ private struct TrimMarks: View {
     Canvas { ctx, size in
       guard store.trimArmed, store.trimDurationNs > 0 else { return }
       let span = max(size.width - 2 * inset, 1)
+      // Read on the main actor here: the nested func is not main-actor
+      // isolated under the macOS 14 toolchain CI builds with.
+      let duration = Double(store.trimDurationNs)
+      let inset = inset
       func x(_ t: Int64) -> CGFloat {
-        inset + span * CGFloat(min(max(Double(t) / Double(store.trimDurationNs), 0), 1))
+        inset + span * CGFloat(min(max(Double(t) / duration, 0), 1))
       }
       if store.trimCutInNs >= 0, store.trimCutOutNs > store.trimCutInNs {
         let a = x(store.trimCutInNs), b = x(store.trimCutOutNs)
