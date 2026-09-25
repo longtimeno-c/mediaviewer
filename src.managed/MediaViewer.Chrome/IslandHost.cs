@@ -77,6 +77,10 @@ public static partial class IslandHost
         // with TakeTreePath and opens it in the viewer.
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
+        // PR 12: the comment field was committed (native pulls the text with
+        // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
+        public const int MetaComment = 1012;
+        public const int MetaRevert = 1013;
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -96,6 +100,9 @@ public static partial class IslandHost
         public const int AdjustTemperature = 122;
         public const int AdjustTint = 123;
         public const int AdjustReset = 124;
+        // PR 12: the pane's stars post the rating keys' ids (commands.h
+        // set_rating_0..5); 0 clears.
+        public const int SetRating0 = 127;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -107,6 +114,7 @@ public static partial class IslandHost
                 OpenFolder, ToggleGallery, CloseGallery, GalleryActivate, SetSettings, FolderReady,
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
                 UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns, AddonState, OpenPath,
+                MetaComment, MetaRevert,
             };
             unchecked
             {
@@ -185,6 +193,7 @@ public static partial class IslandHost
         if (Marshal.SizeOf<ChromeTableArgs>() != TableArgsSize) return -9;
         if (Marshal.SizeOf<ChromePanelArgs>() != PanelArgsSize) return -10;
         if (Marshal.SizeOf<ChromeMetaArgs>() != MetaDataArgsSize) return -11;
+        if (Marshal.SizeOf<ChromeMetaEditArgs>() != MetaEditArgsSize) return -12;
         return AttachArgsSize;
     }
 
