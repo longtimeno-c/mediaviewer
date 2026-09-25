@@ -259,7 +259,7 @@ jobs:
           path: |
             build/vcpkg_installed
             build/vcpkg_dynamic
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake') }}-${{ matrix.triplet }}-mixed-v1
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake') }}-${{ matrix.triplet }}-mixed-v2
 
       # CMake installs the static, permissive dependencies from the root
       # manifest. Keep the LGPL dylibs in a separate manifest/install tree:
