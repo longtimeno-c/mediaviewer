@@ -20,6 +20,16 @@ inline std::string utf8(const fs::path& p) {
   return std::string(u.begin(), u.end());
 }
 
+// A path as the body of a JSON string: Windows separators are backslashes.
+inline std::string json_path(const fs::path& p) {
+  std::string out;
+  for (const char c : utf8(p)) {
+    if (c == '\\' || c == '"') out += '\\';
+    out += c;
+  }
+  return out;
+}
+
 class scratch_dir {
  public:
   explicit scratch_dir(const char* tag) {
