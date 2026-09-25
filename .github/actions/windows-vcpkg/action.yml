@@ -37,11 +37,12 @@ runs:
 
     # One key for every Windows toolchain. The manifest builds the x64-windows
     # triplet with the image's MSVC; clang-cl and ASan compile our code, not
-    # these ports. The -msvc suffix is the entry CI already filled — keep it so
-    # a run does not discard that tree and rebuild FFmpeg.
+    # these ports. The key covers the overlay ports and triplets as well as the
+    # manifest, and the overlay triplet disables compiler tracking so a runner
+    # on a different image version reuses the tree instead of rebuilding it.
     - name: Restore installed packages
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: build/vcpkg_installed
-        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-msvc
+        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'tools/vcpkg/**') }}-msvc
