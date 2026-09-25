@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Mac host's add-ons (plan/18 "Add-ons"; the Windows twin is
 // abi/addon_abi.cpp + IslandHost.Addons.cs). Owns the add-on store, the
 // loaded Import add-on, and its chrome: Import.bundle, loaded with NSBundle,

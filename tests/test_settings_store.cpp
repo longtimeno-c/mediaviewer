@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 8: settings.ini writes are off the UI thread (plan/12 "Settings writes on
 // the UI thread"). The store coalesces, writes atomically on its worker, and
 // flushes on the exit path.
@@ -73,6 +74,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     v.sort = 2 | 8;  // PR 9: size, descending
     save_view_settings(store, v);
     save_destinations(store, {"D:\\Cull", "E:\\K\xC3\xA9" "ep"});  // non-ANSI survives
+    save_recent_folders(store, {"F:\\DCIM\\100CANON", "D:\\Iceland"});  // PR 15 jump list
     const key_override keys[] = {{4, 0x41, 2}, {9, 0x70, 0}};
     save_key_overrides(store, keys);
     store.set_int("update", "auto_check", 0);
@@ -94,6 +96,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   REQUIRE(load_view_settings(again).sort == 0);
   again.set_int("view", "sort", 2 | 8);
   REQUIRE(load_destinations(again) == std::vector<std::string>{"D:\\Cull", "E:\\K\xC3\xA9" "ep"});
+  REQUIRE(load_recent_folders(again) == std::vector<std::string>{"F:\\DCIM\\100CANON", "D:\\Iceland"});
   const auto keys = load_key_overrides(again);
   REQUIRE(keys.size() == 2);
   REQUIRE((keys[1].row == 9 && keys[1].k == 0x70 && keys[1].mods == 0));

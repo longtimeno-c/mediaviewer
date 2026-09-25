@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9 (plan/06, plan/16 Ctrl/Cmd+Shift+E): the folder tree, rooted at the open folder (not the computer). A node lists its subfolders on first expand, in a
 // background task through the host's portable `io::list_subdirectories` -- the
 // main actor never touches the disk (rule 1). Choosing a folder opens it exactly

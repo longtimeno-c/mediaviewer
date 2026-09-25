@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # PR 8 verify, local end to end: "An update downloads and stages without
 # showing the wizard" and "Exercise update signature rejection and rollback".
 #

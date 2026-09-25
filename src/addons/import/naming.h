@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Where files go: layouts, rename templates, safe names (plan/18 "Layout",
 // "Rename"). Pure functions of their inputs, identical on Windows and Mac
 // (PR 18 verify: "a rename template yields identical names on Windows and Mac

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The present lab: PR 1's instrument, and the app's actual render thread.
 //
 // plan/10-roadmap.md, PR 1: "Win32 + DComp + Dear ImGui host, D3D11 device,

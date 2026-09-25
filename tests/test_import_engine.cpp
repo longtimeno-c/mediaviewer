@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Import engine end to end, over the real host table (io ports, pairing,
 // verified copy), at card scale: plan/18's PR 16-19 verify lines, the ones a
 // machine without a card reader can check. The 64 GB timing, eject, and the

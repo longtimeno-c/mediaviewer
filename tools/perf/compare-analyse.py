@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turn docs/perf/compare/{presentmon.csv,runs.json} into summary.json and docs/img/compare-*.svg.
 
     python tools/perf/compare-analyse.py

@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Enforces the module dependency direction from plan/02-architecture.md:
 #
@@ -47,6 +48,9 @@ $allowed = [ordered]@{
     'addons' = @('addons', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     'shell'  = @('shell', 'abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    # PR 15: Explorer's host (the thumbnail handler DLL). A sibling of shell,
+    # never included by it: it reaches the core through image/ and codec/.
+    'shellext' = @('shellext', 'image', 'codec', 'gfx', 'io', 'core')
 }
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path

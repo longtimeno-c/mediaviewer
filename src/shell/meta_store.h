@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The host-side cache in front of meta::read (PR 9, plan/06 + plan/16).
 //
 // Two jobs, both off the UI and render threads (rule 1):

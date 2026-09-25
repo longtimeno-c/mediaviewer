@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12: the XMP sidecar beside a file (plan/06: `IMG_1234.xmp`) on the read
 // side. The writer (write.cpp) puts rating, orientation and comment there for
 // everything it will not rewrite in place; the read model shows them, and the

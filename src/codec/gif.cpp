@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // GIF (still and animated) via giflib (MIT). Decodes one frame at a time from
 // memory — never DGifSlurp, which would hold every frame's index buffer at
 // once — and composites onto the logical screen with codec::compositor.

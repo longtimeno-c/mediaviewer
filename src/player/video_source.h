@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5a — decoded video frames, in textures WE own.
 //
 // Contract owner: mediaviewer-56. 5a implements, 5b and 5c consume. Do not

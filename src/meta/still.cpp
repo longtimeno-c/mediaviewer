@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Still-image metadata through Exiv2: EXIF (with maker notes), IPTC and XMP.
 //
 // Exiv2 reports failure by throwing. That is confined to this file: every

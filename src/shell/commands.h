@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The command table: host keys, modes, command ids, and the default map.
 //
 // plan/16-commands.md: one router, one table. Dispatch is an array index, not a
@@ -291,6 +292,10 @@ enum class command_id : std::uint16_t {
   clip_tools,          // Ctrl+S on a clip: rotate / split / remux / frame / audio / GIF flyout
   clip_split,          // Ctrl+B on a clip: split at the playhead's nearest keyframe
   trim_remove_middle,  // Ctrl+X in trim: a copy without [in, out)
+  // PR 15 (plan/16 View, plan/10 "OS integration"). Appended.
+  copy_path,           // Ctrl/Cmd+Shift+C: the marked / current path(s) as text
+  copy_flattened,      // Ctrl+Alt+C / Cmd+Opt+C: the current still, edits baked, as a PNG
+  share,               // Ctrl/Cmd+Shift+S: the OS share sheet with the marked / current file(s)
   count
 };
 

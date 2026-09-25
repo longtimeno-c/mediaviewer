@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # PR 8 release pipeline (plan/13 Part 1, plan/11).
 #
@@ -152,7 +153,7 @@ Get-ChildItem $bin -Directory |
     Copy-Item -Destination $payload -Recurse
 Copy-Item (Join-Path $bin "mediaviewer_lab.exe") (Join-Path $payload "MediaViewer.exe")
 
-foreach ($required in "MediaViewer.exe", "MediaViewer.Chrome.dll", "crashpad_handler.exe", "LICENSE", "THIRD-PARTY.md") {
+foreach ($required in "MediaViewer.exe", "MediaViewer.Chrome.dll", "crashpad_handler.exe", "MediaViewerThumbs.dll", "MediaViewerThumbs.files", "LICENSE", "NOTICE", "THIRD-PARTY.md") {
     if (-not (Test-Path (Join-Path $payload $required))) { Fail "payload is missing $required" }
 }
 # The recursive copy above could reintroduce them from a subdirectory, so the

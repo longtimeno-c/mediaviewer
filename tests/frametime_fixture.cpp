@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Deliberately synthetic child reports for testing the harness, never a GPU gate.
 #include <windows.h>
 #include <cstdio>

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // AF-point geometry from maker-note arrays (plan/06 "Overlays that fall out of
 // the read model"). Pure functions over already-parsed numbers so each
 // vendor's layout is unit-tested without a camera file; still.cpp does the

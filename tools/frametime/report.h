@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Schema-2 frame-time report parser. No DXGI, no Metal — both present labs
 // write the same keys. Unit tests cover Metal drop_source strings so a Darwin
 // report cannot fail to parse on a Windows box.

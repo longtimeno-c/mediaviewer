@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # MediaViewer — native core + present lab.
 #
@@ -40,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.3
+  VERSION 0.1.4
   DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
 
@@ -354,6 +355,7 @@ add_library(mv_image STATIC
   src/image/upload.cpp
   src/image/tiles.cpp
   src/image/thumb.cpp
+  src/image/thumb_pixels.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/upload.h
@@ -522,6 +524,30 @@ target_link_libraries(mv_clip
   PRIVATE mv_edit ${FFMPEG_LIBRARIES})
 add_library(mv::clip ALIAS mv_clip)
 
+# ---------------------------------------------------------------------------
+# MediaViewerThumbs.dll -- PR 15's Explorer thumbnail handler (plan/09
+# "Windows integration"). Explorer's host, beside the app's: it reaches the
+# core through image/ and codec/ only, shares no state with the app, and is
+# loaded by an isolated surrogate, never by Explorer itself. The app copies it
+# (with the DLLs listed in MediaViewerThumbs.files) to <root>\shellext\<version>
+# and registers it there (shell/shellext_install.cpp), so an update never
+# replaces a DLL a surrogate still holds.
+add_library(MediaViewerThumbs SHARED
+  src/shellext/thumb_request.cpp
+  src/shellext/thumb_request.h
+  src/shellext/thumb_provider_win.cpp
+  src/shellext/MediaViewerThumbs.def
+)
+target_link_libraries(MediaViewerThumbs PRIVATE mv_image mv_codec mv_core mv_project_options ole32 uuid)
+target_include_directories(MediaViewerThumbs PRIVATE src)
+set_target_properties(MediaViewerThumbs PROPERTIES OUTPUT_NAME "MediaViewerThumbs")
+mv_asan_runtime_beside(MediaViewerThumbs)
+# The files a versioned handler folder needs: the handler, then every DLL it
+# loads. Written beside it at build time; the payload carries it.
+file(GENERATE
+  OUTPUT "$<TARGET_FILE_DIR:MediaViewerThumbs>/MediaViewerThumbs.files"
+  CONTENT "$<TARGET_FILE_NAME:MediaViewerThumbs>\n$<JOIN:$<PATH:GET_FILENAME,$<TARGET_RUNTIME_DLLS:MediaViewerThumbs>>,\n>\n")
+
 # MediaViewerClipJob.exe -- PR 13 / 14's encode and decode jobs, out of process
 # (plan/08 "Execution & UX"; plan/12 2026-09-25). Beside MediaViewer.exe; no
 # mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
@@ -619,6 +645,12 @@ add_executable(mediaviewer_lab WIN32
   src/shell/trim_state.h
   src/shell/open_request.cpp
   src/shell/open_request.h
+  src/shell/os_integration.cpp
+  src/shell/os_integration.h
+  src/shell/shellext_install.cpp
+  src/shell/shellext_install.h
+  src/shell/single_instance_win.cpp
+  src/shell/single_instance_win.h
   src/shell/slideshow.h
   src/shell/navigation.h
   src/shell/settings.cpp
@@ -664,7 +696,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
-add_dependencies(mediaviewer_lab MediaViewerClipJob)
+add_dependencies(mediaviewer_lab MediaViewerClipJob MediaViewerThumbs)
 mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
 set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
@@ -703,9 +735,10 @@ add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_SOURCE_DIR}/assets/icon/mediaviewer-256.png"
           "${CMAKE_SOURCE_DIR}/LICENSE"
+          "${CMAKE_SOURCE_DIR}/NOTICE"
           "${CMAKE_SOURCE_DIR}/THIRD-PARTY.md"
           "$<TARGET_FILE_DIR:mediaviewer_lab>"
-  COMMENT "Copy About assets (icon PNG, LICENSE, THIRD-PARTY.md) beside mediaviewer_lab")
+  COMMENT "Copy About assets (icon PNG, LICENSE, NOTICE, THIRD-PARTY.md) beside mediaviewer_lab")
 
 # PR 3: publish the C# WinUI chrome beside the lab so hostfxr can load it.
 # The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
@@ -894,6 +927,12 @@ if(MV_BUILD_TESTS)
     tests/test_folder_reselect.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
+    tests/test_os_integration.cpp
+    tests/test_thumb_pixels.cpp
+    tests/test_thumb_request.cpp
+    src/shellext/thumb_request.cpp
+    tests/test_spotlight_fields.cpp
+    src/shell/spotlight_fields.cpp
     tests/test_slideshow.cpp
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
@@ -915,6 +954,7 @@ if(MV_BUILD_TESTS)
     src/shell/key_router.cpp
     src/shell/file_jobs.cpp
     src/shell/open_request.cpp
+    src/shell/os_integration.cpp
     src/shell/settings.cpp
     src/shell/settings_store.cpp
     src/shell/update_guard.cpp
@@ -1099,4 +1139,4 @@ if(MV_FUZZ)
   add_subdirectory(tools/fuzz)
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-2.0-or-later (plan/11)")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-3.0-or-later (plan/11)")

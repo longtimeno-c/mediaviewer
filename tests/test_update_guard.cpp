@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 8 verify: "Exercise update signature rejection and rollback" — the
 // native start-attempt half. Signature rules: src.managed/MediaViewer.Updater.Tests.
 #include <catch2/catch_test_macros.hpp>

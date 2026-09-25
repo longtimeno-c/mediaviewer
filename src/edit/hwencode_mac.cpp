@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The macOS encode port: VideoToolbox (plan/10 PR 13, plan/15). FFmpeg's
 // h264_videotoolbox / hevc_videotoolbox drive a VTCompressionSession; the
 // port is built with --enable-videotoolbox on Darwin. Both Apple Silicon and

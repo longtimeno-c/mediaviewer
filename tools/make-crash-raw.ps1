@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Makes the "deliberately-corrupted RAW" for PR 7's crash-report verify
 # (plan/10: "a deliberately-corrupted RAW produces a minidump containing no

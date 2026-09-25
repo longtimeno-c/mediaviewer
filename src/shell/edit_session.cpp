@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/edit_session.h"
 
 #include <algorithm>
@@ -8,6 +9,8 @@
 #include "edit/lossless_jpeg.h"
 #include "io/collision_name.h"
 #include "io/file.h"
+#include "io/file_port.h"
+#include "io/paths.h"
 #include "io/replace.h"
 #include "meta/meta.h"
 
@@ -478,6 +481,38 @@ result<std::string> run_export(std::string_view source_path, const edit::geometr
     if (!io::file_exists(out)) return err(status::io);
   }
   return err(status::io);
+}
+
+result<std::vector<std::uint8_t>> render_flattened_png(std::string_view source_path,
+                                                       const edit::geometry& g, const edit::colour& c) {
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
+  edit::export_options opt;
+  opt.encode.format = edit::image_format::png;
+  opt.policy = edit::metadata_policy::none;
+  opt.prefer_lossless = false;
+  MV_TRY(edit::export_result r, edit::export_image(bytes, g, c, opt));
+  return std::move(r.bytes);
+}
+
+std::string flattened_file_name(std::string_view source_path) {
+  const std::size_t sep = source_path.find_last_of("/\\");
+  const std::string_view name = sep == std::string_view::npos ? source_path : source_path.substr(sep + 1);
+  return edit::export_file_name(name, edit::image_format::png);
+}
+
+result<flattened_copy> run_flatten(std::string_view source_path, const edit::geometry& g,
+                                   const edit::colour& c) {
+  MV_TRY(std::vector<std::uint8_t> png, render_flattened_png(source_path, g, c));
+  MV_TRY(std::string dir, io::clipboard_dir());
+  // One file at a time: the previous copy is on no clipboard once this one is.
+  (void)io::remove_tree(dir);
+  MV_TRY_VOID(io::make_directories(dir));
+  const char slash = dir.find('\\') != std::string::npos ? '\\' : '/';
+  flattened_copy out;
+  out.path = dir + slash + flattened_file_name(source_path);
+  if (!io::write_new(out.path, png)) return err(status::io);
+  out.png = std::move(png);
+  return out;
 }
 
 }  // namespace mv::shell

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9 (plan/06, plan/16 `I`): the metadata pane. Summary card, the searchable full
 // tag tree, and -- for a clip -- the per-stream inspector. A field the file does
 // not have shows as a dash; a file with no metadata at all is an empty pane, never

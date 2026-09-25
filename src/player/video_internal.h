@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Player-private plumbing shared by the six 5a translation units: the packet
 // queue, the frame ring, the decoder context, and the two entry points
 // hwdecode_win.cpp exports.

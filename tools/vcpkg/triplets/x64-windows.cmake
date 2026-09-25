@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The stock x64-windows triplet, minus compiler tracking.
 #
 # GitHub's windows-latest pool mixes image versions with different MSVC

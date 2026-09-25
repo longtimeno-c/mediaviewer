@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Process-wide cache locations. UTF-8. Windows impl is paths_win.cpp (D9).
 #pragma once
 
@@ -20,6 +21,12 @@ void set_thumb_cache_dir_override(std::string_view utf8_dir);
 // Per-user; created if missing.
 [[nodiscard]] result<std::string> addons_dir();
 void set_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
+
+// PR 15: where Ctrl+Alt+C / ⌘⌥C writes the flattened copy it puts on the
+// clipboard (%LocalAppData%\MediaViewer\clipboard, ~/Library/Caches/
+// MediaViewer/Clipboard). Never the browsed folder. Created if missing.
+[[nodiscard]] result<std::string> clipboard_dir();
+void set_clipboard_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
 // PR 12: where "revert metadata" keeps the prior value of the fields a write
 // changed (plan/06 "Undo"): %LocalAppData%\MediaViewer\metadata-snapshots on

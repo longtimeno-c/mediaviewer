@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // POSIX half of the file port (io/file_port.h). macOS in the product; the
 // Linux core test build (cmake/portable.cmake) uses it too, with the closest
 // Linux equivalents where macOS has its own call.

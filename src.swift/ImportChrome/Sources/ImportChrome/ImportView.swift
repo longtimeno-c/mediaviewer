@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Import window (plan/18 "The Import window"), SwiftUI, the Mac twin of
 // ImportWindow.cs: sources, the day-grouped grid, the preset with "Where
 // files go", one primary button; progress while copying, summary after.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 18's filmstrip/gallery follow-up (plan/12 2026-09-17): the SwiftUI-side
 // state both views read. Owns nothing MvLabApp doesn't already own on the
 // C++ side (folder_model, browse_index) — this only mirrors item

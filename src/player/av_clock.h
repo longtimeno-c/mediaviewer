@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5b — the A/V clock. plan/05: "Budget 2-4 weeks and treat it as a
 // first-class subsystem, not glue."
 //

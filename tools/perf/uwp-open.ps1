@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Opens a file in a packaged (UWP) app the way "Open with" does: IApplicationActivationManager.ActivateForFile.
 # Usage: uwp-open.ps1 -AppId "Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic" -Path C:\clip.mp4
 param([Parameter(Mandatory)][string]$AppId, [Parameter(Mandatory)][string]$Path)

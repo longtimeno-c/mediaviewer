@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // What to open from a command line or a drop (plan/16, PR 6 "drag-and-drop in,
 // argv handling"). Pure: the caller probes the paths, this decides.
 //

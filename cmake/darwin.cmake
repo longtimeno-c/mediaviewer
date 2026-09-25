@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Darwin / Apple Silicon host (PR 16–20). Included from the root
 # CMakeLists.txt and then returns, so none of the Windows targets are defined.
@@ -464,6 +465,9 @@ add_library(mv_shell STATIC
   src/shell/trim_state.h
   src/abi/clip_session.cpp
   src/abi/clip_session.h
+  # PR 15: recent folders (Dock menu), copy-path text, shared with Windows.
+  src/shell/os_integration.cpp
+  src/shell/os_integration.h
 )
 target_include_directories(mv_shell PUBLIC src/abi/include)
 target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_clip)
@@ -576,6 +580,7 @@ function(mv_mac_host target)
     "-framework CoreServices"
     "-framework DiskArbitration"
     "-framework UniformTypeIdentifiers"
+    "-framework MediaPlayer"  # PR 15: Now Playing / MPRemoteCommandCenter
     "-framework SwiftUI"
     "-framework Combine"
     # PR 11: Crashpad's macOS client (audit tokens, IOKit registry reads) and
@@ -707,6 +712,15 @@ if(MV_BUILD_TESTS)
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
+    # PR 15: recent folders, copy path.
+    tests/test_os_integration.cpp
+    tests/test_thumb_pixels.cpp
+    # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
+    tests/test_thumb_request.cpp
+    src/shellext/thumb_request.cpp
+    # PR 15: the Spotlight importer's field mapping.
+    tests/test_spotlight_fields.cpp
+    src/shell/spotlight_fields.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -767,4 +781,4 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-2.0-or-later")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-3.0-or-later")

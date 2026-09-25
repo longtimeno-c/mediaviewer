@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The drop/hold/show rules from plan/05, tested headlessly — no device, no
 // audio endpoint, no clip. That is the whole point of keeping choose() pure.
 #include <catch2/catch_test_macros.hpp>

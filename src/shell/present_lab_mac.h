@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Metal present lab — PR 16's instrument, kept as a debug harness the way
 // the Win32 lab is. No SwiftUI. plan/10, plan/15.
 #pragma once

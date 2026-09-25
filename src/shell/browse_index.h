@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Wrapping index arithmetic for folder navigation (plan/16-commands.md's
 // Browse table: prev/next, first/last, skip ~10, all wrapping by default —
 // "Wrap at end of folder: on by default, toggle in settings"). Pure logic,

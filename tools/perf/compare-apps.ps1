@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # App launch/teardown for the comparison. Each app is opened on the same file the way a user would.
 $Repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $Apps = @{

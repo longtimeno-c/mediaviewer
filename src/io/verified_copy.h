@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Verified copy (plan/18-import.md "Verify"; the base app's F8 across volumes).
 //
 // One read of the source feeds every destination (Import's backup copy is

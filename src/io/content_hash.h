@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Content hashing for verified copies (plan/18-import.md "The engine").
 //
 // BLAKE3-256, taken under CC0 (plan/18: Apache-2.0 alone does not combine with

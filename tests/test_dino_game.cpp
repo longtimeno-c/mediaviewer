@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The empty-window runner's rules (src/shell/dino_game.h). No ImGui, no clock:
 // the tests step it with exact dt values.
 #include <catch2/catch_test_macros.hpp>

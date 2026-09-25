@@ -1,7 +1,8 @@
 # Third-party components
 
-MediaViewer is licensed **GPL-2.0-or-later** ([LICENSE](LICENSE)). That decision was
-made in PR 1 and is recorded, with its reasoning, in
+MediaViewer is licensed **GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE](NOTICE)). It was
+settled as GPL-2.0-or-later in PR 1 and moved to GPL-3.0-or-later on 2026-09-25. Both decisions are recorded, with
+reasoning, in
 [plan/12-decision-log.md](plan/12-decision-log.md) and
 [plan/11-licensing.md](plan/11-licensing.md).
 
@@ -32,7 +33,7 @@ added by the PR that adds the dependency.
 | [nv-codec-headers (ffnvcodec)](https://github.com/FFmpeg/nv-codec-headers) | 13.0.19.0 | MIT | Headers only; the NVIDIA driver is loaded at run time | Via FFmpeg's `nvcodec` feature: NVENC for PR 13's frame-accurate re-encode. Nothing of NVIDIA's is shipped. |
 | [AMD AMF headers](https://github.com/GPUOpen-LibrariesAndSDKs/AMF) | 1.5.2 | MIT | Headers only; the AMD driver is loaded at run time | Via FFmpeg's `amf` feature: AMF for PR 13's re-encode. |
 | [oneVPL (libvpl)](https://github.com/intel/libvpl) | 2.17.0 | MIT | Dynamic, via FFmpeg | Via FFmpeg's `qsv` feature: Quick Sync (`h264_qsv`) for PR 13's re-encode; the Intel runtime comes with the driver. |
-| [Crashpad](https://chromium.googlesource.com/crashpad/crashpad) (client, util, mini_chromium base) | vcpkg 2026-07-02 | **Apache-2.0** (mini_chromium: BSD-3) | Client **static** in `mediaviewer_lab`; `crashpad_handler.exe` shipped as a **separate program** beside it | Out-of-process crash capture (PR 7, plan/13 Part 2). No upload URL; dumps are scrubbed locally before any send could be offered. **Licence note:** Apache-2.0 is compatible with GPL-3.0 but not GPL-2.0-only. MediaViewer is GPL-2.0-or-later, so a distributed binary that statically links the client is conveyed under GPL-3.0 terms — the same position libheif/libde265 (LGPL-3) already put us in. Recorded in plan/12 (2026-09-14). |
+| [Crashpad](https://chromium.googlesource.com/crashpad/crashpad) (client, util, mini_chromium base) | vcpkg 2026-07-02 | **Apache-2.0** (mini_chromium: BSD-3) | Client **static** in `mediaviewer_lab`; `crashpad_handler.exe` shipped as a **separate program** beside it | Out-of-process crash capture (PR 7, plan/13 Part 2). No upload URL; dumps are scrubbed locally before any send could be offered. **Licence note:** Apache-2.0 is compatible with GPL-3.0 but not GPL-2.0-only. The app is now GPL-3.0-or-later (plan/12, 2026-09-25), so statically linking the client is compatible outright. (Before that move a distributed binary was conveyed under GPL-3.0 terms via the "or later" — plan/12, 2026-09-14.) |
 | .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 8. |
 | [Windows App SDK / WinUI 3](https://github.com/microsoft/WindowsAppSDK) | 2.4.0 | MIT | Framework package | Command bar chrome in a `DesktopWindowXamlSource` island. Not the canvas. Runtime must be installed on the machine (unpackaged). |
 | Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
@@ -47,7 +48,7 @@ added by the PR that adds the dependency.
 | [liblzma (xz)](https://tukaani.org/xz/) | 5.8.3 | 0BSD | Dynamic (vcpkg x64-windows) | Transitive, via libtiff. |
 | [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (plan/13 Part 1). |
 | [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | 2.7.0 | MIT (Bouncy Castle) | Managed assembly | Ed25519 verification of the signed update manifest (PR 8). The signature check runs before anything from the channel is trusted. |
-| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, plan/18). CC0 because Apache-2.0 alone does not combine with GPL-2.0. |
+| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, plan/18). CC0 was chosen when the app was GPL-2.0-or-later, where Apache-2.0 alone does not combine; the choice stands. |
 | [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static) | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (plan/18 "Signed, verified, then loaded"). |
 
 ## macOS (MediaViewer.app, PR 20)
@@ -71,7 +72,7 @@ is settled before it arrives, rather than discovered afterwards.
 | Component | Licence | Required linkage | Arrives in |
 |---|---|---|---|
 | DirectXTex | MIT | Static | Deferred from PR 4 until a thumbnail must be GPU-resident (plan/12 2026-09-07) |
-| **Exiv2** | **GPL-2.0** | Dynamic (DLL / dylib) | PR 9 (metadata read); PR 12 adds writes. Pulls brotli (MIT) and expat (MIT) for its BMFF and XMP features |
+| **Exiv2** | **GPL-2.0** (upstream is "or later", so it combines with the app under GPL-3.0) | Dynamic (DLL / dylib) | PR 9 (metadata read); PR 12 adds writes. Pulls brotli (MIT) and expat (MIT) for its BMFF and XMP features |
 
 ### Rules the build enforces
 

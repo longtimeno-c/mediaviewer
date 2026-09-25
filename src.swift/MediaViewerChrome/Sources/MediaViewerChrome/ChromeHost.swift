@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The one thing src/shell/main_mac.mm (ObjC++) needs from Swift: a plain
 // NSView hosting the command bar. Building the app target with
 // `-emit-objc-header-path` generates MediaViewerChrome-Swift.h, which
@@ -47,6 +48,11 @@ public final class MVChromeHost: NSObject {
 
   @objc public static func makeHelpView() -> NSView {
     host(HelpView())
+  }
+
+  /// `?` opened: the sheet re-reads the live table (Settings may have remapped).
+  @MainActor @objc public static func reloadHelp() {
+    HelpStore.shared.reload()
   }
 
   @objc public static func makeSettingsView() -> NSView {

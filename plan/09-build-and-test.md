@@ -137,6 +137,9 @@ and it does not belong in Git LFS at that size either.
   until the next successful still open.
 - Shell verbs ("Open with MediaViewer", "Edit"), thumbnail provider (`IThumbnailProvider`) and
   property handler so *Explorer itself* gets your format support for HEIC/AVIF/RAW.
+  *(2026-09-25, [12](12-decision-log.md): PR 15 ships the thumbnail provider on the
+  `MediaViewer.Image` ProgId; the property handler needs an HKLM registration a per-user
+  install cannot make, and waits.)*
 
   **These must run out-of-process, and this is a landmine, not polish.** Your handler loads
   libheif, LibRaw, and FFmpeg — decoders that parse untrusted files — and if it is registered
@@ -165,7 +168,7 @@ decoded pixels back over shared memory. This is what browsers do and it converts
 
 ## Distribution
 
-Direct download only. The app is GPL-2.0-or-later; Store MSIX is off the table
+Direct download only. The app is GPL-3.0-or-later; Store MSIX is off the table
 ([11-licensing.md](11-licensing.md)).
 
 **First install:** a signed **Inno Setup** wizard, per-user, no UAC, branded with the app

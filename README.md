@@ -82,6 +82,8 @@ Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`�
 Then the **PR 12 metadata writes** (shared core and the **macOS half**; the Windows half is written but not yet compiled or run): keypad `0`–`5` (or `⌘⇧0`–`5`, `Ctrl+Shift+0`–`5` on Windows once built) rate the photo on screen, and `⌘I` puts the keyboard in the metadata pane's comment field. A plain JPEG is rewritten in place, checked against the original before it replaces anything; every other format (RAW, HEIC, PNG, video, …) gets an `IMG_1234.xmp` sidecar beside it and the original is never opened for writing. The pane has clickable stars, the comment and a "Revert metadata" button. **On a Mac, `⌘⇧3`/`4`/`5` are the system's screenshot shortcuts and never reach the app; use the keypad or turn those shortcuts off.** See [plan/12](plan/12-decision-log.md) 2026-09-25.
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core), not yet built on either platform: on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is tested on Linux ([tools/portable](tools/portable/README.md)); what is owed on each platform is in [plan/12](plan/12-decision-log.md) 2026-09-25. OS integration (PR 15) is not started.
+
+**PR 15 OS integration** has started on a branch (Windows and macOS, same command rows). So far: `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down (written, not yet built). Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). Several windows grouped as tabs come in a later update ([plan/10](plan/10-roadmap.md) PR 15). The macOS half is built and its shared tests pass; the Windows half has not been compiled yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -92,8 +94,16 @@ The keys below come from the command table specified in
 [plan/16-commands.md](plan/16-commands.md); press `?` in the app for the ones
 that apply to what you are doing.
 
-**Licence: GPL-2.0-or-later** ([LICENSE](LICENSE)). Settled in PR 1; the reasoning is in
-[plan/11-licensing.md](plan/11-licensing.md).
+**Licence: GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE](NOTICE)). Settled in PR 1 as
+GPL-2.0-or-later and moved to GPL-3.0-or-later on 2026-09-25; the reasoning is in
+[plan/11-licensing.md](plan/11-licensing.md) and [plan/12-decision-log.md](plan/12-decision-log.md).
+Nothing about selling or distributing it changed.
+
+**Attribution.** Copyright (C) 2026 longtimeno-c. Copies and forks must keep the copyright
+notices, `LICENSE`, `NOTICE` and the in-app legal notices (About: copyright line, licence line,
+links to `LICENSE`, `NOTICE` and `THIRD-PARTY.md`). They may charge money for it, as the GPL
+allows. Please do not present a fork as the original MediaViewer: the name and icon are a
+trademark request, not a licence term.
 
 ---
 
@@ -104,6 +114,8 @@ that apply to what you are doing.
 | **Mac, Apple Silicon, macOS 14+** | [MediaViewer-0.1.2.dmg](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2.dmg) |
 
 Windows may show a SmartScreen warning the first time. This installer is not Authenticode-signed. Checksums are on the [release page](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2).
+
+Setup's Finish page offers to delete the setup `.exe` once it closes. On a Mac, the first-launch setup sheet offers to eject the MediaViewer disk and move the `.dmg` to the Trash. Both boxes start ticked.
 
 ---
 
@@ -225,7 +237,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
-| **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
+| **Windows and macOS integration** (PR 15, started) | Explorer thumbnails and properties for HEIC and RAW, a Spotlight importer for RAW, a second open going to the running app as a new tab-grouped window, and drag-out of the edited photo. Copy path, copy edited image, Share, recent folders and media controls are in (above) |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
 | **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
 | **Voice search** (optional add-on) | Speak the query; speech runs on-device |
@@ -814,7 +826,7 @@ The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, wit
 UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
 for every update, which is how update mechanisms stop working
 ([plan/13](plan/13-updates-and-telemetry.md)). There is no Microsoft Store channel — the
-app is GPL-2.0-or-later ([plan/11](plan/11-licensing.md)).
+app is GPL-3.0-or-later ([plan/11](plan/11-licensing.md)).
 
 First install is an Inno Setup wizard; every later update is Velopack, in the background,
 never re-opening the wizard.
@@ -1246,8 +1258,10 @@ machine:
 - The browse/play/pan/fullscreen/slideshow pass over a real camera dump, on the installed
   build rather than the build tree, and PR 1's present-loop verify against it.
 
-PR 8 creates no PR 15 file associations or handlers. The place they must be removed at
-uninstall is marked in `tools/package/mediaviewer.iss`.
+PR 8's wizard registers the file associations ("Open with", a Default Apps candidate) and
+removes every key on uninstall. PR 15's thumbnail handler is registered by the app on first
+start (`src/shell/shellext_install.cpp`); the wizard creates its keys so uninstall deletes them,
+and removes the versioned copies under `shellext\` (`tools/package/mediaviewer.iss`).
 
 ## Layout
 
@@ -1315,6 +1329,6 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
-GPL-2.0-or-later, see [LICENSE](LICENSE). Bundled libraries and their licences are listed in
+GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE). Bundled libraries and their licences are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md). Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.
 

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10: the metadata a re-encoded export carries (meta.h read_carried).
 #include <exiv2/exiv2.hpp>
 

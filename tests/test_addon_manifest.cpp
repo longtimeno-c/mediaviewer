@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The add-on mechanism (plan/18 "Add-ons"; PR 16 verify: "a tampered add-on
 // file or manifest is refused").
 #include "catch_compat.h"
@@ -72,7 +73,7 @@ std::string manifest_json(const std::vector<file_spec>& files, const std::string
     w.key("path").string(f.path);
     w.key("sha256").string(mv::addon::sha256_hex(f.bytes));
     w.key("size").integer(static_cast<std::int64_t>(f.bytes.size()));
-    w.key("licence").string("GPL-2.0-or-later");
+    w.key("licence").string("GPL-3.0-or-later");
     w.end_object();
   }
   w.end_array();

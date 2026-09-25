@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Stream copy: Path 1 keyframe trim, lossless rotate, split, remove-middle,
 // remux and audio copy. No decoder is ever opened here, so the output is the
 // source's own packets, re-timed (plan/08 "Keyframe trim").

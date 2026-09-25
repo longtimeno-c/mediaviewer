@@ -1,5 +1,6 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # `swift build`'s on-disk layout under --build-path is not a stable contract
 # across Swift toolchain versions (classic SwiftPM vs. the newer Xcode-style
 # "Swift Build" backend land the umbrella ObjC header and static lib in

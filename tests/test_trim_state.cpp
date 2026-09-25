@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // shell/trim_state.h and the PR 13 / 14 rows of the command table.
 #include "catch_compat.h"
 

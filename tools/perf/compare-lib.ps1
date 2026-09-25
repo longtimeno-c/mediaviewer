@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Shared helpers for tools/perf/compare.ps1: find a window, capture only that window, drive the mouse.
 # Only the target window is ever captured, never the whole desktop.
 Add-Type -AssemblyName System.Drawing

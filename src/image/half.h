@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // IEEE 754 binary16 <-> binary32, portable (no F16C / NEON intrinsics), so the
 // FP16 working space (D6, PR 11) is the same bits on both hosts: a
 // DXGI_FORMAT_R16G16B16A16_FLOAT texture and an MTLPixelFormatRGBA16Float one

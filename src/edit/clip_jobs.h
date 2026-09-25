@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The clip job queue (plan/08 "Execution & UX", plan/10 PR 13): one worker,
 // FIFO, every job cancellable, queued or running. The job panel on both hosts
 // is a view of this: it polls snapshot() and never waits on a job.

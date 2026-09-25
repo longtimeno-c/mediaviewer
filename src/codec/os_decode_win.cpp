@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Windows OS-codec probe (D3): WIC's HEIF decoder for HEIC stills that it can
 // show identically to libheif, libheif otherwise. *_win.cpp is the D9 port
 // (plan/15). The policy is written down in codec/os_decode.h.

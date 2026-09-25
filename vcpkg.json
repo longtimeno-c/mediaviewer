@@ -3,7 +3,7 @@
   "name": "mediaviewer",
   "version": "0.1.0",
   "description": "Windows viewer for a real camera dump - photos and video in one folder.",
-  "license": "GPL-2.0-or-later",
+  "license": "GPL-3.0-or-later",
 
   "$comment-baseline": "Pinned. plan/09: reproducible builds beat fresh deps. Move it deliberately, in its own commit, with the frame-time suite re-run afterwards.",
   "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
@@ -132,7 +132,7 @@
     "PR 16 (Import, both platforms)": "blake3 (CC0-1.0 OR Apache-2.0; taken under CC0, plan/18) for content hashes in io/ (verified copy, F8 across volumes, Import), libsodium (ISC) for the Ed25519 add-on manifest signature and SHA-256 in src/addon. The Import add-on links SQLite itself and nothing of the core.",
     "PR 11 (osx)": "crashpad on osx too (plan/10 PR 11: Mac crash reporting). Apache-2.0, static, from this manifest's arm64-osx install like the permissive codecs; the handler binary ships in MediaViewer.app/Contents/Helpers (tools/mac/macpack.py).",
     "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them, and it now reads the configure string embedded in the built avutil/avcodec DLLs rather than a log vcpkg deletes. Verified on the pinned baseline: the port configures --enable-d3d11va --enable-dxva2 --enable-shared with --disable-libx264 --disable-libx265 --disable-libfdk-aac and no --enable-gpl.",
-    "note-exiv2": "GPL-2.0, and kept. The app is GPL-2.0-or-later (plan/11, settled in PR 1), so this is compliant rather than a trap.",
+    "note-exiv2": "GPL-2.0, and kept. The app is GPL-3.0-or-later (plan/11, settled in PR 1), so this is compliant rather than a trap.",
     "note-v1.1": "libjxl, openexr, openjpeg and resvg arrive with their formats in v1.1 (D5). Do not add one to buy a format early."
   },
 

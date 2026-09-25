@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+  <!-- Copyright (C) 2026 longtimeno-c -->
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
   <!-- Milestone G (plan/18): the Import add-on's Windows chrome. Shipped in the
        signed add-on archive beside mv_import.dll, never in the base install.
        Loaded by IslandHost.Addons.cs into its own collectible

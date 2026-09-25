@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Import engine (plan/18-import.md): scans, plans and jobs, over the host
 // function table and import.db. Behind mv_import_api (addon_entry.cpp).
 //

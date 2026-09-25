@@ -1,5 +1,6 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Wraps src.swift/ImportChrome's dynamic library into Import.bundle
 # (plan/18 "Mac chrome": loaded with NSBundle, principal class MVImportChrome).

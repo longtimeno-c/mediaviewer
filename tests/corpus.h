@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Locating the PR 5 video corpus, and being honest when it is not there.
 //
 // The clips live in tools/testmedia/ and are gitignored (plan/09: the corpus

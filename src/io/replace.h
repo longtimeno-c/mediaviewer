@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The io replace port (plan/10 PR 10): every write of edited pixels goes
 // through here. Portable header; io/replace_win.cpp (ReplaceFileW) and
 // io/replace_mac.cpp (same-directory temp, F_FULLFSYNC, rename) implement it

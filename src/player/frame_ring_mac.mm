@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 19 -- the Metal half of the presentation ring (plan/05 "Surface
 // ownership", plan/15 D9). frame_ring.cpp holds the lock-free index rings and is
 // shared with Windows; only the slot's textures are host-specific.

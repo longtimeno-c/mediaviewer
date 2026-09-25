@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Same files in MediaViewer, Windows Photos and Media Player, timed from the screen.
 # A grab of the picture is about 17 ms, so a gap is only good to about one refresh.
 # PresentMon is not required. Writes docs/perf/compare/screen.json.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Animation timing, compositing and APNG parsing. Fixtures are built in the
 // test (stored zlib blocks, no compressor), so no binary corpus lives in git.
 #include <catch2/catch_test_macros.hpp>

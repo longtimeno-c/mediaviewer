@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // TIFF via libtiff, decoded from memory. Page 0 is the still; pages are
 // Ctrl+PageUp/PageDown (plan/04), not extra filmstrip stops — decode_page()
 // already takes a page index so that feature does not need a rewrite.

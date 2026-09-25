@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // POSIX job pool. Same queues and cancellation as job_system_win.cpp; the
 // Windows file is thread-description / priority, this file is pthread name
 // and QoS. plan/15: the Mac file arrives with Milestone F as a real impl.

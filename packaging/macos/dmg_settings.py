@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # dmgbuild settings for the first-install disk image (PR 20, plan/13 "macOS
 # first install"). Run by `tools/mac/macpack.py release`, which passes
 # -D app=... -D license=... -D background=...

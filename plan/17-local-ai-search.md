@@ -58,7 +58,7 @@ shared vector space; search is a dot product. This is the only class of model th
   larger, licence-clean SigLIP-so400m / ViT-L/14-class tower and selects the best recall that fits
   the 3 GB installation ceiling and has acceptable measured indexing throughput. A larger model
   is allowed to win; the eval, not download minimisation, decides.
-- **Weights licence is a gate, not a footnote.** The app is GPL-2.0-or-later; weights are data,
+- **Weights licence is a gate, not a footnote.** The app is GPL-3.0-or-later; weights are data,
   but redistribution terms still bind. CI check: the pack manifest names the licence for every
   model file, and non-commercial / research-only weights fail the build. Some LAION-trained and
   Meta checkpoints are not permissive — check each.
@@ -96,7 +96,7 @@ src/infer   IEmbedder { load(pack), embed_image(span<u8 rgb>, w, h), embed_text(
   is introduced. Candidates, each its **own optional sub-pack** so a user only downloads the one
   their hardware uses: **OpenVINO** (Intel iGPU/NPU, Apache-2.0), **CUDA/TensorRT** (NVIDIA;
   redistribution is under NVIDIA's EULA, not an OSI licence — legal check against the app's
-  GPL-2.0-or-later status before shipping it, and if it fails the gate it is user-supplied
+  GPL-3.0-or-later status before shipping it, and if it fails the gate it is user-supplied
   instead). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
   until a provider exists. That is a known gap, not a hidden one. Adding DirectML later as one
   more provider would need the CLAUDE.md D3D12 rule reworded and is not planned.

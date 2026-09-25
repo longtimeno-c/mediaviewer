@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 11 (plan/10: "SwiftUI adjust pane"): exposure, contrast, saturation,
 // temperature and tint, the histogram and the clipping readout. The twin of
 // the Windows pane (IslandHost.Adjust.cs): same sliders, same ranges, same

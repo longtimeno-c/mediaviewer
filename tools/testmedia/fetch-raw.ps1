@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Fetch the PR 7 RAW sample set into tools/testmedia/raw/ and verify it.
 #
 # plan/09: the corpus does not live in git. The manifest beside this script —

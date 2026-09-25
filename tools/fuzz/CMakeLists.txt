@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # libFuzzer harnesses, one per decoder entry point (PR 7, plan/09: "libFuzzer
 # harness per decoder against the corpus, run in CI nightly").
@@ -133,7 +134,7 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail)
 
 add_custom_target(mv_fuzzers)
 
@@ -143,6 +144,11 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(${target} PRIVATE mv_codec)
   if(name STREQUAL "decode")
+    target_link_libraries(${target} PRIVATE mv_image)
+  endif()
+  # PR 15: the Explorer handler's request path, built from its source.
+  if(name STREQUAL "thumbnail")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/shellext/thumb_request.cpp")
     target_link_libraries(${target} PRIVATE mv_image)
   endif()
   # The linker is not the clang driver, so name the runtimes the driver would

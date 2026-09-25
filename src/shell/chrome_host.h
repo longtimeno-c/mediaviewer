@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Loads the C# WinUI chrome and attaches a DesktopWindowXamlSource island.
 //
 // plan/10 PR 3, D1 amendment: the Win32 window and D3D11 swapchain stay the
@@ -509,6 +510,9 @@ class chrome_host {
   // with the last preset (kind 1, Ctrl+Shift+F7). Optional entry point: a
   // chrome without it ignores the call.
   void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
+  // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
+  // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
+  bool share_files(HWND window, const std::string& paths_json) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -576,6 +580,7 @@ class chrome_host {
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
+  chrome_entry_fn share_files_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

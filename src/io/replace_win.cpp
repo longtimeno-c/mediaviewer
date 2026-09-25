@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Windows half of the io replace port (io/replace.h): CREATE_NEW for an
 // export, a sibling temporary + ReplaceFileW for the viewer's lossless rotate.
 #include "io/replace.h"

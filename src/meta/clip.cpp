@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Clip metadata through libavformat: container facts, one inspector record per
 // stream (video / audio / subtitle / attachment), chapters and tags. FFmpeg is
 // already the video pipeline (plan/05), so this reads in-process rather than
@@ -17,6 +18,7 @@ extern "C" {
 #include <libavutil/rational.h>
 }
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -270,6 +272,8 @@ bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
       bps = static_cast<std::int64_t>(static_cast<double>(s.file_size) * 8.0 * AV_TIME_BASE / static_cast<double>(ctx->duration));
     }
     s.bitrate = bitrate_text(bps);
+    if (ctx->duration > 0) s.duration_seconds = static_cast<double>(ctx->duration) / AV_TIME_BASE;
+    s.bitrate_bps = std::max<std::int64_t>(0, bps);
 
     add_tags(out, "Container", ctx->metadata);
     out.properties.push_back({origin::computed, "Container", "Format", "Format", s.format, s.format, "Container.Format"});
@@ -287,8 +291,20 @@ bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
       info.codec = cd && cd->long_name ? cd->long_name : (cd && cd->name ? cd->name : "unknown");
       switch (info.kind) {
         case stream_kind::video: describe_video(st, info); break;
-        case stream_kind::audio: describe_audio(st, info); break;
+        case stream_kind::audio:
+          describe_audio(st, info);
+          if (s.audio_channels == 0) {
+            s.audio_channels = std::max(0, st.codecpar->ch_layout.nb_channels);
+            s.audio_sample_rate = std::max(0, st.codecpar->sample_rate);
+          }
+          break;
         default: break;
+      }
+      if ((info.kind == stream_kind::video && !(st.disposition & AV_DISPOSITION_ATTACHED_PIC)) ||
+          info.kind == stream_kind::audio) {
+        if (std::find(s.codecs.begin(), s.codecs.end(), info.codec) == s.codecs.end()) {
+          s.codecs.push_back(info.codec);
+        }
       }
       add(info, "Language", tag(st.metadata, "language"));
       add(info, "Title", tag(st.metadata, "title"));
