@@ -6,6 +6,7 @@ using MediaViewer.Interop;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
@@ -38,6 +39,8 @@ public static partial class IslandHost
     private static StackPanel? _galleryStack;
     private static FrameworkElement? _breadcrumbBar;
     private static Button? _upButton;
+    private static Button? _rootButton;
+    private static TextBlock? _pathCurrent;
     private static StackPanel? _crumbTrail;
     private static TextBlock? _photosHeader;
     private static TextBlock? _galleryEmpty;
@@ -46,12 +49,13 @@ public static partial class IslandHost
     private static ScrollViewer? _folderStrip;
     private static FrameworkElement? _barPathRow;
     private static Button? _barUpButton;
+    private static Button? _barRootButton;
+    private static TextBlock? _barPathCurrent;
     private static StackPanel? _barCrumbTrail;
     private static bool _galleryVisible;
     private static readonly ObservableCollection<FolderCardVm> Folders = new();
     private static int _folderCursor = -1;
     private static bool _canGoUp;
-    private static bool _pathExpanded;
     private static string? _folderQuery;
     private static readonly List<(string Name, string Path)> Crumbs = new();
 
@@ -158,7 +162,6 @@ public static partial class IslandHost
             // listing lands. The ABI has already dropped the old subdirs.
             if (!string.Equals(previous, current, StringComparison.OrdinalIgnoreCase))
             {
-                _pathExpanded = false;
                 ReloadFolders();
             }
             RebuildPathBars();
@@ -286,6 +289,8 @@ public static partial class IslandHost
             _galleryStack = null;
             _breadcrumbBar = null;
             _upButton = null;
+            _rootButton = null;
+            _pathCurrent = null;
             _crumbTrail = null;
             _photosHeader = null;
             _galleryEmpty = null;
@@ -576,50 +581,53 @@ public static partial class IslandHost
         Visibility = Visibility.Collapsed,
     };
 
-    private static FrameworkElement BuildBreadcrumb()
-    {
-        _upButton = PathUpButton();
-        _crumbTrail = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        var scroller = PathScroller(_crumbTrail);
-        var row = new Grid { Height = 36, Padding = new Thickness(8, 0, 12, 0) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.Children.Add(_upButton);
-        Grid.SetColumn(scroller, 1);
-        row.Children.Add(scroller);
-        row.Background = Brush(Canvas);
-        return row;
-    }
+    private static FrameworkElement BuildBreadcrumb() => BuildPathRow(36,
+        out _upButton, out _rootButton, out _crumbTrail, out _pathCurrent);
 
     private static FrameworkElement BuildBarPathRow()
     {
-        _barUpButton = PathUpButton();
-        _barCrumbTrail = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        var scroller = PathScroller(_barCrumbTrail);
-        var row = new Grid { Height = 27, Padding = new Thickness(8, 0, 12, 0) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.Children.Add(_barUpButton);
-        Grid.SetColumn(scroller, 1);
-        row.Children.Add(scroller);
-        row.Background = Brush(Canvas);
-        _barPathRow = row;
-        return row;
+        _barPathRow = BuildPathRow(27,
+            out _barUpButton, out _barRootButton, out _barCrumbTrail, out _barPathCurrent);
+        return _barPathRow;
     }
 
-    private static Button PathUpButton()
+    private static FrameworkElement BuildPathRow(double height, out Button up, out Button root,
+        out StackPanel trail, out TextBlock current)
     {
-        var up = new Button
+        up = TextButton("↑ Up", () => Send(Command.FolderUp));
+        root = TextButton("Root", () => Send(Command.OpenCrumb, 0));
+        foreach (Button button in new[] { up, root })
         {
-            Content = new FontIcon { Glyph = "\uE70E", FontSize = 12, Foreground = Brush(Title) },
-            Background = new SolidColorBrush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 4, 8, 4),
-            AllowFocusOnInteraction = false,
+            button.Padding = new Thickness(8, 2, 8, 2);
+            button.MinHeight = 24;
+            button.VerticalAlignment = VerticalAlignment.Center;
+        }
+        AutomationProperties.SetName(up, "Up one folder");
+        AutomationProperties.SetName(root, "Return to browsing root");
+        ToolTipService.SetToolTip(up, "Open the enclosing folder (Ctrl+Up)");
+        trail = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var scroller = PathScroller(trail);
+        current = new TextBlock
+        {
+            FontFamily = UiFont, FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush(Title), VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 240, TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(8, 0, 0, 0),
         };
-        up.Click += (_, _) => Send(Command.FolderUp);
-        ToolTipService.SetToolTip(up, "Up one folder (Ctrl+Up)");
-        return up;
+        var row = new Grid { Height = height, Padding = new Thickness(8, 0, 12, 0), Background = Brush(Canvas) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.Children.Add(up);
+        Grid.SetColumn(root, 1);
+        row.Children.Add(root);
+        Grid.SetColumn(scroller, 2);
+        row.Children.Add(scroller);
+        Grid.SetColumn(current, 3);
+        row.Children.Add(current);
+        return row;
     }
 
     private static ScrollViewer PathScroller(StackPanel trail) => new()
@@ -633,19 +641,24 @@ public static partial class IslandHost
 
     private static void RebuildPathBars()
     {
-        FillPathTrail(_crumbTrail, _upButton, _breadcrumbBar);
-        FillPathTrail(_barCrumbTrail, _barUpButton, _barPathRow);
+        FillPathTrail(_crumbTrail, _upButton, _rootButton, _pathCurrent, _breadcrumbBar);
+        FillPathTrail(_barCrumbTrail, _barUpButton, _barRootButton, _barPathCurrent, _barPathRow);
     }
 
-    private static void FillPathTrail(StackPanel? trail, Button? up, FrameworkElement? row)
+    private static void FillPathTrail(StackPanel? trail, Button? up, Button? root, TextBlock? current, FrameworkElement? row)
     {
-        if (trail is null || up is null || row is null) return;
+        if (trail is null || up is null || root is null || current is null || row is null) return;
         up.IsEnabled = _canGoUp;
         up.Opacity = _canGoUp ? 1 : 0.4;
         row.Visibility = Crumbs.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        root.IsEnabled = Crumbs.Count > 1;
+        root.Opacity = root.IsEnabled ? 1 : 0.4;
+        ToolTipService.SetToolTip(root, Crumbs.Count > 0 ? "Return to browsing root: " + Crumbs[0].Path : "No folder open");
+        current.Text = Crumbs.Count > 0 ? (Crumbs.Count > 1 ? "›  " : "") + Crumbs[^1].Name : "";
+        ToolTipService.SetToolTip(current, Crumbs.Count > 0 ? Crumbs[^1].Path : "");
         trail.Children.Clear();
         var shown = DisplayCrumbs();
-        for (int i = 0; i < shown.Count; ++i)
+        for (int i = 0; i < shown.Count - 1; ++i)
         {
             if (i > 0)
             {
@@ -659,36 +672,34 @@ public static partial class IslandHost
                 });
             }
             var piece = shown[i];
-            if (i == shown.Count - 1)
+            if (piece.Ellipsis)
             {
-                trail.Children.Add(new TextBlock
+                var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
+                for (int hidden = 1; hidden < Crumbs.Count - 2; ++hidden)
                 {
-                    Text = piece.Name,
-                    FontFamily = UiFont,
-                    FontSize = 13,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = Brush(Title),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    MaxWidth = 240,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                });
-            }
-            else if (piece.Ellipsis)
-            {
-                Button more = TextButton("…", () =>
-                {
-                    _pathExpanded = true;
-                    RebuildPathBars();
-                });
-                more.Padding = new Thickness(4, 4, 4, 4);
-                ToolTipService.SetToolTip(more, "Show the whole path");
+                    int index = hidden;
+                    var item = new MenuFlyoutItem { Text = Crumbs[index].Name };
+                    ToolTipService.SetToolTip(item, Crumbs[index].Path);
+                    item.Click += (_, _) => Send(Command.OpenCrumb, index);
+                    menu.Items.Add(item);
+                }
+                Button more = TextButton("…", () => { });
+                more.Flyout = menu;
+                more.Padding = new Thickness(4, 2, 4, 2);
+                more.MinHeight = 24;
+                AutomationProperties.SetName(more, "Hidden parent folders");
+                ToolTipService.SetToolTip(more, "Open a parent folder");
                 trail.Children.Add(more);
             }
             else
             {
                 int index = piece.Index;
                 Button crumb = TextButton(piece.Name, () => Send(Command.OpenCrumb, index));
-                crumb.Padding = new Thickness(4, 4, 4, 4);
+                crumb.Padding = new Thickness(4, 2, 4, 2);
+                crumb.MinHeight = 24;
+                crumb.MaxWidth = 160;
+                if (crumb.Content is TextBlock label) label.TextTrimming = TextTrimming.CharacterEllipsis;
+                ToolTipService.SetToolTip(crumb, Crumbs[index].Path);
                 trail.Children.Add(crumb);
             }
         }
@@ -698,7 +709,7 @@ public static partial class IslandHost
 
     private static List<PathPiece> DisplayCrumbs()
     {
-        if (_pathExpanded || Crumbs.Count <= 4)
+        if (Crumbs.Count <= 4)
         {
             var all = new List<PathPiece>(Crumbs.Count);
             for (int i = 0; i < Crumbs.Count; ++i) all.Add(new PathPiece(i, Crumbs[i].Name, false));
@@ -1270,3 +1281,4 @@ internal struct ChromeGalleryNavigationArgs
     public int Direction;
     public int Index;
 }
+
