@@ -2135,12 +2135,17 @@ Two calls the roadmap left open for PR 15, answered by the owner when the slice 
   becomes per window; the device, decoder pools, thumb store and settings stay process-wide.
   Every extra window is inside the present-loop gates: both PR 1 soaks run with two windows open.
 - **The Spotlight importer is built.** An `.mdimporter` in `Contents/Library/Spotlight` is the
-  twin of the Explorer property handler. It is out of process by construction (`mdworker`), links
-  the shared `meta/` read model only, never a decoder, and fills the standard
-  `kMDItem*` keys (dimensions, capture date, camera, lens, exposure, GPS, duration, codec) for the
-  D5 formats Spotlight does not already index, RAW first. Its verify joins the macOS line:
-  `mdimport -t -d2` on a CR3 prints the keys, and `mdls` shows them after a Finder copy.
-  Dragging the app to the Trash still removes every extension.
+  twin of the Explorer property handler. It is out of process by construction (`mdworker`) and
+  reads through the shared `meta/` read model, never a decoder.
+  *Corrected the same day, when it was built:* macOS's own Image importer already claims every
+  D5 still type (`public.image`, `public.camera-raw-image`, `public.heic`, …), RAW included, and an
+  app importer claiming those would compete with Apple's richer one. The gap is video: the
+  system's CoreMedia importer covers MP4 / MOV but not **Matroska, WebM, AVI or MPEG-TS**. So the
+  importer claims exactly those four, and reports duration, pixel size, codecs, audio channels
+  and rate, bit rate, media types, the container's creation date and title, and the camera
+  (`shell/spotlight_fields.h`). Its verify joins the macOS line: `mdimport -t -d2` on an MKV,
+  with the installed, Developer ID-signed app, lists those keys. Dragging the app to the Trash
+  still removes every extension.
 - **One AppUserModelID, `MediaViewer.Viewer`, from PR 15 on.** The Start / desktop shortcuts
   start the root stub, which starts `current\MediaViewer.exe`. Without an explicit id those are
   two taskbar identities, so a pinned button and the running window did not group, and a jump

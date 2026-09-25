@@ -917,6 +917,8 @@ if(MV_BUILD_TESTS)
     tests/test_thumb_pixels.cpp
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
+    tests/test_spotlight_fields.cpp
+    src/shell/spotlight_fields.cpp
     tests/test_slideshow.cpp
     tests/test_anim.cpp
     tests/test_gif_webp.cpp

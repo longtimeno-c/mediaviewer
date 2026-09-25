@@ -82,6 +82,8 @@ configure_file("${CMAKE_SOURCE_DIR}/packaging/macos/Info.plist.in"
                "${CMAKE_BINARY_DIR}/packaging/MediaViewer-Info.plist" @ONLY)
 configure_file("${CMAKE_SOURCE_DIR}/packaging/macos/QuickLook-Info.plist.in"
                "${CMAKE_BINARY_DIR}/packaging/MediaViewerThumbnails-Info.plist" @ONLY)
+configure_file("${CMAKE_SOURCE_DIR}/packaging/macos/Spotlight-Info.plist.in"
+               "${CMAKE_BINARY_DIR}/packaging/MediaViewerSpotlight-Info.plist" @ONLY)
 
 # --- MediaViewer: the executable inside MediaViewer.app -----------------------
 mv_mac_host(MediaViewer)
@@ -109,6 +111,22 @@ target_link_libraries(MediaViewerThumbnails PRIVATE
   "-framework ImageIO"
   "-framework QuickLookThumbnailing")
 
+# --- MediaViewerSpotlight: the Spotlight importer (PR 15) ---------------------
+# A CFPlugIn bundle mdworker loads for the clip containers macOS does not index
+# (packaging/macos/Spotlight-Info.plist.in); the Mac twin of the Explorer
+# property handler (plan/12 2026-09-25). No lib prefix, no suffix: the bundle's
+# CFBundleExecutable names the file.
+add_library(MediaViewerSpotlight MODULE
+  src/shell/spotlight_importer_mac.mm
+  src/shell/spotlight_fields.cpp
+  src/shell/spotlight_fields.h)
+target_include_directories(MediaViewerSpotlight PRIVATE src)
+target_link_libraries(MediaViewerSpotlight PRIVATE
+  mv_meta
+  "-framework CoreFoundation"
+  "-framework CoreServices")
+set_target_properties(MediaViewerSpotlight PROPERTIES PREFIX "" SUFFIX "")
+
 # --- MediaViewer.app ----------------------------------------------------------
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(MV_APP_BUNDLE "${CMAKE_BINARY_DIR}/MediaViewer.app")
@@ -132,8 +150,12 @@ if(EXISTS "${MV_CRASHPAD_HANDLER}")
 endif()
 # PR 13 / 14: encode and decode jobs out of process, to Contents/Helpers.
 list(APPEND MV_ASSEMBLE_ARGS --clipjob "$<TARGET_FILE:MediaViewerClipJob>")
+# PR 15: the Spotlight importer, to Contents/Library/Spotlight.
+list(APPEND MV_ASSEMBLE_ARGS
+  --mdimporter-exe "$<TARGET_FILE:MediaViewerSpotlight>"
+  --mdimporter-plist "${CMAKE_BINARY_DIR}/packaging/MediaViewerSpotlight-Info.plist")
 add_custom_target(mediaviewer_app
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/mac/macpack.py" ${MV_ASSEMBLE_ARGS}
-  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob
+  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob MediaViewerSpotlight
   COMMENT "Assemble MediaViewer.app (PR 20)"
   VERBATIM)

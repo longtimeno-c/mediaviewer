@@ -34,6 +34,7 @@ from typing import Callable, Iterable
 
 APP_NAME = "MediaViewer"
 APPEX_NAME = "MediaViewerThumbnails"
+MDIMPORTER_NAME = "MediaViewerSpotlight"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
@@ -329,6 +330,17 @@ def cmd_assemble(args: argparse.Namespace) -> None:
         clipjob.chmod(0o755)
         roots.append((clipjob, "@executable_path/../Frameworks"))
 
+    # PR 15: the Spotlight importer, a loadable bundle mdworker opens. Its
+    # rpath is @loader_path-relative: @executable_path would be mdworker's.
+    if args.mdimporter_exe:
+        importer = contents / "Library" / "Spotlight" / f"{MDIMPORTER_NAME}.mdimporter" / "Contents"
+        (importer / "MacOS").mkdir(parents=True)
+        importer_exe = importer / "MacOS" / MDIMPORTER_NAME
+        shutil.copyfile(args.mdimporter_exe, importer_exe)
+        importer_exe.chmod(0o755)
+        shutil.copyfile(args.mdimporter_plist, importer / "Info.plist")
+        roots.append((importer_exe, "@loader_path/../../../../../Frameworks"))
+
     bundle_dylibs(app, roots, [args.dylib_dir])
 
     sign_app(app, identity="-", appex_entitlements=Path(args.appex_entitlements), hardened=False)
@@ -375,6 +387,9 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool)
     clipjob = app / "Contents" / "Helpers" / CLIPJOB
     if clipjob.exists():
         codesign(clipjob, identity, hardened)
+    importer = app / "Contents" / "Library" / "Spotlight" / f"{MDIMPORTER_NAME}.mdimporter"
+    if importer.exists():
+        codesign(importer, identity, hardened)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
     codesign(app, identity, hardened)
@@ -534,6 +549,8 @@ def main(argv: list[str]) -> None:
     a.add_argument("--sparkle")
     a.add_argument("--crashpad-handler", help="vcpkg's tools/crashpad/crashpad_handler (PR 11)")
     a.add_argument("--clipjob", help="the MediaViewerClipJob helper (PR 13 / 14)")
+    a.add_argument("--mdimporter-exe", help="the Spotlight importer's binary (PR 15)")
+    a.add_argument("--mdimporter-plist", help="its Info.plist (PR 15)")
     a.set_defaults(func=cmd_assemble)
 
     r = sub.add_parser("release", help="sign, notarize, disk image, update archive, appcast")

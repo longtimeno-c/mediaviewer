@@ -562,10 +562,14 @@ tests pass on macOS; the Windows half awaits its first MSVC / clang-cl build in 
 `IThumbnailProvider` over `IInitializeWithStream` on the `MediaViewer.Image` ProgId, run from a
 versioned copy under `<root>\shellext`, with its portable request path tested on macOS and
 fuzzed (`fuzz_thumbnail`). The property handler is deferred (HKLM only; [12](12-decision-log.md)).
+**Spotlight importer (written, 2026-09-25):** `MediaViewerSpotlight.mdimporter` in
+`Contents/Library/Spotlight`, for MKV / WebM / AVI / TS (the containers macOS does not index;
+the system already indexes every D5 still). Loaded directly it returns every field; inside
+`mdworker` an ad-hoc-signed dev build did not run, so its verify needs the installed,
+Developer ID-signed app.
 **Still to do:** single instance with
 windows grouped as tabs and `Ctrl+Tab`, drag-out of the flattened view
-(`CFSTR_FILEDESCRIPTOR`, `NSFilePromiseProvider`), the Spotlight importer, and both
-platforms' verify lines.*
+(`CFSTR_FILEDESCRIPTOR`, `NSFilePromiseProvider`), and both platforms' verify lines.*
 
 *Status 2026-09-25: **not started.** PR 8's installer registers the `ProgId`s and `OpenWithProgids`
 (a partial overlap with the Windows half below), and Windows already has SMTC transport from PR 5;

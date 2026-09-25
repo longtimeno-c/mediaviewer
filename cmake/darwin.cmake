@@ -707,6 +707,9 @@ if(MV_BUILD_TESTS)
     # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
+    # PR 15: the Spotlight importer's field mapping.
+    tests/test_spotlight_fields.cpp
+    src/shell/spotlight_fields.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

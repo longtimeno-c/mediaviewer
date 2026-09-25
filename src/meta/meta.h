@@ -57,6 +57,13 @@ struct summary {
   std::string duration;      // "1:23.4" (clips)
   std::string codec;         // primary video codec
   std::string bitrate;       // "12.4 Mb/s"
+  // PR 15: the same clip facts as numbers, for a consumer that is not a
+  // person (the Spotlight importer). 0 = unknown.
+  double duration_seconds = 0;
+  std::int64_t bitrate_bps = 0;
+  int audio_channels = 0;        // first audio stream
+  int audio_sample_rate = 0;     // Hz, first audio stream
+  std::vector<std::string> codecs;  // every audio / video stream's codec, file order, no repeats
   // The date-taken sort key (plan/16): the stamp read as if it were UTC.
   // Camera stamps carry no zone, so this orders correctly within a folder and
   // is not a real instant. 0 = unknown.
