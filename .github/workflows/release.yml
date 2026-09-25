@@ -272,6 +272,23 @@ jobs:
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
             --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
 
+      # Intel runners keep Homebrew in /usr/local, a default compiler search
+      # path. Its jpeg-turbo headers (JPEG_LIB_VERSION 80) then shadow vcpkg's
+      # (62) and every libjpeg call fails "Wrong JPEG library version". Unlink
+      # Homebrew's copies of the libraries vcpkg supplies; keg paths remain.
+      - name: Hide Homebrew copies of vcpkg libraries
+        run: |
+          ls -l /usr/local/include/jpeglib.h 2>/dev/null || true
+          for f in jpeg-turbo jpeg libpng webp libtiff giflib little-cms2 sqlite \
+                   libheif libde265 libavif aom dav1d libraw exiv2 ffmpeg; do
+            if brew list --formula "$f" >/dev/null 2>&1; then brew unlink "$f" || true; fi
+          done
+          if [ -e /usr/local/include/jpeglib.h ]; then
+            echo "/usr/local/include/jpeglib.h still present" >&2
+            ls -l /usr/local/include/jpeglib.h >&2
+            exit 1
+          fi
+
       - name: Configure
         run: |
           args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION"

@@ -21,8 +21,8 @@ namespace mv::shell {
     if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     ext[i] = c;
   }
-  static constexpr const char* kVideo[] = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v"};
-  for (const char* e : kVideo) {
+  static constexpr const char* kVideoExts[] = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v"};
+  for (const char* e : kVideoExts) {
     if (std::strcmp(ext, e) == 0) return true;
   }
   return false;
