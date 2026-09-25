@@ -35,6 +35,10 @@ struct meta_store::state {
   };
   std::unordered_map<std::string, record> cache;
   std::unordered_set<std::string> in_flight;
+  // PR 12: `invalidate` bumps `gen` and stamps the path, so a read that began
+  // before a write landed cannot cache the pre-write record afterwards.
+  std::uint64_t gen = 0;
+  std::unordered_map<std::string, std::uint64_t> invalidated;
 
   // std::nullopt inside the map = "read it, it has no date" (cached so a
   // dateless file is not re-read on every re-sort).
@@ -84,17 +88,27 @@ std::shared_ptr<const meta::metadata> meta_store::get(const io::dir_entry& e, jo
       background_generation,
       [st, key, path, ready = std::move(on_ready)](const job_context&) -> status {
         st->reads.fetch_add(1, std::memory_order_relaxed);
+        std::uint64_t started = 0;
+        {
+          std::lock_guard<std::mutex> lock(st->mutex);
+          started = st->gen;
+        }
         auto record = std::make_shared<meta::metadata>();
         if (auto r = st->loader(path); r) *record = std::move(r).value();
         // else: unreadable -> the empty record stands, cached below.
         {
           std::lock_guard<std::mutex> lock(st->mutex);
           st->in_flight.erase(key);
-          st->lru.push_front(key);
-          st->cache[key] = {std::move(record), st->lru.begin()};
-          while (st->lru.size() > kCapacity) {
-            st->cache.erase(st->lru.back());
-            st->lru.pop_back();
+          const auto inv = st->invalidated.find(path);
+          // A write landed while this read ran: what it read is out of date.
+          // Do not keep it; the `ready` below makes the UI ask again.
+          if (inv == st->invalidated.end() || inv->second <= started) {
+            st->lru.push_front(key);
+            st->cache[key] = {std::move(record), st->lru.begin()};
+            while (st->lru.size() > kCapacity) {
+              st->cache.erase(st->lru.back());
+              st->lru.pop_back();
+            }
           }
         }
         if (ready) ready(path);
@@ -147,6 +161,23 @@ bool meta_store::consume_dates_changed() noexcept {
 
 std::uint64_t meta_store::reads() const noexcept {
   return state_->reads.load(std::memory_order_relaxed);
+}
+
+void meta_store::invalidate(std::string_view utf8_path) {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (state_->invalidated.size() > 256) state_->invalidated.clear();
+  state_->invalidated[std::string(utf8_path)] = ++state_->gen;
+  // Keys are "path\0mtime\0size".
+  std::string prefix(utf8_path);
+  prefix += '\0';
+  for (auto it = state_->cache.begin(); it != state_->cache.end();) {
+    if (it->first.compare(0, prefix.size(), prefix) == 0) {
+      state_->lru.erase(it->second.lru_it);
+      it = state_->cache.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void meta_store::clear() {

@@ -14,6 +14,7 @@ namespace {
 std::mutex g_mu;
 std::string g_override;
 std::string g_addons_override;
+std::string g_snapshot_override;
 std::string g_clipboard_override;
 
 std::string utf8_from_wide(const wchar_t* wide) {
@@ -96,6 +97,30 @@ result<std::string> clipboard_dir() {
   }
   const std::wstring app = std::wstring(local) + L"\\MediaViewer";
   const std::wstring dir = app + L"\\clipboard";
+  for (const std::wstring* d : {&app, &dir}) {
+    if (!::CreateDirectoryW(d->c_str(), nullptr) && ::GetLastError() != ERROR_ALREADY_EXISTS) {
+      return err(status::io);
+    }
+  }
+  return utf8_from_wide(dir.c_str());
+}
+
+void set_metadata_snapshot_dir_override(std::string_view utf8_dir) {
+  std::lock_guard lock(g_mu);
+  g_snapshot_override.assign(utf8_dir);
+}
+
+result<std::string> metadata_snapshot_dir() {
+  {
+    std::lock_guard lock(g_mu);
+    if (!g_snapshot_override.empty()) return g_snapshot_override;
+  }
+  wchar_t local[MAX_PATH]{};
+  if (FAILED(::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, local))) {
+    return err(status::io);
+  }
+  const std::wstring app = std::wstring(local) + L"\\MediaViewer";
+  const std::wstring dir = app + L"\\metadata-snapshots";
   for (const std::wstring* d : {&app, &dir}) {
     if (!::CreateDirectoryW(d->c_str(), nullptr) && ::GetLastError() != ERROR_ALREADY_EXISTS) {
       return err(status::io);

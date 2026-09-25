@@ -27,8 +27,8 @@ private struct VolumeSliderRow: View {
 
 /// Command-table ids (src/shell/commands.h; chrome_host.h pins them).
 enum TrimCommand {
-  static let keyframe: Int32 = 132
-  static let reencode: Int32 = 133
+  static let keyframe: Int32 = 139
+  static let reencode: Int32 = 140
 }
 
 /// Trim over the scrubber (plan/08: "show the keyframe grid on the timeline so

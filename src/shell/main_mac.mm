@@ -58,6 +58,7 @@
 #include "shell/key_router.h"
 #include "shell/meta_store.h"
 #include "shell/os_integration.h"
+#include "shell/meta_writer.h"
 #include "io/sort_order.h"
 #include "shell/settings.h"
 #include "shell/input_state.h"
@@ -136,6 +137,9 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case undo_edit: case reset_edits:
     // PR 11
     case adjust_pane:
+    // PR 12
+    case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
+    case set_rating_4: case set_rating_5: case edit_comment:
     // PR 13 / 14
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
@@ -408,6 +412,18 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)jobsBlur;
 - (void)adjustReset;
 - (void)adjustBlur;
+// PR 12
+- (int32_t)metaRating;
+- (std::string)metaComment;
+- (BOOL)metaCanEdit;
+- (BOOL)metaCanRevert;
+- (void)metaSetRating:(int32_t)stars;
+- (void)metaSetComment:(const char*)utf8;
+- (void)metaRevert;
+- (uint64_t)metaFocusSeq;
+- (void)metaBlur;
+- (uint64_t)noticeGeneration;
+- (std::string)noticeText;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -698,6 +714,41 @@ extern "C" int32_t mv_chrome_meta_streams(char* buf, int32_t size) {
   return MvCopyOut(out, buf, size);
 }
 
+// PR 12: the rating, comment and revert controls in the metadata pane.
+extern "C" int32_t mv_chrome_meta_rating(void) {
+  return g_chrome_app ? [g_chrome_app metaRating] : 0;
+}
+extern "C" int32_t mv_chrome_meta_comment(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app metaComment] : std::string{}, buf, size);
+}
+extern "C" bool mv_chrome_meta_can_edit(void) {
+  return g_chrome_app ? [g_chrome_app metaCanEdit] == YES : false;
+}
+extern "C" bool mv_chrome_meta_can_revert(void) {
+  return g_chrome_app ? [g_chrome_app metaCanRevert] == YES : false;
+}
+extern "C" void mv_chrome_meta_set_rating(int32_t stars) {
+  if (g_chrome_app) [g_chrome_app metaSetRating:stars];
+}
+extern "C" void mv_chrome_meta_set_comment(const char* utf8) {
+  if (g_chrome_app && utf8) [g_chrome_app metaSetComment:utf8];
+}
+extern "C" void mv_chrome_meta_revert(void) {
+  if (g_chrome_app) [g_chrome_app metaRevert];
+}
+extern "C" uint64_t mv_chrome_meta_focus_seq(void) {
+  return g_chrome_app ? [g_chrome_app metaFocusSeq] : 0;
+}
+extern "C" void mv_chrome_meta_blur(void) {
+  if (g_chrome_app) [g_chrome_app metaBlur];
+}
+extern "C" uint64_t mv_chrome_notice_generation(void) {
+  return g_chrome_app ? [g_chrome_app noticeGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_notice_text(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app noticeText] : std::string{}, buf, size);
+}
+
 extern "C" bool mv_chrome_tree_visible(void) {
   return g_chrome_app ? [g_chrome_app treeVisible] == YES : false;
 }
@@ -927,6 +978,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   NSString* ignored = event.charactersIgnoringModifiers;
   const unichar c = ignored.length > 0 ? [ignored characterAtIndex:0] : 0;
+  // PR 12 (plan/16 Rate): the keypad's digits are their own keys, apart from the
+  // number row's, which stay zoom. (The keypad's arrows carry the same flag.)
+  if ((event.modifierFlags & NSEventModifierFlagNumericPad) && c >= '0' && c <= '9') {
+    return static_cast<key>(static_cast<int>(key::numpad0) + (c - '0'));
+  }
   if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
     return static_cast<key>(static_cast<int>(key::f1) + static_cast<int>(c - NSF1FunctionKey));
   }
@@ -1300,6 +1356,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
+  // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
+  // queued here and written on the pool: a plain JPEG in place, everything else
+  // in an XMP sidecar. `_metaWritten` is the paths written this session, the
+  // ones "revert metadata" has a snapshot for.
+  mv::shell::meta_writer _metaWriter;
+  NSTimer* _metaWriteDebounce;
+  std::set<std::string> _metaWritten;
+  std::uint64_t _metaFocusSeq;
+  std::string _noticeText;
+  std::uint64_t _noticeGeneration;
+  NSTimer* _noticeTimer;
   // PR 10 (plan/07, plan/16). `_edits` owns every item's edit stack and crop
   // mode; the render thread gets the geometry through _snap.edit, tagged with
   // the item id _lab.open_item returned (so a reload never borrows it).
@@ -3328,6 +3395,11 @@ enum MvMenuCmd : NSInteger {
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
       [self setMetaPaneVisible:!_metaPaneVisible];
       return YES;
+    // PR 12 (plan/16 Rate): 0-5 write the rating of the item on screen.
+    case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
+    case set_rating_4: case set_rating_5:
+      return [self rateCurrentItem:mv::shell::rating_of_command(command)];
+    case edit_comment: return [self focusCommentField];
     // PR 11 (plan/16 Pane): ⇧A shows the adjust pane and focuses it.
     case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
     // PR 13 / 14 (plan/08, plan/16 "Video and trim").
@@ -3419,6 +3491,12 @@ enum MvMenuCmd : NSInteger {
 
 - (void)startRotationWrite {
   _rotateDebounce = nil;
+  // PR 12: a metadata write is rewriting a JPEG; wait for it (it re-keys the
+  // item's edits when it lands, so the rotation then checks the new bytes).
+  if (_metaWriter.in_flight()) {
+    [self scheduleRotationWrite];
+    return;
+  }
   const std::optional<mv::shell::rotation_write> w = _edits.take_pending_write();
   if (!w) return;
   const mv::shell::rotation_write job = *w;
@@ -4089,6 +4167,210 @@ enum MvMenuCmd : NSInteger {
 - (uint64_t)metaGeneration { return _metaGeneration; }
 - (std::shared_ptr<const mv::meta::metadata>)metaRecord { return _metaRecord; }
 
+// ---- PR 12: rating, comment, revert ----------------------------------------------
+//
+// Keys 0-5 and the pane's controls queue a write; nothing here touches a file on
+// the main thread. The queue coalesces (3 then 4 writes 4), runs one job at a
+// time on the pool, and never overlaps a lossless rotation of the same JPEG.
+
+- (const mv::io::dir_entry*)currentEntry {
+  if (_items.empty() || _index.current() >= _items.size()) return nullptr;
+  return &_items[_index.current()];
+}
+
+- (BOOL)rateCurrentItem:(int)stars {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry || stars < 0 || stars > mv::meta::kMaxRating) return NO;
+  _metaWriter.submit(entry->path_utf8, mv::shell::rating_fields(stars));
+  // The keystroke shows at once; the file catches up a moment later.
+  [self noticeShow:stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars)];
+  [self scheduleMetaWrite:0.25];
+  return YES;
+}
+
+- (BOOL)focusCommentField {
+  if (![self currentEntry]) return NO;
+  if (_adjust.visible()) [self setAdjustVisible:NO];
+  if (!_metaPaneVisible) [self setMetaPaneVisible:YES];
+  ++_metaFocusSeq;  // Swift focuses the field once per ask
+  [self.window makeFirstResponder:self.metaHost];
+  return YES;
+}
+
+- (int32_t)metaRating {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return 0;
+  if (const auto pending = _metaWriter.pending_rating(entry->path_utf8)) return *pending;
+  return _metaRecord ? _metaRecord->s.rating : 0;
+}
+
+- (std::string)metaComment {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return {};
+  if (auto pending = _metaWriter.pending_comment(entry->path_utf8)) return std::move(*pending);
+  return _metaRecord ? _metaRecord->s.comment : std::string{};
+}
+
+- (BOOL)metaCanEdit { return [self currentEntry] != nullptr; }
+
+- (BOOL)metaCanRevert {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  return entry && _metaWritten.count(entry->path_utf8) != 0;
+}
+
+- (void)metaSetRating:(int32_t)stars {
+  (void)[self rateCurrentItem:std::clamp<int32_t>(stars, 0, mv::meta::kMaxRating)];
+}
+
+- (void)metaSetComment:(const char*)utf8 {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return;
+  const std::string text(utf8);
+  if (text.size() > mv::meta::kMaxCommentBytes) {
+    NSBeep();
+    [self noticeShow:std::string("Comment is too long")];
+    return;
+  }
+  if (text == [self metaComment]) return;  // unchanged: no write
+  _metaWriter.submit(entry->path_utf8, mv::shell::comment_fields(text));
+  [self scheduleMetaWrite:0.05];
+}
+
+- (void)metaRevert {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry || _metaWritten.count(entry->path_utf8) == 0) return;
+  _metaWriter.submit_revert(entry->path_utf8);
+  [self noticeShow:std::string("Reverting metadata…")];
+  [self scheduleMetaWrite:0.05];
+}
+
+- (uint64_t)metaFocusSeq { return _metaFocusSeq; }
+- (void)metaBlur { [self.window makeFirstResponder:self.view]; }
+
+- (void)scheduleMetaWrite:(NSTimeInterval)delay {
+  [_metaWriteDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _metaWriteDebounce = [NSTimer scheduledTimerWithTimeInterval:delay
+                                                       repeats:NO
+                                                         block:^(NSTimer* timer) {
+                                                           (void)timer;
+                                                           [weakSelf startMetaWrite];
+                                                         }];
+}
+
+- (void)startMetaWrite {
+  _metaWriteDebounce = nil;
+  if (_metaWriter.in_flight()) return;  // its completion starts the next
+  // A lossless rotation of a JPEG owns the file until it lands.
+  if (_edits.write_in_flight()) {
+    [self scheduleMetaWrite:0.2];
+    return;
+  }
+  const std::optional<mv::shell::meta_job> next = _metaWriter.take_next();
+  if (!next) return;
+  const mv::shell::meta_job job = *next;
+  // The identity the item's edits are filed under; a rewrite changes it.
+  std::uint64_t old_size = 0;
+  std::int64_t old_mtime = 0;
+  for (const auto& entry : _items) {
+    if (entry.path_utf8 != job.path) continue;
+    old_size = entry.size;
+    old_mtime = entry.mtime_unix;
+    break;
+  }
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [job, old_size, old_mtime, weakSelf](const mv::job_context&) -> mv::status {
+                    const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      [weakSelf metaWriteFinished:out job:job oldSize:old_size oldMtime:old_mtime];
+                    });
+                    return out.ok ? mv::status::ok : out.error;
+                  });
+}
+
+- (void)metaWriteFinished:(const mv::shell::meta_outcome&)out
+                      job:(const mv::shell::meta_job&)job
+                  oldSize:(std::uint64_t)old_size
+                 oldMtime:(std::int64_t)old_mtime {
+  _metaWriter.finished(out);
+  if (!out.ok) {
+    (void)_metaWriter.take_failure();
+    NSBeep();
+    MV_LOG_WARN("metadata write failed: %s", mv::status_name(out.error));  // never the path (rule 6)
+    [self noticeShow:job.revert                  ? std::string("Could not revert the metadata")
+                     : job.fields.rating.touches() ? std::string("Could not save the rating")
+                                                   : std::string("Could not save the comment")];
+    if (_metaWriter.has_pending()) [self scheduleMetaWrite:0.0];
+    return;
+  }
+
+  // What the store cached for this file is out of date: a JPEG's stamp moved,
+  // a sidecar's did not, so drop it by path either way.
+  _meta.invalidate(out.path);
+  struct stat st{};
+  if (::stat(out.path.c_str(), &st) == 0) {
+    const auto new_size = static_cast<std::uint64_t>(st.st_size);
+    const auto new_mtime = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
+    for (auto& entry : _items) {
+      if (entry.path_utf8 != out.path) continue;
+      entry.size = new_size;
+      entry.mtime_unix = new_mtime;
+    }
+    // The bytes changed, the pixels did not: keep the item's edits.
+    _edits.metadata_rewritten(out.path, old_size, old_mtime, new_size, new_mtime);
+  }
+  if (job.revert) _metaWritten.erase(out.path);
+  else _metaWritten.insert(out.path);
+
+  const mv::io::dir_entry* current = [self currentEntry];
+  if (current && current->path_utf8 == out.path) {
+    _metaRecord.reset();
+    ++_metaGeneration;
+    if ([self metadataWanted]) [self requestMetadataNow];
+  }
+
+  // Say where it went, unless another change to the same file is already queued
+  // (its message is the one that matters).
+  if (!_metaWriter.busy_for(out.path)) {
+    std::string text = job.revert ? std::string("Metadata reverted") : std::string();
+    if (!job.revert && job.fields.rating.touches()) {
+      const int stars = job.fields.rating.k == mv::meta::change<int>::kind::clear ? 0 : job.fields.rating.value;
+      text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
+    } else if (!job.revert && job.fields.comment.touches()) {
+      text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed" : "Comment saved";
+    }
+    if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
+      const std::size_t sep = out.sidecar_path.find_last_of('/');
+      text += "  \xE2\x80\x94 " + out.sidecar_path.substr(sep == std::string::npos ? 0 : sep + 1);  // — IMG_1234.xmp
+    }
+    if (!text.empty()) [self noticeShow:text];
+  }
+  if (_metaWriter.has_pending()) [self scheduleMetaWrite:0.0];
+}
+
+- (void)noticeShow:(const std::string&)text {
+  _noticeText = text;
+  ++_noticeGeneration;
+  [_noticeTimer invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _noticeTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
+                                                 repeats:NO
+                                                   block:^(NSTimer* timer) {
+                                                     (void)timer;
+                                                     [weakSelf noticeClear];
+                                                   }];
+}
+
+- (void)noticeClear {
+  _noticeTimer = nil;
+  _noticeText.clear();
+  ++_noticeGeneration;
+}
+
+- (uint64_t)noticeGeneration { return _noticeGeneration; }
+- (std::string)noticeText { return _noticeText; }
+
 - (void)setMetaPaneVisible:(BOOL)visible {
   if (visible == _metaPaneVisible) return;
   _metaPaneVisible = visible;
@@ -4556,6 +4838,20 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   (void)sender;
   if (_terminating) return NSTerminateLater;
   _terminating = true;
+  // PR 12: writes the user asked for and has not seen land -- a rating inside
+  // its 0.25 s debounce, a comment queued behind another write, a rotation
+  // inside its 0.4 s debounce. Taken here, on the main thread that owns the
+  // queues, and written below once the pool has finished the write it is
+  // running (a second write to one file must not overlap it). The rotation
+  // goes first: it refuses bytes a metadata write has changed, while a
+  // metadata write applies to whatever orientation it finds. A rotation
+  // already in flight is not repeated (a turn is relative; a rating is not).
+  [_rotateDebounce invalidate];
+  _rotateDebounce = nil;
+  [_metaWriteDebounce invalidate];
+  _metaWriteDebounce = nil;
+  std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
+  std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
   // device_.destroy() on the render thread -- shutdown() drains queued jobs
@@ -4567,6 +4863,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     // removed (no partial output); joins the queue's workers.
     _clipJobs.reset();
     _jobs.shutdown();
+    if (exitTurn && !mv::shell::run_rotation_write(*exitTurn)) MV_LOG_WARN("exit: rotation write failed");
+    for (const mv::shell::meta_job& job : exitMeta) {
+      const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
+      if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
+    }
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,
     // -[NSApplication terminate:] spins a nested run loop in a mode that does

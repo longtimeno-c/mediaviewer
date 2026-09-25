@@ -207,6 +207,28 @@ constexpr binding kBindings[] = {
     // Milestone G: only while the Import add-on is installed (plan/18).
     row(C('I'), mod_ctrl | mod_shift, kViewing, edge, open_import),
     row(key::f7, mod_ctrl | mod_shift, kViewing, edge, import_now),
+    // PR 12 (plan/16 Rate). Appended. The keypad digits are their own keys;
+    // the number row stays zoom (0 fit, 1 100 %), so a laptop with no keypad
+    // rates on Ctrl+Shift+digit (Cmd+Shift on a Mac). Not in a slideshow or
+    // crop mode: a rating is a write, and neither is a place to make one by
+    // accident. Only on the item on screen; a batch is v1.1.
+    row(key::numpad0, mod_none, kViewing, edge, set_rating_0),
+    row(key::numpad1, mod_none, kViewing, edge, set_rating_1),
+    row(key::numpad2, mod_none, kViewing, edge, set_rating_2),
+    row(key::numpad3, mod_none, kViewing, edge, set_rating_3),
+    row(key::numpad4, mod_none, kViewing, edge, set_rating_4),
+    row(key::numpad5, mod_none, kViewing, edge, set_rating_5),
+    row(C('0'), mod_ctrl | mod_shift, kViewing, edge, set_rating_0),
+    row(C('1'), mod_ctrl | mod_shift, kViewing, edge, set_rating_1),
+    row(C('2'), mod_ctrl | mod_shift, kViewing, edge, set_rating_2),
+    row(C('3'), mod_ctrl | mod_shift, kViewing, edge, set_rating_3),
+    row(C('4'), mod_ctrl | mod_shift, kViewing, edge, set_rating_4),
+    row(C('5'), mod_ctrl | mod_shift, kViewing, edge, set_rating_5),
+    // plan/16 gives the comment no key, only "user comment in the pane" and a
+    // rule that a focused text control owns the keyboard. Ctrl+I is `I`
+    // (the pane) with the edit modifier, and puts the keyboard in the field so
+    // the comment is reachable without the mouse.
+    row(C('I'), mod_ctrl, kViewing, edge, edit_comment),
     // PR 13 (plan/16 "Video and trim", plan/08). Appended. Trim mode layers
     // over video (key_router.cpp), so Space, J K L, Q E and , . keep driving
     // the clip; these rows are only what trim adds or takes over. `[` `]` are
@@ -366,6 +388,13 @@ constexpr command_info kCommands[] = {
     {adjust_reset, "Adjust: reset", true},
     {open_import, "Import…"},
     {import_now, "Import marked now"},
+    {set_rating_0, "Rating: none"},
+    {set_rating_1, "Rating: 1 star"},
+    {set_rating_2, "Rating: 2 stars"},
+    {set_rating_3, "Rating: 3 stars"},
+    {set_rating_4, "Rating: 4 stars"},
+    {set_rating_5, "Rating: 5 stars"},
+    {edit_comment, "Edit comment"},
     {trim_mode, "Trim clip"},
     {trim_in, "Trim: in marker"},
     {trim_out, "Trim: out marker"},
@@ -413,6 +442,16 @@ const char* named_key(key k) noexcept {
     case key::f10: return "F10";
     case key::f11: return "F11";
     case key::f12: return "F12";
+    case key::numpad0: return "Numpad 0";
+    case key::numpad1: return "Numpad 1";
+    case key::numpad2: return "Numpad 2";
+    case key::numpad3: return "Numpad 3";
+    case key::numpad4: return "Numpad 4";
+    case key::numpad5: return "Numpad 5";
+    case key::numpad6: return "Numpad 6";
+    case key::numpad7: return "Numpad 7";
+    case key::numpad8: return "Numpad 8";
+    case key::numpad9: return "Numpad 9";
     default: return nullptr;
   }
 }

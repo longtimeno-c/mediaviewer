@@ -68,12 +68,17 @@ enum chrome_command : int {
   // Milestone G. Open a file in the viewer (Import's Enter); native pulls the
   // path with take_tree_path, as for the tree.
   chrome_cmd_open_path = 1011,
+  // PR 12. The metadata pane's comment field was committed (Return or leaving
+  // it); native pulls the text with take_parked_text. Revert puts the fields
+  // back to the session's first snapshot. The stars post set_rating_0..5.
+  chrome_cmd_meta_comment = 1012,
+  chrome_cmd_meta_revert = 1013,
   // PR 14. The clip tools flyout was confirmed; arg is the packed choice
   // (shell/trim_state.h pack_clip_choice). Cancel sends nothing.
-  chrome_cmd_clip_tool = 1012,
+  chrome_cmd_clip_tool = 1014,
   // PR 13. The island drained MV_COMPLETION_CLIP_INDEX (the island owns the
   // drain); arg is the request id, which native reads with mv_clip_index_get.
-  chrome_cmd_clip_index = 1013,
+  chrome_cmd_clip_index = 1015,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -131,18 +136,21 @@ static_assert(static_cast<int>(command_id::adjust_pane) == 118);
 static_assert(static_cast<int>(command_id::adjust_exposure) == 119);
 static_assert(static_cast<int>(command_id::adjust_tint) == 123);
 static_assert(static_cast<int>(command_id::adjust_reset) == 124);
+static_assert(static_cast<int>(command_id::set_rating_0) == 127);
+static_assert(static_cast<int>(command_id::set_rating_5) == 132);
 static_assert(chrome_cmd_tree_open >= kCommandCount && chrome_cmd_set_sort >= kCommandCount);
 static_assert(chrome_cmd_export >= kCommandCount);
 static_assert(chrome_cmd_open_subfolder >= kCommandCount && chrome_cmd_gallery_columns >= kCommandCount);
 static_assert(chrome_cmd_addon_state >= kCommandCount);
 static_assert(chrome_cmd_open_path >= kCommandCount);
+static_assert(chrome_cmd_meta_comment >= kCommandCount && chrome_cmd_meta_revert >= kCommandCount);
 static_assert(chrome_cmd_clip_tool >= kCommandCount && chrome_cmd_clip_index >= kCommandCount);
 // PR 13 / 14: the jobs pane's close button and the trim chips send these.
-static_assert(static_cast<int>(command_id::trim_mode) == 127);
-static_assert(static_cast<int>(command_id::trim_keyframe) == 132);
-static_assert(static_cast<int>(command_id::trim_reencode) == 133);
-static_assert(static_cast<int>(command_id::jobs_pane) == 136);
-static_assert(static_cast<int>(command_id::clip_tools) == 137);
+static_assert(static_cast<int>(command_id::trim_mode) == 134);
+static_assert(static_cast<int>(command_id::trim_keyframe) == 139);
+static_assert(static_cast<int>(command_id::trim_reencode) == 140);
+static_assert(static_cast<int>(command_id::jobs_pane) == 143);
+static_assert(static_cast<int>(command_id::clip_tools) == 144);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -163,7 +171,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_reset_keys, chrome_cmd_update_restart, chrome_cmd_tree_open,
       chrome_cmd_set_sort, chrome_cmd_export, chrome_cmd_open_subfolder, chrome_cmd_open_crumb,
       chrome_cmd_gallery_columns,
-      chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_clip_tool, chrome_cmd_clip_index};
+      chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_meta_comment,
+      chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -266,6 +275,23 @@ struct chrome_meta_args {
 };
 
 static_assert(sizeof(chrome_meta_args) == 40, "keep in sync with ChromeMetaArgs");
+
+// PR 12: what the pane's rating, comment and Revert show. A change still in the
+// write queue already counts, so a key or a click shows at once.
+struct chrome_meta_edit_args {
+  std::uint64_t comment;     // UTF-8, valid for the call only
+  std::int32_t comment_len;
+  std::int32_t rating;       // -1 rejected, 0 none, 1..5
+  std::int32_t flags;        // kMetaEdit*
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_meta_edit_args) == 24, "keep in sync with ChromeMetaEditArgs");
+
+inline constexpr std::int32_t kMetaEditCanEdit = 1;    // an item is open
+inline constexpr std::int32_t kMetaEditCanRevert = 2;  // a write to it landed this session
+inline constexpr std::int32_t kMetaEditFocus = 4;      // Ctrl+I: the comment field takes the keyboard
+inline constexpr std::int32_t kMetaEditDropDraft = 8;  // Esc: forget what was typed, show the file's
 
 struct chrome_flags_args {
   std::int32_t flags;
@@ -425,6 +451,12 @@ class chrome_host {
   void set_tree_root(const std::string& utf8_dir) noexcept;
   // The folder the user chose in the tree ("" if none pending).
   [[nodiscard]] std::string take_tree_path() noexcept;
+  // The string the island parked for the last notification that carries one
+  // (the tree, Import's open, PR 12's comment). False when nothing could be
+  // read, which is not the same as an empty string: "" clears a comment.
+  [[nodiscard]] bool take_parked_text(std::string& out) noexcept;
+  // PR 12: the pane's rating / comment / Revert state (chrome_meta_edit_args).
+  void set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
 
   // PR 11: the adjust pane, a third panel island on the right (it and the
   // metadata pane share that edge; the host shows one at a time). Optional
@@ -558,6 +590,7 @@ class chrome_host {
   chrome_entry_fn take_tree_path_ = nullptr;
   chrome_entry_fn show_adjust_pane_ = nullptr;
   chrome_entry_fn set_adjust_view_ = nullptr;
+  chrome_entry_fn set_meta_edit_ = nullptr;
   chrome_entry_fn show_jobs_pane_ = nullptr;  // PR 13 / 14
   chrome_entry_fn set_trim_ = nullptr;        // PR 13
   chrome_entry_fn navigate_gallery_ = nullptr;

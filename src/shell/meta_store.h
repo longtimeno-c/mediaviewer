@@ -67,6 +67,11 @@ class meta_store {
   // True once since the last call if keys arrived (the host re-sorts on it).
   [[nodiscard]] bool consume_dates_changed() noexcept;
 
+  // PR 12: drops every cached record for `utf8_path` (whatever its mtime and
+  // size), so the next `get` reads it again. A write that landed in a sidecar
+  // leaves the file's own mtime and size alone, so the key cannot tell.
+  void invalidate(std::string_view utf8_path);
+
   // How many full metadata reads have been performed. For tests and the F3
   // overlay: the number must not move when an overlay is toggled.
   [[nodiscard]] std::uint64_t reads() const noexcept;

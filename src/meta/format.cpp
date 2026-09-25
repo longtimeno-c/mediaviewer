@@ -6,6 +6,7 @@
 #include <initializer_list>
 
 #include "meta/meta.h"
+#include "meta/write.h"
 
 namespace mv::meta {
 namespace {
@@ -90,6 +91,15 @@ void orient_point(std::uint8_t orientation, float& x, float& y) noexcept {
   }
 }
 
+std::string format_rating(int rating) {
+  if (rating < 0) return "Rejected";
+  if (rating == 0) return {};
+  if (rating > kMaxRating) rating = kMaxRating;
+  std::string out;
+  for (int i = 0; i < kMaxRating; ++i) out += i < rating ? "\xE2\x98\x85" : "\xE2\x98\x86";  // ★ ☆
+  return out;
+}
+
 std::string format_dimensions(std::uint32_t w, std::uint32_t h) {
   if (w == 0 || h == 0) return {};
   return std::to_string(w) + " \xC3\x97 " + std::to_string(h);
@@ -132,6 +142,8 @@ std::vector<field> summary_rows(const metadata& m) {
   }
   add("Date taken", s.date_taken);
   add("Location", s.gps);
+  add("Rating", format_rating(s.rating));
+  add("Comment", s.comment);
   return rows;
 }
 

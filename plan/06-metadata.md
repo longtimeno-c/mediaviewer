@@ -66,6 +66,15 @@ Editing metadata is where you can lose someone's photos. Rules:
 - Batch editing across a selection, with per-file success/failure reporting — never a silent
   partial success.
 
+**As built (PR 12, 2026-09-25).** `meta/write.h`. A plain JPEG is edited in place through Exiv2 and the
+result is *checked against the original before it replaces anything*: untouched EXIF / XMP / IPTC
+values, the thumbnail, the ICC profile and every non-metadata JPEG segment must match, or the write
+is refused and the file is never touched. Rating goes to XMP only (EXIF `Rating` tags are updated
+only where the file already had them, so a rating never grows IFD0). Everything else — RAW, HEIC /
+AVIF, TIFF, PNG, WebP, BMP / GIF / ICO, video, and a JPEG with an MPF table or bytes after its EOI —
+gets `IMG_1234.xmp`, merged with any sidecar already there. A sidecar beside a file wins on read. See
+[12](12-decision-log.md) 2026-09-25 for the calls.
+
 ## Overlays that fall out of the read model (v1)
 
 These are why PR 9 is not only a pane. They read properties **already parsed** — no extra

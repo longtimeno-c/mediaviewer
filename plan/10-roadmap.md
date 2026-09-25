@@ -484,6 +484,13 @@ filename, username or pixel data** in it. A forced `NSException` in the chrome i
 the correlation id of the native call in flight. The app relaunches cleanly after each crash.
 
 ### PR 12 — Metadata (write) — narrow on purpose
+*Status 2026-09-25: shared core and the **macOS half written and built**; the **Windows half is written
+but not yet compiled** (branch `pr12-metadata-write`). The core is unit-tested (writer, sidecar, snapshot / revert,
+kill-mid-write, the five-camera corpus) and the Mac host was driven by real keypad, `⌘⇧` and clear
+keystrokes on a scratch JPEG. The Windows C++ host, WinUI pane and a hardware verify on both
+platforms are owed — see [12](12-decision-log.md) 2026-09-25, which lists the Windows work and where
+this departs from the text below.*
+
 **Rating, orientation, and user comment only.** **Shared:** the Exiv2 writer, a snapshot
 before the first write in a session, maker notes preserved, and an **XMP sidecar for RAW
 that never rewrites the original**. The atomic replace goes through the PR 10 `io` port

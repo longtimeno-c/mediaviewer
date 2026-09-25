@@ -30,6 +30,7 @@ public static partial class IslandHost
 {
     internal const int PanelArgsSize = 24;
     internal const int MetaDataArgsSize = 40;
+    internal const int MetaEditArgsSize = 24;
 
     private static DesktopWindowXamlSource? _metaPane;
     private static DesktopWindowXamlSource? _tree;
@@ -272,15 +273,26 @@ public static partial class IslandHost
         _metaContent = null;
         _metaLoadingText = null;
         _metaTabs = null;
+        _metaStarsRow = null;
+        _metaRejected = null;
+        _metaCommentBox = null;
+        _metaRevert = null;
+        MetaStarButtons.Clear();
     }
 
     private static UIElement BuildMetaPane()
     {
         Grid root = PanelShell("Metadata", Command.MetadataPane, out Grid body);
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
+        // PR 12: rating, comment and Revert sit above the tabs, so Ctrl+I and the
+        // stars are there whichever tab is open.
+        body.Children.Add(BuildMetaEdit());
+
         var bar = new Grid { Padding = new Thickness(14, 0, 14, 8) };
+        Grid.SetRow(bar, 1);
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _metaTabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
@@ -291,7 +303,7 @@ public static partial class IslandHost
         body.Children.Add(bar);
 
         _metaContent = new Border { BorderBrush = Brush(Hairline), BorderThickness = new Thickness(0, 1, 0, 0) };
-        Grid.SetRow(_metaContent, 1);
+        Grid.SetRow(_metaContent, 2);
         body.Children.Add(_metaContent);
 
         RenderMeta();
@@ -393,6 +405,8 @@ public static partial class IslandHost
         var rows = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
         foreach ((string label, string value) in _metaSummary)
         {
+            // PR 12: rating and comment have their own controls above the tabs.
+            if (label is "Rating" or "Comment") continue;
             var row = new Grid();
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -586,6 +600,227 @@ public static partial class IslandHost
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
         }
+    }
+
+    // ==== PR 12: rating, comment, revert =======================================
+    //
+    // Native owns the truth and pushes it (SetMetaEdit) whenever it may have
+    // moved; a change still in its write queue already counts, so a star clicked
+    // or a key pressed shows at once. The stars post the rating keys' command
+    // ids, the comment is parked for native to pull (TakeTreePath) and Revert
+    // is a notification. Nothing here reads or writes a file.
+
+    private static int _metaRating;
+    private static string _metaComment = "";
+    private static bool _metaCanEdit;
+    private static bool _metaCanRevert;
+
+    private static StackPanel? _metaStarsRow;
+    private static TextBlock? _metaRejected;
+    private static FakeInput? _metaCommentBox;
+    private static Button? _metaRevert;
+    private static readonly List<Button> MetaStarButtons = new();
+
+    private static readonly Color StarOn = ColorHelper.FromArgb(255, 240, 196, 64);
+
+    private static UIElement BuildMetaEdit()
+    {
+        var col = new StackPanel { Spacing = 8, Padding = new Thickness(14, 0, 14, 10) };
+
+        var rating = new Grid();
+        rating.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        rating.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        TextBlock ratingLabel = Text("Rating", Body);
+        ratingLabel.VerticalAlignment = VerticalAlignment.Center;
+        rating.Children.Add(ratingLabel);
+        _metaStarsRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        MetaStarButtons.Clear();
+        for (int n = 1; n <= 5; n++)
+        {
+            int stars = n;
+            var b = new Button
+            {
+                Content = new TextBlock { FontSize = 18 },
+                Background = Brush(Colors.Transparent),
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(4, 0, 4, 2),
+                AllowFocusOnInteraction = false,
+            };
+            // The star that is already the rating clears it (the Mac pane's rule).
+            b.Click += (_, _) => Send(Command.SetRating0 + (_metaRating == stars ? 0 : stars));
+            // Left / Right walk the stars, Down drops to the comment. Explicit:
+            // XY focus navigation fail-fasts in these islands.
+            int index = n - 1;
+            b.KeyDown += (_, e) =>
+            {
+                if (e.Key == Windows.System.VirtualKey.Right && index + 1 < MetaStarButtons.Count)
+                {
+                    MetaStarButtons[index + 1].Focus(FocusState.Keyboard);
+                    e.Handled = true;
+                }
+                else if (e.Key == Windows.System.VirtualKey.Left && index > 0)
+                {
+                    MetaStarButtons[index - 1].Focus(FocusState.Keyboard);
+                    e.Handled = true;
+                }
+                else if (e.Key == Windows.System.VirtualKey.Down)
+                {
+                    _metaCommentBox?.Focus(FocusState.Keyboard);
+                    e.Handled = true;
+                }
+            };
+            ToolTipService.SetToolTip(b, n == 1 ? "1 star" : $"{n} stars");
+            MetaStarButtons.Add(b);
+            _metaStarsRow.Children.Add(b);
+        }
+        Grid.SetColumn(_metaStarsRow, 1);
+        rating.Children.Add(_metaStarsRow);
+        _metaRejected = Text("Rejected", Body);
+        _metaRejected.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(_metaRejected, 1);
+        rating.Children.Add(_metaRejected);
+        col.Children.Add(rating);
+
+        var comment = new Grid();
+        comment.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        comment.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        TextBlock commentLabel = Text("Comment", Body);
+        commentLabel.VerticalAlignment = VerticalAlignment.Center;
+        comment.Children.Add(commentLabel);
+        // Not a TextBox: that control fail-fasts in these islands (see FakeInput).
+        // Return saves and gives the keyboard back to the canvas; Esc is native's
+        // (it pushes DropDraft first, so leaving the field then saves nothing).
+        var box = new FakeInput("Add a comment");
+        box.SetText(_metaComment);
+        box.Submitted += () => CommitMetaComment(box);
+        box.LostFocus += (_, _) =>
+        {
+            try
+            {
+                if (box.Text != _metaComment) CommitMetaComment(box);
+            }
+            catch (Exception ex)
+            {
+                // Never let an exception out of a XAML event: that is a fail-fast.
+                System.Diagnostics.Debug.WriteLine(ex);
+            }
+        };
+        box.MoveDown += () => _metaRevert?.Focus(FocusState.Keyboard);
+        box.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Up || MetaStarButtons.Count == 0) return;
+            MetaStarButtons[Math.Clamp(_metaRating, 1, MetaStarButtons.Count) - 1].Focus(FocusState.Keyboard);
+            e.Handled = true;
+        };
+        _metaCommentBox = box;
+        Grid.SetColumn(box, 1);
+        comment.Children.Add(box);
+        col.Children.Add(comment);
+
+        _metaRevert = new Button
+        {
+            Content = Text("Revert metadata", Body),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            AllowFocusOnInteraction = false,
+        };
+        ToolTipService.SetToolTip(_metaRevert,
+            "Put the rating, comment and orientation back to how this file was before this session's first change");
+        _metaRevert.Click += (_, _) => Send(Command.MetaRevert);
+        _metaRevert.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Up)
+            {
+                _metaCommentBox?.Focus(FocusState.Keyboard);
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Down && MetaTabButtons.Count > 0)
+            {
+                MetaTabButtons[0].Focus(FocusState.Keyboard);
+                e.Handled = true;
+            }
+        };
+        col.Children.Add(_metaRevert);
+
+        RenderMetaEdit();
+        return col;
+    }
+
+    private static void CommitMetaComment(FakeInput box)
+    {
+        _treePending = box.Text;
+        Send(Command.MetaComment);
+    }
+
+    // In place, never a rebuild: the keyboard may be on a star or in the field.
+    private static void RenderMetaEdit()
+    {
+        if (_metaStarsRow is null || _metaRejected is null) return;
+        bool rejected = _metaRating < 0;
+        _metaStarsRow.Visibility = rejected ? Visibility.Collapsed : Visibility.Visible;
+        _metaRejected.Visibility = rejected ? Visibility.Visible : Visibility.Collapsed;
+        for (int i = 0; i < MetaStarButtons.Count; i++)
+        {
+            bool on = i < _metaRating;
+            if (MetaStarButtons[i].Content is TextBlock t)
+            {
+                t.Text = on ? "★" : "☆";
+                t.Foreground = Brush(on ? StarOn : Body);
+            }
+            MetaStarButtons[i].IsEnabled = _metaCanEdit;
+        }
+        if (_metaCommentBox is not null) _metaCommentBox.IsEnabled = _metaCanEdit;
+        if (_metaRevert is not null) _metaRevert.IsEnabled = _metaCanRevert;
+    }
+
+    /// <summary>
+    /// Native pushes the rating, the comment and what may be done with them
+    /// whenever any of them may have moved (every pane push). In: ChromeMetaEditArgs.
+    /// </summary>
+    public static int SetMetaEdit(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < MetaEditArgsSize) return unchecked((int)0x80070057);
+            ChromeMetaEditArgs a = Marshal.PtrToStructure<ChromeMetaEditArgs>(arg);
+            string comment = a.Comment == 0 || a.CommentLen <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Comment), a.CommentLen) ?? "";
+            _metaRating = a.Rating;
+            _metaComment = comment;
+            _metaCanEdit = (a.Flags & MetaEditFlags.CanEdit) != 0;
+            _metaCanRevert = (a.Flags & MetaEditFlags.CanRevert) != 0;
+            if (!_metaPaneVisible) return 0;
+            RenderMetaEdit();
+            if (_metaCommentBox is FakeInput box)
+            {
+                // Follow the file (another item, a write landed) unless the user is
+                // typing; Esc drops what was typed.
+                bool typing = box.FocusState != FocusState.Unfocused;
+                if (!typing || (a.Flags & MetaEditFlags.DropDraft) != 0) box.SetText(comment);
+                if ((a.Flags & MetaEditFlags.Focus) != 0 && _metaCanEdit)
+                {
+                    // The island's window takes the keyboard, then the field does.
+                    _metaPane?.NavigateFocus(new XamlSourceFocusNavigationRequest(
+                        XamlSourceFocusNavigationReason.First));
+                    box.Focus(FocusState.Keyboard);
+                }
+            }
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    // Mirrors kMetaEdit* in chrome_host.h.
+    private static class MetaEditFlags
+    {
+        public const int CanEdit = 1;
+        public const int CanRevert = 2;
+        public const int Focus = 4;
+        public const int DropDraft = 8;
     }
 
     // ==== folder tree ==========================================================
@@ -905,4 +1140,14 @@ internal struct ChromeMetaArgs
     public int PropertiesLen;
     public int StreamsLen;
     public int Loading;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct ChromeMetaEditArgs
+{
+    public ulong Comment;
+    public int CommentLen;
+    public int Rating;
+    public int Flags;
+    public int Reserved;
 }
