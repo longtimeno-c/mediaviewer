@@ -99,12 +99,61 @@ TEST_CASE("an obstacle is passed while airborne", "[dino]") {
   CHECK(g.state() == phase::playing);
 }
 
-TEST_CASE("leave returns to idle and Space starts fresh", "[dino]") {
+TEST_CASE("leave plays the outro, then returns to idle and Space starts fresh", "[dino]") {
   dino_game g = running();
+  const int best = g.best();
   g.leave();
+  CHECK(g.state() == phase::outro);
+  CHECK(g.active());  // still drawn while it folds away
+  g.leave();          // a second Esc does not restart it
+  CHECK(g.state() == phase::outro);
+  const float distance = g.distance();
+  run_for(g, dino_game::kOutroSeconds * 0.5f);
+  CHECK(g.state() == phase::outro);
+  CHECK(g.distance() == distance);  // the world stops; only the runner moves
+  CHECK(g.outro_progress() > 0.0f);
+  run_for(g, dino_game::kOutroSeconds * 0.5f + 0.1f);
   CHECK(g.state() == phase::idle);
+  CHECK_FALSE(g.active());
+  CHECK(g.obstacle_count() == 0);
+  CHECK(g.best() == best);
   g.press();
   CHECK(g.state() == phase::intro);
+}
+
+TEST_CASE("the outro lands a jump and plays from game over too", "[dino]") {
+  dino_game g = running();
+  g.debug_clear_obstacles();
+  g.press();
+  g.update(1.0f / 60.0f);
+  REQUIRE(g.airborne());
+  g.leave();
+  run_for(g, dino_game::kOutroSeconds + 0.1f);
+  CHECK(g.state() == phase::idle);
+  CHECK_FALSE(g.airborne());
+  CHECK(g.dino_y() == 0.0f);
+
+  dino_game dead = running();
+  dead.debug_add_obstacle(dead.dino_x() + 5.0f, 10.0f, 22.0f);
+  dead.update(0.01f);
+  REQUIRE(dead.state() == phase::over);
+  dead.leave();
+  CHECK(dead.state() == phase::outro);
+}
+
+TEST_CASE("Space during the outro starts a fresh run; leave_now skips it", "[dino]") {
+  dino_game g = running();
+  g.toggle_3d();
+  g.leave();
+  g.toggle_3d();  // the camera is fixed on the way out
+  CHECK(g.view_3d());
+  g.press();
+  CHECK(g.state() == phase::intro);
+  CHECK_FALSE(g.view_3d());  // leaving restored the default view
+
+  dino_game h = running();
+  h.leave_now();
+  CHECK(h.state() == phase::idle);
 }
 
 TEST_CASE("a stalled frame does not teleport the runner", "[dino]") {

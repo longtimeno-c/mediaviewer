@@ -16,11 +16,12 @@ namespace mv::shell {
 
 class dino_game {
  public:
-  enum class phase : std::uint8_t { idle, intro, playing, over };
+  enum class phase : std::uint8_t { idle, intro, playing, over, outro };
 
   static constexpr float kDinoW = 20.0f;
   static constexpr float kDinoH = 21.0f;
   static constexpr float kIntroSeconds = 1.25f;
+  static constexpr float kOutroSeconds = 0.9f;
   static constexpr int kMaxObstacles = 8;
 
   struct obstacle {
@@ -38,18 +39,30 @@ class dino_game {
       case phase::intro: break;  // the run has not begun; ignore
       case phase::playing: jump(); break;
       case phase::over: start(); break;
+      case phase::outro:  // Space again on the way out: a fresh run, in the default view
+        view_3d_ = false;
+        start();
+        break;
     }
   }
 
-  // Leave the game: back to the welcome card. The best score survives.
+  // Esc: the runner sprints off and the scene folds away before the welcome card
+  // returns (the intro in reverse). The best score survives.
   void leave() noexcept {
+    if (phase_ == phase::idle || phase_ == phase::outro) return;
+    phase_ = phase::outro;
+    t_ = 0.0f;
+  }
+
+  // Straight back to idle, no outro: a file opened over the runner.
+  void leave_now() noexcept {
     phase_ = phase::idle;
     count_ = 0;
     view_3d_ = false;
   }
 
   // Presentation only: switching cameras never resets the run or changes physics.
-  void toggle_3d() noexcept { if (active()) view_3d_ = !view_3d_; }
+  void toggle_3d() noexcept { if (active() && phase_ != phase::outro) view_3d_ = !view_3d_; }
   bool view_3d() const noexcept { return view_3d_; }
 
   void update(float dt) noexcept {
@@ -62,6 +75,13 @@ class dino_game {
         run_clock_ += dt * 9.0f;
         if (t_ >= kIntroSeconds) begin_run();
         return;
+      case phase::outro:
+        // The world stops; the runner lands any jump and keeps running off.
+        t_ += dt;
+        run_clock_ += dt * 11.0f;
+        if (airborne_) fall(dt);
+        if (t_ >= kOutroSeconds) leave_now();
+        return;
       case phase::playing: break;
     }
 
@@ -70,16 +90,7 @@ class dino_game {
     speed_ = std::min(kMaxSpeed, speed_ + dt * 4.0f);
     distance_ += speed_ * dt;
 
-    // Jump arc.
-    if (airborne_) {
-      vy_ -= kGravity * dt;
-      y_ += vy_ * dt;
-      if (y_ <= 0.0f) {
-        y_ = 0.0f;
-        vy_ = 0.0f;
-        airborne_ = false;
-      }
-    }
+    if (airborne_) fall(dt);
 
     // Obstacles scroll left; drop the ones that left the screen.
     int w = 0;
@@ -106,6 +117,9 @@ class dino_game {
   bool active() const noexcept { return phase_ != phase::idle; }
   float intro_progress() const noexcept {
     return phase_ == phase::intro ? std::clamp(t_ / kIntroSeconds, 0.0f, 1.0f) : 1.0f;
+  }
+  float outro_progress() const noexcept {
+    return phase_ == phase::outro ? std::clamp(t_ / kOutroSeconds, 0.0f, 1.0f) : 0.0f;
   }
   float dino_x() const noexcept { return kDinoX; }
   float dino_y() const noexcept { return y_; }
@@ -157,6 +171,17 @@ class dino_game {
     phase_ = phase::playing;
     t_ = 0.0f;
     next_spawn_in_ = view_w_ * 0.9f;  // the first cactus is a moment away
+  }
+
+  // Jump arc.
+  void fall(float dt) noexcept {
+    vy_ -= kGravity * dt;
+    y_ += vy_ * dt;
+    if (y_ <= 0.0f) {
+      y_ = 0.0f;
+      vy_ = 0.0f;
+      airborne_ = false;
+    }
   }
 
   void jump() noexcept {

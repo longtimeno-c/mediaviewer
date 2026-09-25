@@ -501,7 +501,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 |---|---|
 | `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
 | `F3` | frame-time overlay — off at launch on Windows and macOS unless a soak is running |
-| Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves. Switching views keeps your run and score |
+| Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves with a short outro. Switching views keeps your run and score |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
@@ -611,7 +611,7 @@ thumbnail too — a poster frame from about 10 % into the clip, in that same cac
 camera dump does not show blanks where the video is. With no
 folder open the canvas shows a welcome card (drop target, open shortcut, formats, key legend) reading *Drop photos, videos or a folder here*, not the
 present-lab sweep. **Space** on that empty view starts a small runner game (an intro animation, then
-Space to jump, `Esc` to leave); it stops presenting the moment you leave it. The frame-time
+Space to jump, `Esc` to leave with a short outro); it stops presenting once the welcome card is back. The frame-time
 soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The gallery and filmstrip accept the same drop, and you can drag a
 thumbnail or the fitted image out to Explorer.
 
