@@ -290,6 +290,35 @@ mv_status mv_folder_request_summary(mv_session_t, uint32_t index);  /* FOLDER_SU
 This is not `mv_list_subdirectories` (the PR 9 tree's one-shot read). Tiles use
 `io::list_subfolders`: natural order, housekeeping folders dropped, listed with the folder.
 
+## PR 13 / 14 — clip jobs and the keyframe index (ABI 0.10)
+
+Minor bump, **no change to an existing layout**. A companion header,
+`mediaviewer_clip.h`, like `mediaviewer_import.h`. Two completion kinds follow the
+existing ones: `MV_COMPLETION_CLIP_INDEX` (11; job id = the request id, payload = keyframe
+count) and `MV_COMPLETION_CLIP_JOB` (12; job id = the clip job, payload =
+`mv_clip_job_state`, pushed on every transition, `status` carrying a failure's reason).
+
+```c
+mv_status mv_clip_index_request(mv_session_t, const char* utf8_path, uint64_t* out_request_id);
+mv_status mv_clip_index_get(mv_session_t, uint64_t request_id, int64_t* keyframes_ns, uint32_t cap,
+                            uint32_t* out_count, int64_t* out_duration_ns);
+typedef struct mv_clip_request {  /* 40 bytes */
+  uint32_t struct_size, op;       /* mv_clip_op: 1 trim keyframe .. 9 animation */
+  int64_t in_ns, out_ns;          /* the player's timeline; out < 0 = the end */
+  uint32_t option, animation_width, animation_fps, reserved;
+} mv_clip_request;
+mv_status mv_clip_submit(mv_session_t, const char* utf8_source, const mv_clip_request*, uint64_t* out_job_id);
+mv_status mv_clip_cancel / mv_clip_retry / mv_clip_jobs / mv_clip_clear_finished(...);
+mv_status mv_clip_job_progress(mv_session_t, uint64_t job_id, mv_clip_progress*);  /* 368 bytes */
+mv_status mv_clip_job_output(mv_session_t, uint64_t job_id, uint32_t index, char*, uint32_t, uint32_t*);
+```
+
+Every call is `[any-thread][no-block]`: the index is read on its own worker (only the newest
+request is read; a superseded one is answered `MV_ERR_CANCELLED`), each job runs on the clip
+queue's single worker, and nothing retains a caller's string. No pixel crosses: a frame export
+is a file the job writes. The logic lives in the portable `abi/clip_session`, which the Mac host
+links directly (it has no ABI session) — one queue implementation on both platforms.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

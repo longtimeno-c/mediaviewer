@@ -298,7 +298,11 @@ void present_lab_mac::update_video_status() noexcept {
     return;
   }
   static constexpr int kRateX100[] = {25, 50, 100, 150, 200, 400};
-  vs_pos_ms_.store(media_->position_ns() / 1'000'000, std::memory_order_relaxed);
+  {
+    const player::time_ns pos = media_->position_ns();
+    vs_pos_ms_.store(pos / 1'000'000, std::memory_order_relaxed);
+    vs_pos_ns_.store(pos, std::memory_order_relaxed);
+  }
   vs_dur_ms_.store(media_->info().duration_ns / 1'000'000, std::memory_order_relaxed);
   vs_playing_.store(media_->state() == player::play_state::playing, std::memory_order_relaxed);
   vs_muted_.store(video_muted_, std::memory_order_relaxed);
@@ -510,6 +514,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
     seen_video_volume_ = s.video_volume_steps;
     seen_video_volume_set_ = s.video_volume_set_seq;
     seen_video_seek_ = s.video_seek_seq;
+    seen_video_loop_ = s.video_loop_seq;
     return changed;
   }
   if (s.video_skip_ms != seen_video_skip_) {
@@ -531,9 +536,15 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   if (s.video_seek_seq != seen_video_seek_) {
     seen_video_seek_ = s.video_seek_seq;
     const player::time_ns duration = media_->info().duration_ns;
-    player::time_ns target = s.video_seek_ms * 1'000'000;
+    player::time_ns target = s.video_seek_ns >= 0 ? s.video_seek_ns : s.video_seek_ms * 1'000'000;
     target = std::max<player::time_ns>(0, duration > 0 ? std::min(target, duration - 1) : target);
     media_->seek(target, s.video_seek_exact);
+    changed = true;
+  }
+  // PR 13: trim's A-B preview (b < 0 clears), the Windows mv_video_set_loop twin.
+  if (s.video_loop_seq != seen_video_loop_) {
+    seen_video_loop_ = s.video_loop_seq;
+    media_->set_loop(s.video_loop_a_ns, s.video_loop_b_ns);
     changed = true;
   }
   if (s.video_mute_seq != seen_video_mute_) {

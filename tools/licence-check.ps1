@@ -72,6 +72,18 @@ foreach ($manifestName in @('vcpkg.json', 'tools/mac/dependencies/vcpkg.json')) 
                 "$manifestName declares '$dep'. FFmpeg is LGPL-only: no gpl, no nonfree features."
         }
     }
+
+    # PR 13 added encoder features to FFmpeg (nvcodec, qsv, amf, webp). The
+    # feature list is where a GPL encoder would arrive, so it is checked too.
+    foreach ($dep in $parsed.dependencies) {
+        if ($dep -is [string] -or $dep.name -ne 'ffmpeg' -or -not $dep.features) { continue }
+        foreach ($feature in $dep.features) {
+            if ($feature -in @('gpl', 'all-gpl', 'nonfree', 'all-nonfree', 'x264', 'x265', 'fdk-aac', 'all', 'version3')) {
+                Add-Violation 'FFmpeg feature' `
+                    "$manifestName enables ffmpeg[$feature]. plan/11: LGPL-2.1 only, hardware encoders only."
+            }
+        }
+    }
 }
 
 # --- 2. FFmpeg configure line, as actually built ---------------------------

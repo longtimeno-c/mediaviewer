@@ -1,6 +1,9 @@
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE dynamic)
 set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
+# The app's deployment target (cmake/darwin.cmake). Unset, the dylibs take the
+# runner SDK's default and carry a minos newer than the app claims to support.
+set(VCPKG_OSX_DEPLOYMENT_TARGET 14.0)
 if(PORT STREQUAL "libraw")
   # LibRaw's headers undefine LIBRAW_USE_OPENMP on Apple unless this is set,
   # even when the openmp feature links libomp. PPG and AHD then stay

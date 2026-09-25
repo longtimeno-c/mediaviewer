@@ -49,7 +49,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 9  /* 0.9: Milestone G add-on management (mediaviewer_addon.h) */
+#define MV_ABI_VERSION_MINOR 10 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);

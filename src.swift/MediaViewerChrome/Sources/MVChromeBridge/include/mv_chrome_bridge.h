@@ -333,6 +333,76 @@ void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
 
+// ---- PR 13 / 14: trim mode, clip tools, Jobs pane (plan/08, plan/10) ---------
+//
+// The twin of the Windows transport overlay, clip tools flyout and Jobs pane
+// (IslandHost.Clip.cs). The host owns trim mode (shell/trim_state.h, shared
+// with Windows) and the clip job queue (abi/clip_session, the same one the
+// Windows ABI drives); Swift polls these and posts back. Nothing here reads a
+// file or waits on a job. [main-thread]
+
+// Runs a command-table command by id (commands.h), as its key would. The
+// transport's trim buttons and the panes' close buttons use it.
+void mv_chrome_run_command(int32_t command_id);
+
+// Trim on the scrub bar. `generation` moves whenever anything below changes.
+// Times are nanoseconds on the player's timeline; -1 = unset. `cut_*` is the
+// range Path 1 will write (keyframe-snapped).
+typedef struct mv_trim_view {
+  int32_t armed;
+  int32_t index_ready;
+  int32_t previewing;
+  int32_t keyframe_count;
+  int64_t duration_ns;
+  int64_t in_ns;
+  int64_t out_ns;
+  int64_t cut_in_ns;
+  int64_t cut_out_ns;
+} mv_trim_view;
+uint64_t mv_chrome_trim_generation(void);
+bool mv_chrome_trim_view(mv_trim_view* out);
+// Up to `cap` keyframe times; returns the full count.
+int32_t mv_chrome_trim_keyframes(int64_t* out, int32_t cap);
+// "In 0:12.345 · Out 0:40.000 · keyframe cut …"; length needed, as the tables.
+int32_t mv_chrome_trim_label(char* buf, int32_t size);
+
+// The clip tools sheet (⌘S on a clip). `flags` as trim_state.h kClipFlag*:
+// 1 markers set, 2 has audio, 4 has video. The answer is pack_clip_choice
+// (op | option << 8), exactly as the Windows flyout packs it.
+bool mv_chrome_clip_tools_visible(void);
+int32_t mv_chrome_clip_tool_flags(void);
+void mv_chrome_clip_tool_confirm(int32_t packed);
+void mv_chrome_clip_tool_cancel(void);
+
+// The Jobs pane (⌘J). `generation` moves when a job is queued, starts or
+// finishes; progress is polled while one runs.
+typedef struct mv_chrome_job {
+  uint64_t id;
+  int32_t state;         // mv_clip_job_state: 1 queued 2 running 3 done 4 failed 5 cancelled
+  int32_t op;            // mv_clip_op
+  double fraction;       // 0..1
+  int64_t elapsed_ms;
+  int64_t eta_ms;        // -1 until measured
+  int32_t error;         // mv_status when failed
+  int32_t output_count;
+} mv_chrome_job;
+bool mv_chrome_jobs_visible(void);
+uint64_t mv_chrome_jobs_generation(void);
+// Newest first; returns the full count.
+int32_t mv_chrome_jobs(uint64_t* ids, int32_t cap);
+bool mv_chrome_job_info(uint64_t id, mv_chrome_job* out);
+// which: 0 title ("Trim (re-encode, VideoToolbox)"), 1 source file name,
+// 2 first output path. Length needed, as the tables.
+int32_t mv_chrome_job_text(uint64_t id, int32_t which, char* buf, int32_t size);
+void mv_chrome_job_cancel(uint64_t id);
+void mv_chrome_job_retry(uint64_t id);
+// Finder, the output selected.
+void mv_chrome_job_reveal(uint64_t id);
+void mv_chrome_jobs_clear_finished(void);
+void mv_chrome_jobs_close(void);
+// Esc in the pane: focus back to the canvas (the pane stays open).
+void mv_chrome_jobs_blur(void);
+
 #ifdef __cplusplus
 }
 #endif

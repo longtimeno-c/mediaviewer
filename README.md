@@ -80,6 +80,8 @@ It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane
 On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. Neither host half has been compiled yet — see [plan/12](plan/12-decision-log.md) 2026-09-24.
 Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`⇧A` on Mac) opens an adjust pane with exposure, contrast, saturation, temperature and tint, a histogram and a clipped-highlights / crushed-shadows readout. Slider drags only change shader uniforms — nothing is re-decoded — and the colour is worked in linear light from an FP16 working image; for a RAW the sliders stay disabled ("Preparing…") until LibRaw's full linear develop is ready, never the embedded preview. Export (`Ctrl+S`) bakes the same maths at full resolution. The Mac half also brings **crash reporting**: Crashpad out of process, the Windows privacy scrub (now aware of `/Users/…`-style paths), and uncaught `NSException`s recorded with the id of the native call they happened in. PR 11's host halves are not verified on hardware yet — see [plan/12](plan/12-decision-log.md) 2026-09-24 (PR 11).
 Then the **PR 12 metadata writes** (shared core and the **macOS half**; the Windows half is written but not yet compiled or run): keypad `0`–`5` (or `⌘⇧0`–`5`, `Ctrl+Shift+0`–`5` on Windows once built) rate the photo on screen, and `⌘I` puts the keyboard in the metadata pane's comment field. A plain JPEG is rewritten in place, checked against the original before it replaces anything; every other format (RAW, HEIC, PNG, video, …) gets an `IMG_1234.xmp` sidecar beside it and the original is never opened for writing. The pane has clickable stars, the comment and a "Revert metadata" button. **On a Mac, `⌘⇧3`/`4`/`5` are the system's screenshot shortcuts and never reach the app; use the keypad or turn those shortcuts off.** See [plan/12](plan/12-decision-log.md) 2026-09-25.
+
+And **PR 13 / 14 clip editing** (Windows and macOS, same core), not yet built on either platform: on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is tested on Linux ([tools/portable](tools/portable/README.md)); what is owed on each platform is in [plan/12](plan/12-decision-log.md) 2026-09-25. OS integration (PR 15) is not started.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -222,7 +224,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
-| **Video trim** | Cut clips losslessly at keyframes, or re-encode with hardware encoders; extract a frame or the audio |
+| **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
 | **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
 | **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
@@ -571,6 +573,24 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
 | `Shift+A` | adjust pane (PR 11): exposure, contrast, saturation, temperature, tint, histogram and clipping. It takes the keyboard: on Windows `Tab` walks the sliders and the arrows step them; on Mac `↑` `↓` pick a slider, `←` `→` step it (`⇧` ×10), `0` zeroes it, `R` resets. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
+
+**Clips (PR 13 / 14, Windows and macOS; not yet built on either).** Nothing here changes the
+clip: every result is a new file beside it, and a cancelled job leaves nothing behind.
+
+| Key | Does |
+|---|---|
+| `Ctrl+T` | trim mode on the clip on screen. Transport keys keep working; `Esc` leaves it (markers are kept for that clip) |
+| `[` / `]` | in / out marker at the playhead. The scrub bar shows the markers, the keyframe grid and the range the instant cut keeps |
+| `P` | preview the cut: loops exactly what `Enter` will write |
+| `Enter` / `Shift+Enter` | save the keyframe cut (instant, lossless, snapped to keyframes) / the frame-accurate re-encode on the hardware encoder (slower) |
+| `Ctrl+X` | save a copy without the in–out range |
+| `Ctrl+←` / `Ctrl+→` | previous / next keyframe (in trim mode) |
+| `Backspace` / `Delete` | clear the markers (in trim mode `Delete` never trashes the clip) |
+| `Ctrl+S` | clip tools: rotate losslessly, split, save the frame (PNG / JPEG), extract audio (copy / WAV / FLAC), convert MP4 ↔ MKV, GIF / WebP of in–out (or 5 s from the playhead) |
+| `Ctrl+B` | split at the nearest keyframe to the playhead |
+| `Ctrl+J` | Jobs pane: progress and time left; `↑` `↓` choose, `Delete` cancels, `R` retries, `Enter` shows the output in Explorer / Finder |
+
+On a Mac these are the `⌘` chords.
 
 Colour edits are worked in linear light (an FP16 working image, D6) and shown through the
 same shader on both platforms; `C` blinks what the edit clips. A RAW's sliders wait for

@@ -72,6 +72,16 @@ public final class MVChromeHost: NSObject {
     host(ExportView())
   }
 
+  /// PR 13 / 14: the Jobs pane, on the metadata / adjust pane's edge.
+  @objc public static func makeJobsView() -> NSView {
+    host(JobsView())
+  }
+
+  /// PR 14: the clip tools sheet, built fresh per open like the export sheet.
+  @objc public static func makeClipToolsView() -> NSView {
+    host(ClipToolsView())
+  }
+
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
   /// NSException raised from the chrome, inside AppKit's event handling.
   @objc public static func crashTestException() {

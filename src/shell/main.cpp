@@ -44,12 +44,14 @@
 #include "shell/app_icon.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
+#include "mediaviewer/mediaviewer_clip.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
+#include "shell/trim_state.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
@@ -195,6 +197,13 @@ struct app_state {
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
   std::atomic<mv::generation> adjust_generation{1};
+  // PR 13 / 14 (plan/08): trim mode on the current clip, the keyframe-index
+  // request in flight for it, and the Jobs pane's wish. The jobs themselves
+  // are the session's clip queue (mediaviewer_clip.h); the pane polls it.
+  mv::shell::trim_state trim;
+  std::uint64_t trim_index_request = 0;
+  bool jobs_pane_visible = false;
+  bool focus_jobs_next = false;
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
   // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
@@ -408,6 +417,8 @@ void push_meta_pane(app_state* app) noexcept;
 void update_title(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
+void trim_item_opened(app_state* app) noexcept;
+void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
 void reveal_current_in_explorer(app_state* app) noexcept;
 void begin_file_drag(HWND hwnd, const std::string& utf8) noexcept;
@@ -893,6 +904,7 @@ void push_tree_root(app_state* app) noexcept {
 
 void set_meta_pane(app_state* app, bool on) noexcept {
   if (!app || app->meta_pane_visible == on) return;
+  if (on) app->jobs_pane_visible = false;  // one right-edge pane at a time
   app->meta_pane_visible = on;
   app->focus_meta_next = on;  // `I` focuses the pane (plan/16); Esc returns to the canvas
   apply_view_state(app);
@@ -1250,6 +1262,7 @@ void adjust_colour_changed(app_state* app);
 // a reselect after a rewrite). The previous slot keeps its geometry for the
 // texture still on screen until the new pixels land (shell/edit_view.h).
 void edit_item_opened(app_state* app) {
+  trim_item_opened(app);
   mv::io::dir_entry entry;
   if (!current_dir_entry(app, entry)) {
     if (app->edits.has_item()) {
@@ -1568,6 +1581,7 @@ void set_adjust_pane(app_state* app, bool on) {
   }
   // The adjust and metadata panes share the right edge: one at a time.
   if (on && app->meta_pane_visible) set_meta_pane(app, false);
+  if (on) app->jobs_pane_visible = false;
   const bool has_colour = app->edits.has_item() && !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.show(on, has_colour));
   if (!on && !has_colour) {
@@ -1670,6 +1684,285 @@ bool video_mode(app_state* app) noexcept {
   std::uint32_t state = MV_PLAY_STOPPED;
   if (mv_video_state(app->session, &state) != MV_OK) return false;
   return state != MV_PLAY_STOPPED;
+}
+
+// ---- PR 13 / 14: trim mode, the clip tools and the Jobs pane (plan/08) --------
+// Trim is host state over the clip on screen (shell/trim_state.h, shared with
+// the Mac host); the keyframe index and every job run in the core behind
+// mediaviewer_clip.h. Nothing here reads the file or waits on a job (rule 1).
+
+// The scrub bar's markers, grid and label.
+void push_trim(app_state* app) noexcept {
+  if (!app) return;
+  const mv::shell::trim_state& t = app->trim;
+  const std::string label = t.armed() ? t.label() : std::string();
+  const mv::edit::clip::range cut = t.keyframe_range();
+  mv::shell::chrome_trim_args a{};
+  a.armed = t.armed() ? 1 : 0;
+  a.index_ready = t.index_ready() ? 1 : 0;
+  a.duration_ns = t.duration_ns();
+  a.in_ns = t.in_ns();
+  a.out_ns = t.out_ns();
+  a.cut_in_ns = t.has_marker() ? cut.in_ns : -1;
+  a.cut_out_ns = t.has_marker() ? cut.out_ns : -1;
+  a.keyframes = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t.keyframes().data()));
+  a.keyframe_count = static_cast<std::int32_t>(t.keyframes().size());
+  a.label_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(label.data()));
+  a.label_len = static_cast<std::int32_t>(label.size());
+  a.previewing = t.previewing() ? 1 : 0;
+  app->chrome.set_trim(a);
+}
+
+std::int64_t clip_position(app_state* app) noexcept {
+  std::int64_t position = 0;
+  if (app && app->session) (void)mv_video_position(app->session, &position);
+  return std::max<std::int64_t>(0, position);
+}
+
+// P: the A-B loop over exactly what Path 1 will write (plan/08 "Preview the
+// cut"); off clears the loop.
+void apply_trim_preview(app_state* app) noexcept {
+  if (!app || !app->session) return;
+  if (app->trim.previewing()) {
+    const mv::edit::clip::range r = app->trim.keyframe_range();
+    (void)mv_video_set_loop(app->session, r.in_ns, r.out_ns);
+  } else {
+    (void)mv_video_set_loop(app->session, 0, -1);
+  }
+}
+
+// The item changed: trim and its markers belong to the clip that was left.
+void trim_item_opened(app_state* app) noexcept {
+  if (!app || app->trim.path().empty()) return;
+  if (current_item_path(app) == app->trim.path()) return;
+  app->trim.forget();
+  app->trim_index_request = 0;
+  push_trim(app);
+}
+
+bool set_trim_mode(app_state* app, bool on) noexcept {
+  if (!app || !app->session) return false;
+  if (on) {
+    if (!video_mode(app) || app->motion_playing) return false;
+    const std::string path = current_item_path(app);
+    if (path.empty()) return false;
+    mv_video_info info{};
+    (void)mv_video_get_info(app->session, &info);
+    const bool fresh = path != app->trim.path();
+    app->trim.arm(path, info.duration_ns);
+    // The grid is read once per clip, on a worker; it lands through the
+    // island's drain (chrome_cmd_clip_index).
+    if ((fresh || !app->trim.index_ready()) && app->trim_index_request == 0) {
+      std::uint64_t id = 0;
+      if (mv_clip_index_request(app->session, path.c_str(), &id) == MV_OK) app->trim_index_request = id;
+    }
+  } else {
+    const bool looping = app->trim.previewing();
+    app->trim.disarm();
+    if (looping) apply_trim_preview(app);
+  }
+  push_trim(app);
+  return true;
+}
+
+void trim_index_arrived(app_state* app, std::uint64_t id) noexcept {
+  if (!app || !app->session || id == 0 || id != app->trim_index_request) return;
+  app->trim_index_request = 0;
+  std::uint32_t count = 0;
+  std::int64_t duration = 0;
+  if (mv_clip_index_get(app->session, id, nullptr, 0, &count, &duration) != MV_OK) return;
+  std::vector<std::int64_t> keyframes(count);
+  if (count > 0 && mv_clip_index_get(app->session, id, keyframes.data(), count, &count, &duration) != MV_OK) {
+    return;
+  }
+  keyframes.resize(std::min<std::size_t>(count, keyframes.size()));
+  app->trim.set_index(app->trim.path(), std::move(keyframes), duration);
+  if (app->trim.previewing()) apply_trim_preview(app);
+  push_trim(app);
+}
+
+// A core request as the ABI's POD (mediaviewer_clip.h option numbers).
+mv_clip_request abi_request(const mv::edit::clip::request& r) noexcept {
+  namespace clip = mv::edit::clip;
+  mv_clip_request q{};
+  q.struct_size = sizeof(q);
+  q.op = static_cast<std::uint32_t>(r.kind);
+  q.in_ns = r.in_ns;
+  q.out_ns = r.out_ns;
+  switch (r.kind) {
+    case clip::op::rotate: q.option = r.rotate_degrees == 270 ? 2u : r.rotate_degrees == 180 ? 3u : 1u; break;
+    case clip::op::remux: q.option = r.remux == clip::remux_target::mkv ? 2u : 1u; break;
+    case clip::op::frame: q.option = r.frame == clip::frame_format::jpeg ? 2u : 1u; break;
+    case clip::op::audio:
+      q.option = r.audio == clip::audio_format::wav ? 2u : r.audio == clip::audio_format::flac ? 3u : 1u;
+      break;
+    case clip::op::animation:
+      q.option = r.animation == clip::anim_format::webp ? 2u : 1u;
+      q.animation_width = r.animation_width;
+      q.animation_fps = r.animation_fps;
+      break;
+    default: break;
+  }
+  return q;
+}
+
+// Queues a job and shows the Jobs pane (without taking the keyboard) so the
+// progress is visible; the pane is where it is cancelled (plan/08: never a
+// modal progress dialog).
+bool submit_clip_job(app_state* app, const mv::edit::clip::request& r) noexcept {
+  if (!app || !app->session || r.source.empty()) return false;
+  const mv_clip_request q = abi_request(r);
+  std::uint64_t job = 0;
+  if (mv_clip_submit(app->session, r.source.c_str(), &q, &job) != MV_OK) {
+    ::MessageBeep(MB_ICONWARNING);
+    return true;
+  }
+  set_jobs_pane(app, true, false);
+  return true;
+}
+
+// plan/13: an update restart waits for queued and running clip jobs.
+bool clip_jobs_busy(app_state* app) noexcept {
+  if (!app || !app->session) return false;
+  std::uint32_t count = 0;
+  if (mv_clip_jobs(app->session, nullptr, 0, &count) != MV_OK || count == 0) return false;
+  std::vector<std::uint64_t> ids(count);
+  if (mv_clip_jobs(app->session, ids.data(), count, &count) != MV_OK) return false;
+  for (std::uint32_t i = 0; i < count && i < ids.size(); ++i) {
+    mv_clip_progress p{};
+    if (mv_clip_job_progress(app->session, ids[i], &p) == MV_OK &&
+        (p.state == MV_CLIP_JOB_QUEUED || p.state == MV_CLIP_JOB_RUNNING)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void set_jobs_pane(app_state* app, bool on, bool focus) noexcept {
+  if (!app) return;
+  if (!app->chrome.panels_attached()) {
+    if (on && focus) ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  if (app->jobs_pane_visible == on) {
+    if (on && focus) {  // already up: Ctrl+J takes the keyboard to it
+      app->focus_jobs_next = true;
+      apply_view_state(app);
+    }
+    return;
+  }
+  app->jobs_pane_visible = on;
+  app->focus_jobs_next = on && focus;
+  apply_view_state(app);
+  if (!on && app->window) focus_canvas(app);
+}
+
+// The clip tools flyout's flags (trim_state.h kClipFlag*).
+std::int32_t clip_tool_flags(app_state* app) noexcept {
+  std::int32_t flags = mv::shell::kClipFlagHasVideo;
+  if (app->trim.has_marker() && app->trim.path() == current_item_path(app)) {
+    flags |= mv::shell::kClipFlagHasRange;
+  }
+  mv_video_info info{};
+  if (app->session && mv_video_get_info(app->session, &info) == MV_OK && (info.flags & 1u) != 0) {
+    flags |= mv::shell::kClipFlagHasAudio;
+  }
+  return flags;
+}
+
+bool run_clip_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  namespace clip = mv::edit::clip;
+  switch (command) {
+    case trim_mode:
+      return set_trim_mode(app, !(app->trim.armed() && video_mode(app)));
+    case trim_in:
+    case trim_out: {
+      if (!app->trim.armed()) return false;
+      const std::int64_t at = clip_position(app);
+      if (command == trim_in) app->trim.mark_in(at);
+      else app->trim.mark_out(at);
+      if (app->trim.previewing()) apply_trim_preview(app);
+      push_trim(app);
+      return true;
+    }
+    case trim_clear: {
+      if (!app->trim.armed()) return false;
+      const bool looping = app->trim.previewing();
+      app->trim.clear();
+      if (looping) apply_trim_preview(app);
+      push_trim(app);
+      return true;
+    }
+    case trim_preview: {
+      if (!app->trim.armed()) return false;
+      if (!app->trim.has_marker() && !app->trim.previewing()) {
+        ::MessageBeep(MB_ICONWARNING);  // nothing to preview: set `[` or `]` first
+        return true;
+      }
+      if (app->trim.toggle_preview()) {
+        apply_trim_preview(app);
+        (void)mv_video_seek(app->session, app->trim.keyframe_range().in_ns, 1);
+        (void)mv_video_play(app->session);
+      } else {
+        apply_trim_preview(app);
+      }
+      push_trim(app);
+      return true;
+    }
+    case trim_keyframe:
+    case trim_reencode:
+    case trim_remove_middle: {
+      if (!app->trim.armed()) return false;
+      if (!app->trim.has_marker()) {
+        ::MessageBeep(MB_ICONWARNING);
+        return true;
+      }
+      const clip::op kind = command == trim_keyframe   ? clip::op::trim_keyframe
+                            : command == trim_reencode ? clip::op::trim_reencode
+                                                       : clip::op::remove_middle;
+      return submit_clip_job(app, app->trim.request(kind));
+    }
+    case keyframe_prev:
+    case keyframe_next: {
+      if (!app->trim.armed() || !app->trim.index_ready()) return false;
+      const std::int64_t at = clip_position(app);
+      const std::int64_t to = command == keyframe_prev ? app->trim.prev_keyframe(at) : app->trim.next_keyframe(at);
+      if (to != at) (void)mv_video_seek(app->session, to, 1);
+      return true;
+    }
+    case jobs_pane:
+      set_jobs_pane(app, !app->jobs_pane_visible);
+      return true;
+    case clip_tools:
+      if (!video_mode(app) || !app->chrome.attached()) return false;
+      app->popup_open = true;
+      if (app->fullscreen) layout_chrome(app);  // the flyout hangs off the bar
+      app->chrome.show_popup(mv::shell::chrome_popup::clip_tools, clip_tool_flags(app));
+      return true;
+    case clip_split: {
+      if (!video_mode(app)) return false;
+      clip::request r;
+      if (!mv::shell::clip_tool_request(mv::shell::pack_clip_choice(clip::op::split, 0), current_item_path(app),
+                                        clip_position(app), &app->trim, r)) {
+        return false;
+      }
+      return submit_clip_job(app, r);
+    }
+    default:
+      return false;
+  }
+}
+
+// The flyout's answer (chrome_cmd_clip_tool).
+void run_clip_tool(app_state* app, std::int32_t packed) noexcept {
+  mv::edit::clip::request r;
+  if (!video_mode(app) ||
+      !mv::shell::clip_tool_request(packed, current_item_path(app), clip_position(app), &app->trim, r)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  (void)submit_clip_job(app, r);
 }
 
 // Native decides the rate and then tells the dropdown, rather than the two
@@ -2167,6 +2460,13 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->export_choice = static_cast<std::int32_t>(arg);
       start_export(app, mv::shell::unpack_export(app->export_choice));
       return;
+    // PR 13 / 14.
+    case mv::shell::chrome_cmd_clip_tool:
+      run_clip_tool(app, static_cast<std::int32_t>(arg));
+      return;
+    case mv::shell::chrome_cmd_clip_index:
+      trim_index_arrived(app, static_cast<std::uint64_t>(arg));
+      return;
     // PR 11: the adjust pane's sliders carry their value; Reset carries none.
     case static_cast<int>(mv::shell::command_id::adjust_exposure):
     case static_cast<int>(mv::shell::command_id::adjust_contrast):
@@ -2258,7 +2558,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       if (app->session) (void)mv_video_state(app->session, &state);
       const bool playing = (app->session && mv::abi::video_open(app->session) &&
                             state == MV_PLAY_PLAYING) ||
-                           app->motion_playing;
+                           app->motion_playing || clip_jobs_busy(app);
       if (playing) {
         ::MessageBeep(MB_ICONWARNING);
         return;
@@ -2401,6 +2701,8 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   // A shown pane is a level for Esc to walk out of (plan/16: crop, pane, gallery, ...).
   s.pane_open = app->chrome.meta_pane_visible() || app->chrome.folder_tree_visible();
   s.crop = app->edits.crop_active();
+  s.trim = app->trim.armed() && s.item == mv::shell::item_kind::clip;
+  if (app->chrome.jobs_pane_visible()) s.pane_open = true;
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
   return s;
@@ -2851,6 +3153,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       publish_edit(app);
       ++app->input.activity_seq;
       publish(app);
+      return;
+    case back_target::trim:
+      (void)set_trim_mode(app, false);
       return;
     case back_target::game:
       app->game_on = false;
@@ -3490,8 +3795,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       mv::shell::view_state underneath = view_state_of(app);
       underneath.focus = mv::shell::focus_kind::canvas;
       underneath.popup_open = false;
-      const auto modes =
-          static_cast<std::int32_t>(mv::shell::mask_of(mv::shell::resolve_mode(underneath)));
+      const mv::shell::mode under_mode = mv::shell::resolve_mode(underneath);
+      auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
+      // Trim layers over video (key_router.cpp), so `?` lists both.
+      if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
@@ -3530,6 +3837,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return rate_current_item(app, mv::shell::rating_of_command(command));
     case edit_comment:
       return focus_comment_field(app);
+    // PR 13 / 14 (plan/08, plan/16 "Video and trim").
+    case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
+    case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
+    case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
+      return run_clip_command(app, command);
 
     // Host-side and cheap (plan/16): photographers park the viewer on a
     // second monitor.
@@ -3665,16 +3977,21 @@ void layout_panels(app_state* app) noexcept {
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
   const bool want_meta = app->meta_pane_visible && !covered;
   const bool want_tree = app->tree_visible && !covered;
+  // PR 13 / 14: the Jobs pane takes the right edge over adjust and metadata
+  // (one at a time; their wishes survive and they return when it closes).
+  const bool want_jobs = app->jobs_pane_visible && !covered;
   // PR 11: the adjust pane takes the metadata pane's edge (one at a time).
-  const bool want_adjust = app->adjust.visible() && !covered;
-  app->chrome.show_meta_pane(want_meta && !want_adjust, width - side, top, side, span,
+  const bool want_adjust = app->adjust.visible() && !covered && !want_jobs;
+  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, width - side, top, side, span,
                              app->focus_meta_next);
   app->chrome.show_adjust_pane(want_adjust, width - side, top, side, span, app->focus_adjust_next);
+  app->chrome.show_jobs_pane(want_jobs, width - side, top, side, span, app->focus_jobs_next);
+  if (want_jobs) app->focus_jobs_next = false;
   app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
-  if (want_meta && !want_adjust) app->focus_meta_next = false;
+  if (want_meta && !want_adjust && !want_jobs) app->focus_meta_next = false;
   if (want_adjust) app->focus_adjust_next = false;
   if (want_tree) app->focus_tree_next = false;
-  if (want_meta && !want_adjust) push_meta_pane(app);
+  if (want_meta && !want_adjust && !want_jobs) push_meta_pane(app);
   if (want_adjust) push_adjust_pane(app);
 }
 
@@ -4315,6 +4632,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   // PR 9: the saved folder sort applies to every open from here on.
   (void)mv_folder_set_sort(app.session, app.settings.sort);
+  // PR 13 / 14: every clip job that opens a decoder or an encoder runs in
+  // MediaViewerClipJob.exe beside this exe, never in the viewer (plan/12
+  // 2026-09-25). Set even if the file is missing: those jobs then fail
+  // rather than run here.
+  {
+    std::wstring exe(32768, L'\0');
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
+    exe.resize(n);
+    const std::size_t slash = exe.find_last_of(L"\\/");
+    if (n > 0 && slash != std::wstring::npos) {
+      const std::string helper = utf8_from_wide(exe.substr(0, slash + 1) + L"MediaViewerClipJob.exe");
+      (void)mv_clip_set_helper(app.session, helper.c_str());
+    }
+  }
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);

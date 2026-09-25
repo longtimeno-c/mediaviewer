@@ -22,6 +22,9 @@
 #include "corpus.h"
 #include "gfx/device.h"
 #include "mediaviewer/mediaviewer.h"
+#include "mediaviewer/mediaviewer_clip.h"
+#include "clip_fixture.h"
+#include "import_fixture.h"
 
 using namespace std::chrono_literals;
 
@@ -372,4 +375,54 @@ TEST_CASE("mv_folder_forget validates and tolerates an uncached path (ABI 0.7)",
   REQUIRE(mv_folder_forget(session.handle, nullptr) == MV_ERR_INVALID_ARG);
   REQUIRE(mv_folder_forget(session.handle, "") == MV_ERR_INVALID_ARG);
   REQUIRE(mv_folder_forget(session.handle, "C:/not/cached.jpg") == MV_OK);
+}
+
+TEST_CASE("clip index and a keyframe trim through the exports (ABI 0.10)", "[abi][clip]") {
+  REQUIRE(mv_clip_submit(nullptr, "x", nullptr, nullptr) == MV_ERR_INVALID_ARG);
+  REQUIRE(mv_clip_index_request(nullptr, "x", nullptr) == MV_ERR_INVALID_ARG);
+  session_guard s;
+  mv::test::scratch_dir dir("abi_clip");
+  const std::string src = mv::test::utf8(dir / "clip.mp4");
+  REQUIRE(mv::test::clipfx::make(src, {}));
+
+  const auto wait = [&](uint32_t kind, uint64_t id, int64_t payload) {
+    const auto until = std::chrono::steady_clock::now() + 20s;
+    mv_completion c[16];
+    while (std::chrono::steady_clock::now() < until) {
+      const uint32_t n = mv_completion_drain(s.handle, c, 16);
+      for (uint32_t i = 0; i < n; ++i) {
+        if (c[i].kind == kind && c[i].job_id == id && (payload < 0 || c[i].payload == payload)) return true;
+      }
+      std::this_thread::sleep_for(5ms);
+    }
+    return false;
+  };
+
+  uint64_t idx = 0;
+  REQUIRE(mv_clip_index_request(s.handle, src.c_str(), &idx) == MV_OK);
+  REQUIRE(wait(MV_COMPLETION_CLIP_INDEX, idx, 8));
+  int64_t kf[8] = {};
+  uint32_t count = 0;
+  int64_t duration = 0;
+  REQUIRE(mv_clip_index_get(s.handle, idx, kf, 8, &count, &duration) == MV_OK);
+  REQUIRE(count == 8);
+
+  mv_clip_request r{};
+  r.struct_size = sizeof(r);
+  r.op = MV_CLIP_TRIM_KEYFRAME;
+  r.in_ns = kf[2];
+  r.out_ns = kf[4];
+  uint64_t job = 0;
+  REQUIRE(mv_clip_submit(s.handle, src.c_str(), &r, &job) == MV_OK);
+  REQUIRE(wait(MV_COMPLETION_CLIP_JOB, job, MV_CLIP_JOB_DONE));
+  mv_clip_progress p{};
+  REQUIRE(mv_clip_job_progress(s.handle, job, &p) == MV_OK);
+  REQUIRE(p.output_count == 1);
+  char out[1024];
+  uint32_t bytes = 0;
+  REQUIRE(mv_clip_job_output(s.handle, job, 0, out, sizeof(out), &bytes) == MV_OK);
+  REQUIRE(std::string(out).find("clip_trimmed.mp4") != std::string::npos);
+  REQUIRE(mv_clip_clear_finished(s.handle) == MV_OK);
+  REQUIRE(mv_clip_jobs(s.handle, nullptr, 0, &count) == MV_OK);
+  REQUIRE(count == 0);
 }

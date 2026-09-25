@@ -148,6 +148,10 @@ public static partial class IslandHost
             {
                 OnAddonCompletion(addon);  // Milestone G (IslandHost.Addons.cs)
             }
+            else if (c.Kind is MvCompletionKind.ClipIndex or MvCompletionKind.ClipJob)
+            {
+                OnClipCompletion(c);  // PR 13 / 14 (IslandHost.Clip.cs)
+            }
             else if (c.Kind is MvCompletionKind.FolderReady or MvCompletionKind.FolderChanged)
             {
                 ReloadItems();

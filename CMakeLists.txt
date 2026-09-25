@@ -244,6 +244,8 @@ add_library(mv_io STATIC
   src/io/file_port.cpp
   src/io/file_port.h
   src/io/file_port_win.cpp
+  src/io/child_process.h
+  src/io/child_process_win.cpp
   src/io/verified_copy.cpp
   src/io/verified_copy.h
   src/io/volume.h
@@ -490,6 +492,45 @@ target_link_libraries(mv_edit
 add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
+# mv_clip -- PR 13 / 14 (plan/08): two-path trim, extract & remux, and the
+# clip job queue. Module `edit` in the dependency graph (src/edit/clip*), a
+# separate library only because it links FFmpeg and mv_edit does not. The
+# encode port's Windows half lists the hardware encoders (hwencode_win.cpp);
+# FFmpeg is dynamic and LGPL (tools/licence-check.ps1). cmake/portable builds
+# the same sources with hwencode_none.cpp for the Linux core tests.
+# ---------------------------------------------------------------------------
+add_library(mv_clip STATIC
+  src/edit/clip.h
+  src/edit/clip_internal.h
+  src/edit/clip_common.cpp
+  src/edit/clip_copy.cpp
+  src/edit/clip_encode.cpp
+  src/edit/clip_run.cpp
+  src/edit/clip_jobs.cpp
+  src/edit/clip_jobs.h
+  src/edit/clip_wire.cpp
+  src/edit/clip_wire.h
+  src/edit/clip_helper.cpp
+  src/edit/clip_helper.h
+  src/edit/hwencode.h
+  src/edit/hwencode_win.cpp
+)
+target_include_directories(mv_clip SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_clip PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_clip
+  PUBLIC mv_core mv_io
+  PRIVATE mv_edit ${FFMPEG_LIBRARIES})
+add_library(mv::clip ALIAS mv_clip)
+
+# MediaViewerClipJob.exe -- PR 13 / 14's encode and decode jobs, out of process
+# (plan/08 "Execution & UX"; plan/12 2026-09-25). Beside MediaViewer.exe; no
+# mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
+add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options)
+target_include_directories(MediaViewerClipJob PRIVATE src)
+mv_asan_runtime_beside(MediaViewerClipJob)
+
+# ---------------------------------------------------------------------------
 # Milestone G: the add-on host (mv_addon, in the base app) and the Import
 # add-on (mv_import, built beside it and packed separately; never installed
 # with the app). cmake/import.cmake.
@@ -527,12 +568,15 @@ add_library(mediaviewer_core SHARED
   src/abi/include/mediaviewer/mediaviewer.h
   src/abi/include/mediaviewer/mediaviewer_addon.h
   src/abi/include/mediaviewer/mediaviewer_import.h
+  src/abi/include/mediaviewer/mediaviewer_clip.h
+  src/abi/clip_session.cpp
+  src/abi/clip_session.h
 )
 target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_clip)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -571,6 +615,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/edit_view.h
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
+  src/shell/trim_state.cpp
+  src/shell/trim_state.h
   src/shell/open_request.cpp
   src/shell/open_request.h
   src/shell/slideshow.h
@@ -602,6 +648,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   mv_player
   mv_meta
   mv_edit
+  mv_clip
   mv_gfx
   mv_canvas
   mv_io
@@ -617,6 +664,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+add_dependencies(mediaviewer_lab MediaViewerClipJob)
 mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
 set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
@@ -827,6 +875,13 @@ if(MV_BUILD_TESTS)
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
+    # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
+    tests/test_clip.cpp
+    tests/test_clip_helper.cpp
+    tests/test_clip_session.cpp
+    tests/test_trim_state.cpp
+    src/abi/clip_session.cpp
+    src/shell/trim_state.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
@@ -885,6 +940,7 @@ if(MV_BUILD_TESTS)
     mv_canvas
     mv_meta
     mv_edit
+    mv_clip
     Exiv2::exiv2lib
     ${FFMPEG_LIBRARIES}
     mediaviewer_core
@@ -901,6 +957,18 @@ if(MV_BUILD_TESTS)
     uuid
     mv_io)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+  # The clip helper with its test hooks (a crash, a hang, a software encoder);
+  # the product MediaViewerClipJob.exe is built without them.
+  add_executable(mv_clipjob_test tools/clipjob/main.cpp)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options)
+  target_include_directories(mv_clipjob_test PRIVATE src)
+  # The hooks reach clip::detail through clip_internal.h, which includes FFmpeg;
+  # mv_clip keeps those headers PRIVATE.
+  target_include_directories(mv_clipjob_test SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+  target_compile_definitions(mv_clipjob_test PRIVATE MV_CLIPJOB_TEST_HOOKS=1)
+  mv_asan_runtime_beside(mv_clipjob_test)
+  target_compile_definitions(mv_tests PRIVATE MV_CLIPJOB_PATH="$<TARGET_FILE:mv_clipjob_test>")
+  add_dependencies(mv_tests mv_clipjob_test)
   # Before catch_discover_tests below: discovery runs this exe, and it must not
   # have to borrow MSBuild's PATH to start.
   mv_asan_runtime_beside(mv_tests)

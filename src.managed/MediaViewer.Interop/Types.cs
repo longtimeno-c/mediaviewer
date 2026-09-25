@@ -31,6 +31,8 @@ public enum MvCompletionKind : uint
     VideoEnded = 8,
     VideoState = 9,
     FolderSummary = 10,  // PR 26: payload = subfolder index
+    ClipIndex = 11,      // PR 13 (mediaviewer_clip.h): job id = request id, payload = keyframe count
+    ClipJob = 12,        // PR 13 / 14: job id = clip job, payload = MvClipJobState
 }
 
 /// <summary>Mirrors <c>mv_session_config</c>.</summary>

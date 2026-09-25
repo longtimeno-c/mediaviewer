@@ -96,6 +96,7 @@ class present_lab_mac {
     bool muted = false;
     std::int64_t position_ms = 0;
     std::int64_t duration_ms = 0;
+    std::int64_t position_ns = 0;  // PR 13: trim markers need the frame, not the ms
     int rate_x100 = 100;
     float volume = 1.0f;
   };
@@ -112,6 +113,7 @@ class present_lab_mac {
     s.playing = vs_playing_.load(std::memory_order_relaxed);
     s.muted = vs_muted_.load(std::memory_order_relaxed);
     s.position_ms = vs_pos_ms_.load(std::memory_order_relaxed);
+    s.position_ns = vs_pos_ns_.load(std::memory_order_relaxed);
     s.duration_ms = vs_dur_ms_.load(std::memory_order_relaxed);
     s.rate_x100 = vs_rate_x100_.load(std::memory_order_relaxed);
     s.volume = vs_volume_.load(std::memory_order_relaxed);
@@ -245,6 +247,7 @@ class present_lab_mac {
   std::uint32_t seen_video_volume_set_ = 0;
   float video_volume_ = 1.0f;  // survives from clip to clip
   std::uint32_t seen_video_seek_ = 0;
+  std::uint32_t seen_video_loop_ = 0;  // PR 13
 
   // Animated GIF/APNG/WebP playback (plan/04, folded into PR 18's "animated
   // GIF/APNG/WebP on the display-link frame clock", plan/15). Frame 0 already
@@ -271,6 +274,7 @@ class present_lab_mac {
   std::atomic<bool> vs_playing_{false};
   std::atomic<bool> vs_muted_{false};
   std::atomic<std::int64_t> vs_pos_ms_{0};
+  std::atomic<std::int64_t> vs_pos_ns_{0};
   std::atomic<std::int64_t> vs_dur_ms_{0};
   std::atomic<int> vs_rate_x100_{100};
   std::atomic<float> vs_volume_{1.0f};

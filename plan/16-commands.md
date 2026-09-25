@@ -251,7 +251,14 @@ chord.
 | `↑` `↓` | Volume +/− 10 % on a clip (fitted view; when zoomed they pan). Volume carries across clips |
 | `Shift+M` | Mute (`M` is not mute — reserved so a FastStone-layout preset can put Move on `M` in v1.1) |
 | `[` `]` | In / out markers when trim is armed (PR 13). In browse they rotate; trim mode takes them |
-| `Ctrl+←` `Ctrl+→` | Previous / next keyframe |
+| `Ctrl+T` | Arm / disarm trim on a clip (PR 13). Trim layers over video: the keys above keep working |
+| `P` | Trim: preview the cut (A–B loop over exactly what the keyframe save writes) |
+| `Enter` / `Shift+Enter` | Trim: save the keyframe cut (instant) / the frame-accurate re-encode (slower) |
+| `Ctrl+X` | Trim: a copy without in–out |
+| `Backspace` / `Delete` | Trim: clear the markers. In trim, `Delete` never moves the clip to the Trash / Recycle Bin |
+| `Ctrl+←` `Ctrl+→` | Previous / next keyframe, in trim mode (outside trim they are the sibling-folder walk) |
+| `Ctrl+J` | Jobs pane (PR 13): `↑` `↓` choose, `Delete` cancel, `R` retry, `Enter` reveal the output |
+| `Ctrl+S` / `Ctrl+B` | On a clip: clip tools (PR 14) / split at the playhead |
 | Media keys | SMTC, same commands |
 
 ### Slideshow (PR 6)
@@ -427,7 +434,8 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 10 | `[` `]` lossless rotate from the viewer, crop mode keys, `H` / `V` flip (deferred from PR 6 with the other geometry ops). Written for Windows and macOS 2026-09-24 with `Shift+C`, `Ctrl+S`, `Ctrl+Z`, `Ctrl+R` ([12](12-decision-log.md)) |
 | 11 | `Shift+A` adjust pane (not `E`, which is the clip transport), accurate RAW clipping, histogram |
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
-| 13 | Trim mode takes `[` `]` |
+| 13 | Trim mode takes `[` `]`. Written for Windows and macOS 2026-09-25 ([12](12-decision-log.md)): `Ctrl+T` arms trim on a clip; in trim `P` previews the cut as an A–B loop, `Enter` saves the keyframe cut, `Shift+Enter` the re-encode, `Ctrl+X` removes in–out, `Ctrl+←` `Ctrl+→` walk keyframes, `Backspace` / `Delete` clear the markers (never trash the clip). `Ctrl+J` is the Jobs pane (`Delete` cancels the focused job, `R` retries, `Enter` reveals) |
+| 14 | `Ctrl+S` on a clip opens the clip tools (rotate, split, frame, audio, remux, GIF / WebP; Export stays `Ctrl+S` on a still); `Ctrl+B` splits at the playhead |
 | 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
 | 16–19 | Import add-on commands, present only while it is installed ([18-import.md](18-import.md#commands)). Base app, PR 16: `F8` across volumes deletes the source only after verify |
 | 27–28 | Voice query add-on commands, present only while it is installed ([19-voice.md](19-voice.md#commands)). Hold-to-talk is `Ctrl+Shift+Space` / `⌘⇧Space`; `Space` stays next / play |

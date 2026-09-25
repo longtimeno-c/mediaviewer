@@ -267,6 +267,9 @@ expected chrome_host::load() noexcept {
   set_adjust_view_ = get_entry(L"SetAdjustView");
   // PR 12, optional the same way: without it the pane shows no rating controls.
   set_meta_edit_ = get_entry(L"SetMetaEdit");
+  // PR 13 / 14, optional the same way.
+  show_jobs_pane_ = get_entry(L"ShowJobsPane");
+  set_trim_ = get_entry(L"SetTrim");
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
@@ -615,6 +618,7 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   meta_visible_ = false;
   tree_visible_ = false;
   adjust_visible_ = false;
+  jobs_visible_ = false;
 
   chrome_filmstrip_args args{};
   args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
@@ -669,6 +673,18 @@ void chrome_host::show_adjust_pane(bool visible, int x, int y, int width, int he
   if (!panels_attached_ || !show_adjust_pane_) return;
   show_panel(show_adjust_pane_, visible, x, y, width, height, focus, y + height + 1);
   adjust_visible_ = visible;
+}
+
+void chrome_host::show_jobs_pane(bool visible, int x, int y, int width, int height,
+                                 bool focus) noexcept {
+  if (!panels_attached_ || !show_jobs_pane_) return;
+  show_panel(show_jobs_pane_, visible, x, y, width, height, focus, y + height + 1);
+  jobs_visible_ = visible;
+}
+
+void chrome_host::set_trim(const chrome_trim_args& args) noexcept {
+  if (!transport_attached_ || !set_trim_) return;
+  (void)set_trim_(const_cast<chrome_trim_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::set_adjust_view(const adjust_view& view) noexcept {
@@ -825,6 +841,7 @@ void chrome_host::detach() noexcept {
     meta_visible_ = false;
     tree_visible_ = false;
     adjust_visible_ = false;
+  jobs_visible_ = false;
   }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);

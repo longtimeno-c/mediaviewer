@@ -81,6 +81,11 @@ public static partial class IslandHost
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
         public const int MetaRevert = 1013;
+        // PR 14: the clip tools flyout was confirmed; arg is the packed choice
+        // (trim_state.h pack_clip_choice). PR 13: the drain saw a keyframe
+        // index answer; arg is its request id (chrome_host.h).
+        public const int ClipTool = 1014;
+        public const int ClipIndex = 1015;
         // Command-table ids the island can post (commands.h).
         public const int Clipping = 46;
         public const int Fullscreen = 41;
@@ -103,6 +108,12 @@ public static partial class IslandHost
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
+        // PR 13 / 14 keyed commands the transport and the Jobs pane also send.
+        public const int TrimMode = 134;
+        public const int TrimKeyframe = 139;
+        public const int TrimReencode = 140;
+        public const int JobsPane = 143;
+        public const int ClipToolsFlyout = 144;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -115,6 +126,7 @@ public static partial class IslandHost
                 ToggleFilmstrip, VideoActive, SetRate, FocusChanged, Popup, Rebind, ResetKeys,
                 UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns, AddonState, OpenPath,
                 MetaComment, MetaRevert,
+                ClipTool, ClipIndex,
             };
             unchecked
             {

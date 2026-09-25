@@ -68,6 +68,7 @@ public static partial class IslandHost
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);
+            DisposeSource(ref _jobsPane);
             EnsureFocusHook();
             _metaPane = new DesktopWindowXamlSource();
             _metaPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
@@ -79,11 +80,16 @@ public static partial class IslandHost
             _adjustPane = new DesktopWindowXamlSource();
             _adjustPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             _adjustPane.TakeFocusRequested += OnTakeFocusRequested;
+            // PR 13 / 14: the Jobs pane, the same right edge again (one at a time).
+            _jobsPane = new DesktopWindowXamlSource();
+            _jobsPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _jobsPane.TakeFocusRequested += OnTakeFocusRequested;
             // Parked below the client area with no content until first shown: a
             // default full-client island would flash over the canvas.
             MoveAt(_metaPane, 0, args.ClientHeight, 1, 1);
             MoveAt(_tree, 0, args.ClientHeight, 1, 1);
             MoveAt(_adjustPane, 0, args.ClientHeight, 1, 1);
+            MoveAt(_jobsPane, 0, args.ClientHeight, 1, 1);
             _metaPaneVisible = false;
             _treeVisible = false;
             _adjustPaneVisible = false;
@@ -105,12 +111,16 @@ public static partial class IslandHost
             _metaPaneVisible = false;
             _treeVisible = false;
             _adjustPaneVisible = false;
+            _jobsPaneVisible = false;
+            _jobsTimer?.Stop();
             DropMetaUi();
+            DropJobsUi();
             DropTreeUi();
             DropAdjustUi();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);
+            DisposeSource(ref _jobsPane);
             return 0;
         }
         catch (Exception ex)

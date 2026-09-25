@@ -265,6 +265,7 @@ def copy_sparkle(framework: Path, app: Path) -> None:
 
 
 CRASHPAD_HANDLER = "crashpad_handler"
+CLIPJOB = "MediaViewerClipJob"
 
 
 def copy_crashpad_handler(src: Path, app: Path) -> Path:
@@ -318,6 +319,15 @@ def cmd_assemble(args: argparse.Namespace) -> None:
     if args.crashpad_handler:
         handler = copy_crashpad_handler(Path(args.crashpad_handler), app)
         roots.append((handler, "@executable_path/../Frameworks"))
+    # PR 13 / 14: encode and decode jobs run in this helper, never in the app
+    # (plan/12 2026-09-25). It links FFmpeg, so its dylibs are bundled too.
+    if args.clipjob:
+        helpers = app / "Contents" / "Helpers"
+        helpers.mkdir(parents=True, exist_ok=True)
+        clipjob = helpers / CLIPJOB
+        shutil.copyfile(args.clipjob, clipjob)
+        clipjob.chmod(0o755)
+        roots.append((clipjob, "@executable_path/../Frameworks"))
 
     bundle_dylibs(app, roots, [args.dylib_dir])
 
@@ -362,6 +372,9 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool)
     handler = app / "Contents" / "Helpers" / CRASHPAD_HANDLER
     if handler.exists():
         codesign(handler, identity, hardened)
+    clipjob = app / "Contents" / "Helpers" / CLIPJOB
+    if clipjob.exists():
+        codesign(clipjob, identity, hardened)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
     codesign(app, identity, hardened)
@@ -520,6 +533,7 @@ def main(argv: list[str]) -> None:
     a.add_argument("--dylib-dir", required=True)
     a.add_argument("--sparkle")
     a.add_argument("--crashpad-handler", help="vcpkg's tools/crashpad/crashpad_handler (PR 11)")
+    a.add_argument("--clipjob", help="the MediaViewerClipJob helper (PR 13 / 14)")
     a.set_defaults(func=cmd_assemble)
 
     r = sub.add_parser("release", help="sign, notarize, disk image, update archive, appcast")

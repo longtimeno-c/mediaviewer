@@ -92,12 +92,14 @@ enum class mode : std::uint8_t {
   gallery = 5,    // visible gallery owns navigation, even with canvas focus
   runner = 6,     // empty-window game; number keys do not change image zoom
   crop = 7,       // PR 10: crop / straighten on the canvas; arrows nudge the rect
+  trim = 8,       // PR 13: trim armed on a clip; layers over video (key_router.cpp)
   count
 };
 
 inline constexpr int kModeCount = static_cast<int>(mode::count);
 
-using mode_mask = std::uint8_t;
+// 16 bits since PR 13: crop took the last bit of a byte.
+using mode_mask = std::uint16_t;
 inline constexpr mode_mask kBrowse = 1 << 0;
 inline constexpr mode_mask kVideo = 1 << 1;
 inline constexpr mode_mask kSlideshow = 1 << 2;
@@ -105,9 +107,10 @@ inline constexpr mode_mask kIsland = 1 << 3;
 inline constexpr mode_mask kLoupe = 1 << 4;
 inline constexpr mode_mask kGallery = 1 << 5;
 inline constexpr mode_mask kRunner = 1 << 6;
-inline constexpr mode_mask kCrop = 1 << 7;  // the last bit of the mask byte
+inline constexpr mode_mask kCrop = 1 << 7;
+inline constexpr mode_mask kTrim = 1 << 8;
 inline constexpr mode_mask kAllModes =
-    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop;
+    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -273,6 +276,21 @@ enum class command_id : std::uint16_t {
   set_rating_4,
   set_rating_5,
   edit_comment,  // Ctrl+I: show the metadata pane and put the keyboard in its comment field
+  // PR 13 (plan/16 Video and trim, plan/08). Appended; every id above keeps its value.
+  trim_mode,           // Ctrl+T on a clip: arm / disarm trim
+  trim_in,             // `[` in trim: in marker at the playhead
+  trim_out,            // `]` in trim: out marker at the playhead
+  trim_clear,          // Backspace in trim: clear both markers
+  trim_preview,        // P in trim: A-B loop over exactly what Path 1 will write
+  trim_keyframe,       // Enter in trim: Path 1, keyframe stream copy
+  trim_reencode,       // Shift+Enter in trim: Path 2, frame-accurate re-encode (slower)
+  keyframe_prev,       // Ctrl+Left in trim: previous keyframe (plan/16)
+  keyframe_next,       // Ctrl+Right in trim: next keyframe
+  jobs_pane,           // Ctrl+J: the job queue panel (plan/08: keyboard-reachable)
+  // PR 14 (plan/08 "Other operations"). Appended.
+  clip_tools,          // Ctrl+S on a clip: rotate / split / remux / frame / audio / GIF flyout
+  clip_split,          // Ctrl+B on a clip: split at the playhead's nearest keyframe
+  trim_remove_middle,  // Ctrl+X in trim: a copy without [in, out)
   count
 };
 

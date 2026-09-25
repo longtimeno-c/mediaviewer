@@ -130,8 +130,10 @@ endif()
 if(EXISTS "${MV_CRASHPAD_HANDLER}")
   list(APPEND MV_ASSEMBLE_ARGS --crashpad-handler "${MV_CRASHPAD_HANDLER}")
 endif()
+# PR 13 / 14: encode and decode jobs out of process, to Contents/Helpers.
+list(APPEND MV_ASSEMBLE_ARGS --clipjob "$<TARGET_FILE:MediaViewerClipJob>")
 add_custom_target(mediaviewer_app
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/mac/macpack.py" ${MV_ASSEMBLE_ARGS}
-  DEPENDS MediaViewer MediaViewerThumbnails
+  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob
   COMMENT "Assemble MediaViewer.app (PR 20)"
   VERBATIM)

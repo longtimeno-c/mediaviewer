@@ -46,10 +46,11 @@ runs:
     # manifest. The overlay triplet disables compiler tracking and the pinned
     # host tools above do the rest, so a runner on a different image version
     # reuses the tree instead of rebuilding it. -pinned-tools: trees from
-    # before the pin have different ABIs and must not be restored.
+    # before the pin have different ABIs and must not be restored. The macOS
+    # overlay triplets are excluded: they cannot change a Windows package.
     - name: Restore installed packages
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: build/vcpkg_installed
-        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'tools/vcpkg/**') }}-msvc-pinned-tools
+        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'tools/vcpkg/**', '!tools/vcpkg/triplets/*-osx.cmake') }}-msvc-pinned-tools

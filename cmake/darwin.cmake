@@ -24,6 +24,8 @@ endif()
 set(MV_MAC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx")
 set(MV_MAC_DYNAMIC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx-dynamic")
 
+# vcpkg builds the dependencies for the same target: tools/vcpkg/triplets/*-osx.cmake
+# and tools/mac/triplets/openmp-dynamic.cmake. Change all three together.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
 set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
@@ -202,6 +204,8 @@ add_library(mv_io STATIC
   src/io/file_port.cpp
   src/io/file_port.h
   src/io/file_port_mac.cpp
+  src/io/child_process.h
+  src/io/child_process_posix.cpp
   src/io/verified_copy.cpp
   src/io/verified_copy.h
   src/io/volume.h
@@ -249,7 +253,7 @@ add_library(mv::image ALIAS mv_image)
 # audio_mac.cpp. FFmpeg is LGPL and dynamic-link only (CLAUDE.md), so it comes
 # from the arm64-osx-dynamic triplet:
 #   vcpkg install --triplet arm64-osx-dynamic \
-#     "ffmpeg[core,avcodec,avformat,avfilter,swresample,swscale,dav1d]"
+#     "ffmpeg[core,avcodec,avformat,avfilter,swresample,swscale,dav1d,webp]"
 # (add the `ffmpeg` feature if you want the CLI for tools/testmedia clips).
 # ---------------------------------------------------------------------------
 list(APPEND CMAKE_MODULE_PATH "${MV_VCPKG_DYNAMIC_PREFIX}/share/ffmpeg")
@@ -362,6 +366,40 @@ target_link_libraries(mv_edit
 add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
+# mv_clip -- PR 13 / 14 (plan/08): two-path trim, extract & remux, the clip
+# job queue. The same sources as Windows; the encode port's Mac half lists
+# VideoToolbox (hwencode_mac.cpp). FFmpeg dynamic and LGPL, as for mv_player.
+# ---------------------------------------------------------------------------
+add_library(mv_clip STATIC
+  src/edit/clip.h
+  src/edit/clip_internal.h
+  src/edit/clip_common.cpp
+  src/edit/clip_copy.cpp
+  src/edit/clip_encode.cpp
+  src/edit/clip_run.cpp
+  src/edit/clip_jobs.cpp
+  src/edit/clip_jobs.h
+  src/edit/clip_wire.cpp
+  src/edit/clip_wire.h
+  src/edit/clip_helper.cpp
+  src/edit/clip_helper.h
+  src/edit/hwencode.h
+  src/edit/hwencode_mac.cpp
+)
+target_include_directories(mv_clip SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(mv_clip PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(mv_clip
+  PUBLIC mv_core mv_io
+  PRIVATE mv_edit ${FFMPEG_LIBRARIES})
+add_library(mv::clip ALIAS mv_clip)
+
+# MediaViewerClipJob -- encode and decode jobs out of process (plan/12
+# 2026-09-25). Beside mediaviewer_lab; macpack.py puts it in Contents/Helpers.
+add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip)
+target_include_directories(MediaViewerClipJob PRIVATE src)
+
+# ---------------------------------------------------------------------------
 # Milestone G: the add-on host (in the app) and the Import add-on
 # (libmv_import.dylib, packed and signed separately; never in the app bundle).
 # ---------------------------------------------------------------------------
@@ -420,8 +458,15 @@ add_library(mv_shell STATIC
   # PR 11: the adjust pane's state (readiness, tokens, histogram), shared.
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
+  # PR 13 / 14: trim mode and the clip tools (shared with Windows), and the
+  # clip job queue + keyframe index behind the Windows ABI, reused as is.
+  src/shell/trim_state.cpp
+  src/shell/trim_state.h
+  src/abi/clip_session.cpp
+  src/abi/clip_session.h
 )
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon)
+target_include_directories(mv_shell PUBLIC src/abi/include)
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_clip)
 add_library(mv::shell ALIAS mv_shell)
 
 find_package(imgui CONFIG REQUIRED)
@@ -546,6 +591,7 @@ function(mv_mac_host target)
 endfunction()
 
 mv_mac_host(mediaviewer_lab)
+add_dependencies(mediaviewer_lab MediaViewerClipJob)
 
 # ---------------------------------------------------------------------------
 # Milestone G: Import.bundle, the Import add-on's SwiftUI chrome. Built beside
@@ -656,6 +702,11 @@ if(MV_BUILD_TESTS)
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp
+    # PR 13 / 14: the clip core on synthetic clips, the clip session, trim mode.
+    tests/test_clip.cpp
+    tests/test_clip_helper.cpp
+    tests/test_clip_session.cpp
+    tests/test_trim_state.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -667,6 +718,7 @@ if(MV_BUILD_TESTS)
     mv_image
     mv_player
     mv_meta
+    mv_clip
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF
@@ -679,7 +731,17 @@ if(MV_BUILD_TESTS)
     libraw::raw_r
     lcms2::lcms2
     Catch2::Catch2WithMain)
-  target_include_directories(mv_tests PRIVATE src tools)
+  target_include_directories(mv_tests PRIVATE src tools tests src/abi/include)
+  # The clip helper with its test hooks (a crash, a hang, a software encoder).
+  add_executable(mv_clipjob_test tools/clipjob/main.cpp)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip)
+  target_include_directories(mv_clipjob_test PRIVATE src)
+  # The hooks reach clip::detail through clip_internal.h, which includes FFmpeg;
+  # mv_clip keeps those headers PRIVATE.
+  target_include_directories(mv_clipjob_test SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+  target_compile_definitions(mv_clipjob_test PRIVATE MV_CLIPJOB_TEST_HOOKS=1)
+  target_compile_definitions(mv_tests PRIVATE MV_CLIPJOB_PATH="$<TARGET_FILE:mv_clipjob_test>")
+  add_dependencies(mv_tests mv_clipjob_test)
   # test_meta.cpp writes fixtures with Exiv2 and libavformat's muxer.
   target_include_directories(mv_tests SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
   target_link_directories(mv_tests PRIVATE ${FFMPEG_LIBRARY_DIRS})
