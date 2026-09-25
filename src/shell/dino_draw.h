@@ -40,6 +40,11 @@ inline float ease_out(float t) noexcept {
   return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
 }
 
+inline float ease_in(float t) noexcept {
+  t = std::clamp(t, 0.0f, 1.0f);
+  return t * t * t;
+}
+
 // Cheap stable hash for the scrolling ground texture: same cell, same pebble.
 inline std::uint32_t hash_cell(std::int64_t i) noexcept {
   auto x = static_cast<std::uint32_t>(i) * 2654435761u;
@@ -71,12 +76,14 @@ inline void draw_rows(ImDrawList* dl, const char* const* rows, int n, float x0, 
 }  // namespace dino_detail
 
 // How much of the welcome card is still visible while the game starts: 1 idle,
-// falling to 0 in the first third of the intro. The host passes this to
-// draw_welcome(); once the run begins it is 0 and the card is not drawn at all.
+// falling to 0 in the first third of the intro, and back to 1 over the last
+// half of the outro. The host passes this to draw_welcome(); once the run
+// begins it is 0 and the card is not drawn at all.
 inline float welcome_alpha(const dino_game& g) noexcept {
   switch (g.state()) {
     case dino_game::phase::idle: return 1.0f;
     case dino_game::phase::intro: return 1.0f - dino_detail::ease_out(g.intro_progress() / 0.3f);
+    case dino_game::phase::outro: return dino_detail::ease_out((g.outro_progress() - 0.5f) / 0.5f);
     default: return 0.0f;
   }
 }
@@ -98,13 +105,21 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
   const float p = g.intro_progress();
   const bool intro = g.state() == dino_game::phase::intro;
   const bool dead = g.state() == dino_game::phase::over;
+  const bool outro = g.state() == dino_game::phase::outro;
+  const float op = g.outro_progress();
+  // The outro folds the scene away in the reverse order the intro built it:
+  // HUD and obstacles first, then clouds, then the ground line.
+  const float hud = outro ? 1.0f - ease_out(op / 0.3f) : 1.0f;
 
   if (g.view_3d()) {
     dino_3d::draw(dl, g, w, h, chrome, scale);
   } else {
 
-    // Ground line: in the intro it grows outwards from the centre.
-    const float reveal = intro ? ease_out((p - 0.12f) / 0.5f) : 1.0f;
+    // Ground line: in the intro it grows outwards from the centre; the outro
+    // shrinks it back.
+    const float reveal = intro   ? ease_out((p - 0.12f) / 0.5f)
+                         : outro ? 1.0f - ease_out((op - 0.3f) / 0.55f)
+                                 : 1.0f;
     const float half = (w * 0.5f) * reveal;
     if (half > 0.0f) dl->AddLine(ImVec2(cx - half, ground), ImVec2(cx + half, ground), ink, 2.0f * scale);
 
@@ -127,7 +142,9 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
 
     // Clouds drift slower than the ground (parallax), fading in with the intro.
     {
-      const float fade = intro ? ease_out((p - 0.3f) / 0.5f) : 1.0f;
+      const float fade = intro   ? ease_out((p - 0.3f) / 0.5f)
+                         : outro ? 1.0f - ease_out((op - 0.15f) / 0.45f)
+                                 : 1.0f;
       const float span = w + 240.0f * scale;
       for (int k = 0; k < 4; ++k) {
         const float base = static_cast<float>(k) * (span / 4.0f);
@@ -142,20 +159,22 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
     }
 
     // Obstacles: a trunk and two little arms.
-    for (int i = 0; i < g.obstacle_count(); ++i) {
+    const ImU32 cactus = with_alpha(ink, hud);
+    for (int i = 0; i < g.obstacle_count() && hud > 0.0f; ++i) {
       const auto& o = g.obstacle_at(i);
       const float x0 = cx - (w * 0.5f) + o.x * u;
-      dl->AddRectFilled(ImVec2(x0, ground - o.h * u), ImVec2(x0 + o.w * u, ground), ink, 1.5f * u);
+      dl->AddRectFilled(ImVec2(x0, ground - o.h * u), ImVec2(x0 + o.w * u, ground), cactus, 1.5f * u);
       const float army = ground - o.h * 0.62f * u;
-      dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army), ImVec2(x0 + 1.0f * u, army + 2.0f * u), ink);
-      dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army - 4.0f * u), ImVec2(x0 - 1.0f * u, army + 2.0f * u), ink);
+      dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army), ImVec2(x0 + 1.0f * u, army + 2.0f * u), cactus);
+      dl->AddRectFilled(ImVec2(x0 - 3.0f * u, army - 4.0f * u), ImVec2(x0 - 1.0f * u, army + 2.0f * u), cactus);
       dl->AddRectFilled(ImVec2(x0 + o.w * u - 1.0f * u, army - 1.0f * u),
-                        ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), ink);
+                        ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), cactus);
       dl->AddRectFilled(ImVec2(x0 + o.w * u + 1.0f * u, army - 5.0f * u),
-                        ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), ink);
+                        ImVec2(x0 + o.w * u + 3.0f * u, army + 1.0f * u), cactus);
     }
 
-    // The runner. In the intro it sprints in from the left edge and lands with a hop.
+    // The runner. In the intro it sprints in from the left edge and lands with a
+    // hop; in the outro it sprints off the right edge.
     float dx = g.dino_x();
     float dy = g.dino_y();
     const float left_edge = cx - w * 0.5f;
@@ -163,6 +182,8 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
       const float q = ease_out((p - 0.35f) / 0.6f);
       dx = -dino_game::kDinoW - 6.0f + (g.dino_x() + dino_game::kDinoW + 6.0f) * q;
       if (q > 0.85f && q < 1.0f) dy = std::sin((q - 0.85f) / 0.15f * 3.14159f) * 5.0f;
+    } else if (outro) {
+      dx += (w / u - g.dino_x() + 6.0f) * ease_in(op / 0.7f);
     }
     const bool legs_a = std::fmod(g.run_clock(), 2.0f) < 1.0f;
     const float sx = left_edge + dx * u;
@@ -186,11 +207,11 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
   };
 
   // Always discoverable, including once the jump tutorial has faded.
-  dl->AddText(font, 14.0f * scale, ImVec2(24.0f * scale, chrome + 24.0f * scale), soft,
+  dl->AddText(font, 14.0f * scale, ImVec2(24.0f * scale, chrome + 24.0f * scale), with_alpha(soft, hud),
               g.view_3d() ? "3D   [3] switch to 2D" : "2D   [3] switch to 3D");
 
   // Score, top right of the canvas (below the command bar).
-  if (g.state() != dino_game::phase::intro) {
+  if (!intro && hud > 0.0f) {
     char buf[64];
     if (g.best() > 0) {
       std::snprintf(buf, sizeof buf, "HI %05d   %05d", g.best(), g.score());
@@ -199,7 +220,7 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
     }
     const float fs = 18.0f * scale;
     const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, buf);
-    dl->AddText(font, fs, ImVec2(w - sz.x - 28.0f * scale, chrome + 24.0f * scale), soft, buf);
+    dl->AddText(font, fs, ImVec2(w - sz.x - 28.0f * scale, chrome + 24.0f * scale), with_alpha(soft, hud), buf);
   }
 
   if (g.state() == dino_game::phase::playing && g.seconds_in_phase() < 4.0f) {

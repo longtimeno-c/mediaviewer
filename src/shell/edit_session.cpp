@@ -57,15 +57,41 @@ bool same_rect(const edit::rect& a, const edit::rect& b) noexcept {
 
 }  // namespace
 
-std::uint64_t edit_session::key() const noexcept {
+std::uint64_t edit_session::key_for(const std::string& path, std::uint64_t size,
+                                    std::int64_t mtime) const noexcept {
   std::uint64_t h = 1469598103934665603ull;
-  h = fnv1a(h, item_.path.data(), item_.path.size());
-  h = fnv1a(h, &item_.size, sizeof(item_.size));
-  h = fnv1a(h, &item_.mtime, sizeof(item_.mtime));
-  if (const auto it = epochs_.find(item_.path); it != epochs_.end()) {
+  h = fnv1a(h, path.data(), path.size());
+  h = fnv1a(h, &size, sizeof(size));
+  h = fnv1a(h, &mtime, sizeof(mtime));
+  if (const auto it = epochs_.find(path); it != epochs_.end()) {
     h = fnv1a(h, &it->second, sizeof(it->second));
   }
   return h;
+}
+
+std::uint64_t edit_session::key() const noexcept { return key_for(item_.path, item_.size, item_.mtime); }
+
+void edit_session::metadata_rewritten(const std::string& path, std::uint64_t old_size,
+                                      std::int64_t old_mtime, std::uint64_t new_size,
+                                      std::int64_t new_mtime) {
+  const std::uint64_t from = key_for(path, old_size, old_mtime);
+  const std::uint64_t to = key_for(path, new_size, new_mtime);
+  if (from != to) {
+    const auto it = stacks_.find(from);
+    if (it != stacks_.end() && stacks_.find(to) == stacks_.end()) {
+      edit::edit_stack moved = std::move(it->second);
+      stacks_.erase(it);
+      moved.source_id = to;
+      stacks_.emplace(to, std::move(moved));
+      std::replace(order_.begin(), order_.end(), from, to);
+    }
+    if (in_flight_ && in_flight_->key == from) in_flight_->key = to;
+    if (carry_ && carry_->old_key == from) carry_->old_key = to;
+  }
+  if (has_item_ && item_.path == path && item_.size == old_size && item_.mtime == old_mtime) {
+    item_.size = new_size;
+    item_.mtime = new_mtime;
+  }
 }
 
 edit::edit_stack& edit_session::current() {

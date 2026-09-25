@@ -28,6 +28,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <set>
 #include <cwchar>
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +56,7 @@
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "io/file.h"
+#include "io/file_port.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
@@ -62,6 +64,7 @@
 #include "shell/marks.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
+#include "shell/meta_writer.h"
 #include "shell/open_request.h"
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
@@ -102,6 +105,14 @@ constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Le
 constexpr UINT_PTR kHistogramTimerId = 0x7701;
 constexpr UINT kHistogramDebounceMs = 120;
 constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
+// PR 12: rating keys coalesce for a moment before the write; the write runs on
+// the pool and posts its outcome back as one message.
+constexpr UINT_PTR kMetaWriteTimerId = 0x7801;
+constexpr UINT kRatingDebounceMs = 250;
+constexpr UINT kCommentDebounceMs = 50;
+constexpr UINT kMetaRetryMs = 200;  // a lossless rotation owns the file until it lands
+constexpr UINT kMsgMetaWriteDone = WM_APP + 0x75;
+constexpr ULONGLONG kNoticeMs = 3000;  // how long "★★★★☆" stays in the status line
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
@@ -129,7 +140,9 @@ constexpr UINT_PTR kUpdateConfirmTimerId = 0x7301;
 constexpr UINT kUpdateConfirmMs = 10000;
 // --browse-soak: time the arrow from one still to the next. A UI-thread tick
 // only chooses the next index; the render thread records the present.
-constexpr UINT_PTR kBrowseTimerId = 0x7701;
+// Not 0x7701: that is kHistogramTimerId, checked first in WM_TIMER, which ate
+// every soak tick.
+constexpr UINT_PTR kBrowseTimerId = 0x7901;
 constexpr UINT kBrowseTickMs = 50;
 constexpr ULONGLONG kBrowseDwellMs = 3000;
 constexpr ULONGLONG kBrowseStepTimeoutMs = 20000;
@@ -184,6 +197,15 @@ struct app_state {
   std::atomic<mv::generation> adjust_generation{1};
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
+  // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
+  // queued here and written on `jobs`: a plain JPEG in place, everything else
+  // in an XMP sidecar. `meta_written` is the paths written this session, the
+  // ones Revert has a snapshot for. The notice rides the title's status line.
+  mv::shell::meta_writer meta_writer;
+  std::set<std::string> meta_written;
+  bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
+  std::wstring notice;
+  ULONGLONG notice_until = 0;
   mv_session_t session = nullptr;
   bool tracking_mouse = false;
   bool chrome_enabled = true;
@@ -383,6 +405,7 @@ void push_browse_state(app_state* app);
 void set_gallery(app_state* app, bool visible);
 void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
+void update_title(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void focus_canvas(app_state* app) noexcept;
@@ -842,11 +865,16 @@ void metadata_selection_changed(app_state* app) {
   push_meta_pane(app);
 }
 
+void push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
+void set_adjust_pane(app_state* app, bool on);
+
 // The pane shows the record already held: three text tables, formatted here once
 // per record. No record yet means "reading" while something is wanted, and the
-// pane renders its empty states. Never reads the file.
+// pane renders its empty states. Never reads the file. PR 12: the rating,
+// comment and Revert state ride along (push_meta_edit).
 void push_meta_pane(app_state* app) noexcept {
   if (!app || !app->chrome.meta_pane_visible()) return;
+  push_meta_edit(app);
   if (app->meta_record) {
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
                               mv::meta::properties_table(*app->meta_record),
@@ -883,6 +911,237 @@ void set_folder_tree(app_state* app, bool on) noexcept {
   push_tree_root(app);
   apply_view_state(app);
   if (!on && app->window) focus_canvas(app);
+}
+
+// ---- PR 12: rating, comment, revert ------------------------------------------
+//
+// Keys 0-5 and the pane's controls queue a write; nothing here touches a file on
+// this thread (rule 1). The queue coalesces (3 then 4 writes 4), runs one job at
+// a time on the pool, and never overlaps a lossless rotation of the same JPEG.
+// The Mac host's twin is main_mac.mm "PR 12".
+
+// What a finished write posts back (kMsgMetaWriteDone's LPARAM, owned by the
+// handler). The stamps are taken on the worker around the write, so the UI
+// thread never stats the file to re-key the item's edits.
+struct meta_write_result {
+  mv::shell::meta_job job;
+  mv::shell::meta_outcome out;
+  bool stamped = false;
+  std::uint64_t old_size = 0;
+  std::int64_t old_mtime = 0;
+  std::uint64_t new_size = 0;
+  std::int64_t new_mtime = 0;
+};
+
+// One line in the title's status line for a few seconds (update_title reads it).
+void notice_show(app_state* app, const std::string& utf8) noexcept {
+  if (!app) return;
+  try {
+    app->notice = wide_from_utf8(utf8);
+  } catch (...) {
+    return;
+  }
+  app->notice_until = ::GetTickCount64() + kNoticeMs;
+  update_title(app);
+}
+
+// The rating / comment as the pane should draw them: a change still waiting in
+// the queue counts, so a key or a click shows at once.
+std::int32_t meta_rating_now(app_state* app, const std::string& path) {
+  if (const auto pending = app->meta_writer.pending_rating(path)) return *pending;
+  return app->meta_record ? app->meta_record->s.rating : 0;
+}
+
+std::string meta_comment_now(app_state* app, const std::string& path) {
+  if (auto pending = app->meta_writer.pending_comment(path)) return std::move(*pending);
+  return app->meta_record ? app->meta_record->s.comment : std::string{};
+}
+
+void push_meta_edit(app_state* app, bool drop_draft) noexcept {
+  if (!app || !app->chrome.meta_pane_visible()) return;
+  try {
+    const std::string path = current_item_path(app);
+    std::int32_t flags = 0;
+    if (!path.empty()) flags |= mv::shell::kMetaEditCanEdit;
+    if (!path.empty() && app->meta_written.count(path) != 0) flags |= mv::shell::kMetaEditCanRevert;
+    if (app->focus_comment_next) flags |= mv::shell::kMetaEditFocus;
+    if (drop_draft) flags |= mv::shell::kMetaEditDropDraft;
+    app->focus_comment_next = false;
+    const std::int32_t rating = path.empty() ? 0 : meta_rating_now(app, path);
+    const std::string comment = path.empty() ? std::string{} : meta_comment_now(app, path);
+    app->chrome.set_meta_edit(rating, comment, flags);
+  } catch (...) {
+  }
+}
+
+void schedule_meta_write(app_state* app, UINT delay_ms) noexcept {
+  if (app->window) ::SetTimer(app->window, kMetaWriteTimerId, std::max<UINT>(delay_ms, 1), nullptr);
+}
+
+bool rate_current_item(app_state* app, int stars) noexcept {
+  if (stars < 0 || stars > mv::meta::kMaxRating) return false;
+  try {
+    const std::string path = current_item_path(app);
+    if (path.empty()) return false;
+    app->meta_writer.submit(path, mv::shell::rating_fields(stars));
+    // The keystroke shows at once; the file catches up a moment later.
+    notice_show(app, stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars));
+    push_meta_edit(app);
+    schedule_meta_write(app, kRatingDebounceMs);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// Ctrl+I: the pane comes up (it replaces the adjust pane, as `I` does) and the
+// keyboard goes to its comment field rather than the pane's first control.
+bool focus_comment_field(app_state* app) noexcept {
+  try {
+    if (current_item_path(app).empty()) return false;
+    if (app->adjust.visible()) set_adjust_pane(app, false);
+    app->focus_comment_next = true;
+    if (!app->meta_pane_visible) {
+      app->meta_pane_visible = true;
+      apply_view_state(app);
+      request_metadata_now(app);
+    }
+    push_meta_pane(app);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// The island committed the comment field (Return, or the field lost focus with
+// an edit in it). The text is parked island-side; a read that fails is not an
+// empty comment, which would clear the file's.
+void set_comment_from_pane(app_state* app) noexcept {
+  try {
+    std::string text;
+    const bool took = app->chrome.take_parked_text(text);
+    const std::string path = current_item_path(app);
+    if (path.empty()) return;
+    if (!took || text.size() > mv::meta::kMaxCommentBytes) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, "Comment is too long");
+      push_meta_edit(app, true);
+      return;
+    }
+    if (text == meta_comment_now(app, path)) return;  // unchanged: no write
+    app->meta_writer.submit(path, mv::shell::comment_fields(text));
+    push_meta_edit(app);
+    schedule_meta_write(app, kCommentDebounceMs);
+  } catch (...) {
+  }
+}
+
+void revert_current_metadata(app_state* app) noexcept {
+  try {
+    const std::string path = current_item_path(app);
+    if (path.empty() || app->meta_written.count(path) == 0) return;
+    app->meta_writer.submit_revert(path);
+    notice_show(app, "Reverting metadata\xE2\x80\xA6");
+    schedule_meta_write(app, kCommentDebounceMs);
+  } catch (...) {
+  }
+}
+
+void start_meta_write(app_state* app) {
+  if (app->window) ::KillTimer(app->window, kMetaWriteTimerId);
+  if (app->meta_writer.in_flight()) return;  // its completion starts the next
+  // A lossless rotation of a JPEG owns the file until it lands.
+  if (app->edits.write_in_flight()) {
+    schedule_meta_write(app, kMetaRetryMs);
+    return;
+  }
+  const std::optional<mv::shell::meta_job> next = app->meta_writer.take_next();
+  if (!next) return;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [job = *next, hwnd](const mv::job_context&) -> mv::status {
+                        // No way to report back: no write (a write nobody hears of
+                        // would leave the pane and the toast wrong).
+                        auto r = std::unique_ptr<meta_write_result>(new (std::nothrow) meta_write_result{});
+                        if (!r) return mv::status::out_of_memory;
+                        // The identity the item's edits are filed under; a rewrite changes it.
+                        const auto before = mv::io::stat_path(job.path);
+                        const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
+                        r->job = job;
+                        r->out = out;
+                        if (const auto after = mv::io::stat_path(job.path); before && after) {
+                          r->stamped = true;
+                          r->old_size = before->size;
+                          r->old_mtime = before->mtime_unix;
+                          r->new_size = after->size;
+                          r->new_mtime = after->mtime_unix;
+                        }
+                        const bool ok = out.ok;
+                        const mv::status error = out.error;
+                        if (::PostMessageW(hwnd, kMsgMetaWriteDone, 0, reinterpret_cast<LPARAM>(r.get()))) {
+                          (void)r.release();
+                        }
+                        return ok ? mv::status::ok : error;
+                      });
+}
+
+void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
+  if (!r) return;
+  const mv::shell::meta_job& job = r->job;
+  const mv::shell::meta_outcome& out = r->out;
+  app->meta_writer.finished(out);
+  if (!out.ok) {
+    (void)app->meta_writer.take_failure();
+    ::MessageBeep(MB_ICONWARNING);
+    MV_LOG_WARN("metadata write failed: %s", mv::status_name(out.error));  // never the path (rule 6)
+    notice_show(app, job.revert                    ? "Could not revert the metadata"
+                     : job.fields.rating.touches() ? "Could not save the rating"
+                                                   : "Could not save the comment");
+    push_meta_edit(app);
+    if (app->meta_writer.has_pending()) schedule_meta_write(app, 0);
+    return;
+  }
+
+  // What the store cached for this file is out of date: a JPEG's stamp moved,
+  // a sidecar's did not, so drop it by path either way.
+  app->meta.invalidate(out.path);
+  if (r->stamped) {
+    // The bytes changed, the pixels did not: keep the item's edits, and let
+    // the next listing see the same item rather than a new one.
+    app->edits.metadata_rewritten(out.path, r->old_size, r->old_mtime, r->new_size, r->new_mtime);
+    if (app->edit_path == out.path && app->edit_size == r->old_size && app->edit_mtime == r->old_mtime) {
+      app->edit_size = r->new_size;
+      app->edit_mtime = r->new_mtime;
+    }
+  }
+  if (job.revert) app->meta_written.erase(out.path);
+  else app->meta_written.insert(out.path);
+
+  if (current_item_path(app) == out.path) {
+    app->meta_record.reset();
+    if (metadata_wanted(app)) request_metadata_now(app);
+    push_meta_pane(app);
+  }
+
+  // Say where it went, unless another change to the same file is already queued
+  // (its message is the one that matters).
+  if (!app->meta_writer.busy_for(out.path)) {
+    std::string text = job.revert ? std::string("Metadata reverted") : std::string();
+    if (!job.revert && job.fields.rating.touches()) {
+      const int stars =
+          job.fields.rating.k == mv::meta::change<int>::kind::clear ? 0 : job.fields.rating.value;
+      text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
+    } else if (!job.revert && job.fields.comment.touches()) {
+      text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed"
+                                                                                : "Comment saved";
+    }
+    if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
+      const std::size_t sep = out.sidecar_path.find_last_of("\\/");
+      text += "  \xE2\x80\x94 " + out.sidecar_path.substr(sep == std::string::npos ? 0 : sep + 1);  // — IMG_1234.xmp
+    }
+    if (!text.empty()) notice_show(app, text);
+  }
+  if (app->meta_writer.has_pending()) schedule_meta_write(app, 0);
 }
 
 // PR 9 sort. The session owns the order (the filmstrip, the gallery and the arrow
@@ -1039,6 +1298,12 @@ void edit_item_opened(app_state* app) {
 
 void start_rotation_write(app_state* app) {
   if (app->window) ::KillTimer(app->window, kRotateTimerId);
+  // PR 12: a metadata write is rewriting a JPEG; wait for it (it re-keys the
+  // item's edits when it lands, so the rotation then checks the new bytes).
+  if (app->meta_writer.in_flight()) {
+    schedule_rotation_write(app);
+    return;
+  }
   const std::optional<mv::shell::rotation_write> w = app->edits.take_pending_write();
   if (!w) return;
   const HWND hwnd = app->window;
@@ -1916,6 +2181,15 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case static_cast<int>(mv::shell::command_id::adjust_reset):
       reset_adjust_from_pane(app);
       return;
+    // PR 12: the pane's comment field and Revert button. Return hands the
+    // keyboard back to the canvas; leaving the field by mouse already did.
+    case mv::shell::chrome_cmd_meta_comment:
+      set_comment_from_pane(app);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
+      return;
+    case mv::shell::chrome_cmd_meta_revert:
+      revert_current_metadata(app);
+      return;
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
@@ -2067,8 +2341,13 @@ mv::shell::key_event translate_key(const MSG& msg, bool is_up) noexcept {
         k = static_cast<key>(static_cast<int>(key::f1) + static_cast<int>(vk - VK_F1));
       } else if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
         k = mv::shell::char_key(static_cast<char>(vk));
-      } else if (vk >= VK_NUMPAD0 && vk <= VK_DIVIDE) {
-        k = key::none;  // numpad digits are ratings (PR 11)
+      } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+        // PR 12 (plan/16 Rate): the keypad's digits are their own keys, apart
+        // from the number row's, which stay zoom. With NumLock off Windows
+        // sends Insert / End / arrows instead, and those keep their meaning.
+        k = static_cast<key>(static_cast<int>(key::numpad0) + static_cast<int>(vk - VK_NUMPAD0));
+      } else if (vk >= VK_MULTIPLY && vk <= VK_DIVIDE) {
+        k = key::none;  // the keypad's other keys are unbound
       } else {
         BYTE state[256]{};
         if (!::GetKeyboardState(state)) break;
@@ -2532,6 +2811,11 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
   using mv::shell::back_target;
   switch (target) {
     case back_target::blur_text:
+      // PR 12: Esc in the comment field drops the edit. The pane forgets the
+      // draft before focus leaves, so leaving it does not commit.
+      push_meta_edit(app, true);
+      focus_canvas(app);
+      return;
     case back_target::canvas_focus:
       focus_canvas(app);
       return;
@@ -2622,6 +2906,11 @@ void update_title(app_state* app) noexcept {
         (void)::swprintf_s(tail, L" — %u/%u", selected + 1, count);
       }
       title = wide + tail;
+    }
+    // PR 12: what a rating key or a metadata write just did, for a few seconds.
+    if (!app->notice.empty()) {
+      if (::GetTickCount64() < app->notice_until) title += L" \u2014 " + app->notice;
+      else app->notice.clear();
     }
   } catch (...) {
     return;
@@ -3234,6 +3523,13 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case adjust_exposure: case adjust_contrast: case adjust_saturation:
     case adjust_temperature: case adjust_tint: case adjust_reset:
       return false;  // island-only: they carry a value (chrome_on_command)
+    // PR 12 (plan/16 Rate): 0-5 write the rating of the item on screen. The
+    // pane's stars post the same ids.
+    case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
+    case set_rating_4: case set_rating_5:
+      return rate_current_item(app, mv::shell::rating_of_command(command));
+    case edit_comment:
+      return focus_comment_field(app);
 
     // Host-side and cheap (plan/16): photographers park the viewer on a
     // second monitor.
@@ -3732,9 +4028,18 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                  reinterpret_cast<sibling_job_result*>(lparam)));
       return 0;
 
+    case kMsgMetaWriteDone:
+      on_meta_write_done(app, std::unique_ptr<meta_write_result>(
+                                  reinterpret_cast<meta_write_result*>(lparam)));
+      return 0;
+
     case WM_TIMER:
       if (wparam == kRotateTimerId) {
         start_rotation_write(app);
+        return 0;
+      }
+      if (wparam == kMetaWriteTimerId) {
+        start_meta_write(app);
         return 0;
       }
       if (wparam == kHistogramTimerId) {
@@ -4104,6 +4409,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
                       static_cast<long long>(completions[i].payload));
         }
         if (n < 64) break;
+      }
+    }
+  }
+
+  // PR 12: writes the user asked for and has not seen land — a rating inside
+  // its 250 ms debounce, a comment queued behind another write, a rotation
+  // inside its own debounce. The window is gone, so nothing waits on them now:
+  // take them, let the pool finish the write it is running (a second write to
+  // the same file must not overlap it), then write them here, in order. The
+  // rotation goes first: it refuses bytes a metadata write has changed, while
+  // a metadata write applies to whatever orientation it finds. A rotation
+  // already in flight is not repeated (a turn is relative; a rating is not).
+  {
+    const std::optional<mv::shell::rotation_write> turn = app.edits.take_pending_write();
+    const std::vector<mv::shell::meta_job> meta_jobs = app.meta_writer.drain_for_exit();
+    if (turn || !meta_jobs.empty()) {
+      app.jobs.shutdown();
+      if (turn && !mv::shell::run_rotation_write(*turn)) MV_LOG_WARN("exit: rotation write failed");
+      for (const mv::shell::meta_job& job : meta_jobs) {
+        const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
+        if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
       }
     }
   }

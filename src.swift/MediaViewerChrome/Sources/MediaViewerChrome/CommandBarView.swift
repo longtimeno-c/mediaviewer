@@ -104,6 +104,7 @@ private struct BarFlyout<Content: View>: View {
 
 public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var notice = NoticeStore.shared
 
   public init() {}
 
@@ -170,6 +171,15 @@ public struct CommandBarView: View {
         // Milestone G: the one-time Import hint and a running import's line.
         AddonBarItems()
         Spacer()
+        // PR 12: what a rating key or a metadata write just did.
+        if !notice.text.isEmpty {
+          Text(notice.text)
+            .font(MVTheme.font())
+            .foregroundStyle(MVTheme.title)
+            .padding(.trailing, 10)
+            .lineLimit(1)
+            .accessibilityLabel(notice.text)
+        }
         // What F7 / F8 / Delete will act on (plan/16): the marks if any, else
         // the current item.
         if store.markedCount > 0 {

@@ -51,6 +51,29 @@ expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> byt
   return {};
 }
 
+expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  std::wstring wide;
+  if (!widen(utf8_path, wide)) return err(status::invalid_arg);
+  std::wstring temp;
+  HANDLE file = INVALID_HANDLE_VALUE;
+  for (int attempt = 0; attempt < 100 && file == INVALID_HANDLE_VALUE; ++attempt) {
+    temp = wide + L".mvtmp" + std::to_wstring(::GetCurrentProcessId()) + L"-" +
+           std::to_wstring(attempt);
+    file = ::CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  }
+  if (file == INVALID_HANDLE_VALUE) return err(status::io);
+  const bool ok = write_handle(file, bytes);
+  ::CloseHandle(file);
+  // MoveFileExW without MOVEFILE_REPLACE_EXISTING fails if the name is taken.
+  if (!ok || !::MoveFileExW(temp.c_str(), wide.c_str(), MOVEFILE_WRITE_THROUGH)) {
+    ::DeleteFileW(temp.c_str());
+    return err(status::io);
+  }
+  return {};
+}
+
 expected replace_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
   std::wstring wide;

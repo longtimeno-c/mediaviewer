@@ -971,3 +971,38 @@ TEST_CASE("Shift+A opens the adjust pane on a still; E stays the clip's transpor
   REQUIRE(table.find("\tAdjust pane\tShift+A\t") != std::string::npos);
   REQUIRE(table.find("Adjust: exposure") == std::string::npos);
 }
+
+TEST_CASE("PR 12: the keypad and Ctrl+Shift+digit rate; the number row still zooms", "[shell][router]") {
+  key_router r;
+  const view_state s = still();
+  const command_id ratings[] = {command_id::set_rating_0, command_id::set_rating_1, command_id::set_rating_2,
+                                command_id::set_rating_3, command_id::set_rating_4, command_id::set_rating_5};
+  for (int n = 0; n <= 5; ++n) {
+    INFO("rating " << n);
+    const key pad = static_cast<key>(static_cast<int>(key::numpad0) + n);
+    REQUIRE(r.on_key(down(pad), s).command == ratings[n]);
+    REQUIRE(r.on_key(down(char_key(static_cast<char>('0' + n)), mod_ctrl | mod_shift), s).command == ratings[n]);
+    REQUIRE(rating_of_command(ratings[n]) == n);
+  }
+  REQUIRE(rating_of_command(command_id::fit) == -1);
+  // Plan/16: number-row 0 and 1 stay fit / 100 %; the plain and Ctrl-only digits are untouched.
+  REQUIRE(r.on_key(down(char_key('0')), s).command == command_id::fit);
+  REQUIRE(r.on_key(down(char_key('1')), s).command == command_id::one_to_one);
+  REQUIRE(r.on_key(down(char_key('0'), mod_ctrl), s).command == command_id::reset_view);
+  // A keypad 6-9 is not bound to anything.
+  REQUIRE_FALSE(r.on_key(down(key::numpad7), s).handled);
+
+  // A clip rates too (its rating lives in a sidecar); a slideshow does not.
+  REQUIRE(r.on_key(down(key::numpad3), clip()).command == command_id::set_rating_3);
+  view_state show = still();
+  show.slideshow = true;
+  REQUIRE_FALSE(r.on_key(down(key::numpad3), show).handled);
+}
+
+TEST_CASE("PR 12: the rating rows are listed for `?` with their keys", "[shell][commands]") {
+  const std::string table = describe_commands();
+  REQUIRE(table.find("Rating: 3 stars") != std::string::npos);
+  REQUIRE(table.find("Numpad 3") != std::string::npos);
+  REQUIRE(table.find("Ctrl+Shift+3") != std::string::npos);
+  REQUIRE(key_label(key::numpad0, mod_none) == "Numpad 0");
+}

@@ -88,7 +88,10 @@ class scene {
 
 inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chrome, float scale) noexcept {
   const float fade = std::clamp((g.intro_progress() - 0.25f) / 0.5f, 0.0f, 1.0f);
-  scene world(w, h, chrome, scale, fade);
+  // The outro fades the whole scene back out while the runner sprints off.
+  const float out = g.outro_progress();
+  const float vanish = std::clamp((out - 0.3f) / 0.55f, 0.0f, 1.0f);
+  scene world(w, h, chrome, scale, fade * (1.0f - vanish * vanish * (3.0f - 2.0f * vanish)));
   dl->PushClipRect(ImVec2(0.0f, chrome), ImVec2(w, h), true);
 
   // A long, solid track with a visible near edge, not a flat sprite backdrop.
@@ -130,6 +133,10 @@ inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chr
   float x = g.dino_x();
   const float y = g.dino_y();
   if (g.state() == dino_game::phase::intro) x -= (1.0f - fade) * 50.0f;
+  if (g.state() == dino_game::phase::outro) {
+    const float run = std::clamp(out / 0.7f, 0.0f, 1.0f);
+    x += run * run * run * 260.0f;
+  }
   shadow(x + 2, 19, -4, 12);
   const ImU32 body = dead ? IM_COL32(222, 130, 132, 255) : IM_COL32(225, 232, 241, 255);
   const ImU32 belly = dead ? IM_COL32(185, 96, 109, 255) : IM_COL32(157, 188, 204, 255);

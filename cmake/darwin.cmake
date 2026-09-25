@@ -311,6 +311,10 @@ add_library(mv_meta STATIC
   src/meta/af.cpp
   src/meta/format.cpp
   src/meta/tables.cpp
+  src/meta/fields.cpp
+  src/meta/sidecar.cpp
+  src/meta/write.cpp
+  src/meta/write.h
   src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
@@ -406,6 +410,9 @@ add_library(mv_shell STATIC
   src/io/sort_order.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
+  # PR 12: the write queue behind the rating keys and the comment field.
+  src/shell/meta_writer.cpp
+  src/shell/meta_writer.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
@@ -637,6 +644,9 @@ if(MV_BUILD_TESTS)
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
     tests/test_meta_store.cpp
+    # PR 12: the metadata writer, and the host-shared write queue.
+    tests/test_meta_write.cpp
+    tests/test_meta_writer_queue.cpp
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp

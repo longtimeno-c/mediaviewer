@@ -439,6 +439,10 @@ add_library(mv_meta STATIC
   src/meta/af.cpp
   src/meta/format.cpp
   src/meta/tables.cpp
+  src/meta/fields.cpp
+  src/meta/sidecar.cpp
+  src/meta/write.cpp
+  src/meta/write.h
   src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
@@ -560,6 +564,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/marks.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
+  src/shell/meta_writer.cpp
+  src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
   src/shell/edit_view.h
@@ -808,7 +814,11 @@ if(MV_BUILD_TESTS)
     # PR 9 (plan/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp
+    # PR 12: the metadata writer, and the host-shared write queue.
+    tests/test_meta_write.cpp
+    tests/test_meta_writer_queue.cpp
     src/shell/meta_store.cpp
+    src/shell/meta_writer.cpp
     # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp

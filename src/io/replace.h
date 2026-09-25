@@ -29,4 +29,11 @@ namespace mv::io {
 // has already made sure the change is lossless.
 [[nodiscard]] expected replace_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes);
 
+// PR 12 (a new XMP sidecar): like `write_new` — nothing is overwritten, an
+// existing file is `status::io` — but the bytes go to a sibling temporary that
+// is flushed and then given the final name in one step, so a crash mid-write
+// leaves no partial file *under that name* (a half sidecar would poison every
+// later write to the file it sits beside).
+[[nodiscard]] expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes);
+
 }  // namespace mv::io

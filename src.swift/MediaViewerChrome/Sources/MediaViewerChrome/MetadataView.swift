@@ -9,6 +9,8 @@ struct MetadataView: View {
   @ObservedObject private var store = MetadataStore.shared
   @State private var tab: Tab = .summary
   @State private var query = ""
+  @State private var draft = ""
+  @FocusState private var commentFocused: Bool
 
   private enum Tab: String, CaseIterable, Identifiable {
     case summary = "Summary"
@@ -50,6 +52,15 @@ struct MetadataView: View {
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }
     }
+    .onAppear { draft = store.comment }
+    // The host's value moved (another item, a write landed): follow it, unless
+    // the user is in the middle of typing.
+    .onChange(of: store.comment) { _, new in if !commentFocused { draft = new } }
+    // Ctrl+I: the pane is up and the keyboard goes to the comment.
+    .onChange(of: store.focusSeq) { _, _ in
+      tab = .summary
+      commentFocused = true
+    }
   }
 
   // MARK: Summary
@@ -60,7 +71,10 @@ struct MetadataView: View {
         Text(store.loading ? "Reading…" : "Nothing selected").foregroundStyle(.secondary).padding(20)
       } else {
         VStack(alignment: .leading, spacing: 8) {
-          ForEach(store.summary) { row in
+          editControls
+          Divider().padding(.vertical, 4)
+          // Rating and comment have their own controls above.
+          ForEach(store.summary.filter { $0.label != "Rating" && $0.label != "Comment" }) { row in
             HStack(alignment: .firstTextBaseline, spacing: 10) {
               Text(row.label).foregroundStyle(.secondary).frame(width: 100, alignment: .leading)
               Text(row.value.isEmpty ? "—" : row.value)
@@ -73,6 +87,70 @@ struct MetadataView: View {
         .padding(14)
       }
     }
+  }
+
+  // MARK: Rating, comment, revert (PR 12)
+
+  /// The pane's writes. Stars and the comment go to the host's write queue; a
+  /// JPEG is rewritten in place, anything else gets an XMP sidecar beside it.
+  private var editControls: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .center, spacing: 10) {
+        Text("Rating").foregroundStyle(.secondary).frame(width: 100, alignment: .leading)
+        if store.rating < 0 {
+          Label("Rejected", systemImage: "xmark.circle")
+            .foregroundStyle(.secondary)
+        } else {
+          HStack(spacing: 2) {
+            ForEach(1...5, id: \.self) { n in
+              Button {
+                // The star that is already the rating clears it.
+                store.setRating(store.rating == n ? 0 : n)
+              } label: {
+                Image(systemName: n <= store.rating ? "star.fill" : "star")
+                  .foregroundStyle(n <= store.rating ? Color.yellow : Color.secondary)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(n == 1 ? "1 star" : "\(n) stars")
+              .help(store.rating == n ? "Clear the rating" : "\(n) star" + (n == 1 ? "" : "s"))
+            }
+          }
+        }
+        Spacer(minLength: 0)
+      }
+      .disabled(!store.canEdit)
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
+        Text("Comment").foregroundStyle(.secondary).frame(width: 100, alignment: .leading)
+        TextField("Add a comment", text: $draft)
+          .textFieldStyle(.roundedBorder)
+          .focused($commentFocused)
+          .disabled(!store.canEdit)
+          .onSubmit {
+            commitComment()
+            commentFocused = false
+            store.blur()
+          }
+          .onChange(of: commentFocused) { _, focused in
+            if !focused { commitComment() }
+          }
+          // Esc gives the keyboard back to the canvas, dropping what was typed.
+          .onExitCommand {
+            draft = store.comment
+            commentFocused = false
+            store.blur()
+          }
+      }
+      HStack {
+        Spacer(minLength: 0)
+        Button("Revert metadata") { store.revert() }
+          .disabled(!store.canRevert)
+          .help("Put the rating, comment and orientation back to how this file was before this session's first change")
+      }
+    }
+  }
+
+  private func commitComment() {
+    if draft != store.comment { store.setComment(draft) }
   }
 
   // MARK: Full tree
