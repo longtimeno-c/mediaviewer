@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "codec/decode.h"
@@ -98,6 +99,31 @@ TEST_CASE("a cancelled PNG decode stops before finishing", "[codec][png]") {
   auto img = decode_png(bytes, &ctx);
   REQUIRE_FALSE(img);
   REQUIRE(img.error() == mv::status::cancelled);
+}
+
+TEST_CASE("a JPEG header declaring a gigapixel is refused without allocating it",
+          "[codec][jpeg]") {
+  // fuzz_jpeg (CI run 36159301248): 291 bytes whose SOF0 declares 56528x18759.
+  // libjpeg sizes its working memory from that inside jpeg_start_decompress,
+  // before our output check, so this cost 2.1 GB at 1:1 and 6.9 GB at 1/4
+  // until the decoder gave libjpeg a memory budget.
+  const char* hex =
+      "ffd8ffe000104a4649006d6e7472520807070000ffdb0043000a070708073439003b3e3e4947"
+      "4946383961433ce0100d0a110e0b0b1016101113141515150c0f171816141812140e14ffdb00"
+      "43010304040504050b053005140d0b0d14141414141414141414141414141414141414141414"
+      "14141414141414141414141c14141414141414141414141414111414ffc00011084947dcd003"
+      "011100021101031101ff00104a4649006d6e520807072b00ffdb0043000a070708073439003b"
+      "3e3e49433c1e1e1e1e1e1e1e1e1e1e1e1e48373d3e3bffc0000b0c0020003001011100ffc400"
+      "1f0000010501010101010100000000000000000102030405065a0200000708090a0b3bc400b5"
+      "f4f5f6f7f8fdfaffda0008010100003f3fa575003f001c6674";
+  std::vector<std::uint8_t> bytes;
+  for (const char* p = hex; p[0] && p[1]; p += 2) {
+    bytes.push_back(static_cast<std::uint8_t>(std::strtoul(std::string(p, 2).c_str(), nullptr, 16)));
+  }
+  REQUIRE(bytes.size() == 291);
+  for (int scale : {1, 2, 4, 8}) {
+    CHECK_FALSE(mv::codec::decode_jpeg(bytes, nullptr, scale));
+  }
 }
 
 TEST_CASE("truncated JPEG is corrupt", "[codec][jpeg]") {
