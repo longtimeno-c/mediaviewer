@@ -2294,3 +2294,23 @@ Three owner calls when the handler was started, and one finding that shaped it.
   thumbnail" and cancels the decode. It still declares its own `DllSurrogate` AppID as plan/09
   asks. `shellext/` is a new host module beside `shell/` (tools/check-module-graph.ps1), and
   `fuzz_thumbnail` fuzzes its entry point.
+
+## 2026-09-25 (later) — PR 15 ships single instance; windows grouped as tabs become their own PR
+
+Amends this morning's PR 15 scope entry. Building it showed that both chromes are one-window by
+construction: the C# chrome is a single `static partial class IslandHost` (islands, dispatcher,
+folder session, SMTC and Share are singletons), and the SwiftUI chrome reaches the host through
+102 bridge functions routed to one global window controller. A window per viewer means making
+both per-window, plus the two-window present-loop gates: more work than the rest of PR 15, so
+the owner split it out.
+
+- **PR 15 ships the single instance.** Windows: a second start (Explorer, the jump list, a
+  shortcut) hands its paths over a per-user, per-session named pipe
+  (`\\.\pipe\MediaViewer.Viewer.<session>.<SID>`, first-instance, local clients only) to the
+  running app, which opens them in its window and comes forward; `--new-instance` overrides, and
+  soaks, `--no-chrome` and an update's restart always run alone. macOS: Launch Services already
+  routes a second open to the running app (`application:openURLs:`), which opens it in its window.
+- **Multi-window + OS tabs + `Ctrl+Tab` / `⌃Tab` is a later PR** (unnumbered until planned), with
+  this morning's model unchanged: one process, a window per viewer, grouped by the OS.
+- **Verify lines amended:** macOS "a second open of a file goes to the running instance as a tab"
+  becomes "…goes to the running instance and opens in its window"; Windows gains the same check.

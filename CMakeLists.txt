@@ -648,6 +648,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/os_integration.h
   src/shell/shellext_install.cpp
   src/shell/shellext_install.h
+  src/shell/single_instance_win.cpp
+  src/shell/single_instance_win.h
   src/shell/slideshow.h
   src/shell/navigation.h
   src/shell/settings.cpp

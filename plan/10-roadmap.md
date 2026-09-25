@@ -574,9 +574,12 @@ fuzzed (`fuzz_thumbnail`). The property handler is deferred (HKLM only; [12](12-
 the system already indexes every D5 still). Loaded directly it returns every field; inside
 `mdworker` an ad-hoc-signed dev build did not run, so its verify needs the installed,
 Developer ID-signed app.
-**Still to do:** single instance with
-windows grouped as tabs and `Ctrl+Tab`, drag-out of the flattened view
-(`CFSTR_FILEDESCRIPTOR`, `NSFilePromiseProvider`), and both platforms' verify lines.*
+**Drag-out and single instance (written, 2026-09-25):** `Ctrl+Alt+drag` / `⌘⌥-drag` drags the
+edited copy (a file promise on the Mac; on Windows the bake lands first, then a `CF_HDROP` drag,
+so no drop target ever waits on the UI thread). A second start hands its paths to the running
+app (a named pipe on Windows, Launch Services on the Mac). **Windows grouped as tabs and
+`Ctrl+Tab` moved to their own PR** ([12](12-decision-log.md) 2026-09-25 (later)).
+**Still to do:** both platforms' verify lines.*
 
 *Status 2026-09-25: **not started.** PR 8's installer registers the `ProgId`s and `OpenWithProgids`
 (a partial overlap with the Windows half below), and Windows already has SMTC transport from PR 5;
@@ -612,10 +615,12 @@ your thumbnail and the MediaViewer file-type icon; a **deliberately corrupted** 
 browsed folder leaves Explorer running; uninstall removes every association. The running
 window and taskbar button use the app icon, not the default exe. Accepting the default-app
 offer opens Default Apps rather than writing `UserChoice`; declining leaves existing
-defaults unchanged.
+defaults unchanged. Opening a second file from Explorer while the app runs opens it in the
+running window; no second window or process stays.
 
 **Verify (macOS):** Mac PR 8's Finder verify still holds. The Dock menu lists recent folders
-and opens one. A second open of a file goes to the running instance as a tab. Transport
+and opens one. A second open of a file goes to the running instance and opens in its window
+(tabs are a later PR, [12](12-decision-log.md) 2026-09-25 (later)). Transport
 from the Now Playing controls drives the clip. `⌘C` of a still pastes as a file in Finder.
 Share opens the system picker with the file. Dragging the app to the Trash still removes
 every extension.

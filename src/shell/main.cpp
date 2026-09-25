@@ -76,6 +76,7 @@
 #include "shell/present_lab.h"
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
+#include "shell/single_instance_win.h"
 #include "shell/telemetry.h"
 #include "shell/update_guard.h"
 #include "shell/av_soak.h"
@@ -114,6 +115,7 @@ constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
 // PR 15 (plan/10 "OS integration").
 constexpr UINT kMsgFlattenDone = WM_APP + 0x76;     // Ctrl+Alt+C's bake finished (any thread posts)
 constexpr UINT kMsgJumpListPruned = WM_APP + 0x77;  // folders the user removed from the jump list
+constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed over its paths
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -302,6 +304,8 @@ struct app_state {
   ITaskbarList3* taskbar = nullptr;
   HICON thumb_icons[4]{};  // prev, play, pause, next
   int thumb_state = -1;
+  // PR 15: the single instance. A second start hands its paths over here.
+  mv::shell::instance_listener instance;
   std::uint64_t folder_token = 0;         // bumped per folder open
   // plan/16 slideshow, a mode: order and interval in `show`, advancing through
   // the same folder_select as browse.
@@ -332,6 +336,9 @@ struct pending_restore {
   bool fullscreen = false;
   bool gallery = false;
 } g_restore;
+// PR 15: `--new-instance` runs a second, independent window (plan/09
+// "overridable"); without it a second start hands its paths to the first.
+bool g_new_instance = false;
 
 // --browse-soak. Neighbours of the open photo are decoded ahead (±1, ±2, no
 // wrap). Cold jumps are the photos past that window, taken before the walk
@@ -4768,6 +4775,16 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
       return 0;
 
+    case kMsgOpenForwarded: {
+      // A second start's paths (plan/09): opened here, as a drop would be, and
+      // the window comes forward. An empty hand-off only brings it forward.
+      std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
+      if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
+      if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
+      ::SetForegroundWindow(hwnd);
+      return 0;
+    }
+
     case kMsgJumpListPruned:
       on_jump_list_pruned(app, std::unique_ptr<std::vector<std::string>>(
                                    reinterpret_cast<std::vector<std::string>*>(lparam)));
@@ -4903,6 +4920,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_DESTROY:
+      app->instance.stop();
       release_taskbar(app);
       app->chrome.detach();
       ::PostQuitMessage(0);
@@ -4982,6 +5000,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
         const unsigned long pct = std::wcstoul(value.c_str(), nullptr, 10);
         g_restore.zoom_percent = pct <= 6400 ? static_cast<unsigned>(pct) : 0;
       }
+    } else if (arg == L"--new-instance") {
+      g_new_instance = true;
     } else if (arg == L"--restore-fullscreen") {
       g_restore.fullscreen = true;
     } else if (arg == L"--restore-gallery") {
@@ -5050,6 +5070,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::MessageBoxW(nullptr, parse_error.c_str(), kWindowTitle, MB_ICONERROR | MB_OK);
     return 2;
   }
+
+  // PR 15: one MediaViewer per user. A plain start (Explorer, the jump list,
+  // a shortcut) hands its paths to the one already running and exits. Soaks,
+  // --no-chrome, an update's restart (the old process may still be closing)
+  // and --new-instance always run on their own.
+  const bool single_instance = chrome_enabled && !g_new_instance && options.soak_seconds == 0.0 &&
+                               options.av_soak_seconds == 0 && !g_browse.enabled && !options.scripted_pan &&
+                               g_restore.zoom_percent == 0 && !g_restore.fullscreen && !g_restore.gallery;
+  if (single_instance && mv::shell::forward_to_running_instance(requested_paths)) return 0;
 
   if (options.av_soak_seconds) {
     const auto clip = utf8_from_wide(requested_paths.empty() ? std::wstring_view{}
@@ -5161,6 +5190,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::MessageBoxA(nullptr, "render thread failed to start", "MediaViewer", MB_ICONERROR | MB_OK);
     mv_session_release(app.session);
     return 2;
+  }
+  if (single_instance && !app.instance.start(hwnd, kMsgOpenForwarded)) {
+    MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
   }
   // PR 15: the Explorer thumbnail handler for this version, copied and
   // registered off the UI thread (shell/shellext_install.h). Installed builds only.
