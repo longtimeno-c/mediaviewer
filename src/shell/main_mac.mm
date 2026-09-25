@@ -1598,6 +1598,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
         [weakClip clipCompletion:copy];
       });
     });
+    // Encode and decode jobs run in MediaViewerClipJob, never in the viewer
+    // (plan/12 2026-09-25): Contents/Helpers in the app, beside the lab in a
+    // build tree. Set even when missing, so those jobs fail instead.
+    NSString* macos = [[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent];
+    NSString* bundled = [[macos stringByAppendingPathComponent:@"../Helpers/MediaViewerClipJob"]
+        stringByStandardizingPath];
+    NSString* beside = [macos stringByAppendingPathComponent:@"MediaViewerClipJob"];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* helper = [fm isExecutableFileAtPath:bundled] || ![fm isExecutableFileAtPath:beside] ? bundled : beside;
+    _clipJobs->set_helper(helper.UTF8String ? helper.UTF8String : "");
   }
   [NSLayoutConstraint activateConstraints:@[
     [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],

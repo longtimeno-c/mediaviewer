@@ -2126,6 +2126,15 @@ void push_addon_completion(mv_session_t session, const mv_completion& c) noexcep
 // ---------------------------------------------------------------------------
 extern "C" {
 
+mv_status MV_CALL mv_clip_set_helper(mv_session_t session, const char* utf8_helper_path) {
+  return static_cast<mv_status>(guard("mv_clip_set_helper", [&]() -> status {
+    MV_REQUIRE(valid(session) && session->clip, "session must not be null");
+    MV_REQUIRE(utf8_helper_path != nullptr && utf8_helper_path[0] != '\0', "utf8_helper_path must not be empty");
+    session->clip->set_helper(utf8_helper_path);
+    return status::ok;
+  }));
+}
+
 mv_status MV_CALL mv_clip_index_request(mv_session_t session, const char* utf8_path,
                                         uint64_t* out_request_id) {
   return static_cast<mv_status>(guard("mv_clip_index_request", [&]() -> status {

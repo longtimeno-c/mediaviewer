@@ -244,6 +244,8 @@ add_library(mv_io STATIC
   src/io/file_port.cpp
   src/io/file_port.h
   src/io/file_port_win.cpp
+  src/io/child_process.h
+  src/io/child_process_win.cpp
   src/io/verified_copy.cpp
   src/io/verified_copy.h
   src/io/volume.h
@@ -502,6 +504,10 @@ add_library(mv_clip STATIC
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
   src/edit/clip_jobs.h
+  src/edit/clip_wire.cpp
+  src/edit/clip_wire.h
+  src/edit/clip_helper.cpp
+  src/edit/clip_helper.h
   src/edit/hwencode.h
   src/edit/hwencode_win.cpp
 )
@@ -511,6 +517,14 @@ target_link_libraries(mv_clip
   PUBLIC mv_core mv_io
   PRIVATE mv_edit ${FFMPEG_LIBRARIES})
 add_library(mv::clip ALIAS mv_clip)
+
+# MediaViewerClipJob.exe -- PR 13 / 14's encode and decode jobs, out of process
+# (plan/08 "Execution & UX"; plan/12 2026-09-25). Beside MediaViewer.exe; no
+# mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
+add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options)
+target_include_directories(MediaViewerClipJob PRIVATE src)
+mv_asan_runtime_beside(MediaViewerClipJob)
 
 # ---------------------------------------------------------------------------
 # Milestone G: the add-on host (mv_addon, in the base app) and the Import
@@ -644,6 +658,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+add_dependencies(mediaviewer_lab MediaViewerClipJob)
 mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
 set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
@@ -852,6 +867,7 @@ if(MV_BUILD_TESTS)
     src/shell/adjust_pane.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
+    tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
     src/abi/clip_session.cpp
@@ -931,6 +947,15 @@ if(MV_BUILD_TESTS)
     uuid
     mv_io)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+  # The clip helper with its test hooks (a crash, a hang, a software encoder);
+  # the product MediaViewerClipJob.exe is built without them.
+  add_executable(mv_clipjob_test tools/clipjob/main.cpp)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options)
+  target_include_directories(mv_clipjob_test PRIVATE src)
+  target_compile_definitions(mv_clipjob_test PRIVATE MV_CLIPJOB_TEST_HOOKS=1)
+  mv_asan_runtime_beside(mv_clipjob_test)
+  target_compile_definitions(mv_tests PRIVATE MV_CLIPJOB_PATH="$<TARGET_FILE:mv_clipjob_test>")
+  add_dependencies(mv_tests mv_clipjob_test)
   # Before catch_discover_tests below: discovery runs this exe, and it must not
   # have to borrow MSBuild's PATH to start.
   mv_asan_runtime_beside(mv_tests)

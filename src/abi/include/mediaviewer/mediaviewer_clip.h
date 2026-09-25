@@ -84,6 +84,15 @@ typedef struct mv_clip_progress {
   char source_name_utf8[256]; /* file name only, for display */
 } mv_clip_progress;
 
+/* The MediaViewerClipJob helper (UTF-8 path; copied). Once set, every job
+ * that opens a decoder or an encoder (re-encode, frame, WAV / FLAC, GIF /
+ * WebP) runs in that helper process, so a crash in a driver's encoder fails
+ * the job and not the viewer; if the helper cannot be started those jobs
+ * fail with MV_ERR_IO and are never run in the viewer's process. Stream-copy
+ * jobs always run in process. Hosts set it once, before the first submit.
+ * [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_clip_set_helper(mv_session_t session, const char* utf8_helper_path);
+
 /* Reads the clip's keyframe index on a pool worker (packets, never decoded).
  * `out_request_id` names the MV_COMPLETION_CLIP_INDEX that answers. */
 MV_API mv_status MV_CALL mv_clip_index_request(mv_session_t session, const char* utf8_path,

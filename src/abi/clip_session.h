@@ -31,6 +31,9 @@ class clip_session {
   clip_session(const clip_session&) = delete;
   clip_session& operator=(const clip_session&) = delete;
 
+  // The MediaViewerClipJob executable; see mv_clip_set_helper.
+  void set_helper(std::string helper_utf8) { queue_.set_helper(std::move(helper_utf8)); }
+
   [[nodiscard]] status request_index(std::string path, std::uint64_t& out_id);
   [[nodiscard]] status index_get(std::uint64_t id, std::int64_t* keyframes, std::uint32_t cap,
                                  std::uint32_t* out_count, std::int64_t* out_duration) const;

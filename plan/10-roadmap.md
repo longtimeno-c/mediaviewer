@@ -513,9 +513,9 @@ port `edit/hwencode_{win,mac,none}.cpp`, ABI 0.10 (`mediaviewer_clip.h`), trim m
 on both hosts, the WinUI transport overlay + Jobs pane and their SwiftUI twins. Proved on Linux: the
 core suites (keyframe trim proportional and on the grid, Path 2 frame-accurate through a software
 test encoder, source untouched, cancel leaves nothing; a 968 MB keyframe trim in 1.0 s). Owed: the
-first MSVC and Xcode builds, the hardware-encoder runs, both present-loop gates. Departures (jobs
-in-process rather than a child process — an open owner call — FFmpeg's hardware wrappers as the
-encode port, audio stream-copied on Path 2): [12](12-decision-log.md) 2026-09-25.*
+first MSVC and Xcode builds, the hardware-encoder runs, both present-loop gates. Encode and decode
+jobs run in the `MediaViewerClipJob` helper process (owner's call). Departures (FFmpeg's hardware
+wrappers as the encode port, audio stream-copied on Path 2): [12](12-decision-log.md) 2026-09-25.*
 
 **Shared:** in/out model, keyframe index for the scrub-bar grid, Path 1 keyframe trim
 (FFmpeg stream copy, platform-neutral), the cancellable job queue and the A–B loop preview.

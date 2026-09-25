@@ -2031,12 +2031,18 @@ Host-side trim mode is `shell/trim_state` (shared), with `mode::trim` in the rou
   encoder takes P010), else H.264; colour tags and the display matrix are carried. **Audio is stream-
   copied** (no software AAC encoder, plan/11), so Path 2's audio edges are packet-accurate, not
   sample-accurate.
-- **Jobs run in-process** on the queue's own worker, not in a child process as plan/08's
-  "Execution & UX" suggests. Cancellation is a flag checked per packet plus FFmpeg's AVIO interrupt
-  callback; outputs go to a hidden `.<name>.mvpart` sibling and are published with
-  `io::rename_no_replace`, so a cancel, a failure or a quit leaves nothing (tested). What is lost is
-  crash isolation for a GPU driver's encoder. **Open, for the owner:** move `trim_reencode` into a
-  helper process before PR 13 ships to users, or accept in-process. Not decided silently.
+- **Encode and decode jobs run in a helper process** (owner's call, 2026-09-25: "the main app
+  shouldn't be affected"). `MediaViewerClipJob` (`tools/clipjob`; beside `MediaViewer.exe`, in
+  `Contents/Helpers` on Mac) runs every job that opens a decoder or an encoder — Path 2, frame,
+  WAV / FLAC, GIF / WebP — speaking a line protocol (`edit/clip_wire.h`) over its stdin / stdout
+  through the new `io/child_process` port (`CreateProcessW` in a kill-on-close job object;
+  `posix_spawn`). Stream-copy jobs stay in process, as plan/08 says: they open no codec. Cancel
+  asks the helper, which removes its own temporaries; after 5 s it is killed and the queue sweeps
+  the `.mvpart` files. A crash fails the one job (`MV_ERR_INTERNAL`) and the viewer carries on. The
+  hosts always set the helper (`mv_clip_set_helper`); if it is missing, those jobs fail with
+  `MV_ERR_IO` and are never run in the viewer. Tested with a test build of the helper that can
+  crash, hang past a cancel, or use a software encoder (`mv_clipjob_test`; hooks never compiled into
+  the product helper).
 - **Decode inside a job is software**, on the job's thread — never the player's D3D11VA /
   VideoToolbox decoder on the render device, whose surface pool the canvas presents from (plan/05).
 - **The keyframe grid reads every video packet** (other streams discarded, nothing decoded).
@@ -2093,4 +2099,5 @@ keyframe trim in seconds, a Path 2 trim on NVENC / Quick Sync / AMF / MF checked
 Jobs pane cancel, and PR 1's present-loop gate. macOS: the first Xcode / SwiftPM build of
 `main_mac.mm` and the Swift views; the same verify, plus "the re-encode shows VideoToolbox active"
 (Activity Monitor / `powermetrics`) and "no software encoder is linked" (`nm` of the FFmpeg dylibs for
-`libx264` / `libx265`); the Mac PR 1 Metal gate. Both: the child-process question above.
+`libx264` / `libx265`); the Mac PR 1 Metal gate. Both: `MediaViewerClipJob` signed and shipped
+(the Windows payload picks it up by name; `macpack.py --clipjob` puts it in Contents/Helpers).

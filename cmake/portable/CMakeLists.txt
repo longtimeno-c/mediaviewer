@@ -83,6 +83,7 @@ add_library(mv_io STATIC
   "${MV_ROOT}/src/io/volume_mac.cpp"
   "${MV_ROOT}/src/io/paths_mac.cpp"
   "${MV_ROOT}/src/io/replace_mac.cpp"
+  "${MV_ROOT}/src/io/child_process_posix.cpp"
 )
 target_include_directories(mv_io PUBLIC "${MV_ROOT}/src")
 target_link_libraries(mv_io PUBLIC mv_project_options PRIVATE ${MV_BLAKE3_TARGET})
@@ -154,6 +155,8 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_encode.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
+    "${MV_ROOT}/src/edit/clip_wire.cpp"
+    "${MV_ROOT}/src/edit/clip_helper.cpp"
     "${MV_ROOT}/src/edit/hwencode_none.cpp"
     "${MV_ROOT}/src/edit/encode.cpp"
   )
@@ -161,13 +164,22 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
   target_link_libraries(mv_clip PUBLIC mv_io mv_project_options PkgConfig::MV_FFMPEG
     PRIVATE PkgConfig::MV_SPNG JPEG::JPEG)
 
+  # The clip helper (tools/clipjob) with its test hooks: a crash, a hang, a
+  # software encoder. The product helper is built without them.
+  add_executable(mv_clipjob_test "${MV_ROOT}/tools/clipjob/main.cpp")
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip)
+  target_compile_definitions(mv_clipjob_test PRIVATE MV_CLIPJOB_TEST_HOOKS=1)
+
   add_executable(mv_clip_tests
+    "${MV_ROOT}/tests/test_clip_helper.cpp"
     "${MV_ROOT}/tests/test_clip.cpp"
     "${MV_ROOT}/tests/test_clip_session.cpp"
     "${MV_ROOT}/src/abi/clip_session.cpp")
   target_link_libraries(mv_clip_tests PRIVATE mv_clip PkgConfig::MV_SPNG ${MV_CATCH2_TARGET})
   target_include_directories(mv_clip_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests"
     "${MV_ROOT}/src/abi/include")
+  target_compile_definitions(mv_clip_tests PRIVATE MV_CLIPJOB_PATH="$<TARGET_FILE:mv_clipjob_test>")
+  add_dependencies(mv_clip_tests mv_clipjob_test)
   add_test(NAME mv_clip_tests COMMAND mv_clip_tests)
 
   # The host-side trim model and the command table rows it adds (shell/ code

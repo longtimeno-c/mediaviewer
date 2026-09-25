@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include "edit/clip_helper.h"
+#include "edit/clip_wire.h"
 #include "edit/hwencode.h"
 #include "io/file_port.h"
 
@@ -44,6 +46,11 @@ job_queue::~job_queue() {
   }
   cv_.notify_all();
   if (thread_.joinable()) thread_.join();
+}
+
+void job_queue::set_helper(std::string helper_utf8) {
+  std::lock_guard lock(mu_);
+  helper_ = std::move(helper_utf8);
 }
 
 void job_queue::set_listener(job_listener fn, void* user) noexcept {
@@ -181,7 +188,13 @@ void job_queue::worker() noexcept {
     ctl.cancel = &next->cancel;
     ctl.progress = on_progress;
     ctl.user = &next->fraction;
-    auto r = run(next->req, ctl);
+    std::string helper;
+    {
+      std::lock_guard lock(mu_);
+      helper = helper_;
+    }
+    auto r = !helper.empty() && wire::runs_in_helper(next->req) ? run_in_helper(helper, next->req, ctl)
+                                                                 : run(next->req, ctl);
     job_state final_state = job_state::done;
     const std::uint64_t id = next->id;  // `next` may be cleared once finished
     {

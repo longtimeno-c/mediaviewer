@@ -60,6 +60,13 @@ class job_queue {
   // Set once, before the first submit.
   void set_listener(job_listener fn, void* user) noexcept;
 
+  // The MediaViewerClipJob executable (UTF-8). Once set, every job that opens
+  // a decoder or an encoder (clip_wire.h runs_in_helper) runs in it, never in
+  // this process; a missing helper fails those jobs rather than running them
+  // here (plan/12 2026-09-25, owner: "the main app shouldn't be affected").
+  // Unset (the core tests), everything runs in process.
+  void set_helper(std::string helper_utf8);
+
   // Returns the job id (never 0).
   std::uint64_t submit(request req);
   // False if the id is unknown or already finished.
@@ -87,6 +94,7 @@ class job_queue {
   std::atomic<int> active_{0};
   job_listener listener_ = nullptr;
   void* listener_user_ = nullptr;
+  std::string helper_;  // guarded by mu_
   std::thread thread_;
 };
 

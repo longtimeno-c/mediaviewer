@@ -202,6 +202,8 @@ add_library(mv_io STATIC
   src/io/file_port.cpp
   src/io/file_port.h
   src/io/file_port_mac.cpp
+  src/io/child_process.h
+  src/io/child_process_posix.cpp
   src/io/verified_copy.cpp
   src/io/verified_copy.h
   src/io/volume.h
@@ -371,6 +373,10 @@ add_library(mv_clip STATIC
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
   src/edit/clip_jobs.h
+  src/edit/clip_wire.cpp
+  src/edit/clip_wire.h
+  src/edit/clip_helper.cpp
+  src/edit/clip_helper.h
   src/edit/hwencode.h
   src/edit/hwencode_mac.cpp
 )
@@ -380,6 +386,12 @@ target_link_libraries(mv_clip
   PUBLIC mv_core mv_io
   PRIVATE mv_edit ${FFMPEG_LIBRARIES})
 add_library(mv::clip ALIAS mv_clip)
+
+# MediaViewerClipJob -- encode and decode jobs out of process (plan/12
+# 2026-09-25). Beside mediaviewer_lab; macpack.py puts it in Contents/Helpers.
+add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip)
+target_include_directories(MediaViewerClipJob PRIVATE src)
 
 # ---------------------------------------------------------------------------
 # Milestone G: the add-on host (in the app) and the Import add-on
@@ -570,6 +582,7 @@ function(mv_mac_host target)
 endfunction()
 
 mv_mac_host(mediaviewer_lab)
+add_dependencies(mediaviewer_lab MediaViewerClipJob)
 
 # ---------------------------------------------------------------------------
 # Milestone G: Import.bundle, the Import add-on's SwiftUI chrome. Built beside
@@ -679,6 +692,7 @@ if(MV_BUILD_TESTS)
     src/shell/minidump_scrub.cpp
     # PR 13 / 14: the clip core on synthetic clips, the clip session, trim mode.
     tests/test_clip.cpp
+    tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
   )
@@ -706,6 +720,13 @@ if(MV_BUILD_TESTS)
     lcms2::lcms2
     Catch2::Catch2WithMain)
   target_include_directories(mv_tests PRIVATE src tools tests src/abi/include)
+  # The clip helper with its test hooks (a crash, a hang, a software encoder).
+  add_executable(mv_clipjob_test tools/clipjob/main.cpp)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip)
+  target_include_directories(mv_clipjob_test PRIVATE src)
+  target_compile_definitions(mv_clipjob_test PRIVATE MV_CLIPJOB_TEST_HOOKS=1)
+  target_compile_definitions(mv_tests PRIVATE MV_CLIPJOB_PATH="$<TARGET_FILE:mv_clipjob_test>")
+  add_dependencies(mv_tests mv_clipjob_test)
   # test_meta.cpp writes fixtures with Exiv2 and libavformat's muxer.
   target_include_directories(mv_tests SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
   target_link_directories(mv_tests PRIVATE ${FFMPEG_LIBRARY_DIRS})

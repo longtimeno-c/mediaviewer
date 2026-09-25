@@ -4327,6 +4327,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   // PR 9: the saved folder sort applies to every open from here on.
   (void)mv_folder_set_sort(app.session, app.settings.sort);
+  // PR 13 / 14: every clip job that opens a decoder or an encoder runs in
+  // MediaViewerClipJob.exe beside this exe, never in the viewer (plan/12
+  // 2026-09-25). Set even if the file is missing: those jobs then fail
+  // rather than run here.
+  {
+    std::wstring exe(32768, L'\0');
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
+    exe.resize(n);
+    const std::size_t slash = exe.find_last_of(L"\\/");
+    if (n > 0 && slash != std::wstring::npos) {
+      const std::string helper = utf8_from_wide(exe.substr(0, slash + 1) + L"MediaViewerClipJob.exe");
+      (void)mv_clip_set_helper(app.session, helper.c_str());
+    }
+  }
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
