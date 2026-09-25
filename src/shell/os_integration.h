@@ -41,4 +41,25 @@ inline constexpr std::size_t kMaxRecentFolders = 10;
 [[nodiscard]] std::string paths_as_text(std::span<const std::string> utf8_paths,
                                         std::string_view newline);
 
+// ---- The Explorer thumbnail handler's install (Windows; the rule is pure) ----
+// The handler runs from <root>\shellext\<version>\, a copy made by the app,
+// never from current\: a surrogate can hold the DLL for minutes after
+// Explorer last asked, and an update must not have to replace it.
+
+// MediaViewerThumbs.files: one file name per line (the handler, then the DLLs
+// it loads). Blank lines and a trailing CR are ignored. A name with a path
+// separator, a drive, or "." / ".." is refused, and so is the whole list:
+// the copy never leaves the folders it was given.
+[[nodiscard]] std::vector<std::string> parse_shellext_file_list(std::string_view text);
+
+struct shellext_plan {
+  std::string version_dir;          // the folder name under <root>\shellext
+  std::vector<std::string> prune;   // older folders to try to remove
+};
+// `version` must be a plain version string (letters, digits, `.`, `-`, `+`);
+// anything else is no plan (empty version_dir). `existing` is what
+// <root>\shellext holds now; every other entry there is pruned.
+[[nodiscard]] shellext_plan plan_shellext_install(std::string_view version,
+                                                  std::span<const std::string> existing);
+
 }  // namespace mv::shell

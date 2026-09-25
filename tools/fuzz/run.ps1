@@ -50,6 +50,7 @@ $table = [ordered]@{
     raw         = @{ Seeds = @('raw', 'tiff');                          MaxLen = 262144 }
     raw_preview = @{ Seeds = @('raw', 'tiff', 'jpeg');                  MaxLen = 262144 }
     decode      = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
+    thumbnail   = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
 }
 

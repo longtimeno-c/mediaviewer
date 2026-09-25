@@ -7,6 +7,7 @@
 // Darwin (plan/12 2026-09-17).
 #include "image/thumb.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -223,8 +224,9 @@ result<std::vector<std::uint8_t>> encode_thumb_rgba(std::span<const std::uint8_t
   return codec::encode_jpeg_rgba(rgba.subspan(0, need), width, height, kThumbJpegQuality);
 }
 
-result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> src_bytes,
-                                                  const job_context* ctx) {
+result<thumb_pixels> make_thumb_rgba(std::span<const std::uint8_t> src_bytes,
+                                     std::uint32_t max_long_edge, const job_context* ctx) {
+  if (max_long_edge == 0) return err(status::invalid_arg);
   result<display_image> decoded = err(status::unsupported_format);
   if (codec::probe(src_bytes) == codec::format_family::jpeg) {
     int denom = 1;
@@ -232,7 +234,7 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
       const std::uint32_t edge = size.value().width > size.value().height ? size.value().width
                                                                           : size.value().height;
       for (int candidate : {8, 4, 2}) {
-        if (edge / static_cast<std::uint32_t>(candidate) >= kThumbLongEdge) {
+        if (edge / static_cast<std::uint32_t>(candidate) >= max_long_edge) {
           denom = candidate;
           break;
         }
@@ -267,27 +269,26 @@ result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> 
   if (ctx && ctx->cancelled()) return err(status::cancelled);
 
   display_image& img = decoded.value();
-  std::uint32_t dw = img.width;
-  std::uint32_t dh = img.height;
-  if (dw == 0 || dh == 0) return err(status::corrupt);
-  const std::uint32_t long_edge = dw > dh ? dw : dh;
-  std::vector<std::uint8_t> rgba;
-  const std::uint8_t* pixels = img.rgba.data();
-  std::uint32_t pw = dw;
-  std::uint32_t ph = dh;
-  if (long_edge > kThumbLongEdge) {
-    dw = dw * kThumbLongEdge / long_edge;
-    dh = dh * kThumbLongEdge / long_edge;
-    if (dw == 0) dw = 1;
-    if (dh == 0) dh = 1;
-    box_fit_rgba(img, dw, dh, rgba);
-    pixels = rgba.data();
-    pw = dw;
-    ph = dh;
+  if (img.width == 0 || img.height == 0) return err(status::corrupt);
+  const std::uint32_t long_edge = img.width > img.height ? img.width : img.height;
+  thumb_pixels out;
+  if (long_edge > max_long_edge) {
+    out.width = std::max<std::uint32_t>(1, img.width * max_long_edge / long_edge);
+    out.height = std::max<std::uint32_t>(1, img.height * max_long_edge / long_edge);
+    box_fit_rgba(img, out.width, out.height, out.rgba);
+  } else {
+    out.width = img.width;
+    out.height = img.height;
+    out.rgba = std::move(img.rgba);
   }
   if (ctx && ctx->cancelled()) return err(status::cancelled);
-  return codec::encode_jpeg_rgba(std::span<const std::uint8_t>(pixels, static_cast<std::size_t>(pw) * ph * 4u),
-                                 pw, ph, kThumbJpegQuality);
+  return out;
+}
+
+result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> src_bytes,
+                                                  const job_context* ctx) {
+  MV_TRY(thumb_pixels t, make_thumb_rgba(src_bytes, kThumbLongEdge, ctx));
+  return codec::encode_jpeg_rgba(t.rgba, t.width, t.height, kThumbJpegQuality);
 }
 
 }  // namespace mv::image

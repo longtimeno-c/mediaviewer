@@ -558,7 +558,11 @@ the taskbar's thumbnail transport buttons, and Now Playing / `MPRemoteCommandCen
 Mac. The process and its shortcuts share one AppUserModelID (`MediaViewer.Viewer`) so the
 pinned button, the window and the jump list are one entry. macOS half built and the shared
 tests pass on macOS; the Windows half awaits its first MSVC / clang-cl build in CI.
-**Still to do:** the out-of-process thumbnail + property handlers, single instance with
+**Explorer thumbnails (written, 2026-09-25):** `MediaViewerThumbs.dll` (`src/shellext/`), an
+`IThumbnailProvider` over `IInitializeWithStream` on the `MediaViewer.Image` ProgId, run from a
+versioned copy under `<root>\shellext`, with its portable request path tested on macOS and
+fuzzed (`fuzz_thumbnail`). The property handler is deferred (HKLM only; [12](12-decision-log.md)).
+**Still to do:** single instance with
 windows grouped as tabs and `Ctrl+Tab`, drag-out of the flattened view
 (`CFSTR_FILEDESCRIPTOR`, `NSFilePromiseProvider`), the Spotlight importer, and both
 platforms' verify lines.*

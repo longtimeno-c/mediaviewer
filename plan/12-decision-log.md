@@ -2147,3 +2147,29 @@ Two calls the roadmap left open for PR 15, answered by the owner when the slice 
   list has nowhere stable to live. The process sets it before its first window, the wizard's
   shortcuts carry it (`mediaviewer.iss` [Icons]), and the jump list is committed under it. It is
   never renamed: pins are keyed on it. Jump list entries start the root stub, as the shortcuts do.
+
+## 2026-09-25 — PR 15 Explorer handler: thumbnails only, on our ProgId, from a versioned copy
+
+Three owner calls when the handler was started, and one finding that shaped it.
+
+- **Property handler deferred.** Windows reads property handlers only from
+  `HKLM\…\PropertySystem\PropertyHandlers`; a per-user, no-UAC install (plan/13) cannot register
+  one. PR 15 ships the thumbnail handler alone. The property handler waits for the enterprise MSI
+  or a later opt-in elevated step. The Windows verify line's "Explorer shows your thumbnail"
+  stands; nothing in it needed the Details pane.
+- **Registered on `MediaViewer.Image` only**, never on an extension. Explorer then uses our
+  thumbnails exactly for the types the user made MediaViewer the default for, and a Microsoft
+  HEIF / Raw Image Extension is never overridden ("never silently hijack"). Video gets none, as on
+  the Mac (2026-09-24).
+- **The DLL runs from `<root>\shellext\<version>\`**, copied from `current\` with the DLLs it loads
+  (the build writes `MediaViewerThumbs.files`) on the first start of a version, and registered
+  there per-user. A surrogate may hold the DLL for minutes; an update swaps `current\` and never
+  has to replace a DLL in use. Older copies are removed once free. Uninstall deletes the keys and
+  the folder.
+- **Finding: the surrogate is shared.** A handler that initialises from a stream is run by the
+  shell in an isolated `dllhost.exe` that may host other vendors' handlers too. The handler
+  therefore changes nothing process-wide (no job object, no DLL search path); it caps its own
+  work instead: 512 MB read, edges clamped to 1024, a 4 s deadline after which it answers "no
+  thumbnail" and cancels the decode. It still declares its own `DllSurrogate` AppID as plan/09
+  asks. `shellext/` is a new host module beside `shell/` (tools/check-module-graph.ps1), and
+  `fuzz_thumbnail` fuzzes its entry point.

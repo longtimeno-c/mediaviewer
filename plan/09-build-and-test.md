@@ -137,6 +137,9 @@ and it does not belong in Git LFS at that size either.
   until the next successful still open.
 - Shell verbs ("Open with MediaViewer", "Edit"), thumbnail provider (`IThumbnailProvider`) and
   property handler so *Explorer itself* gets your format support for HEIC/AVIF/RAW.
+  *(2026-09-25, [12](12-decision-log.md): PR 15 ships the thumbnail provider on the
+  `MediaViewer.Image` ProgId; the property handler needs an HKLM registration a per-user
+  install cannot make, and waits.)*
 
   **These must run out-of-process, and this is a landmine, not polish.** Your handler loads
   libheif, LibRaw, and FFmpeg — decoders that parse untrusted files — and if it is registered

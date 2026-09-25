@@ -61,3 +61,25 @@ TEST_CASE("copy path is one path per line, no trailing newline", "[shell][os]") 
   REQUIRE(paths_as_text(two, "\n") == "/a/1.heic\n/a/2.cr3");
   REQUIRE(paths_as_text({}, "\n").empty());
 }
+
+TEST_CASE("the handler's file list is names only", "[shell][os][shellext]") {
+  CHECK(parse_shellext_file_list("MediaViewerThumbs.dll\r\nheif.dll\n\nraw_r.dll\n") ==
+        std::vector<std::string>{"MediaViewerThumbs.dll", "heif.dll", "raw_r.dll"});
+  CHECK(parse_shellext_file_list("").empty());
+  // One bad line refuses the list: the copy never leaves its two folders.
+  CHECK(parse_shellext_file_list("MediaViewerThumbs.dll\n..\\evil.dll\n").empty());
+  CHECK(parse_shellext_file_list("C:evil.dll\n").empty());
+  CHECK(parse_shellext_file_list("sub/evil.dll\n").empty());
+  CHECK(parse_shellext_file_list("..\n").empty());
+}
+
+TEST_CASE("each version's handler gets its own folder; the rest are pruned", "[shell][os][shellext]") {
+  const std::vector<std::string> existing = {"0.1.3", "0.1.4", "junk"};
+  const auto plan = plan_shellext_install("0.1.4", existing);
+  CHECK(plan.version_dir == "0.1.4");
+  CHECK(plan.prune == std::vector<std::string>{"0.1.3", "junk"});
+  CHECK(plan_shellext_install("1.0.0-beta+7", {}).version_dir == "1.0.0-beta+7");
+  CHECK(plan_shellext_install("", existing).version_dir.empty());
+  CHECK(plan_shellext_install("..", existing).version_dir.empty());
+  CHECK(plan_shellext_install("0.1\\..\\x", existing).version_dir.empty());
+}

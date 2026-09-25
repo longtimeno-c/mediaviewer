@@ -1,0 +1,8 @@
+; SPDX-License-Identifier: GPL-2.0-or-later
+; PR 15: the Explorer thumbnail handler's COM entry points. Registration is
+; the app's (shell/shellext_install.cpp), not DllRegisterServer: a per-user
+; install writes HKCU keys itself and never needs regsvr32.
+LIBRARY MediaViewerThumbs
+EXPORTS
+  DllGetClassObject PRIVATE
+  DllCanUnloadNow PRIVATE

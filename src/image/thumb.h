@@ -57,6 +57,20 @@ class thumb_store {
   std::string dir_;
 };
 
+// The thumbnail's pixels: the same "first pixel is never the full decode"
+// path (rule 3: JPEG DCT scaling, a RAW's embedded preview, else a decode),
+// ICC -> sRGB, box-fit so the long edge is at most `max_long_edge`, never
+// enlarged. Tightly packed, straight-alpha RGBA. make_thumb_jpeg is this at
+// kThumbLongEdge, encoded; the Explorer handler takes the pixels directly.
+struct thumb_pixels {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::vector<std::uint8_t> rgba;
+};
+[[nodiscard]] result<thumb_pixels> make_thumb_rgba(std::span<const std::uint8_t> src_bytes,
+                                                   std::uint32_t max_long_edge,
+                                                   const job_context* ctx = nullptr);
+
 [[nodiscard]] result<std::vector<std::uint8_t>> make_thumb_jpeg(
     std::span<const std::uint8_t> src_bytes, const job_context* ctx = nullptr);
 

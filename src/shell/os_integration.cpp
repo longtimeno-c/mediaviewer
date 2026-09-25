@@ -78,4 +78,33 @@ std::string paths_as_text(std::span<const std::string> utf8_paths, std::string_v
   return out;
 }
 
+std::vector<std::string> parse_shellext_file_list(std::string_view text) {
+  std::vector<std::string> out;
+  while (!text.empty()) {
+    const std::size_t nl = text.find('\n');
+    std::string_view line = text.substr(0, nl);
+    text = nl == std::string_view::npos ? std::string_view{} : text.substr(nl + 1);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+    if (line.empty()) continue;
+    if (line == "." || line == ".." || line.find_first_of("/\\:") != std::string_view::npos) return {};
+    out.emplace_back(line);
+  }
+  return out;
+}
+
+shellext_plan plan_shellext_install(std::string_view version, std::span<const std::string> existing) {
+  shellext_plan plan;
+  const bool plain = !version.empty() && version != "." && version != ".." &&
+                     std::all_of(version.begin(), version.end(), [](char c) {
+                       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                              c == '.' || c == '-' || c == '+';
+                     });
+  if (!plain) return plan;
+  plan.version_dir = std::string(version);
+  for (const std::string& e : existing) {
+    if (!e.empty() && e != plan.version_dir) plan.prune.push_back(e);
+  }
+  return plan;
+}
+
 }  // namespace mv::shell

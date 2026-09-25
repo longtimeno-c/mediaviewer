@@ -153,6 +153,13 @@ Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\shell\open\command"; Val
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "MediaViewer"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "View photos and video from a camera dump."
 Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "MediaViewer"; ValueData: "Software\MediaViewer\Capabilities"; Flags: uninsdeletevalue
+; PR 15: the Explorer thumbnail handler (plan/12 2026-09-25). The app copies
+; it to {app}\shellext\<version> and writes these keys' values on its first
+; start (shell/shellext_install.cpp); the wizard only creates them, so that
+; uninstall deletes them. The handler's ShellEx sits under MediaViewer.Image
+; and goes with that key.
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{6A3F1B52-8C0E-4D7A-9B21-5E4C7D2F9A13}"; ValueType: none; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\AppID\{{3E91A7C2-5B4D-4F18-8C6E-9D2A1B7F4E05}"; ValueType: none; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\.jpg\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jpg"; ValueData: "MediaViewer.Image"
 Root: HKCU; Subkey: "Software\Classes\.jpeg\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Image"; ValueData: ""; Flags: uninsdeletevalue
@@ -254,6 +261,9 @@ Type: filesandordirs; Name: "{app}\updater"
 Type: filesandordirs; Name: "{app}\staging"
 Type: filesandordirs; Name: "{app}\app-*"
 Type: filesandordirs; Name: "{app}\telemetry"
+; PR 15: the versioned thumbnail handler copies. One still held by a
+; surrogate is removed when that process ends (it idles out in minutes).
+Type: filesandordirs; Name: "{app}\shellext"
 Type: files; Name: "{app}\MediaViewer.exe"
 Type: files; Name: "{app}\Update.exe"
 Type: files; Name: "{app}\sq.version"

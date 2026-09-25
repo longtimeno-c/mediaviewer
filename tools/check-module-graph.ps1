@@ -47,6 +47,9 @@ $allowed = [ordered]@{
     'addons' = @('addons', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     'shell'  = @('shell', 'abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    # PR 15: Explorer's host (the thumbnail handler DLL). A sibling of shell,
+    # never included by it: it reaches the core through image/ and codec/.
+    'shellext' = @('shellext', 'image', 'codec', 'gfx', 'io', 'core')
 }
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path

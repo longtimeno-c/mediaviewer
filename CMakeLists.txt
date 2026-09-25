@@ -354,6 +354,7 @@ add_library(mv_image STATIC
   src/image/upload.cpp
   src/image/tiles.cpp
   src/image/thumb.cpp
+  src/image/thumb_pixels.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/upload.h
@@ -518,6 +519,30 @@ target_link_libraries(mv_clip
   PRIVATE mv_edit ${FFMPEG_LIBRARIES})
 add_library(mv::clip ALIAS mv_clip)
 
+# ---------------------------------------------------------------------------
+# MediaViewerThumbs.dll -- PR 15's Explorer thumbnail handler (plan/09
+# "Windows integration"). Explorer's host, beside the app's: it reaches the
+# core through image/ and codec/ only, shares no state with the app, and is
+# loaded by an isolated surrogate, never by Explorer itself. The app copies it
+# (with the DLLs listed in MediaViewerThumbs.files) to <root>\shellext\<version>
+# and registers it there (shell/shellext_install.cpp), so an update never
+# replaces a DLL a surrogate still holds.
+add_library(MediaViewerThumbs SHARED
+  src/shellext/thumb_request.cpp
+  src/shellext/thumb_request.h
+  src/shellext/thumb_provider_win.cpp
+  src/shellext/MediaViewerThumbs.def
+)
+target_link_libraries(MediaViewerThumbs PRIVATE mv_image mv_codec mv_core mv_project_options ole32 uuid)
+target_include_directories(MediaViewerThumbs PRIVATE src)
+set_target_properties(MediaViewerThumbs PROPERTIES OUTPUT_NAME "MediaViewerThumbs")
+mv_asan_runtime_beside(MediaViewerThumbs)
+# The files a versioned handler folder needs: the handler, then every DLL it
+# loads. Written beside it at build time; the payload carries it.
+file(GENERATE
+  OUTPUT "$<TARGET_FILE_DIR:MediaViewerThumbs>/MediaViewerThumbs.files"
+  CONTENT "$<TARGET_FILE_NAME:MediaViewerThumbs>\n$<JOIN:$<PATH:GET_FILENAME,$<TARGET_RUNTIME_DLLS:MediaViewerThumbs>>,\n>\n")
+
 # MediaViewerClipJob.exe -- PR 13 / 14's encode and decode jobs, out of process
 # (plan/08 "Execution & UX"; plan/12 2026-09-25). Beside MediaViewer.exe; no
 # mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
@@ -615,6 +640,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/open_request.h
   src/shell/os_integration.cpp
   src/shell/os_integration.h
+  src/shell/shellext_install.cpp
+  src/shell/shellext_install.h
   src/shell/slideshow.h
   src/shell/navigation.h
   src/shell/settings.cpp
@@ -660,7 +687,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
-add_dependencies(mediaviewer_lab MediaViewerClipJob)
+add_dependencies(mediaviewer_lab MediaViewerClipJob MediaViewerThumbs)
 mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
 set(MV_CRASHPAD_TOOLS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/crashpad")
@@ -887,6 +914,9 @@ if(MV_BUILD_TESTS)
     tests/test_marks.cpp
     tests/test_open_request.cpp
     tests/test_os_integration.cpp
+    tests/test_thumb_pixels.cpp
+    tests/test_thumb_request.cpp
+    src/shellext/thumb_request.cpp
     tests/test_slideshow.cpp
     tests/test_anim.cpp
     tests/test_gif_webp.cpp

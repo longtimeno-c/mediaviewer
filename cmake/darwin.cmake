@@ -701,6 +701,10 @@ if(MV_BUILD_TESTS)
     tests/test_trim_state.cpp
     # PR 15: recent folders, copy path.
     tests/test_os_integration.cpp
+    tests/test_thumb_pixels.cpp
+    # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
+    tests/test_thumb_request.cpp
+    src/shellext/thumb_request.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

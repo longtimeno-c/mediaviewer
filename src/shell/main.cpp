@@ -72,6 +72,7 @@
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
+#include "shell/shellext_install.h"
 #include "shell/telemetry.h"
 #include "shell/update_guard.h"
 #include "shell/av_soak.h"
@@ -4834,6 +4835,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::MessageBoxA(nullptr, "render thread failed to start", "MediaViewer", MB_ICONERROR | MB_OK);
     mv_session_release(app.session);
     return 2;
+  }
+  // PR 15: the Explorer thumbnail handler for this version, copied and
+  // registered off the UI thread (shell/shellext_install.h). Installed builds only.
+  if (g_install.installed()) {
+    app.jobs.submit_at(mv::background_generation,
+                       [root = g_install.root, version = g_install.version](const mv::job_context&) {
+                         mv::shell::install_thumbnail_handler(root, version);
+                         return mv::status::ok;
+                       });
   }
 
   ::ShowWindow(hwnd, show_command);

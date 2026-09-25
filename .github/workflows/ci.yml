@@ -338,7 +338,9 @@ jobs:
 
       - name: Fuzz (quarantined, non-gating)
         continue-on-error: true
-        run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation'
+        # thumbnail (PR 15) links mv_image like decode, so it starts here and
+        # moves to the gating list once it has been seen to start on the runner.
+        run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation','thumbnail'
 
       - name: Upload fuzz artefacts
         if: failure()
