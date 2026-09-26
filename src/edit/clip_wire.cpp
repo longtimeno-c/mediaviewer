@@ -15,6 +15,7 @@ bool runs_in_helper(const request& req) noexcept {
     case op::frame:
     case op::animation: return true;
     case op::audio: return req.audio != audio_format::copy;
+    case op::keep_ranges: return req.ranges_exact;
     default: return false;
   }
 }
@@ -35,6 +36,16 @@ std::string encode_request(const request& r) {
   w.key("width").integer(r.animation_width);
   w.key("fps").integer(r.animation_fps);
   w.key("quality").integer(r.jpeg_quality);
+  // PR 30: the Video Editor's pieces, [in, out] pairs.
+  w.key("exact").integer(r.ranges_exact ? 1 : 0);
+  w.key("ranges").begin_array();
+  for (const range& g : r.ranges) {
+    w.begin_array();
+    w.integer(g.in_ns);
+    w.integer(g.out_ns);
+    w.end_array();
+  }
+  w.end_array();
   w.end_object();
   return w.take();
 }
@@ -45,7 +56,7 @@ bool decode_request(std::string_view line, request& out) {
   const auto op_n = v->integer("op");
   const std::string* source = v->str("source");
   const std::string* out_dir = v->str("out_dir");
-  if (!op_n || *op_n < static_cast<int>(op::trim_keyframe) || *op_n > static_cast<int>(op::animation)) return false;
+  if (!op_n || *op_n < static_cast<int>(op::trim_keyframe) || *op_n > static_cast<int>(op::keep_ranges)) return false;
   if (!source || source->empty() || !out_dir) return false;
   request r;
   r.kind = static_cast<op>(*op_n);
@@ -75,6 +86,18 @@ bool decode_request(std::string_view line, request& out) {
   r.animation_width = static_cast<std::uint32_t>(width);
   r.animation_fps = static_cast<std::uint32_t>(fps);
   r.jpeg_quality = static_cast<int>(q);
+  // PR 30. Optional, so a line from an older queue still decodes.
+  if (const auto exact = v->integer("exact")) r.ranges_exact = *exact != 0;
+  if (const json::value* rs = v->find("ranges")) {
+    if (rs->k != json::kind::array || rs->a.size() > kMaxRanges) return false;
+    for (const json::value& g : rs->a) {
+      if (g.k != json::kind::array || g.a.size() != 2) return false;
+      for (const json::value& t : g.a) {
+        if (t.k != json::kind::number || !t.is_integer) return false;
+      }
+      r.ranges.push_back({g.a[0].i, g.a[1].i});
+    }
+  }
   out = std::move(r);
   return true;
 }

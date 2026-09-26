@@ -2,7 +2,8 @@
  *
  * Clip editing (PR 13 two-path trim, PR 14 extract & remux): the keyframe
  * index for the scrub-bar grid, and the clip job queue the Jobs pane shows.
- * plan/08-video-editing.md, plan/14-abi.md. ABI 0.10.
+ * plan/08-video-editing.md, plan/14-abi.md. ABI 0.10; 0.11 adds KEEP_RANGES
+ * (plan/21, the Video Editor).
  *
  * Same rules as mediaviewer.h: opaque session, POD structs with explicit
  * padding, status codes, UTF-8 caller buffers, nothing retained. No pixels.
@@ -44,7 +45,8 @@ typedef enum mv_clip_op {
   MV_CLIP_REMUX = 6,          /* MKV <-> MP4, no re-encode */
   MV_CLIP_FRAME = 7,          /* the frame at in_ns as PNG / JPEG */
   MV_CLIP_AUDIO = 8,          /* first audio track: copy / WAV / FLAC */
-  MV_CLIP_ANIMATION = 9       /* [in, out) as GIF / WebP, at most 60 s */
+  MV_CLIP_ANIMATION = 9,      /* [in, out) as GIF / WebP, at most 60 s */
+  MV_CLIP_KEEP_RANGES = 10    /* ABI 0.11: ranges_ns pairs, in order, in one file (keyframe cuts) */
 } mv_clip_op;
 
 typedef enum mv_clip_job_state {
@@ -57,7 +59,8 @@ typedef enum mv_clip_job_state {
 
 /* `option` by op: ROTATE 1 = 90° clockwise, 2 = 90° counter-clockwise,
  * 3 = 180°; REMUX 1 = MP4, 2 = MKV; FRAME 1 = PNG, 2 = JPEG; AUDIO 1 = copy,
- * 2 = WAV, 3 = FLAC; ANIMATION 1 = GIF, 2 = WebP. Others ignore it.
+ * 2 = WAV, 3 = FLAC; ANIMATION 1 = GIF, 2 = WebP; KEEP_RANGES 1 = keyframe
+ * cuts (instant), 2 = exact (re-encoded, slower). Others ignore it.
  * Times are nanoseconds on the player's timeline (mv_video_position);
  * out_ns < 0 means the end of the clip. */
 typedef struct mv_clip_request {
@@ -69,6 +72,12 @@ typedef struct mv_clip_request {
   uint32_t animation_width;   /* long edge, 0 = 480 */
   uint32_t animation_fps;     /* 0 = 15 */
   uint32_t reserved;
+  /* ABI 0.11 (PR 30). KEEP_RANGES: range_count [in, out) pairs, flattened
+   * (in0, out0, in1, out1, ...), ascending; out < 0 = the end. Read during
+   * the call only. A request of the 0.10 size is still accepted. */
+  const int64_t* ranges_ns;
+  uint32_t range_count;
+  uint32_t reserved2;
 } mv_clip_request;
 
 typedef struct mv_clip_progress {

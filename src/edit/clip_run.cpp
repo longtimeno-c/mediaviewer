@@ -191,6 +191,52 @@ result<outcome> run_with_encoders(const request& req, const control& ctl, std::v
       done.written = {a, b};
       return done;
     }
+    case op::keep_ranges: {
+      if (req.ranges.empty() || req.ranges.size() > kMaxRanges) return err(status::invalid_arg);
+      MV_TRY(clip_info info, probe(req.source, ctl.cancel));
+      if (req.ranges_exact) {
+        if (!info.has_video) return err(status::unsupported_format);
+        reencode_spec spec;
+        spec.ranges = req.ranges;
+        spec.allow_software = allow_software;
+        spec.muxer = info.container == "mp4" || info.container == "mov" ? muxer_for_family(info.container)
+                                                                          : "matroska";
+        spec.encoders = std::move(encoders);
+        if (spec.encoders.empty()) return err(status::unsupported_format);
+        staged_output out(dir, stem + output_stem_suffix(req.kind) + extension_for_muxer(spec.muxer));
+        MV_TRY(std::string used, reencode(req.source, out.temp_path(), spec, ctl));
+        if (cancelled(ctl.cancel)) return err(status::cancelled);
+        MV_TRY(std::string path, out.publish());
+        done.outputs.push_back(std::move(path));
+        done.encoder = std::move(used);
+        done.written = {req.ranges.front().in_ns, req.ranges.back().out_ns};
+        return done;
+      }
+      const time_ns end = info.duration_ns;
+      copy_spec spec;
+      spec.muxer = muxer_for_family(info.container);
+      time_ns last = -1;
+      for (const range& r : req.ranges) {
+        const time_ns out = r.out_ns < 0 ? end : std::min(r.out_ns, end);
+        if (r.in_ns < 0 || out <= r.in_ns || r.in_ns < last) return err(status::invalid_arg);
+        last = out;
+        const time_ns a = keyframe_nearest(info.keyframes_ns, std::clamp<time_ns>(r.in_ns, 0, end));
+        const time_ns b = out >= end ? end : keyframe_nearest(info.keyframes_ns, out);
+        if (b <= a) continue;  // shorter than a GOP: nothing a keyframe cut can keep
+        if (!spec.segments.empty() && spec.segments.back().end_ns >= a) {
+          spec.segments.back().end_ns = b >= end ? -1 : b;  // touching after snapping: one piece
+          continue;
+        }
+        spec.segments.push_back({a, b >= end ? -1 : b});
+      }
+      if (spec.segments.empty()) return err(status::invalid_arg);
+      MV_TRY(std::string path, copy_to(dir, stem + output_stem_suffix(req.kind) + extension_for_muxer(spec.muxer),
+                                       req.source, spec, ctl, 0.0, 1.0));
+      done.outputs.push_back(std::move(path));
+      done.written = {spec.segments.front().start_ns,
+                      spec.segments.back().end_ns < 0 ? end : spec.segments.back().end_ns};
+      return done;
+    }
     case op::remux: {
       copy_spec spec;
       spec.muxer = req.remux == remux_target::mkv ? "matroska" : "mp4";
@@ -253,6 +299,7 @@ std::string output_stem_suffix(op kind) noexcept {
     case op::rotate: return "_rotated";
     case op::split: return "_part";
     case op::remove_middle: return "_cut";
+    case op::keep_ranges: return "_edit";
     case op::frame: return "_frame";
     case op::audio: return "_audio";
     case op::remux:
@@ -263,7 +310,7 @@ std::string output_stem_suffix(op kind) noexcept {
 
 result<outcome> run(const request& req, const control& ctl) {
   std::vector<std::string> encoders;
-  if (req.kind == op::trim_reencode) {
+  if (req.kind == op::trim_reencode || (req.kind == op::keep_ranges && req.ranges_exact)) {
     // HEVC stays HEVC when this machine has a hardware HEVC encoder; H.264
     // is the fallback for everything, and the only choice for other codecs.
     auto s = detail::open_source(req.source, ctl.cancel);

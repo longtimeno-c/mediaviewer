@@ -229,6 +229,9 @@ std::string job_title(op kind, const std::string& encoder) {
     case op::frame: return "Save frame";
     case op::audio: return "Extract audio";
     case op::animation: return "GIF / WebP";
+    case op::keep_ranges:
+      return encoder.empty() ? std::string("Export edit")
+                             : "Export edit (exact, " + std::string(hwencode::family_label(encoder.c_str())) + ")";
   }
   return "Clip job";
 }

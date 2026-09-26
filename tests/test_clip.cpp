@@ -24,6 +24,7 @@ extern "C" {
 #include "edit/clip.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
+#include "edit/clip_wire.h"
 #include "edit/hwencode.h"
 #include "import_fixture.h"
 
@@ -304,6 +305,91 @@ TEST_CASE("remove-middle joins the two sides on keyframes", "[clip][pr14]") {
       for (std::size_t i = 1; i < out.pts_ns.size(); ++i) CHECK(out.pts_ns[i] > out.pts_ns[i - 1]);
     }
   }
+}
+
+TEST_CASE("keep_ranges writes the kept pieces, in order, on keyframes", "[clip][pr30]") {
+  for (int b : {0, 2}) {
+    DYNAMIC_SECTION("b_frames=" << b) {
+      scratch_dir d("clip_keep");
+      const fs::path src = d / "clip.mp4";
+      fx::spec s;
+      s.b_frames = b;
+      REQUIRE(fx::make(utf8(src), s));
+      const auto before = read_bytes(src);
+      auto info = clip::probe(utf8(src));
+      REQUIRE(info);
+      const auto& kf = info->keyframes_ns;
+      REQUIRE(kf.size() >= 8);
+      fx::decoded whole;
+      REQUIRE(fx::decode_all(utf8(src), whole));
+      auto r = req_for(clip::op::keep_ranges, src);
+      // Three pieces: [kf1, kf2), [kf3, kf5), [kf6, end); ends a frame off the grid.
+      r.ranges = {{kf[1] + kFrameNs, kf[2] - kFrameNs}, {kf[3], kf[5] + kFrameNs}, {kf[6] - kFrameNs, -1}};
+      auto done = clip::run(r, {});
+      REQUIRE(done);
+      CHECK(done->outputs.size() == 1);
+      CHECK(done->outputs[0].find("_edit.mp4") != std::string::npos);
+      const auto kept = [&](std::int64_t t) {
+        const std::int64_t tol = 1'000'000;
+        return (t >= kf[1] - tol && t < kf[2] - tol) || (t >= kf[3] - tol && t < kf[5] - tol) || t >= kf[6] - tol;
+      };
+      std::vector<int> expect;
+      for (std::size_t i = 0; i < whole.pts_ns.size(); ++i) {
+        if (kept(whole.pts_ns[i])) expect.push_back(whole.luma[i]);
+      }
+      fx::decoded out;
+      REQUIRE(fx::decode_all(done->outputs[0], out));
+      CHECK(out.luma == expect);
+      for (std::size_t i = 1; i < out.pts_ns.size(); ++i) CHECK(out.pts_ns[i] > out.pts_ns[i - 1]);
+      CHECK(read_bytes(src) == before);  // rule 5
+    }
+  }
+}
+
+TEST_CASE("keep_ranges exact: every piece frame-accurate, back to back", "[clip][pr30]") {
+  scratch_dir d("clip_keep_exact");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 150;
+  s.b_frames = 2;
+  REQUIRE(fx::make(utf8(src), s));
+  const auto before = read_bytes(src);
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{7 * kFrameNs, 19 * kFrameNs}, {40 * kFrameNs, 45 * kFrameNs}, {101 * kFrameNs, 110 * kFrameNs}};
+  auto done = run_soft(r);
+  REQUIRE(done);
+  CHECK(done->encoder == "mpeg4");
+  fx::decoded out;
+  REQUIRE(fx::decode_all(done->outputs[0], out));
+  std::vector<int> want;
+  for (int i = 7; i < 19; ++i) want.push_back(i % 50);
+  for (int i = 40; i < 45; ++i) want.push_back(i % 50);
+  for (int i = 101; i < 110; ++i) want.push_back(i % 50);
+  REQUIRE(out.luma.size() == want.size());  // 12 + 5 + 9 frames, nothing between
+  for (std::size_t i = 0; i < want.size(); ++i) CHECK(frame_of(out.luma[i]) == want[i]);
+  for (std::size_t i = 1; i < out.pts_ns.size(); ++i) CHECK(out.pts_ns[i] > out.pts_ns[i - 1]);
+  CHECK(read_bytes(src) == before);
+  // The helper's wire carries the pieces.
+  clip::request back;
+  REQUIRE(clip::wire::decode_request(clip::wire::encode_request(r), back));
+  CHECK(back.ranges_exact);
+  REQUIRE(back.ranges.size() == 3);
+  CHECK(back.ranges[2].out_ns == 110 * kFrameNs);
+  CHECK(clip::wire::runs_in_helper(back));
+}
+
+TEST_CASE("keep_ranges refuses what is not an edit", "[clip][pr30]") {
+  scratch_dir d("clip_keep_bad");
+  const fs::path src = d / "clip.mp4";
+  REQUIRE(fx::make(utf8(src), {}));
+  auto r = req_for(clip::op::keep_ranges, src);
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);          // no ranges
+  r.ranges = {{2'000'000'000, 1'000'000'000}};
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);          // backwards
+  r.ranges = {{0, 2'000'000'000}, {1'000'000'000, 3'000'000'000}};
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);          // overlapping
+  CHECK(names_in(d.root()) == std::vector<std::string>{"clip.mp4"});     // nothing written
 }
 
 TEST_CASE("remux MP4 -> MKV -> MP4 keeps every packet", "[clip][pr14]") {

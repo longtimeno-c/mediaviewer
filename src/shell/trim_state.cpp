@@ -159,6 +159,7 @@ bool clip_tool_request(std::int32_t packed, const std::string& path, std::int64_
       r.audio = option == 2 ? clip::audio_format::wav : option == 3 ? clip::audio_format::flac
                                                                     : clip::audio_format::copy;
       break;
+    case clip::op::keep_ranges: return false;  // the Video Editor's, not a clip tool
     case clip::op::animation:
       r.animation = option == 2 ? clip::anim_format::webp : clip::anim_format::gif;
       if (!ranged) {

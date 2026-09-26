@@ -355,9 +355,25 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
   MV_TRY(source s, open_source(src_path, ctl.cancel));
   if (s.video < 0) return err(status::unsupported_format);
   AVStream* ist = s.format->streams[s.video];
-  const time_ns in_ns = std::max<time_ns>(0, spec.in_ns);
-  const time_ns out_ns = spec.out_ns < 0 ? s.duration_ns : std::min(spec.out_ns, s.duration_ns);
-  if (out_ns <= in_ns) return err(status::invalid_arg);
+  // PR 30: several pieces back to back (the Video Editor's exact export);
+  // PR 13's trim is the one-piece case.
+  std::vector<range> pieces;
+  if (spec.ranges.empty()) {
+    pieces.push_back({spec.in_ns, spec.out_ns});
+  } else {
+    pieces = spec.ranges;
+  }
+  time_ns total = 0;
+  time_ns last_out = -1;
+  for (range& p : pieces) {
+    p.in_ns = std::max<time_ns>(0, p.in_ns);
+    p.out_ns = p.out_ns < 0 ? s.duration_ns : std::min(p.out_ns, s.duration_ns);
+    if (p.out_ns <= p.in_ns || p.in_ns < last_out) return err(status::invalid_arg);
+    last_out = p.out_ns;
+    total += p.out_ns - p.in_ns;
+  }
+  const time_ns in_ns = pieces.front().in_ns;
+  const time_ns out_ns = pieces.back().out_ns;
   MV_TRY(codec_ptr dec, open_decoder(ist));
 
   MV_TRY(output_ptr out, open_output(spec.muxer, out_path, ctl.cancel));
@@ -445,11 +461,14 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
   bool video_done = false;
   std::vector<std::int64_t> audio_last(s.format->nb_streams, INT64_MIN);
   status failure = status::ok;
-  const time_ns span = out_ns - in_ns;
+  // The piece being written: its source range and where it starts on the output.
+  time_ns piece_in = in_ns;
+  time_ns piece_out = out_ns;
+  time_ns written = 0;
 
   auto on_frame = [&](AVFrame* f, time_ns t) -> bool {
-    if (t < in_ns - kTol) return true;  // decode-up from the keyframe
-    if (t >= out_ns - kTol) {
+    if (t < piece_in - kTol) return true;  // decode-up from the keyframe
+    if (t >= piece_out - kTol) {
       video_done = true;
       return false;
     }
@@ -474,7 +493,7 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
       (void)av_frame_copy_props(conv.get(), f);
       send = conv.get();
     }
-    send->pts = av_rescale_q(t - in_ns, kNs, enc->time_base);
+    send->pts = av_rescale_q(written + t - piece_in, kNs, enc->time_base);
     send->pict_type = AV_PICTURE_TYPE_NONE;
     if (avcodec_send_frame(enc.get(), send) < 0) {
       failure = status::internal;
@@ -485,7 +504,8 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
       return false;
     }
     if (ctl.progress != nullptr) {
-      ctl.progress(ctl.user, std::clamp(static_cast<double>(t - in_ns) / static_cast<double>(span), 0.0, 1.0));
+      ctl.progress(ctl.user,
+                   std::clamp(static_cast<double>(written + t - piece_in) / static_cast<double>(total), 0.0, 1.0));
     }
     return true;
   };
@@ -496,8 +516,8 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
     const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
     if (ts == AV_NOPTS_VALUE) return true;
     const time_ns t = to_timeline(s, ast, ts);
-    if (t < in_ns - kTol || t >= out_ns) return !video_done;
-    const std::int64_t shift = from_timeline(s, ast, in_ns);
+    if (t < piece_in - kTol || t >= piece_out) return !video_done;
+    const std::int64_t shift = from_timeline(s, ast, piece_in) - av_rescale_q(written, kNs, ast->time_base);
     if (pkt->pts != AV_NOPTS_VALUE) pkt->pts -= shift;
     if (pkt->dts != AV_NOPTS_VALUE) pkt->dts -= shift;
     AVStream* aost = out->streams[audio_map[idx]];
@@ -514,25 +534,32 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
     }
     return true;
   };
-  MV_TRY_VOID(decode_forward(s, s.video, dec.get(), in_ns, ctl, on_frame, on_other));
-  if (failure != status::ok) return err(failure);
-  // The tail of the audio that interleaves after the last video frame.
-  if (video_done) {
-    packet_ptr pkt(av_packet_alloc());
-    while (pkt && av_read_frame(s.format.get(), pkt.get()) >= 0) {
-      if (cancelled(ctl.cancel)) return err(status::cancelled);
-      const int idx = pkt->stream_index;
-      bool more = true;
-      if (idx != s.video && idx >= 0 && idx < static_cast<int>(audio_map.size()) && audio_map[idx] >= 0) {
-        AVStream* ast = s.format->streams[idx];
-        const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
-        if (ts != AV_NOPTS_VALUE && to_timeline(s, ast, ts) >= out_ns) more = false;
-        else if (!on_other(pkt.get())) more = false;
-      }
-      av_packet_unref(pkt.get());
-      if (!more || failure != status::ok) break;
-    }
+  for (std::size_t n = 0; n < pieces.size(); ++n) {
+    piece_in = pieces[n].in_ns;
+    piece_out = pieces[n].out_ns;
+    video_done = false;
+    if (n > 0) avcodec_flush_buffers(dec.get());  // a new seek: nothing held from the last piece
+    MV_TRY_VOID(decode_forward(s, s.video, dec.get(), piece_in, ctl, on_frame, on_other));
     if (failure != status::ok) return err(failure);
+    // The tail of the audio that interleaves after the piece's last video frame.
+    if (video_done) {
+      packet_ptr pkt(av_packet_alloc());
+      while (pkt && av_read_frame(s.format.get(), pkt.get()) >= 0) {
+        if (cancelled(ctl.cancel)) return err(status::cancelled);
+        const int idx = pkt->stream_index;
+        bool more = true;
+        if (idx != s.video && idx >= 0 && idx < static_cast<int>(audio_map.size()) && audio_map[idx] >= 0) {
+          AVStream* ast = s.format->streams[idx];
+          const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+          if (ts != AV_NOPTS_VALUE && to_timeline(s, ast, ts) >= piece_out) more = false;
+          else if (!on_other(pkt.get())) more = false;
+        }
+        av_packet_unref(pkt.get());
+        if (!more || failure != status::ok) break;
+      }
+      if (failure != status::ok) return err(failure);
+    }
+    written += piece_out - piece_in;
   }
   if (avcodec_send_frame(enc.get(), nullptr) < 0) return err(status::internal);
   MV_TRY_VOID(drain_encoder(enc.get(), out.get(), vost, opkt.get()));
