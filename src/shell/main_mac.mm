@@ -2149,8 +2149,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // AppKit resolves the semantic colour for this window's effective appearance.
   // Do this on the UI thread; the Metal thread reads only the POD snapshot.
   if (!self.view.window) return;
-  // A dynamic NSColor resolves against the current drawing appearance, so
-  // convert it while this view's appearance is current.
+  // A dynamic colour resolves against the current drawing appearance, so
+  // convert it while this view's appearance is current (macOS 11+).
   __block NSColor* c = nil;
   [self.view.effectiveAppearance performAsCurrentDrawingAppearance:^{
     c = [[NSColor windowBackgroundColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
