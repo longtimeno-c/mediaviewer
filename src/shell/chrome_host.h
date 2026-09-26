@@ -337,8 +337,6 @@ using chrome_entry_fn = int (*)(void* arg, std::int32_t arg_size_in_bytes);
 
 // DIP height of the command-bar strip. Physical pixels = this * dpi / 96.
 inline constexpr int kChromeBarDip = 48;
-// Breadcrumb under the bar while a folder is open (Mac kPathRowPoints).
-inline constexpr int kPathRowDip = 28;
 inline constexpr int kFilmstripDip = 112;
 // The transport strip. It sits BELOW the canvas and above the filmstrip, and
 // the canvas rectangle shrinks by exactly this much while it is up — plan/16
@@ -346,10 +344,9 @@ inline constexpr int kFilmstripDip = 112;
 // transport must never cover the video.
 inline constexpr int kTransportDip = 52;
 
-[[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi, bool path_row = false) noexcept {
+[[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi) noexcept {
   if (dpi == 0) dpi = 96;
-  const int dip = kChromeBarDip + (path_row ? kPathRowDip : 0);
-  return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96);
+  return static_cast<int>((kChromeBarDip * static_cast<int>(dpi) + 48) / 96);
 }
 
 [[nodiscard]] inline int chrome_filmstrip_height_px(std::uint32_t dpi) noexcept {
@@ -603,7 +600,6 @@ class chrome_host {
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
-  bool path_row_ = false;  // command bar grew by kPathRowDip; gallery Y follows
   bool panels_attached_ = false;
   bool meta_visible_ = false;
   bool tree_visible_ = false;

@@ -560,7 +560,11 @@ TEST_CASE("the job queue runs, cancels and retries", "[clip][pr13][jobs]") {
   const auto b = q.submit(remux);
   const auto c = q.submit(req_for(clip::op::trim_reencode, src));  // no hardware encoder here
   CHECK(q.cancel(b));  // likely still queued; either way it must not publish
-  for (int i = 0; i < 400 && ev.finished.load() < 3; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  // A wall-clock deadline, not a tight one: ASan Debug on a CI runner probing
+  // every hardware encoder took ~8 s here. A healthy queue returns in well under 1 s.
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+       ev.finished.load() < 3 && std::chrono::steady_clock::now() < end;)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   REQUIRE(ev.finished.load() == 3);
   clip::job_snapshot sa, sb, sc;
   REQUIRE(q.snapshot(a, sa));
@@ -581,7 +585,9 @@ TEST_CASE("the job queue runs, cancels and retries", "[clip][pr13][jobs]") {
   const auto again = q.retry(sb.id);
   CHECK(again != 0);
   CHECK(q.retry(a) == 0);  // done jobs are not retried
-  for (int i = 0; i < 400 && ev.finished.load() < 4; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+       ev.finished.load() < 4 && std::chrono::steady_clock::now() < end;)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   clip::job_snapshot sr;
   REQUIRE(q.snapshot(again, sr));
   CHECK(sr.state == clip::job_state::done);
