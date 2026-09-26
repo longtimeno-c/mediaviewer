@@ -346,6 +346,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)setGalleryVisible:(BOOL)visible;
 - (void)toggleFilmstrip;
 - (void)setFilmstripVisible:(BOOL)visible;
+- (void)applyFilmstripLayout;
 - (void)toggleGallery;
 // Gallery keyboard navigation (plan/16 `G` row): Up/Down/W/S move by row, `+`/`-`
 // resize the cells. Enter just closes the gallery -- the selection is already
@@ -1363,7 +1364,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   NSTimer* _slideshowTimer;
 
   // Filmstrip/gallery visibility (plan/16 View table's T/G, folded-in PR 4,
-  // plan/12 2026-09-17). Filmstrip defaults visible once a folder is open --
+  // plan/12 2026-09-17). _filmstripVisible is the wish; -filmstripVisible is
+  // what is on screen, and it also needs items -- the empty window shows no
+  // strip, the same as Windows' have_media gate. Filmstrip defaults visible
+  // once a folder is open --
   // there is no Settings screen yet to remember a per-mode preference
   // (plan/10-roadmap.md PR 4's own note that this is normally per-open-mode
   // and persisted; both wait on Settings existing at all). Gallery defaults
@@ -1581,9 +1585,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   // Filmstrip: a bottom strip, the same "sibling drawn over the canvas's own
   // pixels" shape as the command bar above, not a resize of MvMetalView.
-  // Visible by default (`T` hides it) -- -syncSize below is what actually
-  // reserves canvas space for it, via chrome_bottom_px.
+  // Hidden until there are items to strip (-applyFilmstripLayout, from
+  // -selectIndex:) -- -syncSize is what actually reserves canvas space for it,
+  // via chrome_bottom_px.
   self.filmstripHost = [MVChromeHost makeFilmstripView];
+  self.filmstripHost.hidden = YES;
   self.filmstripHost.translatesAutoresizingMaskIntoConstraints = NO;
   [self.filmstripHost setContentHuggingPriority:NSLayoutPriorityDefaultLow
                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -1603,7 +1609,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [container addSubview:self.transportHost];
   self.transportBottom = [self.transportHost.bottomAnchor
       constraintEqualToAnchor:container.bottomAnchor
-                     constant:-(kFilmstripHeightPoints + 10.0)];
+                     constant:-10.0];
   NSLayoutConstraint* preferredWidth =
       [self.transportHost.widthAnchor constraintEqualToConstant:720.0];
   preferredWidth.priority = NSLayoutPriorityDefaultHigh;
@@ -1658,20 +1664,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.metaHost.translatesAutoresizingMaskIntoConstraints = NO;
   [container addSubview:self.metaHost];
   self.metaBottom = [self.metaHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
-                                                               constant:-kFilmstripHeightPoints];
+                                                               constant:0.0];
   self.treeHost = [MVChromeHost makeFolderTreeView];
   self.treeHost.hidden = YES;
   self.treeHost.translatesAutoresizingMaskIntoConstraints = NO;
   [container addSubview:self.treeHost];
   self.treeBottom = [self.treeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
-                                                               constant:-kFilmstripHeightPoints];
+                                                               constant:0.0];
   // PR 11: the adjust pane, same edge and width as the metadata pane.
   self.adjustHost = [MVChromeHost makeAdjustView];
   self.adjustHost.hidden = YES;
   self.adjustHost.translatesAutoresizingMaskIntoConstraints = NO;
   [container addSubview:self.adjustHost];
   self.adjustBottom = [self.adjustHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
-                                                                   constant:-kFilmstripHeightPoints];
+                                                                   constant:0.0];
   [NSLayoutConstraint activateConstraints:@[
     [self.adjustHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.adjustHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
@@ -1684,7 +1690,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.jobsHost.translatesAutoresizingMaskIntoConstraints = NO;
   [container addSubview:self.jobsHost];
   self.jobsBottom = [self.jobsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
-                                                               constant:-kFilmstripHeightPoints];
+                                                               constant:0.0];
   [NSLayoutConstraint activateConstraints:@[
     [self.jobsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.jobsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
@@ -2043,6 +2049,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
 - (void)selectIndex:(std::size_t)new_index {
   _index.reset(_items.size(), new_index);
+  [self applyFilmstripLayout];
   [self trimItemChanged];
 
   if (_items.empty()) {
@@ -2430,7 +2437,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (BOOL)filmstripVisible {
-  return _filmstripVisible;
+  return _filmstripVisible && !_items.empty();
 }
 - (BOOL)galleryVisible {
   return _galleryVisible;
@@ -2440,14 +2447,28 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.galleryHost.hidden = !visible;
 }
 - (void)toggleFilmstrip {
+  // Nothing open: nothing to toggle, and no preference silently flipped for
+  // the next folder by a key that looked like it did nothing (Windows'
+  // toggle_filmstrip_setting makes the same call).
+  if (_items.empty()) return;
   [self setFilmstripVisible:!_filmstripVisible];
 }
 - (void)setFilmstripVisible:(BOOL)visible {
   _filmstripVisible = visible;
-  self.filmstripHost.hidden = !_filmstripVisible;
-  self.transportBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints + 10.0 : 10.0);
-  self.metaBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints : 0.0);
-  self.treeBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints : 0.0);
+  [self applyFilmstripLayout];
+}
+// Re-run whenever the wish or the item list changes; a no-op when what is on
+// screen already matches.
+- (void)applyFilmstripLayout {
+  const BOOL shown = [self filmstripVisible];
+  if (self.filmstripHost.hidden == !shown) return;
+  self.filmstripHost.hidden = !shown;
+  self.transportBottom.constant = -(shown ? kFilmstripHeightPoints + 10.0 : 10.0);
+  const CGFloat pane_bottom = -(shown ? kFilmstripHeightPoints : 0.0);
+  self.metaBottom.constant = pane_bottom;
+  self.treeBottom.constant = pane_bottom;
+  self.adjustBottom.constant = pane_bottom;
+  self.jobsBottom.constant = pane_bottom;
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same
