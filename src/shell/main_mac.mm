@@ -217,7 +217,6 @@ extern "C" bool mv_chrome_app_version(char* buf, int32_t size) {
 // — that field, and every canvas-rect field alongside it, is already in
 // physical pixels, matching Windows' PerMonitorV2 convention).
 constexpr CGFloat kChromeBarHeightPoints = 48.0;  // Windows bar height
-constexpr CGFloat kPathRowPoints = 28.0;          // breadcrumb under the bar while a folder is open
 // Filmstrip strip height, in points -- same conversion-to-backing-pixels
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
@@ -2759,7 +2758,8 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 
 - (CGFloat)chromeBarHeight {
-  return _currentDir.empty() ? kChromeBarHeightPoints : kChromeBarHeightPoints + kPathRowPoints;
+  // The folder trail lives inside the bar, beside `?`; opening a folder does not grow it.
+  return kChromeBarHeightPoints;
 }
 
 - (void)updateChromeBarHeight {

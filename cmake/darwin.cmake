@@ -689,6 +689,8 @@ if(MV_BUILD_TESTS)
     tests/test_presenter.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
+    # Issue #43: Space at natural EOF restarts, on the real Metal player.
+    tests/test_video_eof_mac.mm
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
     tests/test_meta_store.cpp
@@ -733,7 +735,8 @@ if(MV_BUILD_TESTS)
     ${MV_AVIF_TARGET}
     libraw::raw_r
     lcms2::lcms2
-    Catch2::Catch2WithMain)
+    Catch2::Catch2WithMain
+    "-framework Metal")
   target_include_directories(mv_tests PRIVATE src tools tests src/abi/include)
   # The clip helper with its test hooks (a crash, a hang, a software encoder).
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
