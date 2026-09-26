@@ -106,13 +106,13 @@ struct AdjustView: View {
   // R, G, B and luma as four translucent filled paths, the Windows pane's drawing.
   private var histogramView: some View {
     Canvas { ctx, size in
-      ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color.black.opacity(0.35)))
+      ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(nsColor: .textBackgroundColor)))
       guard store.histogramValid else { return }
       let colours: [Color] = [
         Color(red: 0.92, green: 0.31, blue: 0.31).opacity(0.45),
         Color(red: 0.35, green: 0.82, blue: 0.43).opacity(0.45),
         Color(red: 0.35, green: 0.55, blue: 0.94).opacity(0.45),
-        Color(white: 0.84).opacity(0.6),
+        Color.primary.opacity(0.6),
       ]
       for c in 0..<4 {
         let bins = store.histogram[c]

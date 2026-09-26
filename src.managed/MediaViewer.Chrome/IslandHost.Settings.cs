@@ -286,7 +286,7 @@ public static partial class IslandHost
     private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control)
     {
         var row = new Grid { Padding = new Thickness(14), ColumnSpacing = 24,
-            Background = Brush(ColorHelper.FromArgb(255, 42, 44, 52)), CornerRadius = new CornerRadius(8) };
+            Background = Brush(ChromeColour.Surface), CornerRadius = new CornerRadius(8) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
@@ -670,4 +670,3 @@ public static partial class IslandHost
         };
     }
 }
-
