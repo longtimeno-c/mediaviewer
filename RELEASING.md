@@ -4,9 +4,9 @@ Downloads belong on [GitHub Releases](https://github.com/longtimeno-c/mediaviewe
 a Windows x64 installer wizard (`Setup.exe`) and a macOS 14+ universal (Apple Silicon and
 Intel) disk image (`.dmg`, drag to Applications).
 
-**You can publish test installers without buying signing certificates.** Use `preview`.
-For a stable Mac release, configure Developer ID, Apple notarization and Sparkle signing.
-Windows Authenticode is optional; the Windows update-manifest key is required for stable updates.
+**You can build test installers without signing certificates.** Use `artifacts`.
+Both `preview` and `stable` publish signed update feeds, so both need Developer ID, Apple
+notarization, Sparkle signing and the Windows update-manifest key. Windows Authenticode is optional.
 
 ## Publish from GitHub Actions
 
@@ -15,23 +15,25 @@ or publishing. [CI](.github/workflows/ci.yml) handles ordinary push/PR validatio
 The workflow reads the version already committed in `CMakeLists.txt`; it does not
 bump the version, commit changes, or push them for you.
 
-1. For each stable release, increase `project(mediaviewer VERSION x.y.z ...)` in
+1. For each release, stable or preview, increase `project(mediaviewer VERSION x.y.z ...)` in
    `CMakeLists.txt`. Both platforms use that exact version, including the Mac build number.
-   App versions must be strictly numeric (`0.1.2`, not `0.1.2-beta`).
+   App versions must be strictly numeric (`0.1.2`, not `0.1.2-beta`). Previews and stable
+   releases share one sequence: a preview uses up its version (preview 0.1.5, then stable 0.1.6).
 2. Commit and push that version change with the desired source to `main`; let CI pass first.
 3. Open **Actions → Release → Run workflow**, select `main`, and choose:
 
 | Mode | Result | Credentials |
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
-| `preview` | Both unsigned installers on GitHub Releases as a **Pre-release** | None |
-| `stable` | Both installers and signed update feeds, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
+| `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
+| `stable` | Both installers, signed update feeds and the Import add-on, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
 ```sh
+gh workflow run release.yml --ref main -f mode=artifacts
+# After configuring the signing credentials:
 gh workflow run release.yml --ref main -f mode=preview
-# After configuring the stable credentials:
 gh workflow run release.yml --ref main -f mode=stable
 gh run list --workflow release.yml --limit 5
 gh release list
@@ -46,20 +48,27 @@ independently; a final job validates both asset sets, uploads into a draft, chec
 uploaded names and sizes, and only then publishes. A failed platform leaves the previous
 Latest release intact. Only the publishing job has release-write permission.
 
-Stable tags are `v<version>`; previews use `v<version>.preview.<run-id>` (only the Git tag
-has a suffix). Tags point at the exact built commit. Selecting an existing tag requires
-`v<version>` to match CMake. Published releases are never overwritten. Stable versions
-must increase beyond the current latest release; no run-number version stamping occurs.
+Tags are `v<version>` for both stable and preview releases (previews before 2026-09-26 used
+`v<version>.preview.<run-id>`). Tags point at the exact built commit. Selecting an existing
+tag requires `v<version>` to match CMake. Published releases are never overwritten. Every
+version must exceed every published release, previews included; no run-number version
+stamping occurs.
 
-## Unsigned previews
+## Previews and the update channel
 
-Windows SmartScreen may warn. The Mac image is ad-hoc signed and unnotarized, so
-Gatekeeper may block it. A preview is for deliberate testing, not normal signed distribution.
-The **Mac preview has no automatic updater**; install a stable build manually later.
-The Windows preview only accepts correctly signed, higher-version updates from the stable feed.
+A preview is signed exactly like a stable release, but published as a GitHub **Pre-release**,
+not Latest. The apps follow stable releases by default. In **Settings → Update channel**,
+**Preview** makes the Windows updater and Sparkle read the newest published release,
+prerelease or not, from the public release listing. They take a stable release too when it
+is the newer one. Signatures, the channel and "newer than installed" are checked exactly
+as on the stable channel. Switching back to Stable never downgrades: the app keeps the
+preview version until a newer stable release exists.
 
-Previews carry installers and checksums, without update feeds. They do not replace
-Latest or its `/latest/download/` URLs. **Do not manually promote a preview to Latest.**
+Previews carry no Import add-on; add-ons stay on the stable feed. They do not replace Latest
+or its `/latest/download/` URLs. **Do not manually promote a preview to Latest**: publish the
+next version as stable instead.
+
+Unsigned test builds are `artifacts` only. They are never published and have no updater on Mac.
 
 ## Stable signing setup
 
@@ -208,7 +217,8 @@ each platform and an upgrade from the previous stable before announcing a releas
 
 - No downloads on Releases: `artifacts` only saves Actions artifacts. Use `preview` or
   `stable` and inspect the final publishing job.
-- Missing secrets: use `preview` now, or configure the named secrets for `stable`.
+- Missing secrets: `preview` and `stable` both need them. Use `artifacts` for unsigned test
+  installers until the named secrets are configured.
 - Mac signing failed: inspect Apple's submission log; check the private key, identity,
   Team ID and app-specific password.
 - Mac stopped at `generate_appcast`: app and DMG notarization may already have passed.

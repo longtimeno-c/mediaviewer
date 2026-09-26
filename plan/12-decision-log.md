@@ -2234,3 +2234,45 @@ Jobs pane cancel, and PR 1's present-loop gate. macOS: the first Xcode / SwiftPM
 (Activity Monitor / `powermetrics`) and "no software encoder is linked" (`nm` of the FFmpeg dylibs for
 `libx264` / `libx265`); the Mac PR 1 Metal gate. Both: `MediaViewerClipJob` signed and shipped
 (the Windows payload picks it up by name; `macpack.py --clipjob` puts it in Contents/Helpers).
+
+## 2026-09-26 — Signed previews and a Preview update channel
+
+**Reverses two calls:** "prerelease tags are not a v1 channel" (2026-09-23, GitHub Releases is
+the channel) and "unsigned Mac previews omit the updater" (2026-09-23, deliberate two-platform
+releases). The owner asked for a Settings choice to receive preview releases as updates.
+
+**Call.** Settings has **Update channel: Stable / Preview** on both platforms, Stable by
+default. Windows stores it as `[update] channel` in settings.ini and mirrors it into the chrome
+word as `kChromeFlagUpdatePreview` (bit 11). Mac stores `mv.updateChannel` in NSUserDefaults. On
+Preview, each app reads the public GitHub release listing and uses the feed of the
+highest-versioned published release that has one, prerelease or not: the signed manifest on
+Windows (`GithubManifestFetcher`, with Velopack's source switched to include prereleases,
+`ChannelSource`), and the appcast on Mac (Sparkle's `feedURLStringForUpdater:`, refreshed at
+launch, on a channel change and after each update cycle). Stable is unchanged:
+`/releases/latest/download/`.
+
+**Why this does not weaken the updater.** The listing only picks *which* signed feed is read.
+Windows still verifies the Ed25519 manifest, its channel, and "newer than running"; Sparkle
+still requires the signed feed, the EdDSA archive signature, the same Developer ID, and a
+higher version. Asset URLs outside this repository's release downloads are ignored. The one new
+request is an unauthenticated GET of the public listing: no query about the user, nothing
+about their files (rule 6).
+
+**What had to change to make it safe.** A preview reaches users' machines automatically, so
+it is signed exactly like stable: `release.yml` `preview` now needs every stable credential,
+signs, notarizes and publishes both update feeds; `artifacts` is the only unsigned mode.
+Versions stay strict `x.y.z` (`ReleaseVersion` is untouched). A preview uses up its version, and
+`github-release.py` refuses any release that does not exceed every published release, previews
+included, so a stable release that follows a preview is always newer on the preview channel.
+Preview tags are plain `v<version>`; the legacy `.preview.<run-id>` tags still parse.
+
+**Consequences.** Switching back to Stable never downgrades: the app keeps its preview
+version until a newer stable release exists. Add-ons stay on the stable feed; previews carry
+none. The x64 Mac leg is still `experimental` in `release.yml`, so a signed preview (like a
+stable release) can ship arm64-only if the Intel build fails — v0.1.4 did. That is a separate
+open item.
+
+**Owed on hardware.** Windows: switch to Preview, publish a preview above the installed
+version, see "Update ready — restart", restart into it; switch back to Stable and see no
+downgrade. Mac: the same with Sparkle, and the first Xcode build of `main_mac.mm` with the new
+delegate methods (only the release-picking function was compiled and tested on its own).

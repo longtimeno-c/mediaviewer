@@ -17,6 +17,16 @@ def version_tuple(value):
     return tuple(map(int, value.split('.')))
 
 
+# Stable tags are v<version>. Previews are too; tags from before previews became
+# signed updates carry a .preview.<run-id> suffix, which only the tag ever had.
+def tag_version(tag):
+    match = re.fullmatch(r'v([0-9.]+?)(?:\.preview\.[0-9]+)?', tag or '')
+    try:
+        return version_tuple(match[1]) if match else None
+    except ValueError:
+        return None
+
+
 def project_version():
     match = re.search(r'project\(\s*mediaviewer\s+VERSION\s+(\S+)', Path('CMakeLists.txt').read_text())
     if not match:
@@ -38,13 +48,15 @@ def prepare():
             raise ValueError('Cannot blocklist the release being published')
     if os.environ.get('GITHUB_REF_TYPE') == 'tag' and os.environ['GITHUB_REF_NAME'] != f'v{version}':
         raise ValueError('Selected tag must match CMakeLists.txt: v' + version)
-    if mode == 'stable':
+    # A preview is a signed update too (Settings > Update channel), so it needs
+    # every credential stable does.
+    if mode in ('preview', 'stable'):
         required = ('MV_MANIFEST_SIGNING_KEY', 'MV_MAC_CERT_P12_BASE64', 'MV_MAC_CERT_PASSWORD',
                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_PASSWORD', 'MV_SPARKLE_PRIVATE_KEY')
         missing = [name for name in required if not os.environ.get(name)]
         if missing:
-            raise ValueError('Stable release needs repository secrets: ' + ', '.join(missing)
-                             + '. Use preview to publish unsigned test installers.')
+            raise ValueError(f'A {mode} release needs repository secrets: ' + ', '.join(missing)
+                             + '. Use artifacts to build unsigned test installers.')
         azure = ('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET',
                  'TRUSTED_SIGNING_ENDPOINT', 'TRUSTED_SIGNING_ACCOUNT', 'TRUSTED_SIGNING_PROFILE')
         configured = [name for name in azure if os.environ.get(name)]
@@ -54,8 +66,6 @@ def prepare():
         if not configured:
             print('::warning::Windows installers will be unsigned; SmartScreen may warn.')
     tag = f'v{version}'
-    if mode == 'preview':
-        tag += '.preview.' + os.environ['GITHUB_RUN_ID']
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         output.write(f'version={version}\ntag={tag}\n')
     print(f'{mode}: {version} ({tag})')
@@ -96,7 +106,7 @@ def validate_addon(folder, version, platform):
 
 def validate_assets(folder, version, mode, repo, tag):
     names = [f'MediaViewer-{version}-Setup.exe', f'MediaViewer-{version}.dmg']
-    if mode == 'stable':
+    if mode in ('preview', 'stable'):
         names += [f'MediaViewer-{version}-full.nupkg', 'RELEASES', 'releases.win.json',
                   'assets.win.json', 'mediaviewer-manifest.json', 'mediaviewer-manifest.json.sig',
                   f'MediaViewer-{version}.zip', 'appcast.xml']
@@ -107,7 +117,7 @@ def validate_assets(folder, version, mode, repo, tag):
         path = folder / name
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError('Missing or empty release asset: ' + name)
-    if mode == 'stable':
+    if mode in ('preview', 'stable'):
         manifest = json.loads((folder / 'mediaviewer-manifest.json').read_text())
         if manifest['version'] != version or manifest['channel'] != 'win':
             raise ValueError('Windows manifest version/channel mismatch')
@@ -158,6 +168,13 @@ def release_by_tag(repo, tag):
     return next((release for page in pages for release in page if release['tag_name'] == tag), None)
 
 
+def highest_release_version(repo):
+    """The highest version any published release (stable or preview) has used."""
+    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100'))
+    versions = [tag_version(r['tag_name']) for page in pages for r in page if not r['draft']]
+    return max(filter(None, versions), default=None)
+
+
 def release_notes(version, mode, repo, tag, sha):
     base = f'https://github.com/{repo}/releases/download/{tag}'
     text = ('## Downloads\n\n'
@@ -166,10 +183,11 @@ def release_notes(version, mode, repo, tag, sha):
             f'- **[Download for Mac (Apple Silicon and Intel, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
             '- open the disk image and drag MediaViewer to Applications.\n\n')
     if mode == 'preview':
-        text += ('Other assets below provide download checksums and source code.\n\n'
-                 'Unsigned test build. Windows SmartScreen may warn; macOS Gatekeeper may block '
-                 'the unnotarized app. The Mac preview has no automatic updater; install the '
-                 'stable version manually later. This prerelease does not change the stable update feed.\n')
+        text += ('Preview build: signed like a stable release, but not marked Latest. Apps with '
+                 '**Settings > Update channel** set to Preview update to it automatically; the '
+                 'stable channel does not see it.\n\n'
+                 'Windows Authenticode signing is optional; if unavailable, SmartScreen '
+                 'may warn on first installation.\n')
     else:
         text += ('You only need the installer for your platform. Other assets below support '
                  'automatic updates, download verification, and source-code access.\n\n'
@@ -193,10 +211,13 @@ def publish(folder):
         commit = json.loads(gh('api', f'repos/{repo}/commits/{tag}'))
         if commit['sha'] != sha:
             raise ValueError('Existing tag points at a different commit')
-    if mode == 'stable':
-        latest = api_optional(f'repos/{repo}/releases/latest')
-        if latest and version_tuple(latest['tag_name'].removeprefix('v')) >= version_tuple(version):
-            raise ValueError('Bump CMakeLists.txt: stable version must exceed the current latest release')
+    # Previews and stable releases share one version sequence: a preview uses up
+    # its version, so the preview channel always sees a stable release that
+    # follows it as newer.
+    highest = highest_release_version(repo)
+    if highest and highest >= version_tuple(version):
+        raise ValueError('Bump CMakeLists.txt: the version must exceed every published release, '
+                         'previews included')
     checksums = folder / 'SHA256SUMS.txt'
     checksums.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n'
                                  for p in sorted(assets)), encoding='utf-8')
@@ -205,7 +226,7 @@ def publish(folder):
     notes.write_text(release_notes(version, mode, repo, tag, sha), encoding='utf-8')
     if not existing:
         gh('release', 'create', tag, '--repo', repo, '--target', sha, '--draft',
-           '--title', f'MediaViewer {version}' + (' (unsigned preview)' if mode == 'preview' else ''),
+           '--title', f'MediaViewer {version}' + (' (preview)' if mode == 'preview' else ''),
            '--notes-file', str(notes))
     gh('release', 'upload', tag, '--repo', repo, '--clobber', *(str(p) for p in assets))
     uploaded = release_by_tag(repo, tag)

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 using System.Net;
+using System.Text.Json;
 using Velopack;
 using Velopack.Logging;
 using Velopack.Sources;
@@ -17,9 +18,18 @@ public interface IManifestFetcher
 /// certificate validation. The request is a plain GET of two fixed asset URLs:
 /// no query string, no cookies, nothing about the user's files (rule 6).
 /// </summary>
-public sealed class GithubManifestFetcher : IManifestFetcher
+/// <remarks>
+/// On the preview channel (plan/12, 2026-09-26) the newest release may be a
+/// prerelease, which /releases/latest never serves, so the fetcher first reads
+/// the public release listing and takes the highest-versioned release that
+/// carries a manifest. That only chooses which signed manifest is evaluated:
+/// the signature, the channel and "newer than running" are checked exactly as
+/// on the stable channel.
+/// </remarks>
+public sealed class GithubManifestFetcher(Func<bool>? preview = null) : IManifestFetcher
 {
     private static readonly HttpClient Http = CreateClient();
+    private static readonly string DownloadPrefix = UpdateKeys.GithubRepoUrl + "/releases/download/";
 
     private static HttpClient CreateClient()
     {
@@ -31,10 +41,79 @@ public sealed class GithubManifestFetcher : IManifestFetcher
     public async Task<(byte[]? Manifest, byte[]? Signature)> FetchAsync(CancellationToken cancel)
     {
         string baseUrl = UpdateKeys.GithubRepoUrl + "/releases/latest/download/";
-        byte[]? manifest = await Get(baseUrl + UpdateKeys.ManifestAssetName, cancel).ConfigureAwait(false);
+        string manifestUrl = baseUrl + UpdateKeys.ManifestAssetName;
+        string sigUrl = baseUrl + UpdateKeys.SignatureAssetName;
+        if (preview?.Invoke() == true)
+        {
+            byte[]? listing = await Get(UpdateKeys.GithubReleasesApiUrl, cancel).ConfigureAwait(false);
+            (string Manifest, string Signature)? newest = listing is null ? null : PickNewestRelease(listing);
+            if (newest is null) return (null, null);
+            (manifestUrl, sigUrl) = newest.Value;
+        }
+        byte[]? manifest = await Get(manifestUrl, cancel).ConfigureAwait(false);
         if (manifest is null) return (null, null);
-        byte[]? sig = await Get(baseUrl + UpdateKeys.SignatureAssetName, cancel).ConfigureAwait(false);
+        byte[]? sig = await Get(sigUrl, cancel).ConfigureAwait(false);
         return (manifest, sig);
+    }
+
+    /// <summary>
+    /// From a GitHub release listing: the manifest and signature download URLs
+    /// of the highest-versioned published release (stable or prerelease) that
+    /// has both. Tags are v1.2.3, or v1.2.3.preview.N from before previews were
+    /// signed. URLs outside this repository's release downloads are ignored.
+    /// </summary>
+    public static (string Manifest, string Signature)? PickNewestRelease(ReadOnlySpan<byte> listingJson)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(listingJson.ToArray());
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return null;
+            (string, string)? best = null;
+            ReleaseVersion bestVersion = default;
+            foreach (JsonElement r in doc.RootElement.EnumerateArray())
+            {
+                if (r.ValueKind != JsonValueKind.Object) continue;
+                if (r.TryGetProperty("draft", out JsonElement draft) && draft.ValueKind == JsonValueKind.True) continue;
+                if (!TagVersion(r, out ReleaseVersion version) || (best is not null && version <= bestVersion)) continue;
+                string? m = AssetUrl(r, UpdateKeys.ManifestAssetName);
+                string? s = AssetUrl(r, UpdateKeys.SignatureAssetName);
+                if (m is null || s is null) continue;
+                best = (m, s);
+                bestVersion = version;
+            }
+            return best;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TagVersion(JsonElement release, out ReleaseVersion version)
+    {
+        version = default;
+        if (!release.TryGetProperty("tag_name", out JsonElement t) || t.ValueKind != JsonValueKind.String) return false;
+        string tag = t.GetString() ?? "";
+        if (!tag.StartsWith('v')) return false;
+        tag = tag[1..];
+        int suffix = tag.IndexOf(".preview.", StringComparison.Ordinal);
+        if (suffix >= 0) tag = tag[..suffix];
+        return ReleaseVersion.TryParse(tag, out version);
+    }
+
+    private static string? AssetUrl(JsonElement release, string name)
+    {
+        if (!release.TryGetProperty("assets", out JsonElement assets) || assets.ValueKind != JsonValueKind.Array) return null;
+        foreach (JsonElement a in assets.EnumerateArray())
+        {
+            if (a.ValueKind != JsonValueKind.Object ||
+                !a.TryGetProperty("name", out JsonElement n) || n.ValueKind != JsonValueKind.String ||
+                n.GetString() != name) continue;
+            if (!a.TryGetProperty("browser_download_url", out JsonElement u) || u.ValueKind != JsonValueKind.String) return null;
+            string? url = u.GetString();
+            return url is not null && url.StartsWith(DownloadPrefix, StringComparison.Ordinal) ? url : null;
+        }
+        return null;
     }
 
     private static async Task<byte[]?> Get(string url, CancellationToken cancel)
@@ -44,6 +123,26 @@ public sealed class GithubManifestFetcher : IManifestFetcher
         r.EnsureSuccessStatusCode();
         return await r.Content.ReadAsByteArrayAsync(cancel).ConfigureAwait(false);
     }
+}
+
+/// <summary>
+/// The Velopack feed for the current update channel: stable releases only, or
+/// prereleases as well on the preview channel. Chosen per request, so a channel
+/// change takes effect at the next check. The signed manifest still decides the
+/// one version that may be installed (<see cref="SignedManifestSource"/>).
+/// </summary>
+public sealed class ChannelSource(Func<bool> preview, IUpdateSource stable, IUpdateSource withPrereleases) : IUpdateSource
+{
+    private IUpdateSource Current => preview() ? withPrereleases : stable;
+
+    public Task<VelopackAssetFeed> GetReleaseFeed(IVelopackLogger logger, string? appId, string channel,
+        Guid? stagingId = null, VelopackAsset? latestLocalRelease = null) =>
+        Current.GetReleaseFeed(logger, appId, channel, stagingId, latestLocalRelease);
+
+    // Either GitHub source downloads any GitHub asset: the entry carries its release.
+    public Task DownloadReleaseEntry(IVelopackLogger logger, VelopackAsset releaseEntry, string localFile,
+        Action<int> progress, CancellationToken cancelToken = default) =>
+        Current.DownloadReleaseEntry(logger, releaseEntry, localFile, progress, cancelToken);
 }
 
 /// <summary>A local directory feed (tests and the dev-build e2e). Same signature rules.</summary>

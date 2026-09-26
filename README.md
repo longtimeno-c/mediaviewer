@@ -219,6 +219,9 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
   locally, scrubbed of paths, filenames and your username, and never sent without asking.
 - **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
 - **Installs per user**, with a public installer and a background updater. The 0.1.2 installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
+- **Stable or preview updates.** Updates follow stable releases by default. **Settings → Update channel → Preview**
+  also installs signed preview builds as they are published; switching back to Stable keeps the installed version
+  until a newer stable release arrives.
 - **Hardened decoding.** A corpus of broken files and per-decoder fuzzers run in CI.
 
 ---

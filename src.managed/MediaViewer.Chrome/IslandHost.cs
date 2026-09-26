@@ -171,6 +171,8 @@ public static partial class IslandHost
         // been answered - either way. Asked is not consent (plan/13 Part 3).
         public const int Telemetry = 1 << 9;
         public const int TelemetryAsked = 1 << 10;
+        // [update] channel = preview (update_guard.h kChromeFlagUpdatePreview).
+        public const int UpdatePreview = 1 << 11;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -474,6 +476,7 @@ public static partial class IslandHost
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
             _sortPacked = args.Sort;
+            UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
             // PR 8: the telemetry first-run screen, once, when native reports
