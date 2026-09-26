@@ -29,6 +29,9 @@ Mac are both at PR 9.** The order from here is:
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
 | 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
 | **29** | **Edit workspace** (issue #39, [20](20-edit-workspace.md)): Edit button / `Enter`, docked pane, crop presets, every-tag metadata editing | both | **Mac half written and run** (2026-09-26, self-test rig); Windows half owed |
+| **30** | **Video Editor window, one clip** (issue #40, [21](21-video-editor.md)): timeline, strip, waveform, split / delete / in / out, keyframe or exact export | both | **Mac half written and run** (2026-09-26); Windows half owed. Does not merge before 29 |
+| 31 | Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)) | both | Planned |
+| 32–35 | **Editor add-on** ([21](21-video-editor.md)): spikes + mechanism, grade, audio, voice isolation | both | Proposed; S1 (encoder coverage) run on the Mac |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.

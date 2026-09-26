@@ -46,6 +46,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/18-import.md` | Import add-on (PRs 16–19): card copy with hash dedupe + verify; the add-on mechanism |
 | `plan/19-voice.md` | Voice query add-on (PRs 27–28): on-device STT/TTS over Local search, separate install |
 | `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
+| `plan/21-video-editor.md` | PRs 30–35: the Video Editor window (base) and the optional Editor add-on (grade, audio, voice isolation) |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.

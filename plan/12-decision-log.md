@@ -2317,3 +2317,30 @@ resolvedColorWithAppearance:]` does not exist); it now resolves inside
 tag written and read back, then revert → the original's bytes exactly. **Owed:** the Windows
 half (WinUI strip, panes, dock inset, tag editor; nothing was compiled for Windows), VoiceOver /
 Narrator passes, and both present-loop gates with the pane docked.
+
+## 2026-09-26 — PR 30: video is edited in its own window (owner); the Editor add-on is re-scoped
+
+**Owner, on reviewing PR 29:** "video editing should happen in a separate window similar to
+iMovie, Final Cut, DaVinci, with timelines." Issue #40 had proposed the whole editor as an
+optional add-on docked into the Edit workspace. The window is now **base** (it adds no payload:
+it is PR 13/14's clip core with a timeline), and the add-on keeps what does add weight —
+grading, audio clean-up, voice-isolation models ([21](21-video-editor.md)). Whether PR 31
+(several clips) is base or add-on is left to the owner there.
+
+**"Resist the NLE" ([10](10-roadmap.md)) is narrowed, not dropped:** a cut editor for camera
+clips is in; titles, keyframed effects, compositing, multicam and plug-ins stay out.
+
+**The preview is the viewer's canvas, moved.** The one `MvMetalView` (one CAMetalLayer) moves
+into the editor window while it is open and back when it closes: rule 2 and "one present path
+per OS" hold, with no second renderer. While it is there the canvas refuses first responder, so
+a click on the preview cannot hand the keys to the browse router (A / D would walk the folder
+out from under the edit).
+
+**Export is `clip::op::keep_ranges`** (ABI 0.11 appends `ranges_ns` / `range_count` to
+`mv_clip_request`; a 0.10-sized request is still accepted): keyframe cuts by default, or *exact*
+through Path 2's loop generalised to pieces, hardware encoders only, in the helper process.
+
+**Proved on the Mac:** a 16 s clip with its middle third cut exports to 11.13 s (keyframe cuts)
+and 10.69 s (exact, VideoToolbox) for a 10.71 s program; the source is untouched. **Owed:** the
+Windows half (a WinUI window hosting the D3D11 canvas the same way), both present-loop gates
+with the editor open, VoiceOver.

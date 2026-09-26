@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// encprobe: spike S1 for the video/audio editor add-on (plan/20-editor-addon.md).
+// encprobe: spike S1 for the video/audio editor add-on (plan/21-video-editor.md).
 //
 // What can THIS machine's build encode and filter, and how fast? Prints a
 // Markdown report on stdout:
@@ -348,7 +348,7 @@ void hwdevice_section() {
 
 int main() {
   av_log_set_level(AV_LOG_QUIET);
-  std::printf("# encprobe (plan/20 spike S1)\n\n");
+  std::printf("# encprobe (plan/21 spike S1)\n\n");
   std::printf("libavcodec %s · libavfilter %s\n\n", AV_STRINGIFY(LIBAVCODEC_VERSION),
               AV_STRINGIFY(LIBAVFILTER_VERSION));
   video_section();

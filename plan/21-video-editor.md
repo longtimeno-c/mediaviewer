@@ -1,117 +1,90 @@
-# 20 — Editor (an optional video/audio editing add-on)
+# 21 — The Video Editor (its own window) and the Editor add-on
 
-**Status: proposed 2026-09-26, post-v1, from issue #40. Milestone J, PRs 29–34. Windows and
-macOS together (D9, amended 2026-09-24). Not a D-decision, and it needs the owner's
-sign-off before PR 30 starts ([Open decisions](#open-decisions-owner)). PR 29 is spikes only.**
-Nothing here changes the PR 1–15 viewer or the PR 13/14 clip tools. The Editor is a separate
-download, installed from Settings → Add-ons through PR 16's mechanism
-([18](18-import.md#add-ons-how-import-is-installed)).
+**Status: 2026-09-26, from issue #40 and the owner's review of PR 29. Milestone J, PRs 30–35,
+Windows and macOS together (D9). PR 30 — the Video Editor window, one clip — is written and run on
+the Mac (below, "What was built"); its Windows half is owed. PRs 32–35, the optional Editor add-on
+(grading, audio clean-up, voice isolation), are proposed and need the owner's sign-off.**
 
 ## What it is
 
-A **short-form editor for the clips in a camera dump**. Put a few clips on one timeline, cut
-them, grade them, clean up the sound, and export one new file. The timeline has thumbnails and
-waveforms, a precise playhead and in/out points, and split and ripple delete. Grading has
-curves, a `.cube` LUT, scopes and a before/after view. Audio has gain, EQ, loudness, noise
-reduction and, as an optional model download, voice isolation. Preview runs on the viewer's own
-canvas. Renders go to a cancellable background queue.
+Video is edited in a **window of its own**, with a timeline, the way iMovie, Final Cut and
+DaVinci Resolve do it, not in a side pane (owner, 2026-09-26; [20](20-edit-workspace.md)
+"Owner review"). *Edit video* (or `Enter`) on a clip opens it:
 
-It is **not a studio NLE**. It has one video track and one linked audio track (plus one music
-bed from PR 33), cuts and cross-dissolves, and no titles, keyframed effects, compositing,
-multicam or third-party plug-ins. Those limits are what make it shippable (see *Later, or never*).
+```
+┌ Video Editor — GOPR0412.MP4 ─────────────────────────────────────────────────────────────┐
+│                                                                                           │
+│                     preview: the viewer's own canvas, moved into this window              │
+│                                                                                           │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ ◁| ❚❚ |▷  0:07.57 / 0:10.70 │ Split  Delete  Set in  Set out │ Undo  Redo    Export  Export exact │ Done │
+│ 0:00      0:01      0:02      0:03      0:04      0:05      0:06    ▼ 0:07      0:08      0:09   │
+│ [▣▣▣▣▣▣ piece 1 (thumbnails) ▣▣▣▣▣▣][▣▣▣▣ piece 2, selected ▣▣▣▣▣▣▣▣▣▣]                        │
+│ [∿∿∿∿∿∿∿ waveform ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿][∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿]                        │
+│ Space play · ← → frame · I O in / out · ⌘B split · ⌫ delete piece · ⌘Z undo · ⌘E export        │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Two layers, split by payload rather than by feature count:
+
+- **The Video Editor (base app, PRs 30–31).** The window, the timeline, cutting, several clips,
+  and export. It is built on PR 13/14's clip core and adds no library, model or download, so it
+  costs the installer nothing.
+- **The Editor add-on (optional, PRs 32–35; issue #40).** The parts that do add payload or
+  maintenance weight: grading (curves, LUTs, scopes), audio clean-up and mixing, and voice
+  isolation with its model download. It docks into the Video Editor window when it is installed.
+
+Still **not a studio NLE**: one video track and its audio, cuts (dissolves from PR 31), no titles,
+keyframed effects, compositing, multicam or third-party plug-ins.
 
 ## Contradictions this plan has to resolve (read before building)
 
-1. **"Not an NLE"** (CLAUDE.md, [plan/README](README.md), [08](08-video-editing.md) scope line,
-   [10](10-roadmap.md) "Resist the NLE"). That line is about the **viewer**: its installer, its
-   updates and what a new user sees. It stands. The Editor follows the Import precedent. It is an
-   add-on the base app never carries, and with it absent the install tree is byte-identical and no
-   Editor command, menu or key exists. The core changes it needs (below) are generalisations the
-   base Edit workspace (issue #39) uses too. They are not an NLE hiding in the base app. **Owner
-   decision required**: this is a scope expansion of the product, even though the viewer's scope
-   does not change.
+1. **"Not an NLE"** (CLAUDE.md, [plan/README](README.md), [08](08-video-editing.md),
+   [10](10-roadmap.md) "Resist the NLE"). The owner asked for a timeline editor in its own
+   window. The line now reads as the limits above: a cut editor for camera clips is in, a
+   studio NLE is not. Recorded in [12](12-decision-log.md) 2026-09-26.
 2. **[08](08-video-editing.md) mentions "an x264/x265 software fallback"** for full re-encode.
-   That line predates [11](11-licensing.md) and CLAUDE.md "Video". This plan follows the licence
-   rule: **hardware / OS encoders only**. There is no software H.264/HEVC fallback, and a machine
-   with no hardware encoder exports ProRes / lossless intermediates only (S1). 08 is corrected
-   in the same change.
-3. **AAC.** [11](11-licensing.md) says "never bundle a software AAC encoder; prefer the OS one".
-   S1 shows FFmpeg's native `aac` is in the build (Path 2 stream-copies audio and never used it).
-   The Editor re-encodes audio whenever gain, EQ or clean-up runs, so it must pick `aac_at`
-   (AudioToolbox, Mac) and `aac_mf` (Media Foundation, Windows). Native `aac` stays unused, and a
-   test asserts the export path never opens it.
+   That predates [11](11-licensing.md). The Editor uses **hardware / OS encoders only**; *Export
+   exact* is Path 2's encoder rules.
+3. **AAC.** [11](11-licensing.md): never a bundled software AAC encoder. The base editor copies
+   audio (no re-encode). The add-on's audio features re-encode through `aac_at` / `aac_mf` (the
+   OS encoders; S1 below), never FFmpeg's native `aac`.
 
-## Rules, and how the Editor holds them
+## What was built (PR 30, Mac, 2026-09-26)
 
-| Rule | How it holds |
+| Piece | Code |
 |---|---|
-| 1 — nothing blocking on UI/render | Timeline thumbnails, waveforms, scopes readback, model inference and renders all run on workers or in the render helper process. The UI thread edits a POD project model and posts it |
-| 2 — the canvas is ours | Preview is **the main canvas**, not a second player. The Editor is a workspace mode of the main window, not a new window with a `MediaPlayerElement` or `AVPlayerView` |
-| 4 — zero dropped frames | Both present-loop gates are re-run **while a render is running** and **while a model processes audio** |
-| 5 — never modify an original | Sources are read-only. A project is a separate file. Exports are new files published through `.mvpart` staging |
-| 6 — nothing leaves the machine | No cloud render, no cloud model. The model download is a plain GET of a fixed URL. Project files, caches, stems and waveforms are user data and never go into telemetry or crash reports (minidump filter excludes the audio and frame heaps, as for images) |
-| 7 — no required pack | The base app never requires the Editor, and the Editor never requires the voice model. Absent means hidden |
+| The cut list: pieces of one clip, split / delete / set in / set out, undo / redo, source ↔ program clocks, where playback jumps | `shell/video_timeline.{h,cpp}` (shared, tested) |
+| The timeline strip: keyframe thumbnails (sRGB, display rotation, HDR tone-mapped like the canvas) and an audio peak envelope | `edit/clip_strip.h`, in `edit/clip_encode.cpp` (tested) |
+| Export: `clip::op::keep_ranges` — the pieces in one file, cut on keyframes (packets copied, instant), or *exact* (every piece decoded and re-encoded on the hardware encoder, in the `MediaViewerClipJob` helper) | `edit/clip_run.cpp`, `clip_encode.cpp` (the Path 2 loop, generalised to pieces); ABI 0.11 appends `ranges_ns` / `range_count` to `mv_clip_request` |
+| The window: the canvas **moves into its preview** while it is open (one canvas, one CAMetalLayer, one present path, rule 2) and back when it closes; the viewer shows where it went | `main_mac.mm` (`setEditorOpen:`, `moveCanvasToEditor:`) |
+| Playback over the edit: a 60 Hz main-thread tick jumps the player over each cut and pauses at the end | `main_mac.mm` (`editorFollowPlayback`) |
+| The timeline UI: transport, timecode, cut tools, thumbnail and waveform tracks, a draggable playhead, piece selection, Export / Export exact, keyboard-complete | `VideoEditorView.swift` |
 
-## Where it starts (with issue #39)
+Run with the `MV_EDIT_SELFTEST` rig on a 16 s clip: open → split at ⅓ and ⅔ → delete the middle →
+export both ways. The program is 10.71 s; the keyframe-cut file is 11.13 s (each cut on its
+nearest keyframe, as labelled) and the exact file 10.69 s (VideoToolbox), and the source is
+untouched. Tests: `test_video_timeline`, and the `[pr30]` cases in `test_clip` (pieces with and
+without B-frames, exact pieces frame for frame, the helper wire, the strip).
 
-Issue #39 gives the base app one **Edit** workspace with a visible *Edit image / Edit video*
-button. Its video tab is PR 13's trim lane. The Editor **does not add a second entry point**:
+**Known limits of PR 30:** a join during playback can show a frame of the cut while the exact
+seek lands (the tick runs a frame ahead). Export exact copies audio packet-accurately, as Path 2
+does, so a join can carry up to a packet of the cut's audio. The timeline fits the whole program
+(zoom is PR 31). No VoiceOver pass yet. Windows: nothing yet.
 
-- Editor absent: *Edit video* opens the base trim lane (PR 13/14, unchanged).
-- Editor installed: the same button and key open the same workspace. It shows the Editor's
-  timeline instead of the trim lane, and a *Simple trim* toggle keeps the base lane one click away.
-  The current clip is on the timeline, and nothing is exported until the user asks.
-- Edit workspace absent (issue #39 not landed yet): the Editor adds one command, *Open in
-  Editor* (`Ctrl+Shift+T` / `⌘⇧T`, currently unbound; checked against the live table when PR 30
-  lands).
+## Architecture (PRs 31–35; PR 30's pieces are in the table above)
 
-Issue #39 decides whether the Edit workspace is itself an add-on. This plan assumes it is not:
-the workspace and crop are base features, and the Editor plugs its panes into the workspace.
-
-## The workspace
-
-```
-┌ Edit video ─ Holiday cut ● ───────────────────────────────────────────── [Simple trim] [Export ▾] ┐
-│ ┌ Media ─────────┐ ┌──────────────── canvas (the viewer's swapchain) ────────────┐ ┌ Inspector ────┐│
-│ │ ▶ IMG_4411 0:42│ │                                                             │ │ Clip  Grade  ││
-│ │ ▶ IMG_4412 1:10│ │            before │ after   (\ toggles, drag the divider)  │ │ Audio         ││
-│ │ ▶ IMG_4415 0:09│ │                                                             │ │ Exposure  +0.3││
-│ │  (this folder) │ │                                                             │ │ Curves  [╱ ]  ││
-│ │ + Add from…    │ └─────────────────────────────────────────────────────────────┘ │ LUT  Rec709 ▾ ││
-│ └────────────────┘  00:01:12.18 / 00:02:01.00   ◀◀ ▶ ▶▶   1.0×   I 00:00:31  O 01:12 │ Scopes ▾      ││
-├───────────────────────────────────────────────────────────────────────────────────┴───────────────┤
-│ V │▕▔IMG_4411▔▔▔▔▔▔▔▔▏▕▔IMG_4412▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▏▕IMG_4415▔▏     thumbnails every ~1 s at this zoom      │
-│ A │ ▁▃▅▇▅▃▁▁▃▅▃▁▁▁▂▃ ▁▂▅▇▇▅▂▁▁▂▃▅▃▂▁▁▂▃▅▇▅▃▁▁ ▂▃▂▁▂   waveform, loudness colour-coded            │
-│ M │ ♪ music bed (PR 33)                                                                            │
-│   0:00        0:15        0:30   ▼playhead   0:45        1:00        1:15        1:30             │
-├───────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Render queue: Holiday cut.mp4 · HEVC · VideoToolbox · 42 % · 0:38 left      [Cancel] [Reveal]      │
-└───────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-- **Media** lists the open folder's clips (the viewer's thumbnails and posters). *Add from…*
-  adds clips from other folders. Clips are referenced, never copied.
-- **Canvas**: the viewer's canvas plays the timeline. Before/after is a split or a toggle on the
-  same frame, drawn by the blit, so it costs no second decode.
-- **Inspector**: per-clip Clip (speed 0.5–2× from PR 31, rotation, audio on/off), Grade (PR 32)
-  and Audio (PR 33/34). **Scopes** dock here: histogram, luma waveform, RGB parade, vectorscope.
-- **Timeline**: a V track, a linked A track, and an M track for one music bed (PR 33).
-  Thumbnails and waveform are generated in the background and cached. Zoom runs from the whole
-  sequence down to single frames, and at frame zoom a keyframe grid shows where cuts are lossless.
-- **Render queue**: the Jobs pane (PR 13), with Editor renders as jobs. Closing the workspace
-  keeps a render running.
-
-UX mockups for both hosts (WinUI 3 and SwiftUI, light/dark, 100 % and 200 % scale) are produced
-in PR 30 before the chrome is written, as issue #39 asks for its workspace.
-
-## Architecture
+Rules held throughout: nothing that decodes, encodes or reads a file runs on the UI or render
+thread (the strip and exports are worker jobs; encodes run in the helper process); the preview
+is the viewer's canvas and never an `AVPlayerView` / `MediaPlayerElement` (rule 2); sources are
+never written (rule 5); nothing about the files leaves the machine (rule 6).
 
 **The split: what draws on the canvas or writes the output file lives in the core; what only
-the Editor needs lives in the add-on.** The canvas is one present path per OS that C++ owns
+the Editor add-on needs lives in the add-on.** The canvas is one present path per OS that C++ owns
 (rule 2), and the add-on links nothing of the core ([18](18-import.md)). A timeline preview
 therefore cannot be drawn by the add-on. The core has to play a *sequence*.
 
-### Core (base app, shared with issue #39's Edit workspace)
+### Core (base app; `edit/sequence` grows out of PR 30's `video_timeline` in PR 31)
 
 | Piece | What changes | Why in the core |
 |---|---|---|
@@ -135,7 +108,7 @@ HLSL and MSL twins are written in the same PR.
   clean-up pre-passes, and the model runner for voice isolation.
 - **Chrome**: `MediaViewer.Editor.Chrome.dll` (its own `AssemblyLoadContext`) and
   `Editor.bundle` (SwiftUI), which provide the timeline, media, inspector and scopes panes docked
-  into the Edit workspace.
+  into the Video Editor window.
 - **Voice model** (optional, a separate sub-pack, PR 34): the model files and their runtime.
 
 ### Host function table v2 (spike S4)
@@ -303,7 +276,7 @@ The same mechanism as Import, and nothing new to trust:
   `Ctrl+Shift+Z` undo/redo, `Ctrl+J` the render queue, `\` before/after. Inside the timeline,
   `Tab` moves between tracks, `←` `→` select the previous/next clip, `Alt+←` `Alt+→` move it, and
   `Enter` opens it in the Inspector. Mac uses the `⌘` equivalents. The keys are checked against
-  the live table in PR 30, and the table wins over this list.
+  the live table when each PR lands, and the table wins over this list.
 - **Screen readers** (UI Automation / NSAccessibility): the timeline is exposed as a list of
   clips ("IMG_4411, 0:00 to 0:42, graded, gain −3 dB"). The playhead announces its time on pause
   and step, in/out changes are announced, and every scope has a text readout (clipping %, peak
@@ -314,7 +287,7 @@ The same mechanism as Import, and nothing new to trust:
 - **Scale**: 100–300 % DPI and Dynamic Type. The track height and hit targets have a 24 DIP
   minimum.
 
-## Spikes first (PR 29)
+## Spikes (PR 32; S1 done)
 
 | # | Question | Output | State |
 |---|---|---|---|
@@ -352,73 +325,46 @@ Run it: `tools/encprobe/CMakeLists.txt` (opt-in, not part of the app build).
 
 ## Roadmap slices (both platforms each)
 
-Sequenced **after PR 28** and after issue #39's Edit workspace. Each slice has a Windows half
-and a Mac half, a verify line per platform, and both present-loop gates **while rendering**.
+Each slice has a Windows half and a Mac half, a verify line per platform, and both present-loop
+gates **while the editor plays and while it renders**.
 
-### PR 29 — Spikes (S1–S5), no user-visible change
-**Verify (both platforms):** S1 through S5 filled in above with numbers from real machines
-(Windows: NVENC, Quick Sync and AMF; Mac: Apple Silicon), each ending in a go / no-go line. A
-no-go on S2 (seams drop frames) stops PR 30 until it is fixed. A no-go on S3 drops PR 34.
+### PR 30 — The Video Editor window, one clip *(Mac written and run; Windows owed)*
+The window, the canvas hand-off, the cut list, the strip, the timeline UI, playback over the
+edit, Export / Export exact (above).
 
-### PR 30 — MVP 1: the add-on, one clip, a real timeline
-Add-on install/remove (with `requires`), host table v2, the core sequence source (one segment),
-the render op, and the workspace inside issue #39's Edit workspace: a timeline with thumbnails
-and waveform, playhead, in/out, split, ripple delete, per-clip gain and fades, the render queue,
-export presets, the cache with its cap and Clear button, and project save/open.
+**Verify (both platforms):** `Enter` on a clip opens the window with the clip in the preview and
+the strip drawn; closing it puts the canvas back. Cut the middle third: playback skips it and
+stops at the end. Export writes a new file beside the source whose duration matches the program
+(within a GOP for keyframe cuts, a frame for exact), and the source is byte-identical. Keyboard
+only: open, split, delete, export, close. Both present-loop gates hold with the editor open.
 
-**Verify (both platforms):** base tree byte-identical and no Editor key with the add-on absent;
-the add-on refused with a tampered file. A 10-minute 4K clip: thumbnails for the visible range in
-< 1 s, and the whole strip and waveform in the background. Split, delete, then export: the output
-has exactly the expected frames (first and last checked by content). An untouched segment is
-stream-copied (packets byte-identical), the source is byte-identical afterwards, and cancelling
-at 50 % leaves no file. The cache stays under its cap. Keyboard only: open, cut, export. **Both
-present-loop gates hold while a render runs.**
+### PR 31 — Several clips, zoom, dissolves (base)
+Add clips from the folder (the viewer's gallery as the media list), reorder pieces (which needs
+`keep_ranges` over several sources: the exact path first, then the copy path where codecs match),
+a zoomable timeline with a keyframe grid at frame zoom, cross-dissolves (exact export only), and
+the project saved as a small JSON file beside the first clip.
 
-### PR 31 — MVP 2: multi-clip composition
-Several sources on V + A, reorder, add from other folders, cross-dissolve (video and audio),
-speed 0.5–2×, sequence frame rate and size, VFR conform, the mixed-audio mix, and relinking a
-moved source.
+**Verify (both platforms):** three clips of different frame rates and one without audio export as
+one file at the sequence rate with A/V drift ≤ 1 frame; a 2-hour clip opens and scrubs with flat
+memory; 20 cuts between 4K HEVC clips play with no dropped frame at a cut.
 
-**Verify (both platforms):** a timeline of a VFR iPhone clip, a 25 fps camera clip, a clip with
-no audio and a 44.1 kHz clip exports at the sequence rate with A/V drift ≤ 1 frame at the end.
-A 2-hour chaptered clip opens and scrubs, and memory is flat over time. The preview plays 20
-cuts between 4K HEVC clips with **no dropped frame at the cut** (frametime harness). The same
-project renders on Windows and Mac to outputs within PSNR ≥ 45 dB of each other (encoders
-differ, so hashes do not match).
+### PR 32 — The Editor add-on: spikes and the mechanism
+S2–S5 below (S1 is done on the Mac), then the add-on through PR 16's mechanism (signed, sized,
+removable), host function table v2 so it can drive the editor's preview and render, and the
+Settings entry. Nothing user-visible beyond Install / Remove.
 
-**MVP = PRs 30 + 31.** This is where the Editor becomes worth installing, and a user can stop
-here.
+### PR 33 — Grade (add-on)
+Curves, `.cube` LUTs, PR 11's exposure / contrast / saturation / white balance per piece,
+before/after, and scopes (histogram, waveform, parade, vectorscope) with text readouts. One
+kernel source compiled to HLSL, MSL and C++ so preview and export match.
 
-### PR 32 — Grade
-Curves (master + RGB), `.cube` LUT import (33³, validated, stored in the project), PR 11's
-exposure/contrast/saturation/WB per clip, copy/paste grade, before/after split, and scopes
-(histogram, luma waveform, RGB parade, vectorscope) with text readouts. HLSL + MSL + C++ kernel
-twins.
+### PR 34 — Audio (add-on)
+Gain and fades per piece, a 5-band EQ, compressor / limiter, noise reduction with no model
+(`afftdn`, de-hum), loudness normalise, meters, and one music bed with ducking.
 
-**Verify (both platforms):** preview vs export of a graded frame within 1 code value (8-bit)
-everywhere; a LUT known to be identity leaves the export bit-exact with the ungraded one; scopes
-update at ≥ 15 Hz during playback with no dropped present frames; screen reader reads scope
-readouts.
-
-### PR 33 — Audio
-5-band EQ, compressor/limiter, the no-model clean-up tier (high-pass, gate, `afftdn`, de-hum),
-loudness analyse + normalise to a target, meters (peak, short-term LUFS), and one music bed on
-M with ducking under speech clips.
-
-**Verify (both platforms):** normalise to −16 LUFS gives an export measured at −16 ± 0.5 LUFS,
-with the true peak ≤ −1 dBTP. Noise reduction on a noisy fixture improves DNSMOS on the local
-eval set. The EQ and gain the user hears in the preview match the export sample for sample. A
-clip edited with the network off works end to end.
-
-### PR 34 — Voice isolation (optional sub-pack), only if S3 says go
-The `editor-voice` sub-pack (signed, size shown, CPU + Core ML) and a per-clip *Isolate voice*
-control with a strength amount, processed offline into the cache and previewed when ready.
-
-**Verify (both platforms):** installing shows the manifest's size, and the installed size is
-under the ceiling. Removing it leaves the Editor working with the clean-up tier. A 10-minute
-clip processes within the time S3 measured, and **both present-loop gates hold while it
-processes**. The eval-set quality meets S3's go line. Nothing is fetched except the fixed pack
-URL (checked with a proxy log).
+### PR 35 — Voice isolation (add-on sub-pack), only if S3 says go
+The model as its own signed download with its size shown, processed offline into the cache and
+previewed when ready.
 
 ## Later, or never
 
@@ -431,10 +377,11 @@ URL (checked with a proxy log).
 
 ## Open decisions (owner)
 
-1. **Approve the Editor at all.** It stays out of the viewer, but it is a second product surface
-   with a real maintenance cost (every kernel ×3, every pane ×2).
-2. **Order against Milestones H and I.** As written it follows PR 28. The MVP (PRs 30–31) could
-   come before AI search, since it needs no model.
+1. **The add-on at all** (PRs 32–35): grading, audio and voice isolation are a second product
+   surface with a real maintenance cost (every kernel ×3, every pane ×2). The base editor
+   (PRs 30–31) was asked for; the add-on is proposed.
+2. **Base or add-on for PR 31.** Several clips, zoom and dissolves add no payload, so they are
+   planned as base. If the owner wants all multi-clip editing optional, they move behind the
+   add-on with no design change.
 3. **Voice sub-pack size ceiling** (300 MB proposed) and whether an ONNX runtime shared with the
    AI pack is worth add-on dependencies.
-4. **Issue #39:** whether the Edit workspace is itself an add-on. This plan assumes it is base.
