@@ -1450,11 +1450,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                           NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
-#if MV_APP_BUNDLE
   self.window.title = @"MediaViewer";
-#else
-  self.window.title = @"MediaViewer present lab";
-#endif
   // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;

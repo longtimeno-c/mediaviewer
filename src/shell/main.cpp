@@ -84,7 +84,7 @@ using mv::shell::lab_options;
 using mv::shell::present_lab;
 
 constexpr wchar_t kWindowClass[] = L"MediaViewer.PresentLab";
-constexpr wchar_t kWindowTitle[] = L"MediaViewer — present lab";
+constexpr wchar_t kWindowTitle[] = L"MediaViewer";
 
 // What the user asked for, which is not the same as what is on screen. A
 // folder open is "browse this folder"; an image open is "show me this file",
