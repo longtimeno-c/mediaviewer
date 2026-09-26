@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shell/chrome_host.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -345,6 +346,15 @@ bool chrome_host::cursor_over_island() const noexcept {
   return false;
 }
 
+bool chrome_host::cursor_over_transport() const noexcept {
+  POINT pt{};
+  if (!::GetCursorPos(&pt)) return false;
+  const HWND root = island_hwnds_[static_cast<int>(focus_kind::transport)];
+  if (!root || !::IsWindowVisible(root)) return false;
+  RECT r{};
+  return ::GetWindowRect(root, &r) && ::PtInRect(&r, pt);
+}
+
 focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
   if (focus && focus == canvas) return focus_kind::canvas;
   for (int island = static_cast<int>(focus_kind::command_bar);
@@ -528,14 +538,30 @@ void chrome_host::show_gallery(bool visible, int width, int client_height,
   gallery_visible_ = visible;
 }
 
-// The transport stacks ON TOP of the filmstrip, not over it: `filmstrip_px` is
-// the bottom chrome already spoken for, and the strip's top edge is measured up
-// from there. Native owns this maths for the same reason it owns the
+// The transport floats over the bottom of the canvas (issue #38), centred and
+// above the filmstrip, never over it: `filmstrip_px` is the bottom chrome
+// already spoken for. Native owns this maths for the same reason it owns the
 // filmstrip's — the island must never have to guess where "offscreen" is.
 namespace {
-int transport_top(int client_height, int filmstrip_px, int strip) noexcept {
-  const int bottom = client_height - filmstrip_px;
-  return bottom > strip ? bottom - strip : 0;
+int dip_px(int dip, std::uint32_t dpi) noexcept {
+  if (dpi == 0) dpi = 96;
+  return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96);
+}
+
+chrome_panel_args transport_rect(bool visible, bool parked, int width, int client_height,
+                                 int filmstrip_px, std::uint32_t dpi) noexcept {
+  chrome_panel_args args{};
+  args.visible = visible ? 1 : 0;
+  const int strip = chrome_transport_height_px(dpi);
+  const int bar = std::max(1, std::min(dip_px(kTransportMaxWidthDip, dpi),
+                                       width - 2 * dip_px(kTransportSideDip, dpi)));
+  args.width = visible ? bar : 1;
+  args.height = visible ? strip : 1;
+  args.x = visible ? std::max(0, (width - bar) / 2) : 0;
+  const int bottom = client_height - filmstrip_px - dip_px(kTransportMarginDip, dpi);
+  // Parked (hidden, or auto-hidden) is one client height down: off screen.
+  args.y = visible && !parked ? std::max(0, bottom - strip) : client_height;
+  return args;
 }
 }  // namespace
 
@@ -576,26 +602,26 @@ void chrome_host::resize_transport(int width, int client_height, int filmstrip_p
     show_transport(false, width, client_height, filmstrip_px, dpi);
     return;
   }
-  const int strip = chrome_transport_height_px(dpi);
-  chrome_resize_args args{};
-  args.width = width;
-  args.height = strip;
-  args.dpi = static_cast<std::int32_t>(dpi);
-  args.y = transport_top(client_height, filmstrip_px, strip);
+  chrome_panel_args args =
+      transport_rect(true, transport_parked_, width, client_height, filmstrip_px, dpi);
   (void)resize_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_transport(bool visible, int width, int client_height, int filmstrip_px,
                                  std::uint32_t dpi) noexcept {
   if (!transport_attached_ || !show_transport_) return;
-  const int strip = chrome_transport_height_px(dpi);
-  chrome_show_args args{};
-  args.visible = visible ? 1 : 0;
-  args.width = visible ? width : 1;
-  args.height = visible ? strip : 1;
-  args.y = visible ? transport_top(client_height, filmstrip_px, strip) : client_height;
+  // A clip arrives with its controls up; the auto-hide rule parks them later.
+  transport_parked_ = false;
+  chrome_panel_args args = transport_rect(visible, false, width, client_height, filmstrip_px, dpi);
   (void)show_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
   transport_visible_ = visible;
+}
+
+void chrome_host::park_transport(bool parked, int width, int client_height, int filmstrip_px,
+                                 std::uint32_t dpi) noexcept {
+  if (!transport_attached_ || !transport_visible_ || transport_parked_ == parked) return;
+  transport_parked_ = parked;
+  resize_transport(width, client_height, filmstrip_px, dpi);
 }
 
 void chrome_host::apply_settings(std::int32_t flags, std::int32_t sort) noexcept {
