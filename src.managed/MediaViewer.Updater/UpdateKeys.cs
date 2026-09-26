@@ -26,6 +26,8 @@ public static class UpdateKeys
     public const string Channel = "win";
     public const string PackId = "MediaViewer";
     public const string GithubRepoUrl = "https://github.com/longtimeno-c/mediaviewer";
+    /// <summary>The preview channel's release listing: prereleases are absent from /releases/latest.</summary>
+    public const string GithubReleasesApiUrl = "https://api.github.com/repos/longtimeno-c/mediaviewer/releases?per_page=10";
     public const string ManifestAssetName = "mediaviewer-manifest.json";
     public const string SignatureAssetName = "mediaviewer-manifest.json.sig";
 

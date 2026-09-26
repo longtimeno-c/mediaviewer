@@ -33,6 +33,7 @@ public sealed class UpdateService
     public static readonly TimeSpan FirstCheckDelay = TimeSpan.FromSeconds(30);
 
     private readonly Func<bool> _autoCheck;
+    private readonly Func<bool> _preview;
     private readonly Action<string> _log;
     private readonly AutoResetEvent _wake = new(false);
     private readonly object _gate = new();
@@ -44,9 +45,11 @@ public sealed class UpdateService
     private string? _root;
     private bool _applyLaunched;
 
-    public UpdateService(Func<bool> autoCheck, Action<string> log)
+    /// <param name="preview">The preview update channel: prerelease builds as well as stable ones.</param>
+    public UpdateService(Func<bool> autoCheck, Func<bool> preview, Action<string> log)
     {
         _autoCheck = autoCheck;
+        _preview = preview;
         _log = log;
     }
 
@@ -70,7 +73,7 @@ public sealed class UpdateService
         }
     }
 
-    /// <summary>Settings toggled auto-check on: check soon rather than in 6 h.</summary>
+    /// <summary>Settings turned auto-check on or changed the channel: check soon rather than in 6 h.</summary>
     public void Poke() => _wake.Set();
 
     public void Stop()
@@ -133,8 +136,10 @@ public sealed class UpdateService
 
         _root = root;
         string? pinnedHex = UpdateKeys.ProductionPublicKeyHex;
-        IManifestFetcher fetcher = new GithubManifestFetcher();
-        IUpdateSource inner = new GithubSource(UpdateKeys.GithubRepoUrl, null, false);
+        IManifestFetcher fetcher = new GithubManifestFetcher(_preview);
+        IUpdateSource inner = new ChannelSource(_preview,
+            new GithubSource(UpdateKeys.GithubRepoUrl, null, false),
+            new GithubSource(UpdateKeys.GithubRepoUrl, null, true));
 #if MV_UPDATER_DEV
         string? devDir = Environment.GetEnvironmentVariable("MV_UPDATE_FEED_DIR");
         string? devKey = Environment.GetEnvironmentVariable("MV_UPDATE_DEV_PUBKEY");

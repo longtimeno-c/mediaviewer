@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'artifacts: test packaging; preview: unsigned prerelease; stable: signed update feeds'
+        description: 'artifacts: unsigned test packaging; preview: signed prerelease for the Preview update channel; stable: signed Latest release'
         type: choice
         options: [artifacts, preview, stable]
         default: artifacts
@@ -130,7 +130,7 @@ jobs:
 
       - name: Signing material
         id: sign
-        if: inputs.mode == 'stable'
+        if: inputs.mode != 'artifacts'
         env:
           MV_MANIFEST_SIGNING_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
           TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
@@ -187,7 +187,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Verify signed update feed
-        if: inputs.mode == 'stable'
+        if: inputs.mode != 'artifacts'
         run: dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- verify-release dist/releases
 
       # The Import add-on (plan/18): built beside the app, never in it, and
@@ -234,10 +234,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force upload | Out-Null
           Copy-Item "dist/MediaViewer-$env:VERSION-Setup.exe" upload
-          if ($env:MODE -eq 'stable') {
+          if ($env:MODE -ne 'artifacts') {
             Copy-Item dist/releases/*.nupkg upload
             Copy-Item dist/releases/RELEASES, dist/releases/releases.win.json, dist/releases/assets.win.json upload
             Copy-Item dist/releases/mediaviewer-manifest.json, dist/releases/mediaviewer-manifest.json.sig upload
+          }
+          # Add-ons stay on the stable feed (plan/18): previews carry none.
+          if ($env:MODE -eq 'stable') {
             Copy-Item dist/addon/mediaviewer-addon-import-win-x64.zip, dist/addon/mediaviewer-addon-import-win-x64.json, dist/addon/mediaviewer-addon-import-win-x64.json.sig upload
           }
 
@@ -338,7 +341,7 @@ jobs:
                 -G Ninja
                 -DVCPKG_TARGET_TRIPLET="$TRIPLET"
                 -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
-          if [ "$MODE" = "stable" ]; then
+          if [ "$MODE" != "artifacts" ]; then
             args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
           fi
           cmake -S . -B build "${args[@]}"
@@ -404,7 +407,7 @@ jobs:
           merge-multiple: true
 
       - name: Signing keychain
-        if: inputs.mode == 'stable'
+        if: inputs.mode != 'artifacts'
         env:
           CERT_P12: ${{ secrets.MV_MAC_CERT_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.MV_MAC_CERT_PASSWORD }}
@@ -486,7 +489,7 @@ jobs:
         timeout-minutes: 30
         run: |
           args=(--app build/universal/MediaViewer.app --out-dir build/release)
-          if [ "$MODE" = "stable" ]; then
+          if [ "$MODE" != "artifacts" ]; then
             args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
                    --sparkle-bin "$RUNNER_TEMP/sparkle/bin"
                    --sparkle-key-file "$RUNNER_TEMP/sparkle.key"
@@ -497,7 +500,7 @@ jobs:
           python3 tools/mac/macpack.py release "${args[@]}"
           mkdir -p upload
           cp "build/release/MediaViewer-$VERSION.dmg" upload/
-          if [ "$MODE" = "stable" ]; then
+          if [ "$MODE" != "artifacts" ]; then
             cp "build/release/updates/MediaViewer-$VERSION.zip" build/release/updates/appcast.xml upload/
           fi
 
