@@ -177,6 +177,9 @@ TEST_CASE("publish_slot never hands back a torn snapshot", "[core][publish]") {
     }
   });
 
+  // Hold the writer until the reader is running: on a loaded runner the whole
+  // publish loop can finish before the thread is first scheduled.
+  while (reads.load(std::memory_order_relaxed) == 0) std::this_thread::yield();
   for (std::uint64_t i = 1; i <= 500000; ++i) slot.publish(triple{i, i * 2, i * 3});
 
   stop.store(true, std::memory_order_relaxed);
