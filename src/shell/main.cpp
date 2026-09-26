@@ -375,12 +375,14 @@ void publish(app_state* app) noexcept {
 }
 
 // The settings word the island sees: view_settings plus [update] auto_check
-// plus the two [telemetry] bits. One place, so both switches ride the existing
+// and channel plus the two [telemetry] bits. One place, so both switches ride the existing
 // ApplySettings push.
 std::int32_t chrome_flags(const app_state* app) noexcept {
   const bool auto_check = mv::shell::app_settings().get_int("update", "auto_check", 1) != 0;
   std::int32_t flags = app->settings.flags();
   if (auto_check) flags |= mv::shell::update::kChromeFlagUpdateAutoCheck;
+  if (mv::shell::app_settings().get("update", "channel") == "preview")
+    flags |= mv::shell::update::kChromeFlagUpdatePreview;
   // Default off, and the island shows the first-run screen exactly while
   // `asked` is clear (plan/13 Part 3).
   if (mv::shell::telemetry::enabled()) flags |= mv::shell::telemetry::kChromeFlagTelemetry;
@@ -2312,6 +2314,14 @@ void chrome_on_command(void* ctx, int command, float arg) {
   // it went away may act on the app now.
   if (!app || app->closing) return;
   switch (command) {
+    case mv::shell::chrome_cmd_home_colour: {
+      const auto rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
+      if (app->input.home_background_rgb != rgb) {
+        app->input.home_background_rgb = rgb;
+        publish(app);
+      }
+      return;
+    }
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
       return;
@@ -2369,6 +2379,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
       mv::shell::app_settings().set_int(
           "update", "auto_check",
           (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdateAutoCheck) != 0 ? 1 : 0);
+      mv::shell::app_settings().set(
+          "update", "channel",
+          (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdatePreview) != 0 ? "preview" : "stable");
       // Telemetry only ever changes through an explicit answer: the first-run
       // screen, or the Settings row. Both arrive here with the Asked bit set,
       // and a word without it leaves consent exactly as it was (plan/13).

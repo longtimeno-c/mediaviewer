@@ -77,6 +77,7 @@ public static partial class IslandHost
         // with TakeTreePath and opens it in the viewer.
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
+        public const int HomeColour = 1016;
         // PR 12: the comment field was committed (native pulls the text with
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
@@ -171,6 +172,8 @@ public static partial class IslandHost
         // been answered - either way. Asked is not consent (plan/13 Part 3).
         public const int Telemetry = 1 << 9;
         public const int TelemetryAsked = 1 << 10;
+        // [update] channel = preview (update_guard.h kChromeFlagUpdatePreview).
+        public const int UpdatePreview = 1 << 11;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -258,13 +261,12 @@ public static partial class IslandHost
             // Register Cozette first so a named FontFamily can resolve.
             RegisterUiFont();
             EnsureApp();
-            _themeWindow = parent;
-            RefreshTheme();
-
             _context = checked((IntPtr)args.Context);
             _onCommand = args.OnCommand == 0
                 ? null
                 : Marshal.GetDelegateForFunctionPointer<NativeCommand>(checked((IntPtr)args.OnCommand));
+            _themeWindow = parent;
+            RefreshTheme();
 
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
             DisposeSource(ref _source);
@@ -474,6 +476,7 @@ public static partial class IslandHost
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
             _sortPacked = args.Sort;
+            UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
             // PR 8: the telemetry first-run screen, once, when native reports

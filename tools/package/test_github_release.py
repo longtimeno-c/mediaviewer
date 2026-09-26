@@ -27,6 +27,13 @@ class DraftLookupTests(unittest.TestCase):
         with patch.object(release, 'gh', return_value='[[]]'):
             self.assertIsNone(release.release_by_tag('owner/repo', 'v0.1.1'))
 
+    def test_highest_release_version_counts_previews_and_skips_drafts(self):
+        pages = [[{'tag_name': 'v0.1.3', 'draft': False},
+                  {'tag_name': 'v0.1.4.preview.99', 'draft': False},
+                  {'tag_name': 'v0.1.9', 'draft': True}]]
+        with patch.object(release, 'gh', return_value=json.dumps(pages)):
+            self.assertEqual(release.highest_release_version('owner/repo'), (0, 1, 4))
+
     def test_authentication_failure_is_not_treated_as_missing_release(self):
         with patch.object(release, 'gh', side_effect=subprocess.CalledProcessError(1, 'gh', stderr='HTTP 403')):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -38,7 +45,7 @@ class ReleaseTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
-        self.env = {'MODE': 'preview', 'VERSION': '0.1.1', 'TAG': 'v0.1.1.preview.1',
+        self.env = {'MODE': 'artifacts', 'VERSION': '0.1.1', 'TAG': 'v0.1.1',
                     'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_SHA': 'abc123',
                     'GITHUB_RUN_ID': '1', 'MIN_VERSION': '0.0.0', 'BLOCKLIST': '',
                     'GITHUB_OUTPUT': str(self.folder / 'output')}
@@ -46,17 +53,32 @@ class ReleaseTests(unittest.TestCase):
         patch.dict(os.environ, self.env, clear=True).start()
         patch.object(release, 'project_version', return_value='0.1.1').start()
         self.lookup = patch.object(release, 'release_by_tag', return_value=None).start()
+        self.highest = patch.object(release, 'highest_release_version', return_value=None).start()
         for name in ('MediaViewer-0.1.1-Setup.exe', 'MediaViewer-0.1.1.dmg'):
             (self.folder / name).write_bytes(b'test installer')
 
-    def test_preview_preflight_needs_no_secrets(self):
+    def test_artifacts_preflight_needs_no_secrets(self):
         release.prepare()
-        self.assertIn('tag=v0.1.1.preview.1', (self.folder / 'output').read_text())
+        self.assertIn('tag=v0.1.1', (self.folder / 'output').read_text())
 
-    def test_stable_preflight_fails_before_build_without_credentials(self):
-        os.environ['MODE'] = 'stable'
-        with self.assertRaisesRegex(ValueError, 'MV_MANIFEST_SIGNING_KEY'):
-            release.prepare()
+    def test_signed_preflight_fails_before_build_without_credentials(self):
+        for mode in ('preview', 'stable'):
+            os.environ['MODE'] = mode
+            with self.assertRaisesRegex(ValueError, 'MV_MANIFEST_SIGNING_KEY'):
+                release.prepare()
+
+    def test_preview_tag_has_no_suffix(self):
+        os.environ['MODE'] = 'preview'
+        for name in ('MV_MANIFEST_SIGNING_KEY', 'MV_MAC_CERT_P12_BASE64', 'MV_MAC_CERT_PASSWORD',
+                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_PASSWORD', 'MV_SPARKLE_PRIVATE_KEY'):
+            os.environ[name] = 'test'
+        release.prepare()
+        self.assertIn('tag=v0.1.1\n', (self.folder / 'output').read_text())
+
+    def test_tag_version_reads_stable_and_legacy_preview_tags(self):
+        self.assertEqual(release.tag_version('v0.1.4'), (0, 1, 4))
+        self.assertEqual(release.tag_version('v0.1.4.preview.36219649049'), (0, 1, 4))
+        self.assertIsNone(release.tag_version('nightly'))
 
     def test_partial_azure_configuration_fails(self):
         os.environ['MODE'] = 'stable'
@@ -73,6 +95,7 @@ class ReleaseTests(unittest.TestCase):
             release.prepare()
 
     def test_missing_platform_never_contacts_github(self):
+        self.stable_assets()
         (self.folder / 'MediaViewer-0.1.1.dmg').unlink()
         with patch.object(release, 'gh') as cli:
             with self.assertRaisesRegex(ValueError, 'Missing or empty'):
@@ -80,6 +103,7 @@ class ReleaseTests(unittest.TestCase):
             cli.assert_not_called()
 
     def test_published_release_is_never_overwritten(self):
+        self.stable_assets()
         self.lookup.return_value = {'draft': False}
         with patch.object(release, 'gh') as cli:
             with self.assertRaisesRegex(ValueError, 'Refusing to overwrite'):
@@ -87,6 +111,7 @@ class ReleaseTests(unittest.TestCase):
             cli.assert_not_called()
 
     def test_upload_failure_leaves_draft_unpublished(self):
+        self.stable_assets()
         calls = []
         def cli(*args):
             calls.append(args)
@@ -99,14 +124,17 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual([c[:2] for c in calls], [('release', 'create'), ('release', 'upload')])
         self.assertIn('--draft', calls[0])
 
-    def test_preview_publishes_only_after_upload_verification_without_latest(self):
+    def test_preview_publishes_signed_feeds_without_latest(self):
+        self.stable_assets()
+        os.environ['MODE'] = 'preview'
+        # Add-ons stay on the stable feed (plan/18): a preview carries none.
+        for platform in release.ADDON_PLATFORMS:
+            for name in release.addon_asset_names(platform):
+                (self.folder / name).unlink()
         calls = []
         self.lookup.side_effect = lambda *_: self.uploaded_draft() if calls else None
         def cli(*args):
             calls.append(args)
-            if args[0] == 'api':
-                assets = [p for p in self.folder.iterdir() if p.suffix in ('.exe', '.dmg') or p.name == 'SHA256SUMS.txt']
-                return json.dumps({'assets': [{'name': p.name, 'size': p.stat().st_size} for p in assets]})
             return ''
         with patch.object(release, 'api_optional', return_value=None), patch.object(release, 'gh', side_effect=cli):
             release.publish(self.folder)
@@ -114,6 +142,17 @@ class ReleaseTests(unittest.TestCase):
                          [('release', 'create'), ('release', 'upload'), ('release', 'edit')])
         self.assertIn('--latest=false', calls[-1])
         self.assertIn('--prerelease=true', calls[-1])
+        uploaded = [c for c in calls if c[:2] == ('release', 'upload')][0]
+        for name in ('mediaviewer-manifest.json', 'appcast.xml', 'releases.win.json'):
+            self.assertTrue(any(a.endswith(name) for a in uploaded), name)
+        self.assertFalse(any('mediaviewer-addon-' in a for a in uploaded))
+
+    def test_preview_cannot_publish_installers_without_feeds(self):
+        os.environ['MODE'] = 'preview'
+        with patch.object(release, 'gh') as cli:
+            with self.assertRaisesRegex(ValueError, 'full.nupkg'):
+                release.publish(self.folder)
+            cli.assert_not_called()
 
     def test_stable_cannot_publish_installers_without_feeds(self):
         os.environ['MODE'] = 'stable'
@@ -196,12 +235,17 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
         with self.assertRaisesRegex(ValueError, 'does not reference'):
             release.publish(self.folder)
 
-    def test_stable_cannot_move_latest_backwards(self):
+    def test_release_must_exceed_every_published_version_previews_included(self):
         self.stable_assets()
-        with patch.object(release, 'api_optional', side_effect=[None, {'tag_name': 'v0.1.2'}]), patch.object(release, 'gh') as cli:
-            with self.assertRaisesRegex(ValueError, 'must exceed'):
-                release.publish(self.folder)
-            cli.assert_not_called()
+        for mode in ('preview', 'stable'):
+            os.environ['MODE'] = mode
+            for highest in ((0, 1, 1), (0, 1, 2)):
+                self.highest.return_value = highest
+                with patch.object(release, 'api_optional', return_value=None), patch.object(release, 'gh') as cli:
+                    with self.assertRaisesRegex(ValueError, 'must exceed'):
+                        release.publish(self.folder)
+                    cli.assert_not_called()
+
 
     def test_stable_publishes_complete_feed_as_latest(self):
         self.stable_assets()
@@ -225,6 +269,7 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             if p.name != 'release-notes.md']}
 
     def test_retry_resumes_same_commit_draft_without_creating_another_release(self):
+        self.stable_assets()
         self.lookup.side_effect = lambda *_: self.uploaded_draft()
         with patch.object(release, 'api_optional', return_value=None), patch.object(release, 'gh') as cli:
             release.publish(self.folder)
@@ -232,12 +277,14 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
         self.assertEqual(commands, [('release', 'upload'), ('release', 'edit')])
 
     def test_draft_from_different_commit_is_never_overwritten(self):
+        self.stable_assets()
         self.lookup.return_value = {'draft': True, 'target_commitish': 'different'}
         with patch.object(release, 'gh') as cli, self.assertRaisesRegex(ValueError, 'another commit'):
             release.publish(self.folder)
         cli.assert_not_called()
 
     def test_extra_uploaded_asset_leaves_draft_unpublished(self):
+        self.stable_assets()
         def lookup(*_):
             result = self.uploaded_draft()
             result['assets'].append({'name': 'unexpected.exe', 'size': 100})

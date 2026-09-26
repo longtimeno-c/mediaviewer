@@ -12,6 +12,7 @@
 #include <cfloat>
 
 #include "imgui.h"
+#include "shell/home_theme.h"
 
 namespace mv::shell {
 
@@ -24,7 +25,8 @@ struct welcome_text {
 // canvas; `scale` is the DPI scale. Everything is laid out in `scale` units so it
 // reads the same on a 100 % and a 200 % display.
 inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float chrome,
-                         float scale, const welcome_text& text, float alpha = 1.0f) noexcept {
+                         float scale, const welcome_text& text, const home_palette& theme,
+                         float alpha = 1.0f) noexcept {
   if (bg == nullptr || font == nullptr || w <= 0.0f || h <= chrome || alpha <= 0.01f) return;
   // `alpha` < 1 is the hand-off to the runner (dino_draw.h): the card fades and
   // floats up as the game starts.
@@ -33,12 +35,12 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
     return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
   };
 
-  const ImU32 c_title = fade(IM_COL32(226, 228, 234, 255));
-  const ImU32 c_body = fade(IM_COL32(160, 164, 174, 255));
-  const ImU32 c_mute = fade(IM_COL32(112, 116, 128, 255));
-  const ImU32 c_edge = fade(IM_COL32(255, 255, 255, 34));
-  const ImU32 c_fill = fade(IM_COL32(255, 255, 255, 10));
-  const ImU32 c_glyph = fade(IM_COL32(150, 156, 172, 255));
+  const ImU32 c_title = fade(theme.title());
+  const ImU32 c_body = fade(theme.body());
+  const ImU32 c_mute = fade(theme.muted());
+  const ImU32 c_edge = fade(theme.edge());
+  const ImU32 c_fill = fade(theme.fill());
+  const ImU32 c_glyph = fade(theme.muted());
 
   const auto measure = [&](const char* s, float fs) {
     return font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
