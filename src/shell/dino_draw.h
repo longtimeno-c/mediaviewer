@@ -12,6 +12,7 @@
 #include "imgui.h"
 #include "shell/dino_game.h"
 #include "shell/dino_draw_3d.h"
+#include "shell/home_theme.h"
 
 namespace mv::shell {
 
@@ -92,13 +93,13 @@ inline float welcome_alpha(const dino_game& g) noexcept {
 // are canvas pixels; the scene sits below the command bar. Returns without
 // drawing anything while the game is idle.
 inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w, float h,
-                      float chrome, float scale) noexcept {
+                      float chrome, float scale, const home_palette& theme) noexcept {
   using namespace dino_detail;
   if (dl == nullptr || font == nullptr || !g.active() || w <= 0.0f || h <= chrome) return;
 
-  const ImU32 ink = IM_COL32(226, 228, 234, 255);
-  const ImU32 soft = IM_COL32(120, 124, 136, 255);
-  const ImU32 cloud = IM_COL32(150, 156, 172, 90);
+  const ImU32 ink = theme.title();
+  const ImU32 soft = theme.muted();
+  const ImU32 cloud = theme.cloud();
   const float u = 3.0f * scale;                       // pixels per world unit
   const float ground = chrome + (h - chrome) * 0.62f;  // y of world y = 0
   const float cx = w * 0.5f;
@@ -112,7 +113,7 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
   const float hud = outro ? 1.0f - ease_out(op / 0.3f) : 1.0f;
 
   if (g.view_3d()) {
-    dino_3d::draw(dl, g, w, h, chrome, scale);
+    dino_3d::draw(dl, g, w, h, chrome, scale, theme);
   } else {
 
     // Ground line: in the intro it grows outwards from the centre; the outro
@@ -188,15 +189,18 @@ inline void draw_dino(ImDrawList* dl, ImFont* font, const dino_game& g, float w,
     const bool legs_a = std::fmod(g.run_clock(), 2.0f) < 1.0f;
     const float sx = left_edge + dx * u;
     const float sy = ground - (dy + dino_game::kDinoH) * u;
-    const ImU32 body = dead ? IM_COL32(200, 120, 120, 255) : ink;
+    const ImU32 body = dead ? (theme.light ? IM_COL32(143, 52, 64, 255)
+                                         : IM_COL32(200, 120, 120, 255)) : ink;
     draw_rows(dl, kBody, 17, sx, sy, u, body);
     const bool frozen = dead || g.airborne();
     draw_rows(dl, (frozen || legs_a) ? kLegsA : kLegsB, 4, sx, sy + 17.0f * u, u, body);
     if (dead) {  // an X where the eye was
       const float ex = sx + 11.0f * u, ey = sy + 2.0f * u;
-      dl->AddLine(ImVec2(ex - u, ey - u), ImVec2(ex + 1.6f * u, ey + 1.6f * u), IM_COL32(24, 26, 32, 255),
+      dl->AddLine(ImVec2(ex - u, ey - u), ImVec2(ex + 1.6f * u, ey + 1.6f * u),
+                  theme.light ? IM_COL32(250, 250, 250, 255) : IM_COL32(24, 26, 32, 255),
                   1.5f * scale);
-      dl->AddLine(ImVec2(ex + 1.6f * u, ey - u), ImVec2(ex - u, ey + 1.6f * u), IM_COL32(24, 26, 32, 255),
+      dl->AddLine(ImVec2(ex + 1.6f * u, ey - u), ImVec2(ex - u, ey + 1.6f * u),
+                  theme.light ? IM_COL32(250, 250, 250, 255) : IM_COL32(24, 26, 32, 255),
                   1.5f * scale);
     }
   }

@@ -27,6 +27,11 @@ namespace mv::shell::update {
 // in view_settings. The island mirrors it as SettingFlag.UpdateAutoCheck.
 inline constexpr std::int32_t kChromeFlagUpdateAutoCheck = 1 << 8;
 
+// Bit for [update] channel = preview: follow signed prerelease builds as well
+// as stable ones (plan/12, 2026-09-26). Default stable. The island mirrors it
+// as SettingFlag.UpdatePreview. Bits 9 and 10 are telemetry (telemetry.h).
+inline constexpr std::int32_t kChromeFlagUpdatePreview = 1 << 11;
+
 // A version that has failed to start this many times is rolled back on the
 // next start (plan/13: "fails to start twice").
 inline constexpr int kMaxFailedStarts = 2;

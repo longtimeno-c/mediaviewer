@@ -247,8 +247,55 @@ internal static class Tests
         Check(ReleaseVersion.TryParse("1.10.0", out var a) && ReleaseVersion.TryParse("1.9.9", out var b) && a > b, "numeric compare");
         Check(!ReleaseVersion.TryParse("01.0.0", out _) && !ReleaseVersion.TryParse("1.0", out _), "strict parse");
 
+        // --- the preview channel's release pick ---
+        PreviewChannelTests().GetAwaiter().GetResult();
+
         Console.WriteLine($"{_passes} passed, {_failures} failed");
         return _failures == 0 ? 0 : 1;
+    }
+
+    private static string ReleaseJson(string tag, bool draft, bool prerelease, bool withManifest, string? host = null)
+    {
+        string dl = (host ?? UpdateKeys.GithubRepoUrl) + "/releases/download/" + tag + "/";
+        string assets = withManifest
+            ? $"{{\"name\":\"{UpdateKeys.ManifestAssetName}\",\"browser_download_url\":\"{dl}{UpdateKeys.ManifestAssetName}\"}}," +
+              $"{{\"name\":\"{UpdateKeys.SignatureAssetName}\",\"browser_download_url\":\"{dl}{UpdateKeys.SignatureAssetName}\"}}"
+            : $"{{\"name\":\"MediaViewer-Setup.exe\",\"browser_download_url\":\"{dl}MediaViewer-Setup.exe\"}}";
+        return $"{{\"tag_name\":\"{tag}\",\"draft\":{(draft ? "true" : "false")},\"prerelease\":{(prerelease ? "true" : "false")},\"assets\":[{assets}]}}";
+    }
+
+    private static string? PickedTag(params string[] releases)
+    {
+        var picked = GithubManifestFetcher.PickNewestRelease(Encoding.UTF8.GetBytes("[" + string.Join(",", releases) + "]"));
+        return picked is null ? null : picked.Value.Manifest.Split('/')[^2];
+    }
+
+    private static async Task PreviewChannelTests()
+    {
+        Check(PickedTag(ReleaseJson("v0.1.4", false, false, true), ReleaseJson("v0.1.5", false, true, true)) == "v0.1.5",
+            "preview: a newer prerelease wins");
+        Check(PickedTag(ReleaseJson("v0.1.6", false, false, true), ReleaseJson("v0.1.5", false, true, true)) == "v0.1.6",
+            "preview: a newer stable release wins");
+        Check(PickedTag(ReleaseJson("v0.1.9", true, true, true), ReleaseJson("v0.1.4", false, false, true)) == "v0.1.4",
+            "preview: drafts are ignored");
+        Check(PickedTag(ReleaseJson("v0.1.9", false, true, false), ReleaseJson("v0.1.4", false, false, true)) == "v0.1.4",
+            "preview: a release without a manifest (old unsigned preview) is skipped");
+        Check(PickedTag(ReleaseJson("v0.1.5.preview.123", false, true, true), ReleaseJson("v0.1.4", false, false, true)) == "v0.1.5.preview.123",
+            "preview: legacy preview tags parse");
+        Check(PickedTag(ReleaseJson("v0.1.9", false, true, true, "https://evil.example"), ReleaseJson("v0.1.4", false, false, true)) == "v0.1.4",
+            "preview: asset URLs outside this repository are ignored");
+        Check(PickedTag(ReleaseJson("nightly", false, true, true)) is null, "preview: unversioned tags are ignored");
+        Check(GithubManifestFetcher.PickNewestRelease(Encoding.UTF8.GetBytes("{\"message\":\"rate limited\"}")) is null,
+            "preview: a non-list response is no update");
+
+        bool preview = false;
+        var stable = new FakeInner(Array.Empty<VelopackAsset>(), Array.Empty<byte>());
+        var pre = new FakeInner(Array.Empty<VelopackAsset>(), Array.Empty<byte>());
+        var source = new ChannelSource(() => preview, stable, pre);
+        await source.GetReleaseFeed(NullVelopackLogger.Instance, null, UpdateKeys.Channel);
+        preview = true;
+        await source.GetReleaseFeed(NullVelopackLogger.Instance, null, UpdateKeys.Channel);
+        Check(stable.FeedCalls == 1 && pre.FeedCalls == 1, "channel source follows the setting per request");
     }
 
     private sealed class FakeFetcher(byte[]? m, byte[]? s) : IManifestFetcher

@@ -77,6 +77,7 @@ public static partial class IslandHost
         // with TakeTreePath and opens it in the viewer.
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
+        public const int HomeColour = 1016;
         // PR 12: the comment field was committed (native pulls the text with
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
@@ -171,6 +172,8 @@ public static partial class IslandHost
         // been answered - either way. Asked is not consent (plan/13 Part 3).
         public const int Telemetry = 1 << 9;
         public const int TelemetryAsked = 1 << 10;
+        // [update] channel = preview (update_guard.h kChromeFlagUpdatePreview).
+        public const int UpdatePreview = 1 << 11;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -258,13 +261,12 @@ public static partial class IslandHost
             // Register Cozette first so a named FontFamily can resolve.
             RegisterUiFont();
             EnsureApp();
-            _themeWindow = parent;
-            RefreshTheme();
-
             _context = checked((IntPtr)args.Context);
             _onCommand = args.OnCommand == 0
                 ? null
                 : Marshal.GetDelegateForFunctionPointer<NativeCommand>(checked((IntPtr)args.OnCommand));
+            _themeWindow = parent;
+            RefreshTheme();
 
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
             DisposeSource(ref _source);
@@ -474,6 +476,7 @@ public static partial class IslandHost
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
             _sortPacked = args.Sort;
+            UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
             // PR 8: the telemetry first-run screen, once, when native reports
@@ -1223,16 +1226,20 @@ public static partial class IslandHost
         Button helpBtn = TextButton("?", () => Send(Command.Help));
         ToolTipService.SetToolTip(helpBtn, "Keyboard shortcuts  ?");
 
-        // Menus left, speed then `?` on the far right.
+        // Menus left; speed, the folder trail, then `?` on the far right.
+        FrameworkElement path = BuildBarPathRow();
         var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
         Grid.SetColumn(speed, 1);
         bar.Children.Add(speed);
-        Grid.SetColumn(helpBtn, 2);
+        Grid.SetColumn(path, 2);
+        bar.Children.Add(path);
+        Grid.SetColumn(helpBtn, 3);
         bar.Children.Add(helpBtn);
 
         var root = new Grid
@@ -1243,14 +1250,10 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(bar, 0);
         root.Children.Add(bar);
-        FrameworkElement path = BuildBarPathRow();
-        Grid.SetRow(path, 1);
-        root.Children.Add(path);
         Grid busy = BuildBusyBar();
         Grid.SetRow(busy, 0);
         root.Children.Add(busy);
@@ -1259,7 +1262,7 @@ public static partial class IslandHost
         // Settings is built on first open. Building it into the 48 DIP bar at
         // attach left the command row blank (star-row height 0).
         var rule = new Border { Background = Brush(Hairline) };
-        Grid.SetRow(rule, 2);
+        Grid.SetRow(rule, 1);
         root.Children.Add(rule);
         root.PreviewKeyDown += OnSettingsKeyDown;
         root.PreviewKeyUp += OnSettingsKeyUp;
