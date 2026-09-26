@@ -91,6 +91,11 @@ public final class MVChromeHost: NSObject {
     host(EditPaneView())
   }
 
+  /// PR 30 (plan/21): the Video Editor window's timeline, under its preview.
+  @objc public static func makeVideoEditorView() -> NSView {
+    host(VideoEditorView())
+  }
+
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
   /// NSException raised from the chrome, inside AppKit's event handling.
   @objc public static func crashTestException() {

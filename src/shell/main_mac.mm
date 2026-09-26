@@ -54,6 +54,8 @@
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "shell/video_timeline.h"
+#include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
@@ -225,6 +227,11 @@ constexpr CGFloat kMetaPaneWidthPoints = 360.0;  // PR 9 panes float over the ca
 // PR 29 (plan/20): the Edit workspace's strip (title, tabs, actions) at the top
 // of the right pane column; the tab's pane hangs under it.
 constexpr CGFloat kEditStripHeightPoints = 124.0;
+// PR 30 (plan/21): the Video Editor window's timeline area under the preview.
+constexpr CGFloat kEditorTimelinePoints = 280.0;
+constexpr int kEditorThumbs = 48;          // thumbnails across the source
+constexpr std::uint32_t kEditorThumbPx = 96;  // their height in pixels (48 pt at 2x)
+constexpr std::uint32_t kEditorPeaks = 1200;
 constexpr CGFloat kTreeWidthPoints = 280.0;
 
 // Declared in full (not just `@class`) because MvMetalView's own methods,
@@ -275,6 +282,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSLayoutConstraint* adjustTop;
 @property(nonatomic, strong) NSLayoutConstraint* jobsTop;
 @property(nonatomic, strong) NSLayoutConstraint* editPaneTop;
+// PR 30 (plan/21): the Video Editor window. The canvas moves into its preview
+// while it is open (one canvas, one present path) and back when it closes.
+@property(nonatomic, strong) NSWindow* editorWindow;
+@property(nonatomic, strong) NSView* editorPreview;
+@property(nonatomic, strong) NSView* editorChrome;
+@property(nonatomic, strong) NSTextField* canvasAwayLabel;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -457,6 +470,21 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)editCancelCrop;
 - (void)editShowOriginal:(BOOL)on;
 - (void)editSaveCopy;
+// PR 30 (plan/21): the Video Editor window, read and driven by the bridge.
+- (BOOL)editorOwnsCanvas;
+- (uint64_t)editorGeneration;
+- (void)editorViewInto:(mv_editor_view*)out;
+- (std::string)editorName;
+- (const mv::shell::video_timeline&)timeline;
+- (const std::vector<mv::edit::clip::strip_frame>&)editorStrip;
+- (const std::vector<float>&)editorPeaks;
+- (void)editorSeek:(int64_t)timeline_ns;
+- (void)editorTogglePlay;
+- (void)editorStep:(int32_t)frames;
+- (void)editorEdit:(int32_t)what;
+- (void)editorSelect:(int32_t)index;
+- (void)editorExport:(BOOL)exact;
+- (void)setEditorOpen:(BOOL)open;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -917,6 +945,70 @@ extern "C" void mv_chrome_edit_save_copy(void) {
   if (g_chrome_app) [g_chrome_app editSaveCopy];
 }
 
+// ---- PR 30: the Video Editor window ------------------------------------------------
+extern "C" uint64_t mv_chrome_editor_generation(void) {
+  return g_chrome_app ? [g_chrome_app editorGeneration] : 0;
+}
+extern "C" bool mv_chrome_editor_view(mv_editor_view* out) {
+  if (!g_chrome_app || !out) return false;
+  [g_chrome_app editorViewInto:out];
+  return true;
+}
+extern "C" int32_t mv_chrome_editor_name(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app editorName] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_editor_pieces(int64_t* pairs, int32_t cap_pairs) {
+  if (!g_chrome_app) return 0;
+  const auto& pieces = [g_chrome_app timeline].pieces();
+  for (std::size_t i = 0; pairs != nullptr && i < pieces.size() && static_cast<int32_t>(i) < cap_pairs; ++i) {
+    pairs[2 * i] = pieces[i].in_ns;
+    pairs[2 * i + 1] = pieces[i].out_ns;
+  }
+  return static_cast<int32_t>(pieces.size());
+}
+extern "C" int32_t mv_chrome_editor_thumb(int32_t index, uint8_t* rgba, int32_t cap, int32_t* width,
+                                          int32_t* height, int64_t* source_ns) {
+  if (!g_chrome_app) return 0;
+  const auto& strip = [g_chrome_app editorStrip];
+  if (index < 0 || static_cast<std::size_t>(index) >= strip.size()) return 0;
+  const auto& f = strip[static_cast<std::size_t>(index)];
+  if (width) *width = static_cast<int32_t>(f.width);
+  if (height) *height = static_cast<int32_t>(f.height);
+  if (source_ns) *source_ns = f.shown_ns;
+  if (!rgba || cap < static_cast<int32_t>(f.rgba.size())) return 0;
+  std::memcpy(rgba, f.rgba.data(), f.rgba.size());
+  return static_cast<int32_t>(f.rgba.size());
+}
+extern "C" int32_t mv_chrome_editor_peaks(float* out, int32_t cap) {
+  if (!g_chrome_app) return 0;
+  const auto& p = [g_chrome_app editorPeaks];
+  for (std::size_t i = 0; out != nullptr && i < p.size() && static_cast<int32_t>(i) < cap; ++i) out[i] = p[i];
+  return static_cast<int32_t>(p.size());
+}
+extern "C" void mv_chrome_editor_seek(int64_t timeline_ns) {
+  if (g_chrome_app) [g_chrome_app editorSeek:timeline_ns];
+}
+extern "C" void mv_chrome_editor_toggle_play(void) {
+  if (g_chrome_app) [g_chrome_app editorTogglePlay];
+}
+extern "C" void mv_chrome_editor_step(int32_t frames) {
+  if (g_chrome_app) [g_chrome_app editorStep:frames];
+}
+extern "C" void mv_chrome_editor_edit(int32_t what) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorEdit:what];
+}
+extern "C" void mv_chrome_editor_select(int32_t index) {
+  if (g_chrome_app) [g_chrome_app editorSelect:index];
+}
+extern "C" void mv_chrome_editor_export(int32_t exact) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorExport:exact != 0];
+}
+extern "C" void mv_chrome_editor_close(void) {
+  if (g_chrome_app) [g_chrome_app setEditorOpen:NO];
+}
+
 // ---- PR 13 / 14 ---------------------------------------------------------------
 namespace {
 int32_t MvCopyText(const std::string& text, char* buf, int32_t size) {
@@ -1165,7 +1257,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   return layer;
 }
 - (BOOL)acceptsFirstResponder {
-  return YES;
+  // PR 30: in the Video Editor the keys are the editor's (its timeline has
+  // focus); a click on the preview must not hand them to the browse router,
+  // where A / D would walk the folder out from under the edit.
+  return !(self.app && [self.app editorOwnsCanvas]);
 }
 - (BOOL)isOpaque {
   return YES;
@@ -1182,12 +1277,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->dpi_scale = static_cast<float>(self.window.backingScaleFactor);
   const CGFloat bar = self.app ? [self.app chromeBarHeight] : kChromeBarHeightPoints;
   self.snap->chrome_height_px = static_cast<std::uint32_t>(bar * self.window.backingScaleFactor);
+  // PR 30: in the Video Editor's preview nothing is drawn over the canvas.
+  if (self.app && [self.app editorOwnsCanvas]) self.snap->chrome_height_px = 0;
   // chrome_bottom_px: 0 when the filmstrip is hidden, so present_lab_mac.mm's
   // usable_window_h() lets the canvas reclaim that space the moment `T`
   // hides it -- single source of truth here, same as chrome_height_px above,
   // rather than -toggleFilmstrip computing this itself and risking the two
   // falling out of sync on a resize/DPI change.
-  self.snap->chrome_bottom_px = (self.app && [self.app filmstripVisible])
+  self.snap->chrome_bottom_px = (self.app && [self.app filmstripVisible] && ![self.app editorOwnsCanvas])
       ? static_cast<std::uint32_t>(kFilmstripHeightPoints * self.window.backingScaleFactor)
       : 0;
   // PR 29: the Edit workspace docks instead of covering the picture.
@@ -1512,6 +1609,18 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   BOOL _wsSyncing;
   BOOL _showOriginal;
   std::uint64_t _editGeneration;
+  // PR 30 (plan/21): the Video Editor. _editorToken bumps on open and close, so
+  // a strip job that lands for an older clip is dropped.
+  BOOL _editorOpen;
+  std::string _editorPath;
+  mv::shell::video_timeline _timeline;
+  int32_t _editorSelected;
+  std::uint64_t _editorGeneration;
+  std::uint64_t _editorToken;
+  std::vector<mv::edit::clip::strip_frame> _editorStrip;
+  std::vector<float> _editorPeaks;
+  NSTimer* _editorTick;
+  std::int64_t _editorLastSeek;
   mv::io::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
@@ -3492,6 +3601,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   const bool anim = !clip && _lab.anim_active();
   // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
   // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  // PR 30 (plan/21, owner): video is edited in its own window, not a pane.
+  if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
+    [self setEditorOpen:!_editorOpen];
+    return YES;
+  }
   if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
       command == trim_mode || command == metadata_pane || command == jobs_pane) {
     const mv::shell::workspace_step step = mv::shell::route_workspace(_ws, [self editSubject], command);
@@ -4179,6 +4293,17 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case clip::op::animation: q.option = r.animation == clip::anim_format::webp ? 2u : 1u; break;
     default: break;
   }
+  // PR 30: the Video Editor's pieces, flattened for the ABI (read during the call).
+  std::vector<std::int64_t> flat;
+  if (r.kind == clip::op::keep_ranges) {
+    for (const clip::range& g : r.ranges) {
+      flat.push_back(g.in_ns);
+      flat.push_back(g.out_ns);
+    }
+    q.ranges_ns = flat.data();
+    q.range_count = static_cast<std::uint32_t>(r.ranges.size());
+    q.option = r.ranges_exact ? 2u : 1u;
+  }
   std::uint64_t job = 0;
   if (_clipJobs->submit(r.source, q, job) != mv::status::ok) {
     NSBeep();
@@ -4394,6 +4519,349 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                                     }];
 }
 
+// ---- PR 30: the Video Editor window (plan/21, owner 2026-09-26) ----------------
+//
+// Enter (or Edit video) on a clip opens a window of its own: the preview on
+// top -- the viewer's canvas, moved in, so there is still one present path
+// (rule 2) -- and the SwiftUI timeline under it (VideoEditorView). The cut
+// list is shell::video_timeline; playback follows it by jumping the player
+// over each cut; Export is clip::op::keep_ranges through the Jobs queue.
+
+- (BOOL)editorOwnsCanvas {
+  return _editorOpen;
+}
+
+- (uint64_t)editorGeneration {
+  return _editorGeneration;
+}
+
+- (const mv::shell::video_timeline&)timeline {
+  return _timeline;
+}
+
+- (const std::vector<mv::edit::clip::strip_frame>&)editorStrip {
+  return _editorStrip;
+}
+
+- (const std::vector<float>&)editorPeaks {
+  return _editorPeaks;
+}
+
+- (std::string)editorName {
+  const std::size_t sep = _editorPath.find_last_of('/');
+  return sep == std::string::npos ? _editorPath : _editorPath.substr(sep + 1);
+}
+
+- (std::int64_t)editorTimelinePosition {
+  const auto st = _lab.video_status_snapshot();
+  if (!st.active || !_timeline.loaded()) return 0;
+  if (const auto t = _timeline.to_timeline(st.position_ns)) return *t;
+  // In a cut (the jump has not landed yet): the start of the next piece.
+  const std::int64_t next = _timeline.next_play_start(st.position_ns);
+  if (next < 0) return _timeline.length();
+  return _timeline.to_timeline(next).value_or(0);
+}
+
+- (void)editorViewInto:(mv_editor_view*)out {
+  *out = mv_editor_view{};
+  out->open = _editorOpen ? 1 : 0;
+  out->ready = _timeline.loaded() ? 1 : 0;
+  out->length_ns = _timeline.length();
+  out->playhead_ns = [self editorTimelinePosition];
+  const auto st = _lab.video_status_snapshot();
+  out->playing = st.active && st.playing ? 1 : 0;
+  out->piece_count = static_cast<int32_t>(_timeline.pieces().size());
+  out->selected = _editorSelected;
+  out->can_undo = _timeline.can_undo() ? 1 : 0;
+  out->can_redo = _timeline.can_redo() ? 1 : 0;
+  out->edited = _timeline.edited() ? 1 : 0;
+  out->source_ns = _timeline.source_duration();
+  out->strip_count = static_cast<int32_t>(_editorStrip.size());
+  out->peak_count = static_cast<int32_t>(_editorPeaks.size());
+}
+
+- (void)setEditorOpen:(BOOL)open {
+  if (open == _editorOpen) {
+    if (open) [self.editorWindow makeKeyAndOrderFront:nil];
+    return;
+  }
+  if (open) {
+    if ([self editSubject] != mv::shell::edit_subject::clip) {
+      NSBeep();
+      return;
+    }
+    const std::string path = [self currentClipPath];
+    if (path.empty()) {
+      NSBeep();
+      return;
+    }
+    if (_ws.open) [self editClose];
+    if (_trim.armed()) [self setTrimArmed:NO];
+    _editorPath = path;
+    _editorOpen = YES;
+    _editorSelected = -1;
+    _editorStrip.clear();
+    _editorPeaks.clear();
+    _timeline.load(0);
+    ++_editorToken;
+    [self buildEditorWindow];
+    [self moveCanvasToEditor:YES];
+    [self editorLoadClip];
+    __weak MvLabApp* weakSelf = self;
+    _editorTick = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
+                                                  repeats:YES
+                                                    block:^(NSTimer* timer) {
+                                                      (void)timer;
+                                                      [weakSelf editorFollowPlayback];
+                                                    }];
+    [self.editorWindow makeKeyAndOrderFront:nil];
+  } else {
+    [self.editorWindow close];  // windowWillClose -> editorWindowClosed
+  }
+  ++_editorGeneration;
+}
+
+- (void)editorWindowClosed {
+  if (!_editorOpen) return;
+  _editorOpen = NO;
+  ++_editorToken;
+  [_editorTick invalidate];
+  _editorTick = nil;
+  [self moveCanvasToEditor:NO];
+  self.editorWindow = nil;
+  self.editorPreview = nil;
+  self.editorChrome = nil;
+  ++_editorGeneration;
+  [self.window makeKeyAndOrderFront:nil];
+  [self.window makeFirstResponder:self.view];
+}
+
+- (void)buildEditorWindow {
+  const NSRect frame = NSMakeRect(0, 0, 1180, 820);
+  NSWindow* w = [[NSWindow alloc]
+      initWithContentRect:frame
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
+                          NSWindowStyleMaskMiniaturizable
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  w.title = [NSString stringWithFormat:@"Video Editor — %s", [self editorName].c_str()];
+  w.releasedWhenClosed = NO;
+  w.tabbingMode = NSWindowTabbingModeDisallowed;
+  w.delegate = self;
+  w.contentMinSize = NSMakeSize(720.0, 520.0);
+  w.appearance = self.window.appearance;
+  NSView* content = [[NSView alloc] initWithFrame:frame];
+  w.contentView = content;
+  NSView* preview = [[NSView alloc] initWithFrame:NSZeroRect];
+  preview.translatesAutoresizingMaskIntoConstraints = NO;
+  preview.wantsLayer = YES;
+  preview.layer.backgroundColor = NSColor.blackColor.CGColor;
+  [content addSubview:preview];
+  NSView* chrome = [MVChromeHost makeVideoEditorView];
+  [content addSubview:chrome];
+  [NSLayoutConstraint activateConstraints:@[
+    [preview.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+    [preview.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+    [preview.topAnchor constraintEqualToAnchor:content.topAnchor],
+    [preview.bottomAnchor constraintEqualToAnchor:chrome.topAnchor],
+    [chrome.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+    [chrome.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+    [chrome.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+    [chrome.heightAnchor constraintEqualToConstant:kEditorTimelinePoints],
+  ]];
+  // Beside the viewer, where there is room; the system keeps it on screen.
+  NSRect main = self.window.frame;
+  [w setFrameTopLeftPoint:NSMakePoint(NSMinX(main) + 40.0, NSMaxY(main) - 40.0)];
+  self.editorWindow = w;
+  self.editorPreview = preview;
+  self.editorChrome = chrome;
+  [w makeFirstResponder:chrome];
+}
+
+// The canvas is one NSView with one CAMetalLayer: it moves between the two
+// windows, and the render thread keeps presenting into the same layer. syncSize
+// republishes its size and insets for wherever it is now.
+- (void)moveCanvasToEditor:(BOOL)toEditor {
+  NSView* canvas = self.view;
+  NSView* home = self.window.contentView;
+  NSView* dest = toEditor ? self.editorPreview : home;
+  if (dest == nil) return;
+  [canvas removeFromSuperview];
+  if (toEditor) {
+    [dest addSubview:canvas];
+  } else {
+    // Back under every chrome view, where it started.
+    [home addSubview:canvas positioned:NSWindowBelow relativeTo:nil];
+  }
+  canvas.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+    [canvas.leadingAnchor constraintEqualToAnchor:dest.leadingAnchor],
+    [canvas.trailingAnchor constraintEqualToAnchor:dest.trailingAnchor],
+    [canvas.topAnchor constraintEqualToAnchor:dest.topAnchor],
+    [canvas.bottomAnchor constraintEqualToAnchor:dest.bottomAnchor],
+  ]];
+  // The viewer says where the picture went, and hides the clip's transport.
+  if (toEditor) {
+    if (self.canvasAwayLabel == nil) {
+      NSTextField* label = [NSTextField labelWithString:@"Editing in the Video Editor window"];
+      label.textColor = NSColor.secondaryLabelColor;
+      label.font = [NSFont systemFontOfSize:15];
+      label.translatesAutoresizingMaskIntoConstraints = NO;
+      [home addSubview:label positioned:NSWindowBelow relativeTo:nil];
+      [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:home.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:home.centerYAnchor],
+      ]];
+      self.canvasAwayLabel = label;
+    }
+    self.canvasAwayLabel.hidden = NO;
+  } else {
+    self.canvasAwayLabel.hidden = YES;
+  }
+  self.transportHost.hidden = toEditor;
+  [home layoutSubtreeIfNeeded];
+  [dest layoutSubtreeIfNeeded];
+  [self.view syncSize];
+}
+
+- (void)editorLoadClip {
+  const std::string path = _editorPath;
+  const std::uint64_t token = _editorToken;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, token, weakSelf](const mv::job_context&) -> mv::status {
+    auto info = mv::edit::clip::probe(path);
+    std::int64_t duration = info ? info->duration_ns : 0;
+    std::vector<std::int64_t> times;
+    for (int i = 0; i < kEditorThumbs && duration > 0; ++i) times.push_back(duration * i / kEditorThumbs);
+    auto strip = times.empty() ? mv::result<std::vector<mv::edit::clip::strip_frame>>(
+                                     mv::err(mv::status::unsupported_format))
+                               : mv::edit::clip::thumbnails(path, times, kEditorThumbPx);
+    auto peaks = mv::edit::clip::audio_peaks(path, kEditorPeaks);
+    auto frames = std::make_shared<std::vector<mv::edit::clip::strip_frame>>(
+        strip ? std::move(*strip) : std::vector<mv::edit::clip::strip_frame>{});
+    auto env = std::make_shared<std::vector<float>>(peaks ? std::move(*peaks) : std::vector<float>{});
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf editorClipLoaded:token duration:duration strip:frames peaks:env];
+    });
+    return info ? mv::status::ok : info.error();
+  });
+}
+
+- (void)editorClipLoaded:(std::uint64_t)token
+                duration:(std::int64_t)duration
+                   strip:(std::shared_ptr<std::vector<mv::edit::clip::strip_frame>>)strip
+                   peaks:(std::shared_ptr<std::vector<float>>)peaks {
+  if (token != _editorToken || !_editorOpen) return;  // another clip, or closed
+  if (duration <= 0) {
+    NSBeep();
+    [self noticeShow:std::string("This clip could not be opened for editing")];
+    [self setEditorOpen:NO];
+    return;
+  }
+  _timeline.load(duration);
+  _editorStrip = std::move(*strip);
+  _editorPeaks = std::move(*peaks);
+  ++_editorGeneration;
+}
+
+// 60 Hz while the editor is open: playback skips what was cut, and stops at
+// the end of the program.
+- (void)editorFollowPlayback {
+  if (!_editorOpen || !_timeline.loaded()) return;
+  const auto st = _lab.video_status_snapshot();
+  if (!st.active) return;
+  if (!st.playing) {
+    _editorLastSeek = -1;
+    return;
+  }
+  const std::int64_t lead = 20'000'000;  // a frame's worth, so a cut is not glimpsed
+  const std::int64_t want = _timeline.next_play_start(st.position_ns, lead);
+  if (want < 0) {
+    mv_chrome_video_toggle();  // the end of the edit: pause there
+    [self editorSeekSource:_timeline.pieces().back().out_ns - 1];
+    return;
+  }
+  if (want != st.position_ns && want != _editorLastSeek) {
+    _editorLastSeek = want;
+    [self editorSeekSource:want];
+  }
+}
+
+- (void)editorSeekSource:(std::int64_t)source_ns {
+  _snap.video_seek_ns = std::max<std::int64_t>(0, source_ns);
+  _snap.video_seek_ms = _snap.video_seek_ns / 1'000'000;
+  _snap.video_seek_exact = true;
+  ++_snap.video_seek_seq;
+  [self publish];
+}
+
+- (void)editorSeek:(int64_t)timeline_ns {
+  if (!_timeline.loaded()) return;
+  _editorLastSeek = -1;
+  [self editorSeekSource:_timeline.to_source(std::clamp<std::int64_t>(timeline_ns, 0, _timeline.length()))];
+  _editorSelected = static_cast<int32_t>(_timeline.piece_at(timeline_ns));
+  ++_editorGeneration;
+}
+
+- (void)editorTogglePlay {
+  if (!_timeline.loaded()) return;
+  const auto st = _lab.video_status_snapshot();
+  // At the end, Play starts the program again.
+  if (!st.playing && _timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
+    [self editorSeekSource:_timeline.pieces().front().in_ns];
+  }
+  mv_chrome_video_toggle();
+}
+
+- (void)editorStep:(int32_t)frames {
+  mv_chrome_video_step(frames);
+}
+
+// what: 1 split at the playhead, 2 delete the selected piece, 3 set in,
+// 4 set out, 5 undo, 6 redo.
+- (void)editorEdit:(int32_t)what {
+  if (!_timeline.loaded()) return;
+  const std::int64_t at = [self editorTimelinePosition];
+  bool changed = false;
+  switch (what) {
+    case 1: changed = _timeline.split(at); if (changed) _editorSelected = static_cast<int32_t>(_timeline.piece_at(at)); break;
+    case 2:
+      if (_editorSelected < 0) _editorSelected = static_cast<int32_t>(_timeline.piece_at(at));
+      changed = _timeline.remove(static_cast<std::size_t>(_editorSelected));
+      if (changed) {
+        _editorSelected = std::min<int32_t>(_editorSelected, static_cast<int32_t>(_timeline.pieces().size()) - 1);
+        [self editorSeek:_timeline.piece_start(static_cast<std::size_t>(_editorSelected))];
+      }
+      break;
+    case 3: changed = _timeline.set_in(at); if (changed) [self editorSeek:0]; break;
+    case 4: changed = _timeline.set_out(at); break;
+    case 5: changed = _timeline.undo(); break;
+    case 6: changed = _timeline.redo(); break;
+    default: break;
+  }
+  if (!changed) NSBeep();
+  if (_editorSelected >= static_cast<int32_t>(_timeline.pieces().size())) _editorSelected = -1;
+  ++_editorGeneration;
+}
+
+- (void)editorSelect:(int32_t)index {
+  _editorSelected = index >= 0 && index < static_cast<int32_t>(_timeline.pieces().size()) ? index : -1;
+  ++_editorGeneration;
+}
+
+- (void)editorExport:(BOOL)exact {
+  if (!_timeline.loaded() || _editorPath.empty()) return;
+  if (!_timeline.edited()) {
+    NSBeep();
+    [self noticeShow:std::string("Nothing has been cut yet")];
+    return;
+  }
+  (void)[self submitClipJob:_timeline.export_request(_editorPath, exact)];
+  [self noticeShow:exact ? std::string("Exporting the edit (exact) — see Jobs")
+                         : std::string("Exporting the edit — see Jobs")];
+  ++_editorGeneration;
+}
+
 // ---- PR 29: the Edit workspace's verify rig ------------------------------------
 
 // MV_EDIT_SELFTEST=<folder> (plan/20 verify). Inert unless set. After launch it
@@ -4441,6 +4909,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       CGImageRelease(shot);
     }
   }
+  if (self.editorWindow != nil && capture != nullptr) {
+    CGImageRef shot = capture(CGRectNull, kCGWindowListOptionIncludingWindow,
+                              static_cast<CGWindowID>(self.editorWindow.windowNumber),
+                              kCGWindowImageBoundsIgnoreFraming);
+    if (shot != nullptr) {
+      NSBitmapImageRep* full = [[NSBitmapImageRep alloc] initWithCGImage:shot];
+      NSData* fpng = [full representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+      [fpng writeToFile:[dir stringByAppendingPathComponent:[name stringByAppendingString:@"-editor.png"]]
+             atomically:YES];
+      CGImageRelease(shot);
+    }
+  }
   mv_edit_view e;
   [self editViewInto:&e];
   __block NSString* line = [NSString
@@ -4450,6 +4930,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                        e.crop_height, e.edit_count, e.show_original, self.editStripHost.hidden ? 0 : 1,
                        self.editPaneHost.hidden ? 0 : 1, _adjust.visible() ? 1 : 0, _metaPaneVisible ? 1 : 0,
                        _jobsVisible ? 1 : 0, _trim.armed() ? 1 : 0, self.exportHost != nil ? 1 : 0];
+  if (_editorOpen || _timeline.loaded()) {
+    line = [line stringByAppendingFormat:@"    editor: open=%d pieces=%zu length_ms=%lld edited=%d strip=%zu peaks=%zu\n",
+                                         _editorOpen ? 1 : 0, _timeline.pieces().size(),
+                                         static_cast<long long>(_timeline.length() / 1'000'000),
+                                         _timeline.edited() ? 1 : 0, _editorStrip.size(), _editorPeaks.size()];
+  }
   if (const auto rec = _metaRecord) {
     std::string artist;
     for (const auto& p : rec->properties) {
@@ -4475,16 +4961,21 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   const BOOL clip = [self currentItemIsVideo];
   BOOL done = NO;
   if (clip) {
+    // PR 30: a clip opens the Video Editor window.
+    const std::int64_t third = _timeline.length() / 3;
     switch (step) {
       case 0: break;  // let the clip load
       case 1: [self editSelfTestSnap:@"c0-viewer" dir:dir]; [self runCommand:edit_workspace back:kNoBack]; break;
-      case 2: [self editSelfTestSnap:@"c1-workspace-trim" dir:dir]; [self runCommand:trim_mode back:kNoBack]; break;
-      case 3: [self editSelfTestSnap:@"c2-trim-armed" dir:dir]; [self editSelectTab:4]; break;
-      case 4: [self editSelfTestSnap:@"c3-jobs" dir:dir];
-        [self runCommand:back back:mv::shell::back_target::trim];
-        [self runCommand:back back:mv::shell::back_target::pane];
+      case 2: break;  // the strip is read on a worker
+      case 3: [self editSelfTestSnap:@"c1-editor" dir:dir];
+        [self editorSeek:third];
         break;
-      case 5: [self editSelfTestSnap:@"c4-closed" dir:dir]; done = YES; break;
+      case 4: [self editorEdit:1]; [self editorSeek:2 * third]; break;
+      case 5: [self editorEdit:1]; [self editorSelect:1]; [self editorEdit:2]; break;  // cut the middle third
+      case 6: [self editSelfTestSnap:@"c2-cut" dir:dir]; [self editorExport:NO]; [self editorExport:YES]; break;
+      case 7: case 8: case 9: case 10: break;  // the exports run (exact re-encodes on the GPU)
+      case 11: [self editSelfTestSnap:@"c3-exported" dir:dir]; [self setEditorOpen:NO]; break;
+      case 12: [self editSelfTestSnap:@"c4-closed" dir:dir]; done = YES; break;
     }
   } else {
     switch (step) {
@@ -5253,7 +5744,11 @@ static NSString* const kDefaultsKeys = @"mv.keys";
   return YES;
 }
 - (void)windowWillClose:(NSNotification*)notification {
-  (void)notification;
+  // PR 30: the Video Editor closing hands the canvas back; the app goes on.
+  if (self.editorWindow != nil && notification.object == self.editorWindow) {
+    [self editorWindowClosed];
+    return;
+  }
   // Command-bar buttons stop reaching the lab first: they only poke _snap
   // through the g_chrome_* globals, so clearing those before teardown means
   // a button click racing window close can never touch a torn-down lab.

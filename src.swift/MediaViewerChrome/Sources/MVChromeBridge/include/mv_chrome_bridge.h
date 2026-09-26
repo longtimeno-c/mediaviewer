@@ -462,6 +462,50 @@ void mv_chrome_edit_show_original(int32_t on);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
 
+// ---- PR 30: the Video Editor window (plan/21) ------------------------------------
+//
+// Its own window: the viewer's canvas as the preview, and this timeline. The
+// cut list is the host's (shell/video_timeline.h, shared with Windows); Swift
+// polls it by generation and posts edits back. Times are nanoseconds:
+// "timeline" is the edited program, "source" the clip. [main-thread]
+typedef struct mv_editor_view {
+  int32_t open;
+  int32_t ready;          // the clip is probed; the strip may still be empty
+  int64_t length_ns;      // the program
+  int64_t playhead_ns;    // on the program
+  int64_t source_ns;      // the clip
+  int32_t playing;
+  int32_t piece_count;
+  int32_t selected;       // -1 none
+  int32_t can_undo;
+  int32_t can_redo;
+  int32_t edited;         // anything cut: Export has something to write
+  int32_t strip_count;
+  int32_t peak_count;
+} mv_editor_view;
+uint64_t mv_chrome_editor_generation(void);
+bool mv_chrome_editor_view(mv_editor_view* out);
+int32_t mv_chrome_editor_name(char* buf, int32_t size);
+// Kept source ranges, (in, out) pairs, in program order; returns the count.
+int32_t mv_chrome_editor_pieces(int64_t* pairs, int32_t cap_pairs);
+// Thumbnail `index` (0 .. strip_count-1): RGBA8 into `rgba` (cap bytes);
+// returns width * height * 4, or 0 when `cap` is short (width and height are
+// still written). `source_ns` is the frame's own time.
+int32_t mv_chrome_editor_thumb(int32_t index, uint8_t* rgba, int32_t cap, int32_t* width, int32_t* height,
+                               int64_t* source_ns);
+// The audio envelope across the clip (0..1); returns the count.
+int32_t mv_chrome_editor_peaks(float* out, int32_t cap);
+void mv_chrome_editor_seek(int64_t timeline_ns);
+void mv_chrome_editor_toggle_play(void);
+void mv_chrome_editor_step(int32_t frames);
+// 1 split at the playhead, 2 delete the selected piece, 3 set in, 4 set out,
+// 5 undo, 6 redo. A change that changes nothing beeps.
+void mv_chrome_editor_edit(int32_t what);
+void mv_chrome_editor_select(int32_t index);
+// Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
+void mv_chrome_editor_export(int32_t exact);
+void mv_chrome_editor_close(void);
+
 #ifdef __cplusplus
 }
 #endif
