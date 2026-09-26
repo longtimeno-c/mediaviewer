@@ -2276,3 +2276,44 @@ open item.
 version, see "Update ready — restart", restart into it; switch back to Stable and see no
 downgrade. Mac: the same with Sparkle, and the first Xcode build of `main_mac.mm` with the new
 delegate methods (only the release-picking function was compiled and tested on its own).
+
+## 2026-09-26 — PR 29: the Edit workspace, and every metadata tag editable (owner)
+
+**Issue #39.** Nothing on screen led to crop, rotate, colour, metadata or trim; every edit was
+a key. PR 29 adds one door — **Edit image / Edit video** in the command bar, `Enter`, and a Mac
+Edit menu — to a workspace of tabs over the existing panes ([20](20-edit-workspace.md)). It is
+a base feature, not an add-on: the engines are PR 10–14's and the workspace adds none.
+
+**Reverses, on the owner's review of the first build:**
+
+- **"The panes float instead of insetting the canvas"** (PR 9, 2026-09-24) — for the Edit
+  workspace only. It docks: `input_snapshot.chrome_right_px` narrows the rect the Mac canvas
+  frames the picture in, and the blit's `origin_x` moves it. The swapchain is not resized, so the
+  present path is unchanged; both present-loop gates are still owed with the pane open. The PR 9
+  panes keep floating when opened on their own.
+- **PR 12 "narrow on purpose" (rating, orientation, comment only)** and the matching CLAUDE.md
+  line. The owner asked for the rating/comment editor to go and for every tag to be editable:
+  timestamps changed, tags seen and removed. `meta::write` now takes any Exif / Iptc / Xmp key
+  and a date that moves every capture-time tag together, through the **same** checked in-place
+  JPEG rewrite (untouched tags identical, touched tags equal to a rehearsal, image data
+  unchanged) and the same sidecar rule (a RAW, HEIC, PNG or clip is never opened for writing; an
+  EXIF value on such a file goes to the sidecar under its XMP name, and cannot be removed).
+  Layout, maker-note and orientation tags stay read-only. It is still not a batch engine: one
+  file, one change set. The snapshot is now of **every** tag (a JPEG's metadata segments and the
+  sidecar, byte for byte), so Revert returns the file exactly; old three-field snapshots still
+  revert.
+- **Video editing as a pane.** The owner wants it in its own window with a timeline (iMovie /
+  Final Cut / DaVinci). The Trim tab is the interim; the Video Editor window is issue #40's
+  design ([21](21-video-editor.md)).
+
+**Keys** (checked free, appended so earlier Settings indices hold): `Enter` in browse / video,
+`A` / `X` in crop, hold `Y` for the original ([16](16-commands.md)).
+
+**Also fixed:** `main_mac.mm` stopped compiling after 427ab9e (`-[NSColor
+resolvedColorWithAppearance:]` does not exist); it now resolves inside
+`performAsCurrentDrawingAppearance:`.
+
+**Proved on Mac** with the `MV_EDIT_SELFTEST` rig: crop 1:1 → a 1200 × 1200 copy, the date and a
+tag written and read back, then revert → the original's bytes exactly. **Owed:** the Windows
+half (WinUI strip, panes, dock inset, tag editor; nothing was compiled for Windows), VoiceOver /
+Narrator passes, and both present-loop gates with the pane docked.

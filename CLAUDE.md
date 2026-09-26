@@ -45,6 +45,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/17-local-ai-search.md` | AI search add-on (PRs 20–24), both platforms, proposed |
 | `plan/18-import.md` | Import add-on (PRs 16–19): card copy with hash dedupe + verify; the add-on mechanism |
 | `plan/19-voice.md` | Voice query add-on (PRs 27–28): on-device STT/TTS over Local search, separate install |
+| `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.
@@ -114,8 +115,10 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
   platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
   on a branch).
 - Do not add a format that is not in the D5 v1 set.
-- Do not build a batch metadata engine before the read pane has been used (PR 12 writes
-  rating, orientation, and user comment only).
+- Do not build a batch metadata engine before the read pane has been used. PR 12 wrote
+  rating, orientation, and user comment only; from PR 29 (owner, 2026-09-26) the pane edits
+  any single tag of the file on screen, still through PR 12's checked writer, sidecar rule and
+  snapshot. That is not a batch engine: one file, one change set.
 - Crash reporting should land with the format long tail (PR 7), not wait for PR 8.
   The updater must exist before the first build that leaves this machine.
   Telemetry waits for PR 8 and is **default off**.

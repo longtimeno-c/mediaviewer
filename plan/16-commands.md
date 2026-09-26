@@ -221,6 +221,19 @@ culling first), `Ctrl+Enter` / `⌘Return` imports from anywhere, `Space` toggle
 resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctrl+Shift+Tab` (`⌃Tab`)
 the next / previous source, `Ctrl+J` / `⌘J` ejects, `Esc` closes the window and the import carries on.
 
+### Edit workspace (PR 29, [20](20-edit-workspace.md))
+
+| Key | Command |
+|---|---|
+| `Enter` (`Return`) | Open / close the Edit workspace: **Edit image** on a still, **Edit video** on a clip. Browse and video modes only; in crop it still applies the crop, in trim it still saves the cut, in the gallery it still opens the tile |
+| `Shift+C` / `Shift+A` / `Ctrl+T` | Open the workspace on Crop / Colour / Trim (and start cropping / arm trim, as before) |
+| `I` / `Ctrl+J` | With the workspace open: its Info / Jobs tab (closed, they are their own panes, as before) |
+| `A` / `X` (in crop) | Next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4) / swap portrait and landscape. `A` never walked the folder in crop |
+| hold `Y` | Show the original (the edit stack is untouched). Browse mode, stills |
+
+Appended to the table (every earlier row keeps its Settings index). Checked free on 2026-09-26: `Enter`
+had no browse/video row, `X` and `Y` had none, `A` is dead in crop.
+
 ### Rate (PR 12)
 
 | Key | Command |
@@ -228,7 +241,7 @@ the next / previous source, `Ctrl+J` / `⌘J` ejects, `Esc` closes the window an
 | Numpad `0`–`5` | Rating. No numpad: `Ctrl+Shift+0`–`Ctrl+Shift+5` |
 | `U` | Unflag / clear colour label (label write is v1.1; `U` is a no-op until then) |
 | `X` | Reject mark (convenience for `Insert` + next). Does not delete. **Not built in PR 12** (a mark, not a metadata write; see 12) |
-| `Ctrl+I` (`⌘I`) | Edit comment (PR 12): shows the metadata pane and puts the keyboard in its comment field. `Return` saves, `Esc` drops the edit; both return to the canvas |
+| `Ctrl+I` (`⌘I`) | Edit comment (PR 12): shows the metadata pane and puts the keyboard in its comment field. `Return` saves, `Esc` drops the edit; both return to the canvas. **PR 29 (Mac):** the pane has no comment box any more (every tag is edited in *All tags*); the key shows the pane |
 
 Rating keys write the item on screen only (a batch is v1.1), in browse, video, island and gallery
 modes, not in a slideshow or crop mode. A JPEG is rewritten in place; anything else gets an XMP

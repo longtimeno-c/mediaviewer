@@ -40,6 +40,7 @@ Read in order:
 | [17-local-ai-search.md](17-local-ai-search.md) | Post-v1, proposed: local, opt-in AI search over photos and video keyframes, plus faces. Persistent folder-tree indexes; up to 3 GB of optional installed AI components, never in the base installer. |
 | [18-import.md](18-import.md) | Import add-on (PRs 16–19): card/folder copy with content-hash duplicate skip, verify, date folders, backup, resume. Also how add-ons install. |
 | [19-voice.md](19-voice.md) | Voice query add-on (PRs 27–28): on-device speech-to-text and a spoken count, over Local search, as its own Settings install. |
+| [20-edit-workspace.md](20-edit-workspace.md) | PR 29: one visible way in to every edit (Edit image / Edit video, `Enter`), a docked Edit pane, crop presets, and every metadata tag editable. Video editing goes to its own window. |
 
 ## The rules that don't bend
 

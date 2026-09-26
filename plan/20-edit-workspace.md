@@ -1,7 +1,8 @@
 # 20 — The Edit workspace (one visible way in to crop, colour, metadata and trim)
 
 **Status: planned 2026-09-26 from issue #39. Standalone PR 29, both platforms (D9). Phase 1 is
-written in this change.** It adds no new edit engine. It puts a visible door and one pane in
+written and run on Mac (the `MV_EDIT_SELFTEST` rig); the Windows half is owed. Revised the same
+day on the owner's review (below: "Owner review").** It adds no new edit engine. It puts a visible door and one pane in
 front of what PRs 10–14 already built, so that a first-time user can find crop without reading
 `?`.
 
@@ -33,8 +34,11 @@ The engine was all there. Nothing on screen led to it.
    was unbound in browse and video modes and is the Photos convention. Inside the workspace,
    `Enter` keeps its existing meaning: it applies the crop and saves the trim. The Mac menu bar
    gets an **Edit** menu listing the same commands with their keys.
-3. **One pane, tabs, reusing what exists.** The workspace is a strip at the top of the right
-   pane column (title, tabs, actions) over one tab's pane. The Colour, Info and Jobs tabs *are*
+3. **One pane, tabs, reusing what exists — docked, not floating.** The workspace is a strip at
+   the top of the right pane column (title, tabs, actions) over one tab's pane. Unlike the PR 9
+   panes it **docks**: the canvas frames the picture in the rect beside it
+   (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so the pane never covers the image.
+   Docking is a refit, not a swapchain resize. The Colour, Info and Jobs tabs *are*
    the existing Adjust, Metadata and Jobs panes. Crop and Trim get new panes that drive the
    existing commands. No pane logic is duplicated.
 4. **The old keys land in the workspace.** `Shift+C` opens it on Crop and starts cropping.
@@ -54,6 +58,26 @@ The engine was all there. Nothing on screen led to it.
 7. **Originals stay protected, unchanged.** Everything still goes through `edit_session`: the
    stack is non-destructive, *Save copy…* is PR 10's export (a new file, never an overwrite),
    and the lossless rotate writes are the same debounced PR 10 path. The workspace adds no write.
+
+## Owner review (2026-09-26)
+
+The owner reviewed the first build and asked for four changes, all taken:
+
+1. **No rating-and-comment editor; every tag editable.** The pane's stars and comment box are
+   gone. *Summary* has an editable **Date taken** (it moves every capture-time tag together),
+   **Remove location**, and **Revert all**. *All tags* lets any tag the file allows be edited or
+   removed, and can add one; a lock marks the rows that describe the file itself (sizes,
+   offsets, maker notes, orientation — which is the rotate). This widens PR 12's writer; it
+   keeps its checks, its sidecar rule and its snapshot, now of every tag
+   ([12](12-decision-log.md) 2026-09-26).
+2. **The pane must not cover the image or clash with the path bar**: it docks (decision 3) and
+   starts under the path row, clipped to its frame.
+3. **Buttons match the chrome**: the command bar's flat `FlatButtonStyle` (CozetteVector, no
+   border, a hover wash, a held wash when selected) everywhere in the workspace and the
+   metadata pane. *Edit image* sits in the bar between View and Settings, like a menu.
+4. **Video editing happens in its own window** with a timeline, like iMovie / Final Cut /
+   DaVinci — not a side pane. *Edit video* opens the **Video Editor** window; its design is
+   [21](21-video-editor.md) (issue #40). The Trim tab below is the interim until it lands.
 
 ## Mockups
 
@@ -106,7 +130,8 @@ same strip.
 | Core, shared | `shell/edit_workspace.h/.cpp` | The pure model: `edit_tab` (crop, colour, info, trim, jobs), which tabs a still or a clip offers, the tab a command opens, and what `Esc` closes first. Unit-tested |
 | Core, shared | `shell/edit_session` | `crop_aspect` presets plus orientation, a ratio-keeping resize, `A` / `X` in crop, `set_straighten(deg)`, `edit_count()` for the strip |
 | Core, shared | `shell/commands.h`, `command_table.cpp` | `edit_workspace` (`Enter` in browse and video), `crop_aspect_cycle` (`A` in crop), `crop_aspect_swap` (`X` in crop), `show_original` / `show_original_release` (`Y` held, stills), and the island-only `crop_aspect_set` and `crop_straighten_set` |
-| Mac host | `main_mac.mm`, SwiftUI | `EditStripView`, `CropPaneView` and `TrimPaneView` (`EditStore` polls one POD view by generation, like the other stores). The right-edge panes hang under the strip while it is open. An Edit menu. The command-bar button |
+| Mac host | `main_mac.mm`, SwiftUI | `EditStripView`, `CropPane` and `TrimPane` (`EditStore` polls one POD view by generation, like the other stores). The right-edge panes hang under the strip while it is open, and the canvas docks beside them. An Edit menu. The command-bar button. The metadata pane's tag editor (`MetadataView`) |
+| Core, shared | `meta/write` | `write_fields::tags` (any Exif / Iptc / Xmp key, set or remove) and `date_taken`; `access_of()`; a whole-metadata snapshot (a JPEG's metadata segments and the sidecar, byte for byte) that `revert` splices back |
 | Windows host | `main.cpp`, WinUI | The same strip and panes in `IslandHost.Edit.cs`, pushed through one new blittable `SetEditView` entry, as `SetAdjustView` is. The command-bar button. **Written, not yet compiled** (no MSVC on the machine this was written on) |
 
 Rules: nothing here blocks the UI thread (the view is POD and the work is PR 10–14's existing
@@ -137,6 +162,19 @@ existing blit).
   on Mac, theme resources on Windows), never fixed colours. The crop overlay is drawn on the
   canvas and already contrasts with both.
 - **High DPI:** the layout is in points / DIPs, with nothing pixel-sized.
+
+## What was run (Mac, 2026-09-26)
+
+`MV_EDIT_SELFTEST=<dir>` drives the workspace through the commands its buttons run and writes the
+window (canvas included, where the OS allows a process to read its own window) and a state line
+per step. On a 1800 × 1200 JPEG: open → 1:1 → Apply → Colour → Info (set `Exif.Image.Artist` and
+the date; both read back) → Original → Save copy → Esc → Revert. The copy is 1200 × 1200, and the
+original's SHA-1 is unchanged after the revert. On a clip: Trim → arm → Jobs → Esc. Light and dark
+both render. `mv_tests`: 464 pass. The 15 failures need `tests/data` fixtures this checkout lacks
+(HEIF/AVIF, unrelated).
+
+Not yet run: VoiceOver, 200 % on a non-Retina display, both present-loop gates with the pane
+docked, and anything on Windows.
 
 ## Verify (both platforms)
 

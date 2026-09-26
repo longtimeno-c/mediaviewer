@@ -233,7 +233,8 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 |---|---|
 | **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
-| **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
+| **Edit workspace** (PR 29, [plan/20](plan/20-edit-workspace.md)) | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane: crop with aspect presets, straighten, rotate, colour, and every metadata tag — date taken, location, any EXIF / IPTC / XMP tag — edited or removed, with a byte-exact Revert. Written and run on the Mac; the Windows half is owed |
+| **Video Editor** | A separate window with a timeline (thumbnails, waveform, split, delete, export) — [plan/21](plan/21-video-editor.md), in progress |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
 | **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
@@ -739,6 +740,19 @@ ctest --test-dir build -C Release -L cleanvm --output-on-failure
 .\build\bin\Release\mediaviewer_lab.exe --av-soak 1860 --csv drift.csv `
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
 ```
+
+### Edit workspace self-test (PR 29, macOS)
+
+The Mac app can drive its own Edit workspace and photograph each step, with no pointer and no
+screen-recording permission. Point it at a scratch copy (Save copy writes a new file beside it,
+and the run edits then reverts its metadata):
+
+```bash
+MV_EDIT_SELFTEST=/tmp/mv-edit build-darwin/MediaViewer.app/Contents/MacOS/MediaViewer ~/scratch/IMG_0001.jpg
+```
+
+It quits when done, leaving `s0-viewer.png` … `s8-closed-reverted.png` (a clip gives `c0` … `c4`)
+and `state.txt` in the folder. `MV_EDIT_SELFTEST_DARK=1` or `0` forces Dark or Light Mode.
 
 ### Crash reports (PR 7)
 
@@ -1312,6 +1326,8 @@ The parts worth knowing before touching anything:
   Explorer/Finder copy, its window, settings, engine and how add-ons install.
 - **[plan/19-voice.md](plan/19-voice.md)** — the Voice add-on: speak a Local search query. Its own
   download, on-device recognition, a spoken count.
+- **[plan/20-edit-workspace.md](plan/20-edit-workspace.md)** — PR 29: the Edit button, the docked
+  Edit pane, crop presets, and every metadata tag editable.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](plan/12-decision-log.md)** — why a call was reversed, so it
