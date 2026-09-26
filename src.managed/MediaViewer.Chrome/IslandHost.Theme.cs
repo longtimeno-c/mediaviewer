@@ -82,6 +82,12 @@ public static partial class IslandHost
         Set(ChromeColour.KeyframeTick, body);
         Set(ChromeColour.StarOn, accent);
 
+        // The native welcome/game is outside the XAML tree. Ship the current
+        // system window colour to its snapshot on the UI thread, including
+        // changes to Windows contrast themes. It never alters the photo canvas.
+        uint homeRgb = (uint)(canvas.R << 16 | canvas.G << 8 | canvas.B);
+        _onCommand?.Invoke(_context, Command.HomeColour, homeRgb);
+
         if (_themeWindow != IntPtr.Zero)
         {
             int useDark = dark && !contrast ? 1 : 0;

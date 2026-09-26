@@ -2314,6 +2314,14 @@ void chrome_on_command(void* ctx, int command, float arg) {
   // it went away may act on the app now.
   if (!app || app->closing) return;
   switch (command) {
+    case mv::shell::chrome_cmd_home_colour: {
+      const auto rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
+      if (app->input.home_background_rgb != rgb) {
+        app->input.home_background_rgb = rgb;
+        publish(app);
+      }
+      return;
+    }
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
       return;

@@ -101,6 +101,9 @@ struct input_snapshot {
   // plan/16 view state. Levels, not edges: the render thread draws what these
   // say, and redraws once when any of them changes.
   std::uint8_t background = 0;  // B: 0 canvas, 1 gray, 2 white, 3 checkerboard
+  // OS chrome colour, 0xRRGGBB. Only the empty welcome/game view uses it;
+  // photos and clips keep the user's separate canvas background setting.
+  std::uint32_t home_background_rgb = 0x21232Au;
   bool sticky_zoom = false;     // S
   bool clipping = false;        // C
   bool loupe = false;           // held Z

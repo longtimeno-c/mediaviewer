@@ -1099,10 +1099,16 @@ void present_lab::render_thread_main() noexcept {
     // target view is _SRGB, so the hardware encodes on write. Writing 0.05 here
     // and reading back 0.05 in a screenshot would mean the sRGB view was lost.
     const float clear_level = gfx::background_clear(snapshot.background);
-    const float clear[4] = {snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.016f : clear_level),
-                            snapshot.blackout ? 0.0f : clear_level,
-                            snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.024f : clear_level),
-                            1.0f};
+    const bool home = !current_image_ && !current_video_.texture && !video_open_ &&
+                      !(sweep_mode_ && animating_) && !snapshot.blackout;
+    const float clear[4] = {
+        home ? home_linear_channel(snapshot.home_background_rgb, 16)
+             : snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.016f : clear_level),
+        home ? home_linear_channel(snapshot.home_background_rgb, 8)
+             : snapshot.blackout ? 0.0f : clear_level,
+        home ? home_linear_channel(snapshot.home_background_rgb, 0)
+             : snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.024f : clear_level),
+        1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
     const bool show_previous =
@@ -1676,6 +1682,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   const welcome_text text{
       .open_hint = "or press Ctrl+O to choose a file, Ctrl+Shift+O for a folder",
       .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    F3  frame-time"};
+  const home_palette theme(snapshot.home_background_rgb);
   if (!sweep_mode_ && game_.active()) {
     const float dt =
         last_game_elapsed_ > 0.0 ? static_cast<float>(elapsed_seconds - last_game_elapsed_) : 0.0f;
@@ -1684,12 +1691,12 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
     game_.update(dt);
     // Game over or the outro finished: idle again, nothing moves.
     if (game_.state() == dino_game::phase::over || !game_.active()) animating_ = false;
-    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, welcome_alpha(game_));
-    draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale);
+    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_));
+    draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale, theme);
     return;
   }
   last_game_elapsed_ = 0.0;
-  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text);
+  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme);
 }
 
 void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
