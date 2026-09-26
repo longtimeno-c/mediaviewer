@@ -44,9 +44,9 @@ public static partial class IslandHost
     private static StackPanel? _trimBar;
     private static TextBlock? _trimLabel;
 
-    private static readonly Color TrimAccent = ColorHelper.FromArgb(255, 240, 176, 64);
-    private static readonly Color TrimKeep = ColorHelper.FromArgb(70, 240, 176, 64);
-    private static readonly Color KeyframeTick = ColorHelper.FromArgb(160, 150, 154, 164);
+    private const ChromeColour TrimAccent = ChromeColour.TrimAccent;
+    private const ChromeColour TrimKeep = ChromeColour.TrimKeep;
+    private const ChromeColour KeyframeTick = ChromeColour.KeyframeTick;
 
     // The slider's track starts and ends about half a thumb in from its edges.
     private const double SeekWidth = 320;

@@ -69,6 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swift build --package-path src.swift/MediaViewerChrome -c release
+      - run: swift build --package-path src.swift/ImportChrome -c release
 
   windows-chrome:
     name: WinUI chrome
@@ -81,6 +82,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - run: dotnet build src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj -c Release
+      - run: dotnet build src.managed/MediaViewer.Import.Chrome/MediaViewer.Import.Chrome.csproj -c Release
 
   mac-packaging:
     name: Release tooling and macOS bundle policy
@@ -420,4 +422,3 @@ jobs:
           name: broken-corpus-full-${{ github.run_id }}
           path: broken-dump/
           if-no-files-found: ignore
-

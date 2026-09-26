@@ -37,7 +37,7 @@ public static partial class IslandHost
     private static bool _metaPaneVisible;
     private static bool _treeVisible;
 
-    private static readonly Color PanelBg = ColorHelper.FromArgb(255, 27, 29, 35);
+    private const ChromeColour PanelBg = ChromeColour.PanelBg;
 
     // ---- geometry: native owns the maths, the island only moves --------------
 
@@ -190,7 +190,7 @@ public static partial class IslandHost
 
     // ---- small builders -------------------------------------------------------
 
-    private static TextBlock Text(string text, Color color, double size = UiFontSize,
+    private static TextBlock Text(string text, ChromeColour color, double size = UiFontSize,
                                   bool bold = false, int maxLines = 0)
     {
         var t = new TextBlock
@@ -226,7 +226,7 @@ public static partial class IslandHost
         var root = new Grid
         {
             Background = Brush(PanelBg),
-            RequestedTheme = ElementTheme.Dark,
+            RequestedTheme = ElementTheme.Default,
             // No XY focus navigation: FocusManager.TryMoveFocus fail-fasts in these
             // islands (0xC000027B), so the arrows are handled explicitly per pane.
         };
@@ -356,7 +356,7 @@ public static partial class IslandHost
                 Text = label, FontFamily = UiFont, FontSize = UiFontSize,
                 Foreground = Brush(on ? Title : Body),
             },
-            Background = Brush(on ? Hairline : Colors.Transparent),
+            Background = on ? Brush(Hairline) : Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
             Padding = new Thickness(10, 3, 10, 3),
             AllowFocusOnInteraction = false,
@@ -621,7 +621,7 @@ public static partial class IslandHost
     private static Button? _metaRevert;
     private static readonly List<Button> MetaStarButtons = new();
 
-    private static readonly Color StarOn = ColorHelper.FromArgb(255, 240, 196, 64);
+    private const ChromeColour StarOn = ChromeColour.StarOn;
 
     private static UIElement BuildMetaEdit()
     {

@@ -140,7 +140,8 @@ private struct SettingsRow<Content: View>: View {
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
   }
 }
 
@@ -175,7 +176,7 @@ private struct SettingsButtonStyle: ButtonStyle {
       .foregroundStyle(MVTheme.title)
       .padding(.horizontal, 12).padding(.vertical, 7)
       .background(RoundedRectangle(cornerRadius: 6)
-        .fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.08)))
+        .fill(Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
       .contentShape(Rectangle())
   }
 }
@@ -327,7 +328,6 @@ struct SettingsView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(MVTheme.canvas)
-    .preferredColorScheme(.dark)
     .onChange(of: keyboard) { _, _ in store.cancelCapture() }
   }
 }

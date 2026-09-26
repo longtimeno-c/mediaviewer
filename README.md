@@ -6,6 +6,12 @@ MediaViewer is a fast, keyboard-first viewer for the folder that comes off your 
 video side by side in one window. It draws on its own Direct3D 11 surface instead of a stock image or
 media-player control, so decoding never stands between you and the screen.
 
+The Windows and macOS UI follows the system's light or dark appearance,
+including Settings, browsing, editing panels and Import. Appearance changes
+apply while the app is open. **Canvas background** remains a separate preference
+for the photo/video surround. Build and interactive checks are documented in
+[System appearance verification](docs/system-theme-verify.md).
+
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
 ## Download
@@ -1317,4 +1323,3 @@ modify an original; nothing about a user's files leaves the machine; never requi
 codec pack.
 GPL-2.0-or-later, see [LICENSE](LICENSE). Bundled libraries and their licences are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md). Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.
-

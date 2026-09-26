@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The in-window command bar. Styled to match the Windows island bar
 // (IslandHost.cs): the canvas colour, CozetteVector 16 pt, flat text buttons
-// with a faint hover wash, dark flyouts with a hairline border, and a hairline
+// with a faint hover wash, system-themed flyouts with a hairline border, and a hairline
 // under the bar. The commands are the same ones the system menu bar runs
 // (mv_chrome_menu tags mirror MvMenuCmd in main_mac.mm).
 import AppKit
@@ -9,12 +9,17 @@ import CoreText
 import SwiftUI
 import MVChromeBridge
 
-/// The Windows palette (IslandHost.cs): Canvas / Title / Body / Hairline.
+/// Semantic AppKit colours remain dynamic inside SwiftUI: light, dark and
+/// increased contrast follow the hosting window without forcing a colour scheme.
+/// These are chrome surfaces, independent of the native photo canvas setting.
 enum MVTheme {
-  static let canvas = Color(red: 33 / 255, green: 35 / 255, blue: 42 / 255)
-  static let title = Color(red: 220 / 255, green: 222 / 255, blue: 228 / 255)
-  static let body = Color(red: 150 / 255, green: 154 / 255, blue: 164 / 255)
-  static let hairline = Color(red: 58 / 255, green: 60 / 255, blue: 68 / 255)
+  static let canvas = Color(nsColor: .windowBackgroundColor)
+  static let title = Color(nsColor: .labelColor)
+  static let body = Color(nsColor: .secondaryLabelColor)
+  static let hairline = Color(nsColor: .separatorColor)
+
+  static let surface = Color(nsColor: .controlBackgroundColor)
+  static let disabled = Color(nsColor: .disabledControlTextColor)
 
   private static let registered: Bool = {
     // CMake copies the face beside the executable (cmake/darwin.cmake).
@@ -40,10 +45,10 @@ private struct FlatButtonStyle: ButtonStyle {
     var body: some View {
       configuration.label
         .font(MVTheme.font())
-        .foregroundStyle(enabled ? MVTheme.title : MVTheme.body.opacity(0.5))
+        .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
         .padding(.horizontal, 14).padding(.vertical, 7)
         .background(
-          RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(
+          RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(
             configuration.isPressed ? 0.11 : (hover && enabled ? 0.06 : 0))))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
@@ -84,7 +89,7 @@ private func aboutVersionLine() -> String {
   return "Version \(String(cString: buf))"
 }
 
-/// A bar button that opens a dark flyout beneath it.
+/// A bar button that opens a system-themed flyout beneath it.
 private struct BarFlyout<Content: View>: View {
   let title: String
   @ViewBuilder var content: (_ close: @escaping () -> Void) -> Content
@@ -97,7 +102,6 @@ private struct BarFlyout<Content: View>: View {
           .padding(4)
           .frame(minWidth: 240)
           .background(MVTheme.canvas)
-          .preferredColorScheme(.dark)
       }
   }
 }
@@ -223,7 +227,7 @@ struct PathBar: View {
       .disabled(!store.canGoUp)
       .help("Open the enclosing folder (⌘↑)")
       .accessibilityLabel("Up one folder")
-      .foregroundStyle(store.canGoUp ? MVTheme.title : MVTheme.body.opacity(0.4))
+      .foregroundStyle(store.canGoUp ? MVTheme.title : MVTheme.disabled)
 
       Button { store.openCrumb(0) } label: {
         Label("Root", systemImage: "folder")
@@ -233,7 +237,7 @@ struct PathBar: View {
       .disabled(crumbs.count < 2)
       .help(crumbs.first.map { "Return to browsing root: " + $0.path } ?? "No folder open")
       .accessibilityLabel("Return to browsing root")
-      .foregroundStyle(crumbs.count > 1 ? MVTheme.title : MVTheme.body.opacity(0.4))
+      .foregroundStyle(crumbs.count > 1 ? MVTheme.title : MVTheme.disabled)
       Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 6)
 
       ScrollView(.horizontal, showsIndicators: false) {
@@ -314,4 +318,3 @@ private struct PathPiece: Identifiable {
   let name: String
   let isEllipsis: Bool
 }
-
