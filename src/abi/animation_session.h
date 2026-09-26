@@ -143,8 +143,14 @@ class animation_session {
   // [render][no-block] The next frame produced is `index` (`,` stepping back):
   // the decoder rewinds and decodes forward to it.
   void seek(std::uint32_t index) noexcept {
-    epoch_.fetch_add(1, std::memory_order_acq_rel);
-    seek_to_.store(index + 1, std::memory_order_release);
+    // The target and its epoch travel as one value. Bumping the epoch and then
+    // storing the target separately let the decode thread read the new epoch
+    // before the target was visible, and tag the old run's next frame with it:
+    // take() then handed out frame N+1 as the seek's first frame (seen under
+    // ASan). The thread now tags frames with the epoch of the seek it applied.
+    const std::uint32_t epoch = epoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    seek_to_.store((static_cast<std::uint64_t>(epoch) << 32) | (index + 1u),
+                   std::memory_order_release);
     drain();
     poke();
   }
@@ -185,6 +191,9 @@ class animation_session {
     std::uint32_t produced_this_play = 0;
     bool ended = true;
     codec::canvas_frame frame;
+    // The epoch frames are tagged with: the one of the last seek applied. A
+    // seek not yet applied leaves it old, so take() drops what is made meanwhile.
+    std::uint32_t epoch = epoch_.load(std::memory_order_acquire);
 
     const auto end_feed = [&]() noexcept {
       ended = true;
@@ -212,7 +221,10 @@ class animation_session {
       }
 
       if (current) {
-        if (const std::uint32_t seek = seek_to_.exchange(0, std::memory_order_acq_rel); seek != 0) {
+        if (const std::uint64_t request = seek_to_.exchange(0, std::memory_order_acq_rel);
+            request != 0) {
+          const auto seek = static_cast<std::uint32_t>(request & 0xFFFF'FFFFu);
+          epoch = static_cast<std::uint32_t>(request >> 32);
           ended = false;
           ended_gen_.store(0, std::memory_order_release);
           produced_this_play = 0;
@@ -228,7 +240,6 @@ class animation_session {
         }
       }
 
-      const std::uint32_t epoch = epoch_.load(std::memory_order_acquire);
       while (current && !ended && running_.load(std::memory_order_acquire) &&
              seek_to_.load(std::memory_order_acquire) == 0 &&
              (wanted_gen_.load(std::memory_order_acquire) == 0 ||
@@ -287,7 +298,7 @@ class animation_session {
   std::atomic<std::uint32_t> wanted_gen_{0};
   std::atomic<std::uint32_t> ended_gen_{0};
   std::atomic<std::uint32_t> epoch_{0};
-  std::atomic<std::uint32_t> seek_to_{0};
+  std::atomic<std::uint64_t> seek_to_{0};  // (epoch << 32) | (index + 1); 0 = none
   std::atomic<std::uint32_t> depth_{2};
   std::atomic<std::uint32_t> last_upload_us_{0};
   std::atomic<std::uint64_t> frames_made_{0};
