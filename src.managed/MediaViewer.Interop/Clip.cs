@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 
 namespace MediaViewer.Interop;
 
-/// <summary>Mirrors <c>mv_clip_op</c> (mediaviewer_clip.h, ABI 0.10).</summary>
+/// <summary>Mirrors <c>mv_clip_op</c> (mediaviewer_clip.h, ABI 0.11).</summary>
 public enum MvClipOp : uint
 {
     TrimKeyframe = 1,
@@ -16,6 +16,7 @@ public enum MvClipOp : uint
     Frame = 7,
     Audio = 8,
     Animation = 9,
+    KeepRanges = 10,  // ABI 0.11 (PR 30): the Video Editor's export
 }
 
 /// <summary>Mirrors <c>mv_clip_job_state</c>.</summary>
