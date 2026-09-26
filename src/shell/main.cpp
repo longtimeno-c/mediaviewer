@@ -3701,7 +3701,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
 
     // View state the render thread draws from (levels, not edges).
     case cycle_background:
-      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 4);
+      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 5);
       return set_level(app);
     case sticky_zoom:
       app->input.sticky_zoom = !app->input.sticky_zoom;

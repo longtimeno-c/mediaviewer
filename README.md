@@ -9,9 +9,9 @@ media-player control, so decoding never stands between you and the screen.
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
 apply while the app is open. The empty welcome screen and dinosaur runner follow
-the system window colour too. **Canvas background** remains a separate preference
-for the photo/video surround. Build and interactive checks are documented in
-[System appearance verification](docs/system-theme-verify.md).
+the system window colour too. The photo/video **Canvas background** now defaults
+to System; Grey, White, Checkerboard and Dark remain fixed choices. Build and
+interactive checks are documented in [System appearance verification](docs/system-theme-verify.md).
 
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
