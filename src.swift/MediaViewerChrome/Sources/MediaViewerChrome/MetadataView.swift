@@ -108,7 +108,7 @@ struct MetadataView: View {
                 store.setRating(store.rating == n ? 0 : n)
               } label: {
                 Image(systemName: n <= store.rating ? "star.fill" : "star")
-                  .foregroundStyle(n <= store.rating ? Color.yellow : Color.secondary)
+                  .foregroundStyle(n <= store.rating ? Color.accentColor : Color.secondary)
               }
               .buttonStyle(.plain)
               .accessibilityLabel(n == 1 ? "1 star" : "\(n) stars")

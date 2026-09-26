@@ -411,7 +411,7 @@ public static partial class IslandHost
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.Children.Add(Text(label, Body));
-            TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Hairline : Title);
+            TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
             Grid.SetColumn(v, 1);
             row.Children.Add(v);
             rows.Children.Add(row);

@@ -239,7 +239,7 @@ public static partial class IslandHost
             for (int i = 0; i < rows.Length; ++i)
             {
                 rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
-                rows[i].Foreground = Brush(!Enabled(i) ? Hairline : i == row ? Title : Body);
+                rows[i].Foreground = Brush(!Enabled(i) ? Body : i == row ? Title : Body);
             }
         }
         void Move(int delta)
