@@ -472,8 +472,15 @@ jobs:
             done
           fi
 
-      - name: dmgbuild
-        run: python3 -m pip install --break-system-packages -r tools/mac/requirements.txt
+      # A job-local venv: the runner's Homebrew Python owns packages such as
+      # cryptography that pip cannot uninstall, so pinned versions go here.
+      - name: Python tools (dmgbuild, add-on packer)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/pyenv"
+          "$RUNNER_TEMP/pyenv/bin/python" -m pip install --disable-pip-version-check \
+            -r tools/mac/requirements.txt -r tools/package/requirements.txt
+          echo "$RUNNER_TEMP/pyenv/bin" >> "$GITHUB_PATH"
 
       - name: Disk image
         timeout-minutes: 30
@@ -510,7 +517,6 @@ jobs:
           fi
           python3 tools/mac/macpack.py addon --dir build/addons/import \
             --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
-          python3 -m pip install --break-system-packages -r tools/package/requirements.txt
           python3 tools/package/addon-pack.py pack --platform macos --src build/addons/import \
             --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
           cp build/release/addon/mediaviewer-addon-import-macos.zip \
