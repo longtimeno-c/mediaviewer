@@ -219,6 +219,8 @@ struct av_clock::impl {
   std::atomic<double> rate{1.0};
   std::atomic<std::uint32_t> generation{0};
   std::uint32_t pump_generation = 0;
+  // Generation whose audio the decoder has fully submitted, or ~0u for none.
+  std::atomic<std::uint32_t> ended_generation{~0u};
   std::atomic<std::uint64_t> device_rebuilds{0};
   std::atomic<std::uint64_t> recovery_discontinuities{0};
   std::atomic<double> resampler_ratio{1.0};
@@ -376,6 +378,13 @@ bool av_clock::submit(const audio_block& block) noexcept {
   const bool pushed = impl_->ring.try_push(block);
   if (pushed) impl_->wake.notify_one();
   return pushed;
+}
+
+void av_clock::audio_ended(std::uint32_t generation) noexcept {
+  if (impl_ == nullptr) return;
+  // Release: every submit() of this generation happens-before the pump sees it.
+  impl_->ended_generation.store(generation, std::memory_order_release);
+  impl_->wake.notify_one();
 }
 
 void av_clock::impl::overlay_live_state(clock_stats& out) const noexcept {
@@ -585,6 +594,8 @@ void av_clock::impl::pump_loop() noexcept {
         state.sink_open = false;
         if (state.sink->open(endpoint.sample_rate, endpoint.channels)) state.sink_open = true;
         state.audio_master.store(state.sink_open);
+        // A seek after the track played out: the endpoint is master again.
+        if (state.sink_open) state.fallback.store(clock_fallback_reason::none);
       }
       state.pump_generation = requested_generation;
     }
@@ -606,7 +617,28 @@ void av_clock::impl::pump_loop() noexcept {
 
     // Refill the held block if it is spent.
     if (state.pending_offset >= state.pending.frames) {
+      // Read before the pop: an end seen here means its last block is already
+      // in the ring, so an empty pop below really is the end of the track.
+      const bool track_done =
+          state.ended_generation.load(std::memory_order_acquire) == state.pump_generation;
       if (!state.ring.try_pop(state.pending)) {
+        if (track_done) {
+          if (state.audio_master.load(std::memory_order_acquire)) {
+            // Everything is with the endpoint. Continue on the host clock from
+            // where the audio clock is now, so the rest of the video keeps its
+            // pace and the clip reaches its duration (issue #43). The same
+            // hand-over rebuild_endpoint makes; the next seek hands back.
+            const time_ns position = state.master_now_ns();
+            state.audio_master.store(false, std::memory_order_release);
+            state.fallback.store(clock_fallback_reason::audio_ended, std::memory_order_release);
+            state.anchor_pts_ns.store(position, std::memory_order_relaxed);
+            state.host_start_ns.store(host_now_ns(), std::memory_order_relaxed);
+          }
+          // Out of audio is not an underrun: nothing is counted.
+          std::unique_lock<std::mutex> lock(state.wake_mutex);
+          state.wake.wait_for(lock, std::chrono::milliseconds(5));
+          continue;
+        }
         // The decoder is behind. Counted here because this is where the cause
         // is visible; the endpoint's own silence write happens a period later.
         if (state.anchored.load(std::memory_order_acquire)) {

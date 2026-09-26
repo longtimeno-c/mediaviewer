@@ -21,6 +21,9 @@ enum class clock_fallback_reason : std::uint8_t {
   no_audio_track,
   device_open_failed,
   device_lost,
+  // The track played out; the host clock carries the rest of the video. Not a
+  // fault, and the next seek hands the clock back to the endpoint.
+  audio_ended,
 };
 
 struct audio_endpoint_info {

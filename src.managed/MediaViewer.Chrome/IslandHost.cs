@@ -259,6 +259,8 @@ public static partial class IslandHost
             // Register Cozette first so a named FontFamily can resolve.
             RegisterUiFont();
             EnsureApp();
+            _themeWindow = parent;
+            RefreshTheme();
 
             _context = checked((IntPtr)args.Context);
             _onCommand = args.OnCommand == 0
@@ -573,6 +575,7 @@ public static partial class IslandHost
         // Island init path. Application after this throws; styles are set on
         // the bar itself (custom templates, not generic.xaml).
         _xaml = WindowsXamlManager.InitializeForCurrentThread();
+        InitialiseTheme();
     }
 
     /// <summary>
@@ -609,6 +612,7 @@ public static partial class IslandHost
         }
         _busyDelay?.Stop();
         _busyDelay = null;
+        ShutdownTheme();
         _xaml?.Dispose();
         _xaml = null;
         _dispatcher?.ShutdownQueue();
@@ -648,13 +652,12 @@ public static partial class IslandHost
         }
     }
 
-    // Same palette as the empty canvas (present_lab.cpp). The swapchain clear
-    // is linear 0.016/0.018/0.024; encoded to sRGB that is about 33,35,42.
-    // Type colours match the ImGui welcome: title / body / mute.
-    private static readonly Color Canvas = ColorHelper.FromArgb(255, 33, 35, 42);
-    private static readonly Color Title = ColorHelper.FromArgb(255, 220, 222, 228);
-    private static readonly Color Body = ColorHelper.FromArgb(255, 150, 154, 164);
-    private static readonly Color Hairline = ColorHelper.FromArgb(255, 58, 60, 68);
+    // Semantic chrome roles. The photo canvas has its own background preference.
+    // Shared brushes update in place when Windows changes appearance.
+    private const ChromeColour Canvas = ChromeColour.Canvas;
+    private const ChromeColour Title = ChromeColour.Title;
+    private const ChromeColour Body = ChromeColour.Body;
+    private const ChromeColour Hairline = ChromeColour.Hairline;
 
     private static SolidColorBrush Brush(Color c) => new(c);
 
@@ -761,12 +764,12 @@ public static partial class IslandHost
                     <VisualState x:Name="Normal"/>
                     <VisualState x:Name="PointerOver">
                       <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="#10FFFFFF"/>
+                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
                       </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Pressed">
                       <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="#1CFFFFFF"/>
+                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
                       </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Disabled"/>
@@ -879,12 +882,12 @@ public static partial class IslandHost
                     <VisualState x:Name="Normal"/>
                     <VisualState x:Name="PointerOver">
                       <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="#10FFFFFF"/>
+                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
                       </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Pressed">
                       <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="#1CFFFFFF"/>
+                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
                       </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Disabled"/>
@@ -1235,7 +1238,7 @@ public static partial class IslandHost
 
         var root = new Grid
         {
-            RequestedTheme = ElementTheme.Dark,
+            RequestedTheme = ElementTheme.Default,
             Background = Brush(Canvas),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,

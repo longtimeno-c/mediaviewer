@@ -555,7 +555,7 @@ public static partial class IslandHost
         _breadcrumbBar = BuildBreadcrumb();
         var root = new Grid
         {
-            RequestedTheme = ElementTheme.Dark,
+            RequestedTheme = ElementTheme.Default,
             Background = Brush(Canvas),
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -926,7 +926,7 @@ public static partial class IslandHost
             {
                 Width = GalleryTile,
                 Height = GalleryTile,
-                Background = new SolidColorBrush(ColorHelper.FromArgb(255, 48, 50, 58)),
+                Background = Brush(ChromeColour.Surface),
             };
             placeholder.Children.Add(new FontIcon
             {
@@ -1071,7 +1071,7 @@ public static partial class IslandHost
             {
                 Width = 36,
                 Height = 36,
-                Background = new SolidColorBrush(ColorHelper.FromArgb(255, 48, 50, 58)),
+                Background = Brush(ChromeColour.Surface),
             };
             box.Children.Add(placeholder);
             box.Children.Add(cover);
@@ -1103,7 +1103,7 @@ public static partial class IslandHost
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
                 BorderBrush = Brush(Title),
-                Background = new SolidColorBrush(ColorHelper.FromArgb(vm.Cursor ? (byte)0x2E : (byte)0x0A, 255, 255, 255)),
+                Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface),
                 Child = row,
             };
 
@@ -1138,8 +1138,7 @@ public static partial class IslandHost
             void SetCursor()
             {
                 border.BorderThickness = new Thickness(vm.Cursor ? 2 : 0);
-                border.Background = new SolidColorBrush(
-                    ColorHelper.FromArgb(vm.Cursor ? (byte)0x2E : (byte)0x0A, 255, 255, 255));
+                border.Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface);
             }
             SetCover();
             SetText();
@@ -1282,4 +1281,3 @@ internal struct ChromeGalleryNavigationArgs
     public int Direction;
     public int Index;
 }
-
