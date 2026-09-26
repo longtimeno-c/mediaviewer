@@ -95,7 +95,13 @@ status job_system::start(std::uint32_t worker_count) noexcept {
     impl_->workers.emplace_back([this, i] {
 #if defined(__APPLE__)
       pthread_setname_np("mv.worker");
+      // UTILITY between jobs and for background sweeps (thumbnails, relists,
+      // date scans); USER_INITIATED while a view-tied job runs. Apple Silicon
+      // steers UTILITY to the efficiency cores, 2-3x slower, and the decode of
+      // the photo on screen was running there. Changed only when the class
+      // differs from the last job's.
       pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+      qos_class_t current_qos = QOS_CLASS_UTILITY;
 #endif
       for (;;) {
         job_record job;
@@ -114,6 +120,11 @@ status job_system::start(std::uint32_t worker_count) noexcept {
           continue;
         }
 
+#if defined(__APPLE__)
+        const qos_class_t want =
+            job.gen == background_generation ? QOS_CLASS_UTILITY : QOS_CLASS_USER_INITIATED;
+        if (want != current_qos && pthread_set_qos_class_self_np(want, 0) == 0) current_qos = want;
+#endif
         trace::job_begin(job.id, i);
         const job_context ctx(job.id, job.gen, &generation_, i);
         status result = status::invalid_arg;

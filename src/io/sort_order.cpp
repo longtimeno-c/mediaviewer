@@ -41,7 +41,20 @@ const char* sort_key_label(sort_key k) noexcept {
 
 void sort_entries(std::vector<io::dir_entry>& entries, sort_order order,
                   const date_lookup_fn& dates) {
-  const auto primary = [&](const io::dir_entry& a, const io::dir_entry& b) -> int {
+  // Date taken: one lookup per entry, not two per comparison. The host's
+  // lookup builds a key and takes the meta store's lock, which the background
+  // date scan holds too; n log n of those was tens of ms on the UI thread.
+  std::vector<std::int64_t> taken;
+  if (order.key == sort_key::date_taken) {
+    taken.reserve(entries.size());
+    for (const auto& e : entries) {
+      const auto d = dates ? dates(e) : std::nullopt;
+      taken.push_back(d.value_or(e.mtime_unix));
+    }
+  }
+  const auto primary = [&](std::size_t ia, std::size_t ib) -> int {
+    const io::dir_entry& a = entries[ia];
+    const io::dir_entry& b = entries[ib];
     switch (order.key) {
       case sort_key::name: return compare_casefold(a.name_utf8, b.name_utf8);
       case sort_key::modified: return compare_ints(a.mtime_unix, b.mtime_unix);
@@ -49,26 +62,31 @@ void sort_entries(std::vector<io::dir_entry>& entries, sort_order order,
         return compare_ints(static_cast<std::int64_t>(a.size), static_cast<std::int64_t>(b.size));
       case sort_key::type:
         return compare_casefold(extension_of(a.name_utf8), extension_of(b.name_utf8));
-      case sort_key::date_taken: {
-        const auto da = dates ? dates(a) : std::nullopt;
-        const auto db = dates ? dates(b) : std::nullopt;
-        return compare_ints(da.value_or(a.mtime_unix), db.value_or(b.mtime_unix));
-      }
+      case sort_key::date_taken: return compare_ints(taken[ia], taken[ib]);
       case sort_key::count: break;
     }
     return 0;
   };
+  // Sort indices, then move each entry once: comparisons read the key table
+  // by index, and no dir_entry (two strings) is swapped during the sort.
+  std::vector<std::size_t> order_of(entries.size());
+  for (std::size_t i = 0; i < order_of.size(); ++i) order_of[i] = i;
   // Descending flips the primary key only; the tie-breakers stay ascending so
   // equal items do not reverse relative to each other.
-  std::stable_sort(entries.begin(), entries.end(),
-                   [&](const io::dir_entry& a, const io::dir_entry& b) {
-                     int c = primary(a, b);
-                     if (order.descending) c = -c;
-                     if (c != 0) return c < 0;
-                     c = compare_casefold(a.name_utf8, b.name_utf8);
-                     if (c != 0) return c < 0;
-                     return a.path_utf8 < b.path_utf8;
-                   });
+  std::stable_sort(order_of.begin(), order_of.end(), [&](std::size_t ia, std::size_t ib) {
+    int c = primary(ia, ib);
+    if (order.descending) c = -c;
+    if (c != 0) return c < 0;
+    const io::dir_entry& a = entries[ia];
+    const io::dir_entry& b = entries[ib];
+    c = compare_casefold(a.name_utf8, b.name_utf8);
+    if (c != 0) return c < 0;
+    return a.path_utf8 < b.path_utf8;
+  });
+  std::vector<io::dir_entry> sorted;
+  sorted.reserve(entries.size());
+  for (const std::size_t i : order_of) sorted.push_back(std::move(entries[i]));
+  entries = std::move(sorted);
 }
 
 std::int32_t pack_sort(sort_order o) noexcept {

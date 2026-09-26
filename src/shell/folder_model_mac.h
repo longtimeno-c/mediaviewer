@@ -62,6 +62,13 @@ class folder_model {
   // of the filmstrip/gallery is due.
   [[nodiscard]] bool consume_changed() noexcept;
 
+  // Called on the pool thread each time a listing lands (just after
+  // consume_changed() turns true), so the host can hop to its UI thread at
+  // once instead of finding it on its next poll. Must not block. Set before
+  // open(); the host marshals.
+  using changed_fn = void (*)(void* user);
+  void set_changed_notify(changed_fn fn, void* user) noexcept;
+
   using thumb_ready_fn = std::function<void(std::string path_utf8, std::string thumb_path)>;
 
   // Looks up (or generates and caches) the thumbnail for `path_utf8`/
@@ -87,6 +94,8 @@ class folder_model {
     std::vector<io::subdir_entry> subdirs;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
+    changed_fn notify = nullptr;
+    void* notify_user = nullptr;
     // Bumped by every open(): `thumbs` is one mutable object re-pointed at a
     // new directory's cache DB on each open(), so a request_thumb() job
     // queued for the old directory has no other way to tell, once it finally
@@ -98,6 +107,7 @@ class folder_model {
 
   static void watch_callback(void* user) noexcept;
   void relist_async();
+  static status relist_now(shared_state& state, const std::string& dir);
 
   std::shared_ptr<shared_state> state_;
   io::directory_watcher watcher_;

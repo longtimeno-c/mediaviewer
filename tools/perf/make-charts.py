@@ -5,14 +5,36 @@ No dependencies beyond the standard library. Every number on a chart is read fro
 report the lab or frametime wrote; nothing here is typed in. Re-run after re-measuring:
 
     python tools/perf/make-charts.py
+    python tools/perf/make-charts.py --perf out/perf --img out/img   # a staged run
+
+tools/perf/regenerate.py runs the measurements and then this. A chart whose reports are
+missing is skipped with a note, so a partial run (macOS, --quick) still renders the rest.
 """
+import argparse
 import csv
 import json
 import pathlib
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PERF = ROOT / "docs" / "perf"
 IMG = ROOT / "docs" / "img"
+
+# The reports each chart reads, relative to the perf directory. regenerate.py and the tests
+# use this table too, so a chart and its inputs cannot drift apart.
+INPUTS = {
+    "perf-pacing.svg": ["frametime-animated.json", "pan-soak-42mp-arw.json"],
+    "perf-first-pixel.svg": [f"first-pixel/{n}.json" for n in (
+        "sony_ilce7rm3.arw", "canon_eos7dmk2.cr2", "canon_eosr6.cr3", "nikon_d7500.nef",
+        "pentax_k50.dng", "libheif-example.heic")],
+    "perf-browse.svg": ["browse.json"],
+    "perf-video.svg": ["investigation/video-native-60s.json",
+                       "investigation/video-native-60s.json.video.json"],
+    "perf-av-sync.svg": ["investigation/av-after-120s.csv"],
+    "compare-open.svg": ["compare/screen.json"],
+    "compare-pan.svg": ["compare/screen.json"],
+    "compare-video.svg": ["compare/screen.json"],
+}
 
 BG, FG, MUTED, GRID = "#14181f", "#e6e9ef", "#8b94a5", "#2a303b"
 ACCENT, WARN, GOOD = "#4c9aff", "#ff6b6b", "#3ddc97"
@@ -300,16 +322,39 @@ def compare_screen():
     return charts
 
 
-if __name__ == "__main__":
+def missing(name):
+    return [p for p in INPUTS[name] if not (PERF / p).exists()]
+
+
+def main(argv=None):
+    global PERF, IMG
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--perf", type=pathlib.Path, default=PERF, help="directory of reports (docs/perf)")
+    ap.add_argument("--img", type=pathlib.Path, default=IMG, help="where the SVGs go (docs/img)")
+    ap.add_argument("--strict", action="store_true", help="fail if any chart's reports are missing")
+    args = ap.parse_args(argv)
+    PERF, IMG = args.perf.resolve(), args.img.resolve()
     IMG.mkdir(parents=True, exist_ok=True)
     jobs = [("perf-pacing.svg", pacing), ("perf-first-pixel.svg", first_pixel),
-            ("perf-video.svg", video_pacing), ("perf-av-sync.svg", drift)]
-    if (PERF / "browse.json").exists():
-        jobs.append(("perf-browse.svg", browse))
+            ("perf-browse.svg", browse), ("perf-video.svg", video_pacing),
+            ("perf-av-sync.svg", drift)]
+    skipped = []
     for name, fn in jobs:
+        if missing(name):
+            skipped.append((name, missing(name)))
+            continue
         (IMG / name).write_text(fn(), encoding="utf-8")
         print("wrote", IMG / name)
-    if (PERF / "compare" / "screen.json").exists():
+    if missing("compare-open.svg"):
+        skipped += [(n, missing(n)) for n in ("compare-open.svg", "compare-pan.svg", "compare-video.svg")]
+    else:
         for name, body in compare_screen():
             (IMG / name).write_text(body, encoding="utf-8")
             print("wrote", IMG / name)
+    for name, gone in skipped:
+        print(f"skipped {name}: no {', '.join(gone)}", file=sys.stderr)
+    return 1 if (args.strict and skipped) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

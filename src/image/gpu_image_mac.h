@@ -41,6 +41,16 @@ struct gpu_image_mac {
   bool preview = false;
 
   [[nodiscard]] bool valid() const noexcept { return texture != nullptr; }
+
+  // A second owner of the same immutable texture (one more retain), for the
+  // lab's still cache: the render thread takes one, the cache keeps the other.
+  [[nodiscard]] gpu_image_mac share() const noexcept;
+
+  // Bytes the texture occupies, mips included (an estimate for cache budgets).
+  [[nodiscard]] std::uint64_t approx_bytes() const noexcept {
+    const std::uint64_t top = static_cast<std::uint64_t>(texture_width) * texture_height * 4;
+    return mip_levels > 1 ? top + top / 3 : top;
+  }
 };
 
 }  // namespace mv::image

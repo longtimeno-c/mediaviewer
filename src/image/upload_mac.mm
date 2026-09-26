@@ -211,6 +211,22 @@ gpu_image_mac::~gpu_image_mac() {
   }
 }
 
+gpu_image_mac gpu_image_mac::share() const noexcept {
+  gpu_image_mac out;
+  if (texture) out.texture = (__bridge_retained void*)(__bridge id<MTLTexture>)texture;
+  out.width = width;
+  out.height = height;
+  out.texture_width = texture_width;
+  out.texture_height = texture_height;
+  out.mip_levels = mip_levels;
+  out.format = format;
+  out.icc_tagged = icc_tagged;
+  out.mean_luma = mean_luma;
+  out.item_id = item_id;
+  out.preview = preview;
+  return out;
+}
+
 gpu_image_mac::gpu_image_mac(gpu_image_mac&& other) noexcept
     : texture(other.texture),
       width(other.width),

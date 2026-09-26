@@ -120,25 +120,30 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
   The updater must exist before the first build that leaves this machine.
   Telemetry waits for PR 8 and is **default off**.
 
-## Root README
+## README vs DEVELOPMENT
 
-`README.md` at the repo root is the human landing page. **Keep it up to date in the
-same change that would make it stale.** Do not finish a PR, scaffold, or behaviour
-shift with the README still describing the old repo.
+`README.md` at the repo root is **marketing**: the product page someone sees on GitHub.
+It says what MediaViewer is, where to download it, what it does, the measured speed
+charts, what is coming, a five-line build-from-source, and the licence. Keep it short
+and in the voice of a product page.
 
-Update it when you:
+**Never put logs in the README.** No status reports, PR-by-PR progress, "not yet
+verified" caveats, verify-line results, dated notes, runbooks, command-line flag lists,
+test commands or harness output. Those belong in **`docs/DEVELOPMENT.md`**, the
+contributor notes: build and run recipes for both platforms, the key table, tests and
+gates, crash-report and packaging runbooks, the performance suite, and "Where this
+actually is" (the honest status). Decisions and their history stay in `plan/`.
 
-- Add or change build, run, or test commands
-- Scaffold layout, dependencies, or the toolchain
-- Land a roadmap PR that changes what the tree actually does (formats, playback,
-  edits, trim, install)
-- Settle licence, install/update, or “how to open a camera dump”
-- Add a verify/harness a human would need to run
+Keep `docs/DEVELOPMENT.md` up to date in the same change that would make it stale:
+build, run or test commands; layout, dependencies or toolchain; a roadmap PR landing;
+install/update or licence changes; a new verify or harness. Write it for someone cloning
+the repo. Link to `plan/` rather than pasting it.
 
-Write for someone cloning the repo, not for an agent. What it is, how to build it,
-how to run it, current status vs the plan. Do not paste `plan/` into it — link
-there. If the README still says the repo is empty after you have added a build,
-you are not done.
+Touch the README only when the *product* changes in a way a user would notice (a new
+format, feature, platform, release, or re-measured chart). Its charts come from
+`python tools/perf/regenerate.py` (see DEVELOPMENT, "Performance suite"): re-measure and
+redraw, never edit a number or an SVG by hand. If a README number changes, it is because
+a report in `docs/perf/` changed.
 
 ## Native core (C++20)
 

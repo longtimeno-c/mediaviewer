@@ -654,6 +654,13 @@ add_dependencies(mv_frametime mediaviewer_lab)
 if(MV_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 3 CONFIG REQUIRED)
+  # The README chart suite (tools/perf): charts reproduce from the committed
+  # reports and the suite plans every harness. Standard-library Python only.
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME perf_tools
+             COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/perf/test_perf_tools.py")
+  endif()
   add_executable(mv_tests
     tests/test_result.cpp
     tests/test_spsc_ring.cpp
@@ -676,6 +683,7 @@ if(MV_BUILD_TESTS)
     tests/test_gif_webp.cpp
     tests/test_heif_avif.cpp
     tests/test_raw.cpp
+    tests/test_perf_bench.cpp
     tests/test_anim.cpp
     tests/test_colour.cpp
     # PR 19: the portable player logic (clock, drift, presenter, transport, probe,

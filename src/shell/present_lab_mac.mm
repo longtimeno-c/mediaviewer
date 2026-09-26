@@ -18,6 +18,8 @@
 
 #include <limits.h>
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <pthread/qos.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -44,6 +46,7 @@
 #include "gfx/pace_json.h"
 #include "image/pipeline_mac.h"
 #include "image/upload_mac.h"
+#include "io/file.h"
 
 using mv::gfx::k_input_tail_seconds;
 using mv::gfx::k_occlusion_poll_ms;
@@ -155,6 +158,195 @@ CAMetalDisplayLinkUpdate* take_link_update() noexcept {
 
 present_lab_mac::~present_lab_mac() { stop(); }
 
+namespace {
+
+// The worker's own look at the file, for the cache key (never on the UI thread).
+bool stat_stamp(const std::string& path, std::int64_t* mtime, std::uint64_t* size) noexcept {
+  struct stat st{};
+  if (::stat(path.c_str(), &st) != 0) return false;
+  *mtime = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
+  *size = static_cast<std::uint64_t>(st.st_size);
+  return true;
+}
+
+// GIF, WebP and PNG may be animated: their first frame is not the whole item,
+// and the animation feed wants the file's bytes. They always load.
+bool cacheable_still(const std::string& path) noexcept {
+  if (is_video_name(path)) return false;
+  const std::size_t dot = path.find_last_of('.');
+  if (dot == std::string::npos) return false;
+  std::string ext = path.substr(dot + 1);
+  for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  return ext != "gif" && ext != "webp" && ext != "png" && ext != "apng";
+}
+
+// A sixteenth of memory, 256 MB to 1 GB: the item on screen and about four
+// 24 MP neighbours on a 16 GB Mac. Metal textures are unified memory.
+std::uint64_t still_cache_budget() noexcept {
+  std::uint64_t mem = 0;
+  std::size_t len = sizeof mem;
+  if (::sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) != 0 || mem == 0) mem = 8ull << 30;
+  return std::clamp<std::uint64_t>(mem / 16, 256ull << 20, 1ull << 30);
+}
+
+constexpr std::size_t kStillCacheMax = 8;
+
+}  // namespace
+
+std::uint64_t present_lab_mac::mark_navigation() noexcept {
+  const std::uint64_t seq = nav_seq_.load(std::memory_order_relaxed) + 1;
+  if (seq > 64) return 0;
+  nav_mark_seconds_.store(monotonic_seconds(), std::memory_order_relaxed);
+  nav_seq_.store(seq, std::memory_order_release);
+  return seq;
+}
+
+bool present_lab_mac::navigation_done(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64) return false;
+  return nav_done_seq_.load(std::memory_order_acquire) >= seq && nav_samples_[seq - 1].valid != 0;
+}
+
+present_lab_mac::nav_sample present_lab_mac::navigation_sample(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64 || nav_done_seq_.load(std::memory_order_acquire) < seq) return {};
+  return nav_samples_[seq - 1];
+}
+
+void present_lab_mac::note_nav_image(const image::gpu_image_mac& ready) noexcept {
+  const std::uint64_t seq = nav_seq_.load(std::memory_order_acquire);
+  if (seq == 0 || seq > 64 || nav_latched_seq_ == seq) return;
+  nav_latched_seq_ = seq;
+  nav_latch_seconds_ = nav_mark_seconds_.load(std::memory_order_relaxed);
+  nav_ready_ms_ = (monotonic_seconds() - nav_latch_seconds_) * 1000.0;
+  nav_cached_ = ready.preview ? 0 : 1;
+  nav_item_ = ready.item_id;
+  nav_have_ready_ = true;
+}
+
+void present_lab_mac::commit_nav_present() noexcept {
+  if (!nav_have_ready_ || nav_latched_seq_ == 0 || nav_latched_seq_ > 64) return;
+  if (!current_image_ || current_image_->item_id != nav_item_) return;
+  nav_sample& sample = nav_samples_[nav_latched_seq_ - 1];
+  sample.ready_ms = nav_ready_ms_;
+  sample.present_ms = (monotonic_seconds() - nav_latch_seconds_) * 1000.0;
+  sample.refresh_ms = layer_.refresh_interval_seconds() * 1000.0;
+  sample.cached = nav_cached_;
+  sample.valid = 1;
+  nav_have_ready_ = false;
+  nav_done_seq_.store(nav_latched_seq_, std::memory_order_release);
+}
+
+bool present_lab_mac::cache_has(const std::string& path) const noexcept {
+  std::lock_guard lock(still_cache_mutex_);
+  for (const auto& c : still_cache_) {
+    if (c.path == path) return true;
+  }
+  return false;
+}
+
+bool present_lab_mac::cache_publish(const std::string& path, std::int64_t mtime,
+                                    std::uint64_t size, std::uint64_t item_id) noexcept {
+  if (mtime == kNoStamp) return false;
+  image::gpu_image_mac* hit = nullptr;
+  {
+    std::lock_guard lock(still_cache_mutex_);
+    for (std::size_t i = 0; i < still_cache_.size(); ++i) {
+      cached_still& c = still_cache_[i];
+      if (c.path != path) continue;
+      if (c.mtime != mtime || c.size != size) return false;  // changed on disk: reload
+      hit = new (std::nothrow) image::gpu_image_mac(c.image.share());
+      std::rotate(still_cache_.begin() + static_cast<std::ptrdiff_t>(i),
+                  still_cache_.begin() + static_cast<std::ptrdiff_t>(i) + 1, still_cache_.end());
+      break;
+    }
+  }
+  if (!hit) return false;
+  hit->item_id = item_id;
+  hit->preview = false;
+  delete pending_image_.exchange(hit);
+  wake();
+  return true;
+}
+
+void present_lab_mac::cache_put(const std::string& path, std::int64_t mtime, std::uint64_t size,
+                                const image::gpu_image_mac& image) noexcept {
+  if (!image.valid() || image.preview) return;
+  const std::uint64_t budget = still_cache_budget();
+  const std::uint64_t bytes = image.approx_bytes();
+  if (bytes > budget / 2) return;  // one huge still would evict everything else
+  try {
+    std::lock_guard lock(still_cache_mutex_);
+    for (auto it = still_cache_.begin(); it != still_cache_.end(); ++it) {
+      if (it->path != path) continue;
+      still_cache_bytes_ -= it->image.approx_bytes();
+      still_cache_.erase(it);
+      break;
+    }
+    while (!still_cache_.empty() &&
+           (still_cache_.size() >= kStillCacheMax || still_cache_bytes_ + bytes > budget)) {
+      still_cache_bytes_ -= still_cache_.front().image.approx_bytes();
+      still_cache_.erase(still_cache_.begin());
+    }
+    still_cache_.push_back(cached_still{path, mtime, size, image.share()});
+    still_cache_bytes_ += bytes;
+  } catch (...) {
+    // No room for the entry: the still is simply not cached.
+  }
+}
+
+void present_lab_mac::prefetch(const std::vector<std::string>& paths_utf8) noexcept {
+  const std::uint64_t current = item_counter_.load(std::memory_order_acquire);
+  {
+    std::lock_guard lock(prefetch_mutex_);
+    if (loading_item_.load(std::memory_order_acquire) == current) {
+      try {
+        prefetch_parked_ = paths_utf8;
+        prefetch_parked_for_ = current;
+      } catch (...) {
+      }
+      return;
+    }
+  }
+  submit_prefetch(paths_utf8);
+}
+
+void present_lab_mac::release_prefetch(std::uint64_t item_id) noexcept {
+  loading_item_.compare_exchange_strong(item_id, 0, std::memory_order_acq_rel);
+  std::vector<std::string> parked;
+  {
+    std::lock_guard lock(prefetch_mutex_);
+    if (prefetch_parked_for_ != item_id) return;
+    parked.swap(prefetch_parked_);
+    prefetch_parked_for_ = 0;
+  }
+  submit_prefetch(parked);
+}
+
+void present_lab_mac::submit_prefetch(const std::vector<std::string>& paths_utf8) noexcept {
+  if (!options_.jobs) return;
+  void* mtl_device = device_.native_device();
+  for (const std::string& path : paths_utf8) {
+    if (!cacheable_still(path) || cache_has(path)) continue;
+    // Current generation: queued behind the open that bumped it (FIFO), and
+    // abandoned by the next navigation, as Windows' neighbour decodes are.
+    options_.jobs->submit([this, path, mtl_device](const job_context& ctx) -> status {
+      std::int64_t mtime = 0;
+      std::uint64_t size = 0;
+      if (!stat_stamp(path, &mtime, &size)) return status::io;
+      auto bytes = io::read_all(path);
+      if (!bytes) return bytes.error();
+      if (ctx.cancelled()) return status::cancelled;
+      // One LibRaw thread: the item on screen keeps the cores (Windows does the same).
+      auto decoded = image::decode_bytes_mac(bytes.value(), &ctx, 1);
+      if (!decoded) return decoded.error();
+      if (ctx.cancelled()) return status::cancelled;
+      auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+      if (!uploaded) return uploaded.error();
+      cache_put(path, mtime, size, uploaded.value());
+      return status::ok;
+    });
+  }
+}
+
 // [any-thread]. Runs on the job pool: reads and decodes a file, then uploads
 // an immutable MTLTexture. Never on the render thread (rule 1, CLAUDE.md /
 // plan/02) -- device_.native_device() is safe to use from any thread. The
@@ -231,11 +423,19 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
 
         if (ctx.cancelled()) return status::cancelled;
 
+        if (cacheable_still(path)) {
+          std::int64_t mtime = 0;
+          std::uint64_t size = 0;
+          if (stat_stamp(path, &mtime, &size)) cache_put(path, mtime, size, uploaded.value());
+        }
         auto* img = new image::gpu_image_mac(std::move(uploaded).value());
         img->item_id = item_id;
         image::gpu_image_mac* old = pending->exchange(img);
         delete old;  // a load superseded before the render thread took it over
         wake();
+        // The full image is up: its neighbours may have the cores now. Still
+        // the current generation, so a navigation since abandons them.
+        release_prefetch(item_id);
 
         // Animated GIF/APNG/WebP (plan/04, folded into PR 18): frame 0 is
         // already up via the still path above (rule 3); if the file turns out
@@ -568,7 +768,8 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   return changed;
 }
 
-std::uint64_t present_lab_mac::open_item(std::string path_utf8) noexcept {
+std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mtime_unix,
+                                         std::uint64_t size) noexcept {
   if (path_utf8.empty() || !options_.jobs) return 0;
   // Abandons whatever the previous open_item() call had in flight (folder
   // navigation is a new view intent) without touching folder_model_mac's own
@@ -578,7 +779,8 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8) noexcept {
   const std::uint64_t item = ++item_counter_;
   if (is_video_name(path_utf8)) {
     submit_video_open(std::move(path_utf8), item);
-  } else {
+  } else if (!cacheable_still(path_utf8) || !cache_publish(path_utf8, mtime_unix, size, item)) {
+    loading_item_.store(item, std::memory_order_release);
     submit_image_load(std::move(path_utf8), item);
   }
   return item;
@@ -610,7 +812,13 @@ void present_lab_mac::stop() noexcept {
 }
 
 void present_lab_mac::wake() noexcept {
-  wake_flag_.store(true, std::memory_order_release);
+  // Set the flag under the wait mutex: the idle wait checks it under that
+  // mutex, so a store between its check and its block cannot be missed (the
+  // idle timeout is an hour; a lost wake left a finished load off screen).
+  {
+    std::lock_guard lock(g_wait_mutex);
+    wake_flag_.store(true, std::memory_order_release);
+  }
   g_wait_cv.notify_all();
 }
 
@@ -1039,6 +1247,13 @@ void present_lab_mac::render_thread_main() noexcept {
             fade_from_.reset();
             fade_.cancel();
           }
+          if (!refinement) {
+            note_nav_image(*loaded);
+            first_pixel_seconds_ = elapsed;
+            full_seconds_ = loaded->preview ? -1.0 : elapsed;
+          } else if (!loaded->preview && full_seconds_ < 0.0) {
+            full_seconds_ = elapsed;
+          }
           current_image_.reset(loaded);
           {
             const edit_view* ev = edit_for(current_image_->item_id);
@@ -1127,37 +1342,6 @@ void present_lab_mac::render_thread_main() noexcept {
         }
         if (apply_playback_input(snapshot)) redraw = true;
         update_video_status();
-        if (media_ && media_->needs_present()) {
-          const auto vblank_ns =
-              static_cast<player::time_ns>(layer_.refresh_interval_seconds() * 1e9);
-          if (player::video_frame* frame = media_->acquire_frame(1, vblank_ns)) {
-            // The frame we are replacing may still be read by a command buffer
-            // in flight, and the decode thread reuses a released slot at once,
-            // so it is held back kRetiredFrames presents before release.
-            if (video_frame_) {
-              if (retired_frames_[kRetiredFrames - 1]) {
-                media_->release_frame(retired_frames_[kRetiredFrames - 1]);
-              }
-              for (std::size_t i = kRetiredFrames - 1; i > 0; --i) {
-                retired_frames_[i] = retired_frames_[i - 1];
-              }
-              retired_frames_[0] = video_frame_;
-            }
-            video_frame_ = frame;
-            if (!media_fitted_) {
-              current_image_.reset();
-              fade_from_.reset();
-              fade_.cancel();
-              camera_.reset();
-              camera_.fit(static_cast<float>(frame->width), static_cast<float>(frame->height),
-                          static_cast<float>(snapshot.width), usable_window_h(snapshot),
-                          /*immediate=*/true);
-              media_fitted_ = true;
-            }
-            redraw = true;
-          }
-        }
-
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
 
@@ -1214,7 +1398,7 @@ void present_lab_mac::render_thread_main() noexcept {
         req.window_visible = snapshot.window_visible;
         req.window_active = snapshot.window_active;
         req.occluded = occluded_;
-        req.soak = options_.soak_seconds > 0.0;
+        req.soak = options_.soak_seconds > 0.0 || options_.harness;
         req.animating = animating_;
         {
           float pw = 0, ph = 0;
@@ -1251,6 +1435,9 @@ void present_lab_mac::render_thread_main() noexcept {
           });
           wake_flag_.store(false, std::memory_order_release);
           occluded_ = view.window.occlusionState & NSWindowOcclusionStateVisible ? false : true;
+          // As on Windows: the idle time is not a spring step. Without this the
+          // first frame after rest stepped the full 1/15 s cap and popped.
+          last_frame = monotonic_seconds();
           continue;
         }
 
@@ -1270,6 +1457,40 @@ void present_lab_mac::render_thread_main() noexcept {
           update = take_link_update();
         }
         if (!update) continue;
+
+        // Choose the video frame AFTER the display-link wait, as Windows does
+        // after its latency wait: chosen before it, the clock was read 0 to
+        // one refresh early, which shows as cadence jitter on 24/30 fps clips.
+        if (media_ && media_->needs_present()) {
+          const auto vblank_ns =
+              static_cast<player::time_ns>(layer_.refresh_interval_seconds() * 1e9);
+          if (player::video_frame* frame = media_->acquire_frame(1, vblank_ns)) {
+            // The frame we are replacing may still be read by a command buffer
+            // in flight, and the decode thread reuses a released slot at once,
+            // so it is held back kRetiredFrames presents before release.
+            if (video_frame_) {
+              if (retired_frames_[kRetiredFrames - 1]) {
+                media_->release_frame(retired_frames_[kRetiredFrames - 1]);
+              }
+              for (std::size_t i = kRetiredFrames - 1; i > 0; --i) {
+                retired_frames_[i] = retired_frames_[i - 1];
+              }
+              retired_frames_[0] = video_frame_;
+            }
+            video_frame_ = frame;
+            if (!media_fitted_) {
+              current_image_.reset();
+              fade_from_.reset();
+              fade_.cancel();
+              camera_.reset();
+              camera_.fit(static_cast<float>(frame->width), static_cast<float>(frame->height),
+                          static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                          /*immediate=*/true);
+              media_fitted_ = true;
+            }
+            redraw = true;
+          }
+        }
 
         pacer_.frame_begin();
         const double now = monotonic_seconds();
@@ -1467,6 +1688,7 @@ void present_lab_mac::render_thread_main() noexcept {
         ++total_presents_;
         pacer_.frame_end(tick);
         if (!decision.live) painted_static_ = true;
+        commit_nav_present();
       }
     }
 
@@ -1575,6 +1797,8 @@ bool present_lab_mac::write_json_report() const noexcept {
   r.pace = pacer_.stats();
   r.idle = idle_stats_;
   r.static_run = !options_.start_animating;
+  r.still_first_pixel_s = first_pixel_seconds_;
+  r.still_full_s = full_seconds_;
   r.measurement_complete = soak_complete_ && measurement_valid_ && exit_code_ == 0;
   r.meets_gate = r.measurement_complete &&
                  (options_.start_animating ? r.pace.meets_pr16_gate() : r.idle.meets_pr16_gate());

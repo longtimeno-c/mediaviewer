@@ -9,6 +9,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "canvas/camera.h"
 #include "canvas/refinement.h"
@@ -38,6 +40,10 @@ struct mac_lab_options {
   bool gate_exit_code = false;
   bool start_animating = false;
   bool overlay_visible = true;
+  // A measuring run with no --soak timer (--browse-soak): present whether or
+  // not the window has focus, as a soak does, so a person using the machine
+  // does not stall it.
+  bool harness = false;
   // PR 17: a still to open on start (--open PATH), decoded and uploaded on a
   // job_system worker, never on the render thread (rule 1, plan/02).
   std::string open_path;
@@ -68,7 +74,39 @@ class present_lab_mac {
   // unaffected by the bump.
   // Returns the item id the images of this open will carry (PR 10: the UI tags
   // edit geometry with it, input_state.h edit_view).
-  std::uint64_t open_item(std::string path_utf8) noexcept;
+  //
+  // `mtime_unix`/`size` are the listing's stamp for the file, when the caller
+  // has one: a still cached under that exact stamp is shown at once, full
+  // resolution, with no read or decode. Without one the file always loads.
+  static constexpr std::int64_t kNoStamp = INT64_MIN;
+  std::uint64_t open_item(std::string path_utf8, std::int64_t mtime_unix = kNoStamp,
+                          std::uint64_t size = 0) noexcept;
+
+  // --browse-soak (the Windows lab's twin, present_lab.h): mark a navigation
+  // just before selecting, then poll until the new item's first image is on
+  // screen. ready_ms is mark -> image adopted by the render thread, present_ms
+  // mark -> the frame showing it committed; cached is 1 when that first image
+  // was already full resolution. 64 marks per run.
+  struct nav_sample {
+    double ready_ms = -1.0;
+    double present_ms = -1.0;
+    double refresh_ms = 0.0;
+    int cached = 0;
+    int valid = 0;
+  };
+  [[nodiscard]] std::uint64_t mark_navigation() noexcept;
+  [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
+  [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
+  [[nodiscard]] bool showing_still() const noexcept {
+    return shown_item_.load(std::memory_order_acquire) != 0;
+  }
+
+  // [UI thread] Decode the neighbours of the item just opened into the still
+  // cache (Windows' ±2 prefetch, abi.cpp submit_prefetch), at the current view
+  // generation: the next open_item() abandons what has not finished. A later
+  // open_item() of a cached file shows its full image in the next frame. Pass
+  // stills only; animated families and clips are skipped by the lab.
+  void prefetch(const std::vector<std::string>& paths_utf8) noexcept;
 
   // [any-thread] PR 10: the full-resolution size of the still on screen, if it
   // belongs to `item`. What the edit session constrains a crop against.
@@ -136,6 +174,47 @@ class present_lab_mac {
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
   void submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept;
+
+  // Full-resolution stills already on the GPU, keyed by path + size + mtime:
+  // the item on screen and its prefetched neighbours. Budgeted by bytes (a
+  // 42 MP RAW with mips is ~230 MB); most recent last. Workers insert, the UI
+  // thread looks up, so it is locked, never touched by the render thread.
+  struct cached_still {
+    std::string path;
+    std::int64_t mtime = 0;
+    std::uint64_t size = 0;
+    image::gpu_image_mac image;
+  };
+  bool cache_publish(const std::string& path, std::int64_t mtime, std::uint64_t size,
+                     std::uint64_t item_id) noexcept;
+  void cache_put(const std::string& path, std::int64_t mtime, std::uint64_t size,
+                 const image::gpu_image_mac& image) noexcept;
+  [[nodiscard]] bool cache_has(const std::string& path) const noexcept;
+  // Neighbours wait for the item on screen: queued at once they took the
+  // cores its full decode needed. prefetch() parks the list while that item
+  // is loading; its load job releases it once the full image is up.
+  void submit_prefetch(const std::vector<std::string>& paths_utf8) noexcept;
+  void release_prefetch(std::uint64_t item_id) noexcept;
+  std::mutex prefetch_mutex_;
+  std::vector<std::string> prefetch_parked_;
+  std::uint64_t prefetch_parked_for_ = 0;
+  std::atomic<std::uint64_t> loading_item_{0};
+  // Render thread only, but for the atomics the UI polls.
+  void note_nav_image(const image::gpu_image_mac& ready) noexcept;
+  void commit_nav_present() noexcept;
+  std::atomic<std::uint64_t> nav_seq_{0};
+  std::atomic<double> nav_mark_seconds_{0.0};
+  std::atomic<std::uint64_t> nav_done_seq_{0};
+  nav_sample nav_samples_[64]{};
+  std::uint64_t nav_latched_seq_ = 0;
+  double nav_latch_seconds_ = 0.0;
+  double nav_ready_ms_ = -1.0;
+  std::uint64_t nav_item_ = 0;
+  int nav_cached_ = 0;
+  bool nav_have_ready_ = false;
+  mutable std::mutex still_cache_mutex_;
+  std::vector<cached_still> still_cache_;
+  std::uint64_t still_cache_bytes_ = 0;
   // PR 19: opens a clip on a worker (open_media blocks on I/O) and posts it.
   void submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept;
   // [render-thread] Frees the current clip: releases its frames now, closes the
@@ -294,6 +373,11 @@ class present_lab_mac {
   bool imgui_ready_ = false;
   bool warmed_up_ = false;
   bool measurement_valid_ = true;
+  // Render-thread seconds at which the current item's first pixel and its
+  // full-resolution image landed (-1 until they do); the soak report's
+  // still_first_pixel_s / still_full_s. Render thread only.
+  double first_pixel_seconds_ = -1.0;
+  double full_seconds_ = -1.0;
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
   bool was_presenting_ = false;

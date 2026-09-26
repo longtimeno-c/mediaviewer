@@ -3,7 +3,9 @@
 
 #include <csetjmp>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
+#include <memory>
 #include <new>
 
 #include <jpeglib.h>
@@ -25,8 +27,6 @@ constexpr int kMaxIccChunks = 256;
 struct jpeg_error_trap {
   jpeg_error_mgr pub;
   jmp_buf jump;
-  unsigned char* rgba;
-  unsigned char* row;
   unsigned char* icc;
 };
 
@@ -95,13 +95,23 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   if (probe(bytes) != format_family::jpeg) return err(status::unsupported_format);
   if (bytes.size() < 4) return err(status::corrupt);
 
+  // The result lives on the heap and is created before setjmp: libjpeg writes
+  // straight into its pixel vector, and the unique_ptr itself is never changed
+  // after setjmp, so the longjmp path can still destroy it normally.
+  std::unique_ptr<raster> out;
+  try {
+    out = std::make_unique<raster>();
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
+
   jpeg_decompress_struct cinfo{};
   jpeg_error_trap jerr{};
   cinfo.err = jpeg_std_error(&jerr.pub);
   jerr.pub.error_exit = jpeg_error_exit;
   jerr.pub.output_message = [](j_common_ptr) {};
 
-  // C4611: longjmp skips C++ destructors. Everything live across this setjmp
+  // C4611: longjmp skips C++ destructors. Everything created after this setjmp
   // is POD or a malloc the jump handler frees.
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -112,8 +122,6 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
 #pragma warning(pop)
 #endif
     jpeg_destroy_decompress(&cinfo);
-    std::free(jerr.rgba);
-    std::free(jerr.row);
     std::free(jerr.icc);
     return err(status::corrupt);
   }
@@ -132,7 +140,9 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   unsigned icc_len = 0;
   (void)extract_icc(&cinfo, &jerr.icc, &icc_len);
 
-  cinfo.out_color_space = JCS_RGB;
+  // libjpeg-turbo's SIMD colour converter writes RGBX with alpha 255 straight
+  // into the raster, instead of RGB into a row buffer and a scalar expand.
+  cinfo.out_color_space = JCS_EXT_RGBA;
   if (scale_denom != 2 && scale_denom != 4 && scale_denom != 8) scale_denom = 1;
   cinfo.scale_num = 1;
   cinfo.scale_denom = scale_denom;
@@ -146,65 +156,49 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
     std::free(jerr.icc);
     return err(status::unsupported_format);
   }
-  if (cinfo.output_components != 3) {
+  if (cinfo.output_components != 4) {
     jpeg_destroy_decompress(&cinfo);
     std::free(jerr.icc);
     return err(status::unsupported_format);
   }
 
-  const std::size_t rgba_bytes = static_cast<std::size_t>(width) * height * 4;
-  jerr.rgba = static_cast<unsigned char*>(std::malloc(rgba_bytes));
-  jerr.row = static_cast<unsigned char*>(std::malloc(static_cast<std::size_t>(width) * 3));
-  if (!jerr.rgba || !jerr.row) {
+  const std::size_t stride = static_cast<std::size_t>(width) * 4;
+  try {
+    out->rgba.resize(stride * height);
+    if (jerr.icc && icc_len > 0) out->icc.assign(jerr.icc, jerr.icc + icc_len);
+  } catch (const std::bad_alloc&) {
     jpeg_destroy_decompress(&cinfo);
-    std::free(jerr.rgba);
-    std::free(jerr.row);
     std::free(jerr.icc);
     return err(status::out_of_memory);
   }
+  std::free(jerr.icc);
+  jerr.icc = nullptr;
 
-  JSAMPROW rows[1] = {jerr.row};
-  std::uint32_t y = 0;
+  // Several rows a call: libjpeg-turbo emits up to rec_outbuf_height rows
+  // (2 for 4:2:0) per call, and fancy upsampling otherwise goes through its
+  // spare row buffer one row at a time.
+  constexpr int kRowsPerCall = 16;
+  JSAMPROW rows[kRowsPerCall];
+  unsigned char* const pixels = out->rgba.data();
   while (cinfo.output_scanline < cinfo.output_height) {
     if (ctx && ctx->cancelled()) {
       jpeg_destroy_decompress(&cinfo);
-      std::free(jerr.rgba);
-      std::free(jerr.row);
-      std::free(jerr.icc);
       return err(status::cancelled);
     }
-    jpeg_read_scanlines(&cinfo, rows, 1);
-    unsigned char* dst = jerr.rgba + static_cast<std::size_t>(y) * width * 4;
-    for (std::uint32_t x = 0; x < width; ++x) {
-      dst[x * 4 + 0] = jerr.row[x * 3 + 0];
-      dst[x * 4 + 1] = jerr.row[x * 3 + 1];
-      dst[x * 4 + 2] = jerr.row[x * 3 + 2];
-      dst[x * 4 + 3] = 255;
-    }
-    ++y;
+    const JDIMENSION first = cinfo.output_scanline;
+    const int n = static_cast<int>(std::min<JDIMENSION>(kRowsPerCall, cinfo.output_height - first));
+    for (int r = 0; r < n; ++r) rows[r] = pixels + static_cast<std::size_t>(first + r) * stride;
+    if (jpeg_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n)) == 0) break;
   }
 
   jpeg_finish_decompress(&cinfo);
   jpeg_destroy_decompress(&cinfo);
 
-  raster out;
-  out.format = format_family::jpeg;
-  out.intent = transfer_intent::display_referred;
-  out.width = width;
-  out.height = height;
-  try {
-    out.rgba.assign(jerr.rgba, jerr.rgba + rgba_bytes);
-    if (jerr.icc && icc_len > 0) out.icc.assign(jerr.icc, jerr.icc + icc_len);
-  } catch (const std::bad_alloc&) {
-    std::free(jerr.rgba);
-    std::free(jerr.row);
-    std::free(jerr.icc);
-    return err(status::out_of_memory);
-  }
-  std::free(jerr.rgba);
-  std::free(jerr.row);
-  std::free(jerr.icc);
-  return out;
+  out->format = format_family::jpeg;
+  out->intent = transfer_intent::display_referred;
+  out->width = width;
+  out->height = height;
+  return std::move(*out);
 }
 
 result<jpeg_size> jpeg_dimensions(std::span<const std::uint8_t> bytes) {

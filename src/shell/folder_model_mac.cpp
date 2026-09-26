@@ -35,8 +35,36 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
     return started;
   }
 
-  relist_async();
+  // List here, on the worker open() already runs on (the host never calls it
+  // on the UI thread), rather than queueing a second job behind the thumbnail
+  // sweep. The watcher is already running, so nothing added from here on is
+  // missed.
+  (void)relist_now(*state_, std::string(dir_utf8));
   return {};
+}
+
+void folder_model::set_changed_notify(changed_fn fn, void* user) noexcept {
+  state_->notify = fn;
+  state_->notify_user = user;
+}
+
+status folder_model::relist_now(shared_state& state, const std::string& dir) {
+  auto listed = io::list_still_files(dir);
+  if (!listed) return listed.error();
+  // A folder whose subfolders cannot be read still shows its files: the
+  // tiles are additive.
+  std::vector<io::subdir_entry> subdirs;
+  if (auto subs = io::list_subfolders(dir)) subdirs = std::move(subs).value();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    // The directory may have changed again (or closed) while this ran.
+    if (state.dir != dir) return status::cancelled;
+    state.items = std::move(listed).value();
+    state.subdirs = std::move(subdirs);
+  }
+  state.changed.store(true, std::memory_order_release);
+  if (state.notify) state.notify(state.notify_user);
+  return status::ok;
 }
 
 void folder_model::close() noexcept {
@@ -97,22 +125,7 @@ void folder_model::relist_async() {
   // abandoned just because the user arrowed to the next photo mid-scan.
   jobs_->submit_at(background_generation,
                    [state = state_, dir_copy](const job_context&) -> status {
-                     auto listed = io::list_still_files(dir_copy);
-                     if (!listed) return listed.error();
-                     // A folder whose subfolders cannot be read still shows its
-                     // files: the tiles are additive.
-                     std::vector<io::subdir_entry> subdirs;
-                     if (auto subs = io::list_subfolders(dir_copy)) subdirs = std::move(subs).value();
-                     {
-                       std::lock_guard<std::mutex> lock(state->mutex);
-                       // The directory may have changed again (or closed)
-                       // while this job was queued or running.
-                       if (state->dir != dir_copy) return status::cancelled;
-                       state->items = std::move(listed).value();
-                       state->subdirs = std::move(subdirs);
-                     }
-                     state->changed.store(true, std::memory_order_release);
-                     return status::ok;
+                     return relist_now(*state, dir_copy);
                    });
 }
 
