@@ -10,6 +10,7 @@
 
 #include "imgui.h"
 #include "shell/dino_game.h"
+#include "shell/home_theme.h"
 
 namespace mv::shell::dino_3d {
 
@@ -86,7 +87,8 @@ class scene {
   std::size_t count_ = 0;
 };
 
-inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chrome, float scale) noexcept {
+inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chrome, float scale,
+                 const home_palette& theme) noexcept {
   const float fade = std::clamp((g.intro_progress() - 0.25f) / 0.5f, 0.0f, 1.0f);
   // The outro fades the whole scene back out while the runner sprints off.
   const float out = g.outro_progress();
@@ -95,31 +97,32 @@ inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chr
   dl->PushClipRect(ImVec2(0.0f, chrome), ImVec2(w, h), true);
 
   // A long, solid track with a visible near edge, not a flat sprite backdrop.
-  const ImU32 sand = IM_COL32(75, 88, 104, 255);
+  const ImU32 sand = theme.light ? IM_COL32(143, 158, 170, 255) : IM_COL32(75, 88, 104, 255);
   world.box(-75.0f, -4.0f, -17.0f, 1900.0f, 4.0f, 34.0f, sand);
   world.quad({-75, 0.08f, -16}, {1825, 0.08f, -16}, {1825, 0.08f, -15}, {-75, 0.08f, -15},
-             IM_COL32(153, 176, 192, 255));
+             theme.light ? IM_COL32(74, 91, 103, 255) : IM_COL32(153, 176, 192, 255));
   world.quad({-75, 0.08f, 15}, {1825, 0.08f, 15}, {1825, 0.08f, 16}, {-75, 0.08f, 16},
-             IM_COL32(153, 176, 192, 255));
+             theme.light ? IM_COL32(74, 91, 103, 255) : IM_COL32(153, 176, 192, 255));
 
   const float scroll = std::fmod(g.distance(), 24.0f);
   for (int i = 0; i < 55; ++i) {
     const float x = static_cast<float>(i) * 24.0f - scroll - 55.0f;
     // Ties at the far shoulder make speed and perspective easy to read.
     world.quad({x, 0.1f, -13}, {x + 7, 0.1f, -13}, {x + 7, 0.1f, -12}, {x, 0.1f, -12},
-               IM_COL32(113, 133, 151, 255));
+               theme.light ? IM_COL32(91, 108, 124, 255) : IM_COL32(113, 133, 151, 255));
   }
 
   // Contact shadows stay on the road as the dinosaur jumps above them.
-  const auto shadow = [&world](float x, float width, float z, float depth) {
+  const auto shadow = [&world, &theme](float x, float width, float z, float depth) {
     world.quad({x, 0.15f, z}, {x + width, 0.15f, z},
                {x + width + 3, 0.15f, z + depth}, {x + 3, 0.15f, z + depth},
-               IM_COL32(30, 37, 46, 255));
+               theme.light ? IM_COL32(113, 125, 136, 255) : IM_COL32(30, 37, 46, 255));
   };
   for (int n = 0; n < g.obstacle_count(); ++n) {
     const auto& o = g.obstacle_at(n);
     shadow(o.x - 1, o.w + 3, -3, 12);
-    const ImU32 cactus = IM_COL32(118, 179, 146, 255);
+    const ImU32 cactus = theme.light ? IM_COL32(48, 104, 75, 255)
+                                   : IM_COL32(118, 179, 146, 255);
     world.box(o.x, 0, -3, o.w, o.h, 6, cactus);
     world.box(o.x - 3, o.h * 0.52f, -2, 3, 2, 4, cactus);
     world.box(o.x - 3, o.h * 0.52f, -2, 2, 6, 4, cactus);
@@ -138,8 +141,14 @@ inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chr
     x += run * run * run * 260.0f;
   }
   shadow(x + 2, 19, -4, 12);
-  const ImU32 body = dead ? IM_COL32(222, 130, 132, 255) : IM_COL32(225, 232, 241, 255);
-  const ImU32 belly = dead ? IM_COL32(185, 96, 109, 255) : IM_COL32(157, 188, 204, 255);
+  const ImU32 body = dead ? (theme.light ? IM_COL32(143, 52, 64, 255)
+                                       : IM_COL32(222, 130, 132, 255))
+                          : (theme.light ? IM_COL32(53, 75, 97, 255)
+                                         : IM_COL32(225, 232, 241, 255));
+  const ImU32 belly = dead ? (theme.light ? IM_COL32(118, 45, 57, 255)
+                                        : IM_COL32(185, 96, 109, 255))
+                           : (theme.light ? IM_COL32(73, 117, 143, 255)
+                                          : IM_COL32(157, 188, 204, 255));
   // Chunky T-Rex silhouette: tapered tail, haunches, neck, big snout and tiny arms.
   world.box(x - 3, y + 8, -2, 8, 3, 4, body);
   world.box(x - 6, y + 10, -1, 4, 2, 2, body);
@@ -154,7 +163,8 @@ inline void draw(ImDrawList* dl, const dino_game& g, float w, float h, float chr
   world.box(x + 6 + stride * 1.6f, y + std::max(0.0f, stride), -3.5f, 5, 1.5f, 2.5f, belly);
   world.box(x + 6 - stride * 1.6f, y + std::max(0.0f, -stride), 1.5f, 5, 1.5f, 2.5f, body);
   // The eye is actual geometry on the visible side of the head.
-  world.box(x + 13, y + 18, 4, 1.5f, 1.5f, 0.2f, IM_COL32(25, 32, 43, 255));
+  world.box(x + 13, y + 18, 4, 1.5f, 1.5f, 0.2f,
+            theme.light ? IM_COL32(241, 243, 244, 255) : IM_COL32(25, 32, 43, 255));
   world.draw(dl);
   dl->PopClipRect();
 }

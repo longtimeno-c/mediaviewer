@@ -17,6 +17,9 @@ system appearance must not alter a photo, its adjustments or that preference.
   colours. Selected folder tiles retain readable window text and an outline.
 - Import follows the system in both hosts; its Windows root keeps a live
   `ThemeResource` expression instead of sampling a brush once.
+- The native empty welcome and 2D/3D dinosaur runner receive the system window
+  colour through the UI-thread snapshot. Their text, track and sprites adapt;
+  photos/videos retain the separate saved canvas background preference.
 - Histogram backgrounds and luminance traces adapt; RGB traces still identify
   their channels. White-on-black captions over thumbnails remain paired for
   readability against arbitrary images.
@@ -42,6 +45,7 @@ Run on a native desktop; a successful compile is not a visual or GPU result.
 | Check | Expected result |
 | --- | --- |
 | Start with the system in light mode, then dark mode | Title bar, toolbar, paths, settings and Import match the system; labels and separators remain legible. |
+| Open with no media; play the 2D and 3D dinosaur with Space and 3, switch system appearance in each state | Empty canvas, welcome card, runner, track and HUD adopt the system appearance without restarting; the idle view redraws once rather than presenting continuously. |
 | Open each menu and Settings category | Hover, pressed, disabled and keyboard-focus states are visible in both appearances. |
 | Open gallery, filmstrip, folder tree and metadata | Empty states, folder tiles, captions, selected/marked items and metadata tabs remain readable. |
 | Open Adjust, Export, video transport, clip tools and Jobs | Histograms, controls, trim markers, job progress and dialogue text remain readable. |

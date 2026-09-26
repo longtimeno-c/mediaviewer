@@ -317,6 +317,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)filmstripVisible;
 - (BOOL)galleryVisible;
 - (void)runMenuCmd:(NSInteger)cmd;
+- (void)syncHomeAppearance;
 
 // One key router, one command table (plan/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
@@ -1037,6 +1038,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @end
 
 @implementation MvMetalView
+- (void)viewDidChangeEffectiveAppearance {
+  [super viewDidChangeEffectiveAppearance];
+  if (self.app) [self.app syncHomeAppearance];
+}
 // NSDraggingSource: Cmd+drag-out (mouseDown: above). Copy-only -- dragging
 // the displayed item out never removes it from the folder; that's what
 // Delete/Trash and F8/move are for.
@@ -1478,6 +1483,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.view.snap = &_snap;
   self.view.app = self;
   [container addSubview:self.view];
+  [self syncHomeAppearance];
   // Found on real hardware (2026-09-18): this used to be autoresizingMask =
   // NSViewWidthSizable|NSViewHeightSizable instead of an Auto Layout pin, on
   // the theory that a plain frame-based contentView (container, below) with
@@ -2048,6 +2054,24 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ++_snap.activity_seq;
   [self.view publish];
   _lab.wake();
+}
+
+- (void)syncHomeAppearance {
+  // AppKit resolves the semantic colour for this window's effective appearance.
+  // Do this on the UI thread; the Metal thread reads only the POD snapshot.
+  if (!self.view.window) return;
+  NSColor* c = [[[NSColor windowBackgroundColor]
+      resolvedColorWithAppearance:self.view.effectiveAppearance]
+      colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+  if (!c) return;
+  const auto component = [](CGFloat value) -> std::uint32_t {
+    return static_cast<std::uint32_t>(std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
+  };
+  const std::uint32_t rgb = (component(c.redComponent) << 16) |
+                            (component(c.greenComponent) << 8) | component(c.blueComponent);
+  if (_snap.home_background_rgb == rgb) return;
+  _snap.home_background_rgb = rgb;
+  [self publish];
 }
 
 - (NSString*)currentItemPathForDrag {
