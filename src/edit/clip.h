@@ -88,6 +88,7 @@ struct clip_info {
 struct range {
   time_ns in_ns = 0;
   time_ns out_ns = 0;
+  friend constexpr bool operator==(const range&, const range&) = default;
 };
 [[nodiscard]] range keyframe_range(const clip_info& info, time_ns in_ns, time_ns out_ns) noexcept;
 

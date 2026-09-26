@@ -24,6 +24,7 @@ extern "C" {
 #include "edit/clip.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
+#include "edit/clip_strip.h"
 #include "edit/clip_wire.h"
 #include "edit/hwencode.h"
 #include "import_fixture.h"
@@ -626,4 +627,45 @@ TEST_CASE("keyframe trim of a 1 GB MP4 takes seconds", "[.][bench]") {
                  << ratio << " for a range share "
                  << static_cast<double>(done->written.out_ns - done->written.in_ns) / static_cast<double>(info->duration_ns));
   CHECK(secs < 10.0);
+}
+
+TEST_CASE("the timeline strip: thumbnails from keyframes, peaks across the clip", "[clip][pr30]") {
+  scratch_dir d("clip_strip");
+  const fs::path src = d / "clip.mp4";
+  REQUIRE(fx::make(utf8(src), {}));  // 320 x 240, 120 frames, GOP 15, a 440 Hz tone
+  auto info = clip::probe(utf8(src));
+  REQUIRE(info);
+  std::vector<std::int64_t> times;
+  for (int i = 0; i < 12; ++i) times.push_back(i * info->duration_ns / 12);
+  auto strip = clip::thumbnails(utf8(src), times, 60);
+  REQUIRE(strip);
+  REQUIRE(strip->size() == times.size());
+  for (std::size_t i = 0; i < strip->size(); ++i) {
+    const auto& f = (*strip)[i];
+    CHECK(f.height == 60);
+    CHECK(f.width == 80);  // 4:3
+    CHECK(f.rgba.size() == 80u * 60u * 4u);
+    CHECK(f.shown_ns <= f.at_ns + 1'000'000);
+    CHECK(f.at_ns - f.shown_ns < 15 * kFrameNs + 1'000'000);  // never further back than a GOP
+  }
+  CHECK_FALSE(clip::thumbnails(utf8(src), std::vector<std::int64_t>{2, 1}, 60));  // must ascend
+
+  auto peaks = clip::audio_peaks(utf8(src), 200);
+  REQUIRE(peaks);
+  REQUIRE(peaks->size() == 200);
+  int loud = 0;
+  for (float p : *peaks) {
+    CHECK(p >= 0.0f);
+    CHECK(p <= 1.0f);
+    if (p > 0.2f) ++loud;  // 8000 / 32768 = 0.24
+  }
+  CHECK(loud > 180);
+
+  fx::spec silent;
+  silent.audio = false;
+  const fs::path mute = d / "mute.mp4";
+  REQUIRE(fx::make(utf8(mute), silent));
+  auto none = clip::audio_peaks(utf8(mute), 100);
+  REQUIRE(none);
+  CHECK(none->empty());
 }
