@@ -2,8 +2,8 @@
 
 **Status: 2026-09-26, from issue #40 and the owner's review of PR 29. Milestone J, PRs 30–35,
 Windows and macOS together (D9). PR 30 — the Video Editor window, one clip — is written and run on
-the Mac (below, "What was built"); its Windows half is owed. PRs 32–35, the optional Editor add-on
-(grading, audio clean-up, voice isolation), are proposed and need the owner's sign-off.**
+the Mac (below, "What was built"); its Windows half is owed. The optional Editor add-on (PRs 32–47:
+grading, audio, delivery, model packs) is planned in [22](22-editor-addon.md) and needs the owner's sign-off.**
 
 ## What it is
 
@@ -30,7 +30,7 @@ Two layers, split by payload rather than by feature count:
 - **The Video Editor (base app, PRs 30–31).** The window, the timeline, cutting, several clips,
   and export. It is built on PR 13/14's clip core and adds no library, model or download, so it
   costs the installer nothing.
-- **The Editor add-on (optional, PRs 32–35; issue #40).** The parts that do add payload or
+- **The Editor add-on (optional, PRs 32–47; issue #40; [22](22-editor-addon.md)).** The parts that do add payload or
   maintenance weight: grading (curves, LUTs, scopes), audio clean-up and mixing, and voice
   isolation with its model download. It docks into the Video Editor window when it is installed.
 
@@ -99,44 +99,11 @@ therefore cannot be drawn by the add-on. The core has to play a *sequence*.
 Headers in `edit/`, `player/` and `gfx/` consumers stay free of `d3d11.h` and Metal (D9). The
 HLSL and MSL twins are written in the same PR.
 
-### Add-on (`editor`, downloaded)
+### The Editor add-on
 
-- **Native** `mv_editor.dll` / `libmv_editor.dylib` (`mv_addon_get`, interface `mv.editor.1`):
-  the multi-clip project model and its undo history, project files (`.mvedit`, JSON, sources by
-  path plus size, mtime and a BLAKE3 of the first and last 1 MiB, for relinking), the thumbnail
-  strip and waveform cache builders, loudness analysis (EBU R128 via libavfilter `ebur128`), the
-  clean-up pre-passes, and the model runner for voice isolation.
-- **Chrome**: `MediaViewer.Editor.Chrome.dll` (its own `AssemblyLoadContext`) and
-  `Editor.bundle` (SwiftUI), which provide the timeline, media, inspector and scopes panes docked
-  into the Video Editor window.
-- **Voice model** (optional, a separate sub-pack, PR 34): the model files and their runtime.
-
-### Host function table v2 (spike S4)
-
-The add-on reaches the core only through `mv_host_api` ([mediaviewer_addon.h](../src/abi/include/mediaviewer/mediaviewer_addon.h)).
-v1 was built for Import (io, pairing, thumbnails). The Editor needs these appended fields and a
-`MV_ADDON_HOST_API` bump (additive, and `struct_size` keeps Import loading):
-
-- `probe_clip` (duration, keyframes, streams, VFR flag): wraps `clip::probe`.
-- `preview_set_sequence(json)` and `preview_seek / play / pause`: the canvas plays what the
-  add-on built. The host copies the JSON, so no pointer outlives the call.
-- `set_grade(segment, uniforms, curve_lut, cube_lut)`: POD uniforms plus two small tables, never
-  a texture handle.
-- `read_scopes(out)`: the latest reduced scope buffers (POD, fixed size).
-- `decode_audio_pcm(path, range, rate, cb)`: float PCM on a worker, for waveforms, loudness and
-  clean-up. The add-on never opens FFmpeg itself.
-- `submit_render(sequence_json, output_opts) → job id` and `job_snapshot`: the existing clip
-  queue and helper.
-- `cache_dir(bytes_wanted, out)`: the Editor's cache root, with the free space on it.
-
-**The add-on never receives a device, texture, swapchain or FFmpeg context.** That keeps
-the D9 hostability and the "links nothing of the core" rule, and it is why grading and preview
-live in the core.
-
-**No third-party plug-in API** in this milestone. OFX, VST3 and CLAP hosting would run arbitrary
-code in the render path and put their licence and crash risk in front of users. The only code
-the Editor loads is signed with the add-on key. If ever reopened, it is a separate plan, and the
-plug-ins run out of process.
+Its architecture — the GPU port, the render graph, the host function table v2, colour
+management, model packs, install — is [22](22-editor-addon.md). It supersedes the add-on
+sections that were here.
 
 ### Preview and render stay in sync
 
@@ -212,61 +179,9 @@ clips with no audio.
   marker and orphan `.mvpart` files from Editor renders are removed. Removing the add-on deletes
   the cache (with its size shown) and keeps project files.
 
-## Voice isolation and clean-up (spike S3)
+## Voice isolation, model packs, install
 
-Three tiers, so the common case costs no download:
-
-| Tier | What | Ships as | Real-time? |
-|---|---|---|---|
-| Clean-up | High-pass, gate, `afftdn` spectral noise reduction, `anlmdn`, de-hum (notch at 50/60 Hz and harmonics), loudness normalise (R128, −16 LUFS default for share, −23 for archive) | The Editor add-on itself (FFmpeg filters present in the LGPL build, S1) | Offline pre-pass; fast |
-| Voice isolation (speech) | Keep speech, suppress wind, traffic, crowd and music under dialogue | **Optional model sub-pack** `editor-voice`, with its size shown before download | Offline pre-pass |
-| Stem separation (music / vocals / drums / bass) | Remix a music bed | **Later**, a separate sub-pack only if S3's licence and size check passes | Offline, slow |
-
-S3 decides the voice model. **No model is assumed.** Candidates to measure:
-
-- **DeepFilterNet (v2/v3)**: speech enhancement at 48 kHz, small and CPU-real-time by its
-  authors' account. Code and weights are reported as MIT / Apache-2.0, to be confirmed file by
-  file.
-- **RNNoise-family models through FFmpeg's `arnndn`**: already in the build, and tiny. The
-  licence of each model file has to be checked.
-- **Demucs (v4 / htdemucs)**: the stem tier. The code is MIT. The terms of the pretrained weights
-  and their training data have to be checked before they can be redistributed. It is large and
-  slow on CPU.
-
-Gate (the same as [17](17-local-ai-search.md)): the sub-pack manifest names a licence for every
-model file, and CI fails on non-commercial or research-only weights. Runtime: ONNX Runtime CPU,
-plus the Core ML provider on Mac, dynamic-linked inside the sub-pack. Its ORT copy is its own
-(sharing one runtime with the AI pack needs add-on dependencies; see Open decisions).
-
-**S3 measures on both platforms**: sub-pack download and installed size (a ceiling of 300 MB for
-`editor-voice`, stated in the manifest and enforced like the AI pack's 3 GB), seconds of
-processing per minute of audio on CPU and on Core ML, peak memory, and quality on a local eval
-set (DNSMOS and SI-SDR on speech with added noise: wind, traffic, café and music). The eval set
-lives outside git, like the RAW corpus. **No-go** if nothing licence-clean beats the no-model
-clean-up tier by a clear margin. In that case voice isolation is dropped and PR 34 closes as
-not built.
-
-## Install, sign, update, remove
-
-The same mechanism as Import, and nothing new to trust:
-
-- **Settings → Add-ons → Editor**: "Install Editor, N MB". Then, inside the Editor's settings,
-  "Voice isolation model, N MB download, N MB on disk". Nothing is pre-ticked, and the sizes come
-  from the signed manifest.
-- **Signed and verified**: the Ed25519 manifest is checked with the update key before the archive
-  is fetched, every file is hashed before install **and at every load**, Windows binaries are
-  Authenticode-signed, the Mac bundle is Developer ID-signed and notarized and loaded under library
-  validation. The request is a fixed URL with no identifier.
-- **Sub-packs need one addition to the manifest**: `requires: {"id": "editor", "min": "1.0.0"}`.
-  `editor-voice` is refused without a compatible `editor`, and removing `editor` offers to
-  remove `editor-voice` too. The AI pack needs the same field for its provider sub-packs ([17](17-local-ai-search.md)),
-  so it is added once, in S4.
-- **Updates** arrive with the app on the stable feed. A host-API mismatch shows "Editor needs an
-  update" and falls back to the base trim lane. Sideloading works offline.
-- **Remove**: the add-on unloads after its render jobs are cancelled (staged output swept), then
-  its folder and cache are deleted. Project files stay, and the base trim lane returns.
-- **Absent means absent**: the base tree is byte-identical, and there is no Editor command, key
-  or pane.
+See [22](22-editor-addon.md) §9 and §15.
 
 ## Accessibility
 
@@ -287,7 +202,7 @@ The same mechanism as Import, and nothing new to trust:
 - **Scale**: 100–300 % DPI and Dynamic Type. The track height and hit targets have a 24 DIP
   minimum.
 
-## Spikes (PR 32; S1 done)
+## Spikes (S1 done; the rest are [22](22-editor-addon.md) §16)
 
 | # | Question | Output | State |
 |---|---|---|---|
@@ -348,23 +263,10 @@ the project saved as a small JSON file beside the first clip.
 one file at the sequence rate with A/V drift ≤ 1 frame; a 2-hour clip opens and scrubs with flat
 memory; 20 cuts between 4K HEVC clips play with no dropped frame at a cut.
 
-### PR 32 — The Editor add-on: spikes and the mechanism
-S2–S5 below (S1 is done on the Mac), then the add-on through PR 16's mechanism (signed, sized,
-removable), host function table v2 so it can drive the editor's preview and render, and the
-Settings entry. Nothing user-visible beyond Install / Remove.
+### PRs 32–47 — The Editor add-on
 
-### PR 33 — Grade (add-on)
-Curves, `.cube` LUTs, PR 11's exposure / contrast / saturation / white balance per piece,
-before/after, and scopes (histogram, waveform, parade, vectorscope) with text readouts. One
-kernel source compiled to HLSL, MSL and C++ so preview and export match.
-
-### PR 34 — Audio (add-on)
-Gain and fades per piece, a 5-band EQ, compressor / limiter, noise reduction with no model
-(`afftdn`, de-hum), loudness normalise, meters, and one music bed with ducking.
-
-### PR 35 — Voice isolation (add-on sub-pack), only if S3 says go
-The model as its own signed download with its size shown, processed offline into the cache and
-previewed when ready.
+Colour management, grading, multi-track editing, audio, delivery and the model packs:
+[22](22-editor-addon.md) §16. (This plan's earlier PRs 32–35 are replaced by it.)
 
 ## Later, or never
 
@@ -377,7 +279,7 @@ previewed when ready.
 
 ## Open decisions (owner)
 
-1. **The add-on at all** (PRs 32–35): grading, audio and voice isolation are a second product
+1. **The add-on at all** (PRs 32–47, [22](22-editor-addon.md)): grading, audio and voice isolation are a second product
    surface with a real maintenance cost (every kernel ×3, every pane ×2). The base editor
    (PRs 30–31) was asked for; the add-on is proposed.
 2. **Base or add-on for PR 31.** Several clips, zoom and dissolves add no payload, so they are

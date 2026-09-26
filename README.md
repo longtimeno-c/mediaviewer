@@ -234,7 +234,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Edit workspace** (PR 29, [plan/20](plan/20-edit-workspace.md)) | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane: crop with aspect presets, straighten, rotate, colour, and every metadata tag — date taken, location, any EXIF / IPTC / XMP tag — edited or removed, with a byte-exact Revert. Written and run on the Mac; the Windows half is owed |
-| **Video Editor** (PR 30, [plan/21](plan/21-video-editor.md)) | *Edit video* (or `Enter` on a clip) opens a separate window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export — instant keyframe cuts, or frame-accurate on the hardware encoder. Written and run on the Mac; the Windows half is owed. Grading, audio clean-up and voice isolation are a proposed optional add-on |
+| **Video Editor** (PR 30, [plan/21](plan/21-video-editor.md)) | *Edit video* (or `Enter` on a clip) opens a separate window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export — instant keyframe cuts, or frame-accurate on the hardware encoder. Written and run on the Mac; the Windows half is owed. Grading, audio and delivery tools are a proposed optional add-on ([plan/22](plan/22-editor-addon.md)) |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
 | **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
@@ -1333,8 +1333,9 @@ The parts worth knowing before touching anything:
   download, on-device recognition, a spoken count.
 - **[plan/20-edit-workspace.md](plan/20-edit-workspace.md)** — PR 29: the Edit button, the docked
   Edit pane, crop presets, and every metadata tag editable.
-- **[plan/21-video-editor.md](plan/21-video-editor.md)** — PR 30 on: the Video Editor window and
-  the optional Editor add-on.
+- **[plan/21-video-editor.md](plan/21-video-editor.md)** — PRs 30–31: the Video Editor window.
+- **[plan/22-editor-addon.md](plan/22-editor-addon.md)** — PRs 32–47, proposed: the Editor add-on,
+  with colour grading, a multi-track timeline, audio and delivery.
 - **[plan/01-decisions.md](plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](plan/12-decision-log.md)** — why a call was reversed, so it

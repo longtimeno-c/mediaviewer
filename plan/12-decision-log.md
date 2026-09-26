@@ -2344,3 +2344,24 @@ through Path 2's loop generalised to pieces, hardware encoders only, in the help
 and 10.69 s (exact, VideoToolbox) for a 10.71 s program; the source is untouched. **Owed:** the
 Windows half (a WinUI window hosting the D3D11 canvas the same way), both present-loop gates
 with the editor open, VoiceOver.
+
+## 2026-09-26 — The Editor add-on planned in full (proposed; [22](22-editor-addon.md))
+
+The owner asked for the complete plan for an advanced editor with colour grading. [22](22-editor-addon.md)
+replaces [21](21-video-editor.md)'s PRs 32–35 with Milestone K, PRs 32–47. Calls made in it (none
+reverses a D-decision; all await the owner's approval of the milestone):
+
+- **The engine lives in the add-on, not the core.** 21 had put the grade stage in the base core;
+  an engine of this size would make every viewer install carry it. Instead the host exposes a
+  **GPU port** of opaque handles (textures, buffers, kernels, command lists): the add-on ships its
+  own compiled kernels (HLSL → DXBC for D3D11 compute, MSL → metallib), the host validates them
+  against the signed manifest and runs them on its device. "The add-on never receives a device"
+  holds; so do one present path per OS and "no D3D12".
+- **Colour management through OpenColorIO (BSD-3), baked** into our kernels and LUTs at run time
+  — ACEScct for grading, scene-linear for compositing, per-clip input transforms chosen from
+  camera metadata, SDR and HDR outputs. HDR preview on the 8-bit swapchain is tone-mapped and
+  labelled (D6); HDR files are exact.
+- **Exports and models run out of process** (`MediaViewerRender`, `MediaViewerModel`), as the
+  base editor's encodes do.
+- **Still out:** third-party plug-ins, collaboration, control surfaces, Fusion-style compositing,
+  software H.264 / HEVC / AAC encoders.
