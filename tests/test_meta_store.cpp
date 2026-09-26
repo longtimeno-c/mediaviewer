@@ -129,10 +129,12 @@ TEST_CASE("the cache is bounded", "[meta][store]") {
   gate g;
   mv::shell::meta_store store(fake_read, [](std::string_view) { return std::nullopt; });
   const int n = static_cast<int>(mv::shell::meta_store::kCapacity) + 10;
+  // One read at a time: the LRU takes entries in completion order, and two
+  // workers finishing out of order would let f0 outlive later files.
   for (int i = 0; i < n; ++i) {
     (void)store.get(entry("f" + std::to_string(i) + ".jpg"), jobs, [&](std::string) { g.open(); });
+    REQUIRE(g.wait_for(i + 1));
   }
-  REQUIRE(g.wait_for(n));
   CHECK(store.peek(entry("f0.jpg")) == nullptr);                       // evicted
   CHECK(store.peek(entry("f" + std::to_string(n - 1) + ".jpg")) != nullptr);
 }
