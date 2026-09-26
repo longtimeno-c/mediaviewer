@@ -115,6 +115,35 @@ public static partial class IslandHost
         public const int TrimReencode = 140;
         public const int JobsPane = 143;
         public const int ClipToolsFlyout = 144;
+        // PR 29 (plan/20): the Edit workspace. EditTab: arg is the tab
+        // (shell::edit_tab); EditAction: arg is an EditActions value. The
+        // keyed ids below are what the strip and the Crop / Trim panes send
+        // (chrome_host.h pins each).
+        public const int EditTab = 1017;
+        public const int EditAction = 1018;
+        // PR 29 (owner): every tag editable. MetaTags: native pulls the parked
+        // edits (tab-separated "S key value" / "R key" lines); MetaDate: the parked date,
+        // or arg 1 to remove every date-taken tag.
+        public const int MetaTags = 1019;
+        public const int MetaDate = 1020;
+        public const int RotateCcw = 96;
+        public const int RotateCw = 97;
+        public const int FlipHorizontal = 98;
+        public const int FlipVertical = 99;
+        public const int CropMode = 100;
+        public const int CropCommit = 101;
+        public const int ExportImage = 112;
+        public const int UndoEdit = 113;
+        public const int ResetEdits = 114;
+        public const int TrimIn = 135;
+        public const int TrimOut = 136;
+        public const int TrimClear = 137;
+        public const int TrimPreview = 138;
+        public const int ClipSplit = 145;
+        public const int TrimRemoveMiddle = 146;
+        public const int EditWorkspace = 147;
+        public const int CropAspectSet = 152;      // arg: preset, + 16 portrait
+        public const int CropStraightenSet = 153;  // arg: degrees
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -128,6 +157,7 @@ public static partial class IslandHost
                 UpdateRestart, TreeOpen, SetSort, Export, OpenSubfolder, OpenCrumb, GalleryColumns, AddonState, OpenPath,
                 MetaComment, MetaRevert,
                 ClipTool, ClipIndex,
+                EditTab, EditAction, MetaTags, MetaDate,
             };
             unchecked
             {
@@ -393,7 +423,8 @@ public static partial class IslandHost
                 if (OwnsRoot(_filmstrip, root)) kind = FocusKind.Filmstrip;
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
-                else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root))
+                else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root) ||
+                         OwnsRoot(_editPane, root))
                 {
                     // PR 11: the adjust pane too — its sliders own the arrows.
                     kind = FocusKind.Pane;
@@ -1194,6 +1225,9 @@ public static partial class IslandHost
             if (viewBtn is not null) FlyoutBase.ShowAttachedFlyout(viewBtn);
         });
         AttachBarFlyout(viewBtn, viewFlyout);
+        // PR 29 (plan/20): the visible way in to every edit, a bar button like
+        // Settings. Enter does the same. Native's SetEditView keeps its label.
+        Button editBtn = BuildEditBarButton();
         Button? settingsBtn = null;
         settingsBtn = TextButton("Settings", () => Send(Command.OpenSettings));
         Button? aboutBtn = null;
@@ -1216,6 +1250,7 @@ public static partial class IslandHost
         };
         row.Children.Add(openBtn);
         row.Children.Add(viewBtn);
+        row.Children.Add(editBtn);
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
         row.Children.Add(BuildUpdateButton());

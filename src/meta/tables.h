@@ -10,6 +10,12 @@
 //   properties: "space\tgroup\tlabel\tvalue\traw_tag"  space = exif|iptc|xmp|container|computed
 //   streams:    "S\tindex\tkind\tcodec" opens a stream, "F\tlabel\tvalue" adds a field to it,
 //               "C\tstart_ms\ttitle" is a chapter; empty for a still
+//
+// PR 29 (owner, 2026-09-26: every tag editable): editable_properties_table is
+// the properties form for a pane that edits -- the five columns above, then
+// "\traw\taccess": the value in the form an edit takes, and what an edit may
+// do (write.h access_of): e editable (set, remove), s set only (into the XMP
+// sidecar), r read-only. The Mac bridge (mv_chrome_meta_properties) writes the same.
 #pragma once
 
 #include <string>
@@ -21,5 +27,6 @@ namespace mv::meta {
 [[nodiscard]] std::string summary_table(const metadata& m);
 [[nodiscard]] std::string properties_table(const metadata& m);
 [[nodiscard]] std::string streams_table(const metadata& m);
+[[nodiscard]] std::string editable_properties_table(const metadata& m);
 
 }  // namespace mv::meta

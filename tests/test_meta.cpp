@@ -549,4 +549,36 @@ TEST_CASE("the pane tables are one record per line with flattened values", "[met
   CHECK(mv::meta::properties_table(empty).empty());
   CHECK(mv::meta::streams_table(empty).empty());
   CHECK_FALSE(mv::meta::summary_table(empty).empty());  // every row, all blank
+  CHECK(mv::meta::editable_properties_table(empty).empty());
+}
+
+// PR 29 (owner, 2026-09-26): the editing pane's form adds the raw value and
+// what an edit may do, decided by where the file's writes land.
+TEST_CASE("the editable properties table carries the raw value and the access", "[meta][tables]") {
+  mv::meta::metadata m;
+  mv::meta::property artist;
+  artist.space = mv::meta::origin::exif;
+  artist.group = "Exif.Image";
+  artist.label = "Artist";
+  artist.value = "Ann\tLee";
+  artist.raw = "Ann\tLee";
+  artist.raw_tag = "Exif.Image.Artist";
+  m.properties.push_back(artist);
+  mv::meta::property codec;
+  codec.space = mv::meta::origin::container;
+  codec.group = "Container";
+  codec.label = "Codec";
+  codec.value = "h264";
+  codec.raw = "h264";
+  codec.raw_tag = "Container.codec";
+  m.properties.push_back(codec);
+
+  m.writes_in_file = true;  // a plain JPEG: EXIF is rewritten in place
+  CHECK(mv::meta::editable_properties_table(m) ==
+        "exif\tExif.Image\tArtist\tAnn Lee\tExif.Image.Artist\tAnn Lee\te\n"
+        "container\tContainer\tCodec\th264\tContainer.codec\th264\tr\n");
+  m.writes_in_file = false;  // a RAW, a HEIC, a clip: the EXIF value goes to the sidecar
+  CHECK(mv::meta::editable_properties_table(m) ==
+        "exif\tExif.Image\tArtist\tAnn Lee\tExif.Image.Artist\tAnn Lee\ts\n"
+        "container\tContainer\tCodec\th264\tContainer.codec\th264\tr\n");
 }

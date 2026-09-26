@@ -77,6 +77,11 @@ canvas_view usable_canvas(const input_snapshot& s) noexcept {
     v.x = left;
     v.w -= left;
   }
+  // PR 29 (plan/20): a docked right pane (the Edit workspace). The picture is
+  // framed beside it; the swapchain still spans the client, so docking is a
+  // refit on the same present path, never a resize.
+  const float right = static_cast<float>(s.chrome_right_px);
+  if (right > 0.0f && right < v.w) v.w -= right;
   const float scale = s.dpi_scale > 0.0f ? s.dpi_scale : 1.0f;
   const float gutter = kCanvasGutterDip * scale;
   const float top = static_cast<float>(s.chrome_height_px);

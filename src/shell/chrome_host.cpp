@@ -270,6 +270,9 @@ expected chrome_host::load() noexcept {
   // PR 13 / 14, optional the same way.
   show_jobs_pane_ = get_entry(L"ShowJobsPane");
   set_trim_ = get_entry(L"SetTrim");
+  // PR 29, optional the same way: without it there is no Edit workspace.
+  show_edit_pane_ = get_entry(L"ShowEditPane");
+  set_edit_view_ = get_entry(L"SetEditView");
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
@@ -619,6 +622,7 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   tree_visible_ = false;
   adjust_visible_ = false;
   jobs_visible_ = false;
+  edit_visible_ = false;
 
   chrome_filmstrip_args args{};
   args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
@@ -680,6 +684,18 @@ void chrome_host::show_jobs_pane(bool visible, int x, int y, int width, int heig
   if (!panels_attached_ || !show_jobs_pane_) return;
   show_panel(show_jobs_pane_, visible, x, y, width, height, focus, y + height + 1);
   jobs_visible_ = visible;
+}
+
+void chrome_host::show_edit_pane(bool visible, int x, int y, int width, int height,
+                                 bool focus) noexcept {
+  if (!panels_attached_ || !show_edit_pane_) return;
+  show_panel(show_edit_pane_, visible, x, y, width, height, focus, y + height + 1);
+  edit_visible_ = visible;
+}
+
+void chrome_host::set_edit_view(const chrome_edit_args& args) noexcept {
+  if (!attached_ || !set_edit_view_) return;
+  (void)set_edit_view_(const_cast<chrome_edit_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::set_trim(const chrome_trim_args& args) noexcept {
@@ -840,7 +856,8 @@ void chrome_host::detach() noexcept {
     meta_visible_ = false;
     tree_visible_ = false;
     adjust_visible_ = false;
-  jobs_visible_ = false;
+    jobs_visible_ = false;
+    edit_visible_ = false;
   }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);

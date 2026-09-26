@@ -82,6 +82,24 @@ enum chrome_command : int {
   // Appearance only: WinUI sends the system window colour as an exact
   // 24-bit integer carried by float (all integers up to 2^24 are exact).
   chrome_cmd_home_colour = 1016,
+  // PR 29 (plan/20): the Edit workspace. edit_tab: arg is the shell::edit_tab
+  // the strip's tab row picked. edit_action: arg is a chrome_edit_action.
+  chrome_cmd_edit_tab = 1017,
+  chrome_cmd_edit_action = 1018,
+  // PR 29 (owner, 2026-09-26): every tag editable. meta_tags: native pulls
+  // the parked edits with take_parked_text, one per line: "S\tkey\tvalue"
+  // sets, "R\tkey" removes. meta_date: the parked "YYYY-MM-DD HH:MM:SS" goes
+  // into every capture-time tag; arg 1 removes them all (nothing parked).
+  chrome_cmd_meta_tags = 1019,
+  chrome_cmd_meta_date = 1020,
+};
+
+// chrome_cmd_edit_action's argument. The C# side mirrors it.
+enum class chrome_edit_action : std::int32_t {
+  cancel_crop = 0,   // the Crop pane's Cancel: drop the draft
+  original_off = 1,  // the strip's Original toggle
+  original_on = 2,
+  save_copy = 3,     // applies a crop draft, then the PR 10 export dialog
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -154,6 +172,21 @@ static_assert(static_cast<int>(command_id::trim_keyframe) == 139);
 static_assert(static_cast<int>(command_id::trim_reencode) == 140);
 static_assert(static_cast<int>(command_id::jobs_pane) == 143);
 static_assert(static_cast<int>(command_id::clip_tools) == 144);
+// PR 29: the Edit workspace's buttons send these (the Mac bridge pins 147 too).
+static_assert(static_cast<int>(command_id::edit_workspace) == 147);
+static_assert(static_cast<int>(command_id::rotate_ccw) == 96 && static_cast<int>(command_id::rotate_cw) == 97);
+static_assert(static_cast<int>(command_id::flip_horizontal) == 98 &&
+              static_cast<int>(command_id::flip_vertical) == 99);
+static_assert(static_cast<int>(command_id::crop_mode) == 100 && static_cast<int>(command_id::crop_commit) == 101);
+static_assert(static_cast<int>(command_id::undo_edit) == 113 && static_cast<int>(command_id::reset_edits) == 114);
+static_assert(static_cast<int>(command_id::trim_in) == 135 && static_cast<int>(command_id::trim_out) == 136);
+static_assert(static_cast<int>(command_id::trim_clear) == 137 && static_cast<int>(command_id::trim_preview) == 138);
+static_assert(static_cast<int>(command_id::clip_split) == 145 &&
+              static_cast<int>(command_id::trim_remove_middle) == 146);
+static_assert(static_cast<int>(command_id::crop_aspect_set) == 152);
+static_assert(static_cast<int>(command_id::crop_straighten_set) == 153);
+static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
+static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -175,7 +208,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_set_sort, chrome_cmd_export, chrome_cmd_open_subfolder, chrome_cmd_open_crumb,
       chrome_cmd_gallery_columns,
       chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_meta_comment,
-      chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index};
+      chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index,
+      chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -290,6 +324,34 @@ struct chrome_meta_edit_args {
 };
 
 static_assert(sizeof(chrome_meta_edit_args) == 24, "keep in sync with ChromeMetaEditArgs");
+
+// PR 29 (plan/20): what the Edit workspace's strip, its Crop / Trim pane and
+// the command bar's Edit button show -- the Mac bridge's mv_edit_view plus the
+// item's name and the trim state. Pointers are valid for the call only.
+struct chrome_edit_args {
+  std::int32_t open;           // the workspace is up
+  std::int32_t tab;            // shell::edit_tab
+  std::int32_t subject;        // shell::edit_subject: 0 none, 1 still, 2 clip
+  std::int32_t crop_active;    // a crop draft is on the canvas
+  std::int32_t aspect;         // shell::crop_aspect
+  std::int32_t portrait;       // the locked preset is portrait
+  float straighten;            // degrees: the draft's angle, else the committed one
+  std::int32_t edit_count;     // ops on the item's stack
+  std::int32_t show_original;  // Y held, or the strip's Original toggle
+  std::int32_t crop_width;     // what Apply would keep, in pixels (0 = not known yet)
+  std::int32_t crop_height;
+  std::int32_t trim_flags;     // kEditTrim*
+  std::uint64_t name_utf8;     // the item's file name, display only
+  std::uint64_t trim_label_utf8;  // trim_state::label() while armed
+  std::int32_t name_len;
+  std::int32_t trim_label_len;
+};
+
+static_assert(sizeof(chrome_edit_args) == 72, "keep in sync with IslandHost.Edit EditArgsSize");
+
+inline constexpr std::int32_t kEditTrimArmed = 1;
+inline constexpr std::int32_t kEditTrimPreviewing = 2;
+inline constexpr std::int32_t kEditTrimHasMarker = 4;
 
 inline constexpr std::int32_t kMetaEditCanEdit = 1;    // an item is open
 inline constexpr std::int32_t kMetaEditCanRevert = 2;  // a write to it landed this session
@@ -482,6 +544,16 @@ class chrome_host {
   // Optional: an older chrome ignores it.
   void set_trim(const chrome_trim_args& args) noexcept;
 
+  // PR 29 (plan/20): the Edit workspace, a fifth panel island at the top of
+  // the right column: its strip, and under it the Crop or Trim pane (the
+  // Colour / Info / Jobs tabs are the panes above, placed under the strip by
+  // the host). Optional like the other panes.
+  void show_edit_pane(bool visible, int x, int y, int width, int height, bool focus = false) noexcept;
+  [[nodiscard]] bool edit_pane_visible() const noexcept { return panels_attached_ && edit_visible_; }
+  // The strip, its pane and the command bar's Edit button read this. Pushed
+  // whether or not the pane is up, so the button follows the item.
+  void set_edit_view(const chrome_edit_args& args) noexcept;
+
   // The playback transport: a bottom strip, its content centred, shown only
   // while a clip is open. `filmstrip_px` is how much bottom chrome is already
   // spoken for, so the two strips stack instead of overlapping.
@@ -589,6 +661,8 @@ class chrome_host {
   chrome_entry_fn set_meta_edit_ = nullptr;
   chrome_entry_fn show_jobs_pane_ = nullptr;  // PR 13 / 14
   chrome_entry_fn set_trim_ = nullptr;        // PR 13
+  chrome_entry_fn show_edit_pane_ = nullptr;  // PR 29
+  chrome_entry_fn set_edit_view_ = nullptr;   // PR 29
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn apply_browse_ = nullptr;
@@ -605,6 +679,7 @@ class chrome_host {
   bool tree_visible_ = false;
   bool adjust_visible_ = false;
   bool jobs_visible_ = false;
+  bool edit_visible_ = false;
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   chrome_entry_fn shutdown_for_exit_ = nullptr;

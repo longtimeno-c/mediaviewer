@@ -51,6 +51,7 @@
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
+#include "shell/edit_workspace.h"
 #include "shell/trim_state.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
@@ -62,6 +63,7 @@
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
+#include "meta/write.h"
 #include "core/json.h"
 #include "shell/marks.h"
 #include "shell/media_kind.h"
@@ -204,6 +206,12 @@ struct app_state {
   std::uint64_t trim_index_request = 0;
   bool jobs_pane_visible = false;
   bool focus_jobs_next = false;
+  // PR 29 (plan/20): the Edit workspace (shell/edit_workspace.h, shared with
+  // the Mac host) and Show original. `ws_shown` is what the panes were last
+  // synced to, so closing the workspace closes only the panes it opened.
+  mv::shell::edit_workspace ws;
+  bool ws_shown = false;
+  bool show_original = false;
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
   // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
@@ -429,6 +437,9 @@ void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
 void stop_motion(app_state* app) noexcept;
+// PR 29 (plan/20): the Edit workspace.
+void push_edit_view(app_state* app) noexcept;
+void workspace_item_changed(app_state* app) noexcept;
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
 std::string subfolder_name_at(app_state* app, std::uint32_t index);
@@ -884,13 +895,14 @@ void set_adjust_pane(app_state* app, bool on);
 // The pane shows the record already held: three text tables, formatted here once
 // per record. No record yet means "reading" while something is wanted, and the
 // pane renders its empty states. Never reads the file. PR 12: the rating,
-// comment and Revert state ride along (push_meta_edit).
+// comment and Revert state ride along (push_meta_edit). PR 29: the tags carry
+// their raw form and what an edit may do (editable_properties_table).
 void push_meta_pane(app_state* app) noexcept {
   if (!app || !app->chrome.meta_pane_visible()) return;
   push_meta_edit(app);
   if (app->meta_record) {
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
-                              mv::meta::properties_table(*app->meta_record),
+                              mv::meta::editable_properties_table(*app->meta_record),
                               mv::meta::streams_table(*app->meta_record));
     return;
   }
@@ -1061,6 +1073,82 @@ void revert_current_metadata(app_state* app) noexcept {
   }
 }
 
+// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree, its Add tag
+// form and Summary's Remove location. The island parks one edit per line
+// ("S\tkey\tvalue" sets, "R\tkey" removes); they go as one queued write, so
+// removing a location is one checked rewrite, not one per GPS tag. The Mac
+// host's twin is main_mac.mm metaSetTag.
+void set_tags_from_pane(app_state* app) noexcept {
+  try {
+    std::string parked;
+    const bool took = app->chrome.take_parked_text(parked);
+    const std::string path = current_item_path(app);
+    if (!took || path.empty()) return;
+    const mv::meta::write_target target = app->meta_record && app->meta_record->writes_in_file
+                                              ? mv::meta::write_target::in_file
+                                              : mv::meta::write_target::sidecar;
+    mv::meta::write_fields f;
+    std::string refused;
+    std::size_t at = 0;
+    while (at < parked.size()) {
+      std::size_t end = parked.find('\n', at);
+      if (end == std::string::npos) end = parked.size();
+      const std::string line = parked.substr(at, end - at);
+      at = end + 1;
+      if (line.size() < 3 || line[1] != '\t' || (line[0] != 'S' && line[0] != 'R')) continue;
+      const bool remove = line[0] == 'R';
+      const std::size_t tab = remove ? std::string::npos : line.find('\t', 2);
+      const std::string key = line.substr(2, tab == std::string::npos ? std::string::npos : tab - 2);
+      if (key.empty() || (!remove && tab == std::string::npos)) continue;
+      const mv::meta::tag_access a = mv::meta::access_of(key, target);
+      if (a == mv::meta::tag_access::read_only || (a == mv::meta::tag_access::via_sidecar && remove)) {
+        refused = a == mv::meta::tag_access::read_only
+                      ? "That tag describes the file itself and cannot be changed"
+                      : "That tag is in the original, which is never rewritten";
+        continue;
+      }
+      if (f.tags.size() >= mv::meta::kMaxTagEdits) break;
+      f.tags.push_back({key, remove ? mv::meta::change<std::string>::remove()
+                                    : mv::meta::change<std::string>::to(line.substr(tab + 1))});
+    }
+    if (!refused.empty()) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, refused);
+    }
+    if (f.tags.empty()) return;
+    app->meta_writer.submit(path, f);
+    schedule_meta_write(app, kCommentDebounceMs);
+  } catch (...) {
+  }
+}
+
+// PR 29: Summary's Date taken. Every capture-time tag the file carries moves
+// together (meta::write_fields::date_taken), so no reader sees two dates.
+void set_date_from_pane(app_state* app, bool remove) noexcept {
+  try {
+    std::string value;
+    const bool took = remove || app->chrome.take_parked_text(value);
+    const std::string path = current_item_path(app);
+    if (!took || path.empty()) return;
+    mv::meta::write_fields f;
+    if (remove) {
+      f.date_taken = mv::meta::change<std::string>::remove();
+    } else {
+      std::string exif_form, xmp_form;
+      if (!mv::meta::exif_date_of(value, exif_form, xmp_form)) {
+        ::MessageBeep(MB_ICONWARNING);
+        notice_show(app, "Not a date: use YYYY-MM-DD HH:MM:SS");
+        push_meta_edit(app, true);
+        return;
+      }
+      f.date_taken = mv::meta::change<std::string>::to(value);
+    }
+    app->meta_writer.submit(path, f);
+    schedule_meta_write(app, kCommentDebounceMs);
+  } catch (...) {
+  }
+}
+
 void start_meta_write(app_state* app) {
   if (app->window) ::KillTimer(app->window, kMetaWriteTimerId);
   if (app->meta_writer.in_flight()) return;  // its completion starts the next
@@ -1108,9 +1196,12 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     (void)app->meta_writer.take_failure();
     ::MessageBeep(MB_ICONWARNING);
     MV_LOG_WARN("metadata write failed: %s", mv::status_name(out.error));  // never the path (rule 6)
-    notice_show(app, job.revert                    ? "Could not revert the metadata"
-                     : job.fields.rating.touches() ? "Could not save the rating"
-                                                   : "Could not save the comment");
+    notice_show(app, job.revert                     ? "Could not revert the metadata"
+                     : job.fields.rating.touches()  ? "Could not save the rating"
+                     : job.fields.comment.touches() ? "Could not save the comment"
+                     : out.error == mv::status::invalid_arg
+                         ? "That value does not fit the tag; nothing was changed"
+                         : "Could not save the metadata; nothing was changed");
     push_meta_edit(app);
     if (app->meta_writer.has_pending()) schedule_meta_write(app, 0);
     return;
@@ -1148,6 +1239,12 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     } else if (!job.revert && job.fields.comment.touches()) {
       text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed"
                                                                                 : "Comment saved";
+    } else if (!job.revert && job.fields.date_taken.touches()) {
+      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
+                                                                                   : "Date taken saved";
+    } else if (!job.revert && !job.fields.tags.empty()) {
+      text = job.fields.tags.size() == 1 ? std::string("Metadata saved")
+                                         : std::to_string(job.fields.tags.size()) + " tags saved";
     }
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of("\\/");
@@ -1250,7 +1347,17 @@ struct sibling_job_result {
 };
 
 void publish_edit(app_state* app) noexcept {
-  app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+  if (app->show_original && app->edits.has_item() && app->edit_key != 0) {
+    // PR 29 Show original (Y held, the strip's toggle): the item with no
+    // geometry and no colour, on the same blit. The stack is untouched.
+    mv::shell::edit_view v;
+    v.item = app->edit_key;
+    v.generation = app->edit_generation;
+    app->input.edit[0] = v;
+  } else {
+    app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+  }
+  push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
 
 void schedule_rotation_write(app_state* app) noexcept {
@@ -1272,8 +1379,10 @@ void edit_item_opened(app_state* app) {
       app->input.edit[1] = app->input.edit[0];
       app->edit_path.clear();
       app->edit_key = 0;
+      app->show_original = false;
       publish_edit(app);
       adjust_item_changed(app);
+      workspace_item_changed(app);
     }
     return;
   }
@@ -1306,9 +1415,12 @@ void edit_item_opened(app_state* app) {
     e.height = h;
   }
   const bool carried_turn = app->edits.set_item(e);
+  app->show_original = false;
   publish_edit(app);
   if (carried_turn) schedule_rotation_write(app);
   adjust_item_changed(app);
+  // PR 29: an open workspace follows the item to a tab it offers.
+  workspace_item_changed(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -1373,6 +1485,38 @@ void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   }
 }
 
+// What an edit_session call asked the host to do. Shared by the keys and (PR
+// 29) the Crop pane's preset buttons and straighten slider.
+void apply_edit_effect(app_state* app, mv::shell::edit_effect effect) {
+  switch (effect) {
+    case mv::shell::edit_effect::none:
+      return;
+    case mv::shell::edit_effect::refused:
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    case mv::shell::edit_effect::redraw:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      adjust_colour_changed(app);  // undo / reset may have moved a slider
+      return;
+    case mv::shell::edit_effect::write_rotation:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      schedule_rotation_write(app);
+      adjust_colour_changed(app);
+      return;
+    case mv::shell::edit_effect::export_image:
+      if (app->chrome.attached()) {
+        app->chrome.show_export_dialog(app->export_choice);
+      } else {
+        start_export(app, mv::shell::unpack_export(app->export_choice));
+      }
+      return;
+  }
+}
+
 bool run_edit_command(app_state* app, mv::shell::command_id command) {
   // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
   // single frame to turn.
@@ -1387,33 +1531,7 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
     ::MessageBeep(MB_ICONWARNING);  // no pixels yet: nothing to frame a crop against
     return true;
   }
-  switch (app->edits.run(command)) {
-    case mv::shell::edit_effect::none:
-      return true;
-    case mv::shell::edit_effect::refused:
-      ::MessageBeep(MB_ICONWARNING);
-      return true;
-    case mv::shell::edit_effect::redraw:
-      publish_edit(app);
-      ++app->input.activity_seq;
-      publish(app);
-      adjust_colour_changed(app);  // undo / reset may have moved a slider
-      return true;
-    case mv::shell::edit_effect::write_rotation:
-      publish_edit(app);
-      ++app->input.activity_seq;
-      publish(app);
-      schedule_rotation_write(app);
-      adjust_colour_changed(app);
-      return true;
-    case mv::shell::edit_effect::export_image:
-      if (app->chrome.attached()) {
-        app->chrome.show_export_dialog(app->export_choice);
-      } else {
-        start_export(app, mv::shell::unpack_export(app->export_choice));
-      }
-      return true;
-  }
+  apply_edit_effect(app, app->edits.run(command));
   return true;
 }
 
@@ -1713,6 +1831,7 @@ void push_trim(app_state* app) noexcept {
   a.label_len = static_cast<std::int32_t>(label.size());
   a.previewing = t.previewing() ? 1 : 0;
   app->chrome.set_trim(a);
+  push_edit_view(app);  // PR 29: the Trim pane shows the same state
 }
 
 std::int64_t clip_position(app_state* app) noexcept {
@@ -1965,6 +2084,188 @@ void run_clip_tool(app_state* app, std::int32_t packed) noexcept {
     return;
   }
   (void)submit_clip_job(app, r);
+}
+
+// ---- PR 29: the Edit workspace (plan/20) -----------------------------------------
+// One visible door (the bar's Edit image / Edit video, Enter) to what PRs 10-14
+// built. shell/edit_workspace decides which tab a command lands on; the host
+// shows that tab's pane and runs the command's own work exactly as before. The
+// workspace docks in the right column, so the canvas frames the picture beside
+// it (input.chrome_right_px) instead of under it. The Mac host's twin is
+// main_mac.mm "PR 29".
+
+// DIP height of the strip (title, tabs, actions) at the top of the right column.
+constexpr int kEditStripDip = 140;
+
+mv::shell::edit_subject edit_subject_of(app_state* app) noexcept {
+  if (!app || app->mode == open_mode::none || app->edit_path.empty()) return mv::shell::edit_subject::none;
+  // A Live Photo's motion plays through the video path but the stop is a still.
+  if (mv::shell::is_video_name(app->edit_path) || (video_mode(app) && !app->motion_playing)) {
+    return mv::shell::edit_subject::clip;
+  }
+  if (app->lab.animation() != mv::shell::animation_state::none) return mv::shell::edit_subject::none;
+  return mv::shell::edit_subject::still;
+}
+
+void push_edit_view(app_state* app) noexcept {
+  if (!app) return;
+  try {
+    const mv::shell::edit_subject subject = edit_subject_of(app);
+    mv::shell::chrome_edit_args a{};
+    a.open = app->ws.open ? 1 : 0;
+    a.tab = static_cast<std::int32_t>(app->ws.tab);
+    a.subject = static_cast<std::int32_t>(subject);
+    a.crop_active = app->edits.crop_active() ? 1 : 0;
+    a.aspect = static_cast<std::int32_t>(app->edits.aspect());
+    a.portrait = app->edits.aspect_portrait() ? 1 : 0;
+    a.straighten = app->edits.crop_active() ? app->edits.crop_angle() : app->edits.export_geometry().straighten;
+    a.edit_count = static_cast<std::int32_t>(app->edits.edit_count());
+    a.show_original = app->show_original ? 1 : 0;
+    if (subject == mv::shell::edit_subject::still && app->edits.has_item()) {
+      std::uint32_t w = 0, h = 0;
+      if (app->lab.still_size(app->edit_key, &w, &h)) {
+        app->edits.set_size(w, h);
+        const mv::edit::placement p = app->edits.preview_placement();
+        if (app->edits.crop_active()) {
+          const mv::edit::rect r = app->edits.crop_overlay();
+          a.crop_width = static_cast<std::int32_t>(std::lround(r.w * static_cast<float>(p.cropped.w)));
+          a.crop_height = static_cast<std::int32_t>(std::lround(r.h * static_cast<float>(p.cropped.h)));
+        } else {
+          a.crop_width = static_cast<std::int32_t>(p.cropped.w);
+          a.crop_height = static_cast<std::int32_t>(p.cropped.h);
+        }
+      }
+    }
+    std::string label;
+    if (subject == mv::shell::edit_subject::clip && app->trim.armed() && app->trim.path() == app->edit_path) {
+      a.trim_flags |= mv::shell::kEditTrimArmed;
+      if (app->trim.previewing()) a.trim_flags |= mv::shell::kEditTrimPreviewing;
+      if (app->trim.has_marker()) a.trim_flags |= mv::shell::kEditTrimHasMarker;
+      label = app->trim.label();
+    }
+    const std::size_t slash = app->edit_path.find_last_of("\\/");
+    const std::string name = slash == std::string::npos ? app->edit_path : app->edit_path.substr(slash + 1);
+    a.name_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(name.data()));
+    a.name_len = static_cast<std::int32_t>(name.size());
+    a.trim_label_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(label.data()));
+    a.trim_label_len = static_cast<std::int32_t>(label.size());
+    app->chrome.set_edit_view(a);
+  } catch (...) {
+  }
+}
+
+// Shows what app->ws says: the strip, the tab's pane, the right-edge pane the
+// tab is, and the canvas docked beside them. Closing hides only what the
+// workspace had shown.
+void sync_workspace(app_state* app) {
+  using mv::shell::edit_tab;
+  const bool open = app->ws.open;
+  const edit_tab tab = app->ws.tab;
+  // A crop draft belongs to the Crop tab: leaving it applies the draft
+  // (Lightroom's rule), so no crop is lost to a tab click.
+  if (app->edits.crop_active() && !(open && tab == edit_tab::crop)) {
+    (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+  }
+  if (open || app->ws_shown) {
+    // One right-edge pane at a time: each setter closes the others.
+    const bool colour = open && tab == edit_tab::colour;
+    const bool info = open && tab == edit_tab::info;
+    const bool jobs = open && tab == edit_tab::jobs;
+    if (!colour && app->adjust.visible()) set_adjust_pane(app, false);
+    if (!info && app->meta_pane_visible) set_meta_pane(app, false);
+    if (!jobs && app->jobs_pane_visible) set_jobs_pane(app, false);
+    if (colour) set_adjust_pane(app, true);
+    if (info) set_meta_pane(app, true);
+    if (jobs) set_jobs_pane(app, true, false);
+  }
+  app->ws_shown = open;
+  // The strip and its pane move in, and the canvas refits into the rect beside
+  // them (or back): one layout, one resize_seq, the same swapchain.
+  apply_view_state(app);
+  push_edit_view(app);
+  // Crop and Trim keys are the canvas's: keep the keyboard there.
+  if (open && (tab == edit_tab::crop || tab == edit_tab::trim)) focus_canvas(app);
+}
+
+void close_workspace(app_state* app) {
+  if (!app->ws.open) return;
+  app->ws.open = false;
+  sync_workspace(app);
+}
+
+// The item on the canvas changed (a select, a clip starting to play).
+void workspace_item_changed(app_state* app) noexcept {
+  if (!app) return;
+  try {
+    if (mv::shell::follow_subject(app->ws, edit_subject_of(app))) sync_workspace(app);
+    else push_edit_view(app);
+  } catch (...) {
+  }
+}
+
+// The strip's tab row.
+void edit_select_tab(app_state* app, int tab) {
+  if (tab < 0 || tab >= static_cast<int>(mv::shell::edit_tab::count)) return;
+  const auto t = static_cast<mv::shell::edit_tab>(tab);
+  if (!mv::shell::tab_offered(edit_subject_of(app), t)) return;
+  if (mv::shell::apply_step(app->ws, {mv::shell::workspace_action::select, t})) sync_workspace(app);
+}
+
+// The Crop pane's buttons and slider: stills only, once the pixels are known.
+bool prepare_still_edit(app_state* app) noexcept {
+  if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
+  std::uint32_t w = 0, h = 0;
+  if (!app->lab.still_size(app->edit_key, &w, &h)) return false;
+  app->edits.set_size(w, h);
+  return true;
+}
+
+// crop_aspect_set's argument: the preset, + 16 for portrait.
+void edit_set_aspect(app_state* app, int packed) {
+  const int aspect = packed & 15;
+  if (packed < 0 || aspect >= mv::shell::kCropAspectCount || !prepare_still_edit(app)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  apply_edit_effect(app, app->edits.set_crop_aspect(static_cast<mv::shell::crop_aspect>(aspect), (packed & 16) != 0));
+}
+
+void edit_set_straighten(app_state* app, float degrees) {
+  if (!prepare_still_edit(app)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  apply_edit_effect(app, app->edits.set_straighten(degrees));
+}
+
+void set_show_original(app_state* app, bool on) noexcept {
+  if (app->show_original == on) return;
+  app->show_original = on;
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+void run_edit_action(app_state* app, int action) {
+  switch (static_cast<mv::shell::chrome_edit_action>(action)) {
+    case mv::shell::chrome_edit_action::cancel_crop:
+      if (!app->edits.crop_active()) return;
+      app->edits.cancel_crop();
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      return;
+    case mv::shell::chrome_edit_action::original_off:
+    case mv::shell::chrome_edit_action::original_on:
+      if (edit_subject_of(app) != mv::shell::edit_subject::still) return;
+      set_show_original(app, action == static_cast<int>(mv::shell::chrome_edit_action::original_on));
+      return;
+    case mv::shell::chrome_edit_action::save_copy:
+      // Save copy…: apply a crop draft, then PR 10's export (a new file).
+      if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+      (void)run_edit_command(app, mv::shell::command_id::export_image);
+      return;
+  }
 }
 
 // Native decides the rate and then tells the dropdown, rather than the two
@@ -2450,6 +2751,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
         app->muted = false;
       }
       apply_view_state(app);
+      workspace_item_changed(app);  // PR 29: a clip playing is Trim's subject
       return;
     }
     case mv::shell::chrome_cmd_open_path: {
@@ -2480,6 +2782,29 @@ void chrome_on_command(void* ctx, int command, float arg) {
       return;
     case mv::shell::chrome_cmd_clip_index:
       trim_index_arrived(app, static_cast<std::uint64_t>(arg));
+      return;
+    // PR 29 (plan/20): the Edit workspace's strip, and the Crop pane's presets
+    // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
+    case mv::shell::chrome_cmd_edit_tab:
+      edit_select_tab(app, static_cast<int>(arg));
+      return;
+    case mv::shell::chrome_cmd_edit_action:
+      run_edit_action(app, static_cast<int>(arg));
+      return;
+    case static_cast<int>(mv::shell::command_id::crop_aspect_set):
+      edit_set_aspect(app, static_cast<int>(arg));
+      return;
+    case static_cast<int>(mv::shell::command_id::crop_straighten_set):
+      edit_set_straighten(app, arg);
+      return;
+    // PR 29: the metadata pane's tag editor and Date taken.
+    case mv::shell::chrome_cmd_meta_tags:
+      set_tags_from_pane(app);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
+      return;
+    case mv::shell::chrome_cmd_meta_date:
+      set_date_from_pane(app, arg != 0.0f);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
       return;
     // PR 11: the adjust pane's sliders carry their value; Reset carries none.
     case static_cast<int>(mv::shell::command_id::adjust_exposure):
@@ -2717,6 +3042,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.crop = app->edits.crop_active();
   s.trim = app->trim.armed() && s.item == mv::shell::item_kind::clip;
   if (app->chrome.jobs_pane_visible()) s.pane_open = true;
+  if (app->ws.open) s.pane_open = true;  // PR 29: Esc closes the Edit workspace
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
   return s;
@@ -3139,9 +3465,11 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       set_gallery(app, false);
       return;
     case back_target::pane:
-      // Esc from the canvas closes what is open; the tree first (it is the
-      // outermost on the left), then the metadata pane.
-      if (app->tree_visible) set_folder_tree(app, false);
+      // Esc from the canvas closes what is open: the Edit workspace (PR 29;
+      // a crop draft was cancelled one Esc earlier), else the tree first (it
+      // is the outermost on the left), then the metadata pane.
+      if (app->ws.open) close_workspace(app);
+      else if (app->tree_visible) set_folder_tree(app, false);
       else set_meta_pane(app, false);
       return;
     case back_target::popup:
@@ -3454,6 +3782,22 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     publish(app);
     return true;
   };
+  // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
+  // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
+      command == trim_mode || command == metadata_pane || command == jobs_pane) {
+    const mv::shell::workspace_step step = mv::shell::route_workspace(app->ws, edit_subject_of(app), command);
+    if (step.action != mv::shell::workspace_action::none) {
+      if (mv::shell::apply_step(app->ws, step)) sync_workspace(app);
+      if (command != crop_mode && command != trim_mode) return true;
+    } else if (command == edit_workspace) {
+      ::MessageBeep(MB_ICONWARNING);  // nothing on the canvas to edit
+      return true;
+    } else if (app->ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
+      // A pane the workspace does not hold here takes the edge on its own.
+      close_workspace(app);
+    }
+  }
   switch (command) {
     case open:
       if (app->window) open_file_dialog(app, app->window);
@@ -3719,7 +4063,16 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
+    case crop_aspect_cycle: case crop_aspect_swap:  // PR 29: A / X in crop
       return run_edit_command(app, command);
+    // PR 29: Y held shows the original pixels; the stack is untouched.
+    case show_original:
+    case show_original_release:
+      if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
+      set_show_original(app, command == show_original);
+      return true;
+    case crop_aspect_set: case crop_straighten_set:
+      return false;  // island-only: they carry a value (chrome_on_command)
     // Marks (plan/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -3966,10 +4319,180 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   return run_command(app, routed.command);
 }
 
+// ---- PR 29: the Edit workspace's verify rig ----------------------------------------
+//
+// MV_EDIT_SELFTEST=<folder> (plan/20 verify; the Mac twin is main_mac.mm's).
+// Inert unless set. After launch it walks the workspace through the commands its
+// buttons and keys run -- open, a 3:2 crop, apply, the Colour and Info tabs (a
+// tag and the date set), Show original, Save copy, Esc, Revert -- or, on a clip,
+// Trim and Jobs, and writes the window (PrintWindow, canvas included) as BMPs
+// plus state.txt into <folder>, then closes. The only file it writes beside the
+// photo is Save copy's new one; the metadata edits are reverted byte for byte.
+constexpr UINT_PTR kEditSelfTestTimerId = 0x7A01;
+constexpr UINT kEditSelfTestStepMs = 1500;
+std::wstring g_edit_selftest_dir;
+int g_edit_selftest_step = 0;
+
+void edit_selftest_capture(app_state* app, const std::wstring& path) noexcept {
+  RECT rc{};
+  if (!app->window || !::GetClientRect(app->window, &rc)) return;
+  const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+  if (w <= 0 || h <= 0) return;
+  HDC screen = ::GetDC(app->window);
+  HDC mem = ::CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = h;  // bottom-up, as a BMP stores it
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = ::CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (dib && bits) {
+    HGDIOBJ old = ::SelectObject(mem, dib);
+    // PW_RENDERFULLCONTENT (2): the DirectComposition content too -- the
+    // swapchain and the XAML islands, not just the GDI client.
+    (void)::PrintWindow(app->window, mem, PW_CLIENTONLY | 2);
+    ::SelectObject(mem, old);
+    const DWORD image = static_cast<DWORD>(w) * static_cast<DWORD>(h) * 4;
+    BITMAPFILEHEADER fh{};
+    fh.bfType = 0x4D42;  // "BM"
+    fh.bfOffBits = sizeof(fh) + sizeof(bi.bmiHeader);
+    fh.bfSize = fh.bfOffBits + image;
+    if (FILE* f = _wfopen(path.c_str(), L"wb")) {
+      std::fwrite(&fh, sizeof(fh), 1, f);
+      std::fwrite(&bi.bmiHeader, sizeof(bi.bmiHeader), 1, f);
+      std::fwrite(bits, image, 1, f);
+      std::fclose(f);
+    }
+  }
+  if (dib) ::DeleteObject(dib);
+  ::DeleteDC(mem);
+  ::ReleaseDC(app->window, screen);
+}
+
+void edit_selftest_snap(app_state* app, const char* name) noexcept {
+  try {
+    const std::wstring wide_name = wide_from_utf8(name);
+    edit_selftest_capture(app, g_edit_selftest_dir + L"\\" + wide_name + L".bmp");
+    const mv::shell::edit_subject subject = edit_subject_of(app);
+    std::uint32_t w = 0, h = 0;
+    int crop_w = 0, crop_h = 0;
+    if (subject == mv::shell::edit_subject::still && app->lab.still_size(app->edit_key, &w, &h)) {
+      app->edits.set_size(w, h);
+      const mv::edit::placement p = app->edits.preview_placement();
+      const mv::edit::rect r = app->edits.crop_active() ? app->edits.crop_overlay() : mv::edit::rect{0, 0, 1, 1};
+      crop_w = static_cast<int>(std::lround(r.w * static_cast<float>(p.cropped.w)));
+      crop_h = static_cast<int>(std::lround(r.h * static_cast<float>(p.cropped.h)));
+    }
+    char line[512];
+    std::snprintf(line, sizeof(line),
+                  "%s open=%d tab=%d subject=%d crop=%d aspect=%d portrait=%d crop_px=%dx%d edits=%d "
+                  "original=%d edit_pane=%d adjust=%d meta=%d jobs=%d trim=%d right_px=%u\n",
+                  name, app->ws.open ? 1 : 0, static_cast<int>(app->ws.tab), static_cast<int>(subject),
+                  app->edits.crop_active() ? 1 : 0, static_cast<int>(app->edits.aspect()),
+                  app->edits.aspect_portrait() ? 1 : 0, crop_w, crop_h, static_cast<int>(app->edits.edit_count()),
+                  app->show_original ? 1 : 0, app->chrome.edit_pane_visible() ? 1 : 0,
+                  app->chrome.adjust_pane_visible() ? 1 : 0, app->chrome.meta_pane_visible() ? 1 : 0,
+                  app->chrome.jobs_pane_visible() ? 1 : 0, app->trim.armed() ? 1 : 0, app->input.chrome_right_px);
+    std::string text = line;
+    if (app->meta_record) {
+      std::string artist;
+      for (const auto& p : app->meta_record->properties) {
+        if (p.raw_tag == "Exif.Image.Artist") artist = p.value;
+      }
+      text += "    meta: date=" + app->meta_record->s.date_taken + " artist=" + artist +
+              " in_file=" + (app->meta_record->writes_in_file ? "1" : "0") + "\n";
+    }
+    if (FILE* f = _wfopen((g_edit_selftest_dir + L"\\state.txt").c_str(), L"ab")) {
+      std::fwrite(text.data(), 1, text.size(), f);
+      std::fclose(f);
+    }
+  } catch (...) {
+  }
+}
+
+void edit_selftest_tick(app_state* app) {
+  using enum mv::shell::command_id;
+  const int step = g_edit_selftest_step++;
+  const bool clip = edit_subject_of(app) == mv::shell::edit_subject::clip;
+  bool done = false;
+  if (clip) {
+    switch (step) {
+      case 0: break;  // let the clip load
+      case 1: edit_selftest_snap(app, "c0-viewer"); (void)run_command(app, edit_workspace); break;
+      case 2: edit_selftest_snap(app, "c1-workspace-trim"); (void)run_command(app, trim_mode); break;
+      case 3: edit_selftest_snap(app, "c2-trim-armed"); edit_select_tab(app, 4); break;
+      case 4:
+        edit_selftest_snap(app, "c3-jobs");
+        walk_back(app, mv::shell::back_target::trim);
+        walk_back(app, mv::shell::back_target::pane);
+        break;
+      default: edit_selftest_snap(app, "c4-closed"); done = true; break;
+    }
+  } else {
+    switch (step) {
+      case 0: break;  // let the photo decode
+      case 1: edit_selftest_snap(app, "s0-viewer"); (void)run_command(app, edit_workspace); break;
+      case 2: edit_selftest_snap(app, "s1-workspace"); edit_set_aspect(app, 4); break;  // 3:2
+      case 3: edit_selftest_snap(app, "s2-crop-3x2"); (void)run_command(app, crop_commit); break;
+      case 4: edit_selftest_snap(app, "s3-applied"); edit_select_tab(app, 1); break;
+      case 5: edit_selftest_snap(app, "s4-colour"); edit_select_tab(app, 2); break;
+      case 6: {
+        edit_selftest_snap(app, "s5-info");
+        // Any tag, and the date, from the Info tab (what its Enter sends).
+        const std::string path = current_item_path(app);
+        mv::meta::write_fields f;
+        f.tags.push_back({"Exif.Image.Artist", mv::meta::change<std::string>::to("MV self-test")});
+        f.date_taken = mv::meta::change<std::string>::to("2020-02-02 10:00:00");
+        app->meta_writer.submit(path, f);
+        schedule_meta_write(app, kCommentDebounceMs);
+        break;
+      }
+      case 7:
+        edit_selftest_snap(app, "s5b-info-edited");
+        edit_select_tab(app, 0);
+        run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_on));
+        break;
+      case 8:
+        edit_selftest_snap(app, "s6-original");
+        run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_off));
+        run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::save_copy));
+        break;
+      case 9:
+        edit_selftest_snap(app, "s7-save-copy");
+        // The dialog's Save with its defaults (what chrome_cmd_export runs).
+        app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
+        app->popup_open = false;
+        start_export(app, mv::shell::unpack_export(app->export_choice));
+        break;
+      case 10:
+        walk_back(app, mv::shell::back_target::pane);
+        revert_current_metadata(app);
+        break;
+      default: edit_selftest_snap(app, "s8-closed-reverted"); done = true; break;
+    }
+  }
+  if (done) {
+    ::KillTimer(app->window, kEditSelfTestTimerId);
+    ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+  }
+}
+
+// The right column's width: the metadata, adjust, Jobs and (PR 29) Edit panes.
+int right_pane_px(int client_width, std::uint32_t dpi) noexcept {
+  return std::min(client_width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+}
+
 // PR 9. The panes float over the canvas: the metadata pane on the right, the tree
 // on the left, both between the command bar and the bottom strips. Native owns the
 // maths (the island only moves), and none of it touches the canvas rectangle, so
 // opening one never refits the photo or the present path (plan/12 2026-09-24).
+// PR 29 (plan/20, plan/12 2026-09-26): the Edit workspace is the exception. It
+// docks: its strip heads the right column, the tab's pane hangs under it, and
+// the canvas frames the picture beside them (update_client_metrics sets
+// chrome_right_px). Still one swapchain, refitted, never resized.
 void layout_panels(app_state* app) noexcept {
   if (!app || !app->window || !app->chrome.panels_attached()) return;
   RECT rc{};
@@ -3987,7 +4510,7 @@ void layout_panels(app_state* app) noexcept {
   // Settings; the wish survives and the pane returns with them.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool covered = app->gallery_visible || app->settings_open || chrome_hidden;
-  const int side = std::min(width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+  const int side = right_pane_px(width, dpi);
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
   const bool want_meta = app->meta_pane_visible && !covered;
   const bool want_tree = app->tree_visible && !covered;
@@ -3996,10 +4519,25 @@ void layout_panels(app_state* app) noexcept {
   const bool want_jobs = app->jobs_pane_visible && !covered;
   // PR 11: the adjust pane takes the metadata pane's edge (one at a time).
   const bool want_adjust = app->adjust.visible() && !covered && !want_jobs;
-  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, width - side, top, side, span,
+  // PR 29: the Edit workspace. Crop and Trim are its own island's pane, so it
+  // spans the column; on Colour / Info / Jobs it is the strip alone and that
+  // pane starts under it.
+  const bool want_edit = app->ws.open && !covered;
+  int pane_top = top;
+  int pane_span = span;
+  if (want_edit) {
+    const int strip_h = std::min(::MulDiv(kEditStripDip, static_cast<int>(dpi), 96), span);
+    const bool own_pane = app->ws.tab == mv::shell::edit_tab::crop || app->ws.tab == mv::shell::edit_tab::trim;
+    app->chrome.show_edit_pane(true, width - side, top, side, own_pane ? span : strip_h);
+    pane_top = top + strip_h;
+    pane_span = std::max(span - strip_h, 1);
+  } else {
+    app->chrome.show_edit_pane(false, width - side, top, side, span);
+  }
+  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, width - side, pane_top, side, pane_span,
                              app->focus_meta_next);
-  app->chrome.show_adjust_pane(want_adjust, width - side, top, side, span, app->focus_adjust_next);
-  app->chrome.show_jobs_pane(want_jobs, width - side, top, side, span, app->focus_jobs_next);
+  app->chrome.show_adjust_pane(want_adjust, width - side, pane_top, side, pane_span, app->focus_adjust_next);
+  app->chrome.show_jobs_pane(want_jobs, width - side, pane_top, side, pane_span, app->focus_jobs_next);
   if (want_jobs) app->focus_jobs_next = false;
   app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
   if (want_meta && !want_adjust && !want_jobs) app->focus_meta_next = false;
@@ -4075,6 +4613,11 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
   if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
   app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
+  // PR 29: the docked Edit workspace; the canvas frames the picture left of it.
+  app->input.chrome_right_px =
+      app->chrome.edit_pane_visible()
+          ? static_cast<std::uint32_t>(right_pane_px(static_cast<int>(app->input.width), dpi))
+          : 0;
 }
 
 // Single place that decides which islands are on screen, so the strip, the
@@ -4410,6 +4953,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         browse_tick(app);
         return 0;
       }
+      if (wparam == kEditSelfTestTimerId) {
+        edit_selftest_tick(app);
+        return 0;
+      }
       if (wparam == kMotionTimerId) {
         motion_tick(app);
         return 0;
@@ -4726,6 +5273,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
   if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
+  // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (plan/20 verify).
+  if (wchar_t dir[MAX_PATH]{}; ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", dir, MAX_PATH) > 0) {
+    g_edit_selftest_dir = dir;
+    (void)::CreateDirectoryW(dir, nullptr);
+    MV_LOG_WARN("edit: MV_EDIT_SELFTEST armed; the app will close when it is done");
+    ::SetTimer(hwnd, kEditSelfTestTimerId, kEditSelfTestStepMs, nullptr);
+  }
   if (g_restore.fullscreen) set_fullscreen(&app, true);
   // Chrome attached (or was not asked for) and the window is up: start the
   // clock on "this version starts". A crash before it fires counts.
