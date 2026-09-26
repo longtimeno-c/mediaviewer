@@ -1288,13 +1288,21 @@ void present_lab_mac::render_thread_main() noexcept {
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        // Settings' canvas background (0 dark, 1 gray, 2 white, 3 checkerboard,
-        // which clears to its mid tone under the pattern), as on Windows.
+        // Settings' canvas background applies behind media. The empty welcome
+        // and runner use AppKit's window colour from the UI-thread snapshot.
         {
+          const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
           const double lvl = gfx::background_clear_mac(snapshot.background & 3);
-          pass.colorAttachments[0].clearColor =
-              (snapshot.background & 3) == 0 ? MTLClearColorMake(0.016, 0.018, 0.024, 1.0)
-                                             : MTLClearColorMake(lvl, lvl, lvl, 1.0);
+          if (!have_picture && !(sweep_mode_ && animating_) && !snapshot.blackout) {
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(
+                home_linear_channel(snapshot.home_background_rgb, 16),
+                home_linear_channel(snapshot.home_background_rgb, 8),
+                home_linear_channel(snapshot.home_background_rgb, 0), 1.0);
+          } else {
+            pass.colorAttachments[0].clearColor =
+                (snapshot.background & 3) == 0 ? MTLClearColorMake(0.016, 0.018, 0.024, 1.0)
+                                               : MTLClearColorMake(lvl, lvl, lvl, 1.0);
+          }
         }
 
         ImGui_ImplMetal_NewFrame(pass);
@@ -1326,6 +1334,7 @@ void present_lab_mac::render_thread_main() noexcept {
           const welcome_text text{
               .open_hint = "or press Cmd+O to choose a file or a folder",
               .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    ?  shortcuts"};
+          const home_palette theme(snapshot.home_background_rgb);
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
           if (!sweep_mode_ && game_.active()) {
             const float dt = last_game_elapsed_ > 0.0
@@ -1336,11 +1345,11 @@ void present_lab_mac::render_thread_main() noexcept {
             game_.update(dt);
             // Game over or the outro finished: idle again, nothing moves.
             if (game_.state() == dino_game::phase::over || !game_.active()) animating_ = false;
-            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, welcome_alpha(game_));
-            draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale);
+            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_));
+            draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale, theme);
           } else {
             last_game_elapsed_ = 0.0;
-            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text);
+            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme);
           }
         }
 

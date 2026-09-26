@@ -8,7 +8,8 @@ media-player control, so decoding never stands between you and the screen.
 
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
-apply while the app is open. **Canvas background** remains a separate preference
+apply while the app is open. The empty welcome screen and dinosaur runner follow
+the system window colour too. **Canvas background** remains a separate preference
 for the photo/video surround. Build and interactive checks are documented in
 [System appearance verification](docs/system-theme-verify.md).
 
