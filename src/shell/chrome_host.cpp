@@ -506,7 +506,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
     show_gallery(false, width, client_height, dpi);
     return;
   }
-  const int bar = chrome_bar_height_px(dpi, path_row_);
+  const int bar = chrome_bar_height_px(dpi);
   chrome_resize_args args{};
   args.width = width;
   args.height = client_height > bar ? client_height - bar : 1;
@@ -518,7 +518,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
 void chrome_host::show_gallery(bool visible, int width, int client_height,
                                std::uint32_t dpi) noexcept {
   if (!gallery_attached_ || !show_gallery_) return;
-  const int bar = chrome_bar_height_px(dpi, path_row_);
+  const int bar = chrome_bar_height_px(dpi);
   chrome_show_args args{};
   args.visible = visible ? 1 : 0;
   args.width = visible ? width : 1;
@@ -803,7 +803,6 @@ void chrome_host::apply_browse(std::int32_t folder_cursor, bool can_go_up,
                                const std::string& crumbs, bool finding,
                                const std::string& query) noexcept {
   if (!attached_ || !apply_browse_) return;
-  path_row_ = !crumbs.empty();
   chrome_browse_args args{};
   args.folder_cursor = folder_cursor;
   args.can_go_up = can_go_up ? 1 : 0;
