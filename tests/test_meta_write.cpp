@@ -809,3 +809,165 @@ TEST_CASE("real camera maker notes survive an in-file write value for value", "[
   WARN("cameras with a maker note that reached the JPEG: " << with_note << " of " << files.size());
   CHECK(with_note > 0);
 }
+
+// ---- PR 29 (owner, 2026-09-26): every tag editable, the date, remove, revert ----
+
+namespace {
+
+mv::meta::tag_edit set_tag(const char* key, const char* value) {
+  return {key, change<std::string>::to(value)};
+}
+mv::meta::tag_edit remove_tag(const char* key) { return {key, change<std::string>::remove()}; }
+
+std::map<std::string, std::string> tags_of(const std::vector<std::uint8_t>& bytes) {
+  auto image = Exiv2::ImageFactory::open(bytes.data(), bytes.size());
+  image->readMetadata();
+  std::map<std::string, std::string> out;
+  for (const auto& d : image->exifData()) out[d.key()] = d.toString();
+  for (const auto& d : image->iptcData()) out[d.key()] = d.toString();
+  for (const auto& d : image->xmpData()) out[d.key()] = d.toString();
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("any tag of a JPEG can be set and removed; the picture is untouched", "[meta][write][pr29]") {
+  scratch_dir d("tags");
+  mv::meta::reset_snapshot_session();
+  const auto original = jpeg_from(flat_jpeg(), true, true, true);
+  d.write("a.jpg", original);
+  write_fields f;
+  f.tags.push_back(set_tag("Exif.Image.Artist", "Jane Doe"));
+  f.tags.push_back(remove_tag("Exif.Image.Make"));
+  f.tags.push_back(set_tag("Xmp.dc.title", "lang=x-default Harbour at dawn"));
+  f.tags.push_back(set_tag("Iptc.Application2.City", "Bergen"));
+  f.tags.push_back(set_tag("Exif.Photo.ExposureTime", "1/500"));
+  auto r = mv::meta::write(d.path("a.jpg"), f, d.snapshots());
+  REQUIRE(r);
+  CHECK(r->target == write_target::in_file);
+  const auto after = d.read("a.jpg");
+  const auto t = tags_of(after);
+  CHECK(t.at("Exif.Image.Artist") == "Jane Doe");
+  CHECK(t.count("Exif.Image.Make") == 0);
+  CHECK(t.at("Exif.Image.Model") == "Test Camera");  // not asked for: unchanged
+  CHECK(t.at("Exif.Photo.ExposureTime") == "1/500");
+  CHECK(t.at("Iptc.Application2.City") == "Bergen");
+  CHECK(t.at("Xmp.dc.title").find("Harbour at dawn") != std::string::npos);
+  CHECK(t.at("Exif.Photo.MakerNote").size() > 0);  // the opaque maker note survives
+  // Same picture: the entropy-coded data from the first SOS on is identical.
+  const auto from_sos = [](const std::vector<std::uint8_t>& b) {
+    for (std::size_t i = 2; i + 1 < b.size(); ++i) {
+      if (b[i] == 0xFF && b[i + 1] == 0xDA) return std::vector<std::uint8_t>(b.begin() + i, b.end());
+    }
+    return std::vector<std::uint8_t>{};
+  };
+  CHECK_FALSE(from_sos(after).empty());
+  CHECK(from_sos(after) == from_sos(original));
+
+  SECTION("revert puts every tag back, byte for byte") {
+    REQUIRE(mv::meta::has_snapshot(d.path("a.jpg"), d.snapshots()));
+    REQUIRE(mv::meta::revert(d.path("a.jpg"), d.snapshots()));
+    CHECK(d.read("a.jpg") == original);
+  }
+}
+
+TEST_CASE("the date taken is set in every capture-time tag at once", "[meta][write][pr29]") {
+  scratch_dir d("date");
+  mv::meta::reset_snapshot_session();
+  auto base = jpeg_from(flat_jpeg(), true, false, false);
+  {  // with an XMP CreateDate mirror, which must follow
+    auto image = Exiv2::ImageFactory::open(base.data(), base.size());
+    image->readMetadata();
+    image->exifData()["Exif.Photo.DateTimeDigitized"] = "2024:05:01 14:03:22";
+    image->xmpData()["Xmp.xmp.CreateDate"] = "2024-05-01T14:03:22";
+    image->writeMetadata();
+    base = bytes_of(*image);
+  }
+  d.write("a.jpg", base);
+  write_fields f;
+  f.date_taken = change<std::string>::to("2019-12-31 23:59:58");
+  REQUIRE(mv::meta::write(d.path("a.jpg"), f, d.snapshots()));
+  auto t = tags_of(d.read("a.jpg"));
+  CHECK(t.at("Exif.Photo.DateTimeOriginal") == "2019:12:31 23:59:58");
+  CHECK(t.at("Exif.Photo.DateTimeDigitized") == "2019:12:31 23:59:58");
+  CHECK(t.at("Xmp.xmp.CreateDate").rfind("2019-12-31T23:59:58", 0) == 0);
+  auto m = mv::meta::read(d.path("a.jpg"));
+  REQUIRE(m);
+  CHECK(m->s.date_taken.rfind("2019-12-31", 0) == 0);
+
+  write_fields gone;
+  gone.date_taken = change<std::string>::remove();
+  REQUIRE(mv::meta::write(d.path("a.jpg"), gone, d.snapshots()));
+  t = tags_of(d.read("a.jpg"));
+  CHECK(t.count("Exif.Photo.DateTimeOriginal") == 0);
+  CHECK(t.count("Xmp.xmp.CreateDate") == 0);
+
+  write_fields bad;
+  bad.date_taken = change<std::string>::to("2019-02-30 10:00:00");
+  CHECK(mv::meta::write(d.path("a.jpg"), bad, d.snapshots()).error() == mv::status::invalid_arg);
+}
+
+TEST_CASE("layout and maker-note tags are shown, never written", "[meta][write][pr29]") {
+  scratch_dir d("readonly");
+  const auto original = jpeg_from(flat_jpeg(), true, true, true);
+  d.write("a.jpg", original);
+  using mv::meta::tag_access;
+  CHECK(mv::meta::access_of("Exif.Photo.PixelXDimension", write_target::in_file) == tag_access::read_only);
+  CHECK(mv::meta::access_of("Exif.Image.Orientation", write_target::in_file) == tag_access::read_only);
+  CHECK(mv::meta::access_of("Exif.Canon.ModelID", write_target::in_file) == tag_access::read_only);
+  CHECK(mv::meta::access_of("Exif.Thumbnail.JPEGInterchangeFormat", write_target::in_file) == tag_access::read_only);
+  CHECK(mv::meta::access_of("Container.Format", write_target::in_file) == tag_access::read_only);
+  CHECK(mv::meta::access_of("Exif.Image.Artist", write_target::in_file) == tag_access::editable);
+  CHECK(mv::meta::access_of("Exif.GPSInfo.GPSLatitude", write_target::in_file) == tag_access::editable);
+  CHECK(mv::meta::access_of("Xmp.dc.subject", write_target::sidecar) == tag_access::editable);
+  CHECK(mv::meta::access_of("Exif.Image.Artist", write_target::sidecar) == tag_access::via_sidecar);
+  write_fields f;
+  f.tags.push_back(set_tag("Exif.Photo.PixelXDimension", "10"));
+  CHECK(mv::meta::write(d.path("a.jpg"), f, d.snapshots()).error() == mv::status::invalid_arg);
+  f.tags = {set_tag("Exif.Photo.ExposureTime", "not a number")};
+  CHECK_FALSE(mv::meta::write(d.path("a.jpg"), f, d.snapshots()));
+  CHECK(d.read("a.jpg") == original);
+}
+
+TEST_CASE("a file that is never rewritten takes tag edits in its sidecar", "[meta][write][pr29]") {
+  scratch_dir d("sidecar_tags");
+  mv::meta::reset_snapshot_session();
+  std::vector<std::uint8_t> rgba(16 * 16 * 4, 90);
+  const auto png = fixtures::png_rgba(16, 16, rgba.data());
+  d.write("a.png", png);
+  write_fields f;
+  f.tags.push_back(set_tag("Exif.Image.Artist", "Jane Doe"));
+  f.tags.push_back(set_tag("Xmp.dc.subject", "boat, harbour"));
+  f.date_taken = change<std::string>::to("2021-06-01 08:00:00");
+  auto r = mv::meta::write(d.path("a.png"), f, d.snapshots());
+  REQUIRE(r);
+  CHECK(r->target == write_target::sidecar);
+  CHECK(d.read("a.png") == png);  // rule 5
+  const auto side = d.read("a.xmp");
+  const std::string packet(side.begin(), side.end());
+  CHECK(packet.find("Jane Doe") != std::string::npos);
+  CHECK(packet.find("harbour") != std::string::npos);
+  CHECK(packet.find("2021-06-01T08:00:00") != std::string::npos);
+  // An EXIF remove cannot be done without touching the original.
+  write_fields rm;
+  rm.tags.push_back(remove_tag("Exif.Image.Artist"));
+  CHECK(mv::meta::write(d.path("a.png"), rm, d.snapshots()).error() == mv::status::invalid_arg);
+  // Revert takes the sidecar away again: there was none.
+  REQUIRE(mv::meta::revert(d.path("a.png"), d.snapshots()));
+  CHECK_FALSE(fs::exists(d.dir / "a.xmp"));
+  CHECK(d.read("a.png") == png);
+}
+
+TEST_CASE("dates are validated and put in both forms", "[meta][write][pr29]") {
+  std::string e, x;
+  CHECK(mv::meta::exif_date_of("2024-05-01 14:03:22", e, x));
+  CHECK(e == "2024:05:01 14:03:22");
+  CHECK(x == "2024-05-01T14:03:22");
+  CHECK(mv::meta::exif_date_of("2024:05:01 14:03:22", e, x));
+  CHECK(mv::meta::exif_date_of("2024-02-29T00:00:00", e, x));
+  CHECK_FALSE(mv::meta::exif_date_of("2023-02-29 00:00:00", e, x));
+  CHECK_FALSE(mv::meta::exif_date_of("2024-13-01 00:00:00", e, x));
+  CHECK_FALSE(mv::meta::exif_date_of("2024-05-01 24:00:00", e, x));
+  CHECK_FALSE(mv::meta::exif_date_of("2024-05-01", e, x));
+  CHECK_FALSE(mv::meta::exif_date_of("2024-05:01 14:03:22", e, x));
+}

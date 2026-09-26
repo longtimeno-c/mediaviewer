@@ -20,6 +20,21 @@ struct MetaProperty: Identifiable {
   let label: String
   let value: String
   let rawTag: String
+  /// PR 29: the value in the form an edit takes, and what an edit may do:
+  /// "e" set and remove, "s" set only (into the XMP sidecar), "r" read-only.
+  let raw: String
+  let access: String
+
+  var editable: Bool { access == "e" || access == "s" }
+  var removable: Bool { access == "e" }
+  /// Why a row cannot be changed, for its lock's help tag.
+  var lockReason: String {
+    switch space {
+    case "container": return "Stored in the video container; container tags are read-only"
+    case "computed": return "Worked out by the viewer, not stored in the file"
+    default: return "Describes the file itself (size, layout, maker note); changing it would break the file"
+    }
+  }
 }
 
 struct MetaStream: Identifiable {
@@ -116,6 +131,25 @@ final class MetadataStore: ObservableObject {
   func setRating(_ stars: Int) { mv_chrome_meta_set_rating(Int32(stars)) }
   func setComment(_ text: String) { text.withCString { mv_chrome_meta_set_comment($0) } }
   func revert() { mv_chrome_meta_revert() }
+
+  // PR 29: any tag, the date, and removing.
+  func setTag(_ key: String, _ value: String) {
+    key.withCString { k in value.withCString { v in mv_chrome_meta_set_tag(k, v) } }
+  }
+  func removeTag(_ key: String) { key.withCString { mv_chrome_meta_set_tag($0, nil) } }
+  func setDate(_ value: String) { value.withCString { mv_chrome_meta_set_date($0) } }
+  func removeDate() { mv_chrome_meta_set_date(nil) }
+
+  /// GPS rows the file lets us remove (EXIF GPSInfo, XMP exif:GPS*).
+  var locationKeys: [String] {
+    properties.filter {
+      $0.removable && ($0.rawTag.hasPrefix("Exif.GPSInfo.") || $0.rawTag.hasPrefix("Xmp.exif.GPS"))
+    }.map(\.rawTag)
+  }
+  /// The date as the editor shows it ("2024-05-01 14:03:22"), from the summary.
+  var dateTaken: String {
+    summary.first { $0.label == "Date taken" }?.value ?? ""
+  }
   func blur() { mv_chrome_meta_blur() }
 
   private func reload() {
@@ -126,7 +160,8 @@ final class MetadataStore: ObservableObject {
       guard f.count >= 5 else { return nil }
       return MetaProperty(
         id: i, space: String(f[0]), group: String(f[1]), label: String(f[2]), value: String(f[3]),
-        rawTag: String(f[4]))
+        rawTag: String(f[4]), raw: f.count > 5 ? String(f[5]) : String(f[3]),
+        access: f.count > 6 ? String(f[6]) : "r")
     }
     var parsed: [MetaStream] = []
     var chaps: [MetaChapter] = []

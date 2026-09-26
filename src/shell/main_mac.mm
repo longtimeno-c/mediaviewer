@@ -437,6 +437,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaSetRating:(int32_t)stars;
 - (void)metaSetComment:(const char*)utf8;
 - (void)metaRevert;
+- (void)metaSetTag:(const char*)key value:(const char*)value;  // value NULL removes
+- (void)metaSetDate:(const char*)value;                        // NULL removes
 - (uint64_t)metaFocusSeq;
 - (void)metaBlur;
 - (uint64_t)noticeGeneration;
@@ -725,8 +727,15 @@ extern "C" int32_t mv_chrome_meta_properties(char* buf, int32_t size) {
   std::string out;
   if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
     for (const auto& p : rec->properties) {
+      // PR 29: the raw form an edit starts from, and what an edit may do.
+      const mv::meta::tag_access a = mv::meta::access_of(
+          p.raw_tag, rec->writes_in_file ? mv::meta::write_target::in_file : mv::meta::write_target::sidecar);
+      const char* access = a == mv::meta::tag_access::editable      ? "e"
+                           : a == mv::meta::tag_access::via_sidecar ? "s"
+                                                                    : "r";
       out += std::string(MvOriginName(p.space)) + "\t" + MvFlat(p.group) + "\t" + MvFlat(p.label) +
-             "\t" + MvFlat(p.value) + "\t" + MvFlat(p.raw_tag) + "\n";
+             "\t" + MvFlat(p.value) + "\t" + MvFlat(p.raw_tag) + "\t" + MvFlat(p.raw) + "\t" + access +
+             "\n";
     }
   }
   return MvCopyOut(out, buf, size);
@@ -772,6 +781,14 @@ extern "C" uint64_t mv_chrome_meta_focus_seq(void) {
 }
 extern "C" void mv_chrome_meta_blur(void) {
   if (g_chrome_app) [g_chrome_app metaBlur];
+}
+extern "C" void mv_chrome_meta_set_tag(const char* key, const char* value) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app && key) [g_chrome_app metaSetTag:key value:value];
+}
+extern "C" void mv_chrome_meta_set_date(const char* value) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app metaSetDate:value];
 }
 extern "C" uint64_t mv_chrome_notice_generation(void) {
   return g_chrome_app ? [g_chrome_app noticeGeneration] : 0;
@@ -4426,13 +4443,21 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   mv_edit_view e;
   [self editViewInto:&e];
-  NSString* line = [NSString
+  __block NSString* line = [NSString
       stringWithFormat:@"%@ open=%d tab=%d subject=%d crop=%d aspect=%d portrait=%d crop_px=%dx%d edits=%d "
                        @"original=%d strip=%d pane=%d adjust=%d meta=%d jobs=%d trim=%d export=%d\n",
                        name, e.open, e.tab, e.subject, e.crop_active, e.aspect, e.portrait, e.crop_width,
                        e.crop_height, e.edit_count, e.show_original, self.editStripHost.hidden ? 0 : 1,
                        self.editPaneHost.hidden ? 0 : 1, _adjust.visible() ? 1 : 0, _metaPaneVisible ? 1 : 0,
                        _jobsVisible ? 1 : 0, _trim.armed() ? 1 : 0, self.exportHost != nil ? 1 : 0];
+  if (const auto rec = _metaRecord) {
+    std::string artist;
+    for (const auto& p : rec->properties) {
+      if (p.raw_tag == "Exif.Image.Artist") artist = p.value;
+    }
+    line = [line stringByAppendingFormat:@"    meta: date=%s artist=%s in_file=%d\n", rec->s.date_taken.c_str(),
+                                         artist.c_str(), rec->writes_in_file ? 1 : 0];
+  }
   NSString* log = [dir stringByAppendingPathComponent:@"state.txt"];
   NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:log];
   if (fh == nil) {
@@ -4469,13 +4494,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       case 3: [self editSelfTestSnap:@"s2-crop-1x1" dir:dir]; [self runCommand:crop_commit back:kNoBack]; break;
       case 4: [self editSelfTestSnap:@"s3-applied" dir:dir]; [self editSelectTab:1]; break;
       case 5: [self editSelfTestSnap:@"s4-colour" dir:dir]; [self editSelectTab:2]; break;
-      case 6: [self editSelfTestSnap:@"s5-info" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
-      case 7: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
-      case 8: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
+      case 6: [self editSelfTestSnap:@"s5-info" dir:dir];
+        // PR 29: any tag, and the date, from the Info tab.
+        [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
+        [self metaSetDate:"2020-02-02 10:00:00"];
+        break;
+      case 7: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
+      case 8: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
+      case 9: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
         [self confirmExport:mv::shell::pack_export(mv::edit::export_options{})];
         break;
-      case 9: [self runCommand:back back:mv::shell::back_target::pane]; break;
-      case 10: [self editSelfTestSnap:@"s8-closed" dir:dir]; done = YES; break;
+      case 10: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
+      case 11: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
     }
   }
   if (done) {
@@ -4828,6 +4858,46 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self scheduleMetaWrite:0.05];
 }
 
+// PR 29: one tag, by its raw key; the queue merges edits to the same file.
+- (void)metaSetTag:(const char*)key value:(const char*)value {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  const auto rec = [self metaRecord];
+  if (!entry || !rec) return;
+  const std::string k(key);
+  const mv::meta::tag_access a = mv::meta::access_of(
+      k, rec->writes_in_file ? mv::meta::write_target::in_file : mv::meta::write_target::sidecar);
+  if (a == mv::meta::tag_access::read_only || (a == mv::meta::tag_access::via_sidecar && value == nullptr)) {
+    NSBeep();
+    [self noticeShow:a == mv::meta::tag_access::read_only
+                         ? std::string("That tag describes the file itself and cannot be changed")
+                         : std::string("That tag is in the original, which is never rewritten")];
+    return;
+  }
+  mv::meta::write_fields f;
+  f.tags.push_back({k, value ? mv::meta::change<std::string>::to(value) : mv::meta::change<std::string>::remove()});
+  _metaWriter.submit(entry->path_utf8, f);
+  [self scheduleMetaWrite:0.05];
+}
+
+- (void)metaSetDate:(const char*)value {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return;
+  mv::meta::write_fields f;
+  if (value != nullptr) {
+    std::string exif_form, xmp_form;
+    if (!mv::meta::exif_date_of(value, exif_form, xmp_form)) {
+      NSBeep();
+      [self noticeShow:std::string("Not a date: use YYYY-MM-DD HH:MM:SS")];
+      return;
+    }
+    f.date_taken = mv::meta::change<std::string>::to(value);
+  } else {
+    f.date_taken = mv::meta::change<std::string>::remove();
+  }
+  _metaWriter.submit(entry->path_utf8, f);
+  [self scheduleMetaWrite:0.05];
+}
+
 - (void)metaRevert {
   const mv::io::dir_entry* entry = [self currentEntry];
   if (!entry || _metaWritten.count(entry->path_utf8) == 0) return;
@@ -4892,7 +4962,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     MV_LOG_WARN("metadata write failed: %s", mv::status_name(out.error));  // never the path (rule 6)
     [self noticeShow:job.revert                  ? std::string("Could not revert the metadata")
                      : job.fields.rating.touches() ? std::string("Could not save the rating")
-                                                   : std::string("Could not save the comment")];
+                     : job.fields.comment.touches() ? std::string("Could not save the comment")
+                     : out.error == mv::status::invalid_arg
+                         ? std::string("That value does not fit the tag; nothing was changed")
+                         : std::string("Could not save the metadata; nothing was changed")];
     if (_metaWriter.has_pending()) [self scheduleMetaWrite:0.0];
     return;
   }
@@ -4931,6 +5004,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
     } else if (!job.revert && job.fields.comment.touches()) {
       text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed" : "Comment saved";
+    } else if (!job.revert && job.fields.date_taken.touches()) {
+      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
+                                                                                  : "Date taken saved";
+    } else if (!job.revert && !job.fields.tags.empty()) {
+      text = job.fields.tags.size() == 1 ? "Metadata saved"
+                                         : std::to_string(job.fields.tags.size()) + " tags saved";
     }
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of('/');

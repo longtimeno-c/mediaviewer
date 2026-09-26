@@ -71,6 +71,11 @@ struct jpeg_scan {
   bool trailer = false;      // bytes after the final EOI (a motion photo's video, a gain map)
   bool xmp_extended = false; // XMP split across APP1 segments; Exiv2 keeps only the main packet
   std::vector<std::uint8_t> digest_input;  // see payload_digest()
+  // PR 29: where each metadata segment (as digest_input leaves out) sits, as
+  // [begin, end) byte offsets, and where new ones go: after SOI and any
+  // leading APP0 (JFIF must stay first).
+  std::vector<std::pair<std::size_t, std::size_t>> meta_ranges;
+  std::size_t insert_at = 2;
 };
 
 bool starts_with(std::span<const std::uint8_t> b, std::size_t at, const char* s, std::size_t n) {
@@ -94,6 +99,7 @@ jpeg_scan scan_jpeg(std::span<const std::uint8_t> b, bool want_digest) {
   };
 
   bool in_scan = false;
+  bool leading_app0 = true;
   const std::size_t scan_start_unset = static_cast<std::size_t>(-1);
   std::size_t scan_start = scan_start_unset;
   while (i + 1 < b.size()) {
@@ -158,6 +164,9 @@ jpeg_scan scan_jpeg(std::span<const std::uint8_t> b, bool want_digest) {
       }
     }
     if (!metadata_segment) push(i, seg);
+    else out.meta_ranges.emplace_back(i, seg);
+    if (leading_app0 && marker == 0xE0) out.insert_at = seg;
+    else leading_app0 = false;
     i = seg;
   }
   return out;
@@ -227,12 +236,25 @@ struct exif_row {
 using exif_rows_t = std::map<std::string, std::vector<exif_row>>;
 using text_rows_t = std::map<std::string, std::vector<std::string>>;
 
-exif_rows_t exif_rows(const Exiv2::ExifData& e) {
+using key_set = std::set<std::string>;
+const key_set& no_keys() {
+  static const key_set empty;
+  return empty;
+}
+
+// `skip`: keys a PR 29 write changes, compared separately (`only`).
+// `only` non-null: the rows of exactly those keys, nothing else.
+exif_rows_t exif_rows(const Exiv2::ExifData& e, const key_set& skip = no_keys(),
+                      const key_set* only = nullptr) {
   exif_rows_t rows;
   const bool note_decoded = decoded_maker_note(e);
   for (const auto& d : e) {
     const std::string key = d.key();
-    if (touched_exif(key) || offset_valued(d)) continue;
+    if (only != nullptr) {
+      if (only->count(key) == 0) continue;
+    } else if (touched_exif(key) || offset_valued(d) || skip.count(key) != 0) {
+      continue;
+    }
     if (note_decoded && key == "Exif.Photo.MakerNote") continue;
     exif_row r;
     r.type = static_cast<int>(d.typeId());
@@ -245,20 +267,30 @@ exif_rows_t exif_rows(const Exiv2::ExifData& e) {
   return rows;
 }
 
-text_rows_t xmp_rows(const Exiv2::XmpData& x) {
+text_rows_t xmp_rows(const Exiv2::XmpData& x, const key_set& skip = no_keys(),
+                     const key_set* only = nullptr) {
   text_rows_t rows;
   for (const auto& d : x) {
     const std::string key = d.key();
-    if (touched_xmp(key)) continue;
+    if (only != nullptr) {
+      if (only->count(key) == 0) continue;
+    } else if (touched_xmp(key) || skip.count(key) != 0) {
+      continue;
+    }
     rows[key].push_back(d.toString());
   }
   for (auto& kv : rows) std::sort(kv.second.begin(), kv.second.end());
   return rows;
 }
 
-text_rows_t iptc_rows(const Exiv2::IptcData& x) {
+text_rows_t iptc_rows(const Exiv2::IptcData& x, const key_set& skip = no_keys(),
+                      const key_set* only = nullptr) {
   text_rows_t rows;
-  for (const auto& d : x) rows[d.key()].push_back(d.toString());
+  for (const auto& d : x) {
+    const std::string key = d.key();
+    if (only != nullptr ? only->count(key) == 0 : skip.count(key) != 0) continue;
+    rows[key].push_back(d.toString());
+  }
   for (auto& kv : rows) std::sort(kv.second.begin(), kv.second.end());
   return rows;
 }
@@ -370,7 +402,182 @@ void apply_exif(Exiv2::ExifData& e, const write_fields& f, detail::comment_order
   }
 }
 
+// ---- PR 29: any tag, and the capture date ----------------------------------
+
+constexpr const char* kDateExif[] = {"Exif.Photo.DateTimeOriginal", "Exif.Photo.DateTimeDigitized",
+                                     "Exif.Image.DateTimeOriginal"};
+constexpr const char* kDateXmp[] = {"Xmp.exif.DateTimeOriginal", "Xmp.xmp.CreateDate",
+                                    "Xmp.photoshop.DateCreated"};
+
+// Tags that describe the file's own layout or pixels, or live inside a maker
+// note: a value there that disagrees with the bytes breaks the file for every
+// reader. Shown, never written. Orientation is the viewer's rotate (PR 10).
+bool exif_read_only(std::string_view key) {
+  const std::size_t a = key.find('.');
+  const std::size_t b = key.find('.', a + 1);
+  if (a == std::string_view::npos || b == std::string_view::npos) return true;
+  const std::string_view group = key.substr(a + 1, b - a - 1);
+  const std::string_view name = key.substr(b + 1);
+  if (group != "Image" && group != "Photo" && group != "GPSInfo" && group != "Iop") return true;
+  if (name.find("Offset") != std::string_view::npos || name.find("ByteCount") != std::string_view::npos) return true;
+  static constexpr std::string_view kLayout[] = {
+      "ImageWidth", "ImageLength", "BitsPerSample", "Compression", "PhotometricInterpretation",
+      "SamplesPerPixel", "RowsPerStrip", "PlanarConfiguration", "TileWidth", "TileLength", "SubIFDs",
+      "JPEGInterchangeFormat", "JPEGInterchangeFormatLength", "YCbCrSubSampling", "YCbCrPositioning",
+      "ExifTag", "GPSTag", "InteroperabilityTag", "NewSubfileType", "SubfileType", "MakerNote",
+      "PixelXDimension", "PixelYDimension", "Orientation", "PrintImageMatching", "DNGPrivateData"};
+  for (std::string_view n : kLayout) {
+    if (name == n) return true;
+  }
+  return false;
+}
+
+// An EXIF / IPTC value as the XMP a sidecar holds for it (Exiv2's own
+// conversion table). Empty when XMP has no name for that tag.
+Exiv2::XmpData as_xmp(const std::string& key, const std::string& value) {
+  Exiv2::XmpData out;
+  if (key.rfind("Exif.", 0) == 0) {
+    Exiv2::ExifData tmp;
+    if (tmp[key].setValue(value) != 0) return out;
+    Exiv2::copyExifToXmp(tmp, out);
+  } else if (key.rfind("Iptc.", 0) == 0) {
+    Exiv2::IptcData tmp;
+    if (tmp[key].setValue(value) != 0) return out;
+    Exiv2::copyIptcToXmp(tmp, out);
+  }
+  return out;
+}
+
+// A plausible value to ask the conversion table whether a key maps at all.
+std::string sample_value(std::string_view key) {
+  return key.find("Date") != std::string_view::npos ? "2000:01:01 00:00:00" : "1";
+}
+
+void erase_all(Exiv2::ExifData& e, const std::string& key) {
+  const Exiv2::ExifKey k(key);
+  for (auto it = e.findKey(k); it != e.end(); it = e.findKey(k)) e.erase(it);
+}
+void erase_all(Exiv2::IptcData& x, const std::string& key) {
+  const Exiv2::IptcKey k(key);
+  for (auto it = x.findKey(k); it != x.end(); it = x.findKey(k)) x.erase(it);
+}
+void erase_all(Exiv2::XmpData& x, const std::string& key) {
+  const Exiv2::XmpKey k(key);
+  for (auto it = x.findKey(k); it != x.end(); it = x.findKey(k)) x.erase(it);
+}
+
+struct bad_value {};  // a value Exiv2 will not take for that tag: invalid_arg
+
+void set_xmp(Exiv2::XmpData& x, const std::string& key, const std::string& value) {
+  const Exiv2::XmpKey k(key);
+  const auto it = x.findKey(k);
+  const Exiv2::TypeId type = it != x.end() ? it->typeId() : Exiv2::XmpProperties::propertyType(k);
+  erase_all(x, key);
+  const auto v = Exiv2::Value::create(type);
+  if (type == Exiv2::xmpBag || type == Exiv2::xmpSeq || type == Exiv2::xmpAlt) {
+    // The tree shows an array as "a, b, c"; each item is read back in.
+    std::size_t pos = 0;
+    while (pos <= value.size()) {
+      std::size_t cut = value.find(", ", pos);
+      if (cut == std::string::npos) cut = value.size();
+      if (cut > pos && v->read(value.substr(pos, cut - pos)) != 0) throw bad_value{};
+      pos = cut + 2;
+    }
+  } else if (v->read(value) != 0) {
+    throw bad_value{};
+  }
+  x.add(k, v.get());
+}
+
+// The tag edits into a JPEG's own blocks (`sidecar` false) or into a
+// sidecar's XMP (`sidecar` true: EXIF / IPTC keys go under their XMP names).
+void apply_tags(Exiv2::ExifData* e, Exiv2::IptcData* iptc, Exiv2::XmpData& x, const write_fields& f,
+                bool sidecar) {
+  for (const tag_edit& t : f.tags) {
+    const bool set = t.value.k == change<std::string>::kind::set;
+    if (t.key.rfind("Xmp.", 0) == 0) {
+      if (set) set_xmp(x, t.key, t.value.value);
+      else erase_all(x, t.key);
+    } else if (sidecar) {
+      // Only a set reaches here (apply() refuses a remove): the file keeps its
+      // own value, the sidecar -- which the viewer and Lightroom read over it
+      // -- says the new one.
+      const Exiv2::XmpData mapped = as_xmp(t.key, t.value.value);
+      if (mapped.empty()) throw bad_value{};
+      for (const auto& d : mapped) {
+        erase_all(x, d.key());
+        x.add(d);
+      }
+    } else if (t.key.rfind("Exif.", 0) == 0 && e != nullptr) {
+      if (set) {
+        if ((*e)[t.key].setValue(t.value.value) != 0) throw bad_value{};
+      } else {
+        erase_all(*e, t.key);
+      }
+    } else if (t.key.rfind("Iptc.", 0) == 0 && iptc != nullptr) {
+      erase_all(*iptc, t.key);
+      if (set) {
+        Exiv2::Iptcdatum d{Exiv2::IptcKey(t.key)};
+        if (d.setValue(t.value.value) != 0) throw bad_value{};
+        iptc->add(d);
+      }
+    } else {
+      throw bad_value{};
+    }
+  }
+}
+
+void apply_date(Exiv2::ExifData* e, Exiv2::XmpData& x, const change<std::string>& d, bool sidecar) {
+  if (!d.touches()) return;
+  std::string exif_form, xmp_form;
+  const bool set = d.k == change<std::string>::kind::set;
+  if (set && !exif_date_of(d.value, exif_form, xmp_form)) throw bad_value{};
+  if (e != nullptr) {
+    for (const char* key : kDateExif) {
+      const bool primary = std::strcmp(key, "Exif.Photo.DateTimeOriginal") == 0;
+      if (!set) erase_all(*e, key);
+      else if (primary || has_key(*e, key)) (*e)[key] = exif_form;
+    }
+  }
+  for (const char* key : kDateXmp) {
+    // A sidecar states the date where Lightroom and Photos look for it; a
+    // JPEG's own XMP only keeps the copies it already has in agreement.
+    const bool create = sidecar && std::strcmp(key, "Xmp.photoshop.DateCreated") != 0;
+    if (!set) erase_all(x, key);
+    else if (create || has_key(x, key)) x[key] = xmp_form;
+  }
+}
+
+// Every key a write's tag and date edits may change, for the checks.
+key_set touched_keys(const write_fields& f) {
+  key_set keys;
+  for (const tag_edit& t : f.tags) {
+    keys.insert(t.key);
+    if (t.key.rfind("Xmp.", 0) != 0 && t.value.k == change<std::string>::kind::set) {
+      try {
+        for (const auto& d : as_xmp(t.key, t.value.value)) keys.insert(d.key());
+      } catch (...) {
+      }
+    }
+  }
+  if (f.date_taken.touches()) {
+    for (const char* k : kDateExif) keys.insert(k);
+    for (const char* k : kDateXmp) keys.insert(k);
+  }
+  return keys;
+}
+
 bool validate(const write_fields& f) {
+  if (f.tags.size() > kMaxTagEdits) return false;
+  for (const tag_edit& t : f.tags) {
+    if (t.key.rfind("Exif.", 0) != 0 && t.key.rfind("Iptc.", 0) != 0 && t.key.rfind("Xmp.", 0) != 0) return false;
+    if (t.value.k == change<std::string>::kind::keep) return false;
+    if (t.value.value.size() > kMaxTagValueBytes || !valid_utf8(t.value.value)) return false;
+  }
+  if (f.date_taken.k == change<std::string>::kind::set) {
+    std::string a, b;
+    if (!exif_date_of(f.date_taken.value, a, b)) return false;
+  }
   if (f.rating.k == change<int>::kind::set && (f.rating.value < -1 || f.rating.value > kMaxRating)) return false;
   if (f.orientation.k == change<int>::kind::set && (f.orientation.value < 1 || f.orientation.value > 8)) return false;
   if (f.comment.k == change<std::string>::kind::set) {
@@ -526,6 +733,75 @@ bool load_snapshot(const std::string& file, snapshot& out) {
   return parse_snapshot(std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size()), out);
 }
 
+// ---- PR 29: the whole-metadata snapshot ---------------------------------------
+//
+// Beside the three-field snapshot: a JPEG's metadata segments exactly as they
+// were (Exif / XMP APP1, IPTC APP13, COM) and the sidecar's bytes (or its
+// absence). `revert` splices the segments back and restores the sidecar, so
+// every tag -- not only rating, orientation and comment -- returns, byte for
+// byte. The image data is checked unchanged before anything is replaced.
+
+struct blob_snapshot {
+  write_target target = write_target::sidecar;
+  bool sidecar_existed = false;
+  std::string sidecar;                 // the packet's bytes, when it existed
+  std::vector<std::string> segments;   // in file order, marker included
+};
+
+constexpr std::size_t kMaxBlobSnapshotBytes = 16u * 1024 * 1024;
+
+std::string blob_file(std::string_view dir, std::string_view media_path) {
+  return snapshot_file(dir, media_path) + "2";  // "<hash>.mvsnap2"
+}
+
+bool save_blob_snapshot(const std::string& file, const blob_snapshot& b) {
+  std::string out = "mvsnap 2\n";
+  out += b.target == write_target::in_file ? "target in_file\n" : "target sidecar\n";
+  out += b.sidecar_existed ? "sidecar " + hex_of(b.sidecar) + "\n" : "sidecar -\n";
+  for (const std::string& seg : b.segments) out += "seg " + hex_of(seg) + "\n";
+  std::error_code ec;
+  fs::create_directories(to_path(file).parent_path(), ec);
+  return static_cast<bool>(io::write_all(
+      file, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(out.data()), out.size())));
+}
+
+bool load_blob_snapshot(const std::string& file, blob_snapshot& out) {
+  auto bytes = io::read_prefix(file, kMaxBlobSnapshotBytes);
+  if (!bytes) return false;
+  const std::string text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+  blob_snapshot b;
+  std::size_t pos = 0;
+  int line_no = 0;
+  bool have_target = false, have_sidecar = false;
+  while (pos < text.size()) {
+    const std::size_t nl = text.find('\n', pos);
+    if (nl == std::string::npos) return false;  // a torn write
+    const std::string_view line(text.data() + pos, nl - pos);
+    pos = nl + 1;
+    if (line_no++ == 0) {
+      if (line != "mvsnap 2") return false;
+      continue;
+    }
+    if (line == "target in_file") { b.target = write_target::in_file; have_target = true; }
+    else if (line == "target sidecar") { b.target = write_target::sidecar; have_target = true; }
+    else if (line == "sidecar -") { b.sidecar_existed = false; have_sidecar = true; }
+    else if (line.rfind("sidecar ", 0) == 0) {
+      if (!unhex(line.substr(8), b.sidecar)) return false;
+      b.sidecar_existed = true;
+      have_sidecar = true;
+    } else if (line.rfind("seg ", 0) == 0) {
+      std::string seg;
+      if (!unhex(line.substr(4), seg)) return false;
+      b.segments.push_back(std::move(seg));
+    } else {
+      return false;
+    }
+  }
+  if (!have_target || !have_sidecar) return false;
+  out = std::move(b);
+  return true;
+}
+
 // ---- The two writers -------------------------------------------------------
 
 std::vector<std::uint8_t> bytes_of(Exiv2::Image& image) {
@@ -545,10 +821,12 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
     if (!image) return err(status::unsupported_format);
     image->readMetadata();
 
-    // Copies of the state that has to survive.
-    const auto exif_before = exif_rows(image->exifData());
-    const auto xmp_before = xmp_rows(image->xmpData());
-    const auto iptc_before = iptc_rows(image->iptcData());
+    // Copies of the state that has to survive: every tag the write does not
+    // name. The ones it does name are checked against a rehearsal below.
+    const key_set touched = touched_keys(f);
+    const auto exif_before = exif_rows(image->exifData(), touched);
+    const auto xmp_before = xmp_rows(image->xmpData(), touched);
+    const auto iptc_before = iptc_rows(image->iptcData(), touched);
     const auto thumb_before = thumbnail_of(image->exifData());
     const std::uint32_t w = image->pixelWidth(), h = image->pixelHeight();
     std::vector<std::uint8_t> icc_before;
@@ -564,6 +842,13 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
     }
     apply_exif(image->exifData(), f, order);
     apply_xmp(image->xmpData(), f, /*sidecar=*/false);
+    apply_tags(&image->exifData(), &image->iptcData(), image->xmpData(), f, /*sidecar=*/false);
+    apply_date(&image->exifData(), image->xmpData(), f.date_taken, /*sidecar=*/false);
+    // PR 29: what the named tags must read back as -- Exiv2's own encoding of
+    // the edit, taken before it is written.
+    const auto exif_want = exif_rows(image->exifData(), no_keys(), &touched);
+    const auto xmp_want = xmp_rows(image->xmpData(), no_keys(), &touched);
+    const auto iptc_want = iptc_rows(image->iptcData(), no_keys(), &touched);
     image->writeMetadata();
     std::vector<std::uint8_t> out = bytes_of(*image);
 
@@ -576,9 +861,12 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
     if (!check) return err(status::internal);
     check->readMetadata();
     if (check->pixelWidth() != w || check->pixelHeight() != h) return err(status::internal);
-    if (exif_rows(check->exifData()) != exif_before) return err(status::internal);
-    if (xmp_rows(check->xmpData()) != xmp_before) return err(status::internal);
-    if (iptc_rows(check->iptcData()) != iptc_before) return err(status::internal);
+    if (exif_rows(check->exifData(), touched) != exif_before) return err(status::internal);
+    if (xmp_rows(check->xmpData(), touched) != xmp_before) return err(status::internal);
+    if (iptc_rows(check->iptcData(), touched) != iptc_before) return err(status::internal);
+    if (exif_rows(check->exifData(), no_keys(), &touched) != exif_want) return err(status::internal);
+    if (xmp_rows(check->xmpData(), no_keys(), &touched) != xmp_want) return err(status::internal);
+    if (iptc_rows(check->iptcData(), no_keys(), &touched) != iptc_want) return err(status::internal);
     if (thumbnail_of(check->exifData()) != thumb_before) return err(status::internal);
     std::vector<std::uint8_t> icc_after;
     if (check->iccProfileDefined()) {
@@ -601,6 +889,8 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
       if (want ? got.comment != f.comment.value : got.comment.has_value()) return err(status::internal);
     }
     return out;
+  } catch (const bad_value&) {
+    return err(status::invalid_arg);
   } catch (const Exiv2::Error&) {
     return err(status::unsupported_format);
   } catch (...) {
@@ -620,8 +910,12 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
     detail::ensure_exiv2();
     Exiv2::XmpData xmp;
     (void)detail::load_sidecar(path, xmp);
-    const auto before = xmp_rows(xmp);
+    const key_set touched = touched_keys(f);
+    const auto before = xmp_rows(xmp, touched);
     apply_xmp(xmp, f, /*sidecar=*/true);
+    apply_tags(nullptr, nullptr, xmp, f, /*sidecar=*/true);
+    apply_date(nullptr, xmp, f.date_taken, /*sidecar=*/true);
+    const auto want = xmp_rows(xmp, no_keys(), &touched);
 
     sidecar_result r;
     if (xmp.empty()) {
@@ -632,7 +926,8 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
 
     Exiv2::XmpData check;
     if (Exiv2::XmpParser::decode(check, r.packet) != 0) return err(status::internal);
-    if (xmp_rows(check) != before) return err(status::internal);
+    if (xmp_rows(check, touched) != before) return err(status::internal);
+    if (xmp_rows(check, no_keys(), &touched) != want) return err(status::internal);
     const detail::field_state got = detail::read_fields(Exiv2::ExifData{}, check);
     if (const auto w = wanted_rating(f)) {
       if (got.rating.value_or(0) != *w) return err(status::internal);
@@ -642,6 +937,8 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
       if (want ? got.comment != f.comment.value : got.comment.has_value()) return err(status::internal);
     }
     return r;
+  } catch (const bad_value&) {
+    return err(status::invalid_arg);
   } catch (const Exiv2::Error&) {
     return err(status::unsupported_format);
   } catch (...) {
@@ -703,6 +1000,20 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
   loaded& l = *plan;
   write_target target = l.target;
 
+  // PR 29: a tag the file cannot take is refused before anything is written.
+  // A JPEG that Exiv2 then declines falls back to its sidecar only when every
+  // tag edit can live there (an EXIF / IPTC remove cannot).
+  bool sidecar_ok = !file_fields.orientation.touches();
+  for (const tag_edit& t : file_fields.tags) {
+    const tag_access here = access_of(t.key, target);
+    const bool removes = t.value.k == change<std::string>::kind::clear;
+    if (here == tag_access::read_only || (here == tag_access::via_sidecar && removes)) {
+      return err(status::invalid_arg);
+    }
+    const tag_access there = access_of(t.key, write_target::sidecar);
+    if (there == tag_access::read_only || (there == tag_access::via_sidecar && removes)) sidecar_ok = false;
+  }
+
   const std::string side_path = sidecar_path_for(utf8_path);
   Exiv2::XmpData existing_sidecar;
   const bool sidecar_existed = detail::load_sidecar(side_path, existing_sidecar);
@@ -728,7 +1039,22 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
         }
       }
       s.state.sidecar = fields_of(detail::read_fields(Exiv2::ExifData{}, existing_sidecar));
+      // PR 29: and every tag, as bytes.
+      blob_snapshot b;
+      b.target = target;
+      b.sidecar_existed = sidecar_existed;
+      if (sidecar_existed) {
+        auto side = io::read_prefix(side_path, kMaxSidecarBytes + 1);
+        if (!side || side->size() > kMaxSidecarBytes) return err(status::io);
+        b.sidecar.assign(reinterpret_cast<const char*>(side->data()), side->size());
+      }
+      if (target == write_target::in_file) {
+        for (const auto& [from, to] : l.scan.meta_ranges) {
+          b.segments.emplace_back(reinterpret_cast<const char*>(l.bytes.data() + from), to - from);
+        }
+      }
       if (!save_snapshot(snap_file, s)) return err(status::io);
+      if (!save_blob_snapshot(blob_file(snapshot_dir, utf8_path), b)) return err(status::io);
       g_snapshotted.insert(snap_file);
     }
   }
@@ -744,7 +1070,7 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
       if (!stamp_of(l.real, now) || !(now == l.id)) return err(status::io);  // changed under us
       const expected swapped = io::replace_atomic(to_utf8(l.real), *fresh);
       if (!swapped) return err(swapped.error());
-    } else if (!file_fields.orientation.touches() &&
+    } else if (sidecar_ok &&
                (fresh.error() == status::internal || fresh.error() == status::unsupported_format)) {
       // Exiv2 will not rewrite this JPEG cleanly, or its rewrite did not
       // check out. The file is untouched; the rating / comment go to the
@@ -802,12 +1128,116 @@ result<write_outcome> write(std::string_view utf8_path, const write_fields& fiel
 
 bool has_snapshot(std::string_view utf8_path, std::string_view snapshot_dir) {
   if (snapshot_dir.empty()) return false;
+  if (blob_snapshot b; load_blob_snapshot(blob_file(snapshot_dir, utf8_path), b)) return true;
   snapshot s;
   return load_snapshot(snapshot_file(snapshot_dir, utf8_path), s);
 }
 
+namespace {
+
+// Puts back what a blob snapshot holds (see blob_snapshot).
+result<write_outcome> revert_blobs(std::string_view utf8_path, const blob_snapshot& b) {
+  write_outcome out;
+  out.target = b.target;
+  out.sidecar_path = sidecar_path_for(utf8_path);
+  if (b.target == write_target::in_file) {
+    auto plan = load_and_plan(utf8_path);
+    if (!plan) return err(plan.error());
+    loaded& l = *plan;
+    if (l.target != write_target::in_file) return err(status::io);  // no longer the JPEG it was
+    // The file with its metadata segments taken out, the snapshot's put in.
+    std::vector<std::uint8_t> fresh(l.bytes.begin(), l.bytes.begin() + static_cast<std::ptrdiff_t>(l.scan.insert_at));
+    for (const std::string& seg : b.segments) fresh.insert(fresh.end(), seg.begin(), seg.end());
+    std::size_t at = l.scan.insert_at;
+    for (const auto& [from, to] : l.scan.meta_ranges) {
+      if (from < at) return err(status::internal);
+      fresh.insert(fresh.end(), l.bytes.begin() + static_cast<std::ptrdiff_t>(at),
+                   l.bytes.begin() + static_cast<std::ptrdiff_t>(from));
+      at = to;
+    }
+    fresh.insert(fresh.end(), l.bytes.begin() + static_cast<std::ptrdiff_t>(at), l.bytes.end());
+    // The picture, and every other segment, must be exactly what is there now.
+    const jpeg_scan after = scan_jpeg(fresh, true);
+    if (!after.valid || digest_of(after.digest_input) != digest_of(l.scan.digest_input)) {
+      return err(status::internal);
+    }
+    if (after.meta_ranges.size() != b.segments.size()) return err(status::internal);
+    stamp now;
+    if (!stamp_of(l.real, now) || !(now == l.id)) return err(status::io);  // changed under us
+    const expected swapped = io::replace_atomic(to_utf8(l.real), fresh);
+    if (!swapped) return err(swapped.error());
+  }
+  std::error_code ec;
+  const bool exists = fs::exists(to_path(out.sidecar_path), ec);
+  if (b.sidecar_existed) {
+    const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(b.sidecar.data()),
+                                              b.sidecar.size());
+    const expected done = exists ? io::replace_atomic(out.sidecar_path, bytes)
+                                 : io::write_new_atomic(out.sidecar_path, bytes);
+    if (!done) return err(done.error());
+    out.sidecar_touched = true;
+  } else if (exists) {
+    if (!fs::remove(to_path(out.sidecar_path), ec)) return err(status::io);
+    out.sidecar_touched = true;
+  }
+  return out;
+}
+
+}  // namespace
+
+tag_access access_of(std::string_view key, write_target target) noexcept {
+  try {
+    if (key.rfind("Xmp.", 0) == 0) {
+      detail::ensure_exiv2();
+      (void)Exiv2::XmpKey(std::string(key));  // throws on an unknown namespace
+      return tag_access::editable;
+    }
+    const bool exif = key.rfind("Exif.", 0) == 0;
+    if (!exif && key.rfind("Iptc.", 0) != 0) return tag_access::read_only;  // container, computed
+    if (exif && exif_read_only(key)) return tag_access::read_only;
+    if (target == write_target::in_file) return tag_access::editable;
+    detail::ensure_exiv2();
+    const std::string k(key);
+    return as_xmp(k, sample_value(k)).empty() ? tag_access::read_only : tag_access::via_sidecar;
+  } catch (...) {
+    return tag_access::read_only;
+  }
+}
+
+bool exif_date_of(std::string_view stamp, std::string& exif_out, std::string& xmp_out) {
+  // "YYYY-MM-DD HH:MM:SS", with '-' or ':' in the date and ' ' or 'T' between.
+  if (stamp.size() != 19) return false;
+  int v[6] = {};
+  const std::size_t at[6] = {0, 5, 8, 11, 14, 17};
+  const std::size_t len[6] = {4, 2, 2, 2, 2, 2};
+  for (int i = 0; i < 6; ++i) {
+    for (std::size_t j = 0; j < len[i]; ++j) {
+      const char c = stamp[at[i] + j];
+      if (c < '0' || c > '9') return false;
+      v[i] = v[i] * 10 + (c - '0');
+    }
+  }
+  const auto sep = [&](std::size_t i, const char* ok) { return std::strchr(ok, stamp[i]) != nullptr; };
+  if (!sep(4, "-:") || stamp[7] != stamp[4] || !sep(10, " T") || stamp[13] != ':' || stamp[16] != ':') return false;
+  static constexpr int kDays[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const bool leap = (v[0] % 4 == 0 && v[0] % 100 != 0) || v[0] % 400 == 0;
+  if (v[0] < 1800 || v[1] < 1 || v[1] > 12 || v[2] < 1) return false;
+  if (v[2] > kDays[v[1] - 1] || (v[1] == 2 && v[2] == 29 && !leap)) return false;
+  if (v[3] > 23 || v[4] > 59 || v[5] > 59) return false;
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%04d:%02d:%02d %02d:%02d:%02d", v[0], v[1], v[2], v[3], v[4], v[5]);
+  exif_out = buf;
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d", v[0], v[1], v[2], v[3], v[4], v[5]);
+  xmp_out = buf;
+  return true;
+}
+
 result<write_outcome> revert(std::string_view utf8_path, std::string_view snapshot_dir) {
   if (snapshot_dir.empty()) return err(status::io);
+  // PR 29: every tag, when this session's snapshot holds them.
+  if (blob_snapshot b; load_blob_snapshot(blob_file(snapshot_dir, utf8_path), b)) {
+    return revert_blobs(utf8_path, b);
+  }
   snapshot s;
   if (!load_snapshot(snapshot_file(snapshot_dir, utf8_path), s)) return err(status::io);
   // The sidecar may have been created by our write; if it did not exist

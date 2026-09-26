@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // PR 12 — metadata write (plan/06 "Writing"): rating, orientation and user
-// comment, and nothing else. Shared by both hosts; portable (no Win32 or
-// Cocoa, D9).
+// comment. PR 29 (owner, 2026-09-26; plan/12): any EXIF / IPTC / XMP tag can
+// be set or removed, and the capture date set across every tag that holds
+// it -- through the same checked rewrite and the same sidecar rule. Shared by
+// both hosts; portable (no Win32 or Cocoa, D9).
 //
 // Where a change lands:
 //   * A plain JPEG is edited in place through Exiv2's parsed structure, so
@@ -18,9 +20,11 @@
 //     the final EOI, as a motion photo has) — gets an XMP sidecar
 //     (`IMG_1234.xmp`) next to it. The original is never opened for writing
 //     (rule 5). Any existing sidecar is merged, not replaced.
-//   * Before the first write to a file in a session the prior value of the
-//     three fields is snapshotted to a local store, so `revert` is always
-//     available. Nothing here logs a path (rule 6) or leaves the machine.
+//   * Before the first write to a file in a session its metadata is
+//     snapshotted to a local store -- the three fields, and (PR 29) a JPEG's
+//     metadata segments byte for byte plus the sidecar as it was -- so
+//     `revert` puts every tag back, not just the three. Nothing here logs a
+//     path (rule 6) or leaves the machine.
 //
 // Worker threads only: reads and rewrites a whole file (rule 1).
 #pragma once
@@ -28,6 +32,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/result.h"
 
@@ -47,6 +52,26 @@ struct change {
 
 inline constexpr int kMaxRating = 5;
 inline constexpr std::size_t kMaxCommentBytes = 4096;
+inline constexpr std::size_t kMaxTagValueBytes = 64 * 1024;
+inline constexpr std::size_t kMaxTagEdits = 512;
+
+// PR 29: one tag, by its full Exiv2 key ("Exif.Photo.DateTimeOriginal",
+// "Iptc.Application2.Keywords", "Xmp.dc.title"). `set` takes Exiv2's string
+// form -- what the full tree shows as the raw value ("2024:05:01 14:03:22",
+// "1/250", "a, b" for an XMP bag). `remove()` deletes every value the key has.
+struct tag_edit {
+  std::string key;
+  change<std::string> value;
+};
+
+// Who may change a tag, for a file whose writes land at `target`.
+enum class tag_access : std::uint8_t {
+  editable,     // set and remove
+  via_sidecar,  // set only: the value goes to the XMP sidecar under its XMP
+                // name; the original (a RAW, a HEIC, a clip) keeps its own
+  read_only,    // structure (sizes, offsets, strips), a maker note, a
+                // computed or container row: shown, never written
+};
 
 struct write_fields {
   // 1..5 stars; -1 is XMP's "rejected". 0 and `remove()` both remove every
@@ -54,13 +79,31 @@ struct write_fields {
   change<int> rating;
   change<int> orientation;      // EXIF 1..8
   change<std::string> comment;  // UTF-8, no NUL, at most kMaxCommentBytes; "" removes
+  // PR 29. Any tag the file may take (access_of), applied after the three
+  // fields above; a later edit of a key replaces an earlier one.
+  std::vector<tag_edit> tags;
+  // PR 29. "YYYY-MM-DD HH:MM:SS": every capture-time tag the file carries
+  // (EXIF DateTimeOriginal -- always -- and DateTimeDigitized; XMP
+  // exif:DateTimeOriginal, xmp:CreateDate, photoshop:DateCreated), so no
+  // reader sees two dates. `remove()` deletes them all.
+  change<std::string> date_taken;
 
   [[nodiscard]] bool empty() const noexcept {
-    return !rating.touches() && !orientation.touches() && !comment.touches();
+    return !rating.touches() && !orientation.touches() && !comment.touches() && tags.empty() &&
+           !date_taken.touches();
   }
 };
 
 enum class write_target : std::uint8_t { in_file, sidecar };
+
+// PR 29: what a write to `key` may do on a file whose writes land at `target`
+// (write_target_for). Pure: decided by the key, not by the file.
+[[nodiscard]] tag_access access_of(std::string_view key, write_target target) noexcept;
+
+// PR 29: "2024-05-01 14:03:22" (or "...T..." ) -> the EXIF form
+// "2024:05:01 14:03:22" / the XMP form "2024-05-01T14:03:22". False for
+// anything that is not a real date and time.
+[[nodiscard]] bool exif_date_of(std::string_view stamp, std::string& exif_out, std::string& xmp_out);
 
 struct write_outcome {
   write_target target = write_target::in_file;

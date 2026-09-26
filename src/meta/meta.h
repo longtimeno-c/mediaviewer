@@ -110,6 +110,10 @@ struct metadata {
   // must be transformed by exactly this and no more.
   std::uint8_t display_orientation = 1;
   bool is_clip = false;
+  // PR 29: where a tag edit lands (write.h write_target_for): true = the file
+  // itself (a plain JPEG), false = its XMP sidecar. The pane's editability
+  // column (access_of) is decided from this without another read.
+  bool writes_in_file = false;
 };
 
 // Full read. Worker thread only. `status::io` when the file cannot be read;

@@ -209,7 +209,10 @@ bool mv_chrome_meta_loading(void);
 // values are flattened to spaces). Each returns the length needed and writes at
 // most `size` bytes, NUL-terminated, like mv_chrome_command_table.
 //   summary:    "label\tvalue"                      every row for the kind, value may be empty
-//   properties: "space\tgroup\tlabel\tvalue\traw_tag"  space = exif|iptc|xmp|container|computed
+//   properties: "space\tgroup\tlabel\tvalue\traw_tag\traw\taccess"
+//               space = exif|iptc|xmp|container|computed; raw = the value in the
+//               form an edit takes; access (PR 29, meta::access_of) = e editable
+//               (set, remove), s set only (into the XMP sidecar), r read-only
 //   streams:    "S\tindex\tkind\tcodec" starts a stream, "F\tlabel\tvalue" adds a field to
 //               it, "C\tstart_ms\ttitle" is a chapter; empty for a still
 int32_t mv_chrome_meta_summary(char* buf, int32_t size);
@@ -243,6 +246,16 @@ void mv_chrome_meta_revert(void);
 uint64_t mv_chrome_meta_focus_seq(void);
 // Hands the keyboard back to the canvas (Esc or Return in the comment field).
 void mv_chrome_meta_blur(void);
+
+// PR 29 (owner, 2026-09-26): every tag editable. Queued like the PR 12
+// writes, so a JPEG is rewritten in place (checked) and anything else gets its
+// XMP sidecar; Revert above puts every tag back. [main-thread]
+// Sets `key` (a raw_tag from the table) to `value` in its raw form; NULL
+// removes it. A key the file cannot take beeps and says why.
+void mv_chrome_meta_set_tag(const char* key, const char* value);
+// "YYYY-MM-DD HH:MM:SS" into every capture-time tag the file carries; NULL
+// removes them all.
+void mv_chrome_meta_set_date(const char* value);
 
 // One line for the command bar: what a key or a click just did ("★★★★☆  saved",
 // "Could not save the rating"). The generation moves when the text changes; the
