@@ -1293,7 +1293,7 @@ void present_lab_mac::render_thread_main() noexcept {
         {
           const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
           const double lvl = gfx::background_clear_mac(snapshot.background & 3);
-          if (!have_picture && !(sweep_mode_ && animating_) && !snapshot.blackout) {
+          if (!have_picture && !media_ && !(sweep_mode_ && animating_) && !snapshot.blackout) {
             pass.colorAttachments[0].clearColor = MTLClearColorMake(
                 home_linear_channel(snapshot.home_background_rgb, 16),
                 home_linear_channel(snapshot.home_background_rgb, 8),
