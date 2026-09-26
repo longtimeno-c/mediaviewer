@@ -3477,7 +3477,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case cycle_background:
       [self setViewFlags:(_viewFlags & ~mv::shell::kSettingBackgroundMask) |
                          ((((_viewFlags & mv::shell::kSettingBackgroundMask) >>
-                            mv::shell::kSettingBackgroundShift) + 1) & 3)
+                            mv::shell::kSettingBackgroundShift) + 1) % 5)
                              << mv::shell::kSettingBackgroundShift];
       return YES;
     case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
