@@ -81,10 +81,12 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
       generation = packet_generation; rate = pipe.rate.load();
     }
     if (avcodec_send_packet(codec.get(), packet.get()) < 0) continue;
+    bool drained = false;
     for (;;) {
       int rc = avcodec_receive_frame(codec.get(), decoded.get());
       if (rc == AVERROR(EAGAIN)) break;
       if (rc < 0 && rc != AVERROR_EOF) { pipe.decode_errors.fetch_add(1); break; }
+      drained = drained || rc == AVERROR_EOF;
       if (rc != AVERROR_EOF) {
         if (!filter.graph && !filter.create(decoded.get(), stream->time_base, rate)) {
           pipe.decode_errors.fetch_add(1); break;
@@ -125,6 +127,9 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
       }
       if (rc == AVERROR_EOF) break;
     }
+    // The drain's last block is submitted (or dropped as stale): tell the clock
+    // this generation has no more audio coming.
+    if (drained && generation == pipe.generation.load()) pipe.clock.audio_ended(generation);
   }
 }
 }  // namespace mv::player
