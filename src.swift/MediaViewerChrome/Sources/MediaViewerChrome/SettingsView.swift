@@ -33,6 +33,8 @@ final class SettingsStore: ObservableObject {
   @Published private(set) var captureRow: Int32 = -1
   /// PR 9: packed sort order (bits 0-2 key, bit 3 descending), as sort_order.h.
   @Published private(set) var sort: Int32 = 0
+  /// -1 without an updater (unsigned build), 0 stable, 1 preview.
+  @Published private(set) var updateChannel: Int32 = -1
 
   private var timer: Timer?
   private var generation: UInt64 = .max
@@ -50,6 +52,8 @@ final class SettingsStore: ObservableObject {
     // The menu can change the sort too, and that does not move the keys generation.
     let sortNow = mv_chrome_sort_order()
     if sortNow != sort { sort = sortNow }
+    let channelNow = mv_chrome_update_channel()
+    if channelNow != updateChannel { updateChannel = channelNow }
     let g = mv_chrome_keys_generation()
     if g == generation { return }
     generation = g
@@ -111,6 +115,11 @@ final class SettingsStore: ObservableObject {
   var sortDescending: Bool {
     get { sort & 8 != 0 }
     set { mv_chrome_set_sort_order(newValue ? sort | 8 : sort & ~8); sort = mv_chrome_sort_order() }
+  }
+
+  func setUpdateChannel(_ channel: Int32) {
+    mv_chrome_set_update_channel(channel)
+    updateChannel = mv_chrome_update_channel()
   }
 
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
@@ -243,6 +252,18 @@ struct SettingsView: View {
             Text("Checkerboard").tag(3)
           }
           .pickerStyle(.menu).frame(width: 180)
+        }
+        if store.updateChannel >= 0 {
+          section("Updates")
+          SettingsRow(title: "Update channel",
+                      detail: "Preview gets signed test builds before they become stable. Switching back to Stable keeps this version until a newer stable one is released.") {
+            Picker("Update channel", selection: Binding(get: { store.updateChannel },
+                                                        set: { store.setUpdateChannel($0) })) {
+              Text("Stable").tag(Int32(0))
+              Text("Preview").tag(Int32(1))
+            }
+            .pickerStyle(.menu).frame(width: 180)
+          }
         }
         AddonsSection().padding(.top, 20)
       }

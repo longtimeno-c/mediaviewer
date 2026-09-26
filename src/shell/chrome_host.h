@@ -79,6 +79,9 @@ enum chrome_command : int {
   // PR 13. The island drained MV_COMPLETION_CLIP_INDEX (the island owns the
   // drain); arg is the request id, which native reads with mv_clip_index_get.
   chrome_cmd_clip_index = 1015,
+  // Appearance only: WinUI sends the system window colour as an exact
+  // 24-bit integer carried by float (all integers up to 2^24 are exact).
+  chrome_cmd_home_colour = 1016,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);

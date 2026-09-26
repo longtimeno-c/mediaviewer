@@ -266,6 +266,12 @@ void mv_chrome_open_folder(const char* dir_utf8);
 int32_t mv_chrome_sort_order(void);
 void mv_chrome_set_sort_order(int32_t packed);
 
+// Update channel: -1 when the app was built without an updater (hide the
+// setting), 0 stable, 1 preview (signed prerelease builds as well). Setting it
+// checks for updates on the new channel. [main-thread]
+int32_t mv_chrome_update_channel(void);
+void mv_chrome_set_update_channel(int32_t channel);
+
 // ---- PR 10: export sheet (plan/10 "SwiftUI crop mode and export sheet") -------
 //
 // The sheet's choice is one integer, packed exactly as the Windows export

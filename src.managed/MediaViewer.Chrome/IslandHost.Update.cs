@@ -2,13 +2,15 @@
 using System.Runtime.InteropServices;
 using MediaViewer.Updater;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 
 namespace MediaViewer.Chrome;
 
 /// <summary>
 /// PR 8 in-app updater chrome (plan/13 Part 1): a quiet "Update ready —
-/// restart" button in the command bar and one Settings row. All network and
+/// restart" button in the command bar and two Settings rows (automatic checks,
+/// update channel). All network and
 /// disk work is on <see cref="UpdateService"/>'s own low-priority thread; this
 /// file only renders its status and forwards the click to native, which checks
 /// that no clip is playing and builds the restart arguments.
@@ -22,11 +24,16 @@ public static partial class IslandHost
     private static UpdateService? _updater;
     private static Button? _updateButton;
     private static ToggleSwitch? _autoUpdate;
+    private static ComboBox? _updateChannel;
+    // Set when Settings sends a channel change; the check runs once native has
+    // stored it and pushed the flags back (ApplySettings), not before.
+    private static bool _channelChangePending;
 
     private static void StartUpdater()
     {
         if (_updater is not null) return;
-        _updater = new UpdateService(() => HasFlag(SettingFlag.UpdateAutoCheck), UpdaterLog);
+        _updater = new UpdateService(() => HasFlag(SettingFlag.UpdateAutoCheck),
+            () => HasFlag(SettingFlag.UpdatePreview), UpdaterLog);
         _updater.StatusChanged += s =>
         {
             DispatcherQueueControllerTryEnqueue(() => ShowUpdateStatus(s));
@@ -106,11 +113,41 @@ public static partial class IslandHost
         ToolTipService.SetToolTip(_autoUpdate,
             "Asks GitHub for a newer version at launch and every 6 hours. The request reveals your IP address and app version, nothing about your files.");
         view.Children.Add(SettingsRow("Automatic update checks", "Ask GitHub for new versions at launch and every six hours.", _autoUpdate));
+
+        _updateChannel = new ComboBox
+        {
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            Width = 180,
+        };
+        _updateChannel.Items.Add("Stable");
+        _updateChannel.Items.Add("Preview");
+        _updateChannel.SelectedIndex = HasFlag(SettingFlag.UpdatePreview) ? 1 : 0;
+        AutomationProperties.SetName(_updateChannel, "Update channel");
+        _updateChannel.SelectionChanged += (_, _) =>
+        {
+            if (_updatingSettingsUi || _updateChannel.SelectedIndex < 0) return;
+            _channelChangePending = true;
+            SetFlag(SettingFlag.UpdatePreview, _updateChannel.SelectedIndex == 1);
+        };
+        view.Children.Add(SettingsRow("Update channel",
+            "Preview gets signed test builds before they become stable. Switching back to Stable keeps this version until a newer stable one is released.",
+            _updateChannel));
     }
 
     private static void RefreshUpdateSettingsRow()
     {
         if (_autoUpdate is not null) _autoUpdate.IsOn = HasFlag(SettingFlag.UpdateAutoCheck);
+        if (_updateChannel is not null) _updateChannel.SelectedIndex = HasFlag(SettingFlag.UpdatePreview) ? 1 : 0;
+    }
+
+    /// <summary>Native pushed the flags: a channel change from Settings is stored, so check now.</summary>
+    private static void UpdateChannelApplied()
+    {
+        if (!_channelChangePending) return;
+        _channelChangePending = false;
+        _updater?.Poke();
     }
 
     /// <summary>

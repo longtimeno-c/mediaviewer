@@ -316,6 +316,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)filmstripVisible;
 - (BOOL)galleryVisible;
 - (void)runMenuCmd:(NSInteger)cmd;
+- (void)syncHomeAppearance;
 
 // One key router, one command table (plan/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
@@ -386,6 +387,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)openFolderPath:(const char*)utf8_path;
 - (int32_t)sortOrder;
 - (void)setSortOrder:(int32_t)packed;
+// Update channel (plan/12, 2026-09-26): -1 without an updater, 0 stable,
+// 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
+- (int32_t)updateChannel;
+- (void)setUpdateChannel:(int32_t)channel;
 // PR 11
 - (BOOL)adjustVisible;
 - (void)setAdjustVisible:(BOOL)visible;
@@ -770,6 +775,12 @@ extern "C" int32_t mv_chrome_sort_order(void) {
 extern "C" void mv_chrome_set_sort_order(int32_t packed) {
   if (g_chrome_app) [g_chrome_app setSortOrder:packed];
 }
+extern "C" int32_t mv_chrome_update_channel(void) {
+  return g_chrome_app ? [g_chrome_app updateChannel] : -1;
+}
+extern "C" void mv_chrome_set_update_channel(int32_t channel) {
+  if (g_chrome_app) [g_chrome_app setUpdateChannel:channel];
+}
 
 extern "C" int32_t mv_chrome_export_last_choice(void) {
   return g_chrome_app ? [g_chrome_app exportChoice] : 0;
@@ -1026,6 +1037,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @end
 
 @implementation MvMetalView
+- (void)viewDidChangeEffectiveAppearance {
+  [super viewDidChangeEffectiveAppearance];
+  if (self.app) [self.app syncHomeAppearance];
+}
 // NSDraggingSource: Cmd+drag-out (mouseDown: above). Copy-only -- dragging
 // the displayed item out never removes it from the folder; that's what
 // Delete/Trash and F8/move are for.
@@ -1394,6 +1409,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
   void (^_installUpdateNow)(void);
+  // The preview channel's appcast: the newest release's, stable or not
+  // (-resolveFeedThenCheck:). nil = Info.plist SUFeedURL, the stable feed.
+  NSString* _previewFeedURL;
 #endif
 }
 - (instancetype)initWithOptions:(const mv::shell::mac_lab_options&)options {
@@ -1464,6 +1482,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.view.snap = &_snap;
   self.view.app = self;
   [container addSubview:self.view];
+  [self syncHomeAppearance];
   // Found on real hardware (2026-09-18): this used to be autoresizingMask =
   // NSViewWidthSizable|NSViewHeightSizable instead of an Auto Layout pin, on
   // the theory that a plain frame-based contentView (container, below) with
@@ -1698,8 +1717,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // elapsed since the last one, so a release published between launches went
   // unseen for up to 6 h. Check on every start; still silent unless an update
   // exists. Skipped when the user turned automatic checks off.
-  if (_updater.updater.automaticallyChecksForUpdates)
-    [_updater.updater checkForUpdatesInBackground];
+  [self resolveFeedThenCheck:YES];
 #endif
   // Settings screen: a full-container overlay like the help sheet, hidden until
   // opened (Settings button, Cmd+,).
@@ -2035,6 +2053,27 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ++_snap.activity_seq;
   [self.view publish];
   _lab.wake();
+}
+
+- (void)syncHomeAppearance {
+  // AppKit resolves the semantic colour for this window's effective appearance.
+  // Do this on the UI thread; the Metal thread reads only the POD snapshot.
+  if (!self.view.window) return;
+  // A dynamic colour resolves against the current drawing appearance, so
+  // convert it while this view's appearance is current (macOS 11+).
+  __block NSColor* c = nil;
+  [self.view.effectiveAppearance performAsCurrentDrawingAppearance:^{
+    c = [[NSColor windowBackgroundColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+  }];
+  if (!c) return;
+  const auto component = [](CGFloat value) -> std::uint32_t {
+    return static_cast<std::uint32_t>(std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
+  };
+  const std::uint32_t rgb = (component(c.redComponent) << 16) |
+                            (component(c.greenComponent) << 8) | component(c.blueComponent);
+  if (_snap.home_background_rgb == rgb) return;
+  _snap.home_background_rgb = rgb;
+  [self publish];
 }
 
 - (NSString*)currentItemPathForDrag {
@@ -3065,7 +3104,121 @@ enum MvMenuCmd : NSInteger {
   (void)item;
   _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
 }
+
+// The preview channel reads the appcast of the newest release, prerelease or
+// not; GitHub's /releases/latest never serves a prerelease. Sparkle still
+// checks the feed's EdDSA signature, the archive's, and that the version is
+// newer than this one, so the listing only picks which signed feed is read.
+- (nullable NSString*)feedURLStringForUpdater:(SPUUpdater*)updater {
+  (void)updater;
+  return [self updateChannel] == 1 ? _previewFeedURL : nil;
+}
+
+// Sparkle's own schedule reuses the URL above; refresh it after every cycle so
+// the next scheduled check sees a release published since.
+- (void)updater:(SPUUpdater*)updater
+    didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)updateCheck
+                                 error:(nullable NSError*)error {
+  (void)updater;
+  (void)updateCheck;
+  (void)error;
+  [self resolveFeedThenCheck:NO];
+}
+
+// Highest x.y.z among published releases that carry appcast.xml, from the
+// public listing. Tags are v1.2.3 (older unsigned previews carried a
+// .preview.N suffix and no appcast). nil when nothing qualifies.
+static NSString* MvNewestAppcastURL(NSData* listing) {
+  NSString* const prefix = @"https://github.com/longtimeno-c/mediaviewer/releases/download/";
+  id root = listing ? [NSJSONSerialization JSONObjectWithData:listing options:0 error:nil] : nil;
+  if (![root isKindOfClass:[NSArray class]]) return nil;
+  NSString* best = nil;
+  long long bestVersion = -1;
+  for (id r in (NSArray*)root) {
+    if (![r isKindOfClass:[NSDictionary class]]) continue;
+    id draft = r[@"draft"];
+    if ([draft isKindOfClass:[NSNumber class]] && [draft boolValue]) continue;
+    id tag = r[@"tag_name"];
+    if (![tag isKindOfClass:[NSString class]] || ![tag hasPrefix:@"v"]) continue;
+    NSArray<NSString*>* parts = [[tag substringFromIndex:1] componentsSeparatedByString:@"."];
+    if (parts.count < 3) continue;
+    long long version = 0;
+    bool ok = true;
+    for (NSUInteger i = 0; i < 3 && ok; ++i) {
+      NSScanner* scan = [NSScanner scannerWithString:parts[i]];
+      long long n = 0;
+      ok = [scan scanLongLong:&n] && scan.atEnd && n >= 0 && n < 1000000;
+      version = version * 1000000 + n;
+    }
+    if (!ok || version <= bestVersion) continue;
+    id assets = r[@"assets"];
+    if (![assets isKindOfClass:[NSArray class]]) continue;
+    for (id a in (NSArray*)assets) {
+      if (![a isKindOfClass:[NSDictionary class]] || ![a[@"name"] isEqual:@"appcast.xml"]) continue;
+      id url = a[@"browser_download_url"];
+      if ([url isKindOfClass:[NSString class]] && [url hasPrefix:prefix]) {
+        best = url;
+        bestVersion = version;
+      }
+      break;
+    }
+  }
+  return best;
+}
+
+// Stable: check straight away (Info.plist feed). Preview: read the release
+// listing off the main thread first. `check` is the launch / channel-change
+// check; it still honours "Check for Updates Automatically".
+- (void)resolveFeedThenCheck:(BOOL)check {
+  const BOOL wantCheck = check && _updater.updater.automaticallyChecksForUpdates;
+  if ([self updateChannel] != 1) {
+    _previewFeedURL = nil;
+    if (wantCheck) [_updater.updater checkForUpdatesInBackground];
+    return;
+  }
+  NSURL* api = [NSURL URLWithString:@"https://api.github.com/repos/longtimeno-c/mediaviewer/releases?per_page=10"];
+  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:api];
+  [req setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
+  req.HTTPShouldHandleCookies = NO;
+  __weak MvLabApp* weakSelf = self;
+  [[NSURLSession.sharedSession
+      dataTaskWithRequest:req
+        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+          NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
+                                 ? ((NSHTTPURLResponse*)response).statusCode
+                                 : 0;
+          NSString* url = (!error && status == 200) ? MvNewestAppcastURL(data) : nil;
+          dispatch_async(dispatch_get_main_queue(), ^{
+            MvLabApp* app = weakSelf;
+            if (!app || [app updateChannel] != 1) return;
+            // A failed lookup keeps the last good feed; with none yet, the
+            // check reads the stable feed, which is never wrong, only older.
+            if (url) app->_previewFeedURL = url;
+            if (wantCheck) [app->_updater.updater checkForUpdatesInBackground];
+          });
+        }] resume];
+}
 #endif
+
+- (int32_t)updateChannel {
+#if MV_WITH_SPARKLE
+  return [[NSUserDefaults.standardUserDefaults stringForKey:@"mv.updateChannel"] isEqualToString:@"preview"] ? 1 : 0;
+#else
+  return -1;
+#endif
+}
+
+- (void)setUpdateChannel:(int32_t)channel {
+#if MV_WITH_SPARKLE
+  if (channel != 0 && channel != 1) return;
+  if (channel == [self updateChannel]) return;
+  [NSUserDefaults.standardUserDefaults setObject:(channel == 1 ? @"preview" : @"stable")
+                                          forKey:@"mv.updateChannel"];
+  [self resolveFeedThenCheck:YES];
+#else
+  (void)channel;
+#endif
+}
 
 // ---- Keys, commands, settings -----------------------------------------------
 

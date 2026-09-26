@@ -8,7 +8,8 @@ media-player control, so decoding never stands between you and the screen.
 
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
-apply while the app is open. **Canvas background** remains a separate preference
+apply while the app is open. The empty welcome screen and dinosaur runner follow
+the system window colour too. **Canvas background** remains a separate preference
 for the photo/video surround. Build and interactive checks are documented in
 [System appearance verification](docs/system-theme-verify.md).
 
@@ -219,6 +220,9 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
   locally, scrubbed of paths, filenames and your username, and never sent without asking.
 - **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
 - **Installs per user**, with a public installer and a background updater. The 0.1.2 installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
+- **Stable or preview updates.** Updates follow stable releases by default. **Settings → Update channel → Preview**
+  also installs signed preview builds as they are published; switching back to Stable keeps the installed version
+  until a newer stable release arrives.
 - **Hardened decoding.** A corpus of broken files and per-decoder fuzzers run in CI.
 
 ---
