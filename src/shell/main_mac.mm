@@ -4773,6 +4773,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // opened from Finder, the Dock, Open, a drop or argv counts; walking siblings
 // or the tree does not (-openPath:navigation: passes those as navigation).
 - (void)noteRecentFolder:(const std::string&)dir {
+  if (_options.soak_seconds > 0.0) return;  // a soak's fixture is not a folder the user opened
   std::vector<std::string> next = mv::shell::push_recent_folder(_recentFolders, dir);
   if (next == _recentFolders) return;
   _recentFolders = std::move(next);

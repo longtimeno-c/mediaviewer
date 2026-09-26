@@ -308,6 +308,9 @@ struct app_state {
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
+  // Soaks and scripted runs open fixtures, not the user's folders: they never
+  // reach settings.ini [recent] or the jump list.
+  bool record_recent = true;
   // PR 15: the taskbar thumbnail toolbar (prev / play-pause / next). Created
   // when Explorer says the button exists; `thumb_state` is what it shows:
   // -1 not yet, 0 a still (play disabled), 1 a paused clip, 2 a playing one.
@@ -3769,7 +3772,7 @@ void publish_jump_list(app_state* app) {
 // A folder opened from Explorer, the jump list, Open, a drop or argv counts;
 // walking siblings or the tree does not (open_path's `navigation`).
 void note_recent_folder(app_state* app, const std::string& utf8_dir) {
-  if (!app || utf8_dir.empty()) return;
+  if (!app || !app->record_recent || utf8_dir.empty()) return;
   std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_folders, utf8_dir);
   if (next == app->recent_folders) return;
   app->recent_folders = std::move(next);
@@ -5217,9 +5220,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // a shortcut) hands its paths to the one already running and exits. Soaks,
   // --no-chrome, an update's restart (the old process may still be closing)
   // and --new-instance always run on their own.
-  const bool single_instance = chrome_enabled && !g_new_instance && options.soak_seconds == 0.0 &&
-                               options.av_soak_seconds == 0 && !g_browse.enabled && !options.scripted_pan &&
-                               g_restore.zoom_percent == 0 && !g_restore.fullscreen && !g_restore.gallery;
+  const bool harness_run = options.soak_seconds != 0.0 || options.av_soak_seconds != 0 || g_browse.enabled ||
+                           options.scripted_pan;
+  const bool single_instance = chrome_enabled && !g_new_instance && !harness_run && g_restore.zoom_percent == 0 &&
+                               !g_restore.fullscreen && !g_restore.gallery;
   // Claimed here, not once the window exists: starts that arrive while this
   // one is still loading queue on the pipe instead of becoming "first" too.
   mv::shell::instance_claim instance_claim;
@@ -5261,6 +5265,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.input.background = app.settings.background;
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
+  app.record_recent = !harness_run;
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   for (const auto& o : mv::shell::load_key_overrides()) {
