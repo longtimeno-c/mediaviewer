@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.5
+  VERSION 0.1.6
   DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
   LANGUAGES CXX)
 
