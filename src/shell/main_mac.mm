@@ -46,6 +46,7 @@
 #include "shell/adjust_pane.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
+#include "shell/transport_autohide.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
@@ -324,6 +325,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)handleKeyEvent:(NSEvent*)event;
 - (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)back;
 - (void)cancelKeyHolds;
+// Issue #38: pointer, click, transport key or transport button. Wakes the
+// clip's controls and restarts their idle clock; a no-op with no clip.
+- (void)transportActivity;
 // Settings screen (plan/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
@@ -531,6 +535,8 @@ extern "C" bool mv_chrome_is_marked(int32_t index) {
 // published. [main-thread]
 static void MvPublishVideoInput() {
   if (!g_chrome_snap) return;
+  // Issue #38: a press or a scrub on the strip keeps it up for another interval.
+  if (g_chrome_app) [g_chrome_app transportActivity];
   ++g_chrome_snap->activity_seq;
   if (g_chrome_lab) {
     g_chrome_lab->publish(*g_chrome_snap);
@@ -1169,6 +1175,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+  if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
   (void)event;
@@ -1182,6 +1189,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->mouse_down[1] = true;
   ++self.snap->activity_seq;
   [self publish];
+  if (self.app) [self.app transportActivity];
 }
 - (void)rightMouseUp:(NSEvent*)event {
   (void)event;
@@ -1193,6 +1201,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+  if (self.app) [self.app transportActivity];
 }
 // Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
 // why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
@@ -1213,6 +1222,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
   if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if (self.app) [self.app transportActivity];  // a pointer hidden over the video comes back
 }
 - (void)mouseMoved:(NSEvent*)event {
   const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
@@ -1223,6 +1233,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
   if (self.snap->eyedropper && self.lab) self.lab->wake();
+  // Issue #38: movement (and entry, which arrives as a move) wakes the clip's
+  // transport. A bool test and nothing else when no clip is on screen.
+  if (self.app) [self.app transportActivity];
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
@@ -1315,6 +1328,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // rows of the live table that differ from the defaults.
   mv::shell::key_router _router;
   BOOL _settingsVisible;
+
+  // Issue #38: the clip transport's idle state (shell/transport_autohide.h, the
+  // same rule Windows runs). One one-shot timer at most, only while a clip
+  // plays with its controls up: idle playback adds no repaint and no polling.
+  mv::shell::transport_autohide _autohide;
+  NSTimer* _autohideTimer;
+  bool _transportClip;
+  bool _transportPlaying;
+  bool _transportShown;
   int32_t _viewFlags;
   int _captureRow;
   id _captureMonitor;
@@ -1784,6 +1806,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                      selector:@selector(refreshFolderIfChanged)
                                                      userInfo:nil
                                                       repeats:YES];
+  // Issue #38: closing one of the transport's menus (speed, More) restarts the
+  // idle clock, as the Windows flyout's Closed does. SwiftUI's borderless
+  // menus are NSMenus, and a menu closed without a pick posts nothing else.
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(menuDidEndTracking:)
+                                               name:NSMenuDidEndTrackingNotification
+                                             object:nil];
 
   [self.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
@@ -1927,10 +1956,18 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   // The transport strip belongs to a clip: shown while one is on screen (the
   // render thread publishes that), hidden otherwise so it never blocks the
-  // canvas's mouse. Polled here, on the 0.2 s timer that already exists.
+  // canvas's mouse. Polled here, on the 0.2 s timer that already exists; a
+  // clip opening, pausing, ending, or the gallery / Settings covering it is
+  // what re-runs the idle rule (issue #38). Pause and end bring it back.
   if (self.transportHost) {
-    const bool active = g_chrome_lab && g_chrome_lab->video_status_snapshot().active;
-    if (self.transportHost.hidden == active) self.transportHost.hidden = !active;
+    const auto st = _lab.video_status_snapshot();
+    const bool clip = st.active && !_galleryVisible && !_settingsVisible;
+    const bool playing = clip && st.playing;
+    if (clip != _transportClip || playing != _transportPlaying) {
+      _transportClip = clip;
+      _transportPlaying = playing;
+      [self applyTransportAutohide];
+    }
   }
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
   // items, the current one still selected, no image reload.
@@ -3283,6 +3320,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   e.repeat = !up && event.isARepeat;
   e.up = up;
   const route r = _router.on_key(e, [self currentViewState]);
+  // Issue #38: a transport key, or Tab heading for the controls, also wakes
+  // them. The key still runs exactly its own command, nothing more.
+  if (!up && (k == key::tab || is_transport_command(r.command))) [self transportActivity];
   if (r.command == command_id::none) return r.handled;
   return [self runCommand:r.command back:r.back];
 }
@@ -4779,6 +4819,113 @@ static NSString* const kDefaultsKeys = @"mv.keys";
   [self.view publish];
   _lab.wake();
 }
+// Issue #38: a fullscreen / windowed transition shows the controls, like any
+// other activity, so the change of frame is never also a missing transport.
+- (void)windowDidEnterFullScreen:(NSNotification*)notification {
+  (void)notification;
+  [self transportActivity];
+}
+- (void)windowDidExitFullScreen:(NSNotification*)notification {
+  (void)notification;
+  [self transportActivity];
+}
+
+// --- Issue #38: auto-hide the clip transport ----------------------------------
+// The rule is shell/transport_autohide.h, shared with Windows. This host feeds
+// it facts and applies the answer: a fade of the floating strip, and in
+// fullscreen the pointer. Hiding is visual only -- the strip keeps its layout,
+// decode and audio carry on, and every key still routes.
+
+static std::uint64_t MvNowMs() {
+  return static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0);
+}
+
+- (mv::shell::transport_view)transportView {
+  mv::shell::transport_view v;
+  v.clip = _transportClip;
+  v.playing = _transportPlaying;
+  NSView* host = self.transportHost;
+  bool over = false;
+  if (host && !host.hidden && self.window) {
+    const NSPoint p = [host convertPoint:[self.window mouseLocationOutsideOfEventStream] fromView:nil];
+    over = NSPointInRect(p, host.bounds);
+    NSResponder* first = self.window.firstResponder;
+    const bool focused = [first isKindOfClass:[NSView class]] && [(NSView*)first isDescendantOf:host];
+    v.held = over || focused;
+  }
+  v.screen_reader = NSWorkspace.sharedWorkspace.voiceOverEnabled;
+  v.fullscreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+  v.pointer_on_canvas = _snap.mouse_in_client && !over;
+  return v;
+}
+
+- (void)transportActivity {
+  if (!_transportClip) return;
+  _autohide.activity(MvNowMs());
+  // Already up with a timer running (or paused, when nothing is timed): the
+  // timer re-reads the clock when it fires, so a stream of mouse-moves costs a
+  // compare, not a timer each.
+  if (_transportShown && (_autohideTimer || !_transportPlaying)) return;
+  [self applyTransportAutohide];
+}
+
+- (void)menuDidEndTracking:(NSNotification*)notification {
+  (void)notification;
+  [self transportActivity];
+}
+
+- (void)autohideTimerFired:(NSTimer*)timer {
+  (void)timer;
+  _autohideTimer = nil;
+  [self applyTransportAutohide];
+}
+
+- (void)applyTransportAutohide {
+  NSView* host = self.transportHost;
+  if (!host) return;
+  const std::uint64_t now = MvNowMs();
+  const mv::shell::transport_view v = [self transportView];
+  const bool changed = _autohide.update(v, now);
+  const bool want = _transportClip && _autohide.shown();
+
+  if (!_transportClip) {
+    // No clip (or covered): gone at once, nothing to fade.
+    [host.layer removeAllAnimations];
+    host.alphaValue = 1.0;
+    host.hidden = YES;
+  } else if (want && (host.hidden || !_transportShown)) {
+    host.hidden = NO;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
+      ctx.duration = 0.12;
+      host.animator.alphaValue = 1.0;
+    }];
+  } else if (!want && _transportShown) {
+    // Fade, then hide, so a click where it was reaches the video instead of a
+    // button nobody can see (waking must never also press something).
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext* ctx) {
+      ctx.duration = 0.25;
+      host.animator.alphaValue = 0.0;
+    } completionHandler:^{
+      if (!self->_autohide.shown()) host.hidden = YES;
+    }];
+  }
+  _transportShown = want;
+
+  if (changed && _autohide.pointer_hidden()) [NSCursor setHiddenUntilMouseMoves:YES];
+
+  const std::uint64_t due = _autohide.due_in(v, now);
+  [_autohideTimer invalidate];
+  _autohideTimer = nil;
+  if (due > 0) {
+    _autohideTimer = [NSTimer scheduledTimerWithTimeInterval:static_cast<double>(due) / 1000.0
+                                                      target:self
+                                                    selector:@selector(autohideTimerFired:)
+                                                    userInfo:nil
+                                                     repeats:NO];
+    _autohideTimer.tolerance = 0.05;
+  }
+}
+
 - (void)windowDidBecomeKey:(NSNotification*)notification {
   (void)notification;
   _snap.window_active = true;
