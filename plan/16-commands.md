@@ -52,7 +52,9 @@ is `\` (hold-previous) and, from PR 10, `[` `]`. Those wait for the v1.1 remap.
 
 Keyboard pan moves a tenth of the canvas per step, whatever the zoom, through the springs.
 At fit it is not a pan: `↑` `↓` fall through, except that `↓` in fullscreen reveals the strips
-(and a clip's transport) for 3 s after the last navigation; the bottom hot-edge does the same.
+for 3 s after the last navigation; the bottom hot-edge does the same. A clip's transport is not
+one of those strips: it floats over the video in both modes and auto-hides on its own rule
+(below, and [12](12-decision-log.md) 2026-09-26).
 
 **Tap and hold may be two commands on one key**, and `Q` / `E` on a clip are the case that
 earns it: a tap is a discrete skip (±2 s), a hold is a continuous skim. The distinction is
@@ -89,7 +91,17 @@ the canvas. Fullscreen hides chrome; a `↓` or filmstrip hot-edge shows the str
 navigation settles.
 
 Do not grow an island over the canvas to "make keys easier." That eats mouse-move and the
-swapchain ([12-decision-log.md](12-decision-log.md) 2026-09-07).
+swapchain ([12-decision-log.md](12-decision-log.md) 2026-09-07). The one exception is a clip's
+transport bar, which floats over the bottom of the video and auto-hides (2026-09-26):
+
+- Playing, it hides after `kTransportIdleMs` (2.5 s) with no activity; pointer movement, a click,
+  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, speed, mute, `↑` `↓`
+  volume), `Tab`, or a fullscreen change bring it straight back.
+- Paused, ended, hovered, scrubbing, a menu open, keyboard focus in it, or a screen reader
+  running: it stays. Never over the gallery or Settings, never on a Live Photo stop.
+- Fullscreen: the pointer hides with it while over the video. Windowed: never.
+- Only visual: no refit, no second action on the wake, no repaint while idle. The rule is
+  `shell/transport_autohide.h`, shared by both hosts.
 
 ## Default map
 

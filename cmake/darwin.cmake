@@ -723,6 +723,8 @@ if(MV_BUILD_TESTS)
     # PR 15: the Spotlight importer's field mapping.
     tests/test_spotlight_fields.cpp
     src/shell/spotlight_fields.cpp
+    # Issue #38: the transport's idle state, both hosts.
+    tests/test_transport_autohide.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

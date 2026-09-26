@@ -2397,3 +2397,39 @@ open item.
 version, see "Update ready — restart", restart into it; switch back to Stable and see no
 downgrade. Mac: the same with Sparkle, and the first Xcode build of `main_mac.mm` with the new
 delegate methods (only the release-picking function was compiled and tested on its own).
+
+## 2026-09-26 — The clip transport floats over the video and auto-hides (issue #38), both platforms
+
+**Reverses** PR 5's "the transport must never cover the video" on Windows, where the strip was
+reserved out of the canvas rectangle (plan/16 "do not grow an island over the canvas"). Not a
+D1–D9 reversal: the canvas is still the native swapchain, and nothing is drawn in XAML over it
+except this one bar.
+
+**Why.** Issue #38 asked for the transport to leave the picture while a clip plays and come
+back on activity, the same on Windows and macOS. The two hosts had diverged: the Mac bar
+already floated over the video (PR 19) and the Windows strip shrank the canvas. Auto-hiding a
+reserved strip would either refit the video on every wake, or leave an empty band under it.
+The owner chose one layout for both: float, and hide when idle.
+
+**What.** One rule, `src/shell/transport_autohide.h`, portable and tested headless
+(`tests/test_transport_autohide.cpp`), run by both hosts: 2.5 s idle while playing; activity is
+pointer movement, a click, the wheel, a transport command, `Tab`, or a fullscreen change; it is
+held up while paused, ended, hovered, scrubbed, with a menu open, with keyboard focus in it, or
+under a screen reader; in fullscreen the pointer hides with it over the video, never windowed.
+Windows: the bar is centred (≤ 880 DIP), 10 DIP above the filmstrip, no longer in
+`chrome_bottom_px`, shown in fullscreen too, and auto-hide parks the island below the client
+area with its content kept (an island is an opaque child HWND, so it cannot alpha-fade over the
+swapchain). Mac: the same geometry it had, faded with `alphaValue`, then `hidden` so a click
+reaches the canvas. `chrome_cmd_transport_hold` (1017) carries a scrub or the More flyout from
+the Windows island; `chrome_cmd_video_active` now also carries playing (arg 2) vs paused (1).
+
+**Consequences.** Hovering the hidden bar's area on Windows is canvas mouse-move again, which is
+what wakes it. The bar covers the bottom ~60 DIP of the video while it is up, which is the
+trade the issue asked for. No timer or repaint while idle: the host re-evaluates at a single
+one-shot deadline.
+
+**Owed on hardware.** Neither host was run for this change. The shared rule is unit-tested and
+`main_mac.mm` was compiled (syntax) against the real flags; the Windows host and the C# island
+were not compiled on this machine. Run the issue's acceptance on both: mouse, keyboard,
+touchpad, seek drag, Narrator / VoiceOver, pause, end, fullscreen ↔ windowed, both themes, and
+PresentMon / Instruments on idle playback for no extra repaint, plus both present-loop gates.

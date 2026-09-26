@@ -79,6 +79,9 @@ public static partial class IslandHost
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
         public const int HomeColour = 1016;
+        // Issue #38: arg 1 while a scrub or the More flyout holds the transport
+        // up, 0 when it lets go (chrome_cmd_transport_hold).
+        public const int TransportHold = 1017;
         // PR 12: the comment field was committed (native pulls the text with
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
