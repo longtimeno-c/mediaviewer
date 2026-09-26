@@ -2096,8 +2096,9 @@ std::uint32_t subfolder_count(app_state* app) noexcept {
   return count;
 }
 
-int chrome_bar_px(app_state* app, std::uint32_t dpi) noexcept {
-  return mv::shell::chrome_bar_height_px(dpi, app && !app->current_dir.empty());
+int chrome_bar_px(app_state*, std::uint32_t dpi) noexcept {
+  // The folder trail lives inside the bar, so opening a folder does not grow it.
+  return mv::shell::chrome_bar_height_px(dpi);
 }
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index) {

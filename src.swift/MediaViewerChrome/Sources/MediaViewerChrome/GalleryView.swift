@@ -31,9 +31,6 @@ struct GalleryView: View {
       let mixed = !store.folders.isEmpty && !store.names.isEmpty
       let foldersOnly = !store.folders.isEmpty && store.names.isEmpty
       VStack(spacing: 0) {
-        if !store.crumbs.isEmpty {
-          PathBar()
-        }
         if (mixed || foldersOnly), let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
             .font(.callout.weight(.medium))

@@ -38,11 +38,6 @@ public static partial class IslandHost
     private static FrameworkElement? _galleryRoot;
     private static TextBlock? _galleryCount;
     private static StackPanel? _galleryStack;
-    private static FrameworkElement? _breadcrumbBar;
-    private static Button? _upButton;
-    private static Button? _rootButton;
-    private static TextBlock? _pathCurrent;
-    private static StackPanel? _crumbTrail;
     private static TextBlock? _photosHeader;
     private static TextBlock? _galleryEmpty;
     private static TextBlock? _folderFindLabel;
@@ -288,11 +283,6 @@ public static partial class IslandHost
             _galleryScroll = null;
             _galleryCount = null;
             _galleryStack = null;
-            _breadcrumbBar = null;
-            _upButton = null;
-            _rootButton = null;
-            _pathCurrent = null;
-            _crumbTrail = null;
             _photosHeader = null;
             _galleryEmpty = null;
             _folderFindLabel = null;
@@ -552,22 +542,16 @@ public static partial class IslandHost
             }
         };
 
-        _breadcrumbBar = BuildBreadcrumb();
+        // The folder trail is in the command bar above (BuildBarPathRow).
         var root = new Grid
         {
             RequestedTheme = ElementTheme.Default,
             Background = Brush(Canvas),
         };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        Grid.SetRow(_breadcrumbBar, 0);
-        root.Children.Add(_breadcrumbBar);
         WireFileDrop(root);
-        Grid.SetRow(_galleryScroll, 1);
         root.Children.Add(_galleryScroll);
         _galleryRoot = root;
         UpdateGallerySections();
-        RebuildPathBars();
         return root;
     }
 
@@ -582,53 +566,67 @@ public static partial class IslandHost
         Visibility = Visibility.Collapsed,
     };
 
-    private static FrameworkElement BuildBreadcrumb() => BuildPathRow(36,
-        out _upButton, out _rootButton, out _crumbTrail, out _pathCurrent);
-
+    // The folder trail, in the command bar just left of `?` (Mac PathBar in
+    // CommandBarView.swift). Up and Root are icons outside the scrolling
+    // ancestor trail; the current name is pinned at the end. Collapsed with no
+    // folder open.
     private static FrameworkElement BuildBarPathRow()
     {
-        _barPathRow = BuildPathRow(27,
-            out _barUpButton, out _barRootButton, out _barCrumbTrail, out _barPathCurrent);
-        return _barPathRow;
-    }
-
-    private static FrameworkElement BuildPathRow(double height, out Button up, out Button root,
-        out StackPanel trail, out TextBlock current)
-    {
-        up = TextButton("↑ Up", () => Send(Command.FolderUp));
-        root = TextButton("Root", () => Send(Command.OpenCrumb, 0));
-        foreach (Button button in new[] { up, root })
+        _barUpButton = PathIconButton("\uE74A", () => Send(Command.FolderUp));
+        AutomationProperties.SetName(_barUpButton, "Up one folder");
+        ToolTipService.SetToolTip(_barUpButton, "Open the enclosing folder (Ctrl+Up)");
+        _barRootButton = PathIconButton("\uE80F", () => Send(Command.OpenCrumb, 0));
+        AutomationProperties.SetName(_barRootButton, "Return to browsing root");
+        _barCrumbTrail = new StackPanel
         {
-            button.Padding = new Thickness(8, 2, 8, 2);
-            button.MinHeight = 24;
-            button.VerticalAlignment = VerticalAlignment.Center;
-        }
-        AutomationProperties.SetName(up, "Up one folder");
-        AutomationProperties.SetName(root, "Return to browsing root");
-        ToolTipService.SetToolTip(up, "Open the enclosing folder (Ctrl+Up)");
-        trail = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        var scroller = PathScroller(trail);
-        current = new TextBlock
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+        };
+        // Only as wide as the trail, up to a cap; past that it scrolls.
+        ScrollViewer scroller = PathScroller(_barCrumbTrail);
+        scroller.MaxWidth = 300;
+        scroller.VerticalAlignment = VerticalAlignment.Center;
+        _barPathCurrent = new TextBlock
         {
             FontFamily = UiFont, FontSize = 13,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = Brush(Title), VerticalAlignment = VerticalAlignment.Center,
-            MaxWidth = 240, TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(8, 0, 0, 0),
+            MaxWidth = 200, TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(4, 0, 0, 0),
         };
-        var row = new Grid { Height = height, Padding = new Thickness(8, 0, 12, 0), Background = Brush(Canvas) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.Children.Add(up);
-        Grid.SetColumn(root, 1);
-        row.Children.Add(root);
-        Grid.SetColumn(scroller, 2);
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        row.Children.Add(_barUpButton);
+        row.Children.Add(_barRootButton);
         row.Children.Add(scroller);
-        Grid.SetColumn(current, 3);
-        row.Children.Add(current);
+        row.Children.Add(_barPathCurrent);
+        row.Children.Add(new Border
+        {
+            Width = 1, Height = 18,
+            Background = Brush(Hairline),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        _barPathRow = row;
+        RebuildPathBars();
         return row;
+    }
+
+    private static Button PathIconButton(string glyph, Action click)
+    {
+        Button button = TextButton("", click);
+        button.Content = new FontIcon { Glyph = glyph, FontSize = 12, Foreground = Brush(Title) };
+        button.Padding = new Thickness(7, 5, 7, 5);
+        button.MinHeight = 26;
+        return button;
     }
 
     private static ScrollViewer PathScroller(StackPanel trail) => new()
@@ -640,11 +638,8 @@ public static partial class IslandHost
         VerticalScrollMode = ScrollMode.Disabled,
     };
 
-    private static void RebuildPathBars()
-    {
-        FillPathTrail(_crumbTrail, _upButton, _rootButton, _pathCurrent, _breadcrumbBar);
+    private static void RebuildPathBars() =>
         FillPathTrail(_barCrumbTrail, _barUpButton, _barRootButton, _barPathCurrent, _barPathRow);
-    }
 
     private static void FillPathTrail(StackPanel? trail, Button? up, Button? root, TextBlock? current, FrameworkElement? row)
     {
@@ -698,7 +693,7 @@ public static partial class IslandHost
                 Button crumb = TextButton(piece.Name, () => Send(Command.OpenCrumb, index));
                 crumb.Padding = new Thickness(4, 2, 4, 2);
                 crumb.MinHeight = 24;
-                crumb.MaxWidth = 160;
+                crumb.MaxWidth = 120;
                 if (crumb.Content is TextBlock label) label.TextTrimming = TextTrimming.CharacterEllipsis;
                 ToolTipService.SetToolTip(crumb, Crumbs[index].Path);
                 trail.Children.Add(crumb);

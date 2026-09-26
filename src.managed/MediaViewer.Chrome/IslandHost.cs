@@ -1227,16 +1227,20 @@ public static partial class IslandHost
         Button helpBtn = TextButton("?", () => Send(Command.Help));
         ToolTipService.SetToolTip(helpBtn, "Keyboard shortcuts  ?");
 
-        // Menus left, speed then `?` on the far right.
+        // Menus left; speed, the folder trail, then `?` on the far right.
+        FrameworkElement path = BuildBarPathRow();
         var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
         Grid.SetColumn(speed, 1);
         bar.Children.Add(speed);
-        Grid.SetColumn(helpBtn, 2);
+        Grid.SetColumn(path, 2);
+        bar.Children.Add(path);
+        Grid.SetColumn(helpBtn, 3);
         bar.Children.Add(helpBtn);
 
         var root = new Grid
@@ -1247,14 +1251,10 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(bar, 0);
         root.Children.Add(bar);
-        FrameworkElement path = BuildBarPathRow();
-        Grid.SetRow(path, 1);
-        root.Children.Add(path);
         Grid busy = BuildBusyBar();
         Grid.SetRow(busy, 0);
         root.Children.Add(busy);
@@ -1263,7 +1263,7 @@ public static partial class IslandHost
         // Settings is built on first open. Building it into the 48 DIP bar at
         // attach left the command row blank (star-row height 0).
         var rule = new Border { Background = Brush(Hairline) };
-        Grid.SetRow(rule, 2);
+        Grid.SetRow(rule, 1);
         root.Children.Add(rule);
         root.PreviewKeyDown += OnSettingsKeyDown;
         root.PreviewKeyUp += OnSettingsKeyUp;
