@@ -3,11 +3,15 @@
 #include "shell/edit_session.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 
 #include "codec/format.h"
 #include "edit/lossless_jpeg.h"
 #include "io/collision_name.h"
+#include "io/dir.h"
 #include "io/file.h"
 #include "io/file_port.h"
 #include "io/paths.h"
@@ -500,18 +504,45 @@ std::string flattened_file_name(std::string_view source_path) {
   return edit::export_file_name(name, edit::image_format::png);
 }
 
+namespace {
+
+// A name for one bake's folder that sorts after every earlier one: the wall
+// clock, then a per-process count for two bakes in the same tick.
+std::string next_flatten_folder() {
+  static std::atomic<std::uint32_t> seq{0};
+  const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%016llx-%08x", static_cast<unsigned long long>(ns),
+                static_cast<unsigned>(seq.fetch_add(1, std::memory_order_relaxed)));
+  return buf;
+}
+
+}  // namespace
+
 result<flattened_copy> run_flatten(std::string_view source_path, const edit::geometry& g,
                                    const edit::colour& c) {
   MV_TRY(std::vector<std::uint8_t> png, render_flattened_png(source_path, g, c));
   MV_TRY(std::string dir, io::clipboard_dir());
-  // One file at a time: the previous copy is on no clipboard once this one is.
-  (void)io::remove_tree(dir);
-  MV_TRY_VOID(io::make_directories(dir));
   const char slash = dir.find('\\') != std::string::npos ? '\\' : '/';
+  // Each bake has its own folder. Bakes run on the pool, several at once when
+  // the key repeats; wiping one shared folder deleted the file a sibling had
+  // just put on the clipboard, or that a drop target was still copying.
+  const std::string mine = dir + slash + next_flatten_folder();
+  MV_TRY_VOID(io::make_directories(mine));
   flattened_copy out;
-  out.path = dir + slash + flattened_file_name(source_path);
+  out.path = mine + slash + flattened_file_name(source_path);
   if (!io::write_new(out.path, png)) return err(status::io);
   out.png = std::move(png);
+  // Only the newest few stay; anything older is on no clipboard any more.
+  if (auto kids = io::list_subdirectories(dir); kids && kids->size() > kKeptFlattenedCopies) {
+    std::sort(kids->begin(), kids->end(),
+              [](const io::subdir& a, const io::subdir& b) { return a.name_utf8 < b.name_utf8; });
+    for (std::size_t i = 0; i + kKeptFlattenedCopies < kids->size(); ++i) {
+      if (kids->at(i).path_utf8 != mine) (void)io::remove_tree(kids->at(i).path_utf8);
+    }
+  }
   return out;
 }
 

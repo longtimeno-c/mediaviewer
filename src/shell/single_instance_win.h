@@ -26,6 +26,26 @@ namespace mv::shell {
 // as the first instance.
 [[nodiscard]] bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept;
 
+// The first instance claims the name as soon as it knows it is one, long
+// before its window exists. A second start in that gap (Explorer starts one
+// process per selected file) then connects, and its paths wait in the pipe's
+// buffer until the listener starts, instead of opening a second window.
+class instance_claim {
+ public:
+  instance_claim() = default;
+  instance_claim(const instance_claim&) = delete;
+  instance_claim& operator=(const instance_claim&) = delete;
+  ~instance_claim();
+
+  // False when another process already owns the name: forward to it instead.
+  [[nodiscard]] bool claim() noexcept;
+  [[nodiscard]] bool claimed() const noexcept { return pipe_ != INVALID_HANDLE_VALUE; }
+
+ private:
+  friend class instance_listener;
+  HANDLE pipe_ = INVALID_HANDLE_VALUE;
+};
+
 // The first instance. Listens on its own thread; each hand-off is posted to
 // `window` as `message` with a heap std::wstring* in LPARAM (paths separated
 // by '\n', possibly empty: "just come to the front"), which the receiver owns.
@@ -36,8 +56,8 @@ class instance_listener {
   instance_listener& operator=(const instance_listener&) = delete;
   ~instance_listener() { stop(); }
 
-  // False when another instance already owns the pipe.
-  bool start(HWND window, UINT message) noexcept;
+  // Takes over the claimed pipe. False when nothing was claimed.
+  bool start(HWND window, UINT message, instance_claim& claim) noexcept;
   void stop() noexcept;
 
  private:

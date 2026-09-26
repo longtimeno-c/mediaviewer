@@ -531,8 +531,12 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
     publish(app);
     return;
   }
-  note_recent_folder(app, utf8_from_wide(wide_path.substr(0, slash)));
-  open_folder(app, wide_path.substr(0, slash), wide_path);
+  // A file at a drive root keeps the root's separator: "D:" alone is the
+  // drive's current directory, not its root.
+  std::wstring parent(wide_path.substr(0, slash));
+  if (parent.size() == 2 && parent[1] == L':') parent.push_back(L'\\');
+  note_recent_folder(app, utf8_from_wide(parent));
+  open_folder(app, parent, wide_path);
 }
 
 // argv and drag-and-drop (plan/16): the first entry that exists wins — a folder
@@ -3613,9 +3617,17 @@ std::wstring jump_list_arguments(const std::string& utf8_dir) {
 // CommitList writes the list into the user's profile. Returns the folders the
 // user removed from the list since the last commit: Windows refuses a
 // category that adds one back, so the caller drops them from the recents.
-std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, const std::wstring& exe) {
+//
+// Every request takes a number on the UI thread; the pool may run two out of
+// order, so one that a newer request has overtaken commits nothing (the newer
+// one carries the newer list).
+std::atomic<std::uint64_t> g_jump_list_seq{0};
+
+std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, const std::wstring& exe,
+                                         std::uint64_t seq) {
   static std::mutex one_at_a_time;
   const std::lock_guard lock(one_at_a_time);
+  if (seq != g_jump_list_seq.load(std::memory_order_acquire)) return {};
   std::vector<std::string> pruned;
   const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   ICustomDestinationList* list = nullptr;
@@ -3710,9 +3722,10 @@ std::wstring jump_list_exe() {
 void publish_jump_list(app_state* app) {
   if (!app || !app->window) return;
   const HWND hwnd = app->window;
+  const std::uint64_t seq = g_jump_list_seq.fetch_add(1, std::memory_order_acq_rel) + 1;
   app->jobs.submit_at(mv::background_generation,
-                      [folders = app->recent_folders, exe = jump_list_exe(), hwnd](const mv::job_context&) -> mv::status {
-                        std::vector<std::string> pruned = build_jump_list(folders, exe);
+                      [folders = app->recent_folders, exe = jump_list_exe(), hwnd, seq](const mv::job_context&) -> mv::status {
+                        std::vector<std::string> pruned = build_jump_list(folders, exe, seq);
                         if (pruned.empty()) return mv::status::ok;
                         auto* r = new (std::nothrow) std::vector<std::string>(std::move(pruned));
                         if (r && !::PostMessageW(hwnd, kMsgJumpListPruned, 0, reinterpret_cast<LPARAM>(r))) delete r;
@@ -5092,7 +5105,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   const bool single_instance = chrome_enabled && !g_new_instance && options.soak_seconds == 0.0 &&
                                options.av_soak_seconds == 0 && !g_browse.enabled && !options.scripted_pan &&
                                g_restore.zoom_percent == 0 && !g_restore.fullscreen && !g_restore.gallery;
-  if (single_instance && mv::shell::forward_to_running_instance(requested_paths)) return 0;
+  // Claimed here, not once the window exists: starts that arrive while this
+  // one is still loading queue on the pipe instead of becoming "first" too.
+  mv::shell::instance_claim instance_claim;
+  if (single_instance) {
+    if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+    if (!instance_claim.claim()) {
+      // Another start claimed the name between our look and our claim.
+      if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+      MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
+    }
+  }
 
   if (options.av_soak_seconds) {
     const auto clip = utf8_from_wide(requested_paths.empty() ? std::wstring_view{}
@@ -5205,8 +5228,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     mv_session_release(app.session);
     return 2;
   }
-  if (single_instance && !app.instance.start(hwnd, kMsgOpenForwarded)) {
-    MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
+  if (instance_claim.claimed() && !app.instance.start(hwnd, kMsgOpenForwarded, instance_claim)) {
+    MV_LOG_WARN("single instance: the listener did not start; this one runs alone");
   }
   // PR 15: the Explorer thumbnail handler for this version, copied and
   // registered off the UI thread (shell/shellext_install.h). Installed builds only.

@@ -41,6 +41,18 @@ constexpr CLSID kClsid = {0x6a3f1b52, 0x8c0e, 0x4d7a, {0x9b, 0x21, 0x5e, 0x4c, 0
 std::atomic<long> g_objects{0};
 std::atomic<long> g_locks{0};
 
+// A decode that passed the deadline keeps running this DLL's code on its own
+// thread. DllCanUnloadNow also waits for it, but the thread still returns
+// through a few of our instructions after it signs off, so once any decode has
+// been abandoned the DLL stays loaded until the surrogate exits.
+void pin_module() noexcept {
+  static std::atomic<bool> pinned{false};
+  if (pinned.exchange(true)) return;
+  HMODULE self = nullptr;
+  ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       reinterpret_cast<LPCWSTR>(&pin_module), &self);
+}
+
 class thumb_provider final : public IInitializeWithStream, public IThumbnailProvider {
  public:
   thumb_provider() noexcept { ++g_objects; }
@@ -107,6 +119,7 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
     // No path, name or pixels are logged, here or by the core (rule 6).
     auto thumb = mv::shellext::render_thumbnail_by(std::move(bytes_), cx);
     bytes_ = {};
+    if (!thumb && thumb.error() == mv::status::cancelled) pin_module();
     if (!thumb) return thumb.error() == mv::status::out_of_memory ? E_OUTOFMEMORY : E_FAIL;
 
     BITMAPINFO bi{};
@@ -176,5 +189,7 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** out) {
 }
 
 STDAPI DllCanUnloadNow() {
-  return g_objects.load() == 0 && g_locks.load() == 0 ? S_OK : S_FALSE;
+  return g_objects.load() == 0 && g_locks.load() == 0 && mv::shellext::decodes_in_flight() == 0
+             ? S_OK
+             : S_FALSE;
 }

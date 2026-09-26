@@ -48,7 +48,11 @@ struct pending {
   std::vector<std::uint8_t> bytes;
 };
 
+std::atomic<std::uint32_t> g_in_flight{0};
+
 }  // namespace
+
+std::uint32_t decodes_in_flight() noexcept { return g_in_flight.load(std::memory_order_acquire); }
 
 result<bgra_thumb> render_thumbnail(std::span<const std::uint8_t> bytes, std::uint32_t cx,
                                     const job_context* ctx) {
@@ -65,11 +69,17 @@ result<bgra_thumb> render_thumbnail(std::span<const std::uint8_t> bytes, std::ui
 
 result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uint32_t cx,
                                        std::chrono::milliseconds deadline) {
+  // Reserve a slot before starting the thread; the thread gives it back as
+  // the last thing it does, after it has released everything it holds.
+  if (g_in_flight.fetch_add(1, std::memory_order_acq_rel) >= kMaxInFlight) {
+    g_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+    return err(status::cancelled);
+  }
   std::shared_ptr<pending> job;
   try {
     job = std::make_shared<pending>();
     job->bytes = std::move(bytes);
-    std::thread([job, cx] {
+    std::thread([job, cx]() mutable {
       result<bgra_thumb> r = err(status::internal);
       try {
         const job_context ctx(0, 1, &job->current, 0);
@@ -80,14 +90,20 @@ result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uin
         r = err(status::internal);
       }
       job->bytes = {};
-      std::lock_guard lock(job->mu);
-      job->answer.emplace(std::move(r));
-      job->done = true;
-      job->done_cv.notify_all();
+      {
+        std::lock_guard lock(job->mu);
+        job->answer.emplace(std::move(r));
+        job->done = true;
+        job->done_cv.notify_all();
+      }
+      job.reset();
+      g_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     }).detach();
   } catch (const std::bad_alloc&) {
+    g_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     return err(status::out_of_memory);
   } catch (...) {
+    g_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     return err(status::internal);  // no thread could be started
   }
   std::unique_lock lock(job->mu);

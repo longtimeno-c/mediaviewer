@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 #include "codec/raster.h"
@@ -88,4 +89,25 @@ TEST_CASE("the deadline path answers, and abandons a late decode", "[shellext]")
   auto late = mv::shellext::render_thumbnail_by(png(3000, 3000, 9, 9, 9, 255), 256,
                                                 std::chrono::milliseconds(0));
   CHECK_FALSE(late);
+  // The abandoned thread is counted until it has let go of everything, which
+  // is what keeps the Explorer DLL from unloading under it.
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+       mv::shellext::decodes_in_flight() != 0 && std::chrono::steady_clock::now() < end;)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  CHECK(mv::shellext::decodes_in_flight() == 0);
+}
+
+TEST_CASE("abandoned decodes are capped, and the cap frees up", "[shellext]") {
+  std::vector<std::uint8_t> big = png(3000, 3000, 9, 9, 9, 255);
+  for (std::uint32_t i = 0; i < mv::shellext::kMaxInFlight + 4; ++i) {
+    auto r = mv::shellext::render_thumbnail_by(big, 256, std::chrono::milliseconds(0));
+    CHECK_FALSE(r);
+  }
+  CHECK(mv::shellext::decodes_in_flight() <= mv::shellext::kMaxInFlight);
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+       mv::shellext::decodes_in_flight() != 0 && std::chrono::steady_clock::now() < end;)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  REQUIRE(mv::shellext::decodes_in_flight() == 0);
+  auto ok = mv::shellext::render_thumbnail_by(png(64, 64, 9, 9, 9, 255), 32, std::chrono::seconds(10));
+  CHECK(ok);
 }

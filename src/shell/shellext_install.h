@@ -5,7 +5,8 @@
 // running version. Windows host only.
 //
 //   * The handler runs from <root>\shellext\<version>\, a copy of the files
-//     MediaViewerThumbs.files lists, made from current\ on the first start of
+//     MediaViewerThumbs.files lists plus every DLL beside the app they import
+//     (read from their PE import tables), made from current\ on the first start of
 //     a version. An isolated surrogate may hold the DLL for minutes; an update
 //     swaps current\ and never has to replace a DLL in use.
 //   * Per-user COM (HKCU\Software\Classes): the CLSID with its

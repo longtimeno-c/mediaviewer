@@ -35,10 +35,11 @@ bool same_folder(std::string_view a, std::string_view b) noexcept {
 
 std::vector<std::string> push_recent_folder(std::vector<std::string> list, std::string_view utf8_dir,
                                             std::size_t max) {
-  const std::string_view dir = trim_separator(utf8_dir);
+  std::string dir(trim_separator(utf8_dir));
   if (dir.empty() || max == 0) return list;
+  if (dir.size() == 2 && dir[1] == ':') dir.push_back('\\');  // "D:" is the drive's current folder; the root is "D:\".
   std::erase_if(list, [&](const std::string& p) { return p.empty() || same_folder(p, dir); });
-  list.insert(list.begin(), std::string(dir));
+  list.insert(list.begin(), std::move(dir));
   if (list.size() > max) list.resize(max);
   return list;
 }

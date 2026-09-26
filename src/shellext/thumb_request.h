@@ -29,6 +29,11 @@ inline constexpr std::uint64_t kMaxSourceBytes = 512ull * 1024u * 1024u;
 inline constexpr std::uint32_t kMaxThumbEdge = 1024;
 // After this the handler answers "no thumbnail" and cancels the decode.
 inline constexpr std::chrono::milliseconds kDeadline{4000};
+// Decode threads allowed at once, abandoned ones included. A decoder that
+// ignores cancellation keeps its thread and its copy of the bytes; past this
+// many, a new request is refused (status::cancelled) rather than piling up
+// another 512 MB in a surrogate other handlers share.
+inline constexpr std::uint32_t kMaxInFlight = 4;
 
 // Top-down BGRA, what a 32-bpp DIB section holds. Premultiplied when
 // `has_alpha` (WTSAT_ARGB); opaque otherwise (WTSAT_RGB).
@@ -52,5 +57,10 @@ struct bgra_thumb {
 [[nodiscard]] result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes,
                                                      std::uint32_t cx,
                                                      std::chrono::milliseconds deadline = kDeadline);
+
+// Decode threads still running, including those whose caller gave up. The
+// Explorer DLL reports "cannot unload" while this is non-zero: an abandoned
+// thread is still executing the DLL's code.
+[[nodiscard]] std::uint32_t decodes_in_flight() noexcept;
 
 }  // namespace mv::shellext

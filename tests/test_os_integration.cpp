@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,12 @@ TEST_CASE("recent folders are most recent first, one entry per folder", "[shell]
     list = push_recent_folder(list, "/");
     REQUIRE(list[0] == "/");
     REQUIRE(list[1] == "D:\\");
+  }
+  SECTION("a bare drive is its root, and one entry with it") {
+    list = push_recent_folder(list, "D:\\");
+    list = push_recent_folder(list, "D:");
+    REQUIRE(list[0] == "D:\\");
+    REQUIRE(std::count(list.begin(), list.end(), std::string("D:\\")) == 1);
   }
 }
 

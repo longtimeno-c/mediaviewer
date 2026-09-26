@@ -13,7 +13,9 @@ namespace {
 
 // A hand-off is a few paths; anything longer than this is not ours.
 constexpr DWORD kMaxMessageBytes = 256 * 1024;
-constexpr DWORD kClientWaitMs = 2000;
+// How long a second start waits for a busy pipe: the first instance may still
+// be creating its window, and several starts queue on one pipe instance.
+constexpr DWORD kClientWaitMs = 10000;
 constexpr DWORD kReadWaitMs = 2000;
 
 std::wstring pipe_name() {
@@ -72,10 +74,15 @@ bool wait_io(HANDLE pipe, OVERLAPPED& ov, HANDLE stop, DWORD timeout, DWORD& byt
 bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept {
   try {
     const std::wstring name = pipe_name();
-    HANDLE pipe = ::CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (pipe == INVALID_HANDLE_VALUE && ::GetLastError() == ERROR_PIPE_BUSY &&
-        ::WaitNamedPipeW(name.c_str(), kClientWaitMs)) {
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    const ULONGLONG give_up = ::GetTickCount64() + kClientWaitMs;
+    for (;;) {
       pipe = ::CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (pipe != INVALID_HANDLE_VALUE || ::GetLastError() != ERROR_PIPE_BUSY) break;
+      // Another start holds the one instance; the owner frees it once read.
+      const ULONGLONG now = ::GetTickCount64();
+      if (now >= give_up) break;
+      (void)::WaitNamedPipeW(name.c_str(), static_cast<DWORD>(give_up - now));
     }
     if (pipe == INVALID_HANDLE_VALUE) return false;  // nobody is listening: be the first
     std::wstring message;
@@ -101,19 +108,30 @@ bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcep
   }
 }
 
-bool instance_listener::start(HWND window, UINT message) noexcept {
-  if (thread_.joinable() || !window) return false;
+instance_claim::~instance_claim() {
+  if (pipe_ != INVALID_HANDLE_VALUE) ::CloseHandle(pipe_);
+}
+
+bool instance_claim::claim() noexcept {
+  if (claimed()) return true;
   try {
-    HANDLE first = create_pipe(pipe_name(), true);
-    if (first == INVALID_HANDLE_VALUE) return false;  // another instance owns it
+    pipe_ = create_pipe(pipe_name(), true);
+  } catch (...) {
+    pipe_ = INVALID_HANDLE_VALUE;
+  }
+  return claimed();  // INVALID_HANDLE_VALUE: another instance owns the name
+}
+
+bool instance_listener::start(HWND window, UINT message, instance_claim& claim) noexcept {
+  if (thread_.joinable() || !window || !claim.claimed()) return false;
+  try {
     stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!stop_event_) {
-      ::CloseHandle(first);
-      return false;
-    }
+    if (!stop_event_) return false;
     window_ = window;
     message_ = message;
+    HANDLE first = claim.pipe_;
     thread_ = std::thread([this, first] { run(first); });
+    claim.pipe_ = INVALID_HANDLE_VALUE;  // the listener owns it now
     return true;
   } catch (...) {
     return false;
@@ -142,7 +160,9 @@ void instance_listener::run(HANDLE pipe) noexcept {
     bool connected = ::ConnectNamedPipe(pipe, &ov) != FALSE;
     if (!connected) {
       const DWORD e = ::GetLastError();
-      if (e == ERROR_PIPE_CONNECTED) connected = true;
+      // ERROR_NO_DATA: a start connected, wrote and closed before this
+      // listener existed; its message is still in the buffer to read.
+      if (e == ERROR_PIPE_CONNECTED || e == ERROR_NO_DATA) connected = true;
       else if (e == ERROR_IO_PENDING) connected = wait_io(pipe, ov, stop_event_, INFINITE, bytes);
     }
     if (::WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) break;
