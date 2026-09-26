@@ -123,7 +123,7 @@ public static partial class IslandHost
         Grid root = PanelShell("Adjust", Command.AdjustPane, out Grid body);
         var col = new StackPanel { Spacing = 10, Padding = new Thickness(14, 4, 14, 14) };
 
-        _histCanvas = new Canvas { Height = 96, Background = Brush(ColorHelper.FromArgb(255, 20, 21, 26)) };
+        _histCanvas = new Canvas { Height = 96, Background = Brush(ChromeColour.Surface) };
         col.Children.Add(_histCanvas);
         _adjustClip = Text("", Body, UiFontSize - 2);
         col.Children.Add(_adjustClip);
@@ -248,7 +248,12 @@ public static partial class IslandHost
                 points.Add(new Point(x, y));
             }
             points.Add(new Point(w, h));
-            _histCanvas.Children.Add(new Polygon { Points = points, Fill = Brush(colours[c]) });
+            _histCanvas.Children.Add(new Polygon
+            {
+                Points = points,
+                Fill = c == 3 ? Brush(Title) : Brush(colours[c]),
+                Opacity = c == 3 ? 0.6 : 1.0,
+            });
         }
     }
 }

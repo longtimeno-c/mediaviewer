@@ -135,7 +135,13 @@ internal sealed class ImportWindow : Window
 
     private UIElement BuildLayout()
     {
-        var root = new Grid { Background = new SolidColorBrush(ColorHelper.FromArgb(255, 33, 35, 42)) };
+        // Keep the ThemeResource expression on the live root so Windows updates
+        // it, along with the native controls, when appearance changes.
+        var root = (Grid)XamlReader.Load(
+            """
+            <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                  Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
+            """);
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(240) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320) });

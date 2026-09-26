@@ -82,6 +82,6 @@ struct JobsView: View {
     .padding(8)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(RoundedRectangle(cornerRadius: 6).strokeBorder(
-      selected ? Color.orange : Color.primary.opacity(0.15), lineWidth: 1))
+      selected ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: 1))
   }
 }

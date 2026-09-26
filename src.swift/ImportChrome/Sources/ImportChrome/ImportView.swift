@@ -9,9 +9,9 @@
 import AppKit
 import SwiftUI
 
-private let canvas = Color(red: 33 / 255, green: 35 / 255, blue: 42 / 255)
-private let titleColor = Color(red: 220 / 255, green: 222 / 255, blue: 228 / 255)
-private let bodyColor = Color(red: 150 / 255, green: 154 / 255, blue: 164 / 255)
+private let canvas = Color(nsColor: .windowBackgroundColor)
+private let titleColor = Color(nsColor: .labelColor)
+private let bodyColor = Color(nsColor: .secondaryLabelColor)
 
 struct ImportView: View {
   @ObservedObject var model: ImportModel
@@ -148,7 +148,7 @@ struct ImportView: View {
       if let img = model.thumbs[tile.index] {
         Image(nsImage: img).resizable().scaledToFill()
       } else {
-        Rectangle().fill(Color.white.opacity(0.05))
+        Rectangle().fill(Color.primary.opacity(0.05))
       }
       Text(tile.selected ? "☑" : "☐").font(.title3).padding(4)
       VStack {
