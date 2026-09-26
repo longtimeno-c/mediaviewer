@@ -291,6 +291,16 @@ enum class command_id : std::uint16_t {
   clip_tools,          // Ctrl+S on a clip: rotate / split / remux / frame / audio / GIF flyout
   clip_split,          // Ctrl+B on a clip: split at the playhead's nearest keyframe
   trim_remove_middle,  // Ctrl+X in trim: a copy without [in, out)
+  // PR 29 (plan/20 the Edit workspace). Appended; every id above keeps its value.
+  edit_workspace,         // Enter (Return) on a still or a clip: open / close the Edit workspace
+  crop_aspect_cycle,      // A in crop: the next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4)
+  crop_aspect_swap,       // X in crop: portrait <-> landscape for the locked preset
+  show_original,          // Y held on a still: the original pixels, edits kept
+  show_original_release,
+  // Island-only, keyless: the Crop pane's preset buttons (argument = preset,
+  // + 16 for portrait) and its straighten slider (argument = degrees).
+  crop_aspect_set,
+  crop_straighten_set,
   count
 };
 

@@ -409,6 +409,46 @@ void mv_chrome_jobs_close(void);
 // Esc in the pane: focus back to the canvas (the pane stays open).
 void mv_chrome_jobs_blur(void);
 
+// ---- PR 29: the Edit workspace (plan/20) ---------------------------------------
+//
+// One visible door to the PR 10-14 edits: the strip (title, tabs, Undo / Reset
+// / Original / Save copy) and its Crop and Trim panes. The Colour, Info and
+// Jobs tabs are the adjust, metadata and Jobs panes above, hung under the
+// strip. The host owns the workspace (shell/edit_workspace.h, shared with
+// Windows) and the crop draft (shell/edit_session.h). [main-thread]
+
+// `generation` moves whenever anything below changes.
+typedef struct mv_edit_view {
+  int32_t open;           // the workspace is up
+  int32_t tab;            // shell::edit_tab: 0 crop, 1 colour, 2 info, 3 trim, 4 jobs
+  int32_t subject;        // 0 nothing to edit, 1 a still, 2 a clip
+  int32_t crop_active;    // a crop draft is on the canvas
+  int32_t aspect;         // shell::crop_aspect: 0 free, 1 original, 2 1:1, 3 4:3, 4 3:2, 5 16:9, 6 5:4
+  int32_t portrait;       // the locked preset is portrait
+  float straighten;       // degrees: the draft's angle, else the committed one
+  int32_t edit_count;     // ops on the item's stack
+  int32_t show_original;  // Y held, or the strip's Original toggle
+  int32_t crop_width;     // what Apply would keep, in pixels (0 = not known yet)
+  int32_t crop_height;
+} mv_edit_view;
+uint64_t mv_chrome_edit_generation(void);
+bool mv_chrome_edit_view(mv_edit_view* out);
+// The item's file name (display only); length needed, as the tables.
+int32_t mv_chrome_edit_name(char* buf, int32_t size);
+// A tab the subject offers; others are ignored.
+void mv_chrome_edit_select_tab(int32_t tab);
+// Done / the close button: applies a crop draft, then closes.
+void mv_chrome_edit_close(void);
+// The Crop pane: a preset (+ orientation), the straighten slider (degrees),
+// Cancel (drops the draft). Each starts cropping if it was not.
+void mv_chrome_edit_set_aspect(int32_t aspect, int32_t portrait);
+void mv_chrome_edit_set_straighten(float degrees);
+void mv_chrome_edit_cancel_crop(void);
+// The strip's Original toggle (the same state Y holds).
+void mv_chrome_edit_show_original(int32_t on);
+// Save copy…: applies a crop draft, then opens the export sheet (PR 10).
+void mv_chrome_edit_save_copy(void);
+
 #ifdef __cplusplus
 }
 #endif

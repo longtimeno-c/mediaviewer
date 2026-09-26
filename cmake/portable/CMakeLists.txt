@@ -187,6 +187,8 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
   add_executable(mv_trim_tests
     "${MV_ROOT}/tests/test_trim_state.cpp"
     "${MV_ROOT}/src/shell/trim_state.cpp"
+    "${MV_ROOT}/tests/test_edit_workspace.cpp"
+    "${MV_ROOT}/src/shell/edit_workspace.cpp"
     "${MV_ROOT}/src/shell/command_table.cpp"
     "${MV_ROOT}/src/shell/key_router.cpp")
   target_link_libraries(mv_trim_tests PRIVATE mv_clip ${MV_CATCH2_TARGET})

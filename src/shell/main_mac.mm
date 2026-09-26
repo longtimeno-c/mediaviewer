@@ -18,6 +18,7 @@
 #import <Sparkle/Sparkle.h>
 #endif
 
+#include <dlfcn.h>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -52,6 +53,7 @@
 #include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
+#include "shell/edit_workspace.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
@@ -142,6 +144,9 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
+    // PR 29
+    case edit_workspace: case crop_aspect_cycle: case crop_aspect_swap: case show_original:
+    case show_original_release:
       return true;
     // Milestone G: only while the Import add-on is loaded (plan/18).
     case open_import: case import_now:
@@ -217,6 +222,9 @@ constexpr CGFloat kPathRowPoints = 28.0;          // breadcrumb under the bar wh
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
 constexpr CGFloat kMetaPaneWidthPoints = 360.0;  // PR 9 panes float over the canvas
+// PR 29 (plan/20): the Edit workspace's strip (title, tabs, actions) at the top
+// of the right pane column; the tab's pane hangs under it.
+constexpr CGFloat kEditStripHeightPoints = 124.0;
 constexpr CGFloat kTreeWidthPoints = 280.0;
 
 // Declared in full (not just `@class`) because MvMetalView's own methods,
@@ -259,6 +267,14 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* jobsHost;
 @property(nonatomic, strong) NSLayoutConstraint* jobsBottom;
 @property(nonatomic, strong) NSView* clipToolsHost;
+// PR 29 (plan/20): the Edit workspace's strip and its Crop / Trim pane. The
+// right-edge panes' tops follow the strip while it is open.
+@property(nonatomic, strong) NSView* editStripHost;
+@property(nonatomic, strong) NSView* editPaneHost;
+@property(nonatomic, strong) NSLayoutConstraint* metaTop;
+@property(nonatomic, strong) NSLayoutConstraint* adjustTop;
+@property(nonatomic, strong) NSLayoutConstraint* jobsTop;
+@property(nonatomic, strong) NSLayoutConstraint* editPaneTop;
 
 // plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
@@ -425,6 +441,20 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaBlur;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
+// PR 29 (plan/20): the Edit workspace, read and driven by the bridge.
+- (uint64_t)editGeneration;
+// Points the Edit workspace docks on the right (0 when closed): the canvas
+// frames the picture left of it (input_snapshot.chrome_right_px).
+- (CGFloat)dockedRightPoints;
+- (void)editViewInto:(mv_edit_view*)out;
+- (std::string)editName;
+- (void)editSelectTab:(int32_t)tab;
+- (void)editClose;
+- (void)editSetAspect:(int32_t)aspect portrait:(BOOL)portrait;
+- (void)editSetStraighten:(float)degrees;
+- (void)editCancelCrop;
+- (void)editShowOriginal:(BOOL)on;
+- (void)editSaveCopy;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -821,6 +851,55 @@ extern "C" void mv_chrome_adjust_blur(void) {
   if (g_chrome_app) [g_chrome_app adjustBlur];
 }
 
+// ---- PR 29: the Edit workspace (plan/20) ------------------------------------------
+// The Swift views hard-code these (EditStore.swift): keep them in step.
+static_assert(static_cast<int>(mv::shell::command_id::edit_workspace) == 147);
+static_assert(static_cast<int>(mv::shell::edit_tab::jobs) == 4);
+static_assert(static_cast<int>(mv::shell::crop_aspect::r5_4) == 6);
+extern "C" uint64_t mv_chrome_edit_generation(void) {
+  return g_chrome_app ? [g_chrome_app editGeneration] : 0;
+}
+extern "C" bool mv_chrome_edit_view(mv_edit_view* out) {
+  if (!g_chrome_app || !out) return false;
+  [g_chrome_app editViewInto:out];
+  return true;
+}
+extern "C" int32_t mv_chrome_edit_name(char* buf, int32_t size) {
+  const std::string name = g_chrome_app ? [g_chrome_app editName] : std::string();
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(name.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, name.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(name.size() + 1);
+}
+extern "C" void mv_chrome_edit_select_tab(int32_t tab) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editSelectTab:tab];
+}
+extern "C" void mv_chrome_edit_close(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editClose];
+}
+extern "C" void mv_chrome_edit_set_aspect(int32_t aspect, int32_t portrait) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editSetAspect:aspect portrait:portrait != 0];
+}
+extern "C" void mv_chrome_edit_set_straighten(float degrees) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editSetStraighten:degrees];
+}
+extern "C" void mv_chrome_edit_cancel_crop(void) {
+  if (g_chrome_app) [g_chrome_app editCancelCrop];
+}
+extern "C" void mv_chrome_edit_show_original(int32_t on) {
+  if (g_chrome_app) [g_chrome_app editShowOriginal:on != 0];
+}
+extern "C" void mv_chrome_edit_save_copy(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editSaveCopy];
+}
+
 // ---- PR 13 / 14 ---------------------------------------------------------------
 namespace {
 int32_t MvCopyText(const std::string& text, char* buf, int32_t size) {
@@ -1093,6 +1172,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // falling out of sync on a resize/DPI change.
   self.snap->chrome_bottom_px = (self.app && [self.app filmstripVisible])
       ? static_cast<std::uint32_t>(kFilmstripHeightPoints * self.window.backingScaleFactor)
+      : 0;
+  // PR 29: the Edit workspace docks instead of covering the picture.
+  self.snap->chrome_right_px = self.app
+      ? static_cast<std::uint32_t>([self.app dockedRightPoints] * self.window.backingScaleFactor)
       : 0;
   ++self.snap->resize_seq;
   [self publish];
@@ -1404,6 +1487,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
   NSTimer* _histogramDebounce;
+  // PR 29 (plan/20): the Edit workspace (shell/edit_workspace.h) and Show
+  // original. _wsShown is what the panes were last synced to, so closing the
+  // workspace closes only the panes it opened.
+  mv::shell::edit_workspace _ws;
+  BOOL _wsShown;
+  BOOL _wsSyncing;
+  BOOL _showOriginal;
+  std::uint64_t _editGeneration;
   mv::io::sort_order _sort;
   std::string _currentDir;
 #if MV_WITH_SPARKLE
@@ -1657,7 +1748,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                                    constant:-kFilmstripHeightPoints];
   [NSLayoutConstraint activateConstraints:@[
     [self.adjustHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-    [self.adjustHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    self.adjustTop = [self.adjustHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.adjustHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
     self.adjustBottom,
   ]];
@@ -1670,9 +1761,37 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                                constant:-kFilmstripHeightPoints];
   [NSLayoutConstraint activateConstraints:@[
     [self.jobsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-    [self.jobsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    self.jobsTop = [self.jobsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.jobsHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
     self.jobsBottom,
+  ]];
+  // PR 29 (plan/20): the Edit workspace. The strip sits where the panes'
+  // tops were; while it is open they (and the Crop / Trim pane) start under it.
+  self.editStripHost = [MVChromeHost makeEditStripView];
+  self.editStripHost.hidden = YES;
+  self.editStripHost.translatesAutoresizingMaskIntoConstraints = NO;
+  // Below the transport, so a clip's volume and More stay on top of the pane.
+  [container addSubview:self.editStripHost positioned:NSWindowBelow relativeTo:self.transportHost];
+  self.editPaneHost = [MVChromeHost makeEditPaneView];
+  self.editPaneHost.hidden = YES;
+  self.editPaneHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.editPaneHost positioned:NSWindowBelow relativeTo:self.transportHost];
+  // Nothing the SwiftUI content draws may spill over the command bar or the
+  // path row above it.
+  for (NSView* host in @[ self.editStripHost, self.editPaneHost ]) {
+    host.wantsLayer = YES;
+    host.layer.masksToBounds = YES;
+  }
+  [NSLayoutConstraint activateConstraints:@[
+    [self.editStripHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.editStripHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.editStripHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.editStripHost.heightAnchor constraintEqualToConstant:kEditStripHeightPoints],
+    [self.editPaneHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    self.editPaneTop = [self.editPaneHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor
+                                                                   constant:kEditStripHeightPoints],
+    [self.editPaneHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.editPaneHost.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
   ]];
   // The clip job queue. Its completions arrive on its workers and hop to the
   // main queue here (plan/14: the core never calls the host's dispatcher).
@@ -1697,7 +1816,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   [NSLayoutConstraint activateConstraints:@[
     [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-    [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    self.metaTop = [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.metaHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
     self.metaBottom,
     [self.treeHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -1739,6 +1858,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   g_chrome_lab = &_lab;
   g_chrome_app = self;
   [self scheduleChromeCrashTest];
+  [self scheduleEditSelfTest];
 
   _snap.window_visible = YES;
   _snap.window_active = YES;
@@ -2415,6 +2535,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.filmstripHost.hidden = !_filmstripVisible;
   self.transportBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints + 10.0 : 10.0);
   self.metaBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints : 0.0);
+  // The adjust and Jobs panes (and the Edit workspace's pane, which follows
+  // adjust) share the metadata pane's edge, so they follow the strip too.
+  self.adjustBottom.constant = self.metaBottom.constant;
+  self.jobsBottom.constant = self.metaBottom.constant;
   self.treeBottom.constant = -(_filmstripVisible ? kFilmstripHeightPoints : 0.0);
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
@@ -2784,6 +2908,9 @@ enum MvMenuCmd : NSInteger {
   // PR 9
   kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
   kMenuSortDateTaken, kMenuSortDescending,
+  // PR 29 (plan/20): the Edit menu, a visible way in to every edit.
+  kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
+  kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
 };
 
 - (void)menuAction:(NSMenuItem*)item {
@@ -2816,6 +2943,17 @@ enum MvMenuCmd : NSInteger {
     case kMenuReveal: [self runCommand:mv::shell::command_id::reveal_in_explorer back:mv::shell::back_target::none]; break;
     case kMenuMetadata: [self runCommand:mv::shell::command_id::metadata_pane back:mv::shell::back_target::none]; break;
     case kMenuFolderTree: [self runCommand:mv::shell::command_id::folder_tree back:mv::shell::back_target::none]; break;
+    case kMenuEditWorkspace: [self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none]; break;
+    case kMenuEditCrop: [self runCommand:mv::shell::command_id::crop_mode back:mv::shell::back_target::none]; break;
+    case kMenuEditColour: [self runCommand:mv::shell::command_id::adjust_pane back:mv::shell::back_target::none]; break;
+    case kMenuRotateLeft: [self runCommand:mv::shell::command_id::rotate_ccw back:mv::shell::back_target::none]; break;
+    case kMenuRotateRight: [self runCommand:mv::shell::command_id::rotate_cw back:mv::shell::back_target::none]; break;
+    case kMenuFlipH: [self runCommand:mv::shell::command_id::flip_horizontal back:mv::shell::back_target::none]; break;
+    case kMenuFlipV: [self runCommand:mv::shell::command_id::flip_vertical back:mv::shell::back_target::none]; break;
+    case kMenuUndoEdit: [self runCommand:mv::shell::command_id::undo_edit back:mv::shell::back_target::none]; break;
+    case kMenuResetEdits: [self runCommand:mv::shell::command_id::reset_edits back:mv::shell::back_target::none]; break;
+    case kMenuSaveCopy: [self editSaveCopy]; break;
+    case kMenuTrim: [self runCommand:mv::shell::command_id::trim_mode back:mv::shell::back_target::none]; break;
     case kMenuSortName: case kMenuSortModified: case kMenuSortSize: case kMenuSortType:
     case kMenuSortDateTaken: {
       mv::io::sort_order o = _sort;
@@ -2852,6 +2990,17 @@ enum MvMenuCmd : NSInteger {
     return [self hasFolder];
   }
   if (tag == kMenuMetadata) item.state = _metaPaneVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if (tag >= kMenuEditWorkspace && tag <= kMenuTrim) {
+    const mv::shell::edit_subject subject = [self editSubject];
+    if (tag == kMenuEditWorkspace) {
+      item.title = @(mv::shell::workspace_title(subject == mv::shell::edit_subject::none
+                                                    ? mv::shell::edit_subject::still : subject));
+      item.state = _ws.open ? NSControlStateValueOn : NSControlStateValueOff;
+      return subject != mv::shell::edit_subject::none;
+    }
+    if (tag == kMenuTrim) return subject == mv::shell::edit_subject::clip;
+    return subject == mv::shell::edit_subject::still;
+  }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuMetadata: case kMenuFolderTree:
@@ -2949,6 +3098,24 @@ enum MvMenuCmd : NSInteger {
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
 
   // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
+  // PR 29 (plan/20). No key equivalents: the router owns Return, ⇧C, ⇧A, [ ]
+  // and ⌘Z, so a menu equivalent would run them twice. `?` lists the keys.
+  NSMenu* edit = submenu(@"Edit");
+  [self addMenuItem:@"Edit Image" cmd:kMenuEditWorkspace key:@"" mods:0 toMenu:edit];
+  [edit addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Crop and Straighten" cmd:kMenuEditCrop key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Colour" cmd:kMenuEditColour key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Rotate Left" cmd:kMenuRotateLeft key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Rotate Right" cmd:kMenuRotateRight key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Flip Horizontal" cmd:kMenuFlipH key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Flip Vertical" cmd:kMenuFlipV key:@"" mods:0 toMenu:edit];
+  [edit addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Undo Edit" cmd:kMenuUndoEdit key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Reset to Original" cmd:kMenuResetEdits key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Save Copy…" cmd:kMenuSaveCopy key:@"" mods:0 toMenu:edit];
+  [edit addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Trim Video" cmd:kMenuTrim key:@"" mods:0 toMenu:edit];
+
   NSMenu* view = submenu(@"View");
   [self addMenuItem:@"Fit to Window" cmd:kMenuFit key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Actual Size" cmd:kMenuOneToOne key:@"" mods:0 toMenu:view];
@@ -3242,7 +3409,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
-  s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible;
+  s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
   return s;
@@ -3306,6 +3473,22 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   (void)mv::shell::crash::note_native_call();
   const bool clip = [self currentItemIsVideo];
   const bool anim = !clip && _lab.anim_active();
+  // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
+  // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
+      command == trim_mode || command == metadata_pane || command == jobs_pane) {
+    const mv::shell::workspace_step step = mv::shell::route_workspace(_ws, [self editSubject], command);
+    if (step.action != mv::shell::workspace_action::none) {
+      if (mv::shell::apply_step(_ws, step)) [self syncWorkspace];
+      if (command != crop_mode && command != trim_mode) return YES;
+    } else if (command == edit_workspace) {
+      NSBeep();  // nothing on the canvas to edit
+      return YES;
+    } else if (_ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
+      // A pane the workspace does not hold here takes the edge on its own.
+      [self editClose];
+    }
+  }
   switch (command) {
     case open: [self openFolderPanel:NO]; return YES;
     case open_folder: [self openFolderPanel:YES]; return YES;
@@ -3349,6 +3532,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
           break;
         case mv::shell::back_target::trim: [self setTrimArmed:NO]; break;
         case mv::shell::back_target::pane:
+          if (_ws.open) {
+            [self editClose];
+            break;
+          }
           [self setMetaPaneVisible:NO];
           [self setTreeVisible:NO];
           [self setAdjustVisible:NO];
@@ -3529,7 +3716,13 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
+    case crop_aspect_cycle: case crop_aspect_swap:
       return [self runEditCommand:command];
+    // PR 29: Y held shows the original pixels; the stack is untouched.
+    case show_original: case show_original_release:
+      if (_items.empty() || clip || anim) return NO;
+      [self editShowOriginal:command == show_original];
+      return YES;
     default: return NO;
   }
 }
@@ -3550,13 +3743,24 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   NSString* ext = [[NSString stringWithUTF8String:entry.name_utf8.c_str()] pathExtension].lowercaseString;
   e.jpeg = [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] || [ext isEqualToString:@"jpe"];
   const bool carried_turn = _edits.set_item(e);
+  _showOriginal = NO;
   [self publishEdit];
   if (carried_turn) [self scheduleRotationWrite];
   [self adjustItemChanged:mv::shell::is_video_name(entry.path_utf8) ? 0 : item];
+  // PR 29: an open workspace follows the item to a tab it offers.
+  if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
 }
 
 - (void)publishEdit {
-  _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+  if (_showOriginal && _edits.has_item() && _itemId != 0) {
+    // Show original (PR 29): the item with no geometry and no colour.
+    mv::shell::edit_view v;
+    v.item = _itemId;
+    _snap.edit[0] = v;
+  } else {
+    _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+  }
+  ++_editGeneration;  // the strip's edit count, the Crop pane's draft
 }
 
 - (BOOL)runEditCommand:(mv::shell::command_id)command {
@@ -3569,25 +3773,184 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     NSBeep();  // no pixels yet: nothing to frame a crop against
     return YES;
   }
-  switch (_edits.run(command)) {
-    case mv::shell::edit_effect::none: return YES;
-    case mv::shell::edit_effect::refused: NSBeep(); return YES;
+  [self applyEditEffect:_edits.run(command)];
+  return YES;
+}
+
+- (void)applyEditEffect:(mv::shell::edit_effect)effect {
+  switch (effect) {
+    case mv::shell::edit_effect::none: return;
+    case mv::shell::edit_effect::refused: NSBeep(); return;
     case mv::shell::edit_effect::redraw:
       [self publishEdit];
       [self pokeSnapshot];
       [self adjustColourChanged];  // undo / reset may have moved a slider
-      return YES;
+      return;
     case mv::shell::edit_effect::write_rotation:
       [self publishEdit];
       [self pokeSnapshot];
       [self scheduleRotationWrite];
       [self adjustColourChanged];
-      return YES;
+      return;
     case mv::shell::edit_effect::export_image:
       [self setExportVisible:YES];
-      return YES;
+      return;
   }
+}
+
+// ---- PR 29: the Edit workspace (plan/20) --------------------------------------
+
+- (mv::shell::edit_subject)editSubject {
+  if (_items.empty() || _itemId == 0) return mv::shell::edit_subject::none;
+  if ([self currentItemIsVideo]) return mv::shell::edit_subject::clip;
+  if (_lab.anim_active()) return mv::shell::edit_subject::none;
+  return mv::shell::edit_subject::still;
+}
+
+// Shows what _ws says: the strip, the tab's pane, and the panes' tops under
+// the strip. Closing hides only what the workspace had shown.
+- (void)syncWorkspace {
+  using mv::shell::edit_tab;
+  _wsSyncing = YES;
+  const BOOL open = _ws.open ? YES : NO;
+  const edit_tab tab = _ws.tab;
+  // A crop draft belongs to the Crop tab: leaving it applies the draft
+  // (Lightroom's rule), so no crop is lost to a tab click.
+  if (_edits.crop_active() && !(open && tab == edit_tab::crop)) {
+    [self runEditCommand:mv::shell::command_id::crop_commit];
+  }
+  self.editStripHost.hidden = !open;
+  const CGFloat top = open ? kEditStripHeightPoints : 0.0;
+  self.metaTop.constant = top;
+  self.adjustTop.constant = top;
+  self.jobsTop.constant = top;
+  self.editPaneHost.hidden = !(open && (tab == edit_tab::crop || tab == edit_tab::trim));
+  if (open || _wsShown) {
+    // One right-edge pane at a time: each setter below closes the others.
+    const BOOL colour = open && tab == edit_tab::colour;
+    const BOOL info = open && tab == edit_tab::info;
+    const BOOL jobs = open && tab == edit_tab::jobs;
+    if (!colour && _adjust.visible()) [self setAdjustVisible:NO];
+    if (!info && _metaPaneVisible) [self setMetaPaneVisible:NO];
+    if (!jobs && _jobsVisible) [self setJobsVisible:NO];
+    if (colour) [self setAdjustVisible:YES];
+    if (info) [self setMetaPaneVisible:YES];
+    if (jobs) [self setJobsVisible:YES focus:NO];
+  }
+  // Crop and Trim keys are the canvas's: keep the keyboard there.
+  if (open && (tab == edit_tab::crop || tab == edit_tab::trim)) [self.window makeFirstResponder:self.view];
+  const BOOL redock = _wsShown != open;
+  _wsShown = open;
+  _wsSyncing = NO;
+  ++_editGeneration;
+  // The canvas refits into the rect beside the docked pane (or back).
+  if (redock) [self.view syncSize];
+}
+
+- (CGFloat)dockedRightPoints {
+  return _ws.open ? kMetaPaneWidthPoints : 0.0;
+}
+
+// A pane's own close button (or its key) while it is the workspace's tab
+// closes the workspace, not just the pane under the strip.
+- (void)workspacePaneClosed:(mv::shell::edit_tab)tab {
+  if (_wsSyncing || !_ws.open || _ws.tab != tab) return;
+  [self editClose];
+}
+
+- (uint64_t)editGeneration {
+  return _editGeneration;
+}
+
+- (void)editViewInto:(mv_edit_view*)out {
+  *out = mv_edit_view{};
+  const mv::shell::edit_subject subject = [self editSubject];
+  out->open = _ws.open ? 1 : 0;
+  out->tab = static_cast<int32_t>(_ws.tab);
+  out->subject = static_cast<int32_t>(subject);
+  out->crop_active = _edits.crop_active() ? 1 : 0;
+  out->aspect = static_cast<int32_t>(_edits.aspect());
+  out->portrait = _edits.aspect_portrait() ? 1 : 0;
+  out->straighten = _edits.crop_active() ? _edits.crop_angle() : _edits.export_geometry().straighten;
+  out->edit_count = static_cast<int32_t>(_edits.edit_count());
+  out->show_original = _showOriginal ? 1 : 0;
+  if (subject == mv::shell::edit_subject::still && _edits.has_item()) {
+    std::uint32_t w = 0, h = 0;
+    if (_lab.still_size(_itemId, &w, &h)) {
+      _edits.set_size(w, h);
+      const mv::edit::placement p = _edits.preview_placement();
+      if (_edits.crop_active()) {
+        const mv::edit::rect r = _edits.crop_overlay();
+        out->crop_width = static_cast<int32_t>(std::lround(r.w * p.cropped.w));
+        out->crop_height = static_cast<int32_t>(std::lround(r.h * p.cropped.h));
+      } else {
+        out->crop_width = static_cast<int32_t>(p.cropped.w);
+        out->crop_height = static_cast<int32_t>(p.cropped.h);
+      }
+    }
+  }
+}
+
+- (std::string)editName {
+  if (_items.empty() || _index.current() >= _items.size()) return {};
+  return _items[_index.current()].name_utf8;
+}
+
+- (void)editSelectTab:(int32_t)tab {
+  if (tab < 0 || tab >= static_cast<int32_t>(mv::shell::edit_tab::count)) return;
+  const auto t = static_cast<mv::shell::edit_tab>(tab);
+  if (!mv::shell::tab_offered([self editSubject], t)) return;
+  if (mv::shell::apply_step(_ws, {mv::shell::workspace_action::select, t})) [self syncWorkspace];
+}
+
+- (void)editClose {
+  if (!_ws.open) return;
+  _ws.open = false;
+  [self syncWorkspace];
+}
+
+// The Crop pane's buttons and slider: stills only, once the pixels are known.
+- (BOOL)prepareStillEdit {
+  if (_items.empty() || [self currentItemIsVideo] || _lab.anim_active()) return NO;
+  std::uint32_t w = 0, h = 0;
+  if (!_lab.still_size(_itemId, &w, &h)) return NO;
+  _edits.set_size(w, h);
   return YES;
+}
+
+- (void)editSetAspect:(int32_t)aspect portrait:(BOOL)portrait {
+  if (aspect < 0 || aspect >= mv::shell::kCropAspectCount || ![self prepareStillEdit]) {
+    NSBeep();
+    return;
+  }
+  [self applyEditEffect:_edits.set_crop_aspect(static_cast<mv::shell::crop_aspect>(aspect), portrait)];
+}
+
+- (void)editSetStraighten:(float)degrees {
+  if (![self prepareStillEdit]) {
+    NSBeep();
+    return;
+  }
+  [self applyEditEffect:_edits.set_straighten(degrees)];
+}
+
+- (void)editCancelCrop {
+  if (!_edits.crop_active()) return;
+  _edits.cancel_crop();
+  [self publishEdit];
+  [self pokeSnapshot];
+}
+
+- (void)editShowOriginal:(BOOL)on {
+  if (_showOriginal == on) return;
+  _showOriginal = on;
+  [self publishEdit];
+  [self pokeSnapshot];
+}
+
+- (void)editSaveCopy {
+  if (_edits.crop_active()) [self runEditCommand:mv::shell::command_id::crop_commit];
+  [self runEditCommand:mv::shell::command_id::export_image];
 }
 
 // `[` `]` `H` `V` on a JPEG: the preview has already turned. The file is
@@ -3921,6 +4284,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _jobsVisible = visible;
   self.jobsHost.hidden = !visible;
   ++_jobsGeneration;
+  if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::jobs];
   if (visible && focus) [self.window makeFirstResponder:self.jobsHost];
   else if (!visible) [self.window makeFirstResponder:self.view];
 }
@@ -4011,6 +4375,118 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                                       if (trap) [MVChromeHost crashTestSwiftTrap];
                                       else [MVChromeHost crashTestException];
                                     }];
+}
+
+// ---- PR 29: the Edit workspace's verify rig ------------------------------------
+
+// MV_EDIT_SELFTEST=<folder> (plan/20 verify). Inert unless set. After launch it
+// walks the workspace through the commands its buttons and keys run -- open,
+// a 1:1 crop, apply, the Colour and Info tabs, Show original, Save copy, Esc
+// -- or, on a clip, Trim and Jobs, and writes the window (the chrome; the
+// Metal canvas is not in a cached display) as PNGs plus state.txt into
+// <folder>, then quits. MV_EDIT_SELFTEST_DARK=1 / 0 forces Dark / Light Mode. The
+// only file it writes beside the photo is Save copy's new file.
+- (void)scheduleEditSelfTest {
+  const char* dir = std::getenv("MV_EDIT_SELFTEST");
+  if (dir == nullptr || *dir == '\0') return;
+  NSString* out = [NSString stringWithUTF8String:dir];
+  [[NSFileManager defaultManager] createDirectoryAtPath:out withIntermediateDirectories:YES attributes:nil error:nil];
+  const char* dark = std::getenv("MV_EDIT_SELFTEST_DARK");
+  if (dark != nullptr && (*dark == '0' || *dark == '1')) {
+    self.window.appearance =
+        [NSAppearance appearanceNamed:*dark == '1' ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  }
+  MV_LOG_WARN("edit: MV_EDIT_SELFTEST armed; the app will quit when it is done");
+  [self editSelfTestStep:0 dir:out];
+}
+
+- (void)editSelfTestSnap:(NSString*)name dir:(NSString*)dir {
+  NSView* v = self.window.contentView;
+  [v layoutSubtreeIfNeeded];
+  NSBitmapImageRep* rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+  [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+  NSData* png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+  [png writeToFile:[dir stringByAppendingPathComponent:[name stringByAppendingString:@".png"]] atomically:YES];
+  // The Metal canvas is not in a cached display. Where the OS still lets a
+  // process read its own window (CGWindowListCreateImage, looked up at run
+  // time: it is gone from newer SDKs), also write the composed window.
+  using capture_fn = CGImageRef (*)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
+  static const auto capture = reinterpret_cast<capture_fn>(dlsym(RTLD_DEFAULT, "CGWindowListCreateImage"));
+  if (capture != nullptr) {
+    CGImageRef shot = capture(CGRectNull, kCGWindowListOptionIncludingWindow,
+                              static_cast<CGWindowID>(self.window.windowNumber),
+                              kCGWindowImageBoundsIgnoreFraming);
+    if (shot != nullptr) {
+      NSBitmapImageRep* full = [[NSBitmapImageRep alloc] initWithCGImage:shot];
+      NSData* fpng = [full representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+      [fpng writeToFile:[dir stringByAppendingPathComponent:[name stringByAppendingString:@"-window.png"]]
+             atomically:YES];
+      CGImageRelease(shot);
+    }
+  }
+  mv_edit_view e;
+  [self editViewInto:&e];
+  NSString* line = [NSString
+      stringWithFormat:@"%@ open=%d tab=%d subject=%d crop=%d aspect=%d portrait=%d crop_px=%dx%d edits=%d "
+                       @"original=%d strip=%d pane=%d adjust=%d meta=%d jobs=%d trim=%d export=%d\n",
+                       name, e.open, e.tab, e.subject, e.crop_active, e.aspect, e.portrait, e.crop_width,
+                       e.crop_height, e.edit_count, e.show_original, self.editStripHost.hidden ? 0 : 1,
+                       self.editPaneHost.hidden ? 0 : 1, _adjust.visible() ? 1 : 0, _metaPaneVisible ? 1 : 0,
+                       _jobsVisible ? 1 : 0, _trim.armed() ? 1 : 0, self.exportHost != nil ? 1 : 0];
+  NSString* log = [dir stringByAppendingPathComponent:@"state.txt"];
+  NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:log];
+  if (fh == nil) {
+    [line writeToFile:log atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  } else {
+    [fh seekToEndOfFile];
+    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
+  }
+}
+
+- (void)editSelfTestStep:(int)step dir:(NSString*)dir {
+  using enum mv::shell::command_id;
+  const auto kNoBack = mv::shell::back_target::none;
+  const BOOL clip = [self currentItemIsVideo];
+  BOOL done = NO;
+  if (clip) {
+    switch (step) {
+      case 0: break;  // let the clip load
+      case 1: [self editSelfTestSnap:@"c0-viewer" dir:dir]; [self runCommand:edit_workspace back:kNoBack]; break;
+      case 2: [self editSelfTestSnap:@"c1-workspace-trim" dir:dir]; [self runCommand:trim_mode back:kNoBack]; break;
+      case 3: [self editSelfTestSnap:@"c2-trim-armed" dir:dir]; [self editSelectTab:4]; break;
+      case 4: [self editSelfTestSnap:@"c3-jobs" dir:dir];
+        [self runCommand:back back:mv::shell::back_target::trim];
+        [self runCommand:back back:mv::shell::back_target::pane];
+        break;
+      case 5: [self editSelfTestSnap:@"c4-closed" dir:dir]; done = YES; break;
+    }
+  } else {
+    switch (step) {
+      case 0: break;  // let the photo decode
+      case 1: [self editSelfTestSnap:@"s0-viewer" dir:dir]; [self runCommand:edit_workspace back:kNoBack]; break;
+      case 2: [self editSelfTestSnap:@"s1-workspace" dir:dir]; [self editSetAspect:2 portrait:NO]; break;
+      case 3: [self editSelfTestSnap:@"s2-crop-1x1" dir:dir]; [self runCommand:crop_commit back:kNoBack]; break;
+      case 4: [self editSelfTestSnap:@"s3-applied" dir:dir]; [self editSelectTab:1]; break;
+      case 5: [self editSelfTestSnap:@"s4-colour" dir:dir]; [self editSelectTab:2]; break;
+      case 6: [self editSelfTestSnap:@"s5-info" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
+      case 7: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
+      case 8: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
+        [self confirmExport:mv::shell::pack_export(mv::edit::export_options{})];
+        break;
+      case 9: [self runCommand:back back:mv::shell::back_target::pane]; break;
+      case 10: [self editSelfTestSnap:@"s8-closed" dir:dir]; done = YES; break;
+    }
+  }
+  if (done) {
+    [NSApp terminate:nil];
+    return;
+  }
+  __weak MvLabApp* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(1.2 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf editSelfTestStep:step + 1 dir:dir];
+                 });
 }
 
 // ---- PR 11: colour adjusts, the adjust pane, the FP16 working image -----------
@@ -4166,6 +4642,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   self.adjustHost.hidden = !visible;
   [self bumpAdjustView];
+  if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::colour];
   if (visible) {
     [self scheduleHistogram];
     [self.window makeFirstResponder:self.adjustHost];
@@ -4491,6 +4968,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _metaPaneVisible = visible;
   self.metaHost.hidden = !visible;
   ++_metaGeneration;
+  if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::info];
   if (visible) [self requestMetadataNow];
   // Keys stay with the canvas: arrows still browse while the pane is up.
   [self.window makeFirstResponder:self.view];

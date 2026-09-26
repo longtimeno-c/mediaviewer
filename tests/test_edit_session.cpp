@@ -389,3 +389,104 @@ TEST_CASE("a metadata rewrite of a file that is not open moves its stack too", "
   REQUIRE(s.stack() != nullptr);
   CHECK_FALSE(s.colour().identity());
 }
+
+// ---- PR 29 (plan/20): the Crop pane's aspect presets and straighten slider ----
+
+namespace {
+
+// The draft's ratio in pixels, on the 600 x 400 test frame.
+float pixel_ratio(const edit_session& s) {
+  const auto r = s.crop_overlay();
+  return (r.w * 600.0f) / (r.h * 400.0f);
+}
+
+}  // namespace
+
+TEST_CASE("an aspect preset starts cropping at the largest rect of that ratio", "[shell][edit][pr29]") {
+  using mv::shell::crop_aspect;
+  edit_session s;
+  (void)s.set_item(jpeg_item());
+  REQUIRE(s.set_crop_aspect(crop_aspect::square, false) == edit_effect::redraw);
+  CHECK(s.crop_active());
+  CHECK(std::abs(pixel_ratio(s) - 1.0f) < 1e-3f);
+  CHECK(std::abs(s.crop_overlay().h - 1.0f) < 1e-5f);  // full height on a landscape frame
+  CHECK(std::abs(s.crop_overlay().x - (1.0f - 400.0f / 600.0f) * 0.5f) < 1e-4f);  // centred
+
+  REQUIRE(s.set_crop_aspect(crop_aspect::r16_9, false) == edit_effect::redraw);
+  CHECK(std::abs(pixel_ratio(s) - 16.0f / 9.0f) < 1e-3f);
+  CHECK(std::abs(s.crop_overlay().w - 1.0f) < 1e-5f);
+  // X swaps to portrait.
+  REQUIRE(s.run(command_id::crop_aspect_swap) == edit_effect::redraw);
+  CHECK(s.aspect_portrait());
+  CHECK(std::abs(pixel_ratio(s) - 9.0f / 16.0f) < 1e-3f);
+  // Original is the frame's own ratio; its swap is the inverse.
+  REQUIRE(s.set_crop_aspect(crop_aspect::original, false) == edit_effect::redraw);
+  CHECK(std::abs(pixel_ratio(s) - 1.5f) < 1e-3f);
+
+  // Commit: the photo is now that ratio.
+  REQUIRE(s.set_crop_aspect(crop_aspect::r4_3, false) == edit_effect::redraw);
+  REQUIRE(s.run(command_id::crop_commit) == edit_effect::redraw);
+  const auto out = s.preview_placement().cropped;
+  CHECK(std::abs(static_cast<float>(out.w) / out.h - 4.0f / 3.0f) < 0.01f);
+  CHECK(s.edit_count() == 1);
+  // The preset is remembered for the next crop of the session.
+  CHECK(s.aspect() == crop_aspect::r4_3);
+}
+
+TEST_CASE("a locked ratio survives resizing and straightening", "[shell][edit][pr29]") {
+  using mv::shell::crop_aspect;
+  edit_session s;
+  (void)s.set_item(jpeg_item());
+  REQUIRE(s.set_crop_aspect(crop_aspect::r3_2, true) == edit_effect::redraw);
+  const float before = pixel_ratio(s);
+  CHECK(std::abs(before - 2.0f / 3.0f) < 1e-3f);
+  for (int i = 0; i < 5; ++i) REQUIRE(s.run(command_id::crop_narrower) == edit_effect::redraw);
+  CHECK(std::abs(pixel_ratio(s) - before) < 1e-3f);
+  for (int i = 0; i < 3; ++i) REQUIRE(s.run(command_id::crop_shorter) == edit_effect::redraw);
+  CHECK(std::abs(pixel_ratio(s) - before) < 1e-3f);
+  // Growing past the frame is refused, not squashed.
+  for (int i = 0; i < 200; ++i) (void)s.run(command_id::crop_taller);
+  CHECK(s.crop_overlay().h <= 1.0f + 1e-5f);
+  CHECK(std::abs(pixel_ratio(s) - before) < 1e-3f);
+
+  // The slider sets an absolute angle; the rect keeps its ratio and no corner
+  // of the rotated source shows.
+  REQUIRE(s.set_straighten(7.5f) == edit_effect::redraw);
+  CHECK(s.crop_angle() == 7.5f);
+  CHECK(std::abs(pixel_ratio(s) - before) < 2e-3f);
+  const auto r = s.crop_overlay();
+  const auto safe = mv::edit::constrain_crop(r, 7.5f, {600, 400});
+  CHECK(std::abs(safe.w - r.w) < 1e-4f);
+  CHECK(std::abs(safe.h - r.h) < 1e-4f);
+  CHECK(s.set_straighten(90.0f) == edit_effect::redraw);
+  CHECK(s.crop_angle() == mv::edit::kMaxStraighten);
+  // Free unlocks: resizing is one side at a time again.
+  REQUIRE(s.set_crop_aspect(crop_aspect::free, false) == edit_effect::redraw);
+  const float h = s.crop_overlay().h;
+  REQUIRE(s.run(command_id::crop_narrower) == edit_effect::redraw);
+  CHECK(std::abs(s.crop_overlay().h - h) < 1e-6f);
+}
+
+TEST_CASE("A cycles the presets in crop; swap is a no-op on Free and 1:1", "[shell][edit][pr29]") {
+  using mv::shell::crop_aspect;
+  edit_session s;
+  (void)s.set_item(jpeg_item());
+  CHECK(s.run(command_id::crop_aspect_cycle) == edit_effect::none);  // not cropping
+  REQUIRE(s.run(command_id::crop_mode) == edit_effect::redraw);
+  CHECK(s.run(command_id::crop_aspect_swap) == edit_effect::none);   // Free
+  for (int i = 1; i < mv::shell::kCropAspectCount; ++i) {
+    REQUIRE(s.run(command_id::crop_aspect_cycle) == edit_effect::redraw);
+    CHECK(static_cast<int>(s.aspect()) == i);
+    if (s.aspect() == crop_aspect::square) {
+      CHECK(s.run(command_id::crop_aspect_swap) == edit_effect::none);
+    }
+  }
+  REQUIRE(s.run(command_id::crop_aspect_cycle) == edit_effect::redraw);
+  CHECK(s.aspect() == crop_aspect::free);
+  CHECK(std::string(mv::shell::crop_aspect_label(crop_aspect::r16_9)) == "16:9");
+  // With no item, the pane's buttons are refused (a beep), never a crash.
+  edit_session empty;
+  CHECK(empty.set_crop_aspect(crop_aspect::square, false) == edit_effect::refused);
+  CHECK(empty.set_straighten(1.0f) == edit_effect::refused);
+  CHECK(empty.edit_count() == 0);
+}

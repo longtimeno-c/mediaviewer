@@ -612,6 +612,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/edit_workspace.cpp
+  src/shell/edit_workspace.h
   src/shell/edit_view.h
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
@@ -872,6 +874,9 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # PR 29: the Edit workspace's tab model.
+    tests/test_edit_workspace.cpp
+    src/shell/edit_workspace.cpp
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp

@@ -454,6 +454,8 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/edit_workspace.cpp
+  src/shell/edit_workspace.h
   src/shell/edit_view.h
   # PR 11: the adjust pane's state (readiness, tokens, histogram), shared.
   src/shell/adjust_pane.cpp
@@ -696,6 +698,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_edit_workspace.cpp
     tests/test_export_carried.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp

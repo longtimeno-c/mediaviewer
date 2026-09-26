@@ -252,6 +252,15 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_ctrl, kVideo | kTrim, edge, clip_tools),
     row(C('B'), mod_ctrl, kVideo | kTrim, edge, clip_split),
     row(C('X'), mod_ctrl, kTrim, edge, trim_remove_middle),
+    // PR 29 (plan/20): the Edit workspace. Appended so every row above keeps
+    // its Settings index. Enter was unbound in browse and video; inside the
+    // workspace it keeps meaning Apply (crop) / Save (trim), since crop and
+    // trim resolve first. A and X are dead in crop (A/D do not walk mid-crop):
+    // Lightroom's keys. Y is Lightroom's before/after, held here.
+    row(key::enter, mod_none, kBrowse | kVideo, edge, edit_workspace),
+    row(C('A'), mod_none, kCrop, edge, crop_aspect_cycle),
+    row(C('X'), mod_none, kCrop, edge, crop_aspect_swap),
+    row(C('Y'), mod_none, kBrowse, momentary, show_original, none, show_original_release),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -401,6 +410,13 @@ constexpr command_info kCommands[] = {
     {clip_tools, "Clip tools…"},
     {clip_split, "Split clip at playhead"},
     {trim_remove_middle, "Trim: remove in–out"},
+    {edit_workspace, "Edit image / Edit video"},
+    {crop_aspect_cycle, "Crop: next aspect ratio"},
+    {crop_aspect_swap, "Crop: portrait / landscape"},
+    {show_original, "Show original (hold)"},
+    {show_original_release, "Release original"},
+    {crop_aspect_set, "Crop: aspect ratio", true},
+    {crop_straighten_set, "Crop: straighten", true},
 };
 
 const char* named_key(key k) noexcept {

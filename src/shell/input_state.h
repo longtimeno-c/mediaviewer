@@ -68,6 +68,10 @@ struct input_snapshot {
   // Folder tree strip (plan/16: a left island, hidden by default). 0 until the
   // tree lands (PR 8); the canvas maths already takes it.
   std::uint32_t chrome_left_px = 0;
+  // PR 29 (plan/20): a docked right pane (the Edit workspace on Mac). The
+  // canvas frames the picture in the rect left of it, so the pane never
+  // covers the image. 0 = nothing docked.
+  std::uint32_t chrome_right_px = 0;
   float dpi_scale = 1.0f;
 
   float mouse_x = 0.0f;
