@@ -38,8 +38,6 @@ TEST_CASE("chrome bar height is 48 DIP, plus 28 with a path row") {
   REQUIRE(mv::shell::chrome_bar_height_px(120) == 60);
   REQUIRE(mv::shell::chrome_bar_height_px(144) == 72);
   REQUIRE(mv::shell::chrome_bar_height_px(0) == 48);
-  REQUIRE(mv::shell::chrome_bar_height_px(96, true) == 76);
-  REQUIRE(mv::shell::chrome_bar_height_px(0, true) == 76);
 }
 
 TEST_CASE("chrome host loads hostfxr and the blittable size") {

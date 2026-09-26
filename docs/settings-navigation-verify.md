@@ -28,8 +28,10 @@ frame pacing. CI compiles WinUI and SwiftUI independently of the full native bui
 Use a tree at least six levels deep, with empty folders, folders containing only
 folders, mixed photo/video folders, and long/repeated/Unicode folder names.
 
-- Open its root and click through three levels. **Up** opens the enclosing folder
-  and reselects the folder just left. **Root** returns directly to the first
+- The path sits in the command bar, left of `?`; opening a folder must not add a
+  row under the bar or move the canvas down.
+- Open its root and click through three levels. **Up** (↑) opens the enclosing folder
+  and reselects the folder just left. **Root** (house) returns directly to the first
   breadcrumb. Test in the gallery and while a photo/video is open.
 - At the browsing root, Root is disabled. Up remains available if there is an
   enclosing filesystem folder. At a volume root, both are disabled.
