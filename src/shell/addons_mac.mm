@@ -84,6 +84,16 @@
 - (void)itemChanged:(NSString*)path;
 // Settings -> Local search: the management view, owned (and kept) by the chrome.
 - (NSView*)settingsView;
+// Gallery search bar (2026-09-27, plan/17). The index control at the right end
+// of the gallery's field, owned (and kept) by the chrome; it follows the folder
+// -folderChanged: names.
+- (NSView*)galleryAccessory;
+// The grid was shown (@YES) or hidden: the control polls (≤ 2 Hz) only while shown.
+- (void)galleryVisible:(NSNumber*)visible;
+// Contents mode: {"text": String, "folder": String, "seq": Number}. @0 the
+// search runs and its answer comes back through the host's -galleryAnswer:;
+// @1 the folder is not indexed (nothing ran); @-1 nothing ran.
+- (NSNumber*)galleryQuery:(NSDictionary*)request;
 @end
 
 @interface MvAddonHostMac : NSObject
@@ -124,6 +134,8 @@ struct mac_addons {
   std::mutex thumbs_mutex;  // the lazy open below; lookups are the store's own
   mv::image::thumb_store thumbs;
   std::string folder;       // the directory the viewer last opened
+  bool gallery_visible = false;
+  mv_addon2_gallery_answer_fn gallery_answer = nullptr;
 };
 
 mac_addons& state() {
@@ -385,6 +397,9 @@ void attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   if (!s.folder.empty() && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [(id<MVAIChrome>)chrome folderChanged:[NSString stringWithUTF8String:s.folder.c_str()]];
   }
+  if (s.gallery_visible && [chrome respondsToSelector:@selector(galleryVisible:)]) {
+    [(id<MVAIChrome>)chrome galleryVisible:@YES];
+  }
 }
 
 // Verifying hashes every file of a pack that can be gigabytes of models, and
@@ -541,6 +556,21 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
                               current);
 }
 
+// {"seq": Number, "state": Number, "count": Number}: the answer to a gallery
+// Contents query (-galleryQuery:). state 0 the results are open as the
+// gallery's list, 1 nothing found, 2 the search did not finish. To the base
+// chrome's callback, on the main thread (this is called there).
+- (void)galleryAnswer:(NSDictionary*)answer {
+  mv_addon2_gallery_answer_fn fn = state().gallery_answer;
+  if (!fn) return;
+  const auto num = [answer](NSString* key, int64_t fallback) -> int64_t {
+    id v = answer[key];
+    return [v respondsToSelector:@selector(longLongValue)] ? [v longLongValue] : fallback;
+  };
+  fn(static_cast<uint64_t>(num(@"seq", 0)), static_cast<int32_t>(num(@"state", 2)),
+     static_cast<int32_t>(num(@"count", 0)));
+}
+
 // The main window, for centring the search panel over it.
 - (NSWindow*)viewerWindow {
   NSWindow* main = NSApp.mainWindow;
@@ -612,6 +642,15 @@ void MvAddonsFolderOpened(const std::string& dir) {
   id<MVAIChrome> chrome = ai_chrome();
   if (chrome && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [chrome folderChanged:ns(dir)];
+  }
+}
+
+void MvAddonsGalleryVisible(bool visible) {
+  mac_addons& s = state();
+  s.gallery_visible = visible;
+  id<MVAIChrome> chrome = ai_chrome();
+  if (chrome && [chrome respondsToSelector:@selector(galleryVisible:)]) {
+    [chrome galleryVisible:visible ? @YES : @NO];
   }
 }
 
@@ -901,6 +940,41 @@ extern "C" void* mv_addon2_settings_view(const char* addon_id) {
   if (!chrome || ![chrome respondsToSelector:@selector(settingsView)]) return nullptr;
   NSView* view = [chrome settingsView];
   return (__bridge void*)view;
+}
+
+// [main-thread] Gallery search bar (plan/17): the chrome's index control, or
+// NULL (no pack, or a pack from before the bar: Names mode only).
+extern "C" void* mv_addon2_gallery_accessory(const char* addon_id) {
+  if (!addon_id || std::string(addon_id) != "ai") return nullptr;
+  id<MVAIChrome> chrome = ai_chrome();
+  if (!chrome || ![chrome respondsToSelector:@selector(galleryAccessory)] ||
+      ![chrome respondsToSelector:@selector(galleryQuery:)]) {
+    return nullptr;
+  }
+  NSView* view = [chrome galleryAccessory];
+  return (__bridge void*)view;
+}
+
+// [main-thread][no-block] Contents mode: the pack's text search in `folder`,
+// opened as the gallery's result list when it answers.
+extern "C" int32_t mv_addon2_gallery_query(const char* text, const char* folder, uint64_t seq) {
+  id<MVAIChrome> chrome = ai_chrome();
+  if (!text || !folder || !chrome || ![chrome respondsToSelector:@selector(galleryQuery:)]) return -1;
+  NSDictionary* request = @{
+    @"text" : [NSString stringWithUTF8String:text] ?: @"",
+    @"folder" : [NSString stringWithUTF8String:folder] ?: @"",
+    @"seq" : @(seq),
+  };
+  @try {
+    NSNumber* r = [chrome galleryQuery:request];
+    return [r respondsToSelector:@selector(intValue)] ? [r intValue] : -1;
+  } @catch (NSException*) {
+    return -1;
+  }
+}
+
+extern "C" void mv_addon2_set_gallery_answer_callback(mv_addon2_gallery_answer_fn callback) {
+  state().gallery_answer = callback;
 }
 
 // [main-thread] Runs an add-on command as its key would (the command bar's
