@@ -344,12 +344,12 @@ public static partial class IslandHost
         view.Children.Add(_localSearchPanel);
         view.Children.Add(_localSearchStatus);
         RefreshLocalSearch();
-        // Opening Settings asks the channel for what is not installed, like
-        // Import: the person is looking at what can be installed. The GETs
+        // Opening Settings asks the channel for every piece, like Import: the
+        // person is looking at what can be installed or updated. The GETs
         // carry nothing about them.
         foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot })
         {
-            if (!piece.State.Installed && piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
+            if (piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
         }
         StartNvidiaProbe();
         RefreshFamilyUsage();
@@ -513,7 +513,7 @@ public static partial class IslandHost
         row.Children.Add(labels);
 
         long size = slot.State.Installed ? slot.State.Size : slot.Offer.InstalledSize;
-        var sizeText = Label(size > 0 ? Gb(size) : "");
+        var sizeText = Label(size <= 0 ? "" : slot.State.Installed ? $"{slot.State.Version} · {Gb(size)}" : Gb(size));
         sizeText.FontSize = 12;
         sizeText.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(sizeText, 1);
@@ -537,6 +537,16 @@ public static partial class IslandHost
             remove.IsEnabled = !slot.Busy;
             AutomationProperties.SetName(remove, "Remove " + title);
             action = remove;
+            if (UpdateVersion(slot) is string newer)
+            {
+                Button update = SettingsButton($"Update to {newer}", () => StartPieceInstall(slot));
+                update.IsEnabled = !slot.Busy && !AnyAiBusy();
+                AutomationProperties.SetName(update, $"Update {title} to {newer}");
+                var both = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                both.Children.Add(update);
+                both.Children.Add(remove);
+                action = both;
+            }
         }
         else if (slot.Parent is not null && !AiSlot.State.Installed)
         {
@@ -744,7 +754,11 @@ public static partial class IslandHost
         }
         slot.Busy = true;
         string what = slot == AiSlot ? "local search" : slot.Name;
-        SetLocalSearchStatus($"Downloading {what}…");
+        // An update installs beside the running copy (the store keeps it until
+        // the next start). A new Core takes over then; a new piece at once.
+        string? update = UpdateVersion(slot);
+        bool coreRunning = slot == AiSlot && AiSlot.Chrome is not null;
+        SetLocalSearchStatus(update is null ? $"Downloading {what}…" : $"Downloading {what} {update}…");
         RefreshLocalSearch();
         long ceiling = (long)_aiCeiling;
         var progress = new Progress<double>(f => SetLocalSearchStatus($"Downloading {what}… {f * 100:0}%"));
@@ -763,7 +777,10 @@ public static partial class IslandHost
                     _aiCeiling = cap;
                     if (BudgetRefusal(slot, size) is string no) throw new OverBudgetException(no);
                 }, progress).ConfigureAwait(false);
-                message = $"{char.ToUpperInvariant(what[0])}{what[1..]} installed.";
+                string capital = $"{char.ToUpperInvariant(what[0])}{what[1..]}";
+                message = update is null ? $"{capital} installed."
+                    : coreRunning ? $"Local search {update} is installed. It takes over the next time MediaViewer starts."
+                    : $"{capital} updated to {update}.";
             }
             catch (OverBudgetException ex)
             {

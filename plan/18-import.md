@@ -162,7 +162,12 @@ The design follows the AI pack's delivery rules:
   `~/Library/Application Support/MediaViewer/Add-ons/Import/<version>` on Mac. Per-user,
   versioned folders, like the app itself. Uninstalling the app removes add-ons; removing the
   add-on offers to keep or delete `import.db`.
-- **Updates:** an installed add-on updates silently with the app. The manifest declares the
+- **Updates:** *amended 2026-09-27* — Settings offers **Update to X** when the release channel
+  has a newer signed version than the installed one (Import and each Local search piece, both
+  platforms); it is not silent, and nothing downloads until it is clicked. The new version
+  installs beside the running one and the store removes the old one at the next start
+  (`prune.pending`), so a running add-on never loses its files; a new Local search piece is
+  picked up at once, a new Import or Core at the next start. The manifest declares the
   host API range it supports. An add-on outside that range is not loaded, and the app says
   "Import needs an update" rather than crashing. Offline sideloading works: drop the folder
   in, and it is verified the same way.

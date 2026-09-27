@@ -2688,3 +2688,19 @@ so both run on CPU on the Mac whatever the compute setting; Whisper small still 
 **What.** `infer::session_options::fixed_dims`, `clip_model` pins its Core ML image tower to
 `kCoreMLImageBatch` and splits / pads; `pack.cpp` never gives audio Core ML. Windows is unchanged
 (CUDA / OpenVINO take dynamic shapes).
+
+## 2026-09-27 — Add-on updates are offered in Settings, not silent
+
+**Amends** plan/18 *Updates* ("an installed add-on updates silently with the app"), which was
+never built: nothing looked for a newer add-on once one was installed, so Import stayed at the
+version first installed (the owner, on the 0.1.10 preview, still had Import 0.1.6).
+
+**What.** Opening Settings probes the release channel for installed add-ons too; when the signed
+manifest there is newer (dotted numeric compare, as the store's), Import and each Local search
+piece show **Update to X**. Explicit, not silent: it is a download of up to ~1.2 GB, and nothing
+is fetched without a click (plan/17's rule). The store no longer deletes older versions at
+install: it writes `prune.pending` naming the new one and removes the rest at the next start, so
+a running pack keeps its files (the Mac deleted them under it; Windows could not delete a loaded
+DLL and left half a folder). A new piece is picked up at once (reload); a new Import or Core
+takes over at the next start, because a loaded bundle's classes cannot be replaced in the
+running app. Add-ons still ship on stable releases only; previews carry none.

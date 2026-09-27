@@ -38,7 +38,25 @@ public static partial class IslandHost
     // a manifest that verifies counts: the button never offers a download that
     // does not exist or that the core would refuse.
     private enum OfferKind { Unknown, Checking, Available, NotPublished, NeedsNewerApp, Unreachable }
-    private sealed record AddonOffer(OfferKind Kind, long ArchiveSize, long InstalledSize = 0);
+    private sealed record AddonOffer(OfferKind Kind, long ArchiveSize, long InstalledSize = 0, string Version = "");
+
+    // Dotted numeric versions ("0.1.10" > "0.1.9"), as the store compares them.
+    private static bool IsNewer(string published, string installed)
+    {
+        int[] a = Array.ConvertAll(published.Split('.'), p => int.TryParse(p, out int n) ? n : 0);
+        int[] b = Array.ConvertAll(installed.Split('.'), p => int.TryParse(p, out int n) ? n : 0);
+        for (int i = 0; i < Math.Max(a.Length, b.Length); ++i)
+        {
+            int x = i < a.Length ? a[i] : 0, y = i < b.Length ? b[i] : 0;
+            if (x != y) return x > y;
+        }
+        return false;
+    }
+
+    // A newer published version of an installed add-on or piece, or null.
+    private static string? UpdateVersion(AddonSlot slot) =>
+        slot.State.Installed && slot.Offer.Kind == OfferKind.Available && slot.Offer.Version.Length > 0 &&
+        IsNewer(slot.Offer.Version, slot.State.Version) ? slot.Offer.Version : null;
 
     /// <summary>
     /// One add-on or family piece. Pieces (<see cref="Parent"/> set) have no
@@ -488,8 +506,9 @@ public static partial class IslandHost
             if (root.GetProperty("ok").GetBoolean())
             {
                 long installed = root.TryGetProperty("installed_size", out JsonElement size) ? size.GetInt64() : 0;
+                string version = root.TryGetProperty("version", out JsonElement v) ? v.GetString() ?? "" : "";
                 return new AddonOffer(OfferKind.Available, root.GetProperty("archive").GetProperty("size").GetInt64(),
-                    installed);
+                    installed, version);
             }
             // A signed piece for a newer host API; anything else that does not
             // verify is, to this build, nothing to offer.
@@ -590,8 +609,9 @@ public static partial class IslandHost
         view.Children.Add(_addonStatus);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
-        // switch says: the person is looking at what can be installed.
-        if (!ImportSlot.State.Installed) ProbeOffer(ImportSlot);
+        // switch says: the person is looking at what can be installed, or
+        // updated (plan/18).
+        ProbeOffer(ImportSlot);
     }
 
     private static TextBlock WrappedLabel(string text)
@@ -648,6 +668,11 @@ public static partial class IslandHost
         };
         _addonRow.Children.Add(Label(line));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (UpdateVersion(ImportSlot) is string newer)
+        {
+            buttons.Children.Add(SettingsButton($"Update to {newer}, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+                StartImportInstall));
+        }
         if (state.State != "ok") buttons.Children.Add(SettingsButton("Reinstall", StartImportInstall));
         if (ImportSlot.Chrome is not null) buttons.Children.Add(SettingsButton("Open Import", () => ImportSlot.Chrome?.Open(null)));
         buttons.Children.Add(SettingsButton("Remove…", ConfirmImportRemove));
@@ -701,14 +726,20 @@ public static partial class IslandHost
     {
         if (ImportSlot.Busy) return;
         ImportSlot.Busy = true;
-        SetAddonStatus("Downloading Import…");
+        // An update of a running Import installs beside it and takes over at
+        // the next start (the store keeps the running copy until then).
+        string? update = UpdateVersion(ImportSlot);
+        bool running = ImportSlot.Chrome is not null;
+        SetAddonStatus(update is null ? "Downloading Import…" : $"Downloading Import {update}…");
         _ = Task.Run(async () =>
         {
             string message;
             try
             {
                 await DownloadAndInstall(ImportSlot, null).ConfigureAwait(false);
-                message = "Import installed.";
+                message = update is null ? "Import installed."
+                    : running ? $"Import {update} is installed. It takes over the next time MediaViewer starts."
+                    : $"Import updated to {update}.";
             }
             catch (AddonNotPublishedException)
             {
@@ -730,7 +761,7 @@ public static partial class IslandHost
                 ApplyAddonStates(states);
                 SetAddonStatus(message);
                 RefreshAddonRow();
-                if (ImportSlot.Usable) LoadAddon(ImportSlot);
+                if (ImportSlot.Usable && ImportSlot.Chrome is null) LoadAddon(ImportSlot);
             });
         });
     }
