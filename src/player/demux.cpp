@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5a - libavformat demux into bounded packet queues (~2 s).
 //
 // OWNER: mediaviewer-48 (5a).

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for macpack.py's pure helpers (no macOS needed; they run
 on Linux). The otool samples are the formats Apple's cctools print."""
 from __future__ import annotations

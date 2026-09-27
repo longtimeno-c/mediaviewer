@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // One still out of a clip, for the filmstrip and the gallery.
 //
 // plan/04's thumbnail cache is format-agnostic: it stores a JPEG-512 keyed by

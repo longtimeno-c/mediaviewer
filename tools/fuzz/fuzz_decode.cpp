@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // libFuzzer harness: probe + the codec::decode dispatcher (OS codec first,
 // then the registry) and the image pipeline on top of it (decode_bytes,
 // decode_preview, colour management). This is what a folder open runs.

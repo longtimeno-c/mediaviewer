@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -144,9 +145,9 @@ public static partial class IslandHost
         public const int TrimPreview = 138;
         public const int ClipSplit = 145;
         public const int TrimRemoveMiddle = 146;
-        public const int EditWorkspace = 147;
-        public const int CropAspectSet = 152;      // arg: preset, + 16 portrait
-        public const int CropStraightenSet = 153;  // arg: degrees
+        public const int EditWorkspace = 150;
+        public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
+        public const int CropStraightenSet = 156;  // arg: degrees
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.

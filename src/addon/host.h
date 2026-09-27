@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The host side of an add-on: the function table (mediaviewer_addon.h) built
 // over the core's own io, pairing and volume ports, and the loader that maps
 // a verified add-on's library and calls its one export.

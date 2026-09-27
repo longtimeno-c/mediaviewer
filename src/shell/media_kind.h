@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Is this listing entry a clip (played through player/) rather than a still
 // (decoded through image/)? By extension only: the folder listing filters by
 // extension too, and the player probes the real container when it opens it.

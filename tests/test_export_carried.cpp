@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10: a re-encoded export of a HEIC / TIFF / RAW / WebP carries its EXIF and
 // XMP (meta::read_carried, wired by shell::run_export) — the photograph's
 // metadata, never the source container's own image-structure tags. Fixtures

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // abi/clip_session: the logic behind mediaviewer_clip.h, without a window.
 #include "catch_compat.h"
 

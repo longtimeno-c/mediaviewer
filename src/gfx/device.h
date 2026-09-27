@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The D3D11 device, and the adapter-selection rules that go with it.
 //
 // plan/03-rendering.md: pick the adapter that drives the *output the window is

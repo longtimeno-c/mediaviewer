@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 11 — the edit working space (D6: linear FP16, non-negotiable; plan/07).
 //
 // A linear_image is linear-light Rec.709 / sRGB primaries, stored as IEEE

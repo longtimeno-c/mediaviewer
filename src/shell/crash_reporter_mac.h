@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Crashpad client for the macOS host — PR 11's Mac half (plan/10 PR 11, owner
 // call 2026-09-24; plan/13 Part 2). The twin of crash_reporter_win.h:
 //

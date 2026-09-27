@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9: the metadata pane's three text tables (plan/06, plan/16 `I`).
 //
 // A host hands a `metadata` record to its chrome as flat text, one record per

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Video blit: NV12/P010 -> RGB using the stream's real colour matrix, plus
 // HLG/PQ -> SDR tone-mapping, into the 8-bit sRGB swapchain (D6).
 //

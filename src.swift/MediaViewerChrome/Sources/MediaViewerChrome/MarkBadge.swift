@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The "this item is marked" glyph on filmstrip and gallery cells (plan/16
 // "Marks, copy, move"): what F7 / F8 / Delete will act on has to be visible.
 import SwiftUI

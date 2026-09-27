@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The queue's side of clip_wire.h: one job in one MediaViewerClipJob process.
 #include <atomic>
 #include <chrono>

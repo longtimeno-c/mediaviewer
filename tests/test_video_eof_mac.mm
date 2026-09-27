@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Issue #43: Space (or K, or the transport's Play) on a clip that has played to
 // its natural end restarts it from the beginning, once, on the real Metal
 // player. Driven the way present_lab_mac drives it: acquire_frame only while

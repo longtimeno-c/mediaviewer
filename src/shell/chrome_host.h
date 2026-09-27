@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Loads the C# WinUI chrome and attaches a DesktopWindowXamlSource island.
 //
 // plan/10 PR 3, D1 amendment: the Win32 window and D3D11 swapchain stay the
@@ -176,8 +177,8 @@ static_assert(static_cast<int>(command_id::trim_keyframe) == 139);
 static_assert(static_cast<int>(command_id::trim_reencode) == 140);
 static_assert(static_cast<int>(command_id::jobs_pane) == 143);
 static_assert(static_cast<int>(command_id::clip_tools) == 144);
-// PR 29: the Edit workspace's buttons send these (the Mac bridge pins 147 too).
-static_assert(static_cast<int>(command_id::edit_workspace) == 147);
+// PR 29: the Edit workspace's buttons send these (the Mac bridge pins 150 too; PR 15 took 147-149).
+static_assert(static_cast<int>(command_id::edit_workspace) == 150);
 static_assert(static_cast<int>(command_id::rotate_ccw) == 96 && static_cast<int>(command_id::rotate_cw) == 97);
 static_assert(static_cast<int>(command_id::flip_horizontal) == 98 &&
               static_cast<int>(command_id::flip_vertical) == 99);
@@ -187,8 +188,8 @@ static_assert(static_cast<int>(command_id::trim_in) == 135 && static_cast<int>(c
 static_assert(static_cast<int>(command_id::trim_clear) == 137 && static_cast<int>(command_id::trim_preview) == 138);
 static_assert(static_cast<int>(command_id::clip_split) == 145 &&
               static_cast<int>(command_id::trim_remove_middle) == 146);
-static_assert(static_cast<int>(command_id::crop_aspect_set) == 152);
-static_assert(static_cast<int>(command_id::crop_straighten_set) == 153);
+static_assert(static_cast<int>(command_id::crop_aspect_set) == 155);
+static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
@@ -596,6 +597,9 @@ class chrome_host {
   // with the last preset (kind 1, Ctrl+Shift+F7). Optional entry point: a
   // chrome without it ignores the call.
   void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
+  // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
+  // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
+  bool share_files(HWND window, const std::string& paths_json) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -663,6 +667,7 @@ class chrome_host {
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
+  chrome_entry_fn share_files_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

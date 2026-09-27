@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10 — the EditStack (plan/07-photo-editing.md) and its geometry ops.
 //
 // An edit is an ordered list of small POD parameter blocks. The original is

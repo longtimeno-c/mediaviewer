@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Schema-2 frame-time JSON used by both present labs and by frametime.
 //
 // The Windows lab writes this from DXGI statistics; the Metal lab writes the

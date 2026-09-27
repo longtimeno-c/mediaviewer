@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Draws dino_game (dino_game.h) with ImGui draw-list primitives, on the
 // background list, for both present labs (D9: no platform types). Nothing here
 // loads an asset: the runner is a 20x21 pixel sprite, the rest is rectangles.
