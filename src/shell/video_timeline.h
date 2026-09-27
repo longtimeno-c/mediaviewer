@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 30 — the Video Editor's timeline (plan/21), shared by both hosts.
 //
 // One clip, cut into pieces: the timeline is the kept ranges of the source,
