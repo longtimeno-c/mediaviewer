@@ -150,15 +150,20 @@ class present_lab {
   // to the present that first draws the new still. `cached` means that texture
   // was already the full-resolution image, not a preview. Seq 0 means the
   // 64-sample log is full. UI thread marks; the render thread fills the sample.
+  // `full_ms` is to the first full-resolution texture of it (the same as
+  // ready_ms when cached); it can land after navigation_done, and
+  // navigation_full says when it has.
   struct nav_sample {
     double ready_ms = -1.0;
     double present_ms = -1.0;
     double refresh_ms = 0.0;
+    double full_ms = -1.0;
     int cached = 0;
     int valid = 0;
   };
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
+  [[nodiscard]] bool navigation_full(std::uint64_t seq) const noexcept;
   [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
 
  private:
@@ -263,10 +268,12 @@ class present_lab {
   // still_size(). Called wherever current_image_ takes a published image.
   void note_still_landed() noexcept;
   void note_nav_image(const image::gpu_image& ready) noexcept;
+  void note_nav_full(const image::gpu_image& landed) noexcept;
   void commit_nav_present() noexcept;
   std::atomic<std::uint64_t> nav_seq_{0};
   std::atomic<std::int64_t> nav_qpc_{0};
   std::atomic<std::uint64_t> nav_done_seq_{0};
+  std::atomic<std::uint64_t> nav_full_seq_{0};
   nav_sample nav_samples_[64]{};
   std::uint64_t nav_latched_seq_ = 0;
   std::int64_t nav_latch_qpc_ = 0;

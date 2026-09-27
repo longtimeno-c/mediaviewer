@@ -41,8 +41,8 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.6
-  DESCRIPTION "Windows viewer for a real camera dump; macOS present lab is Milestone F"
+  VERSION 0.1.8
+  DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -400,6 +400,7 @@ add_library(mv_player STATIC
   src/player/poster.cpp
   # headers, listed so they show up in the IDE
   src/player/media_source.h
+  src/player/playback_hold.h
   src/player/video_source.h
   src/player/audio_sink.h
   src/player/audio_block.h
@@ -865,6 +866,13 @@ endif()
 if(MV_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 3 CONFIG REQUIRED)
+  # The README chart suite (tools/perf): charts reproduce from the committed
+  # reports and the suite plans every harness. Standard-library Python only.
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME perf_tools
+             COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/perf/test_perf_tools.py")
+  endif()
 
   add_executable(mv_tests
     tests/crt_no_dialogs.cpp
@@ -922,6 +930,8 @@ if(MV_BUILD_TESTS)
     tests/test_trim_state.cpp
     # Issue #38: the transport's idle state, both hosts.
     tests/test_transport_autohide.cpp
+    # Issue #44: no clip plays under the gallery, both hosts.
+    tests/test_playback_hold.cpp
     src/abi/clip_session.cpp
     src/shell/trim_state.cpp
     tests/test_corpus.cpp
@@ -948,6 +958,7 @@ if(MV_BUILD_TESTS)
     tests/test_pairing.cpp
     tests/test_live_photo.cpp
     tests/test_raw.cpp
+    tests/test_perf_bench.cpp
     tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp

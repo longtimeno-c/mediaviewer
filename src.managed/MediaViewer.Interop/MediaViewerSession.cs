@@ -22,6 +22,7 @@ public sealed partial class MediaViewerSession : IDisposable
     public uint VideoState { get { ThrowIfFailed(NativeMethods.mv_video_state(_handle, out var value)); return value; } }
     public void VideoPlay() => ThrowIfFailed(NativeMethods.mv_video_play(_handle));
     public void VideoPause() => ThrowIfFailed(NativeMethods.mv_video_pause(_handle));
+    public void VideoHold(bool hold, bool resume) => ThrowIfFailed(NativeMethods.mv_video_set_hold(_handle, hold ? 1 : 0, resume ? 1 : 0));
     public void VideoSeek(long ns, bool exact) => ThrowIfFailed(NativeMethods.mv_video_seek(_handle, ns, exact ? 1 : 0));
     public void VideoStep(int frames) => ThrowIfFailed(NativeMethods.mv_video_step(_handle, frames));
     public void VideoRate(double rate) => ThrowIfFailed(NativeMethods.mv_video_set_rate(_handle, rate));

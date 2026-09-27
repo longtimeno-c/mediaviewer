@@ -633,6 +633,7 @@ void present_lab::render_thread_main() noexcept {
             }
             current_image_.reset(ready);
             note_still_landed();
+            note_nav_full(*current_image_);
             if (ready->quality == image::gpu_quality::full && full_seconds_ < 0.0) {
               full_seconds_ = elapsed;
             }
@@ -661,6 +662,7 @@ void present_lab::render_thread_main() noexcept {
             current_image_.reset(ready);
             note_still_landed();
             note_nav_image(*current_image_);
+            note_nav_full(*current_image_);
             {
               const auto view = usable_canvas(snapshot);
               // plan/16 sticky zoom: off (default) fits every item; on keeps the
@@ -1377,6 +1379,12 @@ bool present_lab::navigation_done(std::uint64_t seq) const noexcept {
   return nav_samples_[seq - 1].valid != 0;
 }
 
+bool present_lab::navigation_full(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64) return false;
+  return nav_full_seq_.load(std::memory_order_acquire) >= seq &&
+         nav_samples_[seq - 1].full_ms >= 0.0;
+}
+
 present_lab::nav_sample present_lab::navigation_sample(std::uint64_t seq) const noexcept {
   if (seq == 0 || seq > 64) return {};
   return nav_samples_[seq - 1];
@@ -1393,6 +1401,18 @@ void present_lab::note_nav_image(const image::gpu_image& ready) noexcept {
   nav_cached_ = ready.quality == image::gpu_quality::full ? 1 : 0;
   nav_key_ = ready.item_key;
   nav_have_ready_ = true;
+}
+
+// [render] Full resolution of the navigation's still is on the canvas: a
+// full or full_top texture (tiled images count once their overview is up).
+void present_lab::note_nav_full(const image::gpu_image& landed) noexcept {
+  if (landed.quality == image::gpu_quality::preview) return;
+  const std::uint64_t seq = nav_seq_.load(std::memory_order_acquire);
+  if (seq == 0 || seq > 64 || nav_latched_seq_ != seq || landed.item_key != nav_key_) return;
+  auto& sample = nav_samples_[seq - 1];
+  if (sample.full_ms >= 0.0) return;
+  sample.full_ms = qpc_seconds(qpc_now() - nav_latch_qpc_) * 1000.0;
+  nav_full_seq_.store(seq, std::memory_order_release);
 }
 
 void present_lab::commit_nav_present() noexcept {
