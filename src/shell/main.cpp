@@ -85,7 +85,7 @@ using mv::shell::lab_options;
 using mv::shell::present_lab;
 
 constexpr wchar_t kWindowClass[] = L"MediaViewer.PresentLab";
-constexpr wchar_t kWindowTitle[] = L"MediaViewer — present lab";
+constexpr wchar_t kWindowTitle[] = L"MediaViewer";
 
 // What the user asked for, which is not the same as what is on screen. A
 // folder open is "browse this folder"; an image open is "show me this file",
@@ -3701,7 +3701,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
 
     // View state the render thread draws from (levels, not edges).
     case cycle_background:
-      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 4);
+      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 5);
       return set_level(app);
     case sticky_zoom:
       app->input.sticky_zoom = !app->input.sticky_zoom;
