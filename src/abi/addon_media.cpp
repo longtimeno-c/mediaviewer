@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <mutex>
 
 #include "edit/clip_sample.h"
 #include "image/pipeline.h"
@@ -61,9 +62,18 @@ rgb_image fit_rgb(const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h, st
   return out;
 }
 
-image::thumb_store& thumbs() {
+// Opened on first use by whichever pack worker gets here first; several call
+// moment_thumbnail at once. The check-then-open is one step under a lock, so
+// no worker can see it half-done; lookups and stores are the store's own.
+result<image::thumb_store*> thumbs() {
   static image::thumb_store store;
-  return store;
+  static std::mutex open_mutex;
+  std::lock_guard<std::mutex> lock(open_mutex);
+  if (!store.is_open()) {
+    MV_TRY(std::string dir, io::thumb_cache_dir());
+    MV_TRY_VOID(store.open(dir));
+  }
+  return &store;
 }
 
 result<image::thumb_key> moment_key(const std::string& path, std::int64_t pts_ms) {
@@ -161,11 +171,8 @@ result<std::unique_ptr<audio_stream>> open_audio(const std::string& path, std::u
 
 result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
                                      const rgb_image* image) {
-  auto& store = thumbs();
-  if (!store.is_open()) {
-    MV_TRY(std::string dir, io::thumb_cache_dir());
-    MV_TRY_VOID(store.open(dir));
-  }
+  MV_TRY(image::thumb_store* opened, thumbs());
+  image::thumb_store& store = *opened;
   MV_TRY(image::thumb_key key, moment_key(path, pts_ms));
   if (!image) {
     MV_TRY(std::string hit, store.lookup(key));

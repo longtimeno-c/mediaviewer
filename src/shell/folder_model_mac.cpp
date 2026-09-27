@@ -18,6 +18,7 @@ folder_model::~folder_model() { close(); }
 
 expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcept {
   if (dir_utf8.empty()) return err(status::invalid_arg);
+  std::lock_guard<std::mutex> ops(ops_mutex_);
   jobs_ = &jobs;
 
   {
@@ -53,13 +54,15 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
 
 expected folder_model::open_list(std::string title_utf8, std::vector<list_entry> entries,
                                  job_system& jobs) noexcept {
+  std::lock_guard<std::mutex> ops(ops_mutex_);
   jobs_ = &jobs;
   // Nothing to watch: a result list changes only when the user searches again.
   watcher_.stop();
+  std::uint64_t mine = 0;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->dir.clear();  // a queued relist of the old folder now drops itself
-    state_->generation.fetch_add(1, std::memory_order_acq_rel);
+    mine = state_->generation.fetch_add(1, std::memory_order_acq_rel) + 1;
   }
   auto cache = io::thumb_cache_dir();
   if (!cache) return err(cache.error());
@@ -85,6 +88,9 @@ expected folder_model::open_list(std::string title_utf8, std::vector<list_entry>
   }
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
+    // close() may have moved the model on while the stats ran (it does not
+    // take ops_mutex_): it wins, rather than a list marked open over it.
+    if (state_->generation.load(std::memory_order_acquire) != mine) return {};
     state_->is_list = true;
     state_->list_title = std::move(title_utf8);
     state_->items = std::move(items);
@@ -147,6 +153,7 @@ void folder_model::close() noexcept {
     state_->moments.clear();
     state_->list_title.clear();
     state_->is_list = false;
+    state_->generation.fetch_add(1, std::memory_order_acq_rel);
   }
   // Jobs already submitted to `jobs_` (relist/thumb) keep their own
   // std::shared_ptr<shared_state> and finish safely against it; this object

@@ -510,6 +510,7 @@ void present_lab_mac::update_video_status() noexcept {
   vs_muted_.store(video_muted_, std::memory_order_relaxed);
   vs_rate_x100_.store(kRateX100[std::clamp(speed_rung_, 0, 5)], std::memory_order_relaxed);
   vs_volume_.store(video_volume_, std::memory_order_relaxed);
+  vs_item_.store(media_item_, std::memory_order_relaxed);
   vs_active_.store(true, std::memory_order_release);
 }
 
@@ -1363,6 +1364,14 @@ void present_lab_mac::render_thread_main() noexcept {
             // Milestone H: a search result lands paused on its moment. The
             // exact seek decodes forward from the keyframe before it and
             // presents that one frame (media_source preview), then idles.
+            // Opened under the gallery (G while it was still opening), the
+            // hold took it for a clip about to autoplay and would start it on
+            // release: it never was, so it stays paused as an explicit Pause
+            // would leave it. Only for the live item; a stale adoption must
+            // not cancel the resume of the one still opening.
+            if (media_item_ == item_counter_.load(std::memory_order_acquire)) {
+              hold_.user_transport();
+            }
             media_->pause();
             media_->seek(static_cast<player::time_ns>(moment_ms) * 1'000'000, /*exact=*/true);
           } else if (hold_.autoplay(media_item_)) {

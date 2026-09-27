@@ -103,7 +103,14 @@ struct addon_slot {
 };
 
 struct mac_addons {
+  // Made once, on whichever thread asks first (MvAddonsStart's utility block
+  // and Swift's detached state reads race at launch), and never replaced. The
+  // store keeps no state of its own beyond its root and key, so its const
+  // calls are safe from any thread once it exists.
+  std::mutex store_mutex;
   std::unique_ptr<mv::addon::store> store;
+  // install / remove move and delete add-on folders: one at a time.
+  std::mutex store_writes;
   std::unique_ptr<mv::addon::loaded_addon> import;
   id<MVAddonChrome> chrome = nil;
   NSBundle* bundle = nil;
@@ -145,14 +152,37 @@ std::string hint_marker() {
 
 bool ensure_store() {
   mac_addons& s = state();
+  std::lock_guard<std::mutex> lock(s.store_mutex);
   if (s.store) return true;
   auto root = mv::io::addons_dir();
   if (!root) return false;
   auto key = mv::addon::pinned_public_key();
   s.store = std::make_unique<mv::addon::store>(*root, std::vector<std::uint8_t>(key.begin(), key.end()),
                                                MV_ADDON_HOST_API);
-  s.store->startup_cleanup();
+  s.store->startup_cleanup();  // under the lock: nobody holds the store before it has run
   return true;
+}
+
+// Where an AI pack is loaded, shut down and removed, in the order asked: a
+// removal queued behind an unload runs only once the pack's workers have
+// stopped and its dylib is gone, and a new load never overlaps the old pack's
+// teardown. Utility QoS, never the main thread (rule 1).
+dispatch_queue_t addon_queue() {
+  static dispatch_queue_t q = dispatch_queue_create(
+      "MediaViewer.addons",
+      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+  return q;
+}
+
+// A loaded_addon's destructor calls the pack's shutdown, which joins its
+// workers, then unloads the dylib: off the main thread. The chrome, if any,
+// must already have been shut down.
+void retire(std::unique_ptr<mv::addon::loaded_addon> addon) {
+  if (!addon) return;
+  mv::addon::loaded_addon* raw = addon.release();
+  dispatch_async(addon_queue(), ^{
+    std::unique_ptr<mv::addon::loaded_addon> owned(raw);
+  });
 }
 
 bool capture_info(const std::string& path, mv_addon_capture& out) {
@@ -183,6 +213,9 @@ mv::result<std::string> thumbnail(const std::string& path) {
   const mv::image::thumb_key key{path, st.mtime_unix, st.size};
   MV_TRY(std::string hit, s.thumbs.lookup(key));
   if (!hit.empty()) return hit;
+  // Stills only: a clip's poster needs the player, and reading a whole clip
+  // to find that out would cost gigabytes (Windows' twin says the same).
+  if (mv::shell::is_video_name(path)) return mv::err(mv::status::unsupported_format);
   MV_TRY(auto bytes, mv::io::read_all(path));
   MV_TRY(auto jpeg, mv::image::make_thumb_jpeg(bytes));
   return s.thumbs.store(key, jpeg);
@@ -290,6 +323,11 @@ mv::addon::host_services ai_services() {
   return svc;
 }
 
+// [main-thread] The chrome shuts down here, first: it stops taking table calls
+// and waits for those in flight, so nothing reaches the table after this. Only
+// then is the pack retired on addon_queue() (its workers stop, indexing
+// resumes next load, then the dylib goes) -- joining them here would hold the
+// main thread.
 void unload_ai() {
   mac_addons& s = state();
   ++s.ai.load_seq;  // a load in flight lands on nothing
@@ -301,7 +339,7 @@ void unload_ai() {
   }
   s.ai.chrome = nil;
   s.ai.table = nullptr;
-  s.ai.addon.reset();  // the pack stops its workers (indexing resumes next load), then the dylib goes
+  retire(std::move(s.ai.addon));
   s.ai.bundle = nil;   // mapped until quit, inert (NSBundle -unload is unsafe for Swift)
   s.ai.loading = false;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, false);
@@ -310,8 +348,9 @@ void unload_ai() {
 }
 
 // On the main thread, once the native side loaded on a worker: the bundle,
-// its principal class, attach.
-void attach_ai(std::unique_ptr<mv::addon::loaded_addon> loaded) {
+// its principal class, attach. Takes `loaded` only on success; on failure the
+// caller retires it (no chrome was attached to it).
+void attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   mac_addons& s = state();
   const void* table = loaded->query(MV_AI_INTERFACE);
   if (!table) {
@@ -360,7 +399,7 @@ bool start_ai_load() {
   s.ai.error.clear();
   const std::uint64_t seq = ++s.ai.load_seq;
   mv::addon::store* store = s.store.get();  // lives until exit
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+  dispatch_async(addon_queue(), ^{
     auto loaded = mv::addon::loaded_addon::load(*store, "ai", ai_services());
     const std::string why = loaded ? std::string()
                                    : std::string(mv::status_name(loaded.error()));
@@ -370,13 +409,17 @@ bool start_ai_load() {
     dispatch_async(dispatch_get_main_queue(), ^{
       std::unique_ptr<mv::addon::loaded_addon> owned(raw);
       mac_addons& st = state();
-      if (seq != st.ai.load_seq) return;  // removed or unloaded meanwhile: owned shuts it down
+      if (seq != st.ai.load_seq) {
+        retire(std::move(owned));  // removed or unloaded meanwhile
+        return;
+      }
       st.ai.loading = false;
       if (!owned) {
         st.ai.error = why.empty() ? "load" : why;
         return;
       }
-      attach_ai(std::move(owned));
+      attach_ai(owned);
+      retire(std::move(owned));  // attach failed: never on the main thread
     });
   });
   return true;
@@ -473,10 +516,13 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   };
 }
 
-// An exact seek on the clip on screen; it stays paused if it was paused.
+// An exact seek on the clip on screen; it stays paused if it was paused. While
+// the selected clip is still opening (N pressed twice quickly) the live clip
+// is the previous one: the seek is dropped, and the new clip opens on its
+// own moment.
 - (void)seekTo:(NSNumber*)ms {
   if (![ms respondsToSelector:@selector(longLongValue)]) return;
-  mv_chrome_video_seek(ms.longLongValue, true);
+  (void)MvViewerSeekShownClip(ms.longLongValue);
 }
 
 // {"path": String, "ms": [Number], "current": Number}; an empty "ms" clears.
@@ -574,6 +620,30 @@ void MvAddonsItemChanged(const std::string& path) {
   if (chrome && [chrome respondsToSelector:@selector(itemChanged:)]) [chrome itemChanged:ns(path)];
 }
 
+void MvAddonsQuit() {
+  mac_addons& s = state();
+  if (s.chrome) {
+    @try {
+      [s.chrome shutdown];
+    } @catch (NSException*) {
+    }
+  }
+  s.chrome = nil;
+  retire(std::move(s.import));
+  unload_ai();
+}
+
+void MvAddonsWaitStopped(double seconds) {
+  // addon_queue() is serial: this runs once every retirement queued before it
+  // has finished (a verify still hashing ahead of them is what the bound is for).
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  dispatch_async(addon_queue(), ^{
+    dispatch_semaphore_signal(done);
+  });
+  (void)dispatch_semaphore_wait(
+      done, dispatch_time(DISPATCH_TIME_NOW, static_cast<std::int64_t>(seconds * NSEC_PER_SEC)));
+}
+
 bool MvAddonsRunCommand(const char* name) {
   id<MVAIChrome> chrome = ai_chrome();
   if (!name || !chrome || ![chrome respondsToSelector:@selector(runCommand:)]) return false;
@@ -661,6 +731,7 @@ extern "C" int32_t mv_addons_make_staging(char* buf, int32_t size) {
 
 extern "C" bool mv_addons_install(const char* staged_dir) {
   if (!staged_dir || !ensure_store()) return false;
+  std::lock_guard<std::mutex> lock(state().store_writes);
   return state().store->install(staged_dir).has_value();
 }
 
@@ -668,6 +739,8 @@ extern "C" bool mv_addons_load(void) { return load_import(); }
 
 extern "C" bool mv_addons_remove(bool keep_data) {
   unload_import();
+  // Not under store_writes: this runs on the main thread, and an install in
+  // flight holds that lock while it hashes a download.
   return ensure_store() && state().store->remove("import", keep_data).has_value();
 }
 
@@ -755,7 +828,9 @@ extern "C" bool mv_addon2_load(const char* id) {
 
 // [main-thread] A piece of the loaded AI pack was installed or removed: the
 // pack re-reads its pieces (mv.ai.1 set_setting "reload"); People is picked up
-// at once, nothing restarts. With the pack not loaded, this loads it.
+// at once, nothing restarts. With the pack not loaded, this loads it if Core
+// verifies -- checked on addon_queue() (it hashes Core), so true means only
+// that the check was queued.
 extern "C" bool mv_addon2_reload(const char* id) {
   if (!id || std::string(id) != "ai") return false;
   mac_addons& s = state();
@@ -764,31 +839,47 @@ extern "C" bool mv_addon2_reload(const char* id) {
     return api && api->set_setting && api->set_setting(api->ctx, "reload", "1") == MV_OK;
   }
   if (s.ai.loading) return true;  // the load in flight reads the pieces as they are now
-  return ai_installed_ok() && start_ai_load();
+  if (!ai_supported()) return false;
+  dispatch_async(addon_queue(), ^{
+    if (!ai_installed_ok()) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      (void)start_ai_load();
+    });
+  });
+  return true;
 }
 
 // [main-thread] Unloads first. Removing Core removes its pieces too (a piece is
 // nothing without it); keep_data = true keeps the search index. Removing a
 // piece of a loaded pack tells the pack to re-read its pieces ("reload").
+// For the AI family nothing here waits: the chrome shuts down on the main
+// thread, and the pack's shutdown (joining its workers) and the deletion (up to
+// 3 GB) run in that order on addon_queue(). True means the removal was queued;
+// the Settings view sees it land through mv_addon2_state_json, which it polls.
+// Import's removal is still synchronous (mv_addons_remove).
 extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
-  if (!id || !ensure_store()) return false;
+  if (!id) return false;
   const std::string s(id);
-  mv::addon::store& store = *state().store;
   if (s == "import") return mv_addons_remove(keep_data);
-  if (s == "ai") {
-    unload_ai();
-    bool ok = store.remove("ai", keep_data).has_value();
-    for (const char* piece : {"ai-faces", "ai-audio"}) {
-      if (auto found = store.find(piece); found) ok = store.remove(piece, false).has_value() && ok;
+  if (s != "ai" && s != "ai-faces" && s != "ai-audio") return false;
+  if (s == "ai") unload_ai();  // queues the pack's shutdown ahead of the removal below
+  dispatch_async(addon_queue(), ^{
+    if (!ensure_store()) return;
+    mac_addons& st = state();
+    std::lock_guard<std::mutex> lock(st.store_writes);
+    if (s == "ai") {
+      (void)st.store->remove("ai", keep_data);
+      // A piece that is not installed answers invalid_arg: remove() matches on
+      // the manifests' ids without hashing anything, so no find() first.
+      for (const char* piece : {"ai-faces", "ai-audio"}) (void)st.store->remove(piece, false);
+      return;
     }
-    return ok;
-  }
-  if (s == "ai-faces" || s == "ai-audio") {
-    const bool ok = store.remove(s, keep_data).has_value();
-    if (state().ai.chrome) (void)mv_addon2_reload("ai");
-    return ok;
-  }
-  return false;
+    (void)st.store->remove(s, keep_data);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (state().ai.chrome) (void)mv_addon2_reload("ai");
+    });
+  });
+  return true;
 }
 
 // [worker-thread] A family's installed bytes and its ceiling (plan/17: 3 GB

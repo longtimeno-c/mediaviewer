@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <cmath>
 #include <cstdint>
@@ -170,6 +171,8 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 MvLabApp* g_chrome_app = nullptr;
 
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+// _shownMoment after a new search: matches no moment, so the clip reopens.
+constexpr std::int64_t kShownMomentStale = INT64_MIN;
 
 // --browse-soak (the Windows lab's harness, main.cpp browse_run): open a
 // folder, dwell on the first photo, jump to photos past its prefetched
@@ -510,6 +513,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                gallery:(BOOL)gallery;
 - (void)closeList;
 - (BOOL)listOpen;
+- (BOOL)liveClipIsShown;
 - (std::string)listTitle;
 - (std::string)currentItemPath;
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms
@@ -760,6 +764,11 @@ extern "C" bool mv_chrome_open_list(const char* title_utf8, const char* const* p
                               gallery:gallery ? YES : NO] == YES;
 }
 extern "C" bool mv_chrome_list_open(void) { return g_chrome_app && [g_chrome_app listOpen] == YES; }
+bool MvViewerSeekShownClip(int64_t position_ms) {
+  if (!g_chrome_app || [g_chrome_app liveClipIsShown] != YES) return false;
+  mv_chrome_video_seek(position_ms, true);
+  return true;
+}
 extern "C" void mv_chrome_close_list(void) {
   if (g_chrome_app) [g_chrome_app closeList];
 }
@@ -1528,6 +1537,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // value-initializes to 0 as of C++20 (this file builds -std=c++2a), so
   // this starts at 0 regardless.
   std::atomic<std::uint64_t> _openGeneration;
+  // Held by the open job across its _openGeneration check and the
+  // folder->open() / open_list() call, so a superseded job cannot pass the
+  // check and then run after the newer one (leaving a result list, or a
+  // folder, the user has already left). Worker threads only.
+  std::mutex _folderOpenMutex;
   NSTimer* _folderPollTimer;
   // What -selectIndex: last handed to the lab, and the lab's item id for it.
   // A relist that lands on the same file (same size and mtime) keeps that
@@ -1538,6 +1552,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   std::int64_t _shownMtime;
   std::uint64_t _shownSize;
   std::uint64_t _shownItem;
+  // Milestone H: the moment the shown clip was opened at (-1 none). The same
+  // result selected again keeps the clip where it is; another moment of it
+  // reopens. kShownMomentStale after a new search, so its moment opens afresh.
+  std::int64_t _shownMoment;
   NSTimer* _browseTimer;
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
@@ -2378,6 +2396,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     _shownPath = select_path;
     _shownMtime = kShownStampUnknown;
     _shownSize = 0;
+    _shownMoment = -1;
   }
 
   // folder_model::open() itself is real I/O -- opening, and maybe creating,
@@ -2391,14 +2410,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   mv::job_system* jobs = &_jobs;
   const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   std::atomic<std::uint64_t>* open_generation = &_openGeneration;
+  std::mutex* open_mutex = &_folderOpenMutex;
   _jobs.submit_at(mv::background_generation,
-                  [folder, jobs, dir, my_generation, open_generation](
+                  [folder, jobs, dir, my_generation, open_generation, open_mutex](
                       const mv::job_context&) -> mv::status {
                     // A newer -openEntryPath: call already arrived: calling
                     // folder->open() now would race that one's own open()
                     // call outside folder_model's internal locking (see
                     // _openGeneration's declaration comment). Let the newer
                     // request own this folder_model unopposed instead.
+                    std::lock_guard<std::mutex> lock(*open_mutex);
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
                     }
@@ -2549,11 +2570,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     // Already on screen or loading: a relist (a file added elsewhere in the
     // folder, a thumbnail written) or the listing that follows an open keeps
     // that load. Every FSEvents change used to re-read and re-decode it. A
-    // result's moment always opens afresh (another moment of the same clip).
-    const bool same = moment < 0 && _shownItem != 0 && entry.path_utf8 == _shownPath &&
+    // result keeps it too when it is the same moment (the tile already shown,
+    // or next/prev held at the list's edge); another moment of the same clip
+    // opens afresh.
+    const bool same = _shownItem != 0 && entry.path_utf8 == _shownPath &&
+                      moment == _shownMoment &&
                       (_shownMtime == kShownStampUnknown ||
                        (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
     if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+    _shownMoment = moment;
     _shownPath = entry.path_utf8;
     _shownMtime = entry.mtime_unix;
     _shownSize = entry.size;
@@ -5273,6 +5298,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _revealChild.clear();
   _galleryIfEmptyDir.clear();
   _wantSelectedPath = select < paths.size() ? paths[select] : std::string();
+  // A new search lands its chosen clip on its moment again, even when that
+  // result is already on screen (and has since played on).
+  if (_shownMoment >= 0) _shownMoment = kShownMomentStale;
   // mv_folder_directory reports "" while a list is open; so does this host.
   _currentDir.clear();
   _items.clear();
@@ -5292,9 +5320,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   mv::job_system* jobs = &_jobs;
   const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   std::atomic<std::uint64_t>* open_generation = &_openGeneration;
+  std::mutex* open_mutex = &_folderOpenMutex;
   _jobs.submit_at(mv::background_generation,
                   [folder, jobs, title, entries = std::move(entries), my_generation,
-                   open_generation](const mv::job_context&) mutable -> mv::status {
+                   open_generation, open_mutex](const mv::job_context&) mutable -> mv::status {
+                    std::lock_guard<std::mutex> lock(*open_mutex);
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
                     }
@@ -5331,6 +5361,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 }
 
 - (BOOL)listOpen { return _listOpen; }
+// The clip the render thread has adopted is the item on screen, not the one
+// before it while the new one is still opening.
+- (BOOL)liveClipIsShown {
+  const auto st = _lab.video_status_snapshot();
+  return st.active && _shownItem != 0 && st.item == _shownItem ? YES : NO;
+}
 - (std::string)listTitle { return _listOpen ? _listTitle : std::string(); }
 - (std::string)currentItemPath {
   if (_items.empty() || _index.current() >= _items.size()) return {};
@@ -5779,6 +5815,9 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _metaWriteDebounce = nil;
   std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
+  // Add-on chromes shut down here, before their packs stop (below, off the
+  // main thread): nothing may call a table whose add-on is gone.
+  MvAddonsQuit();
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
   // device_.destroy() on the render thread -- shutdown() drains queued jobs
@@ -5795,6 +5834,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
       if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
     }
+    MvAddonsWaitStopped(5.0);
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,
     // -[NSApplication terminate:] spins a nested run loop in a mode that does

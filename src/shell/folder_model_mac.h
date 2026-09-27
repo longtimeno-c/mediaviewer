@@ -141,6 +141,11 @@ class folder_model {
   static status relist_now(shared_state& state, const std::string& dir);
 
   std::shared_ptr<shared_state> state_;
+  // open() and open_list() one at a time: each starts or stops `watcher_` and
+  // re-points `thumbs`, and the one that finishes last must be the one whose
+  // listing stands. Workers only; close() (main thread, at teardown) does not
+  // take it.
+  std::mutex ops_mutex_;
   io::directory_watcher watcher_;
   job_system* jobs_ = nullptr;
 };

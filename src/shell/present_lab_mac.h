@@ -146,6 +146,10 @@ class present_lab_mac {
     std::int64_t position_ns = 0;  // PR 13: trim markers need the frame, not the ms
     int rate_x100 = 100;
     float volume = 1.0f;
+    // The open_item() id the live clip belongs to. While a newer item is still
+    // opening this is the previous clip's, so a seek meant for the new one can
+    // tell it would land on the old (Milestone H: N / Shift+N).
+    std::uint64_t item = 0;
   };
   // [any-thread] Whether an animated still (GIF/APNG/WebP) is open on the
   // canvas right now -- read by main_mac.mm's keyDown: to route Space/,/.
@@ -164,6 +168,7 @@ class present_lab_mac {
     s.duration_ms = vs_dur_ms_.load(std::memory_order_relaxed);
     s.rate_x100 = vs_rate_x100_.load(std::memory_order_relaxed);
     s.volume = vs_volume_.load(std::memory_order_relaxed);
+    s.item = vs_item_.load(std::memory_order_relaxed);
     return s;
   }
 
@@ -373,6 +378,7 @@ class present_lab_mac {
   std::atomic<std::int64_t> vs_dur_ms_{0};
   std::atomic<int> vs_rate_x100_{100};
   std::atomic<float> vs_volume_{1.0f};
+  std::atomic<std::uint64_t> vs_item_{0};
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;
