@@ -781,6 +781,13 @@ public static partial class IslandHost
 
     private static ControlTemplate? _flatButtonTemplate;
 
+    // This template does not load: its XAML uses x:Name without declaring the
+    // x namespace, so XamlReader.Load throws and every bar button falls back to
+    // WinUI's own template -- which is what has always shipped. Do not "fix" it
+    // by declaring x: tried 2026-09-27, and once a custom template actually
+    // loads in these islands, opening or closing a bar flyout fail-fasts in
+    // Microsoft.UI.Xaml (0xC000027B). IslandHost.Edit.cs FlattenButton is the
+    // safe way to restyle a button (lightweight resources, no template).
     private static ControlTemplate? FlatButtonTemplate()
     {
         if (_flatButtonTemplate is not null) return _flatButtonTemplate;
@@ -887,6 +894,13 @@ public static partial class IslandHost
 
     private static ControlTemplate? _flatMenuItemTemplate;
 
+    // This template does not load: its XAML uses x:Name without declaring the
+    // x namespace, so XamlReader.Load throws and every menu item falls back to
+    // WinUI's own template -- which is what has always shipped. Do not "fix" it
+    // by declaring x: tried 2026-09-27, and once a custom template actually
+    // loads in these islands, opening or closing a bar flyout fail-fasts in
+    // Microsoft.UI.Xaml (0xC000027B). IslandHost.Edit.cs FlattenButton is the
+    // safe way to restyle a button (lightweight resources, no template).
     private static ControlTemplate? FlatMenuItemTemplate()
     {
         if (_flatMenuItemTemplate is not null) return _flatMenuItemTemplate;
