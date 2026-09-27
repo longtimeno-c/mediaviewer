@@ -28,6 +28,7 @@
 #include "image/gpu_image_mac.h"
 #include "image/linear.h"
 #include "player/media_source.h"
+#include "player/playback_hold.h"
 #include "shell/dino_game.h"
 #include "shell/input_state.h"
 
@@ -239,6 +240,9 @@ class present_lab_mac {
   bool media_fitted_ = false;
   int speed_rung_ = 2;  // index into the 0.25 .. 4 ladder; 2 = 1x
   std::uint32_t seen_anim_toggle_ = 0;
+  // Issue #44: the snapshot's video_hold, applied on this thread (the Windows
+  // twin is abi/video_session). Keyed by item id, which only moves forward.
+  player::playback_hold hold_;
   std::int64_t seen_anim_steps_ = 0;
   std::int64_t seen_video_skip_ = 0;
   std::int32_t seen_video_speed_ = 0;

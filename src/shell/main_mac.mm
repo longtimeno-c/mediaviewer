@@ -523,7 +523,11 @@ extern "C" bool mv_chrome_gallery_visible(void) {
 }
 extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   if (!g_chrome_app || index < 0) return;
-  [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  // The tile already selected is "back to it": reselecting would reopen the
+  // clip, and the one held under the grid would not resume (issue #44).
+  if (index != [g_chrome_app currentIndex]) {
+    [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  }
   [g_chrome_app setGalleryVisible:NO];
 }
 extern "C" uint64_t mv_chrome_listing_generation(void) {
@@ -2548,6 +2552,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)setGalleryVisible:(BOOL)visible {
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  // Issue #44: nothing plays under the grid. The lab pauses a playing clip,
+  // keeps one selected meanwhile on its first frame, and resumes only the clip
+  // that was playing when the grid opened (player/playback_hold.h).
+  if (_snap.video_hold != static_cast<bool>(visible)) {
+    _snap.video_hold = visible;
+    _snap.video_hold_resume = true;
+    [self pokeSnapshot];
+  }
 }
 - (void)toggleFilmstrip {
   // Nothing open: nothing to toggle, and no preference silently flipped for

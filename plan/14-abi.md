@@ -319,6 +319,23 @@ queue's single worker, and nothing retains a caller's string. No pixel crosses: 
 is a file the job writes. The logic lives in the portable `abi/clip_session`, which the Mac host
 links directly (it has no ABI session) — one queue implementation on both platforms.
 
+## Issue #44 — no clip plays under the gallery (ABI 0.11)
+
+Minor bump, one call, no layout change.
+
+```c
+mv_status mv_video_set_hold(mv_session_t, int32_t hold, int32_t resume);
+```
+
+`[any-thread][no-block]`. The host sets `hold` while the gallery covers the canvas. The render
+thread applies it on its next tick: a playing clip pauses, and a clip opened under the hold is
+adopted paused on its first frame (the poster) instead of autoplaying. Lifting it resumes only
+the clip that was playing (or still opening) when the hold began, and only if it is still the
+one on screen and `resume` is 1; a clip selected meanwhile waits for `mv_video_play`. `resume`
+0 is for leaving the grid for something new (an open, Settings). A play or pause while held is
+the user's and release keeps it. The rule is `player/playback_hold.h`, which the Mac lab runs
+on its own `media_source` from the snapshot's `video_hold` — one policy on both platforms.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

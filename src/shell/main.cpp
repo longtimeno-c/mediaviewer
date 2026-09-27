@@ -241,6 +241,9 @@ struct app_state {
   bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
   open_mode mode = open_mode::none;
   bool gallery_visible = false;
+  // Issue #44: what the core was last told (mv_video_set_hold). The grid covers
+  // the canvas, so nothing plays under it; see sync_video_hold.
+  bool video_held = false;
   // WM_CLOSE has started the orderly teardown; a second close is a no-op.
   bool closing = false;
   // File-job problems waiting to be reported. One dialog at a time: a job that
@@ -460,6 +463,7 @@ void apply_transport_autohide(app_state* app) noexcept;
 void transport_activity(app_state* app) noexcept;
 void push_browse_state(app_state* app);
 void set_gallery(app_state* app, bool visible);
+void sync_video_hold(app_state* app, bool resume = true) noexcept;
 void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
 void update_title(app_state* app) noexcept;
@@ -527,6 +531,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
     if (!navigation) {
       app->mode = open_mode::folder;
       app->gallery_visible = false;
+      sync_video_hold(app, false);
       note_recent_folder(app, utf8);
     } else {
       app->mode = open_mode::folder;
@@ -537,6 +542,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
   if (navigation) return;
   app->mode = open_mode::image;
   app->gallery_visible = false;
+  sync_video_hold(app, false);
   const auto slash = wide_path.find_last_of(L"\\/");
   if (slash == std::wstring_view::npos) {
     mv_session_bump_generation(app->session, nullptr);
@@ -642,6 +648,7 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   // then only flips the persisted flag behind an unchanged screen.
   app->mode = open_mode::folder;
   app->gallery_visible = false;
+  sync_video_hold(app, false);
   open_folder(app, folder, {});
   focus_canvas(app);
 }
@@ -2381,7 +2388,19 @@ void set_gallery(app_state* app, bool visible) {
   if (visible && !gallery_available(app)) return;
   if (app->gallery_visible == visible) return;
   app->gallery_visible = visible;
+  sync_video_hold(app);
   apply_view_state(app);
+}
+
+// Issue #44. The grid covers the canvas, so a clip does not play or sound under
+// it: the core pauses one that is playing, leaves one selected under the grid on
+// its first frame, and on the way out resumes only the clip that was playing
+// when the grid opened (player/playback_hold.h, the rule the Mac host runs).
+// `resume` false is for leaving the grid for something new, not back to the clip.
+void sync_video_hold(app_state* app, bool resume) noexcept {
+  if (!app || !app->session || app->video_held == app->gallery_visible) return;
+  app->video_held = app->gallery_visible;
+  (void)mv_video_set_hold(app->session, app->video_held ? 1 : 0, resume ? 1 : 0);
 }
 
 void toggle_filmstrip_setting(app_state* app) {
@@ -2450,10 +2469,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
       std::uint32_t cur = 0;
       (void)mv_folder_selected(app->session, &cur);
       const auto index = static_cast<std::uint32_t>(arg);
-      folder_select(app, index);
-      // Closing the grid would otherwise reveal the previous still until the
-      // new decode lands. Drop it when the click is a jump.
+      // A click on the tile already selected is "back to it": reselecting would
+      // reopen a clip, and the one held under the grid would not resume (#44).
       if (index != cur) {
+        folder_select(app, index);
+        // Closing the grid would otherwise reveal the previous still until the
+        // new decode lands. Drop it when the click is a jump.
         ++app->input.discard_media_seq;
         publish(app);
       }
@@ -2495,6 +2516,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       if (dir.empty()) return;
       app->mode = open_mode::folder;
       app->gallery_visible = false;
+      sync_video_hold(app, false);
       {
         const int n = ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0);
         if (n <= 1) return;
@@ -2856,6 +2878,7 @@ void set_fullscreen(app_state* app, bool on) noexcept {
     // Set first: the WM_SIZE this causes lays the chrome out as hidden.
     app->fullscreen = true;
     app->gallery_visible = false;
+    sync_video_hold(app);
     // A hidden island must not keep keyboard focus.
     ::SetFocus(hwnd);
     ::SetWindowLongPtrW(hwnd, GWL_STYLE, app->windowed_style & ~WS_OVERLAPPEDWINDOW);
@@ -3217,7 +3240,9 @@ void set_settings_open(app_state* app, bool on) noexcept {
     mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
     const std::size_t n = app->router.cancel_holds(released);
     for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+    // Settings covers the canvas too; leaving the grid for it keeps the clip paused.
     app->gallery_visible = false;
+    sync_video_hold(app, false);
     app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
     app->popup_open = false;
     // Give XAML its final viewport before measuring and focusing Settings.
@@ -4577,6 +4602,7 @@ void apply_view_state(app_state* app) noexcept {
 
   const bool have_media = folder_count(app) > 1;
   if (app->mode == open_mode::none) app->gallery_visible = false;
+  sync_video_hold(app);
 
   // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
