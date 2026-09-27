@@ -235,9 +235,9 @@ internal sealed class GalleryControl
         });
     }
 
+    // Loaded, not only installed (as Settings' "Index videos for").
     private bool AudioAvailable =>
-        (_chrome.StatusValid && (_chrome.Status.Flags & MvAiStatus.FlagAudioReady) != 0) ||
-        _chrome.Host.IsPieceInstalled("ai-audio");
+        _chrome.StatusValid && (_chrome.Status.Flags & MvAiStatus.FlagAudioReady) != 0;
 
     private void Show()
     {

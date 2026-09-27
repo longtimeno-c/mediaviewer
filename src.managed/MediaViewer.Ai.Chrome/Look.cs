@@ -162,7 +162,13 @@ internal sealed class Look
         {
             case MvAiState.Loading:
                 // It opens the models only between the viewer's busy spells.
-                return s.YieldReason == MvAiYield.None ? "Getting ready…" : "Getting ready when the viewer is idle";
+                // "The first time takes a few minutes" only when the pack says
+                // this load is that first compile (a Mac's Core ML; no Windows
+                // provider sets it), never on every start (2026-09-27).
+                if (s.YieldReason != MvAiYield.None) return "Getting ready when the viewer is idle";
+                return (s.Flags & MvAiStatus.FlagFirstCompile) != 0
+                    ? "Preparing the search model for this computer — the first time takes a few minutes"
+                    : "Getting ready…";
             case MvAiState.Error:
                 return "Local search could not load its model.";
             case MvAiState.Paused:

@@ -103,6 +103,8 @@ public unsafe struct MvAiStatus
     public const uint FlagFacesReady = 4;   // ai-faces is installed and loaded
     public const uint FlagNoModels = 8;     // the pack is installed without its model files
     public const uint FlagAudioReady = 16;  // ai-audio is installed and loaded
+    public const uint FlagFirstCompile = 32; // loading, and compiling the model for this machine the first
+                                             // time (Core ML on a Mac; never set on Windows today)
 
     public uint StructSize;
     public MvAiState State;
