@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "io/content_hash.h"
@@ -635,6 +637,71 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   }
   out->api_ = api;
   return out;
+}
+
+// ---- Quit ------------------------------------------------------------------------
+
+namespace {
+
+// Heap-held and never freed: a stop thread may still finish, and the host's
+// exit guard may still ask, once static destructors have begun.
+struct exit_state {
+  std::mutex m;
+  std::condition_variable cv;
+  int stopping = 0;   // stop_for_exit threads not yet finished
+  int abandoned = 0;  // left running for the exit
+};
+
+exit_state& exits() {
+  static exit_state* const s = new exit_state;
+  return *s;
+}
+
+}  // namespace
+
+void stop_for_exit(std::unique_ptr<loaded_addon> addon) noexcept {
+  if (!addon) return;
+  exit_state& s = exits();
+  {
+    std::lock_guard lock(s.m);
+    ++s.stopping;
+  }
+  loaded_addon* raw = addon.release();
+  try {
+    std::thread([raw] {
+      delete raw;  // the add-on's shutdown (joins its threads), then its library
+      exit_state& st = exits();
+      std::lock_guard lock(st.m);
+      --st.stopping;
+      st.cv.notify_all();
+    }).detach();
+  } catch (...) {
+    // No thread to stop it on: it runs until the exit reclaims it.
+    std::lock_guard lock(s.m);
+    --s.stopping;
+    ++s.abandoned;
+  }
+}
+
+void abandon_for_exit(std::unique_ptr<loaded_addon> addon) noexcept {
+  if (!addon) return;
+  (void)addon.release();
+  exit_state& s = exits();
+  std::lock_guard lock(s.m);
+  ++s.abandoned;
+}
+
+bool wait_stopped_for_exit(std::chrono::steady_clock::time_point deadline) noexcept {
+  exit_state& s = exits();
+  std::unique_lock lock(s.m);
+  (void)s.cv.wait_until(lock, deadline, [&] { return s.stopping == 0; });
+  return s.stopping == 0 && s.abandoned == 0;
+}
+
+bool running_at_exit() noexcept {
+  exit_state& s = exits();
+  std::lock_guard lock(s.m);
+  return s.stopping != 0 || s.abandoned != 0;
 }
 
 }  // namespace mv::addon

@@ -1822,6 +1822,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   int32_t _viewFlags;
   int _captureRow;
   id _captureMonitor;
+  id _textEditMonitor;
   uint64_t _keysGeneration;
 
   // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
@@ -2314,6 +2315,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ]];
 
   [self installMainMenu];
+  [self installTextEditKeys];
 
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
@@ -7015,6 +7017,59 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _captureRow = -1;
 }
 
+// ⌘A / ⌘C / ⌘X / ⌘V / ⌘Z / ⇧⌘Z in a text field (owner, 2026-09-27: "Cmd+A in
+// the search bar"). A field editor gets these only as Edit menu items, and
+// this app has none on purpose: on the canvas those keys are the viewer's own
+// commands (⌘A marks all, ⌘C copies the image, ⌘Z undoes an edit), routed by
+// keyDown:. So when a text editor is first responder in the key window (every
+// SwiftUI TextField: the gallery search bar, the ⌘F panel, Settings, People,
+// Import, the metadata pane), the chord is handed to it here and goes no
+// further; anywhere else the event is left alone and routes exactly as before.
+// ⌃A stays the field's own "start of line"; Esc is never taken here.
+- (void)installTextEditKeys {
+  if (_textEditMonitor) return;
+  __weak MvLabApp* weakSelf = self;
+  _textEditMonitor = [NSEvent
+      addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                   handler:^NSEvent*(NSEvent* event) {
+                                     MvLabApp* strong = weakSelf;
+                                     if (!strong || strong->_captureRow >= 0) return event;
+                                     return [strong handleTextEditKey:event] ? nil : event;
+                                   }];
+}
+
+- (BOOL)handleTextEditKey:(NSEvent*)event {
+  const NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  if ((flags & NSEventModifierFlagCommand) == 0 || (flags & NSEventModifierFlagControl) != 0) return NO;
+  NSResponder* first = NSApp.keyWindow.firstResponder;
+  if (![first isKindOfClass:[NSText class]]) return NO;
+  NSText* editor = (NSText*)first;
+  // An input method composing owns its keys until it commits.
+  if ([editor isKindOfClass:[NSTextView class]] && [(NSTextView*)editor hasMarkedText]) return NO;
+  mv::shell::key_event e;
+  e.k = MvKeyFromEvent(event, &e.mods);
+  e.repeat = event.isARepeat;
+  NSUndoManager* undo = editor.undoManager;
+  switch (mv::shell::text_edit_for(e)) {
+    case mv::shell::text_edit::none: return NO;
+    case mv::shell::text_edit::select_all: [editor selectAll:nil]; return YES;
+    case mv::shell::text_edit::copy: [editor copy:nil]; return YES;
+    case mv::shell::text_edit::cut:
+      if (editor.isEditable) [editor cut:nil];
+      return YES;
+    case mv::shell::text_edit::paste:
+      if (editor.isEditable) [editor paste:nil];
+      return YES;
+    case mv::shell::text_edit::undo:
+      if (editor.isEditable && undo.canUndo) [undo undo];
+      return YES;
+    case mv::shell::text_edit::redo:
+      if (editor.isEditable && undo.canRedo) [undo redo];
+      return YES;
+  }
+  return NO;
+}
+
 // "Choose a shortcut, then press its replacement. Esc cancels." A local monitor
 // sees the key before anything else, so it can take chords the menu bar would
 // otherwise claim (Cmd+something) and never lets the key reach a command.
@@ -7126,7 +7181,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
   // Add-on chromes shut down here, before their packs stop (below, off the
-  // main thread): nothing may call a table whose add-on is gone.
+  // main thread): nothing may call a table whose add-on is gone. Nothing
+  // here waits on a pack.
   MvAddonsQuit();
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
@@ -7144,7 +7200,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
       if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
     }
-    MvAddonsWaitStopped(5.0);
+    // Half a second from Quit for the add-ons to stop (an idle pack takes
+    // ~0.06 s). One still in a model load or a Core ML compile (seconds to a
+    // minute, not cancellable) is left to the exit (addons_mac.h).
+    MvAddonsWaitStopped(0.5);
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,
     // -[NSApplication terminate:] spins a nested run loop in a mode that does

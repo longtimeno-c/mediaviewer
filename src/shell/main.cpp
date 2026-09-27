@@ -47,6 +47,7 @@
 #include "shell/app_icon.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
+#include "mediaviewer/mediaviewer_addon.h"
 #include "mediaviewer/mediaviewer_clip.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
@@ -7103,6 +7104,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     }
   }
 
+  // Quit never waits on an add-on (addon/host.h "Quit"): Import starts to
+  // stop now, alongside the teardown below; the AI pack is left running, and
+  // nothing is unloaded. Before 2026-09-27 the loaded set was torn down by
+  // static destruction after main returned, joining a pack's model load or
+  // inference batch (seconds), and could free it under a chrome read.
+  (void)mv_addon_quit();
+  const ULONGLONG addons_quit_at = ::GetTickCount64();
+
   // PR 12: writes the user asked for and has not seen land — a rating inside
   // its 250 ms debounce, a comment queued behind another write, a rotation
   // inside its own debounce. The window is gone, so nothing waits on them now:
@@ -7151,8 +7160,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.lab.stop();
   app.jobs.shutdown();
   const int code = app.lab.exit_code();
+  // Whatever is left of half a second since mv_addon_quit (an idle add-on
+  // stops in well under that; a model load or a copy step can take seconds).
+  constexpr ULONGLONG kQuitAddonBudgetMs = 500;
+  const ULONGLONG quit_spent = ::GetTickCount64() - addons_quit_at;
+  const bool addons_stopped =
+      mv_addon_quit_wait(quit_spent >= kQuitAddonBudgetMs
+                             ? 0u
+                             : static_cast<uint32_t>(kQuitAddonBudgetMs - quit_spent)) == MV_OK;
 
   mv_session_release(app.session);
   mv::trace::provider_unregister();
+  if (!addons_stopped) {
+    // An add-on thread may still be running (the AI pack always is): static
+    // destructors and DLL detach must not run under it. Everything this
+    // process had to write has been written above.
+    std::fflush(nullptr);
+    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(code));
+  }
   return code;
 }

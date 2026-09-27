@@ -631,6 +631,11 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 4. Run the app or `ai-bench --addons <folder> --index <media folder> --query "a dog"` with
    `MV_DEV_ADDONS_DIR=<folder>` and `MV_DEV_THUMBS_DIR=<another folder>`, so a real install
    is untouched.
+5. Quit's cost with a pack loaded: `ai-bench --addons <folder> --query dog --quit-after 1`
+   quits the way both hosts do (the pack gets half a second to stop, then the exit skips static
+   destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
+   old wait of up to 5 s, `--quit-hash` re-verifies the pack meanwhile as Settings does, and a
+   larger `--quit-after` quits once the pack is idle.
 
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
 `MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`

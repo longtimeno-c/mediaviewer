@@ -704,6 +704,8 @@ public static partial class IslandHost
     private const ChromeColour Title = ChromeColour.Title;
     private const ChromeColour Body = ChromeColour.Body;
     private const ChromeColour Hairline = ChromeColour.Hairline;
+    private const ChromeColour TextSelection = ChromeColour.TextSelection;
+    private const ChromeColour TextSelectionInk = ChromeColour.TextSelectionInk;
 
     private static SolidColorBrush Brush(Color c) => new(c);
 

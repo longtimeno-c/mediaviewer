@@ -66,6 +66,22 @@ back_target resolve_back(const view_state& s) noexcept {
   return back_target::none;
 }
 
+text_edit text_edit_for(const key_event& e) noexcept {
+  if (e.up) return text_edit::none;
+  if (e.mods == mod_ctrl) {
+    switch (static_cast<std::uint16_t>(e.k)) {
+      case 'A': return text_edit::select_all;
+      case 'C': return text_edit::copy;
+      case 'X': return text_edit::cut;
+      case 'V': return text_edit::paste;
+      case 'Z': return text_edit::undo;
+      default: return text_edit::none;
+    }
+  }
+  if (e.mods == (mod_ctrl | mod_shift) && e.k == char_key('Z')) return text_edit::redo;
+  return text_edit::none;
+}
+
 key_router::key_router() noexcept { rebuild(live_bindings()); }
 
 void key_router::rebuild(std::span<const binding> rows) noexcept {

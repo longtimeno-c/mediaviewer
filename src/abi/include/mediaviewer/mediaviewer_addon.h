@@ -391,6 +391,22 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
 /* Shuts the add-on down (its jobs stop, resumable) and unloads it. [ui-thread] */
 MV_API mv_status MV_CALL mv_addon_unload(const char* id);
 
+/* Quit (not Remove), once, after the chrome has gone: every loaded add-on is
+ * taken out of the loaded set and nothing is unloaded. Import's stop (its jobs
+ * cancel and clean their temporaries) starts on a thread of its own; the AI
+ * family is not stopped at all, since a chrome read may still be inside it.
+ * Returns at once. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_addon_quit(void);
+
+/* After mv_addon_quit: waits up to `timeout_ms` for the stops it started.
+ * MV_OK when no add-on code can run any more; MV_ERR_TIMEOUT when some still
+ * may (a model load, an inference batch, a copy step), and the host must then
+ * end the process without running static destructors or DLL detach
+ * (TerminateProcess), which that code may still be using. Its data is safe to
+ * lose mid-step: SQLite WAL transactions and temporaries renamed into place.
+ * [any-thread] */
+MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
+
 /* The base app's own card watch, for the one-time "Install Import?" hint
  * when a card appears and Import is not installed (plan/18). Posts
  * MV_ADDON_EVENT_VOLUME_ARRIVED (payload 1 for removable media, 0 otherwise)

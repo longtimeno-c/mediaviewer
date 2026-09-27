@@ -266,11 +266,22 @@ public final class MVAIChrome: NSObject {
   /// still running fails instead of calling into an unloaded library, and
   /// this waits (at most 2 s) for the calls already inside the pack.
   @objc public func shutdown() {
+    _ = close(wait: 2)
+  }
+
+  /// Quit: the same, without waiting for a read still inside the pack (a
+  /// roots or people read can take seconds on a large index). True when none
+  /// was in flight; false tells the host to leave the pack running for the
+  /// process exit rather than free it under that read.
+  @objc public func shutdownForQuit() -> Bool {
+    close(wait: 0)
+  }
+
+  private func close(wait: TimeInterval) -> Bool {
     guard Thread.isMainThread else {
-      DispatchQueue.main.sync { self.shutdown() }
-      return
+      return DispatchQueue.main.sync { self.close(wait: wait) }
     }
-    MainActor.assumeIsolated {
+    return MainActor.assumeIsolated {
       panel?.close()
       panel = nil
       search?.disappeared()
@@ -288,9 +299,10 @@ public final class MVAIChrome: NSObject {
       galleryHost = nil
       lister = nil
       hostSetMarkers(path: "", ms: [], current: -1)
-      table?.close(timeout: 2)
+      let idle = table?.close(timeout: wait) ?? true
       table = nil
       host = nil
+      return idle
     }
   }
 

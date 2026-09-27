@@ -33,7 +33,13 @@
 #include <mediaviewer/mediaviewer_ai.h>
 #include <mediaviewer/mediaviewer_import.h>
 
+#include <unistd.h>
+
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -76,6 +82,11 @@
 - (void)deliverEvent:(uint32_t)kind status:(uint32_t)status identifier:(uint64_t)ident payload:(int64_t)payload;
 - (void)shutdown;
 @optional
+// Quit (2026-09-27): -shutdown without its bounded wait for table calls in
+// flight. YES when none was in flight, so the pack may stop; NO leaves the
+// pack running for the exit (a read inside it must not see it freed). A chrome
+// without it gets -shutdown.
+- (BOOL)shutdownForQuit;
 // search_open / search_similar / search_next_match / search_prev_match.
 - (BOOL)runCommand:(NSString*)name;
 // A directory opened in the viewer (the chrome calls note_folder_opened).
@@ -138,9 +149,12 @@ struct mac_addons {
   mv_addon2_gallery_answer_fn gallery_answer = nullptr;
 };
 
+// Never destroyed: at quit a Swift state read may still be hashing through the
+// store, and a pack left running may still ask for a thumbnail, while the
+// process exits.
 mac_addons& state() {
-  static mac_addons s;
-  return s;
+  static mac_addons* const s = new mac_addons;
+  return *s;
 }
 
 // The Mac AI pack is arm64 only (plan/17, 2026-09-26): ONNX Runtime has no
@@ -189,8 +203,16 @@ dispatch_queue_t addon_queue() {
 // A loaded_addon's destructor calls the pack's shutdown, which joins its
 // workers, then unloads the dylib: off the main thread. The chrome, if any,
 // must already have been shut down.
+// Set by MvAddonsQuit (main thread). A load that lands after it is stopped
+// the quit's way, not queued behind whatever addon_queue() still holds.
+std::atomic<bool> g_quitting{false};
+
 void retire(std::unique_ptr<mv::addon::loaded_addon> addon) {
   if (!addon) return;
+  if (g_quitting.load(std::memory_order_relaxed)) {
+    mv::addon::stop_for_exit(std::move(addon));
+    return;
+  }
   mv::addon::loaded_addon* raw = addon.release();
   dispatch_async(addon_queue(), ^{
     std::unique_ptr<mv::addon::loaded_addon> owned(raw);
@@ -659,28 +681,81 @@ void MvAddonsItemChanged(const std::string& path) {
   if (chrome && [chrome respondsToSelector:@selector(itemChanged:)]) [chrome itemChanged:ns(path)];
 }
 
+namespace {
+
+std::chrono::steady_clock::time_point g_quit_at;
+// Set when MvAddonsWaitStopped's time ran out with add-on work still going.
+std::atomic<bool> g_exit_fast{false};
+
+// Registered by MvAddonsQuit, so it runs before every static destructor that
+// was registered earlier (all of them: the add-ons were loaded before quit).
+// A pack still stopping, a pack left running, or a verify / removal still on
+// the add-on queue may be using what those destructors free.
+void exit_guard() {
+  if (!g_exit_fast.load(std::memory_order_acquire) && !mv::addon::running_at_exit()) return;
+  std::fflush(nullptr);
+  _exit(0);
+}
+
+}  // namespace
+
 void MvAddonsQuit() {
   mac_addons& s = state();
+  g_quitting.store(true, std::memory_order_relaxed);
+  g_quit_at = std::chrono::steady_clock::now();
+  static bool guarded = false;
+  if (!guarded) guarded = std::atexit(&exit_guard) == 0;
   if (s.chrome) {
     @try {
-      [s.chrome shutdown];
+      [s.chrome shutdown];  // Import's chrome waits on nothing
     } @catch (NSException*) {
     }
   }
   s.chrome = nil;
-  retire(std::move(s.import));
-  unload_ai();
+  mv::addon::stop_for_exit(std::move(s.import));
+
+  // The AI pack: its chrome closes the table first. A read still inside the
+  // pack (Settings' roots or people, a result thumbnail) would be freed under
+  // it by a stop, so then the pack is left running for the exit instead.
+  ++s.ai.load_seq;  // a load in flight lands on nothing (retire, the quit's way)
+  bool idle = true;
+  if (s.ai.chrome) {
+    id<MVAIChrome> chrome = (id<MVAIChrome>)s.ai.chrome;
+    @try {
+      if ([chrome respondsToSelector:@selector(shutdownForQuit)]) {
+        idle = [chrome shutdownForQuit] == YES;
+      } else {
+        [chrome shutdown];  // an older chrome: its own bounded wait
+      }
+    } @catch (NSException*) {
+      idle = false;
+    }
+  }
+  s.ai.chrome = nil;
+  s.ai.table = nullptr;
+  s.ai.bundle = nil;
+  s.ai.loading = false;
+  if (idle) {
+    mv::addon::stop_for_exit(std::move(s.ai.addon));
+  } else {
+    mv::addon::abandon_for_exit(std::move(s.ai.addon));
+  }
 }
 
 void MvAddonsWaitStopped(double seconds) {
-  // addon_queue() is serial: this runs once every retirement queued before it
-  // has finished (a verify still hashing ahead of them is what the bound is for).
-  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  const auto deadline =
+      g_quit_at + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+  // addon_queue() is serial: the marker runs once everything queued before it
+  // (a verify hashing the pack, a removal deleting it) has finished.
+  dispatch_semaphore_t drained = dispatch_semaphore_create(0);
   dispatch_async(addon_queue(), ^{
-    dispatch_semaphore_signal(done);
+    dispatch_semaphore_signal(drained);
   });
-  (void)dispatch_semaphore_wait(
-      done, dispatch_time(DISPATCH_TIME_NOW, static_cast<std::int64_t>(seconds * NSEC_PER_SEC)));
+  const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - std::chrono::steady_clock::now());
+  const bool queue_idle =
+      dispatch_semaphore_wait(drained, dispatch_time(DISPATCH_TIME_NOW, std::max<std::int64_t>(0, left.count()))) == 0;
+  const bool stopped = mv::addon::wait_stopped_for_exit(deadline);
+  if (!queue_idle || !stopped) g_exit_fast.store(true, std::memory_order_release);
 }
 
 bool MvAddonsRunCommand(const char* name) {

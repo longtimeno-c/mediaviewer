@@ -77,6 +77,18 @@ struct key_event {
   bool up = false;
 };
 
+// The standard editing chords a text field owns (owner, 2026-09-27: "Cmd+A /
+// Ctrl+A in the search bar"). With a text control focused the router already
+// leaves every key but Esc to it; this names the chords a host must make sure
+// the field actually gets. The Mac field editor gets them only through Edit
+// menu items the viewer does not have (⌘A, ⌘C and ⌘Z are its own commands on
+// the canvas), so the host hands them over; the Windows FakeInput reads them
+// itself (and Ctrl+Y, Windows' other redo). Ctrl here is the host's primary
+// modifier (⌘ on the Mac).
+enum class text_edit : std::uint8_t { none, select_all, copy, cut, paste, undo, redo };
+
+[[nodiscard]] text_edit text_edit_for(const key_event& e) noexcept;
+
 struct route {
   command_id command = command_id::none;
   back_target back = back_target::none;  // set when command == back
