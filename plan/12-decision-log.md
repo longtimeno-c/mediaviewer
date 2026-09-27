@@ -2519,7 +2519,8 @@ provider"; "Whisper small where the picture tower runs High on a GPU / the Neura
 Core ML took 130 / 830 (B/32) and 250 / 1,622 (L/14) nodes and ran no faster than CPU, so
 "Core ML" was CPU with extra copies. Pinned at open (batch 4, 3 x side x side) it takes every
 node: B/32 499 img/s against 73 on CPU, L/14 ~30 against 4.9, cosine >= 0.998 to the reference.
-The price is a one-time compile on each Mac (82 s B/32, ~5.5 min L/14), cached after.
+The price is a compile on each Mac: 82 s / 5.3 min the first time, and still 17 s / 64 s from
+the cache (ORT inlines the weights), so the pack answers on CPU and swaps Core ML in when ready.
 CLAP's audio tower does not compile on Core ML and Whisper's aborts the process inside MPSGraph,
 so both run on CPU on the Mac whatever the compute setting; Whisper small still follows High.
 

@@ -574,9 +574,15 @@ pads other batch sizes) puts **every node** on Core ML:
 | ViT-L/14 fp16 | 4.9 img/s | **31 img/s** | 0.9983 | 5.3 min | 64 s |
 
 Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14). `MLComputeUnits=CPUAndGPU` compiled B/32
-faster (67 s, 386 img/s) but L/14 had not finished after 25 minutes; `ALL` stays. The first
-launch on a Mac compiles for minutes (cached in the pack's data folder after), so the Mac
-status reads "Preparing the search model — the first time on this Mac takes a few minutes".
+faster (67 s, 386 img/s) but L/14 had not finished after 25 minutes; `ALL` stays. Even from
+its cache (`data/cache/coreml` in the pack's folder) an open takes 17 s / 64 s: ORT's converter
+inlines the weights, so Core ML re-parses a 1 GB / 3.5 GB `model.mil` every time (it is not the
+graph optimizer: the basic level inlines them too, and no optimisation loses the coverage). So
+on the Mac the pack **answers on CPU at once** and a background thread opens Core ML, runs the
+same self-test, and swaps it in (`upgrading_clip` in `pack.cpp`); the status shows CPU until
+then. The cache is ~1.2 GB (B/32) / ~4.1 GB (L/14) of derived data outside the 3 GB installed-size
+ceiling: Remove deletes `data/cache` even when it keeps the index (`store::remove`), and each
+start prunes entries whose model is gone (ORT keys them by the model's path, so an older pack's).
 
 **Audio stays on CPU on the Mac.** CLAP's audio tower does not compile on Core ML (unbounded
 dimensions) and Whisper's **aborts the process** inside MPSGraph ("original module failed

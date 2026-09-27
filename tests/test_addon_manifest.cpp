@@ -308,7 +308,13 @@ TEST_CASE("the real Import module installs, loads, answers, and shuts down", "[a
   // import.db lives in the add-on's own data folder.
   loaded->reset();
   REQUIRE(fs::exists(fs::path(st.list()[0].data_dir) / "import.db"));
-  // Removing it can keep or delete that data.
+  // Removing it can keep or delete that data; keeping it never keeps the
+  // add-on's derived cache (data/cache: the Mac's compiled Core ML models).
+  const fs::path data = st.list()[0].data_dir;
+  fs::create_directories(data / "cache" / "coreml");
+  { std::ofstream(data / "cache" / "coreml" / "model.bin") << "x"; }
   REQUIRE(st.remove("import", true));
   REQUIRE(st.list().empty());
+  CHECK(fs::exists(data / "import.db"));
+  CHECK_FALSE(fs::exists(data / "cache"));
 }

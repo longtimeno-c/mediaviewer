@@ -59,6 +59,8 @@ class embedder {
   [[nodiscard]] virtual expected embed_images(std::span<const rgb_view> images,
                                               std::vector<float>& out) = 0;
   [[nodiscard]] virtual result<std::vector<float>> embed_text(std::string_view utf8) = 0;
+  // Why a provider asked for was not used (Settings' reason line), once known.
+  [[nodiscard]] virtual provider_fault fault() const noexcept { return provider_fault::none; }
 };
 
 // Core ML's image tower runs at this fixed batch (the engine's photo batch).

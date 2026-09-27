@@ -387,8 +387,11 @@ void engine::refresh_counts() {
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
   status_.people = people;
-  status_.backend = static_cast<std::uint32_t>(build.on);
-  status_.provider_fault = static_cast<std::uint32_t>(build.fault);
+  // Read live: on the Mac, Core ML takes over from CPU once it has compiled.
+  status_.backend = static_cast<std::uint32_t>(build.model ? build.model->on() : build.on);
+  const infer::provider_fault fault =
+      build.fault != infer::provider_fault::none || !build.model ? build.fault : build.model->fault();
+  status_.provider_fault = static_cast<std::uint32_t>(fault);
   status_.quality = build.meta.quality;
   copy_str(status_.model_utf8, sizeof(status_.model_utf8), build.meta.name);
   copy_str(status_.active_root_utf8, sizeof(status_.active_root_utf8), active_root_);

@@ -70,7 +70,8 @@ class store {
   };
   [[nodiscard]] family_room family_usage(std::string_view family) const;
 
-  // Removes every version. keep_data = false also deletes <dir>/data.
+  // Removes every version. keep_data = false also deletes <dir>/data; true
+  // keeps it but for <dir>/data/cache, an add-on's derived, rebuildable files.
   // Anything locked (loaded) is marked and removed at next start.
   [[nodiscard]] expected remove(const std::string& id, bool keep_data) const;
 

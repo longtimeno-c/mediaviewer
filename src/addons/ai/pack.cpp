@@ -11,8 +11,10 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "addons/ai/platform.h"
 #include "infer/audio_models.h"
 #include "infer/models.h"
 #include "infer/ort.h"
@@ -32,6 +34,7 @@ struct pack_state {
   std::string core_dir;
   std::string data_dir;
   std::once_flag once;
+  std::once_flag cache_pruned;
   std::atomic<bool> ready{false};  // ensure() has run (loaded or not)
   std::unique_ptr<infer::runtime> rt;
   bool from_piece = false;  // ORT came from the ai-cuda piece
@@ -157,6 +160,119 @@ clip_meta meta_of(const infer::clip_spec& s) {
   return m;
 }
 
+// Core ML's compiled models (Mac), under data/cache: derived, so Remove drops
+// them even when it keeps the index (store.h). ORT keys an entry by the model's
+// path, which holds the pack's version: once per start, entries whose model
+// no longer exists (an older pack) go.
+std::string coreml_cache(pack_state& p) {
+  const std::string dir = join(join(p.data_dir, "cache"), "coreml");
+  std::call_once(p.cache_pruned, [&] {
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(fs_path(dir), ec)) {
+      std::ifstream in(e.path() / "model.txt", std::ios::binary);
+      std::string model;
+      if (in && std::getline(in, model) && std::filesystem::exists(fs_path(model), ec)) continue;
+      std::filesystem::remove_all(e.path(), ec);
+    }
+    // The first Mac builds cached beside the index.
+    std::filesystem::remove_all(fs_path(join(p.data_dir, "coreml-cache")), ec);
+  });
+  return dir;
+}
+
+// The provider self-test (plan/17): the provider must agree with CPU, and
+// under Auto it must also beat CPU, else CPU runs it and the status says why.
+// The CPU side comes from the kept reference when there is one.
+infer::provider_fault self_test(pack_state& p, const infer::clip_spec& spec, infer::embedder& fast,
+                                infer::backend want, std::uint32_t compute,
+                                const infer::session_options& cpu) {
+  const std::string cache = join(p.data_dir, "selftest.txt");
+  const std::string key = p.rt->version() + "|" + std::to_string(static_cast<int>(want)) + "|" +
+                          spec.spec_key() + "|" + (p.from_piece ? "piece" : "core");
+  std::optional<selftest_ref> ref = read_selftest(cache, key);
+  std::vector<float> a, b;
+  const double t_fast = time_batch(fast, a);
+  double t_slow = -1;
+  if (ref) {
+    b = std::move(ref->emb);
+    t_slow = ref->cpu_ms;
+  } else if (t_fast >= 0) {
+    if (auto slow = infer::clip_model::open(*p.rt, spec, cpu, nullptr)) {
+      t_slow = time_batch(**slow, b);
+      if (t_slow > 0 && b.size() >= spec.dim) {
+        write_selftest(cache, selftest_ref{key, t_slow, std::vector<float>(b.begin(), b.begin() + spec.dim)});
+      }
+    }
+  }
+  if (t_fast < 0) return infer::provider_fault::failed;
+  if (a.size() >= spec.dim && b.size() >= spec.dim &&
+      infer::dot(std::span<const float>(a.data(), spec.dim), std::span<const float>(b.data(), spec.dim)) < 0.99f) {
+    return infer::provider_fault::mismatch;
+  }
+  if (compute == MV_AI_COMPUTE_AUTO && t_slow > 0 && t_fast > t_slow) return infer::provider_fault::slower;
+  return infer::provider_fault::none;
+}
+
+// Core ML compiles a tower for this Mac on every open: ~17 s for B/32 and
+// ~64 s for L/14 even from its cache (ORT's converter inlines the weights, so
+// Core ML re-parses a 1-3.5 GB model each time). Searching and indexing must
+// not wait for that: this answers on CPU at once while a background thread
+// opens Core ML and self-tests it, then swaps it in. A call in flight keeps
+// the model it started on (shared_ptr), and the CPU tower is freed after it.
+class upgrading_clip final : public infer::embedder {
+ public:
+  upgrading_clip(std::shared_ptr<pack_state> p, infer::clip_spec spec, std::unique_ptr<infer::clip_model> cpu,
+                 infer::session_options fast, std::uint32_t compute)
+      : current_(std::move(cpu)), dim_(spec.dim), key_(spec.spec_key()) {
+    worker_ = std::thread([this, p = std::move(p), spec = std::move(spec), fast, compute] {
+      platform::enter_background();
+      infer::session_options cpu = fast;
+      cpu.on = infer::backend::cpu;
+      cpu.cache_dir_utf8.clear();
+      infer::provider_fault fault = infer::provider_fault::none;
+      auto model = infer::clip_model::open(*p->rt, spec, fast, &fault);
+      if (stop_) return;
+      if (model) fault = self_test(*p, spec, **model, fast.on, compute, cpu);
+      std::lock_guard lock(m_);
+      if (model && fault == infer::provider_fault::none) {
+        current_ = std::shared_ptr<infer::embedder>(std::move(*model));
+      } else {
+        fault_ = fault == infer::provider_fault::none ? infer::provider_fault::failed : fault;
+      }
+    });
+  }
+  ~upgrading_clip() override {
+    stop_ = true;
+    // An open in progress cannot be cancelled; the pack's code must stay
+    // mapped until it returns (unload runs off the main thread).
+    if (worker_.joinable()) worker_.join();
+  }
+  std::uint32_t dim() const noexcept override { return dim_; }
+  const std::string& spec_key() const noexcept override { return key_; }
+  infer::backend on() const noexcept override { return model()->on(); }
+  infer::provider_fault fault() const noexcept override {
+    std::lock_guard lock(m_);
+    return fault_;
+  }
+  expected embed_images(std::span<const infer::rgb_view> images, std::vector<float>& out) override {
+    return model()->embed_images(images, out);
+  }
+  result<std::vector<float>> embed_text(std::string_view utf8) override { return model()->embed_text(utf8); }
+
+ private:
+  std::shared_ptr<infer::embedder> model() const {
+    std::lock_guard lock(m_);
+    return current_;
+  }
+  mutable std::mutex m_;
+  std::shared_ptr<infer::embedder> current_;
+  infer::provider_fault fault_ = infer::provider_fault::none;
+  std::uint32_t dim_;
+  std::string key_;
+  std::atomic<bool> stop_{false};
+  std::thread worker_;
+};
+
 class ort_sound final : public sound_model {
  public:
   explicit ort_sound(std::unique_ptr<infer::clap_model> m) : m_(std::move(m)) {}
@@ -258,40 +374,21 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     if (want != infer::backend::cpu) {
       infer::session_options acc = cpu;
       acc.on = want;
-      acc.cache_dir_utf8 = join(p->data_dir, "coreml-cache");
+      acc.cache_dir_utf8 = coreml_cache(*p);
+      if (want == infer::backend::coreml) {
+        // Answer on CPU now; Core ML follows when compiled (upgrading_clip).
+        // Auto's quality choice goes by the provider it is headed for.
+        auto now = infer::clip_model::open(*p->rt, spec, cpu, nullptr);
+        if (!now) return err(now.error());
+        out.model = std::make_shared<upgrading_clip>(p, spec, std::move(*now), acc, compute);
+        out.on = want;
+        return out;
+      }
       infer::provider_fault fault = infer::provider_fault::none;
       auto fast = infer::clip_model::open(*p->rt, spec, acc, &fault);
       if (fast) {
-        // The self-test (plan/17): the provider must agree with CPU, and under
-        // Auto it must also beat CPU, else CPU runs it and the status says why.
-        // The CPU side comes from the kept reference when there is one.
-        const std::string cache = join(p->data_dir, "selftest.txt");
-        const std::string key = p->rt->version() + "|" + std::to_string(static_cast<int>(want)) + "|" +
-                                spec.spec_key() + "|" + (p->from_piece ? "piece" : "core");
-        std::optional<selftest_ref> ref = read_selftest(cache, key);
-        std::vector<float> a, b;
-        const double t_fast = time_batch(**fast, a);
-        double t_slow = -1;
-        if (ref) {
-          b = std::move(ref->emb);
-          t_slow = ref->cpu_ms;
-        } else if (t_fast >= 0) {
-          if (auto slow = infer::clip_model::open(*p->rt, spec, cpu, nullptr)) {
-            t_slow = time_batch(**slow, b);
-            if (t_slow > 0 && b.size() >= spec.dim) {
-              write_selftest(cache, selftest_ref{key, t_slow, std::vector<float>(b.begin(), b.begin() + spec.dim)});
-            }
-          }
-        }
-        if (t_fast < 0) {
-          fault = infer::provider_fault::failed;
-        } else if (a.size() >= spec.dim && b.size() >= spec.dim &&
-                   infer::dot(std::span<const float>(a.data(), spec.dim),
-                              std::span<const float>(b.data(), spec.dim)) < 0.99f) {
-          fault = infer::provider_fault::mismatch;
-        } else if (compute == MV_AI_COMPUTE_AUTO && t_slow > 0 && t_fast > t_slow) {
-          fault = infer::provider_fault::slower;
-        } else {
+        fault = self_test(*p, spec, **fast, want, compute, cpu);
+        if (fault == infer::provider_fault::none) {
           out.model = std::shared_ptr<infer::embedder>(std::move(*fast));
           out.on = want;
           return out;
@@ -310,7 +407,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   // when it opens, CPU underneath).
   const auto audio_options = [p](std::uint32_t compute, infer::session_options& o) {
     o.threads = 2;
-    o.cache_dir_utf8 = join(p->data_dir, "coreml-cache");
+    o.cache_dir_utf8 = coreml_cache(*p);
     if (compute != MV_AI_COMPUTE_CPU_ONLY && p->rt) o.on = accelerated(*p->rt);
     // Never Core ML (measured on an M5, ORT 1.30): CLAP's dynamic shapes fail
     // to compile, and Whisper's abort the process inside MPSGraph ("original

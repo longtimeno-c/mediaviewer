@@ -11,6 +11,22 @@ Intel Mac or an x86_64 build to prove the section is absent there.
 
 Record for each step: pass / fail, the machine (chip, RAM, macOS), and the numbers asked for.
 
+## Results, first Mac run (2026-09-27, Apple M5, 24 GB, macOS 26.6)
+
+Numbers and fixes are in plan/17 "Verified on macOS". In short:
+
+- **§1 Build:** passes after two compile fixes; all three Swift packages build with no warnings.
+  `mv_ai_tests` and `ai-bench` now exist on Darwin; AI targets are arm64 only (Intel defines none).
+- **§2 / §12b / §12c tests:** pass with the real pack (CPU reference for both towers and CLAP,
+  Whisper base and small on the `say` clip, the grey-ICC JPEG, the labelled eval). Whisper base
+  missed a sentence until the full-window re-listen fix.
+- **§4-5 Core ML:** every CLIP node on Core ML only once the image tower's shapes are pinned
+  (B/32 499 img/s, L/14 31; cosine 0.9992 / 0.9983). Opening compiles for 17-64 s even when
+  cached, so the pack answers on CPU and swaps Core ML in when it is ready. CLAP and Whisper
+  cannot use Core ML (one fails to compile, the other aborts the process): CPU on the Mac.
+- **§13:** reviewed; fixed a store race at launch, main-thread Remove, list/folder races, stale
+  search results, unload safety and the thumbnail pipeline (plan/17 lists them).
+
 ---
 
 ## 0. What changed on the Mac side

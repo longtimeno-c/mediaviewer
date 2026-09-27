@@ -305,7 +305,12 @@ expected store::remove(const std::string& id, bool keep_data) const {
     if (!mine) continue;
     found = true;
     for (const std::string& v : *versions) {
-      if (v == "data" && keep_data) continue;
+      if (v == "data" && keep_data) {
+        // Keeping the data keeps what the user made (an index), never an
+        // add-on's derived cache (the Mac's compiled Core ML models, GBs).
+        (void)io::remove_tree(io::join_path(io::join_path(addon_dir, v), "cache"));
+        continue;
+      }
       ok = io::remove_tree(io::join_path(addon_dir, v)).has_value() && ok;
     }
     if (!keep_data || !io::stat_path(io::join_path(addon_dir, "data"))) {
