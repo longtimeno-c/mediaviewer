@@ -9,6 +9,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -277,6 +278,33 @@ MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
     gone.addon.reset();  // shutdown, then unload; outside the lock
     if (gone.session) (void)mv_session_release(gone.session);
     return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_quit(void) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_quit", [&] {
+    std::map<std::string, loaded_entry> all;
+    {
+      std::lock_guard lock(g_mutex);
+      all.swap(g_loaded);  // static destruction finds nothing left to join
+    }
+    for (auto& [id, entry] : all) {
+      // The entry's session stays retained: a pack left running still posts.
+      const bool ai_family = id == "ai" || id.rfind("ai-", 0) == 0;
+      if (ai_family) {
+        mv::addon::abandon_for_exit(std::move(entry.addon));
+      } else {
+        mv::addon::stop_for_exit(std::move(entry.addon));
+      }
+    }
+    return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_quit_wait", [&] {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    return mv::addon::wait_stopped_for_exit(deadline) ? status::ok : status::timeout;
   }));
 }
 

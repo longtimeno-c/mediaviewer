@@ -9,6 +9,16 @@
 //   ai-bench --addons <folder> --index <media folder> [--recursive] [--media 1|2|3]
 //            [--compute 0..4] [--quality 0..2] [--timeout <s>] [--query "text"]...
 //            [--busy-after <s> --busy-for <s>]   (the viewer "presents" then: yield check)
+//            [--quit-after <s> [--quit-budget <s>] [--quit-hash] [--quit-legacy]]
+//
+// --quit-after: after the index and query steps, keeps the pack running for
+// <s> seconds, then quits the way the hosts do (addon/host.h "Quit": the stop
+// gets --quit-budget, default 0.5 s, then the exit skips static destructors
+// if the pack is still stopping) and prints the time the quit took and the
+// wall clock it exited at. --quit-legacy quits the way the Mac host did
+// before (a normal exit after up to 5 s for the pack's shutdown). --quit-hash
+// re-verifies the installed pack on a thread meanwhile, as Settings' state
+// read does (store::find hashes every file).
 //
 // Nothing here logs a path beyond what the caller typed. Needs a build whose
 // add-on key trusts the pack (MV_ADDON_DEV_PUBLIC_KEY for a dev-signed one).
@@ -16,8 +26,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -60,13 +74,44 @@ bool idle(const mv_ai_api* ai) {
   return s.state == MV_AI_STATE_IDLE && s.assets_total > 0;
 }
 
+// Quit as the hosts do (addon/host.h "Quit"): the pack's stop starts on a
+// thread of its own and gets `budget`; one still stopping after it is left to
+// the exit, which then skips static destructors.
+bool quit_pack(std::unique_ptr<mv::addon::loaded_addon> pack, double budget) {
+  mv::addon::stop_for_exit(std::move(pack));
+  return mv::addon::wait_stopped_for_exit(std::chrono::steady_clock::now() +
+                                          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                              std::chrono::duration<double>(budget)));
+}
+
+// --quit-legacy: Quit as the Mac host did before 2026-09-27, for before/after
+// numbers: the pack retired on a worker (shutdown joins its threads, then the
+// dylib unloads) and up to 5 s waited for it before a normal exit.
+bool quit_pack_legacy(std::unique_ptr<mv::addon::loaded_addon> pack) {
+  struct shared {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+  };
+  auto s = std::make_shared<shared>();
+  std::thread([s, p = std::move(pack)]() mutable {
+    p.reset();
+    std::lock_guard lock(s->m);
+    s->done = true;
+    s->cv.notify_all();
+  }).detach();
+  std::unique_lock lock(s->m);
+  return s->cv.wait_for(lock, std::chrono::seconds(5), [&] { return s->done; });
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string addons, folder;
   bool recursive = false;
   int media = -1, compute = -1, quality = -1;
-  double timeout = 3600, busy_after = -1, busy_for = 0;
+  double timeout = 3600, busy_after = -1, busy_for = 0, quit_after = -1, quit_budget = 0.5;
+  bool quit_hash = false, quit_legacy = false;
   std::vector<std::string> queries;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -81,13 +126,18 @@ int main(int argc, char** argv) {
     else if (a == "--query") queries.push_back(next());
     else if (a == "--busy-after") busy_after = std::stod(next());
     else if (a == "--busy-for") busy_for = std::stod(next());
+    else if (a == "--quit-after") quit_after = std::stod(next());
+    else if (a == "--quit-hash") quit_hash = true;
+    else if (a == "--quit-legacy") quit_legacy = true;
+    else if (a == "--quit-budget") quit_budget = std::stod(next());
   }
   if (addons.empty()) {
     std::fprintf(stderr, "usage: ai-bench --addons <dir> [--index <dir>] [--query text]...\n");
     return 2;
   }
   const auto key = mv::addon::pinned_public_key();
-  mv::addon::store store(addons, std::vector<std::uint8_t>(key.begin(), key.end()), MV_ADDON_HOST_API);
+  // Lives until exit, as the app's does (a state read may still be hashing).
+  static mv::addon::store store(addons, std::vector<std::uint8_t>(key.begin(), key.end()), MV_ADDON_HOST_API);
   mv::addon::host_services svc;
   svc.should_yield = [] { return g_busy.load(); };
   svc.post = [](const mv_addon_event&) {};
@@ -147,6 +197,23 @@ int main(int argc, char** argv) {
     }
     std::printf("]}\n");
     std::fflush(stdout);
+  }
+  if (quit_after >= 0) {
+    if (quit_hash) {
+      std::thread([] {
+        for (;;) (void)store.find("ai");
+      }).detach();
+    }
+    std::this_thread::sleep_for(std::chrono::duration<double>(quit_after));
+    const double tq = now_s();
+    const bool stopped = quit_legacy ? quit_pack_legacy(std::move(*loaded)) : quit_pack(std::move(*loaded), quit_budget);
+    // exit_at is wall-clock seconds, to set against the caller's clock once the
+    // process has gone (the exit itself is the last step).
+    std::printf("{\"quit_pack_s\":%.3f,\"stopped\":%s,\"exit_at\":%.3f}\n", now_s() - tq,
+                stopped ? "true" : "false",
+                std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count());
+    std::fflush(stdout);
+    if (!quit_legacy && mv::addon::running_at_exit()) std::_Exit(0);
   }
   return 0;
 }

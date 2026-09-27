@@ -11,6 +11,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -126,5 +127,33 @@ class loaded_addon {
   shared_library lib_;
   mv_addon_api api_{};
 };
+
+// ---- Quit (not Remove) --------------------------------------------------------
+//
+// Quit must not wait on a pack: its shutdown joins threads that cannot be
+// cancelled mid-step (a model load, a Core ML compile, an inference batch; up
+// to a minute). Remove still unloads through ~loaded_addon (the library stays
+// mapped until its threads have stopped). At quit nothing is unmapped early:
+// each add-on gets a bounded chance to stop, and one that has not is left to
+// the process exit, which the host then makes without static destructors
+// (_exit / TerminateProcess), since its threads may still be in the add-on or
+// in the host services it calls. What an add-on keeps on disk is a transaction
+// (SQLite WAL) or a temporary renamed into place, so an exit mid-step loses at
+// most that step.
+
+// Starts `addon`'s shutdown on a thread of its own and returns at once.
+void stop_for_exit(std::unique_ptr<loaded_addon> addon) noexcept;
+
+// Never stops `addon` and never unloads it: for a pack whose chrome may still
+// be inside its table. The process exit reclaims it.
+void abandon_for_exit(std::unique_ptr<loaded_addon> addon) noexcept;
+
+// Waits until every stop_for_exit has finished, or `deadline`. True when no
+// add-on can still run code (none stopping, none abandoned).
+[[nodiscard]] bool wait_stopped_for_exit(std::chrono::steady_clock::time_point deadline) noexcept;
+
+// True while an add-on stopped or abandoned for exit may still run code: the
+// host must then exit without static destructors.
+[[nodiscard]] bool running_at_exit() noexcept;
 
 }  // namespace mv::addon

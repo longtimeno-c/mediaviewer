@@ -30,11 +30,15 @@ void MvAddonsGalleryVisible(bool visible);
 // search_open / search_similar / search_next_match / search_prev_match, from
 // the command router. False when the AI chrome is not loaded or declined.
 bool MvAddonsRunCommand(const char* name);
-// Quit, on the main thread: each chrome shuts down first (it stops taking
-// table calls and drains those in flight), then the add-ons stop off the main
-// thread. MvAddonsWaitStopped (a worker, before the process exits) waits for
-// that, up to `seconds`: a pack must not be torn down by static destruction
-// while a chrome or a worker of it still runs.
+// Quit, on the main thread, never waiting on a pack (addon/host.h "Quit"):
+// each chrome closes its table (the AI chrome without waiting out a slow
+// read), and each add-on's stop starts on a thread of its own -- or, if its
+// chrome may still be inside its table, it is left running. Quit never
+// unloads a pack. MvAddonsWaitStopped (a worker, before the process exits)
+// gives them until `seconds` after MvAddonsQuit. Whatever is still running
+// then (a model load, a Core ML compile, a verify on the add-on queue) is left
+// to the exit: an exit guard registered by MvAddonsQuit ends the process
+// without static destructors, which those threads could still be using.
 void MvAddonsQuit();
 void MvAddonsWaitStopped(double seconds);
 

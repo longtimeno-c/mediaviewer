@@ -74,12 +74,15 @@ final class AITable: @unchecked Sendable {
   }
 
   /// -shutdown: no new calls, and up to `timeout` for the ones in flight.
-  func close(timeout: TimeInterval) {
+  /// True when none is left inside the pack.
+  @discardableResult
+  func close(timeout: TimeInterval) -> Bool {
     gate.lock()
+    defer { gate.unlock() }
     closed = true
     let deadline = Date(timeIntervalSinceNow: timeout)
     while inFlight > 0 && gate.wait(until: deadline) {}
-    gate.unlock()
+    return inFlight == 0
   }
 
   /// The buffer rule: retry with `needed`.

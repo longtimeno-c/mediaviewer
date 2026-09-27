@@ -7178,7 +7178,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
   // Add-on chromes shut down here, before their packs stop (below, off the
-  // main thread): nothing may call a table whose add-on is gone.
+  // main thread): nothing may call a table whose add-on is gone. Nothing
+  // here waits on a pack.
   MvAddonsQuit();
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
@@ -7196,7 +7197,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
       if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
     }
-    MvAddonsWaitStopped(5.0);
+    // Half a second from Quit for the add-ons to stop (an idle pack takes
+    // ~0.06 s). One still in a model load or a Core ML compile (seconds to a
+    // minute, not cancellable) is left to the exit (addons_mac.h).
+    MvAddonsWaitStopped(0.5);
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,
     // -[NSApplication terminate:] spins a nested run loop in a mode that does
