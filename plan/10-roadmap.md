@@ -25,7 +25,7 @@ Mac are both at PR 9.** The order from here is:
 | 14 | Extract & remux | both | **Written with 13**, same state |
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | **Written on `pr15-os-integration`** (2026-09-26): keyboard twins, recents, media controls, Explorer thumbnails, Spotlight importer, drag-out, single instance. Mac built, tests and Mac PR 1 gate green; Windows builds in CI. Both hardware verify lines owed. Tabs moved to their own PR |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
-| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | **On a branch** (2026-09-26, audio added 2026-09-27): Windows built and tested (models, engine, chrome, audio, the pack end to end); Mac written, first Xcode build and every hardware verify owed. Does not merge before 19 |
+| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | **On a branch** (2026-09-26, audio added 2026-09-27): Windows built and tested (models, engine, chrome, audio, the pack end to end); Mac built and tested with the real pack (2026-09-27: Core ML on every CLIP node, audio on CPU, review fixes); the quiet-machine gates and remaining hardware verifies owed on both. Does not merge before 19 |
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
 | 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
 

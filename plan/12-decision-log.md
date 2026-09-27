@@ -2509,3 +2509,20 @@ controls; no Mac change.
 **Verified** on Windows (build `ui/transport-pill`): the bar fits Play · scrubber · clock ·
 More, grows for trim without clipping, and still auto-hides while playing. `mv_tests` green.
 The present-loop soak was not re-run: other sessions were soaking on the same machine.
+
+## 2026-09-27 — Mac: Core ML runs the picture towers with pinned shapes; audio stays on CPU
+
+**Amends** plan/17 *Runtime* and *Audio* on the Mac only ("Mac runs ONNX Runtime with the Core ML
+provider"; "Whisper small where the picture tower runs High on a GPU / the Neural Engine").
+
+**Why.** Measured on the first Mac build (M5, ORT 1.30). With the exports' dynamic input shapes
+Core ML took 130 / 830 (B/32) and 250 / 1,622 (L/14) nodes and ran no faster than CPU, so
+"Core ML" was CPU with extra copies. Pinned at open (batch 4, 3 x side x side) it takes every
+node: B/32 499 img/s against 73 on CPU, L/14 ~30 against 4.9, cosine >= 0.998 to the reference.
+The price is a one-time compile on each Mac (82 s B/32, ~5.5 min L/14), cached after.
+CLAP's audio tower does not compile on Core ML and Whisper's aborts the process inside MPSGraph,
+so both run on CPU on the Mac whatever the compute setting; Whisper small still follows High.
+
+**What.** `infer::session_options::fixed_dims`, `clip_model` pins its Core ML image tower to
+`kCoreMLImageBatch` and splits / pads; `pack.cpp` never gives audio Core ML. Windows is unchanged
+(CUDA / OpenVINO take dynamic shapes).

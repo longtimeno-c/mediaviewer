@@ -61,6 +61,9 @@ class embedder {
   [[nodiscard]] virtual result<std::vector<float>> embed_text(std::string_view utf8) = 0;
 };
 
+// Core ML's image tower runs at this fixed batch (the engine's photo batch).
+inline constexpr std::size_t kCoreMLImageBatch = 4;
+
 class clip_model final : public embedder {
  public:
   // Opens both towers on `on` (CPU is the caller's fallback, not this one's).
@@ -82,6 +85,7 @@ class clip_model final : public embedder {
   std::unique_ptr<session> image_;
   std::unique_ptr<session> text_;
   clip_tokenizer tok_;
+  std::size_t image_batch_ = 0;  // a fixed image batch (Core ML); 0 = any
 };
 
 // ---- faces ---------------------------------------------------------------------

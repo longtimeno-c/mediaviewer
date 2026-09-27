@@ -382,8 +382,8 @@ faces are indexing.
 ## Implementation notes (2026-09-26, Milestone H branch `milestone-h-local-ai-search`)
 
 All five slices (PRs 20-24) are written as one change, like Import's four, because they share
-one engine. **Windows: built and tested. Mac: written, not yet compiled** (the Mac checklist is
-`src.swift/AIChrome/MAC-VALIDATION.md`). Every present-loop gate and hardware timing on both
+one engine. **Windows: built and tested. Mac: built and tested with the real pack (2026-09-27,
+"Verified on macOS" below)**; the Mac checklist is `src.swift/AIChrome/MAC-VALIDATION.md`. Every present-loop gate and hardware timing on both
 platforms is still owed unless listed as done below.
 
 ### PR 20 spike results (measured on this dev box: Ryzen 16 threads, RTX 4070, ORT 1.30)
@@ -551,6 +551,54 @@ are not a D5 format and stay out.
   model (hardware decode for the sampler is the noted later optimisation).
 - `mv_tests` (641 cases), `mv_ai_tests` (29), Import (41), PR 16, broken-file and clean-VM
   suites, `test_addon_pack.py` (16), a full Release build with `/W4 /WX`.
+
+### Verified on macOS (2026-09-27, Apple M5, 24 GB, macOS 26.6, ORT 1.30)
+
+First build of the Mac half. It compiled after two fixes (an `id` parameter shadowing the ObjC
+type; an unused pinned key under `-Werror` in a dev-key build). `cmake/darwin.cmake` now builds
+`mv_ai_tests` and `ai-bench` like Windows, and defines no AI target at all on Intel (ORT ships no
+x86_64 macOS build; the release's Intel leg would otherwise have tried to link an arm64 pack
+against x64 dependencies).
+
+**Core ML (PR 20 spike on the Mac).** The Xenova exports declare every input dimension dynamic.
+Core ML compiles only static shapes, so with the shapes left free ORT placed **130 of 830**
+(B/32) and **250 of 1,622** (L/14) nodes on it, in 13 and 25 partitions: no faster than CPU
+(B/32 76 against 68 img/s, L/14 4.8 against 5.0) and B/32 drifted to cosine 0.990 from the
+reference, at the self-test's edge. Pinning the image tower's free dimensions at open
+(`session_options::fixed_dims`, batch 4 = the engine's photo batch; `embed_images` splits and
+pads other batch sizes) puts **every node** on Core ML:
+
+| Tower | CPU (2 threads) | Core ML, pinned | cosine to reference (Core ML) | first compile | cached open |
+|---|---|---|---|---|---|
+| ViT-B/32 fp16 | 73 img/s | **499 img/s** | 0.9992 | 82 s | 17 s |
+| ViT-L/14 fp16 | 4.9 img/s | **31 img/s** | 0.9983 | 5.3 min | 64 s |
+
+Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14). `MLComputeUnits=CPUAndGPU` compiled B/32
+faster (67 s, 386 img/s) but L/14 had not finished after 25 minutes; `ALL` stays. The first
+launch on a Mac compiles for minutes (cached in the pack's data folder after), so the Mac
+status reads "Preparing the search model — the first time on this Mac takes a few minutes".
+
+**Audio stays on CPU on the Mac.** CLAP's audio tower does not compile on Core ML (unbounded
+dimensions) and Whisper's **aborts the process** inside MPSGraph ("original module failed
+verification"), which no fallback can catch; the decoder's growing KV cache cannot be pinned.
+`pack.cpp` never gives the audio models Core ML.
+
+**Fixed from the Mac runs (shared code):** Whisper base could stop after the first sentence of
+a full 30 s window and the full-window seek then skipped everything said up to its last 5 s
+(the §12b clip lost "landing in Lisbon"); the re-listen now applies to full windows too.
+
+**Review fixes (Mac host and chrome, compile-checked, then run):** the add-on store was created
+from two threads at launch; Remove and reload joined the pack's workers and deleted up to 3 GB
+on the main thread; a slow result list could leave the folder model stuck in list mode;
+re-selecting the current result reopened the clip; a failed or superseded search's results
+could be shown for the next query; Return before results landed opened the previous query's
+list; Sounds / Speech bits were sent with the piece absent; tiles re-animated and the grid
+scrolled on every indexing re-run; blank tiles after a re-run; blocking pack calls in the
+management view; pack calls after unload.
+
+Tests on the Mac: `mv_tests` 513 (5 RAW-corpus skips), Import 41, `mv_ai_tests` with the real
+pack: the CPU reference (both towers, CLAP), Whisper base and small on the speech clip, the
+grey-ICC JPEG, the Core ML agreement cases (new), `test_addon_pack.py`, `test_macpack.py` (33).
 
 Owed (both platforms unless stated): a quiet machine for the soak's single-miss question (the D6
 quiet-machine item in CLAUDE.md), the 1-hour timing on real 4K footage, the 300,000-asset range,

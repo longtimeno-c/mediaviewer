@@ -17,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/result.h"
@@ -82,6 +83,10 @@ struct session_options {
   backend on = backend::cpu;
   int threads = 1;                 // intra-op; the caller's worker is one of them
   std::string cache_dir_utf8;      // Core ML compiled-model cache (Mac); may be empty
+  // Free dimensions pinned at open (name -> size). Core ML only compiles a
+  // graph whose shapes are static: with every input dimension dynamic it took
+  // 250 of CLIP L/14's 1,622 nodes; pinned, it takes all of them.
+  std::vector<std::pair<std::string, std::int64_t>> fixed_dims;
 };
 
 // One model file on one provider. Run is safe from several threads at once.

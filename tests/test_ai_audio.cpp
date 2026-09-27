@@ -248,3 +248,164 @@ TEST_CASE("Whisper finds the words said in a clip, at the right times", "[ai][au
   }
 #endif
 }
+
+// Mac (MAC-VALIDATION §12b): the pack puts CLAP and Whisper on Core ML with no
+// self-test, so Core ML must agree with the reference here instead.
+TEST_CASE("CLAP on Core ML agrees with the reference", "[ai][audio][pack][coreml]") {
+  const std::string core = env("MV_AI_PACK_DIR");
+  const std::string audio = env("MV_AI_AUDIO_DIR");
+  if (core.empty() || audio.empty()) SKIP("MV_AI_PACK_DIR and MV_AI_AUDIO_DIR not set");
+  auto rt = mv::infer::runtime::load(core);
+  REQUIRE(rt);
+  if (!(*rt)->has_provider(mv::infer::backend::coreml)) SKIP("no Core ML provider in this runtime");
+  const auto ref = reference();
+  auto spec = mv::infer::read_clap_spec(utf8(fs::path(audio) / "models/clap-general"));
+  REQUIRE(spec);
+  mv::infer::session_options o;
+  o.on = mv::infer::backend::coreml;
+  auto model = mv::infer::clap_model::open(**rt, *spec, o);
+  REQUIRE(model);
+  float worst = 1.0f;
+  for (int k = 0; k < 2; ++k) {
+    const auto x = signal(k, 48000);
+    const std::span<const float> win(x);
+    std::vector<float> e;
+    REQUIRE((*model)->embed_audio(std::span<const std::span<const float>>(&win, 1), e));
+    std::vector<float> want;
+    for (const auto& v : ref.find("clap_audio")->a[static_cast<std::size_t>(k)].a) want.push_back(static_cast<float>(num(v)));
+    const float c = mv::infer::dot(e, want);
+    worst = std::min(worst, c);
+    INFO("Core ML CLAP audio signal " << k << " cosine " << c);
+    CHECK(c > 0.99f);
+  }
+  const mv::json::value* queries = ref.find("queries");
+  for (std::size_t q = 0; q < queries->a.size(); ++q) {
+    auto e = (*model)->embed_text(queries->a[q].s);
+    REQUIRE(e);
+    std::vector<float> want;
+    for (const auto& v : ref.find("clap_text")->a[q].a) want.push_back(static_cast<float>(num(v)));
+    const float c = mv::infer::dot(*e, want);
+    worst = std::min(worst, c);
+    INFO("Core ML CLAP text " << queries->a[q].s << " cosine " << c);
+    CHECK(c > 0.99f);
+  }
+  WARN("CLAP Core ML min cosine to the reference: " << worst);
+}
+
+#if defined(MV_AI_TEST_DECODE)
+namespace {
+std::vector<float> clip_pcm(const std::string& clip) {
+  auto pcm = mv::addon::media::open_audio(clip, 16000, 0);
+  REQUIRE(pcm);
+  std::vector<float> all;
+  std::int64_t t = 0;
+  while (true) {
+    auto chunk = (*pcm)->read(16000 * 10, t);
+    REQUIRE(chunk);
+    if (chunk->empty()) break;
+    all.insert(all.end(), chunk->begin(), chunk->end());
+  }
+  return all;
+}
+
+std::string transcribe_all(mv::infer::whisper_model& model, const std::vector<float>& all) {
+  std::string text;
+  std::size_t at = 0;
+  while (at < all.size()) {
+    const std::size_t n = std::min<std::size_t>(480000, all.size() - at);
+    auto w = model.transcribe(std::span<const float>(all.data() + at, n), static_cast<std::int64_t>(at / 16));
+    REQUIRE(w);
+    for (const auto& s : w->segments) text += " " + s.text;
+    at += static_cast<std::size_t>(std::max<std::int64_t>(w->consumed_ms, 1000)) * 16;
+  }
+  return text;
+}
+}  // namespace
+#endif
+
+TEST_CASE("Whisper on Core ML hears the same words", "[ai][audio][pack][speech][coreml]") {
+  const std::string core = env("MV_AI_PACK_DIR");
+  const std::string audio = env("MV_AI_AUDIO_DIR");
+  const std::string clip = env("MV_AI_SPEECH_CLIP");
+  if (core.empty() || audio.empty() || clip.empty()) SKIP("MV_AI_PACK_DIR, MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP not set");
+#if !defined(MV_AI_TEST_DECODE)
+  SKIP("a build without the host decoders");
+#else
+  auto rt = mv::infer::runtime::load(core);
+  REQUIRE(rt);
+  if (!(*rt)->has_provider(mv::infer::backend::coreml)) SKIP("no Core ML provider in this runtime");
+  const auto all = clip_pcm(clip);
+  for (const char* folder : {"whisper-base", "whisper-small"}) {
+    auto spec = mv::infer::read_whisper_spec(utf8(fs::path(audio) / "models" / folder));
+    REQUIRE(spec);
+    mv::infer::session_options o;
+    o.on = mv::infer::backend::coreml;
+    auto model = mv::infer::whisper_model::open(**rt, *spec, o);
+    REQUIRE(model);
+    const std::string text = transcribe_all(**model, all);
+    INFO(folder << " on Core ML:" << text);
+    const auto words = mv::infer::speech_words(text);
+    for (const char* want : {"birthday", "lisbon", "fetch"}) {
+      CHECK(std::find(words.begin(), words.end(), std::string(want)) != words.end());
+    }
+  }
+#endif
+}
+
+// Timings for plan/17 (hidden): CLAP 10 s windows/s and Whisper x real time.
+TEST_CASE("bench: CLAP and Whisper, CPU against Core ML", "[.bench][ai][audio][coreml]") {
+  const std::string core = env("MV_AI_PACK_DIR");
+  const std::string audio = env("MV_AI_AUDIO_DIR");
+  const std::string clip = env("MV_AI_SPEECH_CLIP");
+  if (core.empty() || audio.empty()) SKIP("MV_AI_PACK_DIR and MV_AI_AUDIO_DIR not set");
+  auto rt = mv::infer::runtime::load(core);
+  REQUIRE(rt);
+  using clk = std::chrono::steady_clock;
+  auto spec = mv::infer::read_clap_spec(utf8(fs::path(audio) / "models/clap-general"));
+  REQUIRE(spec);
+  const auto x = signal(1, 48000);  // 12 s: one 10 s window
+  const std::span<const float> win(x.data(), 480000);
+  std::vector<std::span<const float>> wins(4, win);
+  for (auto on : {mv::infer::backend::cpu, mv::infer::backend::coreml}) {
+    if (!(*rt)->has_provider(on)) continue;
+    mv::infer::session_options o;
+    o.on = on;
+    o.threads = 2;
+    auto model = mv::infer::clap_model::open(**rt, *spec, o);
+    REQUIRE(model);
+    std::vector<float> e;
+    REQUIRE((*model)->embed_audio(wins, e));
+    const auto t0 = clk::now();
+    for (int i = 0; i < 5; ++i) REQUIRE((*model)->embed_audio(wins, e));
+    const double s = std::chrono::duration<double>(clk::now() - t0).count();
+    (void)(*model)->embed_text("warm");
+    const auto q0 = clk::now();
+    for (int i = 0; i < 20; ++i) REQUIRE((*model)->embed_text("dog barking"));
+    const double q_ms = std::chrono::duration<double, std::milli>(clk::now() - q0).count() / 20;
+    WARN("CLAP " << mv::infer::backend_name(on) << ": " << 20 / s << " windows/s, " << q_ms << " ms/query");
+  }
+#if defined(MV_AI_TEST_DECODE)
+  if (clip.empty()) return;
+  const auto all = clip_pcm(clip);
+  const double clip_s = static_cast<double>(all.size()) / 16000.0;
+  for (const char* folder : {"whisper-base", "whisper-small"}) {
+    auto ws = mv::infer::read_whisper_spec(utf8(fs::path(audio) / "models" / folder));
+    REQUIRE(ws);
+    for (auto on : {mv::infer::backend::cpu, mv::infer::backend::coreml}) {
+      if (!(*rt)->has_provider(on)) continue;
+      mv::infer::session_options o;
+      o.on = on;
+      o.threads = 2;
+      const auto t_open = clk::now();
+      auto model = mv::infer::whisper_model::open(**rt, *ws, o);
+      REQUIRE(model);
+      const double open_ms = std::chrono::duration<double, std::milli>(clk::now() - t_open).count();
+      (void)transcribe_all(**model, all);  // warm
+      const auto t0 = clk::now();
+      (void)transcribe_all(**model, all);
+      const double s = std::chrono::duration<double>(clk::now() - t0).count();
+      WARN(folder << " " << mv::infer::backend_name(on) << ": " << clip_s / s << "x real time, open " << open_ms << " ms");
+    }
+  }
+#endif
+}

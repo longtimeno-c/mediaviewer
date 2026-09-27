@@ -221,6 +221,9 @@ result<std::unique_ptr<session>> session::open(const runtime& rt, const std::str
   // Idle pool threads sleep instead of spinning: the viewer owns the CPU.
   (void)ok(api, api->AddSessionConfigEntry(so, "session.intra_op.allow_spinning", "0"));
   (void)ok(api, api->AddSessionConfigEntry(so, "session.inter_op.allow_spinning", "0"));
+  for (const auto& [name, size] : options.fixed_dims) {
+    if (!ok(api, api->AddFreeDimensionOverrideByName(so, name.c_str(), size))) return err(status::internal);
+  }
 
   std::string message;
   bool appended = true;

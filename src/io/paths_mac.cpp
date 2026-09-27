@@ -39,6 +39,21 @@ bool ensure_dir(const std::string& path) {
   return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+// A developer build (MV_ADDON_DEV_PUBLIC_KEY, cmake/import.cmake) reads a
+// sideloaded pack and its thumbnails from elsewhere, so a real install is
+// untouched (paths_win.cpp's twin). A release build never looks.
+std::string dev_override(const char* name) {
+#if defined(MV_DEV_OVERRIDES)
+  if (const char* v = std::getenv(name); v && v[0] == '/') {
+    (void)ensure_dir(v);
+    return v;
+  }
+#else
+  (void)name;
+#endif
+  return {};
+}
+
 }  // namespace
 
 void set_thumb_cache_dir_override(std::string_view utf8_dir) {
@@ -51,6 +66,7 @@ result<std::string> thumb_cache_dir() {
     std::lock_guard lock(g_mu);
     if (!g_override.empty()) return g_override;
   }
+  if (std::string dev = dev_override("MV_DEV_THUMBS_DIR"); !dev.empty()) return dev;
 
   const std::string home = home_dir();
   if (home.empty()) return err(status::io);
@@ -72,6 +88,7 @@ result<std::string> addons_dir() {
     std::lock_guard lock(g_mu);
     if (!g_addons_override.empty()) return g_addons_override;
   }
+  if (std::string dev = dev_override("MV_DEV_ADDONS_DIR"); !dev.empty()) return dev;
   const std::string home = home_dir();
   if (home.empty()) return err(status::io);
   const std::string support = home + "/Library/Application Support";

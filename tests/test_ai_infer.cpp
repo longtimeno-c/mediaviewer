@@ -475,3 +475,91 @@ TEST_CASE("a greyscale JPEG decodes to RGB for the index", "[ai][infer][decode]"
   SKIP("a build without the host decoders");
 #endif
 }
+
+// Mac PR 20 (MAC-VALIDATION §4-5): Core ML must agree with the reference as
+// the pack's own self-test demands (cosine 0.99, pack.cpp), on both towers.
+TEST_CASE("the Core ML provider agrees with the reference", "[ai][infer][pack][coreml]") {
+  const std::string pack = env("MV_AI_PACK_DIR");
+  if (pack.empty()) SKIP("MV_AI_PACK_DIR not set");
+  const auto ref = mv::json::parse(read_text(fs::path(MV_AI_TEST_DATA) / "reference.json"), 8);
+  REQUIRE(ref);
+  auto rt = mv::infer::runtime::load(pack);
+  REQUIRE(rt);
+  if (!(*rt)->has_provider(mv::infer::backend::coreml)) SKIP("no Core ML provider in this runtime");
+  for (const char* folder : {"clip-b32", "clip-l14"}) {
+    auto spec = mv::infer::read_clip_spec(utf8(fs::path(pack) / "models" / folder));
+    REQUIRE(spec);
+    mv::infer::session_options o;
+    o.on = mv::infer::backend::coreml;
+    mv::infer::provider_fault fault = mv::infer::provider_fault::none;
+    auto model = mv::infer::clip_model::open(**rt, *spec, o, &fault);
+    INFO(spec->id << " Core ML open: " << mv::infer::fault_name(fault));
+    REQUIRE(model);
+    const mv::json::value* m = ref->find("models")->find(spec->id);
+    float worst = 1.0f;
+    for (int k = 0; k < 3; ++k) {
+      std::uint32_t w = 0, h = 0;
+      const auto px = card(k, w, h);
+      const mv::infer::rgb_view view{px.data(), w, h};
+      std::vector<float> e;
+      REQUIRE((*model)->embed_images(std::span<const mv::infer::rgb_view>(&view, 1), e));
+      const float c = cosine(e, floats(m->find("images")->a[static_cast<std::size_t>(k)]));
+      worst = std::min(worst, c);
+      INFO(spec->id << " Core ML card " << k << " cosine " << c);
+      CHECK(c > 0.99f);
+    }
+    const mv::json::value* queries = ref->find("queries");
+    for (std::size_t q = 0; q < queries->a.size(); ++q) {
+      auto e = (*model)->embed_text(queries->a[q].s);
+      REQUIRE(e);
+      const float c = cosine(*e, floats(m->find("texts")->a[q]));
+      worst = std::min(worst, c);
+      INFO(spec->id << " Core ML query " << queries->a[q].s << " cosine " << c);
+      CHECK(c > 0.99f);
+    }
+    WARN(spec->id << " Core ML min cosine to the reference: " << worst);
+  }
+}
+
+// Timings for plan/17 (hidden: `mv_ai_tests "[.bench]"`). Batches as shipped:
+// four photos (engine.cpp kPhotoBatch), two CPU threads (pack.cpp).
+TEST_CASE("bench: CLIP towers, CPU against Core ML", "[.bench][ai][coreml]") {
+  const std::string pack = env("MV_AI_PACK_DIR");
+  if (pack.empty()) SKIP("MV_AI_PACK_DIR not set");
+  auto rt = mv::infer::runtime::load(pack);
+  REQUIRE(rt);
+  std::vector<std::vector<std::uint8_t>> px(4);
+  std::vector<mv::infer::rgb_view> views;
+  for (std::size_t i = 0; i < px.size(); ++i) {
+    std::uint32_t w = 0, h = 0;
+    px[i] = card(static_cast<int>(i % 3), w, h);
+    views.push_back(mv::infer::rgb_view{px[i].data(), w, h});
+  }
+  using clk = std::chrono::steady_clock;
+  for (const char* folder : {"clip-b32", "clip-l14"}) {
+    auto spec = mv::infer::read_clip_spec(utf8(fs::path(pack) / "models" / folder));
+    REQUIRE(spec);
+    for (auto on : {mv::infer::backend::cpu, mv::infer::backend::coreml}) {
+      if (!(*rt)->has_provider(on)) continue;
+      mv::infer::session_options o;
+      o.on = on;
+      o.threads = 2;
+      const auto t_open = clk::now();
+      auto model = mv::infer::clip_model::open(**rt, *spec, o);
+      REQUIRE(model);
+      const double open_ms = std::chrono::duration<double, std::milli>(clk::now() - t_open).count();
+      std::vector<float> e;
+      for (int i = 0; i < 5; ++i) REQUIRE((*model)->embed_images(views, e));  // warm
+      const int batches = on == mv::infer::backend::cpu && std::string(folder) == "clip-l14" ? 10 : 50;
+      const auto t0 = clk::now();
+      for (int i = 0; i < batches; ++i) REQUIRE((*model)->embed_images(views, e));
+      const double s = std::chrono::duration<double>(clk::now() - t0).count();
+      (void)(*model)->embed_text("warm");
+      const auto q0 = clk::now();
+      for (int i = 0; i < 20; ++i) REQUIRE((*model)->embed_text("guy on a skateboard"));
+      const double q_ms = std::chrono::duration<double, std::milli>(clk::now() - q0).count() / 20;
+      WARN(folder << " " << mv::infer::backend_name(on) << ": " << (batches * 4) / s << " img/s, "
+                  << q_ms << " ms/query, open " << open_ms << " ms");
+    }
+  }
+}

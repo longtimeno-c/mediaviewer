@@ -249,7 +249,10 @@ struct StatusLine: Equatable {
     case MV_AI_STATE_LOADING.rawValue:
       // It opens the models only between the viewer's busy spells.
       let waiting = s.yield_reason != 0
-      text = waiting ? "Loading the search model when the viewer is idle" : "Loading the search model…"
+      // Core ML compiles each model for this Mac once (minutes on the first
+      // launch, cached after), so say why the first load is slow.
+      text = waiting ? "Loading the search model when the viewer is idle"
+                     : "Preparing the search model — the first time on this Mac takes a few minutes"
       spinning = !waiting
       idle = false
     case MV_AI_STATE_ERROR.rawValue:

@@ -312,6 +312,11 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     o.threads = 2;
     o.cache_dir_utf8 = join(p->data_dir, "coreml-cache");
     if (compute != MV_AI_COMPUTE_CPU_ONLY && p->rt) o.on = accelerated(*p->rt);
+    // Never Core ML (measured on an M5, ORT 1.30): CLAP's dynamic shapes fail
+    // to compile, and Whisper's abort the process inside MPSGraph ("original
+    // module failed verification"), which no fallback can catch. The decoder's
+    // growing KV cache cannot be made static.
+    if (o.on == infer::backend::coreml) o.on = infer::backend::cpu;
   };
   d.open_sound = [p, audio_options](std::uint32_t compute) -> result<loaded_sound> {
     p->ensure();

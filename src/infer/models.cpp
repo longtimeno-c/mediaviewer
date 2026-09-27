@@ -138,7 +138,16 @@ result<std::unique_ptr<clip_model>> clip_model::open(const runtime& rt, const cl
   MV_TRY(std::string merges, read_text(spec.merges_file));
   MV_TRY(clip_tokenizer tok, clip_tokenizer::load(vocab, merges, spec.context));
   m->tok_ = std::move(tok);
-  MV_TRY(auto image, session::open(rt, spec.image_file, options, fault));
+  session_options image_opts = options;
+  if (options.on == backend::coreml) {
+    // Core ML needs static shapes (ort.h): the image tower runs four at a time,
+    // the engine's photo batch; embed_images splits and pads to it.
+    const auto side = static_cast<std::int64_t>(spec.norm.size);
+    m->image_batch_ = kCoreMLImageBatch;
+    image_opts.fixed_dims = {{"batch_size", static_cast<std::int64_t>(kCoreMLImageBatch)},
+                             {"num_channels", 3}, {"height", side}, {"width", side}};
+  }
+  MV_TRY(auto image, session::open(rt, spec.image_file, image_opts, fault));
   m->image_ = std::move(image);
   // The text tower is tiny per query and latency-bound: CPU keeps it off a
   // provider's queue and gives the same vector on every compute choice.
@@ -152,6 +161,18 @@ result<std::unique_ptr<clip_model>> clip_model::open(const runtime& rt, const cl
 expected clip_model::embed_images(std::span<const rgb_view> images, std::vector<float>& out) {
   out.clear();
   if (images.empty()) return {};
+  if (image_batch_ > 0 && images.size() != image_batch_) {
+    // A fixed batch: run it in slices, padding the last with its final image.
+    std::vector<rgb_view> slice(image_batch_);
+    std::vector<float> part;
+    for (std::size_t at = 0; at < images.size(); at += image_batch_) {
+      const std::size_t k = std::min(image_batch_, images.size() - at);
+      for (std::size_t i = 0; i < image_batch_; ++i) slice[i] = images[at + std::min(i, k - 1)];
+      MV_TRY_VOID(embed_images(slice, part));
+      out.insert(out.end(), part.begin(), part.begin() + static_cast<std::ptrdiff_t>(k * spec_.dim));
+    }
+    return {};
+  }
   tensor_f32 in;
   const auto n = static_cast<std::int64_t>(images.size());
   const auto s = static_cast<std::int64_t>(spec_.norm.size);
