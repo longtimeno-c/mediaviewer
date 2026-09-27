@@ -458,7 +458,8 @@ private struct ResultTile: View {
 
   private var badges: [String] {
     var out: [String] = []
-    if result.match & MV_AI_MATCH_PICTURE != 0 && result.match != MV_AI_MATCH_PICTURE { out.append("photo") }
+    // The picture badge only beside another: a plain picture match needs none.
+    if result.matchedPicture && (result.matchedSound || result.matchedSpeech) { out.append("photo") }
     if result.matchedSound { out.append("speaker.wave.2") }
     if result.matchedSpeech { out.append("text.bubble") }
     return out

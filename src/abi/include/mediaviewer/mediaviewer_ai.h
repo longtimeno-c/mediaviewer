@@ -1,5 +1,5 @@
 /* Copyright (C) 2026 longtimeno-c
-/* SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The AI pack's interface to the chrome (plan/17-local-ai-search.md,
  * Milestone H, PRs 20-24), obtained with

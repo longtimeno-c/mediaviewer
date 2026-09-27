@@ -23,6 +23,7 @@ struct AIResult: Identifiable, Equatable, Sendable {
   let more: UInt32          // other matching moments in the same clip
   let match: UInt32         // MV_AI_MATCH_*: picture, sound, speech (0 from an older pack)
   var snippet = ""          // the words said, for a speech match ("…happy birthday Anna…")
+  var matchedPicture: Bool { match & MV_AI_MATCH_PICTURE != 0 }
   var matchedSound: Bool { match & MV_AI_MATCH_SOUND != 0 }
   var matchedSpeech: Bool { match & MV_AI_MATCH_SPEECH != 0 }
   /// Stable across a re-run of the same search while the index grows, so a
