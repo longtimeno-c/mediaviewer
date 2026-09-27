@@ -4488,6 +4488,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
   using mv::shell::back_target;
   switch (target) {
     case back_target::blur_text:
+      // The gallery search field: the first Esc clears it, the second hands
+      // the keyboard to the grid. The island says whether the field had it.
+      if (app->gallery_visible &&
+          app->chrome.gallery_search(mv::shell::gallery_search_action::escape)) {
+        return;
+      }
       // PR 12: Esc in the comment field drops the edit. The pane forgets the
       // draft before focus leaves, so leaving it does not commit.
       push_meta_edit(app, true);
@@ -5272,10 +5278,19 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     case prev:
       if (folder_cursor_step(app, -1)) return true;
+      // Gallery search bar: with a name filter on, Left walks its matches.
+      if (app->gallery_visible &&
+          app->chrome.gallery_search(mv::shell::gallery_search_action::step, -1)) {
+        return true;
+      }
       folder_step(app, -1);
       return true;
     case next:
       if (folder_cursor_step(app, 1)) return true;
+      if (app->gallery_visible &&
+          app->chrome.gallery_search(mv::shell::gallery_search_action::step, 1)) {
+        return true;
+      }
       // Nothing open: Space starts the empty-window runner (dino_game.h).
       if (folder_count(app) == 0 && app->mode == open_mode::none && !video_mode(app)) {
         app->game_on = true;
@@ -5288,6 +5303,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case skip_back: folder_jump(app, -10); return true;
     case skip_forward: folder_jump(app, 10); return true;
     case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
+    // `/` in the gallery: the search bar's field (plan/17 "Gallery search
+    // bar"). Not shown, or a chrome without the bar: unbound.
+    case gallery_search:
+      if (!app->gallery_visible) return false;
+      return app->chrome.gallery_search(mv::shell::gallery_search_action::focus);
     case gallery_open_selected:
       if (!app->gallery_visible) return false;
       if (app->folder_cursor >= 0) {
