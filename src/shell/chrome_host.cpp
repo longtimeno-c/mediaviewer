@@ -554,12 +554,16 @@ int dip_px(int dip, std::uint32_t dpi) noexcept {
   return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96);
 }
 
+// `content_dip` is the row's natural width: the bar hugs it, so there is no
+// empty box either side of the controls, and trim's wider row is not clipped.
+// Only the window's sides bound it. 0 (not reported yet) is the old maximum.
 chrome_panel_args transport_rect(bool visible, bool parked, int width, int client_height,
-                                 int filmstrip_px, std::uint32_t dpi) noexcept {
+                                 int filmstrip_px, int content_dip, std::uint32_t dpi) noexcept {
   chrome_panel_args args{};
   args.visible = visible ? 1 : 0;
   const int strip = chrome_transport_height_px(dpi);
-  const int bar = std::max(1, std::min(dip_px(kTransportMaxWidthDip, dpi),
+  const int want = content_dip > 0 ? content_dip + 2 * kTransportPadDip : kTransportMaxWidthDip;
+  const int bar = std::max(1, std::min(dip_px(want, dpi),
                                        width - 2 * dip_px(kTransportSideDip, dpi)));
   args.width = visible ? bar : 1;
   args.height = visible ? strip : 1;
@@ -609,7 +613,8 @@ void chrome_host::resize_transport(int width, int client_height, int filmstrip_p
     return;
   }
   chrome_panel_args args =
-      transport_rect(true, transport_parked_, width, client_height, filmstrip_px, dpi);
+      transport_rect(true, transport_parked_, width, client_height, filmstrip_px,
+                     transport_content_dip_, dpi);
   (void)resize_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
@@ -618,9 +623,17 @@ void chrome_host::show_transport(bool visible, int width, int client_height, int
   if (!transport_attached_ || !show_transport_) return;
   // A clip arrives with its controls up; the auto-hide rule parks them later.
   transport_parked_ = false;
-  chrome_panel_args args = transport_rect(visible, false, width, client_height, filmstrip_px, dpi);
+  chrome_panel_args args = transport_rect(visible, false, width, client_height, filmstrip_px,
+                                          transport_content_dip_, dpi);
   (void)show_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
   transport_visible_ = visible;
+}
+
+bool chrome_host::set_transport_content(int dip) noexcept {
+  dip = std::clamp(dip, 0, 8192);  // a sanity bound; the window's width is the real one
+  if (dip == transport_content_dip_) return false;
+  transport_content_dip_ = dip;
+  return true;
 }
 
 void chrome_host::park_transport(bool parked, int width, int client_height, int filmstrip_px,
