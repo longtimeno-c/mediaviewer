@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Lossless JPEG rotate / flip / MCU-aligned crop (plan/07 "Export",
 // plan/10 PR 10): the DCT coefficients are rearranged, never decoded to
 // pixels, so there is no generation loss. jpegtran's transform, on the plain

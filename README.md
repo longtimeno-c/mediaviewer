@@ -17,6 +17,8 @@ media-player control, so decoding never stands between you and the screen.
 
 Windows may show a SmartScreen warning the first time. This installer is not Authenticode-signed. Checksums are on the [release page](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2).
 
+Setup's Finish page offers to delete the setup `.exe` once it closes. On a Mac, the first-launch setup sheet offers to eject the MediaViewer disk and move the `.dmg` to the Trash. Both boxes start ticked.
+
 ---
 
 ## Speed you can measure
@@ -142,7 +144,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
 | **Video trim, extract and remux** | Instant lossless cuts on keyframes or frame-accurate cuts on the GPU encoder, audio extraction, MP4 ↔ MKV, all as new files beside the clip |
-| **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
+| **Windows and macOS integration** | Explorer thumbnails for HEIC, AVIF and RAW, Recent folders in the jump list and Dock, taskbar and Now Playing media controls, copy path or edited image, the Share sheet, and single-window open. Explorer's Details-pane properties and tab-grouped windows come later |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume, installed from Settings → Add-ons |
 | **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
 | **Voice search** (optional add-on) | Speak the query; speech runs on-device |
@@ -164,6 +166,8 @@ Reproduce every chart above with `python tools/perf/regenerate.py` (about 15 min
 
 ## Licence
 
-GPL-2.0-or-later, see [LICENSE](LICENSE); the reasoning is in [plan/11-licensing.md](plan/11-licensing.md).
+GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE); the reasoning is in [plan/11-licensing.md](plan/11-licensing.md).
+Copyright (C) 2026 longtimeno-c. Copies and forks must keep the copyright notices, `LICENSE`, `NOTICE` and the
+in-app legal notices; they may charge for it, as the GPL allows. Please do not present a fork as the original MediaViewer.
 Bundled libraries and their licences are listed in [THIRD-PARTY.md](THIRD-PARTY.md).
 Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.

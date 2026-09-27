@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // What a crash report is allowed to say about the work in flight.
 //
 // plan/13 Part 2, "Scrubbing": attach the format, codec, dimensions, bit depth

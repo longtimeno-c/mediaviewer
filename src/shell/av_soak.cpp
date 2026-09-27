@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/av_soak.h"
 #include "gfx/device.h"
 #include "player/media_source.h"

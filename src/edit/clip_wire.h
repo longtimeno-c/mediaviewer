@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Clip jobs out of process (plan/08 "Execution & UX": "as a child process for
 // encode jobs. A child process means a crash in an encode can't take the
 // viewer down, and cancelling is a clean kill"; owner's call, plan/12

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The empty-window welcome: what the canvas shows before anything is open.
 //
 // One drawing routine for both present labs (D3D11 and Metal): plain ImGui

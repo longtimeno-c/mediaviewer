@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Settings screen (plan/16 "Settings"), laid out like the Windows one
 // (IslandHost.Settings.cs): grouped General preferences and a separate keyboard
 // shortcuts tab, with a persistent Done footer. Native owns every value -- this view

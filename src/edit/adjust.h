@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 11 — colour adjusts, the first editing set (plan/07 scope line:
 // exposure, contrast, saturation, temperature / tint; histogram + clipping).
 //

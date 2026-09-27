@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // mv_import's one export, mv_addon_get, and the mv.import.1 table behind it.
 //
 // Every thunk is the ABI boundary: no exception crosses it (plan/14), a

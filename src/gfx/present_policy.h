@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Present-or-idle policy. Shared by the D3D11 lab and the Metal lab.
 //
 // plan/03-rendering.md rule 4: idle → stop presenting (0 % GPU on a still).

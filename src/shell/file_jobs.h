@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copy / move / Recycle Bin jobs for marks (plan/16 "Marks, copy, move").
 //
 // The UI thread may open a picker and ask for confirmation; it never copies a

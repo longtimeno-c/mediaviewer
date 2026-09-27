@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5c — transport policy: seek mode, frame step, speed, A-B loop, resume.
 //
 // Everything here is pure and free of FFmpeg, D3D and threads, for the same

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // dlopen half of the add-on loader. On macOS the app runs with the hardened
 // runtime and library validation, so only a library signed by the same Team
 // ID loads (plan/18); the Linux core test build uses the same call.

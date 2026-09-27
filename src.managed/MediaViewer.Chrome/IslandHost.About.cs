@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -8,7 +9,9 @@ using Microsoft.UI.Xaml.Media.Imaging;
 namespace MediaViewer.Chrome;
 
 // PR 8 About (plan/13 "About", plan/11): the mark, the running version, the
-// GPL, GitHub, THIRD-PARTY.md and the LGPL source offer for *this* build.
+// copyright line, GPL, LICENSE / NOTICE / THIRD-PARTY.md, GitHub and the LGPL
+// source offer for *this* build. This flyout is the GPLv3 "Appropriate Legal
+// Notices" (plan/11); keep the copyright line, licence line and links in it.
 // No command-table entry (plan/16 PR 8 row); the flyout is reached from the
 // bar and every link is a tab stop.
 public static partial class IslandHost
@@ -16,6 +19,7 @@ public static partial class IslandHost
     private const string RepoUrl = "https://github.com/longtimeno-c/mediaviewer";
     private const string AboutMarkFile = "mediaviewer-256.png";
     private const string LicenceFile = "LICENSE";
+    private const string NoticeFile = "NOTICE";
     private const string ThirdPartyFile = "THIRD-PARTY.md";
 
     private static string ExeDirectory()
@@ -93,13 +97,20 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
         };
-        var licence = new TextBlock
+        var copyright = new TextBlock
         {
-            Text = "Licensed GPL-2.0-or-later",
+            Text = "Copyright (C) 2026 longtimeno-c",
             Foreground = Brush(Body),
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Margin = new Thickness(0, 6, 0, 0),
+        };
+        var licence = new TextBlock
+        {
+            Text = "Licensed under GNU GPL v3 or later",
+            Foreground = Brush(Body),
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
         };
         var hint = new TextBlock
         {
@@ -114,8 +125,10 @@ public static partial class IslandHost
         var sourceLink = AboutLink("Source code for this build (LGPL components)",
                                    () => OpenUri(RepoUrl + "/releases"));
         var links = new StackPanel { Spacing = 0, Margin = new Thickness(-6, 8, 0, 0) };
-        links.Children.Add(AboutLink("Licence (GPL-2.0-or-later)",
+        links.Children.Add(AboutLink("Licence (GPL-3.0-or-later)",
                                      () => OpenLocal(Path.Combine(dir, LicenceFile), RepoUrl + "/blob/main/LICENSE", textOnly: true)));
+        links.Children.Add(AboutLink("Notice",
+                                     () => OpenLocal(Path.Combine(dir, NoticeFile), RepoUrl + "/blob/main/NOTICE", textOnly: true)));
         links.Children.Add(AboutLink("Third-party notices",
                                      () => OpenLocal(Path.Combine(dir, ThirdPartyFile), RepoUrl + "/blob/main/THIRD-PARTY.md", textOnly: false)));
         links.Children.Add(AboutLink("GitHub — longtimeno-c/mediaviewer", () => OpenUri(RepoUrl)));
@@ -124,6 +137,7 @@ public static partial class IslandHost
         var text = new StackPanel { Spacing = 0 };
         text.Children.Add(name);
         text.Children.Add(version);
+        text.Children.Add(copyright);
         text.Children.Add(licence);
         text.Children.Add(links);
         text.Children.Add(hint);

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10 — the host's edit state, shared by both hosts (plan/16 "Crop" mode,
 // `[` `]` from the viewer; plan/07 EditStack).
 //
@@ -18,6 +19,7 @@
 //     frame; Enter pushes it onto the stack, Esc drops it.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -186,5 +188,30 @@ inline constexpr int kExportLongEdgeCount =
 [[nodiscard]] result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
                                              const edit::export_options& opt,
                                              const edit::colour& c = {});
+
+// PR 15, Ctrl+Alt+C / ⌘⌥C (plan/16 View): the still with its stack baked, as a
+// PNG, for the clipboard. Written to a folder of its own under
+// io::clipboard_dir() — never beside the original — as "<name>-edit.png".
+// Only the newest kKeptFlattenedCopies folders are kept, so a copy another
+// bake overtook is still there for the paste or drop that asked for it.
+// Pixels + ICC only: nothing from the EXIF rides along
+// into a chat window the user pasted into. `png` is the same bytes, for the
+// clipboard's image flavour. Worker thread only.
+// The PNG bytes alone, for a destination the caller owns (the Mac's
+// drag-out file promise writes them where the drop asked). Worker thread only.
+[[nodiscard]] result<std::vector<std::uint8_t>> render_flattened_png(std::string_view source_path,
+                                                                     const edit::geometry& g,
+                                                                     const edit::colour& c = {});
+// "IMG_0001.HEIC" -> "IMG_0001-edit.png": the flattened copy's file name.
+[[nodiscard]] std::string flattened_file_name(std::string_view source_path);
+
+inline constexpr std::size_t kKeptFlattenedCopies = 4;
+
+struct flattened_copy {
+  std::string path;
+  std::vector<std::uint8_t> png;
+};
+[[nodiscard]] result<flattened_copy> run_flatten(std::string_view source_path, const edit::geometry& g,
+                                                 const edit::colour& c = {});
 
 }  // namespace mv::shell

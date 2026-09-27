@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Native-only entry points. Not in the C ABI, not P/Invoked. The language
 // boundary does not carry ID3D11* (plan/14); the present lab, being C++, is
 // allowed to bind the device that lives on the render thread to the session

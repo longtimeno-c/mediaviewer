@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 8 updater, native half: Velopack hook exit, start-attempt guard, rollback,
 // and the restart-state arguments (plan/13 Part 1, "Rollback and the kill
 // switch", "Preserve state across the restart").

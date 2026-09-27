@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Darwin frame-time harness. Same schema-2 JSON as Windows; the gate requires
 // drop_source "Metal display-link". A DXGI report cannot pass.
 

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The empty-window runner: Space on the welcome screen. A small easter egg, and
 // the only thing that presents continuously on an empty canvas (it stops the
 // moment the game is left, like any other animation).

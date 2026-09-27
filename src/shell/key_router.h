@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The one key router (plan/16-commands.md). Runs on the UI thread, before the
 // island's pre-translate. Pure: no Win32, no allocation, no I/O on keydown.
 #pragma once

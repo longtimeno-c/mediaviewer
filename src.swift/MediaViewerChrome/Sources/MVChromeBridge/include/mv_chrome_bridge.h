@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // C bridge from Swift chrome to the present lab's input_snapshot
 // (src/shell/input_state.h). Implemented in src/shell/main_mac.mm, not here:
 // this header only declares the boundary, same shape rule as plan/14-abi.md

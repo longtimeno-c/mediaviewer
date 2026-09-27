@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Join an arm64 MediaViewer.app and an x86_64 one into one universal app.
 
 Each architecture is built natively (its own vcpkg triplet, its own dylibs), so
