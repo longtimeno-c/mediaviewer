@@ -133,6 +133,11 @@ public static partial class IslandHost
         // or arg 1 to remove every date-taken tag.
         public const int MetaTags = 1021;
         public const int MetaDate = 1022;
+        // PR 30 (plan/21): the Video Editor window. EditorSeek: arg is the
+        // program time in ms (and selects the piece there); EditorAction: arg
+        // is an EditorActions value (chrome_editor_action).
+        public const int EditorSeek = 1023;
+        public const int EditorAction = 1024;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -165,6 +170,7 @@ public static partial class IslandHost
                 MetaComment, MetaRevert,
                 ClipTool, ClipIndex,
                 EditTab, EditAction, MetaTags, MetaDate,
+                EditorSeek, EditorAction,
             };
             unchecked
             {
@@ -431,7 +437,7 @@ public static partial class IslandHost
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
                 else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root) ||
-                         OwnsRoot(_editPane, root))
+                         OwnsRoot(_editPane, root) || OwnsRoot(_editorTimeline, root) || OwnsRoot(_editorAway, root))
                 {
                     // PR 11: the adjust pane too — its sliders own the arrows.
                     kind = FocusKind.Pane;

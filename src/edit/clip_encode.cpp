@@ -29,6 +29,7 @@ extern "C" {
 
 #include "codec/cicp.h"
 #include "codec/raster.h"
+#include "edit/clip_strip.h"
 #include "edit/clip_internal.h"
 #include "edit/encode.h"
 
@@ -356,9 +357,25 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
   MV_TRY(source s, open_source(src_path, ctl.cancel));
   if (s.video < 0) return err(status::unsupported_format);
   AVStream* ist = s.format->streams[s.video];
-  const time_ns in_ns = std::max<time_ns>(0, spec.in_ns);
-  const time_ns out_ns = spec.out_ns < 0 ? s.duration_ns : std::min(spec.out_ns, s.duration_ns);
-  if (out_ns <= in_ns) return err(status::invalid_arg);
+  // PR 30: several pieces back to back (the Video Editor's exact export);
+  // PR 13's trim is the one-piece case.
+  std::vector<range> pieces;
+  if (spec.ranges.empty()) {
+    pieces.push_back({spec.in_ns, spec.out_ns});
+  } else {
+    pieces = spec.ranges;
+  }
+  time_ns total = 0;
+  time_ns last_out = -1;
+  for (range& p : pieces) {
+    p.in_ns = std::max<time_ns>(0, p.in_ns);
+    p.out_ns = p.out_ns < 0 ? s.duration_ns : std::min(p.out_ns, s.duration_ns);
+    if (p.out_ns <= p.in_ns || p.in_ns < last_out) return err(status::invalid_arg);
+    last_out = p.out_ns;
+    total += p.out_ns - p.in_ns;
+  }
+  const time_ns in_ns = pieces.front().in_ns;
+  const time_ns out_ns = pieces.back().out_ns;
   MV_TRY(codec_ptr dec, open_decoder(ist));
 
   MV_TRY(output_ptr out, open_output(spec.muxer, out_path, ctl.cancel));
@@ -446,11 +463,14 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
   bool video_done = false;
   std::vector<std::int64_t> audio_last(s.format->nb_streams, INT64_MIN);
   status failure = status::ok;
-  const time_ns span = out_ns - in_ns;
+  // The piece being written: its source range and where it starts on the output.
+  time_ns piece_in = in_ns;
+  time_ns piece_out = out_ns;
+  time_ns written = 0;
 
   auto on_frame = [&](AVFrame* f, time_ns t) -> bool {
-    if (t < in_ns - kTol) return true;  // decode-up from the keyframe
-    if (t >= out_ns - kTol) {
+    if (t < piece_in - kTol) return true;  // decode-up from the keyframe
+    if (t >= piece_out - kTol) {
       video_done = true;
       return false;
     }
@@ -475,7 +495,7 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
       (void)av_frame_copy_props(conv.get(), f);
       send = conv.get();
     }
-    send->pts = av_rescale_q(t - in_ns, kNs, enc->time_base);
+    send->pts = av_rescale_q(written + t - piece_in, kNs, enc->time_base);
     send->pict_type = AV_PICTURE_TYPE_NONE;
     if (avcodec_send_frame(enc.get(), send) < 0) {
       failure = status::internal;
@@ -486,7 +506,8 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
       return false;
     }
     if (ctl.progress != nullptr) {
-      ctl.progress(ctl.user, std::clamp(static_cast<double>(t - in_ns) / static_cast<double>(span), 0.0, 1.0));
+      ctl.progress(ctl.user,
+                   std::clamp(static_cast<double>(written + t - piece_in) / static_cast<double>(total), 0.0, 1.0));
     }
     return true;
   };
@@ -497,8 +518,8 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
     const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
     if (ts == AV_NOPTS_VALUE) return true;
     const time_ns t = to_timeline(s, ast, ts);
-    if (t < in_ns - kTol || t >= out_ns) return !video_done;
-    const std::int64_t shift = from_timeline(s, ast, in_ns);
+    if (t < piece_in - kTol || t >= piece_out) return !video_done;
+    const std::int64_t shift = from_timeline(s, ast, piece_in) - av_rescale_q(written, kNs, ast->time_base);
     if (pkt->pts != AV_NOPTS_VALUE) pkt->pts -= shift;
     if (pkt->dts != AV_NOPTS_VALUE) pkt->dts -= shift;
     AVStream* aost = out->streams[audio_map[idx]];
@@ -515,25 +536,32 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
     }
     return true;
   };
-  MV_TRY_VOID(decode_forward(s, s.video, dec.get(), in_ns, ctl, on_frame, on_other));
-  if (failure != status::ok) return err(failure);
-  // The tail of the audio that interleaves after the last video frame.
-  if (video_done) {
-    packet_ptr pkt(av_packet_alloc());
-    while (pkt && av_read_frame(s.format.get(), pkt.get()) >= 0) {
-      if (cancelled(ctl.cancel)) return err(status::cancelled);
-      const int idx = pkt->stream_index;
-      bool more = true;
-      if (idx != s.video && idx >= 0 && idx < static_cast<int>(audio_map.size()) && audio_map[idx] >= 0) {
-        AVStream* ast = s.format->streams[idx];
-        const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
-        if (ts != AV_NOPTS_VALUE && to_timeline(s, ast, ts) >= out_ns) more = false;
-        else if (!on_other(pkt.get())) more = false;
-      }
-      av_packet_unref(pkt.get());
-      if (!more || failure != status::ok) break;
-    }
+  for (std::size_t n = 0; n < pieces.size(); ++n) {
+    piece_in = pieces[n].in_ns;
+    piece_out = pieces[n].out_ns;
+    video_done = false;
+    if (n > 0) avcodec_flush_buffers(dec.get());  // a new seek: nothing held from the last piece
+    MV_TRY_VOID(decode_forward(s, s.video, dec.get(), piece_in, ctl, on_frame, on_other));
     if (failure != status::ok) return err(failure);
+    // The tail of the audio that interleaves after the piece's last video frame.
+    if (video_done) {
+      packet_ptr pkt(av_packet_alloc());
+      while (pkt && av_read_frame(s.format.get(), pkt.get()) >= 0) {
+        if (cancelled(ctl.cancel)) return err(status::cancelled);
+        const int idx = pkt->stream_index;
+        bool more = true;
+        if (idx != s.video && idx >= 0 && idx < static_cast<int>(audio_map.size()) && audio_map[idx] >= 0) {
+          AVStream* ast = s.format->streams[idx];
+          const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+          if (ts != AV_NOPTS_VALUE && to_timeline(s, ast, ts) >= piece_out) more = false;
+          else if (!on_other(pkt.get())) more = false;
+        }
+        av_packet_unref(pkt.get());
+        if (!more || failure != status::ok) break;
+      }
+      if (failure != status::ok) return err(failure);
+    }
+    written += piece_out - piece_in;
   }
   if (avcodec_send_frame(enc.get(), nullptr) < 0) return err(status::internal);
   MV_TRY_VOID(drain_encoder(enc.get(), out.get(), vost, opkt.get()));
@@ -999,3 +1027,142 @@ expected animation(std::string_view src_path, const std::string& out_path, const
 }
 
 }  // namespace mv::edit::clip::detail
+
+// ---- PR 30: the Video Editor's timeline strip -------------------------------------
+
+namespace mv::edit::clip {
+
+result<std::vector<strip_frame>> thumbnails(std::string_view utf8_path, std::span<const time_ns> times,
+                                            std::uint32_t height, const std::atomic<bool>* cancel) {
+  using namespace detail;
+  if (times.empty() || times.size() > 512 || height < 8 || height > 1080) return err(status::invalid_arg);
+  for (std::size_t i = 1; i < times.size(); ++i) {
+    if (times[i] < times[i - 1]) return err(status::invalid_arg);
+  }
+  MV_TRY(source s, open_source(utf8_path, cancel));
+  if (s.video < 0) return err(status::unsupported_format);
+  AVStream* ist = s.format->streams[s.video];
+  for (unsigned i = 0; i < s.format->nb_streams; ++i) {
+    if (static_cast<int>(i) != s.video) s.format->streams[i]->discard = AVDISCARD_ALL;
+  }
+  MV_TRY(codec_ptr dec, open_decoder(ist));
+  const int rotation = stream_rotation(ist);
+  control ctl;
+  ctl.cancel = cancel;
+  rgba_converter conv;
+  std::vector<strip_frame> out;
+  out.reserve(times.size());
+  for (const time_ns at : times) {
+    // The same keyframe serves every time up to the next one: reuse it.
+    if (!out.empty() && out.back().shown_ns <= at) {
+      bool same = true;
+      if (at > out.back().at_ns) {
+        seek_before(s, at);
+        packet_ptr probe(av_packet_alloc());
+        if (!probe) return err(status::out_of_memory);
+        // Peek the keyframe the seek lands on.
+        same = false;
+        while (av_read_frame(s.format.get(), probe.get()) >= 0) {
+          if (probe->stream_index == s.video) {
+            const std::int64_t ts = probe->pts != AV_NOPTS_VALUE ? probe->pts : probe->dts;
+            same = ts != AV_NOPTS_VALUE && to_timeline(s, ist, ts) <= out.back().shown_ns;
+            av_packet_unref(probe.get());
+            break;
+          }
+          av_packet_unref(probe.get());
+        }
+      }
+      if (same) {
+        strip_frame copy = out.back();
+        copy.at_ns = at;
+        out.push_back(std::move(copy));
+        continue;
+      }
+    }
+    strip_frame f;
+    f.at_ns = at;
+    bool got = false;
+    auto on_frame = [&](AVFrame* fr, time_ns t) -> bool {
+      // The first picture after the seek: the keyframe at or before `at`.
+      const bool quarter = rotation == 90 || rotation == 270;
+      const int src_w = quarter ? fr->height : fr->width;
+      const int src_h = quarter ? fr->width : fr->height;
+      const AVRational sar = fr->sample_aspect_ratio.num > 0 ? fr->sample_aspect_ratio : AVRational{1, 1};
+      const double disp_w = static_cast<double>(src_w) * (quarter ? 1.0 : av_q2d(sar));
+      int h = static_cast<int>(height);
+      int w = std::max(1, static_cast<int>(std::lround(disp_w * h / std::max(1, src_h))));
+      // Convert at the pre-rotation size, then turn.
+      int cw = quarter ? h : w;
+      int ch = quarter ? w : h;
+      if (!conv.convert(fr, ist->codecpar, cw, ch, f.rgba)) return false;
+      rotate_rgba(f.rgba, cw, ch, rotation);
+      f.width = static_cast<std::uint32_t>(cw);
+      f.height = static_cast<std::uint32_t>(ch);
+      f.shown_ns = t;
+      got = true;
+      return false;
+    };
+    MV_TRY_VOID(decode_forward(s, s.video, dec.get(), at, ctl, on_frame, [](AVPacket*) { return true; }));
+    if (!got) {
+      if (out.empty()) return err(status::corrupt);
+      strip_frame copy = out.back();  // past the last decodable frame: repeat it
+      copy.at_ns = at;
+      out.push_back(std::move(copy));
+      continue;
+    }
+    out.push_back(std::move(f));
+  }
+  return out;
+}
+
+result<std::vector<float>> audio_peaks(std::string_view utf8_path, std::uint32_t buckets,
+                                       const std::atomic<bool>* cancel) {
+  using namespace detail;
+  if (buckets == 0 || buckets > 65536) return err(status::invalid_arg);
+  MV_TRY(source s, open_source(utf8_path, cancel));
+  if (s.audio < 0) return std::vector<float>{};
+  if (s.duration_ns <= 0) return err(status::corrupt);
+  AVStream* ast = s.format->streams[s.audio];
+  for (unsigned i = 0; i < s.format->nb_streams; ++i) {
+    if (static_cast<int>(i) != s.audio) s.format->streams[i]->discard = AVDISCARD_ALL;
+  }
+  MV_TRY(codec_ptr dec, open_decoder(ast));
+  // Everything as planar float, whatever the source's sample format.
+  SwrContext* raw = nullptr;
+  if (swr_alloc_set_opts2(&raw, &dec->ch_layout, AV_SAMPLE_FMT_FLTP, dec->sample_rate, &dec->ch_layout,
+                          dec->sample_fmt, dec->sample_rate, 0, nullptr) < 0 ||
+      raw == nullptr) {
+    return err(status::out_of_memory);
+  }
+  swr_ptr swr(raw);
+  if (swr_init(swr.get()) < 0) return err(status::unsupported_format);
+  std::vector<float> peaks(buckets, 0.0f);
+  std::vector<std::uint8_t*> planes(static_cast<std::size_t>(std::max(1, dec->ch_layout.nb_channels)));
+  std::vector<std::vector<float>> buf(planes.size());
+  const double per_bucket = static_cast<double>(s.duration_ns) / buckets;
+  control ctl;
+  ctl.cancel = cancel;
+  auto on_frame = [&](AVFrame* fr, time_ns t) -> bool {
+    const int n = fr->nb_samples;
+    if (n <= 0) return true;
+    for (auto& b : buf) b.resize(static_cast<std::size_t>(n) + 256);
+    for (std::size_t c = 0; c < planes.size(); ++c) planes[c] = reinterpret_cast<std::uint8_t*>(buf[c].data());
+    const int got = swr_convert(swr.get(), planes.data(), n + 256,
+                                const_cast<const std::uint8_t**>(fr->extended_data), n);
+    if (got <= 0) return true;
+    const double ns_per_sample = 1e9 / std::max(1, dec->sample_rate);
+    for (int i = 0; i < got; ++i) {
+      const double when = static_cast<double>(t) + i * ns_per_sample;
+      const auto b = static_cast<std::int64_t>(when / per_bucket);
+      if (b < 0 || b >= static_cast<std::int64_t>(buckets)) continue;
+      float m = 0.0f;
+      for (const auto& ch : buf) m = std::max(m, std::fabs(ch[static_cast<std::size_t>(i)]));
+      peaks[static_cast<std::size_t>(b)] = std::max(peaks[static_cast<std::size_t>(b)], std::min(m, 1.0f));
+    }
+    return true;
+  };
+  MV_TRY_VOID(decode_forward(s, s.audio, dec.get(), 0, ctl, on_frame, [](AVPacket*) { return true; }));
+  return peaks;
+}
+
+}  // namespace mv::edit::clip

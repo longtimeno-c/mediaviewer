@@ -275,6 +275,12 @@ expected chrome_host::load() noexcept {
   // PR 29, optional the same way: without it there is no Edit workspace.
   show_edit_pane_ = get_entry(L"ShowEditPane");
   set_edit_view_ = get_entry(L"SetEditView");
+  // PR 30 (plan/21): the Video Editor window. Optional, like the panes.
+  attach_editor_ = get_entry(L"AttachVideoEditor");
+  layout_editor_ = get_entry(L"LayoutVideoEditor");
+  set_editor_view_ = get_entry(L"SetVideoEditorView");
+  set_editor_strip_ = get_entry(L"SetVideoEditorStrip");
+  detach_editor_ = get_entry(L"DetachVideoEditor");
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
@@ -740,6 +746,39 @@ void chrome_host::set_edit_view(const chrome_edit_args& args) noexcept {
   (void)set_edit_view_(const_cast<chrome_edit_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
 }
 
+bool chrome_host::attach_editor(HWND editor, HWND viewer) noexcept {
+  if (!attached_ || !attach_editor_ || !layout_editor_ || !set_editor_view_ || !detach_editor_ || !editor) {
+    return false;
+  }
+  if (editor_attached_) detach_editor();
+  chrome_editor_attach_args args{};
+  args.editor_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(editor));
+  args.viewer_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(viewer));
+  editor_attached_ = attach_editor_(&args, static_cast<std::int32_t>(sizeof(args))) == 0;
+  return editor_attached_;
+}
+
+void chrome_host::layout_editor(const chrome_editor_layout_args& args) noexcept {
+  if (!editor_attached_ || !layout_editor_) return;
+  (void)layout_editor_(const_cast<chrome_editor_layout_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_editor_view(const chrome_editor_view_args& args) noexcept {
+  if (!editor_attached_ || !set_editor_view_) return;
+  (void)set_editor_view_(const_cast<chrome_editor_view_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_editor_strip(const chrome_editor_strip_args& args) noexcept {
+  if (!editor_attached_ || !set_editor_strip_) return;
+  (void)set_editor_strip_(const_cast<chrome_editor_strip_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::detach_editor() noexcept {
+  if (!editor_attached_) return;
+  editor_attached_ = false;
+  if (detach_editor_) (void)detach_editor_(nullptr, 0);
+}
+
 void chrome_host::set_trim(const chrome_trim_args& args) noexcept {
   if (!transport_attached_ || !set_trim_) return;
   (void)set_trim_(const_cast<chrome_trim_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
@@ -905,6 +944,7 @@ void chrome_host::detach() noexcept {
       begin_detach_) {
     (void)begin_detach_(nullptr, 0);
   }
+  detach_editor();  // PR 30: before the panes (and the bar it borrows the runtime from)
   if (panels_attached_ && detach_panels_) {
     (void)detach_panels_(nullptr, 0);
     panels_attached_ = false;

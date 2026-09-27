@@ -24,6 +24,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Proposed |
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
+| 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete / Set in / Set out / Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.12 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
 
 See [plan/10-roadmap.md](../plan/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1374,6 +1375,9 @@ The parts worth knowing before touching anything:
   download, on-device recognition, a spoken count.
 - **[plan/20-edit-workspace.md](../plan/20-edit-workspace.md)** — PR 29: the Edit button, the docked
   Edit pane, crop presets, and every metadata tag editable.
+- **[plan/21-video-editor.md](../plan/21-video-editor.md)** — PR 30: the Video Editor window, its
+  timeline and the keep-ranges export. [plan/22-editor-addon.md](../plan/22-editor-addon.md) is the
+  proposed Editor add-on.
 - **[plan/01-decisions.md](../plan/01-decisions.md)** — D1–D9, the decisions that do not get
   reopened.
 - **[plan/12-decision-log.md](../plan/12-decision-log.md)** — why a call was reversed, so it

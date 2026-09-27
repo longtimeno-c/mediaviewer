@@ -102,6 +102,29 @@ enum chrome_command : int {
   // into every capture-time tag; arg 1 removes them all (nothing parked).
   chrome_cmd_meta_tags = 1021,
   chrome_cmd_meta_date = 1022,
+  // PR 30 (plan/21): the Video Editor window's timeline. editor_seek: arg is
+  // the program time in milliseconds (exact to 4.6 h in a float), and selects
+  // the piece there; editor_action: arg is a chrome_editor_action.
+  chrome_cmd_editor_seek = 1023,
+  chrome_cmd_editor_action = 1024,
+};
+
+// chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
+// on the Mac bridge. The C# side mirrors it.
+enum class chrome_editor_action : std::int32_t {
+  split = 1,         // at the playhead
+  remove = 2,        // the selected piece
+  set_in = 3,        // cut everything before the playhead
+  set_out = 4,       // cut everything after it
+  undo = 5,
+  redo = 6,
+  toggle_play = 7,
+  step_back = 8,     // a frame
+  step_forward = 9,
+  export_keyframe = 10,  // keep_ranges, cut on keyframes (instant)
+  export_exact = 11,     // keep_ranges, re-encoded (frame-accurate)
+  close = 12,
+  show = 13,         // the viewer's "Editing in the Video Editor" card: raise the window
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -197,6 +220,7 @@ static_assert(static_cast<int>(command_id::crop_aspect_set) == 155);
 static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
+static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -219,7 +243,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_gallery_columns,
       chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_meta_comment,
       chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index,
-      chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date};
+      chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date,
+      chrome_cmd_editor_seek, chrome_cmd_editor_action};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -358,6 +383,75 @@ struct chrome_edit_args {
 };
 
 static_assert(sizeof(chrome_edit_args) == 72, "keep in sync with IslandHost.Edit EditArgsSize");
+
+// PR 30 (plan/21): the Video Editor window. Its timeline is an island on the
+// editor's own top-level window; the card that says where the picture went is
+// an island on the viewer's. Native owns both rects, as for the panes.
+struct chrome_editor_attach_args {
+  std::uint64_t editor_hwnd;  // the Video Editor window
+  std::uint64_t viewer_hwnd;  // the viewer's window, for the "away" card
+};
+
+static_assert(sizeof(chrome_editor_attach_args) == 16, "keep in sync with IslandHost.VideoEditor");
+
+struct chrome_editor_layout_args {
+  std::int32_t x;  // the timeline, in the editor's client pixels
+  std::int32_t y;
+  std::int32_t width;
+  std::int32_t height;
+  std::int32_t away_visible;  // the card, in the viewer's client pixels
+  std::int32_t away_x;
+  std::int32_t away_y;
+  std::int32_t away_width;
+  std::int32_t away_height;
+  std::int32_t focus;  // non-zero: move keyboard focus into the timeline
+};
+
+static_assert(sizeof(chrome_editor_layout_args) == 40, "keep in sync with IslandHost.VideoEditor");
+
+// What the timeline shows: the Mac bridge's mv_editor_view, plus the pieces and
+// the name. `generation` bumps on every edit; between edits only the playhead
+// and `playing` move. Pointers are valid for the call only.
+struct chrome_editor_view_args {
+  std::int32_t open;
+  std::int32_t ready;          // the clip is probed; the strip may still be empty
+  std::int64_t length_ns;      // the program
+  std::int64_t playhead_ns;    // on the program
+  std::int64_t source_ns;      // the clip
+  std::int32_t playing;
+  std::int32_t piece_count;
+  std::int32_t selected;       // -1 none
+  std::int32_t can_undo;
+  std::int32_t can_redo;
+  std::int32_t edited;         // anything cut: Export has something to write
+  std::uint64_t generation;
+  std::uint64_t pieces;        // const int64_t*: (in, out) source pairs, program order
+  std::uint64_t name_utf8;
+  std::int32_t name_len;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_editor_view_args) == 88, "keep in sync with IslandHost.VideoEditor");
+
+// One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
+struct chrome_editor_thumb {
+  std::int64_t shown_ns;  // the frame's own source time
+  std::int32_t width;
+  std::int32_t height;
+  std::uint64_t rgba;     // const uint8_t*, width * height * 4
+};
+
+static_assert(sizeof(chrome_editor_thumb) == 24, "keep in sync with IslandHost.VideoEditor");
+
+// The strip and the waveform, pushed once per clip. Valid for the call only.
+struct chrome_editor_strip_args {
+  std::uint64_t thumbs;  // const chrome_editor_thumb*
+  std::int32_t thumb_count;
+  std::int32_t peak_count;
+  std::uint64_t peaks;   // const float*, 0..1 across the source
+};
+
+static_assert(sizeof(chrome_editor_strip_args) == 24, "keep in sync with IslandHost.VideoEditor");
 
 inline constexpr std::int32_t kEditTrimArmed = 1;
 inline constexpr std::int32_t kEditTrimPreviewing = 2;
@@ -572,6 +666,18 @@ class chrome_host {
   // whether or not the pane is up, so the button follows the item.
   void set_edit_view(const chrome_edit_args& args) noexcept;
 
+  // PR 30 (plan/21): the Video Editor window's islands -- its timeline, on the
+  // editor's own window, and the card on the viewer's that says where the
+  // picture went. Attached when the window opens, detached when it closes.
+  // Optional: an older chrome without them fails attach_editor, and the host
+  // then does not open the window.
+  [[nodiscard]] bool attach_editor(HWND editor, HWND viewer) noexcept;
+  void layout_editor(const chrome_editor_layout_args& args) noexcept;
+  void set_editor_view(const chrome_editor_view_args& args) noexcept;
+  void set_editor_strip(const chrome_editor_strip_args& args) noexcept;
+  void detach_editor() noexcept;
+  [[nodiscard]] bool editor_attached() const noexcept { return editor_attached_; }
+
   // The playback transport: a centred bar floating over the bottom of the
   // canvas, shown only while a clip is open. `filmstrip_px` is how much bottom
   // chrome is already spoken for, so the bar sits above the filmstrip.
@@ -695,6 +801,12 @@ class chrome_host {
   chrome_entry_fn set_trim_ = nullptr;        // PR 13
   chrome_entry_fn show_edit_pane_ = nullptr;  // PR 29
   chrome_entry_fn set_edit_view_ = nullptr;   // PR 29
+  chrome_entry_fn attach_editor_ = nullptr;   // PR 30
+  chrome_entry_fn layout_editor_ = nullptr;
+  chrome_entry_fn set_editor_view_ = nullptr;
+  chrome_entry_fn set_editor_strip_ = nullptr;
+  chrome_entry_fn detach_editor_ = nullptr;
+  bool editor_attached_ = false;
   chrome_entry_fn navigate_gallery_ = nullptr;
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn apply_browse_ = nullptr;

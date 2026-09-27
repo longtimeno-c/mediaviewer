@@ -320,8 +320,11 @@ expected present_lab::rebuild_device() noexcept {
   swapchain_.destroy();
   device_.destroy();
 
+  // PR 30: wherever the canvas is now (the Video Editor's preview, or home).
+  const HWND host = canvas_host_ ? canvas_host_ : window_;
+  canvas_host_ = host;
   RECT rc{};
-  ::GetClientRect(window_, &rc);
+  ::GetClientRect(host, &rc);
 
   auto created = device_.create(window_);
   if (!created) return created;
@@ -333,8 +336,9 @@ expected present_lab::rebuild_device() noexcept {
   // the branch exists so it is one line then, not a rewrite.
   desc.hdr_output = false;
 
-  auto sc = swapchain_.create(device_, window_, desc);
+  auto sc = swapchain_.create(device_, host, desc);
   if (!sc) return sc;
+  resize_pending_ = true;  // the next frame sizes it to the published canvas
 
   if (auto blit = blitter_.create(device_.d3d()); !blit) return blit;
   if (auto blit = video_blitter_.create(device_.d3d()); !blit) return blit;
@@ -499,8 +503,23 @@ void present_lab::render_thread_main() noexcept {
         pacer_.set_refresh(swapchain_.refresh_interval_seconds());
       }
     }
-    if (snapshot.resize_seq != seen_resize_seq_) {
+    // PR 30 (plan/21): the Video Editor borrows the canvas. The same swapchain
+    // moves to its preview window and back; the resize below then fits it.
+    if (const HWND host = snapshot.canvas_window != 0 ? reinterpret_cast<HWND>(snapshot.canvas_window) : window_;
+        host != canvas_host_) {
+      canvas_host_ = host;
+      redraw = true;
+      if (auto r = swapchain_.retarget(host); !r) {
+        MV_LOG_WARN("present_lab: canvas move failed (%s); rebuilding", status_name(r.error()));
+        if (auto rb = rebuild_device(); !rb) { exit_code_ = 2; break; }
+      }
+      resize_pending_ = true;
+      canvas_window_now_.store(host == window_ ? 0 : snapshot.canvas_window, std::memory_order_release);
+      if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
+    }
+    if (snapshot.resize_seq != seen_resize_seq_ || resize_pending_) {
       seen_resize_seq_ = snapshot.resize_seq;
+      resize_pending_ = false;
       redraw = true;
       if (auto r = swapchain_.resize(snapshot.width, snapshot.height); !r) {
         MV_LOG_WARN("present_lab: resize failed (%s); rebuilding", status_name(r.error()));
