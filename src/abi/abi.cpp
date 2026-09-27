@@ -173,6 +173,11 @@ struct mv_session {
   std::uint64_t cpu_key = 0;  // item identity of `cpu` (canvas/refinement.h)
   mv_image_info info{};
   HANDLE image_ready_event = nullptr;
+  // (generation << 32) | status of the last on-screen open that failed; 0 is
+  // none. The render thread reads it (open_failed) to paint the error card:
+  // the IMAGE_OPENED completion that carries the same failure goes to the
+  // chrome, never to the canvas.
+  std::atomic<std::uint64_t> open_failure{0};
 
   // Started with the first tiled image; creates tiles the render thread asks
   // for. Reset before `jobs` is destroyed (it reads the generation).
@@ -668,6 +673,16 @@ void submit_thumb_jobs(mv_session* session, uint32_t first, uint32_t count) {
   for (uint32_t i = first; i < last; ++i) submit_thumb_at(session, i);
 }
 
+// A cancelled open is navigation, not a failure; only a real error reaches the
+// canvas. Wakes an idle render thread so the card replaces the old item now.
+void note_open_failure(mv_session* session, mv::generation gen, status result) {
+  if (result == status::ok || result == status::cancelled) return;
+  session->open_failure.store((static_cast<std::uint64_t>(gen) << 32) |
+                                  static_cast<std::uint32_t>(result),
+                              std::memory_order_release);
+  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+}
+
 void push_image_opened(mv_session* session, std::uint64_t correlation, mv::generation gen,
                        status result) {
   mv_completion c{};
@@ -971,6 +986,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         // "loading" state; success already reported at publish time.
         if (result != status::ok && path_is_selected(session, path)) {
           push_image_opened(session, correlation, ended, result);
+          note_open_failure(session, ended, result);
         }
       });
 }
@@ -1577,6 +1593,7 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
           return upload_and_publish(0);
         },
         [session, correlation](mv::job_id id, mv::generation gen, status result) {
+          note_open_failure(session, gen, result);
           int64_t payload = 0;
           if (result == status::ok) {
             std::lock_guard lock(session->image_mutex);
@@ -2282,6 +2299,13 @@ bool poll_video(mv_session_t session, player::time_ns vblank, player::video_fram
 }
 bool video_open(mv_session_t session) noexcept {
   return session != nullptr && session->video.open();
+}
+bool open_failed(mv_session_t session, std::uint32_t generation, status& why) noexcept {
+  if (session == nullptr) return false;
+  const std::uint64_t f = session->open_failure.load(std::memory_order_acquire);
+  if (f == 0 || static_cast<std::uint32_t>(f >> 32) != generation) return false;
+  why = static_cast<status>(static_cast<std::uint32_t>(f));
+  return true;
 }
 player::video_frame* take_ready_video_frame(mv_session_t session, std::uint32_t generation) {
   (void)generation;

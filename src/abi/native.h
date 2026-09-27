@@ -86,6 +86,14 @@ struct animation_stats {
 // the same thing.
 [[nodiscard]] MV_API bool video_open(mv_session_t session) noexcept;
 
+// [any-thread][wait-free] The open of the item selected at view `generation`
+// failed (a corrupt, unreadable or unsupported file); `why` says which. False
+// while it is still loading, when it opened, and for any other generation.
+// Cancellation is never a failure. A preview may already be on screen when the
+// refinement fails: the caller decides whether what it holds is this item's.
+[[nodiscard]] MV_API bool open_failed(mv_session_t session, std::uint32_t generation,
+                                      status& why) noexcept;
+
 // PR 5a video. Same wait-free handoff as take_ready_image, but a video frame is
 // its own type: two SRVs, an NV12/P010 format, a colour_desc and a PTS. It is
 // deliberately NOT forced into image::gpu_image.
