@@ -2,7 +2,7 @@
 
 **Status: 2026-09-26, from issue #40 and the owner's review of PR 29. Milestone J, PRs 30–35,
 Windows and macOS together (D9). PR 30 — the Video Editor window, one clip — is written and run on
-the Mac (below, "What was built"); its Windows half is owed. The optional Editor add-on (PRs 32–47:
+the Mac (2026-09-26) and on Windows (2026-09-27; below, "What was built"). The optional Editor add-on (PRs 32–47:
 grading, audio, delivery, model packs) is planned in [22](22-editor-addon.md) and needs the owner's sign-off.**
 
 ## What it is
@@ -70,7 +70,58 @@ without B-frames, exact pieces frame for frame, the helper wire, the strip).
 **Known limits of PR 30:** a join during playback can show a frame of the cut while the exact
 seek lands (the tick runs a frame ahead). Export exact copies audio packet-accurately, as Path 2
 does, so a join can carry up to a packet of the cut's audio. The timeline fits the whole program
-(zoom is PR 31). No VoiceOver pass yet. Windows: nothing yet.
+(zoom is PR 31). No VoiceOver pass yet.
+
+## What was built (PR 30, Windows, 2026-09-27)
+
+The WinUI twin, on the same shared core (`video_timeline`, `clip_strip`, `keep_ranges`, ABI 0.11):
+
+| Piece | Code |
+|---|---|
+| The window: a top-level Win32 window owned by the viewer (it stays above it and minimises and closes with it), the preview on top and the timeline island under it | `main.cpp` "PR 30" (`set_editor_open`, `editor_window_proc`) |
+| The canvas hand-off: the one composition swapchain's DComp visual moves to a target on the editor window and back. `input_snapshot::canvas_window` asks for it; the render thread retargets between frames, then resizes to the preview. The editor window is destroyed only after `present_lab::canvas_window()` says the swapchain has left it. One swapchain, one present path (rule 2) | `gfx/swapchain` `retarget`, `present_lab.cpp` |
+| The timeline island: transport, timecode, Split / Delete / Set in / Set out / Undo / Redo, Export / Export exact, Done; the ruler, one thumbnail track and one waveform per piece, a draggable playhead. Native pushes the view (`chrome_editor_view_args`, 88 bytes) on each edit and the playhead on the tick; the strip (`chrome_editor_strip_args`) once per clip | `IslandHost.VideoEditor.cs`, `chrome_host.h` |
+| The viewer while the editor has its canvas: a card over the canvas area ("Editing in the Video Editor window", *Show editor*, *Done*) beside any right-edge pane; the filmstrip and transport step aside; the bar's button reads *Done*; any key in the viewer raises the editor instead of reaching the browse router; another item on the canvas closes the editor | `IslandHost.VideoEditor.cs` (`BuildEditorAway`), `main.cpp` |
+| Keys: every key aimed at the editor window goes to `editor_key`, never the browse router — Space, ← → (Shift ten frames), Home / End, J K L, I O, Ctrl+B, Delete / Backspace, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, Ctrl+E / Ctrl+Shift+E, Esc / Ctrl+W. Tab and Enter stay with the island | `main.cpp` (`editor_key`) |
+| Playback over the edit: a 15 ms UI-thread timer (the system tick) jumps the player over each cut and pauses at the end, as the Mac's 60 Hz tick does | `main.cpp` (`editor_follow_playback`) |
+
+The island sends two notifications, `editor_seek` 1022 (program milliseconds) and `editor_action`
+1023 (`chrome_editor_action`, whose 1–6 are the Mac bridge's `mv_chrome_editor_edit` codes); both
+sides' checksum test pins them.
+
+**Also fixed on the way.** The Jobs pane's row used a WinUI `ProgressBar`, which has no default
+template in this island app (no `XamlControlsResources`): the first job row killed the process with
+a stowed exception inside XAML layout (0xC000027B). The README still lists PR 13/14's Windows run
+as owed, and PR 30's export put the first row there. The row now draws its bar from two borders. And `MV_EDIT_SELFTEST` now counts as a harness run: it had
+been handing its clip to an already-running viewer, and writing its scratch folder into `[recent]`.
+
+### What was run (Windows)
+
+On an NVENC machine, with `MV_EDIT_SELFTEST` on a 16 s 1080p30 H.264 + AAC clip (2 s GOP, B-frames):
+open → split at ⅓ and ⅔ → delete the middle → export both ways → close, three runs in a row, all
+clean. The program is 10.667 s. The keyframe-cut file is 12.00 s (each cut on its keyframe, inside
+the 2 s GOP, as labelled), and the exact file is 10.667 s, 320 frames on NVENC. The source's SHA-1
+is unchanged. `state.txt` records `canvas_moved=1` while the editor is open and `0` after it
+closes; the captures show the strip, the waveform and the preview in the editor, the card beside
+the Jobs pane in the viewer, and the canvas home again.
+
+Keyboard only (`MV_EDIT_SELFTEST_KEYS=1`: synthesised key messages through the message loop's key
+path, not a physical keyboard): Enter opens; Home, L, Ctrl+B split at 5 s and 10 s; J selects the
+middle piece and Delete removes it; Ctrl+E and Ctrl+Shift+E export; Esc closes. The program is
+11.0 s, the exact file 11.0 s and the keyframe file 10.0 s.
+
+Tests: `[pr30]` (8 cases) and `[timeline]` pass on Windows, including exact pieces on NVENC, and so
+does the island command checksum. The full suite: 660 passed, 24 skipped (the media corpus is not
+generated in that tree), none failed.
+
+The Windows PR 1 gate (`frametime --seconds 60`, the viewer's own window, with another session's lab
+running on the machine): one run failed on a single 50.1 ms frame (0 drops, p99 17.1 ms). The next
+two passed (p99 16.9 ms, max 17.1 and 17.3 ms), and the PR 29 base build passed once in between
+(max 17.1 ms).
+
+**Owed on Windows:** both present-loop gates *with the editor open* (the harness soaks the viewer's
+own window); a pass with a real keyboard and mouse on the interactive desktop (every run here was
+on the tool's own desktop); Narrator; 200 % and a light theme; S1 on NVENC, Quick Sync and AMF.
 
 ## Architecture (PRs 31–35; PR 30's pieces are in the table above)
 
@@ -243,7 +294,7 @@ Run it: `tools/encprobe/CMakeLists.txt` (opt-in, not part of the app build).
 Each slice has a Windows half and a Mac half, a verify line per platform, and both present-loop
 gates **while the editor plays and while it renders**.
 
-### PR 30 — The Video Editor window, one clip *(Mac written and run; Windows owed)*
+### PR 30 — The Video Editor window, one clip *(written and run on both; gates with the editor open owed)*
 The window, the canvas hand-off, the cut list, the strip, the timeline UI, playback over the
 edit, Export / Export exact (above).
 

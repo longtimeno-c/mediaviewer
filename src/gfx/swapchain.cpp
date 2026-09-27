@@ -206,6 +206,29 @@ expected swapchain::resize(std::uint32_t width, std::uint32_t height) noexcept {
   return create_rtv();
 }
 
+expected swapchain::retarget(HWND window) noexcept {
+  if (!swapchain_ || !comp_device_ || !comp_visual_ || !window) return err(status::internal);
+  if (window == window_) return {};
+  // A visual has one parent: take it off the old target before the new one
+  // adopts it. topmost = FALSE for the same reason as in create().
+  com_ptr<IDCompositionTarget> next;
+  HRESULT hr = comp_device_->CreateTargetForHwnd(window, FALSE, next.GetAddressOf());
+  if (FAILED(hr)) return err(from_hresult(hr));
+  if (comp_target_) (void)comp_target_->SetRoot(nullptr);
+  hr = next->SetRoot(comp_visual_.Get());
+  if (FAILED(hr)) {
+    if (comp_target_) (void)comp_target_->SetRoot(comp_visual_.Get());
+    (void)comp_device_->Commit();
+    return err(from_hresult(hr));
+  }
+  if (FAILED(comp_device_->Commit())) return err(status::internal);
+  comp_target_ = std::move(next);
+  window_ = window;
+  if (device_) (void)device_->factory()->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+  refresh_output_info();
+  return {};
+}
+
 void swapchain::refresh_output_info() noexcept {
   // GetContainingOutput is invalid on composition swapchains. Match the host
   // monitor to an active display path and read its current rational rate.

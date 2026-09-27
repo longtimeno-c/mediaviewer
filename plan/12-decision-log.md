@@ -2553,3 +2553,42 @@ exactly; a clip opens on Trim), and verify 2–4 with real key input ([20](20-ed
 run failed, unmodified `origin/main` included. **Owed:** that gate on a quiet machine (and with the
 pane docked), Narrator, a light-theme and 200 % pass, the pointer path of verify 1 with a real
 mouse, and VoiceOver / the Mac gate with the pane docked.
+
+## 2026-09-27 — PR 30 Windows half
+
+The WinUI twin of the 2026-09-26 PR 30 entry, on the same shared core. No decision is reversed;
+the calls made on the way:
+
+- **The canvas moves by retargeting its DComp visual.** The Windows canvas is a composition
+  swapchain in a DirectComposition visual on the viewer's window, so the Mac's "move the one
+  CAMetalLayer" becomes `gfx::swapchain::retarget`: the same visual goes onto a DComp target on the
+  editor window and comes back when it closes. There is no second swapchain and no second present
+  path (rule 2). The host asks for it through `input_snapshot::canvas_window`, an opaque handle
+  that the Mac leaves 0 (D9: no HWND in a portable header). The render thread retargets between
+  frames and publishes where the swapchain is (`present_lab::canvas_window()`). The closed editor
+  window is hidden and destroyed only once the swapchain has left it, never under a live target.
+- **The editor is a top-level Win32 window owned by the viewer**, with the timeline as a XAML
+  island on it (`IslandHost.VideoEditor.cs`). It is not a WinUI `Window`: the chrome has none, and
+  the islands and the canvas stay the host's.
+- **Keys go by window, not by focus.** Every key message aimed at the editor window or its island
+  goes to `editor_key` before the browse router sees it. While the editor is open, a key in the
+  viewer raises the editor, so A / D cannot walk the folder out from under the edit (the Mac's
+  refuse-first-responder rule, applied to the whole viewer window). Alt+ keys still reach the
+  system. The viewer shows a card where the picture was; its filmstrip and transport step aside;
+  and another item on the canvas closes the editor.
+- **Two notifications,** `editor_seek` 1022 and `editor_action` 1023. Their codes 1–6 are the Mac
+  bridge's edit codes.
+- **The Jobs pane's `ProgressBar` is replaced** by two borders. WinUI's `ProgressBar` has no
+  default template in this island app (no `XamlControlsResources`), and the first job row
+  fail-fasted the process inside XAML layout (0xC000027B; three earlier dumps from the PR 29
+  worktree fault at the same address). PR 30's export found it by putting a row there. Merging `XamlControlsResources` would restyle every control, so it was not done here. The
+  Import window still uses a `ProgressBar` and is owed the same check.
+- **`MV_EDIT_SELFTEST` is a harness run** (no single-instance handoff, no `[recent]`). It had been
+  forwarding its clip to whichever viewer was running.
+
+**Proved on Windows** (2026-09-27): the rig, three clean runs (a program of 10.667 s gives a 12.00 s
+keyframe-cut file and a 10.667 s exact file on NVENC, and the source's SHA-1 is unchanged), and the
+same walk by key ([21](21-video-editor.md) "What was run (Windows)"). The Windows PR 1 gate on the
+viewer's window passed twice after one run failed on a single 50 ms frame, on a machine in use.
+**Owed:** both present-loop gates with the editor open, a real keyboard and mouse on the interactive desktop, Narrator, 200 %
+and a light theme.

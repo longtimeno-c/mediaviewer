@@ -61,6 +61,13 @@ class swapchain {
 
   [[nodiscard]] expected resize(std::uint32_t width, std::uint32_t height) noexcept;
 
+  // PR 30 (plan/21): shows this same swapchain in another window. The one
+  // visual moves to a DComp target on `window` (the old target is emptied and
+  // released), so the Video Editor's preview is the viewer's canvas, never a
+  // second swapchain or present path (rule 2). The caller resizes after.
+  [[nodiscard]] expected retarget(HWND window) noexcept;
+  [[nodiscard]] HWND window() const noexcept { return window_; }
+
   [[nodiscard]] ID3D11RenderTargetView* back_buffer_rtv() const noexcept { return rtv_.Get(); }
   [[nodiscard]] IDXGISwapChain4* dxgi() const noexcept { return swapchain_.Get(); }
   [[nodiscard]] std::uint32_t width() const noexcept { return width_; }

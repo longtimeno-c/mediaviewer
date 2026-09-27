@@ -510,6 +510,7 @@ add_library(mv_clip STATIC
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
   src/edit/clip_jobs.h
+  src/edit/clip_strip.h
   src/edit/clip_wire.cpp
   src/edit/clip_wire.h
   src/edit/clip_helper.cpp

@@ -246,7 +246,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Edit workspace** (PR 29, [plan/20](plan/20-edit-workspace.md)) | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane: crop with aspect presets, straighten, rotate, colour, and every metadata tag — date taken, location, any EXIF / IPTC / XMP tag — edited or removed, with a byte-exact Revert. Written and run on the Mac and on Windows (self-test rig on both; real keys on Windows); Narrator / VoiceOver passes still owed |
-| **Video Editor** (PR 30, [plan/21](plan/21-video-editor.md)) | *Edit video* (or `Enter` on a clip) opens a separate window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export — instant keyframe cuts, or frame-accurate on the hardware encoder. Written and run on the Mac; the Windows half is owed. Grading, audio and delivery tools are a proposed optional add-on ([plan/22](plan/22-editor-addon.md)) |
+| **Video Editor** (PR 30, [plan/21](plan/21-video-editor.md)) | *Edit video* (or `Enter` on a clip) opens a separate window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export — instant keyframe cuts, or frame-accurate on the hardware encoder. Written and run on the Mac and on Windows (self-test rig and keys on both); the present-loop gates with the editor open are owed. Grading, audio and delivery tools are a proposed optional add-on ([plan/22](plan/22-editor-addon.md)) |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
 | **Windows and macOS integration** (PR 15, written) | Everything above is written; the installed-build verify on each platform is owed. Explorer's Details-pane properties (needs a machine-wide install) and tab-grouped windows come later |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
@@ -789,9 +789,11 @@ It quits when done, leaving `s0-viewer` … `s8-closed-reverted` captures (PNG o
 Windows; a clip gives `c0` … `c4`) and `state.txt` in the folder. On the Mac,
 `MV_EDIT_SELFTEST_DARK=1` or `0` forces Dark or Light Mode; Windows follows the system theme.
 
-On a clip the Mac rig drives the Video Editor instead (PR 30): it cuts the middle third,
-exports it both ways (writing `<clip>_edit.mov` and `<clip>_edit (2).mov` beside it) and leaves
-`c0` … `c4` with an `-editor.png` of the window.
+On a clip both rigs drive the Video Editor instead (PR 30): they cut the middle third, export it
+both ways (writing `<clip>_edit.<ext>` and `<clip>_edit (2).<ext>` beside it) and leave `c0` … `c4`
+with an `-editor` capture of the window. On Windows, `MV_EDIT_SELFTEST_KEYS=1` walks the same edit by
+key instead (Enter, Home, L, Ctrl+B, J, Delete, Ctrl+E, Ctrl+Shift+E, Esc), leaving `k0` … `k4`.
+The rig runs on its own: it never hands its file to a viewer that is already open.
 
 The encoder-coverage spike for the Editor add-on (plan/21 S1) is a separate tool:
 `tools/encprobe` (see its CMakeLists.txt).
