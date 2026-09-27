@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for crash_canary.py (PR 11 macOS crash-reporting verify). Pure
 Python: they run on Linux in CI like test_macpack.py."""
 from __future__ import annotations

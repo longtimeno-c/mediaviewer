@@ -61,7 +61,7 @@ Read in order:
 ## Open decisions
 
 - ~~**Do you need the Microsoft Store?**~~ **Settled 2026-09-06: no.** The app is
-  **GPL-2.0-or-later**, Exiv2 is kept under the GPL, and distribution is direct download only
+  **GPL-3.0-or-later**, Exiv2 is kept under the GPL, and distribution is direct download only
   ([11-licensing.md](11-licensing.md), [12](12-decision-log.md)).
 - **Whether WinUI 3 XAML islands hold up** — validated in PR 3, before any panes are built on them.
   Fallback: a WinUI app with `SwapChainPanel` and an accepted composed frame.

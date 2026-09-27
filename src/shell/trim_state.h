@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Trim mode and the clip tools flyout, host-side (PR 13 / 14; plan/08,
 // plan/16). One model both hosts drive, so `[` `]`, the keyframe walk, the
 // A-B preview range and the request a key submits are the same on Windows

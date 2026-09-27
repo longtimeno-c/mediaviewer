@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The geometry ops evaluated at full resolution, for export (plan/07: the
 // interactive preview runs at viewport resolution on the GPU — the blit's
 // output → source map, `placement::map` — and the full-resolution chain runs

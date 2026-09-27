@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Present-or-idle policy. The Metal lab and the D3D11 lab must agree, so this
 // is tested as arithmetic rather than as a GPU soak.
 

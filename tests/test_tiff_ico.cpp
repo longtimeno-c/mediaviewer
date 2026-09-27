@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 7: TIFF (libtiff) and ICO decoders.
 #include <catch2/catch_test_macros.hpp>
 

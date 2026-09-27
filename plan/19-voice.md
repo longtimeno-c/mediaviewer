@@ -73,7 +73,7 @@ is playing, results still appear and the spoken count waits.
 Microsoft's on-device recognizer is [Windows AI speech recognition](https://learn.microsoft.com/en-us/windows/ai/apis/speech-recognition)
 (`Microsoft.Windows.AI.Speech`): Windows 11 24H2 or later, on an NPU or on the CPU, audio
 stays on the machine. The same document requires an **MSIX** package with the
-`systemAIModels` capability. This app is unpackaged — GPL-2.0-or-later, direct download, no
+`systemAIModels` capability. This app is unpackaged — GPL-3.0-or-later, direct download, no
 Store ([11](11-licensing.md), [12](12-decision-log.md) 2026-09-06). The viewer's floor stays
 Windows 10 21H2. Voice does not raise it.
 

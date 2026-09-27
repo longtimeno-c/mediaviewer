@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12 — metadata write (plan/06 "Writing"): rating, orientation and user
 // comment, and nothing else. Shared by both hosts; portable (no Win32 or
 // Cocoa, D9).

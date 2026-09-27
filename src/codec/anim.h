@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Animation timing and compositing shared by GIF, APNG and animated WebP
 // (plan/04 "Animation"). Pure CPU code: no decoder, no clock, no GPU.
 //

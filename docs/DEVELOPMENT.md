@@ -102,7 +102,7 @@ The keys below come from the command table specified in
 [plan/16-commands.md](../plan/16-commands.md); press `?` in the app for the ones
 that apply to what you are doing.
 
-**Licence: GPL-2.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
+**Licence: GPL-3.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
 [plan/11-licensing.md](../plan/11-licensing.md).
 
 ---
@@ -680,7 +680,7 @@ The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, wit
 UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
 for every update, which is how update mechanisms stop working
 ([plan/13](../plan/13-updates-and-telemetry.md)). There is no Microsoft Store channel — the
-app is GPL-2.0-or-later ([plan/11](../plan/11-licensing.md)).
+app is GPL-3.0-or-later ([plan/11](../plan/11-licensing.md)).
 
 First install is an Inno Setup wizard; every later update is Velopack, in the background,
 never re-opening the wizard.
@@ -1112,8 +1112,10 @@ machine:
 - The browse/play/pan/fullscreen/slideshow pass over a real camera dump, on the installed
   build rather than the build tree, and PR 1's present-loop verify against it.
 
-PR 8 creates no PR 15 file associations or handlers. The place they must be removed at
-uninstall is marked in `tools/package/mediaviewer.iss`.
+PR 8's wizard registers the file associations ("Open with", a Default Apps candidate) and
+removes every key on uninstall. PR 15's thumbnail handler is registered by the app on first
+start (`src/shell/shellext_install.cpp`); the wizard creates its keys so uninstall deletes them,
+and removes the versioned copies under `shellext\` (`tools/package/mediaviewer.iss`).
 
 ## Layout
 

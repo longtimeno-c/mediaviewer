@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the fuzz seeds and the hand-crafted broken files (PR 7, plan/09).
 
     python tools/testmedia/make-seeds.py            # writes tests/data/seeds and tests/data/broken

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Layouts, rename templates, safe names, presets (plan/18; PR 18 verify: "a
 // rename template yields identical names on Windows and Mac for the same
 // card" -- these are pure functions with no OS input, so this test running on

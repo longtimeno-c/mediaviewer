@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Metal pacer arithmetic. No GPU: the Darwin lab feeds it display-link
 // timestamps; this file checks the same counters a 60 s soak will be judged by.
 

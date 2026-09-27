@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // child_process on Windows: CreateProcessW with two anonymous pipes, no
 // console window, and a job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so
 // a helper cannot outlive the viewer (a crash of the app kills its encode).

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // One render-thread owner applies transport intent; workers own all decoding.
 #include "player/media_source.h"
 #include "player/video_internal.h"

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 7 verify: "an iPhone Live Photo is one entry and `;` plays the motion."
 //
 // tests/test_pairing.cpp proves the pairing arithmetic on hand-made dir_entry

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copy / move collision naming (plan/16 "Marks, copy, move"): never overwrite,
 // take `name (2).ext`, then `(3)`, … the way Explorer does.
 //

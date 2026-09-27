@@ -49,3 +49,4 @@ no-x265 rule is about what MediaViewer links.)
 | `avif/irot.avif`, `avif/irot_imir.avif` | EXIF orientation 6 and 5 → `irot` / `irot`+`imir` |
 | `avif/p3_icc.avif`, `avif/p3_nclx.avif` | Display P3 as ICC and as CICP 12/13 |
 | `avif/anim.avif` | `avis`, 4 frames 32x16, durations 40/100/200/0 ms, loop=3 |
+| `avif/fuzz_oom_avis.avif` | not generated: `fuzz_avif`'s out-of-memory input (CI run 36269934345), a tiny frame under a 10008x16400 track; must be refused |

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Settings → Add-ons and the one-time card hint (plan/18 "Add-ons: how Import
 // is installed"), the Mac twin of IslandHost.Addons.cs.
 //
