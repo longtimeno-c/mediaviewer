@@ -583,3 +583,54 @@ public interface ISearchChrome
     /// the pack is loaded: the chrome asks the pack to pick it up.</summary>
     void OnPiecesChanged();
 }
+
+// ---- Gallery search bar (2026-09-27) ---------------------------------------------
+// A new interface beside ISearchChrome, never new members on it: a pack built
+// before the bar still loads, and the bar then offers file names only.
+
+/// <summary>What became of a <see cref="IGallerySearchChrome.GalleryQuery"/>.</summary>
+public enum GallerySearchOutcome
+{
+    /// <summary>The results are the viewer's listing now, in the gallery.</summary>
+    Opened,
+    /// <summary>The search ran and matched nothing.</summary>
+    NothingFound,
+    /// <summary>The index does not cover the folder: nothing was searched.</summary>
+    NotIndexed,
+    /// <summary>The pack could not search (still loading, an error).</summary>
+    Failed,
+}
+
+/// <summary>
+/// The AI chrome's side of the gallery search bar. The base gallery owns the
+/// field and the file-name filter; everything here is the pack's, vended to
+/// the bar as <see cref="ISearchChrome.BuildSettingsPanel"/> is to Settings.
+/// UI thread only; nothing here blocks.
+/// </summary>
+public interface IGallerySearchChrome
+{
+    /// <summary>
+    /// The compact index control for the bar's right end, a
+    /// Microsoft.UI.Xaml.UIElement (object here: this assembly does not
+    /// reference WinUI). A fresh control per call, reflecting the folder last
+    /// given to <see cref="SetGalleryFolder"/>. Built for an island: no TextBox.
+    /// </summary>
+    object? BuildGalleryIndexControl();
+
+    /// <summary>The folder the gallery shows; null when the gallery is hidden
+    /// or shows no folder (the control then stops polling).</summary>
+    void SetGalleryFolder(string? folder);
+
+    /// <summary>
+    /// A contents search for <paramref name="text"/> in <paramref name="folder"/>
+    /// (and its subfolders when the folder's indexed root is recursive). The
+    /// results open as the viewer's result list in the gallery
+    /// (<see cref="IAddonHost2.OpenList"/>), exactly as the pack ranks them.
+    /// <paramref name="done"/> runs once on the UI thread, unless a later query
+    /// supersedes this one first.
+    /// </summary>
+    void GalleryQuery(string text, string folder, Action<GallerySearchOutcome> done);
+
+    /// <summary>Adds <paramref name="folder"/> to the index (the bar's "not indexed" offer).</summary>
+    void IndexGalleryFolder(string folder, bool recursive);
+}
