@@ -87,21 +87,26 @@ enum chrome_command : int {
   // host cannot see from the canvas -- a scrub drag, the More flyout, a
   // dropdown. Release restarts the idle clock.
   chrome_cmd_transport_hold = 1017,
-  // PR 29 (plan/20): the Edit workspace. edit_tab: arg is the shell::edit_tab
+  // The transport row's natural width in DIPs (it grows while trim is armed).
+  // Native sizes the bar to it, so the island hugs its controls instead of
+  // being a long empty box around them.
+  chrome_cmd_transport_width = 1018,
+  // PR 29 (plan/20): the Edit workspace (moved up one again, 2026-09-27, when
+  // main's transport_width took 1018). edit_tab: arg is the shell::edit_tab
   // the strip's tab row picked. edit_action: arg is a chrome_edit_action.
-  chrome_cmd_edit_tab = 1018,
-  chrome_cmd_edit_action = 1019,
+  chrome_cmd_edit_tab = 1019,
+  chrome_cmd_edit_action = 1020,
   // PR 29 (owner, 2026-09-26): every tag editable. meta_tags: native pulls
   // the parked edits with take_parked_text, one per line: "S\tkey\tvalue"
   // sets, "R\tkey" removes. meta_date: the parked "YYYY-MM-DD HH:MM:SS" goes
   // into every capture-time tag; arg 1 removes them all (nothing parked).
-  chrome_cmd_meta_tags = 1020,
-  chrome_cmd_meta_date = 1021,
+  chrome_cmd_meta_tags = 1021,
+  chrome_cmd_meta_date = 1022,
   // PR 30 (plan/21): the Video Editor window's timeline. editor_seek: arg is
   // the program time in milliseconds (exact to 4.6 h in a float), and selects
   // the piece there; editor_action: arg is a chrome_editor_action.
-  chrome_cmd_editor_seek = 1022,
-  chrome_cmd_editor_action = 1023,
+  chrome_cmd_editor_seek = 1023,
+  chrome_cmd_editor_action = 1024,
 };
 
 // chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
@@ -504,7 +509,10 @@ inline constexpr int kFilmstripDip = 112;
 // after an idle interval while the clip plays (shell/transport_autohide.h). It
 // no longer reserves canvas, so showing or hiding it never refits the video.
 inline constexpr int kTransportDip = 52;
-inline constexpr int kTransportMaxWidthDip = 880;  // Windows buttons are text, wider than the Mac's 720 pt
+// The bar hugs its controls (chrome_cmd_transport_width); this is only its width
+// before the island has reported one.
+inline constexpr int kTransportMaxWidthDip = 880;
+inline constexpr int kTransportPadDip = 14;     // each side, between the bar's edge and its controls
 inline constexpr int kTransportMarginDip = 10;  // above the filmstrip / bottom edge
 inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's sides
 
@@ -684,6 +692,10 @@ class chrome_host {
                       std::uint32_t dpi) noexcept;
   void park_transport(bool parked, int width, int client_height, int filmstrip_px,
                       std::uint32_t dpi) noexcept;
+  // The row's natural width in DIPs (chrome_cmd_transport_width); 0 until the
+  // island reports it, which falls back to kTransportMaxWidthDip. Returns
+  // whether it changed, so the caller relays out only then.
+  bool set_transport_content(int dip) noexcept;
   [[nodiscard]] bool transport_parked() const noexcept { return transport_parked_; }
   [[nodiscard]] bool transport_attached() const noexcept { return transport_attached_; }
   [[nodiscard]] bool transport_visible() const noexcept {
@@ -803,6 +815,7 @@ class chrome_host {
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool transport_parked_ = false;  // issue #38: auto-hidden, content kept
+  int transport_content_dip_ = 0;  // 0: not reported yet
   bool filmstrip_attached_ = false;
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;

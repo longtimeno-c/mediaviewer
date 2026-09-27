@@ -246,7 +246,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Edit workspace** (PR 29, [plan/20](plan/20-edit-workspace.md)) | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane: crop with aspect presets, straighten, rotate, colour, and every metadata tag — date taken, location, any EXIF / IPTC / XMP tag — edited or removed, with a byte-exact Revert. Written and run on the Mac and on Windows (self-test rig on both; real keys on Windows); Narrator / VoiceOver passes still owed |
-| **Video Editor** (PR 30, [plan/21](plan/21-video-editor.md)) | *Edit video* (or `Enter` on a clip) opens a separate window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export — instant keyframe cuts, or frame-accurate on the hardware encoder. Written and run on the Mac and on Windows (self-test rig and keys on both); the present-loop gates with the editor open are owed. Grading, audio and delivery tools are a proposed optional add-on ([plan/22](plan/22-editor-addon.md)) |
+| **Video Editor** (PR 30, [plan/21](plan/21-video-editor.md)) | *Edit video* (or `Enter` on a clip) opens a separate window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export — instant keyframe cuts, or frame-accurate on the hardware encoder. Written and run on the Mac and on Windows (self-test rig on both, and a key walk on Windows); the present-loop gates with the editor open are owed. Grading, audio and delivery tools are a proposed optional add-on ([plan/22](plan/22-editor-addon.md)) |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
 | **Windows and macOS integration** (PR 15, written) | Everything above is written; the installed-build verify on each platform is owed. Explorer's Details-pane properties (needs a machine-wide install) and tab-grouped windows come later |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
@@ -660,7 +660,7 @@ soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The g
 thumbnail or the fitted image out to Explorer.
 
 The playback transport is a **third island**: a centred bar floating over the bottom of the
-video, above the filmstrip, that appears with a clip and goes away with it. It works the
+video, above the filmstrip, sized to its controls, that appears with a clip and goes away with it. It works the
 same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
 
 - While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,

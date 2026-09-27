@@ -85,8 +85,8 @@ The WinUI twin, on the same shared core (`video_timeline`, `clip_strip`, `keep_r
 | Keys: every key aimed at the editor window goes to `editor_key`, never the browse router — Space, ← → (Shift ten frames), Home / End, J K L, I O, Ctrl+B, Delete / Backspace, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, Ctrl+E / Ctrl+Shift+E, Esc / Ctrl+W. Tab and Enter stay with the island | `main.cpp` (`editor_key`) |
 | Playback over the edit: a 15 ms UI-thread timer (the system tick) jumps the player over each cut and pauses at the end, as the Mac's 60 Hz tick does | `main.cpp` (`editor_follow_playback`) |
 
-The island sends two notifications, `editor_seek` 1022 (program milliseconds) and `editor_action`
-1023 (`chrome_editor_action`, whose 1–6 are the Mac bridge's `mv_chrome_editor_edit` codes); both
+The island sends two notifications, `editor_seek` 1023 (program milliseconds) and `editor_action`
+1024 (`chrome_editor_action`, whose 1–6 are the Mac bridge's `mv_chrome_editor_edit` codes); both
 sides' checksum test pins them.
 
 **Also fixed on the way.** The Jobs pane's row used a WinUI `ProgressBar`, which has no default
