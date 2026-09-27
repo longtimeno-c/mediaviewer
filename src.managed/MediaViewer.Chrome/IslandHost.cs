@@ -82,6 +82,9 @@ public static partial class IslandHost
         // Issue #38: arg 1 while a scrub or the More flyout holds the transport
         // up, 0 when it lets go (chrome_cmd_transport_hold).
         public const int TransportHold = 1017;
+        // The transport row's natural width in DIPs; native sizes the bar to
+        // it (chrome_cmd_transport_width).
+        public const int TransportWidth = 1018;
         // PR 12: the comment field was committed (native pulls the text with
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
