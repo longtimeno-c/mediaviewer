@@ -29,7 +29,7 @@ struct RootRow: Identifiable, Equatable {
 struct Person: Identifiable, Equatable {
   let id: UInt64
   var name: String
-  let faces: Int
+  var faces: Int
   let coverFace: UInt64     // face_thumb(cover_face), cropped with coverBox
   let coverBox: [Double]
 }
@@ -64,6 +64,9 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var people: [Person] = []
   @Published var confirming: Confirm?
   @Published var message = ""
+  /// What the last People action did ("Merged 2 people into Sam."), shown in
+  /// the People section itself: the top line is out of sight down there.
+  @Published private(set) var peopleNote = ""
 
   enum Confirm: Equatable {
     case clearIndex, removeRoot(UInt64), facesOff
@@ -71,6 +74,14 @@ final class ManagementModel: ObservableObject {
 
   private var timer: Timer?
   private var visible = 0
+  /// people_json in flight; another request while it runs is folded into one
+  /// more read after it (a face landing posts AI_PEOPLE for every face).
+  private var peopleLoading = false
+  private var peopleAgain = false
+  /// faces_total and people as the last status saw them: a change reloads
+  /// the grid even if an AI_PEOPLE event was missed.
+  private var faceCounts: (UInt64, UInt32) = (0, 0)
+  private var noteGeneration = 0
 
   init(table: AITable) {
     self.table = table
@@ -111,12 +122,17 @@ final class ManagementModel: ObservableObject {
     guard let s = table.status() else { return }
     if s.index_bytes != indexBytes { indexBytes = s.index_bytes }
     if s.flags != flags {
-      let facesAppeared = (s.flags & MV_AI_STATUS_FACES_READY) != 0 && !facesReady
+      let facesChanged = (s.flags ^ flags) & (MV_AI_STATUS_FACES_READY | MV_AI_STATUS_FACES_ON) != 0
       let audioChanged = (s.flags ^ flags) & MV_AI_STATUS_AUDIO_READY != 0
       flags = s.flags
-      if facesAppeared { reloadPeople() }
-      // The Sound piece came or went: "Index videos for" enables or disables.
-      if audioChanged { reloadSettings() }
+      // The People or Sound piece came or went (installed, removed, or the
+      // opt-in flipped): the view follows now, not at the next start.
+      if facesChanged || audioChanged { reloadSettings() }
+      if facesChanged { reloadPeople() }
+    }
+    if s.faces_total != faceCounts.0 || s.people != faceCounts.1 {
+      faceCounts = (s.faces_total, s.people)
+      if facesReady { reloadPeople() }
     }
     let line = StatusLine(s)
     if line != status { status = line }
@@ -277,6 +293,11 @@ final class ManagementModel: ObservableObject {
       if !people.isEmpty { people = [] }
       return
     }
+    if peopleLoading {
+      peopleAgain = true
+      return
+    }
+    peopleLoading = true
     let t = table
     Task.detached {
       let json = t.json { t.a.people_json?(t.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
@@ -285,8 +306,36 @@ final class ManagementModel: ObservableObject {
                faces: Int(int64($0["faces"])), coverFace: UInt64(clamping: int64($0["cover_face"])),
                coverBox: ($0["cover_box"] as? [NSNumber] ?? []).map { $0.doubleValue })
       }
-      await MainActor.run { if list != self.people { self.people = list } }
+      await MainActor.run {
+        if list != self.people { self.people = list }
+        guard self.peopleAgain else {
+          self.peopleLoading = false
+          return
+        }
+        // While faces stream in: at most two reads a second.
+        self.peopleAgain = false
+        Task { @MainActor in
+          try? await Task.sleep(nanoseconds: 500_000_000)
+          self.peopleLoading = false
+          self.reloadPeople()
+        }
+      }
     }
+  }
+
+  /// A line under People that clears itself after a few seconds.
+  func note(_ text: String) {
+    noteGeneration &+= 1
+    let g = noteGeneration
+    peopleNote = text
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      if self.noteGeneration == g { self.peopleNote = "" }
+    }
+  }
+
+  func displayName(_ p: Person) -> String {
+    p.name.isEmpty ? "Unnamed (\(p.faces == 1 ? "1 photo" : "\(p.faces) photos"))" : p.name
   }
 
   func rename(_ id: UInt64, _ name: String) {
@@ -294,11 +343,29 @@ final class ManagementModel: ObservableObject {
     if let i = people.firstIndex(where: { $0.id == id }) { people[i].name = name }
   }
 
-  func merge(into: UInt64, from: UInt64) {
+  func merge(into: UInt64, from: UInt64) { merge(into: into, from: [from]) }
+
+  /// Several people are one: their faces move to `into`, which keeps its name
+  /// (or takes the first name among them if it has none, as faces_db does).
+  /// The grid changes now; the rows are rewritten on a worker.
+  func merge(into: UInt64, from ids: [UInt64]) {
+    let from = ids.filter { $0 != into }
+    guard !from.isEmpty, let i = people.firstIndex(where: { $0.id == into }) else { return }
+    let moved = people.filter { from.contains($0.id) }
+    if people[i].name.isEmpty, let named = moved.first(where: { !$0.name.isEmpty }) {
+      people[i].name = named.name
+    }
+    people[i].faces += moved.reduce(0) { $0 + $1.faces }
+    let name = people[i].name.isEmpty ? "one person" : people[i].name
+    people.removeAll { from.contains($0.id) }
+    note(moved.count == 1 ? "Merged into \(name)." : "Merged \(moved.count + 1) people into \(name).")
     let t = table
     Task.detached {
-      t.call { t.a.person_merge?(t.ctx, into, from) }
-      await MainActor.run { self.reloadPeople() }
+      let failed = from.map { f in t.call { t.a.person_merge?(t.ctx, into, f) } }.contains { $0 != MV_OK }
+      await MainActor.run {
+        if failed { self.note("Some faces could not be merged. Try again.") }
+        self.reloadPeople()
+      }
     }
   }
 

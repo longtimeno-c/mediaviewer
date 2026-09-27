@@ -221,7 +221,9 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       Core runs is picked up at once (`set_setting("reload")`, no restart);
       Remove Core asks "Also delete the search index?" — the default keeps it (check
       `~/Library/Application Support/MediaViewer/Add-ons/AI/data/` still has `index.db`), the
-      other choice deletes it. Removing Core also removes People.
+      other choice deletes it. Removing Core also removes People. Without a restart, the removed
+      row reads "Removing…" at once, then offers Install again (and the People section says to
+      install People); reinstalling picks faces back up and the grid fills as they are found.
 - [ ] **Mac PR 1 present-loop gate with the pack installed and idle:**
       `./build-darwin/bin/frametime --seconds 60 --lab ./build-darwin/bin/mediaviewer_lab`
       → 0 dropped, p99 within 10 % of the baseline, idle CPU as before, 0 presents at rest.
@@ -338,7 +340,10 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
 - [ ] Without the People piece: the section says to install People; nothing about faces runs.
 - [ ] With People installed and faces on: circular covers appear, also for RAW / HEIC / clip
       covers (`face_thumb(cover_face)`, cropped in memory with `cover_box`; confirm with `fs_usage -w -f filesys MediaViewer | grep -i crop` or by checking
-      no new image files appear anywhere); rename persists across relaunch; "Merge into…",
+      no new image files appear anywhere); rename persists across relaunch; merging (drag a
+      person onto another, ⌘-click several then "Merge into…", or the context menu) keeps the
+      target's name, or takes the first name if it has none, and says "Merged into …";
+      "Merge into…",
       "Not this person" (hover ✕ and the Delete key) and multi-select "Split into new person"
       persist and re-apply after a rescan.
 - [ ] Search "photos of <name>" returns that person; "Show photos" from a person opens the panel.

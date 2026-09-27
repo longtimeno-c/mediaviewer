@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // People (plan/17 PR 24; the chrome brief's management panel): circular covers
 // cut from the cover picture with cover_box in memory (never written to disk),
-// editable names, "Show photos", "Merge into…", and a person's faces with
+// editable names, "Show photos", merging (drag a person onto another, ⌘-click
+// several then "Merge into…", or the context menu), and a person's faces with
 // "Not this person" (hover ✕ or Delete) and multi-select "Split into new
 // person". A grouping that cannot be corrected is worse than none.
 import AppKit
@@ -39,45 +40,136 @@ private struct FaceImage: View {
 struct PeopleGrid: View {
   @ObservedObject var model: ManagementModel
   let open: (Person) -> Void
+  /// ⌘-click (or ⇧-click) picks several people to merge.
+  @State private var selection = Set<UInt64>()
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 10) {
       if model.people.isEmpty {
         Text("No people yet. Faces are grouped as your folders are indexed.")
           .font(AITheme.font(12)).foregroundStyle(AITheme.body)
       } else {
+        if selected.count >= 2 {
+          mergeBar
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        } else {
+          Text("The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
+            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 132), spacing: 14)], spacing: 16) {
           ForEach(model.people) { person in
-            PersonCard(model: model, person: person, open: { open(person) })
+            PersonCard(model: model, person: person, selected: selection.contains(person.id),
+                       tap: { tap(person) }, open: { open(person) })
           }
         }
       }
+      if !model.peopleNote.isEmpty {
+        Text(model.peopleNote).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+          .transition(.opacity)
+      }
     }
     .padding(12)
+    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: model.people)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: selection)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: model.peopleNote)
+    // A merged or regrouped person leaves the selection with the grid.
+    .onChange(of: model.people) { _, people in
+      let ids = Set(people.map(\.id))
+      if !selection.isSubset(of: ids) { selection.formIntersection(ids) }
+    }
+    .onExitCommand { selection = [] }
+  }
+
+  /// The selected people, in grid order.
+  private var selected: [Person] { model.people.filter { selection.contains($0.id) } }
+
+  private func tap(_ person: Person) {
+    let flags = NSEvent.modifierFlags
+    if flags.contains(.command) || flags.contains(.shift) {
+      if !selection.insert(person.id).inserted { selection.remove(person.id) }
+    } else if !selection.isEmpty {
+      selection = []
+    } else {
+      open(person)
+    }
+  }
+
+  /// "3 people selected · Merge into ▾ · Cancel". The target keeps its name.
+  private var mergeBar: some View {
+    HStack(spacing: 10) {
+      Text("\(selected.count) people selected")
+        .font(AITheme.font(12)).foregroundStyle(AITheme.title)
+      Spacer()
+      Menu("Merge into…") {
+        ForEach(selected) { target in
+          Button(model.displayName(target)) {
+            model.merge(into: target.id, from: selected.map(\.id))
+            selection = []
+          }
+        }
+      }
+      .fixedSize()
+      Button("Cancel") { selection = [] }
+    }
+    .padding(10)
+    .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.08)))
   }
 }
 
 private struct PersonCard: View {
   @ObservedObject var model: ManagementModel
   let person: Person
+  let selected: Bool
+  let tap: () -> Void
   let open: () -> Void
   @State private var name = ""
   @State private var hover = false
+  @State private var dropTarget = false
   @FocusState private var editing: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// What a dragged person carries: its id, tagged so no other text merges.
+  private static let dragPrefix = "mediaviewer-person:"
 
   var body: some View {
     VStack(spacing: 6) {
       FaceImage(table: model.table, faceID: person.coverFace, box: person.coverBox,
                 monogram: String(person.name.prefix(1)).uppercased())
         .frame(width: 84, height: 84)
-        .overlay(Circle().stroke(hover ? Color.accentColor : AITheme.hairline, lineWidth: hover ? 2 : 1))
-        .scaleEffect(hover && !reduceMotion ? 1.04 : 1)
+        .overlay(Circle().stroke(ring, lineWidth: selected || hover || dropTarget ? 2.5 : 1))
+        .overlay(alignment: .bottomTrailing) {
+          if selected {
+            Image(systemName: "checkmark.circle.fill")
+              .symbolRenderingMode(.palette)
+              .foregroundStyle(.white, Color.accentColor)
+              .font(.system(size: 20))
+              .transition(.scale.combined(with: .opacity))
+          }
+        }
+        .scaleEffect((hover || dropTarget) && !reduceMotion ? 1.06 : 1)
         .animation(.easeOut(duration: 0.15), value: hover)
+        .animation(.easeOut(duration: 0.15), value: dropTarget)
         .onHover { hover = $0 }
-        .onTapGesture { open() }
+        .onTapGesture { tap() }
+        .draggable(Self.dragPrefix + String(person.id)) {
+          FaceImage(table: model.table, faceID: person.coverFace, box: person.coverBox,
+                    monogram: String(person.name.prefix(1)).uppercased())
+            .frame(width: 60, height: 60)
+        }
+        .dropDestination(for: String.self) { items, _ in
+          let ids = items.compactMap { item -> UInt64? in
+            guard item.hasPrefix(Self.dragPrefix) else { return nil }
+            return UInt64(item.dropFirst(Self.dragPrefix.count))
+          }.filter { $0 != person.id }
+          guard !ids.isEmpty else { return false }
+          model.merge(into: person.id, from: ids)
+          return true
+        } isTargeted: { dropTarget = $0 }
+        .help("Click to see this person's faces. Drag onto another person to merge them.")
         .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
-        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
       TextField("Add a name", text: $name)
         .textFieldStyle(.plain)
         .multilineTextAlignment(.center)
@@ -87,6 +179,7 @@ private struct PersonCard: View {
         .onChange(of: editing) { _, now in if !now { commit() } }
       Text(person.faces == 1 ? "1 photo" : "\(person.faces) photos")
         .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        .contentTransition(.numericText())
     }
     .onAppear { name = person.name }
     .onChange(of: person.name) { _, n in if !editing { name = n } }
@@ -95,12 +188,14 @@ private struct PersonCard: View {
       Button("Faces…") { open() }
       Menu("Merge into…") {
         ForEach(model.people.filter { $0.id != person.id }) { other in
-          Button(other.name.isEmpty ? "Unnamed (\(other.faces))" : other.name) {
-            model.merge(into: other.id, from: person.id)
-          }
+          Button(model.displayName(other)) { model.merge(into: other.id, from: person.id) }
         }
       }
     }
+  }
+
+  private var ring: Color {
+    selected || dropTarget ? .accentColor : hover ? Color.accentColor.opacity(0.7) : AITheme.hairline
   }
 
   private func commit() {
@@ -128,7 +223,7 @@ struct PersonSheet: View {
         Button("Show photos") { done(); model.showPhotos(of: person) }
         Menu("Merge into…") {
           ForEach(model.people.filter { $0.id != person.id }) { other in
-            Button(other.name.isEmpty ? "Unnamed (\(other.faces))" : other.name) {
+            Button(model.displayName(other)) {
               model.merge(into: other.id, from: person.id)
               done()
             }

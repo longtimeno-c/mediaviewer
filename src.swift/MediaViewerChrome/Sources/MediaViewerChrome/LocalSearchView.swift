@@ -76,6 +76,11 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var phase: AddonChannel.Phase?
   @Published var message = ""
   @Published var confirmingRemove: String?
+  /// Pieces whose removal is queued on the host's add-on queue (it unloads,
+  /// then deletes up to 3 GB). Their rows read "Removing…" at once and offer
+  /// Install again the moment the store no longer lists them: before, the
+  /// row still read Installed until the next start (owner report, 2026-09-27).
+  @Published private(set) var removing: Set<String> = []
   /// Moves whenever the chrome is (re)attached, so the embedded view is rebuilt.
   @Published private(set) var chromeGeneration = 0
 
@@ -90,6 +95,9 @@ final class LocalSearchStore: ObservableObject {
   private var timer: Timer?
   private var ticks = 0
   private var probed = false
+  private var checkingRemovals = false
+  /// What to say once each queued removal has landed.
+  private var removedText: [String: String] = [:]
 
   private init() {
     guard supported else { return }
@@ -104,6 +112,7 @@ final class LocalSearchStore: ObservableObject {
 
   private func poll() {
     ticks += 1
+    if !removing.isEmpty, ticks % 2 == 0 { checkRemovals() }
     // Nothing loaded and nothing loading: every 2 s is enough, unless
     // Settings is open or a piece is being installed (it shows the change).
     if !loaded, !loading, busyPiece == nil, !SettingsStore.shared.visible, ticks % 4 != 0 { return }
@@ -191,6 +200,8 @@ final class LocalSearchStore: ObservableObject {
       let states = read, used = u, ceiling = c
       await MainActor.run {
         for i in self.pieces.indices {
+          // A queued removal is not undone by a read that raced it.
+          if self.removing.contains(self.pieces[i].id) { continue }
           let obj = states[self.pieces[i].id] ?? [:]
           self.pieces[i].installed = obj["installed"] as? Bool ?? false
           self.pieces[i].version = obj["version"] as? String ?? ""
@@ -211,17 +222,56 @@ final class LocalSearchStore: ObservableObject {
   func probe(force: Bool = false) {
     guard supported, force || !probed else { return }
     probed = true
-    for i in pieces.indices where !pieces[i].checking {
-      pieces[i].checking = true
-      let channel = pieces[i].channel
-      let id = pieces[i].id
-      Task.detached {
-        let result = await channel.probe()
-        await MainActor.run {
-          guard let j = self.pieces.firstIndex(where: { $0.id == id }) else { return }
-          self.pieces[j].checking = false
-          self.pieces[j].probe = result
+    for piece in pieces { probe(piece: piece.id) }
+  }
+
+  /// One piece's channel, e.g. after it was removed and no size is known to
+  /// offer an Install with.
+  func probe(piece id: String) {
+    guard supported, let i = pieces.firstIndex(where: { $0.id == id }), !pieces[i].checking else { return }
+    pieces[i].checking = true
+    let channel = pieces[i].channel
+    Task.detached {
+      let result = await channel.probe()
+      await MainActor.run {
+        guard let j = self.pieces.firstIndex(where: { $0.id == id }) else { return }
+        self.pieces[j].checking = false
+        self.pieces[j].probe = result
+      }
+    }
+  }
+
+  /// Reads only the pieces being removed (nothing left to hash once a piece
+  /// is gone), at most one read in flight.
+  private func checkRemovals() {
+    guard !checkingRemovals, !removing.isEmpty else { return }
+    checkingRemovals = true
+    let ids = Array(removing)
+    Task.detached {
+      var gone: [String] = []
+      for id in ids {
+        let json = AddonStore.readString { mv_addon2_state_json(id, $0, $1) }
+        let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+        if !(obj["installed"] as? Bool ?? false) { gone.append(id) }
+      }
+      var u: UInt64 = 0, c: UInt64 = 0
+      let room = !gone.isEmpty && mv_addon2_family_usage("ai", &u, &c)
+      let done = gone, used = u
+      await MainActor.run {
+        self.checkingRemovals = false
+        guard !done.isEmpty else { return }
+        for id in done {
+          self.removing.remove(id)
+          if let i = self.pieces.firstIndex(where: { $0.id == id }) {
+            self.pieces[i].installed = false
+            self.pieces[i].size = 0
+            self.pieces[i].version = ""
+            self.pieces[i].state = ""
+            if self.pieces[i].offeredBytes == nil { self.probe(piece: id) }
+          }
+          if let text = self.removedText.removeValue(forKey: id) { self.message = text }
         }
+        if room { self.used = used }
       }
     }
   }
@@ -237,7 +287,8 @@ final class LocalSearchStore: ObservableObject {
   }
 
   func install(_ id: String) {
-    guard stateKnown, busyPiece == nil, let piece = pieces.first(where: { $0.id == id }) else { return }
+    guard stateKnown, busyPiece == nil, !removing.contains(id),
+          let piece = pieces.first(where: { $0.id == id }) else { return }
     if !piece.required && !coreInstalled {
       message = "Install Core first."
       return
@@ -307,12 +358,21 @@ final class LocalSearchStore: ObservableObject {
       if pillVisible { pillVisible = false }
     }
     // On the main thread: unloading Core is [main-thread] in the host (the
-    // chrome shuts down first); the store work itself is queued there.
-    message = mv_addon2_remove(id, keepData)
-      ? (id == "ai" ? "Local search removed." + (keepData ? " The search index was kept." : "")
-                    : "\(title) removed.")
-      : "\(title) will finish uninstalling the next time MediaViewer starts."
-    refresh()
+    // chrome shuts down first); the store work itself is queued there, and
+    // checkRemovals() sees it land. Removing Core removes its pieces too.
+    guard mv_addon2_remove(id, keepData) else {
+      message = "\(title) will finish uninstalling the next time MediaViewer starts."
+      refresh()
+      return
+    }
+    let ids = id == "ai" ? pieces.filter(\.installed).map(\.id) : [id]
+    removing.formUnion(ids)
+    for other in ids { removedText[other] = nil }
+    removedText[id] = id == "ai"
+      ? "Local search removed." + (keepData ? " The search index was kept, so a reinstall can search right away." : "")
+      : "\(title) removed. Install it again here whenever you like."
+    message = id == "ai" ? "Removing Local search…" : "Removing \(title)…"
+    checkRemovals()
   }
 
   func openSearch() { _ = mv_addon2_run_command("search_open") }
@@ -351,6 +411,8 @@ struct LocalSearchSection: View {
     .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: store.confirmingRemove)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.loaded)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.stateKnown)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.removing)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.pieces)
   }
 
   @ViewBuilder
@@ -451,7 +513,9 @@ struct LocalSearchSection: View {
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 6) {
           Text(piece.title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
-          if piece.installed {
+          if store.removing.contains(piece.id) {
+            EmptyView()
+          } else if piece.installed {
             Text(piece.state == "ok" ? "Installed · \(piece.version) · \(LocalSearchStore.sizeText(piece.size))"
                  : piece.state == "needs_update" ? "Needs an update" : "Did not verify")
               .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
@@ -466,6 +530,12 @@ struct LocalSearchSection: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       if store.busyPiece == piece.id {
         AddonProgressView(phase: store.phase ?? .downloading(done: 0, total: 0), width: 200)
+      } else if store.removing.contains(piece.id) {
+        HStack(spacing: 6) {
+          ProgressView().controlSize(.small)
+          Text("Removing…").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        }
+        .transition(.opacity)
       } else if piece.installed {
         if let v = piece.updateVersion {
           Button("Update to \(v)") { store.install(piece.id) }
