@@ -49,11 +49,13 @@ internal sealed class ResultTile
 /// <remarks>
 /// Keyboard-complete (plan/16 verify: open search, type, navigate results,
 /// open a moment, next / previous match, close — no mouse): the query is
-/// focused with the last query selected; typing searches after ~200 ms; Down
-/// enters the grid; arrows, Home / End and Page Up / Down move; Enter opens
-/// the results as the viewer's listing on that tile (a clip lands paused on
-/// its moment) and Ctrl+Enter opens them in the gallery grid; Esc steps back
-/// from the grid to the query, then closes. Tab reaches the scope and kind
+/// focused with the last query selected; typing searches after ~200 ms; Enter
+/// or Down enters the grid (Enter on words still being searched waits for their
+/// answer, then enters it); arrows, Home / End and Page Up / Down move; Enter in
+/// the grid opens the results as the viewer's listing on that tile (a clip
+/// lands paused on its moment) and Ctrl+Enter opens them in the gallery grid;
+/// typing in the grid goes back to the query; Esc steps back from the grid to
+/// the query, then closes. Tab reaches the scope and kind
 /// chips and the footer. The window is marked so the native key router leaves
 /// its keys alone (Native.Adopt).
 /// </remarks>
@@ -101,7 +103,10 @@ internal sealed class SearchWindow : Window, IDisposable
     private int _sel = -1;
     private ulong _search;    // on screen
     private ulong _pending;   // asked for, not answered
+    private ulong _landing;   // answered, its results being read
+    private bool _pendingFresh;  // what is asked for is new words, not a quiet re-run of those on screen
     private bool? _openWhenReady;
+    private ulong _focusWhenReady;  // Enter in the query: enter the grid when this search lands
     private AiChrome.SimilarTo? _similar;
     private MvAiScope _scope = MvAiScope.Folder;
     private MvAiKinds _kinds = MvAiKinds.All;
@@ -367,8 +372,24 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             if (_sel < 0 && _tiles.Count > 0) Select(0);
             else MoveRing(animate: false);
+            UpdateHint();
         };
-        _gridHost.LostFocus += (_, _) => _ring.Opacity = 0;
+        _gridHost.LostFocus += (_, _) =>
+        {
+            _ring.Opacity = 0;
+            UpdateHint();
+        };
+        // Typing in the grid goes back to the words: the character lands at
+        // the end of the query, which searches as typing always does.
+        _gridHost.CharacterReceived += (_, e) =>
+        {
+            bool ctrl = Down(VirtualKey.Control), alt = Down(VirtualKey.Menu);
+            if (e.Handled || char.IsControl(e.Character) || ctrl != alt) return;  // Ctrl+Alt is AltGr
+            e.Handled = true;
+            _query.Focus(FocusState.Keyboard);
+            _query.Text += e.Character;
+            _query.Select(_query.Text.Length, 0);
+        };
         _scroll.SizeChanged += (_, _) => MoveRing(animate: false);
 
         _empty = new StackPanel
@@ -425,7 +446,7 @@ internal sealed class SearchWindow : Window, IDisposable
         // Always there: closing never stops indexing or a search.
         Button close = _look.Button("Close", Hide);
         ToolTipService.SetToolTip(close, "Close the panel (Esc). Indexing carries on in the background.");
-        var hint = _look.Text("Enter open · Ctrl+Enter gallery", 13, AddonColour.Body, wrap: false);
+        var hint = _look.Text(HintInQuery, 13, AddonColour.Body, wrap: false);
         hint.VerticalAlignment = VerticalAlignment.Center;
         hint.Visibility = Visibility.Collapsed;  // with results only
         _hint = hint;
@@ -775,6 +796,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _startedIndexing = null;
         if (_similar is not null && _query.Text.Length > 0) ClearSimilar(runQuery: false);
         _openWhenReady = null;
+        _focusWhenReady = 0;
         _debounce.Stop();
         _debounce.Start();
     }
@@ -848,6 +870,8 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             _chrome.ReleaseSearch(_pending);
             _pending = 0;
+            _pendingFresh = false;
+            _focusWhenReady = 0;
             SetTiles(new List<ResultTile>(), ulong.MinValue);
             ShowStart();
             return;
@@ -861,9 +885,18 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         catch (MediaViewerException)
         {
+            _focusWhenReady = 0;
             ShowEmpty("Search is not available right now.", "Local search may still be getting ready. Try again in a moment.");
             return;
         }
+        // Enter waits on the words it was pressed for: a quiet re-run of them
+        // (Precision changed) carries the wait over; new words or chips drop it.
+        if (_focusWhenReady != 0)
+        {
+            bool waited = _focusWhenReady == _pending || _focusWhenReady == _landing;
+            _focusWhenReady = quiet && waited ? id : 0;
+        }
+        _pendingFresh = !quiet || _tiles.Count == 0 || ((_pending != 0 || _landing != 0) && _pendingFresh);
         if (_pending != 0) _chrome.ReleaseSearch(_pending);
         _pending = id;
         _lastRunTick = Environment.TickCount64;
@@ -881,9 +914,13 @@ internal sealed class SearchWindow : Window, IDisposable
         _pending = 0;
         if (status != MvStatus.Ok)
         {
+            _pendingFresh = false;
+            _focusWhenReady = 0;
+            _openWhenReady = null;
             ShowEmpty("Search did not finish.", "Try again, or change the words.");
             return;
         }
+        _landing = id;
         int n = (int)Math.Clamp(count, 0, MaxResults);
         AiApi api = _api;
         _ = Task.Run(() =>
@@ -914,12 +951,24 @@ internal sealed class SearchWindow : Window, IDisposable
     private void ApplyResults(ulong id, List<ResultTile> tiles, long total)
     {
         if (_disposing) return;
+        if (_landing == id) _landing = 0;
+        if (_pending == 0 && _landing == 0) _pendingFresh = false;
+        bool enterGrid = _focusWhenReady == id;
+        if (enterGrid) _focusWhenReady = 0;
+        bool gridFocused = _gridHost.FocusState != FocusState.Unfocused;
         if (_search != 0 && _search != id) _chrome.ReleaseSearch(_search);
         _search = id;
         SetTiles(tiles, id);
         if (tiles.Count == 0)
         {
             ShowNothing();
+            if (gridFocused)
+            {
+                // A re-run found nothing under the grid the user was in: the
+                // keyboard goes back to the words, not nowhere.
+                _query.Focus(FocusState.Keyboard);
+                _query.Select(_query.Text.Length, 0);
+            }
         }
         else
         {
@@ -928,12 +977,27 @@ internal sealed class SearchWindow : Window, IDisposable
             _count.Text = total > tiles.Count ? $"best {tiles.Count} of {total:N0}"
                         : tiles.Count == 1 ? "1 result" : $"{tiles.Count} results";
         }
-        if (_openWhenReady is bool gallery && tiles.Count > 0)
+        if (_openWhenReady is bool gallery)
         {
             _openWhenReady = null;
-            OpenResults(gallery);
+            if (tiles.Count > 0) OpenResults(gallery);
+        }
+        else if (enterGrid && tiles.Count > 0 &&
+                 ReferenceEquals(FocusManager.GetFocusedElement(_root.XamlRoot), _query))
+        {
+            // Enter was pressed on these words before their answer: go to it now.
+            EnterGrid(first: true);
         }
     }
+
+    /// <summary>
+    /// Whether the answer for the words in the query is still to come: typed
+    /// and not yet asked, or asked (new words, or nothing on screen yet) and
+    /// not yet read. A quiet re-run as the index grows is not waited on: the
+    /// tiles on screen already answer the same words.
+    /// </summary>
+    private bool AnswerDue =>
+        _debounce.IsRunning || ((_pending != 0 || _landing != 0) && (_pendingFresh || _tiles.Count == 0));
 
     private void SetTiles(List<ResultTile> tiles, ulong search)
     {
@@ -960,6 +1024,7 @@ internal sealed class SearchWindow : Window, IDisposable
         ++_batch;
         _tiles = tiles;
         _hint.Visibility = _tiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateHint();
         _repeater.ItemsSource = _tiles;
         int keep = selectedPath is null ? -1 : _tiles.FindIndex(t => t.Path == selectedPath && t.PtsMs == selectedPts);
         _sel = keep >= 0 ? keep : (_gridHost.FocusState != FocusState.Unfocused && _tiles.Count > 0 ? 0 : -1);
@@ -1227,8 +1292,25 @@ internal sealed class SearchWindow : Window, IDisposable
                 else Hide();
                 e.Handled = true;
                 return;
+            case VirtualKey.Enter when inQuery && !ctrl:
+                // Enter in the query goes to the results. Words still being
+                // searched (typed just now, or while indexing): wait for their
+                // answer, then go; nothing found keeps the query and says so.
+                if (AnswerDue)
+                {
+                    _openWhenReady = null;
+                    if (_debounce.IsRunning) RunQuery(quiet: false);
+                    _focusWhenReady = _pending != 0 ? _pending : _landing;
+                    if (_focusWhenReady != 0) _count.Text = "Searching…";
+                }
+                else
+                {
+                    EnterGrid(first: false);
+                }
+                e.Handled = true;
+                return;
             case VirtualKey.Enter when inQuery || inGrid:
-                if (_debounce.IsRunning || _pending != 0)
+                if (AnswerDue)
                 {
                     // Typed and pressed Enter at once: open when the answer lands.
                     _openWhenReady = ctrl;
@@ -1245,11 +1327,7 @@ internal sealed class SearchWindow : Window, IDisposable
                 e.Handled = true;
                 return;
             case VirtualKey.Down when inQuery:
-                if (_tiles.Count > 0)
-                {
-                    _gridHost.Focus(FocusState.Keyboard);
-                    Select(Math.Max(0, _sel));
-                }
+                EnterGrid(first: false);
                 e.Handled = true;
                 return;
             case VirtualKey.Back when inQuery && _similar is not null && _query.Text.Length == 0:
@@ -1283,6 +1361,23 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         e.Handled = true;
         if (next >= 0 && next < _tiles.Count) Select(next);
+    }
+
+    /// <summary>The keyboard into the grid: on the first tile, or where it was.</summary>
+    private void EnterGrid(bool first)
+    {
+        if (_tiles.Count == 0) return;
+        _gridHost.Focus(FocusState.Keyboard);
+        Select(first ? 0 : Math.Max(0, _sel));
+    }
+
+    private const string HintInQuery = "Enter go to results · Ctrl+Enter open all";
+    private const string HintInGrid = "Enter open · Ctrl+Enter open all";
+
+    /// <summary>The footer says what Enter does where the keyboard is.</summary>
+    private void UpdateHint()
+    {
+        _hint.Text = _gridHost.FocusState != FocusState.Unfocused ? HintInGrid : HintInQuery;
     }
 
     private int Columns()
