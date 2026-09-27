@@ -1135,8 +1135,11 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
   if (!selected_path.empty()) {
     const mv::generation gen = session->jobs.current_generation();
     // A file appearing beside the current one is not a reason to decode it
-    // again: re-publishing would refit the camera under the user.
-    if (!(changed && selected_path == previous_path)) {
+    // again: re-publishing would refit the camera under the user, and for a
+    // clip it would hand playback a fresh media_source with no memory of a
+    // user pause (issue #56; folder_reselect.h's relist_should_reopen is the
+    // Mac host's copy of this same rule).
+    if (mv::abi::relist_should_reopen(changed, selected_path == previous_path)) {
       submit_decode_to_lru(session, selected_path, gen);
     }
     submit_prefetch(session, selected, gen);

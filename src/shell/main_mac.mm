@@ -48,6 +48,7 @@
 #include "shell/addons_mac.h"
 #include "shell/adjust_pane.h"
 #include "abi/clip_session.h"
+#include "abi/folder_reselect.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/browse_index.h"
@@ -317,6 +318,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // of that same bridge — declared here because they read `_items`/`_folder`,
 // private ivars only MvLabApp's own methods can reach.
 - (void)selectIndex:(std::size_t)new_index;
+- (void)selectIndex:(std::size_t)new_index reopen:(BOOL)reopen;
 - (NSInteger)itemCount;
 - (NSInteger)currentIndex;
 - (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
@@ -2073,6 +2075,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     [self resortKeepingSelection];
   }
   if (!_folder.consume_changed()) return;
+  // issue #56: -openEntryPath: clears `_items` synchronously before the async
+  // relist for a *new* folder/file lands, so an empty `_items` here means this
+  // is that folder's first listing -- always reopen. A non-empty `_items`
+  // means a clip or a still is already on screen and this relist is the
+  // watcher's (or the 0.2 s poll's), which must not reopen it just because it
+  // still finds the same file (see the reopen:NO branch below).
+  const bool had_items = !_items.empty();
   _items = _folder.items();
   _subdirs = _folder.subfolders();
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
@@ -2097,22 +2106,26 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
 
   std::size_t new_index = 0;
+  bool same_file_found = false;  // issue #56: the watcher's relist landed on the file already open
   if (!_items.empty()) {
-    bool found = false;
     if (!_wantSelectedPath.empty()) {
       for (std::size_t i = 0; i < _items.size(); ++i) {
         if (_items[i].path_utf8 == _wantSelectedPath) {
           new_index = i;
-          found = true;
+          same_file_found = true;
           break;
         }
       }
     }
-    if (!found) {
+    if (!same_file_found) {
       new_index = std::min(_index.current(), _items.size() - 1);
     }
   }
-  [self selectIndex:new_index];
+  // Same bytes, same select: a relist that just reorders/adds siblings around
+  // the file already on screen updates the index bookkeeping but must not
+  // reopen it (see -selectIndex:reopen: above). Shared with Windows'
+  // apply_folder_list via abi/folder_reselect.h (issue #56, D9).
+  [self selectIndex:new_index reopen:mv::abi::relist_should_reopen(had_items, same_file_found)];
 
   bool revealed = false;
   if (!_revealChild.empty()) {
@@ -2140,6 +2153,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (void)selectIndex:(std::size_t)new_index {
+  [self selectIndex:new_index reopen:YES];
+}
+
+// `reopen` NO is issue #56: a watcher relist that keeps the user on the same
+// file (folder_reselect found it again, byte for byte) must not call back
+// into open_item(). A clip already paused there has no idea a fresh
+// media_source is "the same" clip -- it just opens paused-by-default and
+// hold_.autoplay() (not held, not quiet) waves it through, so a pause the
+// user set minutes ago is silently overridden by background folder churn
+// (an import add-on write, a thumb cache touch, anything the watcher sees).
+// Windows already has the equivalent guard in apply_folder_list (abi/abi.cpp:
+// "A file appearing beside the current one is not a reason to decode it
+// again"); this is the Mac half of the same rule (D9).
+- (void)selectIndex:(std::size_t)new_index reopen:(BOOL)reopen {
   _index.reset(_items.size(), new_index);
   [self applyFilmstripLayout];
   [self trimItemChanged];
@@ -2156,7 +2183,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
-    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
+    if (reopen) [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);

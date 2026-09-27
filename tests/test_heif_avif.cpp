@@ -528,3 +528,45 @@ TEST_CASE("AVIF: a tiny frame declaring a huge canvas is refused before it is sc
     CHECK_FALSE((more && more.value()));
   }
 }
+
+TEST_CASE("AVIF: an avis sequence decodes within the tighter animated-path cap",
+          "[codec][avif][fuzz]") {
+  // Issue #45, nightly fuzz_avif OOM, CI run 36230124220: 2821 MB vs the
+  // 2560 MB harness limit, ~424k execs into that run. This fixture is the
+  // artifact libFuzzer saved for it — a 1.3 KB, 3-sample avis whose
+  // tkhd/ispe are both small (24x16400), so the still-image size guard
+  // (fuzz_oom_avis.avif's fix, CI run 36269934345, above) never fires.
+  //
+  // Replaying this exact file through libavif/dav1d (matching vcpkg's
+  // pinned baseline), both as a single decode and 300k times in one process
+  // to mimic libFuzzer's persistent-process model, never used more than a
+  // few MB: it does not reproduce a large allocation in isolation. The
+  // nightly failure was most likely libFuzzer's RSS poll catching the
+  // long-running ASan process's cumulative growth across many distinct
+  // inputs, with this file simply being whatever was executing at that
+  // moment (codec/avif.cpp has the full reasoning). This test is kept as a
+  // regression fixture and belt-and-suspenders bound check — not proof this
+  // exact file was the culprit — for the cumulative-budget gap issue #45
+  // asked to close: kMaxAnimatedPixels (codec/avif.cpp) gives the `avis`
+  // path a per-frame cap sized for several resident codec buffers, not just
+  // one, unlike the one-shot still path's kMaxPixels.
+  const auto bytes = fixture("avif/fuzz_oom_avis_ref_frames.avif");
+  // Same calls as tools/fuzz/fuzz_avif.cpp: decode_avif is the one-shot
+  // still path, then step the animation up to 8 frames.
+  auto still = decode_avif(bytes);
+  if (still) {
+    CHECK(static_cast<std::uint64_t>(still.value().width) * still.value().height <=
+          128ull * 1000ull * 1000ull);
+  }
+  auto shared = std::make_shared<const std::vector<std::uint8_t>>(bytes);
+  auto anim = open_avif_animation(shared);
+  if (anim) {
+    canvas_frame frame;
+    for (int i = 0; i < 8; ++i) {
+      auto more = anim.value()->next(frame, nullptr);
+      if (!more || !more.value()) break;
+      // rgba is packed 8-bit RGBA: byte count / 4 == pixel count.
+      CHECK(frame.rgba.size() / 4 <= 10ull * 1000ull * 1000ull);
+    }
+  }
+}
