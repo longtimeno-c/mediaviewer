@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12 — metadata write (plan/06 "Writing"): rating, orientation and user
 // comment. PR 29 (owner, 2026-09-26; plan/12): any EXIF / IPTC / XMP tag can
 // be set or removed, and the capture date set across every tag that holds

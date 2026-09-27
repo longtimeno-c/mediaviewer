@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Format family identified by magic bytes, never by extension
 // (plan/04-image-pipeline.md).
 #pragma once

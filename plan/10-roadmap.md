@@ -23,12 +23,12 @@ Mac are both at PR 9.** The order from here is:
 | 12 | Metadata (write) | both | Planned |
 | 13 | Two-path trim | both | **Written ahead on a branch** (2026-09-25): shared core tested on Linux; both host halves written, first MSVC / Xcode builds and every hardware verify owed. Does not merge before 12 ([12](12-decision-log.md) 2026-09-25) |
 | 14 | Extract & remux | both | **Written with 13**, same state |
-| 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
+| 15 | OS integration (Explorer; the remaining Finder twins) | both | **Written on `pr15-os-integration`** (2026-09-26): keyboard twins, recents, media controls, Explorer thumbnails, Spotlight importer, drag-out, single instance. Mac built, tests and Mac PR 1 gate green; Windows builds in CI. Both hardware verify lines owed. Tabs moved to their own PR |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
 | 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
-| **29** | **Edit workspace** (issue #39, [20](20-edit-workspace.md)): Edit button / `Enter`, docked pane, crop presets, every-tag metadata editing | both | **Mac half written and run** (2026-09-26, self-test rig); Windows half owed |
+| **29** | **Edit workspace** (issue #39, [20](20-edit-workspace.md)): Edit button / `Enter`, docked pane, crop presets, every-tag metadata editing | both | **Both halves written and run** (Mac 2026-09-26, Windows 2026-09-27: self-test rig, real keys); Narrator / VoiceOver passes owed |
 | **30** | **Video Editor window, one clip** (issue #40, [21](21-video-editor.md)): timeline, strip, waveform, split / delete / in / out, keyframe or exact export | both | **Mac half written and run** (2026-09-26); Windows half owed. Does not merge before 29 |
 | 31 | Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)) | both | Planned |
 | 32–47 | **Editor add-on**, Milestone K ([22](22-editor-addon.md)): GPU port + colour management, grading (primaries, curves, secondaries, tracking, node graph, LUTs, NR), multi-track editing, motion / titles / captions, audio mixer and repair, delivery, proxies, model packs | both | Proposed (2026-09-26); S1 run on the Mac |
@@ -210,7 +210,7 @@ A **short first-install wizard** (Inno Setup) that lays down a **per-user** Velo
 under `%LocalAppData%\MediaViewer`, then **Velopack** for every later update (staged
 rollout, signed manifest, rollback). Azure Trusted Signing on the wizard, the binaries,
 and the update manifest. About dialog + `THIRD-PARTY.md` + per-release LGPL source offer.
-Store MSIX is **not** a channel — the app is GPL-2.0-or-later ([11](11-licensing.md)).
+Store MSIX is **not** a channel — the app is GPL-3.0-or-later ([11](11-licensing.md)).
 Full design, including the wizard pages: [13-updates-and-telemetry.md](13-updates-and-telemetry.md).
 
 The wizard is the one-time download-and-setup. Updates never re-open it. It does **not**
@@ -559,10 +559,41 @@ palette. Everything is in the core; the hosts only add UI.
 **Verify (both platforms):** each operation round-trips; lossless rotate does not re-encode.
 
 ### PR 15 — OS integration
-*Status 2026-09-25: **not started.** PR 8's installer registers the `ProgId`s and `OpenWithProgids`
-(a partial overlap with the Windows half below), and Windows already has SMTC transport from PR 5;
-the out-of-process thumbnail / property handlers, the jump list, tabs, drag-out, Share and the Mac
-twins (Dock menu, `NSWindow` tabbing, Now Playing, file-promise drag-out, Share) are all owed.*
+*Status 2026-09-25: started on `pr15-os-integration` (from PR 13–14's branch). Scope calls:
+tabs are OS-grouped windows, and the Spotlight importer is built ([12](12-decision-log.md)
+2026-09-25). **Landed on the branch, both hosts:** `Ctrl+Shift+C` / `⌘⇧C` copy path,
+`Ctrl+Alt+C` / `⌘⌥C` the still flattened to a PNG in the app's own `clipboard` folder (file +
+image flavour, pixels and ICC only), `Ctrl+Shift+S` / `⌘⇧S` Share (`IDataTransferManager`
+through the chrome, `NSSharingServicePicker`), recent folders in the jump list / Dock menu,
+the taskbar's thumbnail transport buttons, and Now Playing / `MPRemoteCommandCenter` on the
+Mac. The process and its shortcuts share one AppUserModelID (`MediaViewer.Viewer`) so the
+pinned button, the window and the jump list are one entry. macOS half built and the shared
+tests pass on macOS; the Windows half awaits its first MSVC / clang-cl build in CI.
+**Explorer thumbnails (written, 2026-09-25):** `MediaViewerThumbs.dll` (`src/shellext/`), an
+`IThumbnailProvider` over `IInitializeWithStream` on the `MediaViewer.Image` ProgId, run from a
+versioned copy under `<root>\shellext`, with its portable request path tested on macOS and
+fuzzed (`fuzz_thumbnail`). The property handler is deferred (HKLM only; [12](12-decision-log.md)).
+**Spotlight importer (written, 2026-09-25):** `MediaViewerSpotlight.mdimporter` in
+`Contents/Library/Spotlight`, for MKV / WebM / AVI / TS (the containers macOS does not index;
+the system already indexes every D5 still). Loaded directly it returns every field; inside
+`mdworker` an ad-hoc-signed dev build did not run, so its verify needs the installed,
+Developer ID-signed app.
+**Drag-out and single instance (written, 2026-09-25):** `Ctrl+Alt+drag` / `⌘⌥-drag` drags the
+edited copy (a file promise on the Mac; on Windows the bake lands first, then a `CF_HDROP` drag,
+so no drop target ever waits on the UI thread). A second start hands its paths to the running
+app (a named pipe on Windows, Launch Services on the Mac). **Windows grouped as tabs and
+`Ctrl+Tab` moved to their own PR** ([12](12-decision-log.md) 2026-09-25 (later)).
+**Hardened 2026-09-26** after a review, before any verify: an abandoned thumbnail decode pins
+the handler DLL (and counts in `DllCanUnloadNow`), at most four run at once; the handler's
+versioned folder gets the PE import closure of the DLL, not only `$<TARGET_RUNTIME_DLLS>`
+(which misses libjpeg / libtiff and DLLs' own DLLs); the single-instance pipe is claimed right
+after option parsing, so Explorer's one-process-per-selected-file start forwards instead of
+opening several windows; each flattened copy has its own folder (newest four kept), so a
+repeated `Ctrl+Alt+C` never deletes a file already on the clipboard; jump-list commits cannot
+land out of order; a file at a drive root records `D:\` not `D:`. Branch merged with main
+(0.1.5, Preview channel, system appearance); macOS: 539 tests and the Mac PR 1 soak pass
+(3600 frames, 0 dropped, p99 16.8 ms, idle 0.37 %).
+**Still to do:** both platforms' verify lines, on installed builds.*
 
 The Mac already has part of this from Mac PR 8: UTIs, the "Open with" registration, Quick Look
 in a separate process, and the first-launch default-viewer sheet. So this PR's Mac half is
@@ -593,10 +624,12 @@ your thumbnail and the MediaViewer file-type icon; a **deliberately corrupted** 
 browsed folder leaves Explorer running; uninstall removes every association. The running
 window and taskbar button use the app icon, not the default exe. Accepting the default-app
 offer opens Default Apps rather than writing `UserChoice`; declining leaves existing
-defaults unchanged.
+defaults unchanged. Opening a second file from Explorer while the app runs opens it in the
+running window; no second window or process stays.
 
 **Verify (macOS):** Mac PR 8's Finder verify still holds. The Dock menu lists recent folders
-and opens one. A second open of a file goes to the running instance as a tab. Transport
+and opens one. A second open of a file goes to the running instance and opens in its window
+(tabs are a later PR, [12](12-decision-log.md) 2026-09-25 (later)). Transport
 from the Now Playing controls drives the clip. `⌘C` of a still pastes as a file in Finder.
 Share opens the system picker with the file. Dragging the app to the Trash still removes
 every extension.

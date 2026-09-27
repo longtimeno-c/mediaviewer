@@ -97,7 +97,7 @@ actual fork is a **product** question with one input:
 | | **Store matters** | **Store does not matter** ✅ likely |
 |---|---|---|
 | Exiv2 | **Buy the commercial licence** | Use it under GPL |
-| App licence | Closed, or a permissive licence; everything else LGPL and dynamically linked | **GPL-2.0-or-later** |
+| App licence | Closed, or a permissive licence; everything else LGPL and dynamically linked | **GPL-3.0-or-later** (was GPL-2.0-or-later until 2026-09-25) |
 | Cost | A licence fee, and stricter discipline about GPL creeping in anywhere | None |
 | Distribution | Store + direct download | Direct download only |
 | Consequence | Must audit every future dependency for GPL | Any future GPL dependency is simply fine |
@@ -107,7 +107,7 @@ requirement, **buy the Exiv2 licence and stay GPL-free throughout** — that is 
 spend the money, and it must be decided before the dependency set calcifies.
 
 If the Store is not a requirement — and for a direct-download Windows utility with an auto-updater
-([13-updates-and-telemetry.md](13-updates-and-telemetry.md)) it usually isn't — **GPL-2.0-or-later
+([13-updates-and-telemetry.md](13-updates-and-telemetry.md)) it usually isn't — **the GPL
 is the path of least resistance.** It makes FFmpeg, libheif, libde265, LibRaw, and Exiv2 all
 trivially compliant at once, and matches what comparable tools do.
 
@@ -119,11 +119,24 @@ trivially compliant at once, and matches what comparable tools do.
 ## Checklist for PR 1
 
 **Settled 2026-09-06.** The Store is not a requirement, so the app is
-**GPL-2.0-or-later** and Exiv2 is kept under the GPL. Full reasoning and consequences:
+GPL-licensed and Exiv2 is kept under the GPL. Full reasoning and consequences:
 [12-decision-log.md](12-decision-log.md#2026-09-06--pr-1-implemented).
 
-- [x] Decide the app's own licence — **GPL-2.0-or-later**. `LICENSE` is the GPL-2.0 text;
-      every source file carries an SPDX identifier.
+**Amended 2026-09-25: the app is GPL-3.0-or-later** (was GPL-2.0-or-later) so the in-app
+About can serve as the GPLv3 "Appropriate Legal Notices". It is still copyleft; the selling
+model is unchanged and the Store is still not a goal. The Exiv2, FFmpeg, libheif, LibRaw and
+patent positions below are untouched. Reasoning:
+[12-decision-log.md](12-decision-log.md) (2026-09-25).
+
+**Attribution under the GPL.** We may require only what the GPL itself allows: keep the
+copyright notices, ship `LICENSE` and `NOTICE`, mark modified files, and show the
+Appropriate Legal Notices in the UI. We may **not** add terms such as "credit us on your site"
+or "keep the product name" — GPL §10 forbids further restrictions. The name and icon are a
+trademark *request* in the README, not a licence clause.
+
+- [x] Decide the app's own licence — **GPL-3.0-or-later**. `LICENSE` is the GPL-3.0 text;
+      `NOTICE` carries the copyright line; every first-party source file carries
+      `// Copyright (C) 2026 longtimeno-c` and an SPDX identifier.
 - [x] Decide the Exiv2 route — **go GPL**. Kept, no commercial licence, no replacement.
 - [x] FFmpeg configure line pinned, LGPL-only, no `--enable-gpl`, no `--enable-nonfree` —
       recorded in `vcpkg.json` and enforced by `tools/licence-check.ps1`. **Our own GPL

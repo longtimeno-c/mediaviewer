@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Milestone G (plan/18-import.md): the add-on host (src/addon) and the Import
 # add-on (src/addons/import). Included by the Windows root, cmake/darwin.cmake

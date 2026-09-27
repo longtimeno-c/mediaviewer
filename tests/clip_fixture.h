@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Synthetic clips for the PR 13 / 14 tests, written in-process with FFmpeg's
 // own MPEG-4 Part 2 and MP2 encoders: no corpus, no ffmpeg CLI, no x264, so
 // the same cases run on Linux, Windows and macOS CI.

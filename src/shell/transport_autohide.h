@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The clip transport's idle state, shared by both hosts (issue #38).
 //
 // While a clip plays, the transport floats over the bottom of the video and

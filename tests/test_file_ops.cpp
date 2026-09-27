@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // io/file_ops against a scratch folder. Nothing here sends a real file to the
 // Recycle Bin: that would change the user's machine. The refusal rule is
 // tested on the shell's flag word instead.

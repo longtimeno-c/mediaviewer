@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // A small strict JSON reader and writer (plan/18: add-on manifests, Import
 // presets, reports). Header-only, so an add-on can carry it without linking
 // the core (plan/18 "does not link the core statically").

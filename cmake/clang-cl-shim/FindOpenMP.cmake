@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # clang-cl shim for find_dependency(OpenMP) inside librawConfig.cmake.
 # CMake's own FindOpenMP probes /openmp, which makes clang-cl link libomp.lib
 # (not shipped with VS). vcpkg builds LibRaw against MSVC's vcomp, and

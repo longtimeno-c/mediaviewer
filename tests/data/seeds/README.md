@@ -12,7 +12,7 @@ fuzzer reproducers go there too, named `<family>_<what>.<ext>`.
 
 Every file here is **synthesised by `tools/testmedia/make-seeds.py`** from
 generated gradients. No camera output, no downloaded sample, no third-party
-image. They are covered by the repository licence (GPL-2.0-or-later) and are
+image. They are covered by the repository licence (GPL-3.0-or-later) and are
 safe to redistribute. The real format corpus stays out of git (plan/09).
 
 | Family | Files | Made with |

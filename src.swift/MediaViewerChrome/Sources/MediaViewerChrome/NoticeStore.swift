@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12: the one-line notice in the command bar -- what a rating key or a click
 // just did ("★★★★☆  saved", "Could not save the rating"). The host owns the
 // text and clears it after a few seconds; this only mirrors it.

@@ -1,5 +1,6 @@
 // swift-tools-version: 5.9
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PR 18's SwiftUI chrome (plan/10-roadmap.md, plan/15-platforms.md): "the
 // canvas is not ported to SwiftUI" — PR 16/17's AppKit window and CAMetalLayer

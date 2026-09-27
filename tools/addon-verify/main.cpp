@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // mv_addon_verify <folder> <public-key-hex> <platform>
 //
 // The app's own add-on verification (src/addon/manifest.cpp), run over an

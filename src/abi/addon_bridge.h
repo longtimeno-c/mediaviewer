@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // abi.cpp owns mv_session; addon_abi.cpp posts add-on events through it.
 #pragma once
 

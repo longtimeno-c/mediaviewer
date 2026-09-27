@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12: the three fields the writer owns, read back out of Exiv2's parsed
 // EXIF / XMP. Shared by the read model (the summary card), the writer (the
 // snapshot of what was there) and the sidecar overlay, so all three agree on

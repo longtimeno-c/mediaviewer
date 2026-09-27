@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Render the README performance charts (docs/img/*.svg) from the measured data in docs/perf/.
 
 No dependencies beyond the standard library. Every number on a chart is read from a

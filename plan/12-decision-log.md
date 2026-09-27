@@ -2235,6 +2235,127 @@ Jobs pane cancel, and PR 1's present-loop gate. macOS: the first Xcode / SwiftPM
 `libx264` / `libx265`); the Mac PR 1 Metal gate. Both: `MediaViewerClipJob` signed and shipped
 (the Windows payload picks it up by name; `macpack.py --clipjob` puts it in Contents/Helpers).
 
+## 2026-09-25 — PR 15 scope: tabs are OS-tabbed windows; the Spotlight importer is in
+
+Two calls the roadmap left open for PR 15, answered by the owner when the slice started.
+
+- **"Single instance with tabs" means one process, a window per viewer, grouped by the OS.**
+  A second open from Explorer / Finder goes to the running instance (named pipe on Windows;
+  Launch Services already routes it on the Mac) and opens a **new window** there. macOS groups
+  those windows with `NSWindow` tabbing (`tabbingMode` preferred, one `tabbingIdentifier`);
+  Windows shows separate top-level windows, and `Ctrl+Tab` / `⌃Tab` walks them in both hosts.
+  Rejected: one window holding several viewer states behind an in-app tab strip. It is the
+  bigger rewrite, and it would mean several documents contending for one swapchain. Both hosts
+  keep **one present path per OS** (D2, D9), and each window owns its own swapchain / layer.
+  The viewer state that is global today (`App` in `main.cpp`, `MvLabApp` in `main_mac.mm`)
+  becomes per window; the device, decoder pools, thumb store and settings stay process-wide.
+  Every extra window is inside the present-loop gates: both PR 1 soaks run with two windows open.
+- **The Spotlight importer is built.** An `.mdimporter` in `Contents/Library/Spotlight` is the
+  twin of the Explorer property handler. It is out of process by construction (`mdworker`) and
+  reads through the shared `meta/` read model, never a decoder.
+  *Corrected the same day, when it was built:* macOS's own Image importer already claims every
+  D5 still type (`public.image`, `public.camera-raw-image`, `public.heic`, …), RAW included, and an
+  app importer claiming those would compete with Apple's richer one. The gap is video: the
+  system's CoreMedia importer covers MP4 / MOV but not **Matroska, WebM, AVI or MPEG-TS**. So the
+  importer claims exactly those four, and reports duration, pixel size, codecs, audio channels
+  and rate, bit rate, media types, the container's creation date and title, and the camera
+  (`shell/spotlight_fields.h`). Its verify joins the macOS line: `mdimport -t -d2` on an MKV,
+  with the installed, Developer ID-signed app, lists those keys. Dragging the app to the Trash
+  still removes every extension.
+- **One AppUserModelID, `MediaViewer.Viewer`, from PR 15 on.** The Start / desktop shortcuts
+  start the root stub, which starts `current\MediaViewer.exe`. Without an explicit id those are
+  two taskbar identities, so a pinned button and the running window did not group, and a jump
+  list has nowhere stable to live. The process sets it before its first window, the wizard's
+  shortcuts carry it (`mediaviewer.iss` [Icons]), and the jump list is committed under it. It is
+  never renamed: pins are keyed on it. Jump list entries start the root stub, as the shortcuts do.
+
+## 2026-09-25 — PR 15 Explorer handler: thumbnails only, on our ProgId, from a versioned copy
+
+Three owner calls when the handler was started, and one finding that shaped it.
+
+- **Property handler deferred.** Windows reads property handlers only from
+  `HKLM\…\PropertySystem\PropertyHandlers`; a per-user, no-UAC install (plan/13) cannot register
+  one. PR 15 ships the thumbnail handler alone. The property handler waits for the enterprise MSI
+  or a later opt-in elevated step. The Windows verify line's "Explorer shows your thumbnail"
+  stands; nothing in it needed the Details pane.
+- **Registered on `MediaViewer.Image` only**, never on an extension. Explorer then uses our
+  thumbnails exactly for the types the user made MediaViewer the default for, and a Microsoft
+  HEIF / Raw Image Extension is never overridden ("never silently hijack"). Video gets none, as on
+  the Mac (2026-09-24).
+- **The DLL runs from `<root>\shellext\<version>\`**, copied from `current\` with the DLLs it loads
+  (the build writes `MediaViewerThumbs.files`) on the first start of a version, and registered
+  there per-user. A surrogate may hold the DLL for minutes; an update swaps `current\` and never
+  has to replace a DLL in use. Older copies are removed once free. Uninstall deletes the keys and
+  the folder.
+- **Finding: the surrogate is shared.** A handler that initialises from a stream is run by the
+  shell in an isolated `dllhost.exe` that may host other vendors' handlers too. The handler
+  therefore changes nothing process-wide (no job object, no DLL search path); it caps its own
+  work instead: 512 MB read, edges clamped to 1024, a 4 s deadline after which it answers "no
+  thumbnail" and cancels the decode. It still declares its own `DllSurrogate` AppID as plan/09
+  asks. `shellext/` is a new host module beside `shell/` (tools/check-module-graph.ps1), and
+  `fuzz_thumbnail` fuzzes its entry point.
+
+## 2026-09-25 (later) — PR 15 ships single instance; windows grouped as tabs become their own PR
+
+Amends this morning's PR 15 scope entry. Building it showed that both chromes are one-window by
+construction: the C# chrome is a single `static partial class IslandHost` (islands, dispatcher,
+folder session, SMTC and Share are singletons), and the SwiftUI chrome reaches the host through
+102 bridge functions routed to one global window controller. A window per viewer means making
+both per-window, plus the two-window present-loop gates: more work than the rest of PR 15, so
+the owner split it out.
+
+- **PR 15 ships the single instance.** Windows: a second start (Explorer, the jump list, a
+  shortcut) hands its paths over a per-user, per-session named pipe
+  (`\\.\pipe\MediaViewer.Viewer.<session>.<SID>`, first-instance, local clients only) to the
+  running app, which opens them in its window and comes forward; `--new-instance` overrides, and
+  soaks, `--no-chrome` and an update's restart always run alone. macOS: Launch Services already
+  routes a second open to the running app (`application:openURLs:`), which opens it in its window.
+- **Multi-window + OS tabs + `Ctrl+Tab` / `⌃Tab` is a later PR** (unnumbered until planned), with
+  this morning's model unchanged: one process, a window per viewer, grouped by the OS.
+- **Verify lines amended:** macOS "a second open of a file goes to the running instance as a tab"
+  becomes "…goes to the running instance and opens in its window"; Windows gains the same check.
+
+## 2026-09-25 — First install tidies up its installer, both platforms
+
+The owner asked that installing leave no installer behind. This adds one checkbox to each
+first-install finish in plan/13 and no page to either. **Windows:** the Inno Finish page gets
+**Delete the installer (…-Setup.exe) when Setup closes**, on; a hidden `cmd` deletes
+`{srcexe}` once Setup has exited (the file is locked until then), and silent installs skip it.
+**Mac:** the first-launch setup sheet gets **Eject the installer disk and move the .dmg to the
+Trash**, on, shown only when the disk is still mounted or the `.dmg` a move-to-Applications
+relaunch remembered is still there. It uses the Trash rather than a delete because that is how a
+Mac user throws a `.dmg` away; Windows deletes because Setup has no Recycle Bin call without
+PowerShell. A disk image cannot run code when the app is dragged out of it, so the Mac check
+lives in the app, not the image. Nothing is offered while the app is running from, or
+translocated off, the image.
+
+## 2026-09-25 (later) — app licence moves to GPL-3.0-or-later
+
+**Decision.** The app licence changes from GPL-2.0-or-later to **GPL-3.0-or-later**. The reason
+is attribution: GPLv3 defines "Appropriate Legal Notices" for interactive user interfaces
+(§0, §5(d)), which is what the About flyout is. It is still copyleft. Nothing else changes.
+
+- **Allowed by the licence:** preserve copyright notices, ship `LICENSE` + `NOTICE`, mark
+  modified files, show the legal notices in the UI. **Not added, and not addable:** "credit us on
+  your website / store listing", "keep the name MediaViewer", any selling ban (GPL §10, "no
+  further restrictions"). The name and icon are a trademark request in the README only.
+- **Unchanged:** the selling model (forks may charge), dual-licensing (none), telemetry, updater,
+  pricing, and **the Store is still not a goal**. FFmpeg stays LGPL-only, dynamic, no
+  `--enable-gpl`; no LibRaw GPL demosaic pack; Exiv2 stays under the GPL (upstream is "GPL-2.0
+  or later", so it combines with a GPL-3.0 app); `THIRD-PARTY.md` stays.
+- **Side effect:** Apache-2.0 components (the Crashpad client) are now compatible outright; the
+  2026-09-14 note that a binary was "conveyed under GPL-3.0 terms" is now just the licence.
+- **Holder:** `Copyright (C) 2026 longtimeno-c`, the handle already used in the repo URL and
+  commit history; no legal name appears anywhere in the tree. The owner may replace it with a
+  legal name in one search-and-replace.
+- **Done in this change:** `LICENSE` (GPLv3), new `NOTICE`, copyright + SPDX header on every
+  first-party source file, About on both platforms (copyright line, "Licensed under GNU GPL v3
+  or later", links to `LICENSE`, `NOTICE`, `THIRD-PARTY.md`), `NOTICE` shipped beside `LICENSE`
+  in the Windows payload and the macOS bundle, version resources / `Info.plist` /
+  installer strings, and `tools/licence-check.ps1` (asserts GPLv3 `LICENSE`, `NOTICE`, and
+  `vcpkg.json` = GPL-3.0-or-later; the FFmpeg LGPL checks are untouched).
+- **Superseded, kept as history:** the 2026-09-06 "App licence: GPL-2.0-or-later" row above.
+
 ## 2026-09-26 — Signed previews and a Preview update channel
 
 **Reverses two calls:** "prerelease tags are not a v1 channel" (2026-09-23, GitHub Releases is
@@ -2401,3 +2522,34 @@ reverses a D-decision; all await the owner's approval of the milestone):
   base editor's encodes do.
 - **Still out:** third-party plug-ins, collaboration, control surfaces, Fusion-style compositing,
   software H.264 / HEVC / AAC encoders.
+
+## 2026-09-27 — PR 29 Windows half
+
+The WinUI twin of the entry above, on the same shared core. No decision is reversed; the calls
+made on the way:
+
+- **One island for the strip and its pane.** `IslandHost.Edit.cs` is a fifth panel island heading
+  the right column. On Crop and Trim it spans the column (strip over pane); on Colour / Info /
+  Jobs it is the strip alone and `layout_panels` places that existing pane under it. The canvas
+  docks through the same `chrome_right_px` the Mac uses, applied in `present_lab.cpp`
+  `usable_canvas` — a refit on the one swapchain, never a resize.
+- **One view push.** `SetEditView` (`chrome_edit_args`, 72 bytes) feeds the strip, the Crop / Trim
+  pane and the command bar's **Edit image / Edit video** button. The island sends keyed command
+  ids plus four notifications: `edit_tab` 1018, `edit_action` 1019, `meta_tags` 1020,
+  `meta_date` 1021. They were written as 1017–1020 and moved up one when main's issue #38
+  (`transport_hold`) took 1017; both sides' checksum test pins the numbering.
+- **Tag edits batch.** The pane parks one edit per line; *Remove location* is therefore one
+  checked rewrite for every GPS tag, not one per tag (the Mac sends them one by one, and the
+  writer queue merges them).
+- **`meta::editable_properties_table`** is the shared form of what the Mac bridge formatted by
+  hand (raw value + `access_of`), so the Windows host does not duplicate it.
+- **Also fixed:** the Mac-written `meta/write.cpp` did not compile under `/W4 /WX` (C4456); the
+  same fix also arrived on the branch from the Mac session and the two merged cleanly.
+
+**Proved on Windows** (2026-09-27): the `MV_EDIT_SELFTEST` rig (3:2 → a 2000 × 1333 copy from a
+2000 × 1500 JPEG; tag and date written in place and read back; revert → the original's SHA-1
+exactly; a clip opens on Trim), and verify 2–4 with real key input ([20](20-edit-workspace.md)
+"What was run (Windows)"). The Windows PR 1 gate was **inconclusive**: on a machine in use every
+run failed, unmodified `origin/main` included. **Owed:** that gate on a quiet machine (and with the
+pane docked), Narrator, a light-theme and 200 % pass, the pointer path of verify 1 with a real
+mouse, and VoiceOver / the Mac gate with the pane docked.

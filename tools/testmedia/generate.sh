@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # PR 5 test corpus generator.
 #
 # THE CLIPS are gitignored (plan/09: the corpus does not go in git). THIS

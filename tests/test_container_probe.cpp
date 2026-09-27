@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // CLAUDE.md: "Probe by magic bytes, never extension." These are the cases a
 // real camera dump actually contains.
 #include <catch2/catch_test_macros.hpp>

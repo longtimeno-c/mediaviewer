@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5a - the presentation ring of textures WE own (plan/05), and the bounded
 // packet queue that feeds the decoder.
 //

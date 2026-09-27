@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (plan/18 "Add-ons: how Import is installed").
 
     addon-pack.py pack --platform win-x64|macos --src build/addons/import \
@@ -55,8 +56,8 @@ FILES = {
     },
 }
 
-LICENCE = "GPL-2.0-or-later"
-NOTICE = ("Import add-on for MediaViewer. GPL-2.0-or-later. Uses SQLite (public domain).\n"
+LICENCE = "GPL-3.0-or-later"
+NOTICE = ("Import add-on for MediaViewer. GPL-3.0-or-later. Uses SQLite (public domain).\n"
           "Content hashes use BLAKE3 (CC0-1.0) and signatures libsodium (ISC), both in the app.\n")
 
 

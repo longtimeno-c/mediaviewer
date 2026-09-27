@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Marks (plan/16 "Marks, copy, move"): a set separate from the selection, so
 // arrow-key browsing never turns culling into accidental ranges.
 //

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // AVIF via libavif + dav1d (BSD). Still and animated (`avis`) sequences
 // (plan/04).
 //
@@ -21,7 +22,14 @@ namespace mv::codec {
 namespace {
 
 constexpr std::uint32_t kMaxDim = 65535;
-constexpr std::uint64_t kMaxPixels = 256ull * 1000ull * 1000ull;
+// Lower than the other stills' 256 MP. libavif scales a decoded frame up to
+// the size the container declares (ispe / tkhd) whenever the two differ, with
+// imageSizeLimit as the only bound, so a 1.3 KB avis with a tiny coded frame
+// and a 10008x16400 track reached 2.8 GB in 16-bit planes plus our RGBA
+// (fuzz_avif, CI run 36269934345), about 17 bytes per declared pixel. 128 MP
+// keeps that under the fuzz harness's 2560 MB and is still well above any
+// single AV1 frame (level 6.3 tops out at 35.6 MP) and a 102 MP grid still.
+constexpr std::uint64_t kMaxPixels = 128ull * 1000ull * 1000ull;
 
 status map_result(avifResult r) noexcept {
   switch (r) {

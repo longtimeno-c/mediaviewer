@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 11 verify, the shared half (plan/10): colour adjusts in the linear FP16
 // working space (D6), the export bake, the histogram / clipping reduction,
 // the shader kernel's single source, and the edit session's slider ops.

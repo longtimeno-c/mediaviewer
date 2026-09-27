@@ -72,7 +72,7 @@ enum EditCommand {
   static let clipTools: Int32 = 144
   static let clipSplit: Int32 = 145
   static let trimRemoveMiddle: Int32 = 146
-  static let editWorkspace: Int32 = 147
+  static let editWorkspace: Int32 = 150  // after PR 15's copy_path, copy_flattened, share
 }
 
 @MainActor
