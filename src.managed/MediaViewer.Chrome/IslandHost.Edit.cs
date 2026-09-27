@@ -155,7 +155,7 @@ public static partial class IslandHost
         // The bar's own TextButton, so it looks and behaves like Open / View
         // (see FlattenButton for why nothing here takes a custom template).
         _editBarButton = TextButton("Edit image", () => Send(Command.EditWorkspace));
-        FlattenButton(_editBarButton);  // hidden with no media on the canvas
+        FlattenButton(_editBarButton);  // disabled with nothing on the canvas
         RenderEditBarButton();
         return _editBarButton;
     }
@@ -165,9 +165,7 @@ public static partial class IslandHost
         if (_editBarButton is null) return;
         string label = _editOpen ? "Done" : EditTitle;
         SetButtonText(_editBarButton, label);
-        // Shown only over media: not on the empty start, not over the gallery.
-        _editBarButton.Visibility = _editOpen || (_editSubject != SubjectNone && !_galleryVisible)
-            ? Visibility.Visible : Visibility.Collapsed;
+        _editBarButton.IsEnabled = _editSubject != SubjectNone;
         _editBarButton.Background = _editOpen ? Brush(Hairline) : Brush(Colors.Transparent);
         string tip = _editOpen ? "Close the editor  Enter or Esc"
                      : EditIsClip ? "Edit video: trim, split, clip tools  Enter"

@@ -177,16 +177,15 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(16) }
           }
           // PR 29 (plan/20): the visible way in to every edit, a bar button like
-          // Settings. Return does the same. Shown only over media.
-          if edit.showsBarButton {
-            Button(edit.open ? "Done" : edit.title) { edit.toggle() }
-              .buttonStyle(FlatButtonStyle(selected: edit.open))
-              .help(edit.open ? "Close the editor (Return or Esc)"
-                              : (edit.isClip ? "Edit video: trim, split, clip tools (Return)"
-                                             : "Edit image: crop, rotate, colour, info (Return)"))
-              .accessibilityLabel(edit.open ? "Done editing" : edit.title)
-              .accessibilityHint("Key Return")
-          }
+          // Settings. Return does the same.
+          Button(edit.open ? "Done" : edit.title) { edit.toggle() }
+            .buttonStyle(FlatButtonStyle(selected: edit.open))
+            .disabled(!edit.canEdit)
+            .help(edit.open ? "Close the editor (Return or Esc)"
+                            : (edit.isClip ? "Edit video: trim, split, clip tools (Return)"
+                                           : "Edit image: crop, rotate, colour, info (Return)"))
+            .accessibilityLabel(edit.open ? "Done editing" : edit.title)
+            .accessibilityHint("Key Return")
           Button("Settings") { mv_chrome_menu(18) }.buttonStyle(FlatButtonStyle())
           BarFlyout(title: "About") { _ in
             VStack(alignment: .leading, spacing: 0) {

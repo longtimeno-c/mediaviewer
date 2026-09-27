@@ -82,7 +82,6 @@ final class EditStore: ObservableObject {
   @Published private(set) var open = false
   @Published private(set) var tab: EditTab = .crop
   @Published private(set) var subject: Int32 = 0  // 0 none, 1 still, 2 clip
-  @Published private(set) var galleryVisible = false
   @Published private(set) var cropActive = false
   @Published private(set) var aspect: CropAspect = .free
   @Published private(set) var portrait = false
@@ -97,8 +96,6 @@ final class EditStore: ObservableObject {
 
   var isClip: Bool { subject == 2 }
   var canEdit: Bool { subject != 0 }
-  /// The bar button shows only over media: not on the empty start, not over the gallery.
-  var showsBarButton: Bool { open || (canEdit && !galleryVisible) }
   var title: String { isClip ? "Edit video" : "Edit image" }
   var tabs: [EditTab] { isClip ? [.trim, .jobs] : [.crop, .colour, .info] }
 
@@ -118,8 +115,6 @@ final class EditStore: ObservableObject {
     var v = mv_edit_view()
     guard mv_chrome_edit_view(&v) else { return }
     if v.subject != subject { subject = v.subject }
-    let gallery = mv_chrome_gallery_visible()
-    if gallery != galleryVisible { galleryVisible = gallery }
     guard g != generation else { return }
     generation = g
     open = v.open != 0
