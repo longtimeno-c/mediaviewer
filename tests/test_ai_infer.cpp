@@ -374,8 +374,8 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
     // query_z was calibrated) and, given the labels, 1,000 (where a fixed z
     // let every nonsense query through).
     const std::size_t n = std::min<std::size_t>(labels->a.size(), 1000);
-    std::vector<std::vector<float>> embs;
-    std::vector<std::string> captions;
+    std::vector<std::vector<float>> all_embs;
+    std::vector<std::string> all_captions;
     for (std::size_t i = 0; i < n; ++i) {
       const auto& item = labels->a[i];
       const fs::path img = fs::path(eval) / "img" / *item.str("file");
@@ -394,15 +394,13 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       const mv::infer::rgb_view view{px.data(), w, h};
       std::vector<float> e;
       REQUIRE((*model)->embed_images(std::span<const mv::infer::rgb_view>(&view, 1), e));
-      embs.push_back(e);
+      all_embs.push_back(e);
       std::string all;
       for (const auto& s : item.find("sentences")->a) all += " " + s.s;
       std::transform(all.begin(), all.end(), all.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
-      captions.push_back(all);
+      all_captions.push_back(all);
     }
-    if (embs.size() < 50) SKIP("fewer than 50 labelled images decoded (a build without the host decoders)");
-    const auto all_embs = std::move(embs);
-    const auto all_captions = std::move(captions);
+    if (all_embs.size() < 50) SKIP("fewer than 50 labelled images decoded (a build without the host decoders)");
     for (const std::size_t count : {std::min<std::size_t>(300, all_embs.size()), all_embs.size()}) {
       const std::vector<std::vector<float>> embs(all_embs.begin(), all_embs.begin() + static_cast<std::ptrdiff_t>(count));
       const std::vector<std::string> captions(all_captions.begin(), all_captions.begin() + static_cast<std::ptrdiff_t>(count));

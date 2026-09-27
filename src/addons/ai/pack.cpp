@@ -221,23 +221,24 @@ infer::provider_fault self_test(pack_state& p, const infer::clip_spec& spec, inf
 // the model it started on (shared_ptr), and the CPU tower is freed after it.
 class upgrading_clip final : public infer::embedder {
  public:
-  upgrading_clip(std::shared_ptr<pack_state> p, infer::clip_spec spec, std::unique_ptr<infer::clip_model> cpu,
-                 infer::session_options fast, std::uint32_t compute)
-      : current_(std::move(cpu)), dim_(spec.dim), key_(spec.spec_key()) {
-    worker_ = std::thread([this, p = std::move(p), spec = std::move(spec), fast, compute] {
+  upgrading_clip(std::shared_ptr<pack_state> state, infer::clip_spec tower, std::unique_ptr<infer::clip_model> now,
+                 infer::session_options accelerated_opts, std::uint32_t compute_choice)
+      : current_(std::move(now)), dim_(tower.dim), key_(tower.spec_key()) {
+    worker_ = std::thread([this, p = std::move(state), spec = std::move(tower), fast = std::move(accelerated_opts),
+                           compute = compute_choice] {
       platform::enter_background();
       infer::session_options cpu = fast;
       cpu.on = infer::backend::cpu;
       cpu.cache_dir_utf8.clear();
-      infer::provider_fault fault = infer::provider_fault::none;
-      auto model = infer::clip_model::open(*p->rt, spec, fast, &fault);
+      infer::provider_fault why = infer::provider_fault::none;
+      auto opened = infer::clip_model::open(*p->rt, spec, fast, &why);
       if (stop_) return;
-      if (model) fault = self_test(*p, spec, **model, fast.on, compute, cpu);
+      if (opened) why = self_test(*p, spec, **opened, fast.on, compute, cpu);
       std::lock_guard lock(m_);
-      if (model && fault == infer::provider_fault::none) {
-        current_ = std::shared_ptr<infer::embedder>(std::move(*model));
+      if (opened && why == infer::provider_fault::none) {
+        current_ = std::shared_ptr<infer::embedder>(std::move(*opened));
       } else {
-        fault_ = fault == infer::provider_fault::none ? infer::provider_fault::failed : fault;
+        fault_ = why == infer::provider_fault::none ? infer::provider_fault::failed : why;
       }
     });
   }
