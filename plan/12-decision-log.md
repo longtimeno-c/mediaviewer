@@ -2723,3 +2723,24 @@ L/14 stops answering "helicopter" with planes (captions still found 139-143 / 15
 where B/32 does too (131-137 / 150). B/32 cannot separate "a helicopter" from "a dog" (both
 1.33 x noise), so its level 4 also says nothing found for "a dog"; recorded, not hidden. Level 0
 finds at least today's captions and more rows, and answers 5-10 of 25 nonsense strings.
+
+## 2026-09-28 — Local search Settings: one scale, queued installs, no budget bar
+
+**Amends** plan/17 "UI and commands" (Settings -> Local search) on the owner's review, both
+platforms.
+
+- **Search quality leaves Settings.** "Why do we need two options? Can we just have the
+  scale?" Precision is the one knob. The model stays on the engine's Auto (High where CUDA /
+  Core ML runs it, Fast on CPU only); the `quality` setting and its migration are unchanged. A
+  Fast or High stored before is not rewritten: a "Search model" row says so, with *Use Auto*.
+- **Install clicks queue.** Core, People and Sound/Audio can be clicked at once, and an
+  *Install all* is offered while none is installed. Downloads still run one at a time, Core
+  first; each piece's 3 GB check runs before its own download, after the one before it has
+  landed; pieces waiting on a Core that fails are dropped with a note.
+- **The "1.2 GB of 3 GB" bar is gone** ("a bit naff"). Per-piece sizes and the 3 GB refusal
+  sentence stay.
+- **Download progress is real on the Mac.** The async `URLSession.download(from:delegate:)`
+  task's `Progress` counted a few units, not bytes, so the bar sat at 0 % until Checking; a
+  download task on its own delegate session now reports bytes ~10 times a second (Windows:
+  by time, not 1 % steps). Indeterminate phases animate; with Reduce Motion / animations off
+  the bar is still.

@@ -12,7 +12,8 @@ namespace MediaViewer.Ai.Chrome;
 
 /// <summary>
 /// Settings → Local search once the pack is loaded (plan/17 PR 23, PR 24):
-/// status and Pause, Compute, Search quality, the indexed folders, the index
+/// status and Pause, Compute, Precision (the one quality scale; the model
+/// stays on Auto), the indexed folders, the index
 /// size and Clear, the battery threshold, and the separate people opt-in.
 /// </summary>
 /// <remarks>
@@ -31,8 +32,9 @@ internal sealed class ManagePanel
     private readonly Button _pause;
     private readonly Button _indexAnyway;
     private readonly ComboBox _computeBox;
-    private readonly ComboBox _qualityBox;
-    private readonly TextBlock _qualityLine;
+    // Shown only while a Fast or High from before is stored (no picker now).
+    private readonly FrameworkElement _legacyQualityRow;
+    private readonly TextBlock _legacyQualityLine;
     private readonly Slider _precision;
     private readonly TextBlock _restart;
     private readonly ComboBox _batteryBox;
@@ -62,11 +64,12 @@ internal sealed class ManagePanel
     private static readonly string[] BatteryNames =
         { "Never", "Below 20 %", "Below 30 %", "Below 50 %", "Always on battery" };
     private static readonly string[] PrecisionNames = { "Broadest", "Broader", "Balanced", "Stricter", "Strictest" };
-    private static readonly string[] QualityLines =
+    // A stored Fast (1) or High (2), said beside "Use Auto".
+    private static readonly string[] LegacyQualityLines =
     {
-        "Auto — High on a GPU, Fast otherwise",
-        "Fast — smaller model, quick on any computer",
-        "High — best matches, needs a GPU or Apple silicon to be quick",
+        "",
+        "Set to Fast earlier. Auto chooses the model for this computer and re-indexes in the background if it changes; the current index answers until the new one is ready.",
+        "Set to High earlier. Auto chooses the model for this computer and re-indexes in the background if it changes; the current index answers until the new one is ready.",
     };
 
     public StackPanel Root { get; }
@@ -120,20 +123,16 @@ internal sealed class ManagePanel
         computeDetail.Children.Add(_restart);
         Root.Children.Add(Row("Compute", computeDetail, _computeBox));
 
-        _qualityBox = Combo();
-        foreach (string q in new[] { "Auto", "Fast", "High" }) _qualityBox.Items.Add(q);
-        _qualityLine = _look.Text("", 12);
-        _qualityBox.SelectionChanged += (_, _) =>
-        {
-            if (_qualityBox.SelectedIndex >= 0) _qualityLine.Text = QualityLines[_qualityBox.SelectedIndex];
-            if (_updating || _qualityBox.SelectedIndex < 0) return;
-            Set("quality", _qualityBox.SelectedIndex.ToString());
-        };
-        var qualityDetail = new StackPanel { Spacing = 2 };
-        qualityDetail.Children.Add(_qualityLine);
-        qualityDetail.Children.Add(_look.Text(
-            "Which model reads your photos: speed against accuracy. Changing it re-indexes in the background; the current index answers until the new one is ready.", 12));
-        Root.Children.Add(Row("Search quality", qualityDetail, _qualityBox));
+        // No "Search quality" picker (owner, 2026-09-28: one scale, not two):
+        // the engine's Auto picks the larger model where CUDA runs it quickly,
+        // the smaller one on CPU only. A Fast or High chosen before stays as
+        // it was, said here with a way back to Auto; nothing rewrites it
+        // behind the person's back.
+        _legacyQualityLine = _look.Text("", 12);
+        _legacyQualityRow = Row("Search model", _legacyQualityLine,
+            _look.Button("Use Auto", () => Set("quality", ((uint)MvAiQuality.Auto).ToString())));
+        _legacyQualityRow.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_legacyQualityRow);
 
         // Precision (plan/17 "Precision scale"): five steps, the middle the
         // calibrated rule. Each search reads it as it starts: no re-index.
@@ -167,7 +166,7 @@ internal sealed class ManagePanel
         precisionControl.Children.Add(_precision);
         precisionControl.Children.Add(stricter);
         Root.Children.Add(Row("Precision",
-            "Stricter shows only close matches and says “nothing found” rather than showing near misses (a plane for “helicopter”). Broader shows more, including looser matches.",
+            "How closely a result must match what you type. Stricter shows only close matches and says “nothing found” rather than a near miss (a plane for “helicopter”); Broader shows more, including looser matches.",
             precisionControl));
 
         // Audio (2026-09-27): what videos are indexed for. Sound covers both
@@ -324,8 +323,9 @@ internal sealed class ManagePanel
             _computeBox.Items.Add("CPU only");
             _computeBox.SelectedIndex = Math.Max(0, _computeValues.IndexOf((MvAiCompute)compute));
 
-            _qualityBox.SelectedIndex = (int)Math.Min(2, quality);
-            _qualityLine.Text = QualityLines[_qualityBox.SelectedIndex];
+            bool legacyQuality = quality is (uint)MvAiQuality.Fast or (uint)MvAiQuality.High;
+            _legacyQualityRow.Visibility = legacyQuality ? Visibility.Visible : Visibility.Collapsed;
+            if (legacyQuality) _legacyQualityLine.Text = LegacyQualityLines[quality];
             uint precision = r.TryGetProperty("precision", out JsonElement pr) ? pr.GetUInt32() : 2;
             _precision.Value = Math.Min(4u, precision);
             AutomationProperties.SetItemStatus(_precision, PrecisionNames[(int)Math.Min(4u, precision)]);

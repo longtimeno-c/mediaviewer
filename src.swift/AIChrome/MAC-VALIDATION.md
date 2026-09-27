@@ -217,7 +217,7 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       "People needs about … Remove another piece first." and nothing is downloaded; forcing an
       install through the store is refused too (`mv_addons_install` false).
 - [ ] **Install / Remove per piece** works: Core, then People (People is disabled until Core is
-      installed); the budget bar animates to the new total; installing or removing People while
+      installed, or queued behind Core); the row reads Installed with its size; installing or removing People while
       Core runs is picked up at once (`set_setting("reload")`, no restart);
       Remove Core asks "Also delete the search index?" — the default keeps it (check
       `~/Library/Application Support/MediaViewer/Add-ons/AI/data/` still has `index.db`), the
@@ -324,7 +324,7 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       index size; Settings → Local search → Clear index… → confirm: index size drops to ~0, the
       thumbnail cache size is unchanged and the gallery still shows thumbnails instantly.
 - [ ] Per-folder Pause / Resume / Rescan / Remove work; Remove leaves the user's files untouched.
-- [ ] **Model-upgrade migration:** switch Search quality Fast → High: the footer shows
+- [ ] **Model-upgrade migration:** with `quality` stored as Fast, click *Use Auto* (Search model row) on a Core ML Mac: the footer shows
       "Upgrading the index: X of Y…", queries keep answering from the old model until it
       finishes, and a query mid-migration never mixes vector spaces (the lead's test + a manual
       query whose results do not change character mid-way).
@@ -427,8 +427,8 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
 
 ### Verify
 
-- [ ] **Settings:** a *Sound* row with its size beside Core and People; the budget bar adds its
-      ~1.03 GB; a family over 3 GB is refused before download. Install while Core runs is picked
+- [ ] **Settings:** a *Sound* row with its size beside Core and People (it adds its
+      ~1.03 GB); a family over 3 GB is refused before download. Install while Core runs is picked
       up at once (`set_setting("reload")`); Remove asks, then sound search stops.
 - [ ] **"Index videos for: Pictures · Sound · Both"** (an `NSSegmentedControl`: a `.segmented`
       `Picker` ignored per-item `.disabled`, owner report 2026-09-27): Sound and Both cannot be
