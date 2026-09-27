@@ -7,7 +7,6 @@
 
 #include "abi/folder_reselect.h"
 
-using mv::abi::relist_should_reopen;
 using mv::abi::reselect;
 
 namespace {
@@ -83,23 +82,4 @@ TEST_CASE("a refresh that loses one half stays on the half that is left",
   // Two separate files became a pair: the user's file is now a secondary.
   const std::vector<stop> paired = {{"a.jpg", ""}, {"DSC_1.JPG", "DSC_1.NEF"}};
   REQUIRE(pick_pair(paired, true, "DSC_1.NEF", {}, 2) == 1);
-}
-
-// Issue #56: a watcher/poll relist that lands back on the file already open
-// must not reopen it (a clip's fresh media_source starts paused-by-default
-// and the gallery-hold autoplay gate waves it through, silently overriding a
-// user's pause). Windows' apply_folder_list and the Mac host's
-// -refreshFolderIfChanged both gate their reopen call on this.
-TEST_CASE("a relist reopens only a first listing or a genuine file change",
-          "[abi][folder]") {
-  // Nothing was open yet (a folder's first listing, or the folder was just
-  // emptied out): always worth an open, even if the path happens to match.
-  REQUIRE(relist_should_reopen(false, false));
-  REQUIRE(relist_should_reopen(false, true));
-  // Something is already open and the relist still resolves to that same
-  // file: a watcher tick that saw an unrelated change must not reopen it.
-  REQUIRE_FALSE(relist_should_reopen(true, true));
-  // Something is already open and the relist lands on a different file (the
-  // old one was deleted/renamed out from under the selection): reopen.
-  REQUIRE(relist_should_reopen(true, false));
 }

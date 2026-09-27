@@ -66,6 +66,42 @@ If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the
 7. **Never require a Store codec pack.** Probe OS codec, prefer it when hardware-backed,
    fall back to the bundled decoder silently.
 
+## Performance is the product — strict
+
+Speed is the reason this app exists. Treat every change as a performance change until
+numbers say otherwise.
+
+- **No regression ships.** A change must not make any of these worse on either platform:
+  launch → first pixel, launch → full resolution, arrow → next photo (cached, cold, quick,
+  held), pan pacing (PR 1 gate), idle cost (0 presents, ~0 % CPU on a still), video pacing.
+  "Within noise" means repeated runs overlap, not one lucky run.
+- **Measure, don't argue.** A perf claim needs before/after numbers from the same machine,
+  same build configuration, same files, runs alternated (base, new, base, new), warm cache
+  as the published runs are. Build the base in its own worktree/build dir (never an
+  incremental rebuild of a different commit in one dir). Quote the lab JSON, not
+  impressions. If the harness cannot see the case, extend the harness first
+  (`--browse-soak`, `--soak --json`, `mv_tests "[.perf-bench]"`), then change the code.
+- **Know what a gate is blind to.** The pacing soak says the render thread presented on
+  time, not that media kept its rate or that the right pixels arrived; check cadence,
+  first pixel and full-resolution time separately.
+- **The view comes first.** Work for what is on screen runs on the foreground queue and
+  starts as early as its inputs exist: never behind a folder scan, a sort, the chrome
+  attaching, a thumbnail sweep, or a poll. Chrome (.NET/WinUI, SwiftUI) never gates the
+  core — the core open starts before the chrome loads.
+- **Never throw away work you are about to need.** Cancel on navigation, but hand work
+  the new view wants to the new generation instead of restarting it (see `job_context::
+  handed_off_via`). Deduplicate in-flight work by path.
+- **Hot paths:** no allocation or copy you can avoid (decode straight into the final
+  buffer), no per-frame or per-item lookups you can hoist, no locks held across I/O or
+  decode, no `stat()`/syscall per file you do not need, caches keyed by content identity
+  (path + size + mtime), transforms built once and reused. Parallelise only measured hot
+  loops (`core/parallel.h`), capped so presents keep a core.
+- **Budgets are budgets.** ~2 ms/frame uploads, 512 MB viewer LRU, ±2 prefetch window,
+  foreground RAW threads capped for presents. Changing one needs a measurement and a
+  line in `plan/12-decision-log.md`.
+- **Report honestly.** Numbers that did not improve, cases the harness did not cover and
+  platforms not measured go in the PR description, not under the rug.
+
 ## Decided — do not reopen
 
 | # | Call |
@@ -120,25 +156,30 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
   The updater must exist before the first build that leaves this machine.
   Telemetry waits for PR 8 and is **default off**.
 
-## Root README
+## README vs DEVELOPMENT
 
-`README.md` at the repo root is the human landing page. **Keep it up to date in the
-same change that would make it stale.** Do not finish a PR, scaffold, or behaviour
-shift with the README still describing the old repo.
+`README.md` at the repo root is **marketing**: the product page someone sees on GitHub.
+It says what MediaViewer is, where to download it, what it does, the measured speed
+charts, what is coming, a five-line build-from-source, and the licence. Keep it short
+and in the voice of a product page.
 
-Update it when you:
+**Never put logs in the README.** No status reports, PR-by-PR progress, "not yet
+verified" caveats, verify-line results, dated notes, runbooks, command-line flag lists,
+test commands or harness output. Those belong in **`docs/DEVELOPMENT.md`**, the
+contributor notes: build and run recipes for both platforms, the key table, tests and
+gates, crash-report and packaging runbooks, the performance suite, and "Where this
+actually is" (the honest status). Decisions and their history stay in `plan/`.
 
-- Add or change build, run, or test commands
-- Scaffold layout, dependencies, or the toolchain
-- Land a roadmap PR that changes what the tree actually does (formats, playback,
-  edits, trim, install)
-- Settle licence, install/update, or “how to open a camera dump”
-- Add a verify/harness a human would need to run
+Keep `docs/DEVELOPMENT.md` up to date in the same change that would make it stale:
+build, run or test commands; layout, dependencies or toolchain; a roadmap PR landing;
+install/update or licence changes; a new verify or harness. Write it for someone cloning
+the repo. Link to `plan/` rather than pasting it.
 
-Write for someone cloning the repo, not for an agent. What it is, how to build it,
-how to run it, current status vs the plan. Do not paste `plan/` into it — link
-there. If the README still says the repo is empty after you have added a build,
-you are not done.
+Touch the README only when the *product* changes in a way a user would notice (a new
+format, feature, platform, release, or re-measured chart). Its charts come from
+`python tools/perf/regenerate.py` (see DEVELOPMENT, "Performance suite"): re-measure and
+redraw, never edit a number or an SVG by hand. If a README number changes, it is because
+a report in `docs/perf/` changed.
 
 ## Native core (C++20)
 

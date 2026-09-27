@@ -239,6 +239,10 @@ struct app_state {
   bool tracking_mouse = false;
   bool chrome_enabled = true;
   bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
+  // Launch: the core half of the argv open (mv_folder_open), already issued
+  // before the chrome attached. open_folder skips that one call for it.
+  std::string early_open_dir;
+  std::string early_open_select;
   open_mode mode = open_mode::none;
   bool gallery_visible = false;
   // Issue #44: what the core was last told (mv_video_set_hold). The grid covers
@@ -360,19 +364,38 @@ bool g_new_instance = false;
 // --browse-soak. Neighbours of the open photo are decoded ahead (±1, ±2, no
 // wrap). Cold jumps are the photos past that window, taken before the walk
 // visits them. Warm steps are Right after a dwell, so the next photo has had
-// time to be decoded. The clock is the render thread's, not this tick.
+// time to be decoded. Quick steps are Right as soon as the last step is on
+// screen, from the first photo again: each lands on a neighbour whose
+// prefetch is usually still running, the case the decode hand-off is for.
+// Held steps are a held Right key: one step per tick without waiting for
+// anything, then the last photo is timed to full resolution, and the job
+// counts over the run say how much decode work the walk threw away.
+// The clock is the render thread's, not this tick.
+enum class browse_kind { warm, cold, quick, held };
+const char* browse_kind_name(browse_kind k) noexcept {
+  switch (k) {
+    case browse_kind::cold: return "cold";
+    case browse_kind::quick: return "quick";
+    case browse_kind::held: return "held";
+    case browse_kind::warm: break;
+  }
+  return "warm";
+}
 struct browse_row {
   char name[200]{};
   int index = 0;
-  int cold = 0;
+  browse_kind kind = browse_kind::warm;
   int cached = 0;
   int timed_out = 0;
   double ready_ms = -1.0;
   double present_ms = -1.0;
   double refresh_ms = 0.0;
+  double full_ms = -1.0;
 };
 enum class browse_phase {
-  wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm, finish
+  wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm,
+  quick_home, wait_quick_home, quick, wait_quick, held_home, wait_held_home, held, wait_held,
+  finish
 };
 struct browse_run {
   bool enabled = false;
@@ -387,12 +410,18 @@ struct browse_run {
   int cold_n = 0;
   int cold_i = 0;
   int warm_left = 0;
+  int quick_left = 0;
+  int held_left = 0;
+  int held_steps = 0;
+  mv_job_stats held_before{};
+  mv_job_stats held_after{};
+  bool held_done = false;
   std::uint64_t seq = 0;
   bool record = false;
   int pending_index = 0;
-  int pending_cold = 0;
+  browse_kind pending_kind = browse_kind::warm;
   char pending_name[200]{};
-  browse_row rows[24]{};
+  browse_row rows[32]{};
   int nrows = 0;
 } g_browse;
 
@@ -505,9 +534,15 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   seed_siblings_for(app, dir);
   app->folder_find = false;
   app->folder_query.clear();
-  uint64_t job_id = 0;
-  (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
-                       &job_id);
+  const bool opened_early =
+      !navigation && dir == app->early_open_dir && select == app->early_open_select;
+  app->early_open_dir.clear();
+  app->early_open_select.clear();
+  if (!opened_early) {
+    uint64_t job_id = 0;
+    (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
+                         &job_id);
+  }
   ++app->folder_token;
   app->current_dir = dir;
   app->folder_cursor = -1;
@@ -563,8 +598,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
 // argv and drag-and-drop (plan/16): the first entry that exists wins — a folder
 // opens, a file opens its folder with that file selected (open_request.h).
 // The attribute probe is the same one-stat-per-path open_path already makes.
-void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
-  if (!app) return;
+mv::shell::open_request resolve_paths(const std::vector<std::wstring>& raw) {
   std::vector<mv::shell::path_probe> probes;
   probes.reserve(raw.size());
   for (const auto& r : raw) {
@@ -576,7 +610,45 @@ void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
     probe.is_directory = probe.exists && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
     probes.push_back(std::move(probe));
   }
-  const auto request = mv::shell::resolve_open(probes);
+  return mv::shell::resolve_open(probes);
+}
+
+// Launch only, before attach_chrome: the WinUI islands take ~0.4 s to load,
+// and nothing in the core open needs them. This issues the same
+// mv_folder_open that open_paths -> open_folder would (the folder, or the
+// file's folder with the file selected), so the scan and the file's decode
+// run while the chrome loads. The host half - mode, trail, chrome state -
+// still happens in open_paths once the chrome is up, and skips this call.
+void open_paths_early(app_state* app, const std::vector<std::wstring>& raw) {
+  if (!app || !app->session) return;
+  const auto request = resolve_paths(raw);
+  std::wstring_view dir;
+  std::wstring_view select;
+  if (request.kind == mv::shell::open_kind::folder) {
+    dir = request.path;
+  } else if (request.kind == mv::shell::open_kind::file) {
+    const auto slash = request.path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;  // open_path's bare-name route; not a folder open
+    dir = std::wstring_view(request.path).substr(0, slash);
+    select = request.path;
+  } else {
+    return;
+  }
+  const std::string utf8_dir = utf8_from_wide(dir);
+  if (utf8_dir.empty()) return;
+  const std::string utf8_select = utf8_from_wide(select);
+  uint64_t job_id = 0;
+  if (mv_folder_open(app->session, utf8_dir.c_str(),
+                     utf8_select.empty() ? nullptr : utf8_select.c_str(), &job_id) != MV_OK) {
+    return;
+  }
+  app->early_open_dir = utf8_dir;
+  app->early_open_select = utf8_select;
+}
+
+void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
+  if (!app) return;
+  const auto request = resolve_paths(raw);
   switch (request.kind) {
     case mv::shell::open_kind::folder:
     case mv::shell::open_kind::file:
@@ -3020,7 +3092,8 @@ void browse_json_string(FILE* f, const char* s) noexcept {
   std::fputc('"', f);
 }
 
-bool browse_select(app_state* app, std::uint32_t index, bool record, bool cold) noexcept {
+bool browse_select(app_state* app, std::uint32_t index, bool record,
+                   browse_kind kind) noexcept {
   char name[200]{};
   std::uint32_t bytes = 0;
   if (mv_folder_item_name(app->session, index, name, sizeof name, &bytes) != MV_OK)
@@ -3031,7 +3104,7 @@ bool browse_select(app_state* app, std::uint32_t index, bool record, bool cold) 
   g_browse.seq = seq;
   g_browse.record = record;
   g_browse.pending_index = static_cast<int>(index);
-  g_browse.pending_cold = cold ? 1 : 0;
+  g_browse.pending_kind = kind;
   std::snprintf(g_browse.pending_name, sizeof g_browse.pending_name, "%s", name);
   g_browse.phase_tick = ::GetTickCount64();
   folder_select(app, index);
@@ -3047,7 +3120,7 @@ void browse_take(app_state* app, bool timed_out) noexcept {
   auto& row = g_browse.rows[g_browse.nrows++];
   std::snprintf(row.name, sizeof row.name, "%s", g_browse.pending_name);
   row.index = g_browse.pending_index;
-  row.cold = g_browse.pending_cold;
+  row.kind = g_browse.pending_kind;
   row.timed_out = timed_out ? 1 : 0;
   if (!timed_out) {
     const auto sample = app->lab.navigation_sample(g_browse.seq);
@@ -3055,11 +3128,13 @@ void browse_take(app_state* app, bool timed_out) noexcept {
     row.ready_ms = sample.ready_ms;
     row.present_ms = sample.present_ms;
     row.refresh_ms = sample.refresh_ms;
+    row.full_ms = sample.full_ms;
   }
   char line[400];
   std::snprintf(line, sizeof line,
-                "done %s cold %d cached %d present %.2f ready %.2f timeout %d",
-                row.name, row.cold, row.cached, row.present_ms, row.ready_ms, row.timed_out);
+                "done %s %s cached %d present %.2f ready %.2f full %.2f timeout %d",
+                row.name, browse_kind_name(row.kind), row.cached, row.present_ms, row.ready_ms,
+                row.full_ms, row.timed_out);
   browse_trace(line);
 }
 
@@ -3087,6 +3162,20 @@ void browse_finish(app_state* app, const char* error) noexcept {
                  static_cast<double>(kBrowseDwellMs) / 1000.0, g_browse.count);
     if (error) browse_json_string(f, error);
     else std::fputs("null", f);
+    if (g_browse.held_done) {
+      // Decode jobs over the held run: what the walk submitted, finished and
+      // threw away (a hand-off keeps a landed-on prefetch out of `cancelled`).
+      std::fprintf(f,
+                   ",\n  \"held\": {\"steps\": %d, \"submitted\": %llu, \"completed\": %llu, "
+                   "\"cancelled\": %llu}",
+                   g_browse.held_steps,
+                   static_cast<unsigned long long>(g_browse.held_after.submitted -
+                                                   g_browse.held_before.submitted),
+                   static_cast<unsigned long long>(g_browse.held_after.completed -
+                                                   g_browse.held_before.completed),
+                   static_cast<unsigned long long>(g_browse.held_after.cancelled -
+                                                   g_browse.held_before.cancelled));
+    }
     std::fputs(",\n  \"steps\": [\n", f);
     for (int i = 0; i < g_browse.nrows; ++i) {
       const auto& row = g_browse.rows[i];
@@ -3094,9 +3183,10 @@ void browse_finish(app_state* app, const char* error) noexcept {
       browse_json_string(f, row.name);
       std::fprintf(f,
                    ", \"index\": %d, \"kind\": \"%s\", \"cached\": %d, \"timed_out\": %d, "
-                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f}%s\n",
-                   row.index, row.cold ? "cold" : "warm", row.cached, row.timed_out,
-                   row.ready_ms, row.present_ms, row.refresh_ms,
+                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f, "
+                   "\"full_ms\": %.3f}%s\n",
+                   row.index, browse_kind_name(row.kind), row.cached, row.timed_out,
+                   row.ready_ms, row.present_ms, row.refresh_ms, row.full_ms,
                    i + 1 < g_browse.nrows ? "," : "");
     }
     std::fputs("  ]\n}\n", f);
@@ -3126,6 +3216,8 @@ void browse_tick(app_state* app) noexcept {
         for (std::uint32_t i = 3; i < g_browse.count && g_browse.cold_n < 6; ++i)
           g_browse.cold_targets[g_browse.cold_n++] = static_cast<int>(i);
         g_browse.warm_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
+        g_browse.quick_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
+        g_browse.held_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
         g_browse.step = browse_phase::dwell;
         g_browse.after_dwell = g_browse.cold_n > 0 ? browse_phase::cold : browse_phase::warm;
         g_browse.phase_tick = ::GetTickCount64();
@@ -3146,7 +3238,7 @@ void browse_tick(app_state* app) noexcept {
         return;
       }
       if (!browse_select(app, static_cast<std::uint32_t>(g_browse.cold_targets[g_browse.cold_i++]),
-                         true, true)) {
+                         true, browse_kind::cold)) {
         browse_finish(app, "could not mark a jump");
         return;
       }
@@ -3165,7 +3257,7 @@ void browse_tick(app_state* app) noexcept {
         g_browse.phase_tick = ::GetTickCount64();
         return;
       }
-      if (!browse_select(app, 0, false, false)) {
+      if (!browse_select(app, 0, false, browse_kind::warm)) {
         browse_finish(app, "could not return to the first photo");
         return;
       }
@@ -3180,17 +3272,15 @@ void browse_tick(app_state* app) noexcept {
       g_browse.phase_tick = ::GetTickCount64();
       return;
     case browse_phase::warm: {
-      if (g_browse.warm_left <= 0) {
-        browse_finish(app, nullptr);
-        return;
-      }
       std::uint32_t selected = 0;
-      if (mv_folder_selected(app->session, &selected) != MV_OK || selected + 1 >= g_browse.count) {
-        browse_finish(app, nullptr);
+      if (g_browse.warm_left <= 0 || mv_folder_selected(app->session, &selected) != MV_OK ||
+          selected + 1 >= g_browse.count) {
+        g_browse.step = browse_phase::quick_home;
+        browse_tick(app);
         return;
       }
       --g_browse.warm_left;
-      if (!browse_select(app, selected + 1, true, false)) {
+      if (!browse_select(app, selected + 1, true, browse_kind::warm)) {
         browse_finish(app, "could not mark a step");
         return;
       }
@@ -3200,13 +3290,100 @@ void browse_tick(app_state* app) noexcept {
     case browse_phase::wait_warm:
       if (!browse_step_finished(app)) return;
       if (g_browse.warm_left <= 0) {
-        browse_finish(app, nullptr);
+        g_browse.step = browse_phase::quick_home;
+        browse_tick(app);
         return;
       }
       g_browse.step = browse_phase::dwell;
       g_browse.after_dwell = browse_phase::warm;
       g_browse.phase_tick = ::GetTickCount64();
       return;
+    case browse_phase::quick_home:
+      if (!browse_select(app, 0, false, browse_kind::warm)) {
+        browse_finish(app, "could not return to the first photo");
+        return;
+      }
+      g_browse.step = browse_phase::wait_quick_home;
+      return;
+    case browse_phase::wait_quick_home:
+      if (!app->lab.navigation_done(g_browse.seq) &&
+          ::GetTickCount64() - g_browse.phase_tick <= kBrowseStepTimeoutMs) return;
+      // One dwell here, so the first quick step leaves from a settled window.
+      g_browse.step = browse_phase::dwell;
+      g_browse.after_dwell = browse_phase::quick;
+      g_browse.phase_tick = ::GetTickCount64();
+      return;
+    case browse_phase::quick: {
+      std::uint32_t selected = 0;
+      if (g_browse.quick_left <= 0 || mv_folder_selected(app->session, &selected) != MV_OK ||
+          selected + 1 >= g_browse.count) {
+        g_browse.step = browse_phase::held_home;
+        browse_tick(app);
+        return;
+      }
+      --g_browse.quick_left;
+      if (!browse_select(app, selected + 1, true, browse_kind::quick)) {
+        browse_finish(app, "could not mark a quick step");
+        return;
+      }
+      g_browse.step = browse_phase::wait_quick;
+      return;
+    }
+    case browse_phase::wait_quick:
+      if (!browse_step_finished(app)) return;
+      g_browse.step = browse_phase::quick;  // no dwell: the next Right goes now
+      browse_tick(app);
+      return;
+    case browse_phase::held_home:
+      if (!browse_select(app, 0, false, browse_kind::warm)) {
+        browse_finish(app, "could not return to the first photo");
+        return;
+      }
+      g_browse.step = browse_phase::wait_held_home;
+      return;
+    case browse_phase::wait_held_home:
+      if (!app->lab.navigation_done(g_browse.seq) &&
+          ::GetTickCount64() - g_browse.phase_tick <= kBrowseStepTimeoutMs) return;
+      g_browse.step = browse_phase::dwell;
+      g_browse.after_dwell = browse_phase::held;
+      g_browse.phase_tick = ::GetTickCount64();
+      return;
+    case browse_phase::held: {
+      std::uint32_t selected = 0;
+      if (mv_folder_selected(app->session, &selected) != MV_OK) {
+        browse_finish(app, "could not read the selection");
+        return;
+      }
+      if (g_browse.held_steps == 0) (void)mv_session_job_stats(app->session, &g_browse.held_before);
+      const bool last = g_browse.held_left <= 1 || selected + 2 >= g_browse.count;
+      ++g_browse.held_steps;
+      --g_browse.held_left;
+      if (!last) {
+        folder_select(app, selected + 1);  // one key repeat; nothing waits on it
+        return;
+      }
+      if (!browse_select(app, selected + 1, true, browse_kind::held)) {
+        browse_finish(app, "could not mark the last held step");
+        return;
+      }
+      g_browse.step = browse_phase::wait_held;
+      return;
+    }
+    case browse_phase::wait_held: {
+      const bool timed_out = ::GetTickCount64() - g_browse.phase_tick > kBrowseStepTimeoutMs;
+      if (!app->lab.navigation_full(g_browse.seq) && !timed_out) return;
+      // Then let the pool settle, so work the walk abandoned is counted.
+      mv_job_stats now{};
+      if (mv_session_job_stats(app->session, &now) == MV_OK && !timed_out &&
+          (now.queue_depth != 0 || now.completed + now.cancelled < now.submitted)) {
+        return;
+      }
+      browse_take(app, !app->lab.navigation_full(g_browse.seq));
+      g_browse.held_after = now;
+      g_browse.held_done = true;
+      browse_finish(app, nullptr);
+      return;
+    }
     case browse_phase::finish:
       return;
   }
@@ -5393,6 +5570,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   ::ShowWindow(hwnd, show_command);
   ::UpdateWindow(hwnd);
+  if (app.chrome_enabled && !requested_paths.empty()) open_paths_early(&app, requested_paths);
   if (app.chrome_enabled && !attach_chrome(&app)) {
     MV_LOG_WARN("chrome: island did not attach; command bar is unavailable");
     app.chrome_on_screen = false;

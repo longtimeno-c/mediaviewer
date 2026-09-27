@@ -59,19 +59,4 @@ template <class Items, class PathOf>
       std::string_view{}, previous_index, wanted);
 }
 
-// Issue #56: a watcher/poll relist landing back on the file already open must
-// not reopen it. Reopening hands whatever owns playback (a paused clip, an
-// edit session) a brand new handle that has no memory of that state -- a
-// clip's fresh media_source starts paused-by-default and the existing
-// gallery-hold autoplay gate (playback_hold.h) waves it through, silently
-// overriding a pause the user set minutes ago. `had_selection_before` is
-// false for a listing's first arrival for this view (nothing was open yet,
-// so there is nothing to preserve); `same_file_after` is whether the relist
-// still resolves to that same file. Only reopen when either does not hold —
-// a first listing, or a genuine move to a different file.
-[[nodiscard]] inline bool relist_should_reopen(bool had_selection_before,
-                                               bool same_file_after) noexcept {
-  return !(had_selection_before && same_file_after);
-}
-
 }  // namespace mv::abi
