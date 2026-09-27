@@ -73,8 +73,12 @@ because skip and shuttle are the same gesture at two durations, not to double th
 | **Slideshow** | After `F5` | Next on a timer; `Esc` leaves |
 | **Crop** | Adjust geometry (PR 10): `Shift+C` on a still | Nudge crop; `Enter` commits, `Esc` cancels |
 
-`Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas. The gallery
-covers the canvas like an overlay, so it closes before the window-level states. It does not quit from a
+`Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas → result list. The gallery
+covers the canvas like an overlay, so it closes before the window-level states. A search result
+list ("Search: …", plan/17) is a place rather than an overlay, so it is the outermost step: with
+nothing else to leave, `Esc` is the path bar's **Back to folder** (2026-09-27, both hosts; the
+router's `result_list` target). Over a list the grid closes first and the next `Esc` goes back, the
+same two steps as the gallery over a folder then the canvas. It does not quit from a
 nested mode. Lab `Esc` = quit is a harness thing and dies in PR 6 for the shipped chrome
 (`Alt+F4` / `Ctrl+W` still close).
 

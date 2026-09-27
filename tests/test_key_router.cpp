@@ -380,6 +380,51 @@ TEST_CASE("Esc walks out and never quits", "[shell][router]") {
   REQUIRE(r.on_key(rep(key::escape), s).command == command_id::none);
 }
 
+TEST_CASE("Esc in a result list is Back to folder, after everything over it",
+          "[shell][router]") {
+  key_router r;
+  view_state s = clip();
+  s.list_open = true;
+  // From the viewer: one Esc goes back to the folder.
+  auto esc = r.on_key(down(key::escape), s);
+  REQUIRE(esc.handled);
+  REQUIRE(esc.command == command_id::back);
+  REQUIRE(esc.back == back_target::result_list);
+  // A held Esc does not leave the list on typematic repeat.
+  REQUIRE(r.on_key(rep(key::escape), s).command == command_id::none);
+
+  // The grid over the list closes first; fullscreen and focus go before it too.
+  s.gallery_open = true;
+  s.fullscreen = true;
+  s.focus = focus_kind::filmstrip;
+  const back_target order[] = {back_target::gallery, back_target::fullscreen,
+                               back_target::canvas_focus, back_target::result_list};
+  for (const auto want : order) {
+    const auto got = r.on_key(down(key::escape), s);
+    REQUIRE(got.back == want);
+    switch (want) {
+      case back_target::gallery: s.gallery_open = false; break;
+      case back_target::fullscreen: s.fullscreen = false; break;
+      case back_target::canvas_focus: s.focus = focus_kind::canvas; break;
+      case back_target::result_list: s.list_open = false; break;
+      default: break;
+    }
+  }
+  // Back in the folder: nothing left to leave.
+  REQUIRE_FALSE(r.on_key(down(key::escape), s).handled);
+
+  // A text field (the gallery search bar) and a popup still own Esc first.
+  s.list_open = true;
+  s.focus = focus_kind::text;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::blur_text);
+  s.focus = focus_kind::canvas;
+  s.popup_open = true;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::popup);
+  s.popup_open = false;
+  s.settings_open = true;
+  REQUIRE(resolve_back(s) == back_target::settings);
+}
+
 TEST_CASE("a focused text control owns every key but Esc", "[shell][router]") {
   key_router r;
   view_state s = still();

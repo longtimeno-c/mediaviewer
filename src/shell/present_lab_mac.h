@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -51,6 +52,13 @@ struct mac_lab_options {
   // job_system worker, never on the render thread (rule 1, plan/02).
   std::string open_path;
   mv::job_system* jobs = nullptr;  // non-owning; started by main_mac.mm
+  // Milestone H, rule 3 for a clip opened on a moment: [pool thread] the cached
+  // JPEG-512 to show while the clip opens and seeks (the moment's row, else the
+  // clip's poster), "" for none. A cache lookup, never a decode. Unset: the
+  // previous picture stays up until the sought frame, as before.
+  std::function<std::string(const std::string& path_utf8, std::int64_t mtime_unix,
+                            std::uint64_t size, std::int64_t moment_ms)>
+      clip_thumb;
 };
 
 class present_lab_mac {
@@ -232,6 +240,10 @@ class present_lab_mac {
   // PR 19: opens a clip on a worker (open_media blocks on I/O) and posts it.
   void submit_video_open(std::string path_utf8, std::uint64_t item_id,
                          std::int64_t moment_ms) noexcept;
+  // Milestone H: the clip's cached thumbnail (options_.clip_thumb) up as a
+  // preview of `item_id` while the clip opens; its first frame replaces it.
+  void submit_clip_placeholder(std::string path_utf8, std::int64_t mtime_unix, std::uint64_t size,
+                               std::int64_t moment_ms, std::uint64_t item_id) noexcept;
   // [render-thread] Frees the current clip: releases its frames now, closes the
   // media_source (which joins its threads) on a worker, never here.
   void retire_media() noexcept;
@@ -325,6 +337,9 @@ class present_lab_mac {
   gfx::video_blitter_mac video_blitter_;
   std::atomic<pending_media*> pending_media_{nullptr};
   std::atomic<std::uint64_t> video_opening_{0};  // item id being opened, 0 = none
+  // The item id of the clip open_item() last opened (0 after a still): a
+  // preview image carrying it is that clip's placeholder, not a still.
+  std::atomic<std::uint64_t> clip_item_{0};
   player::media_source* media_ = nullptr;
   std::uint64_t media_item_ = 0;
   player::video_frame* video_frame_ = nullptr;
@@ -408,6 +423,9 @@ class present_lab_mac {
   std::uint64_t busy_drops_seen_ = 0;
   double busy_drop_at_ = -1.0e9;
   bool painted_static_ = false;
+  // A frame asked for while presenting was not allowed (the window not key, a
+  // search panel over it): owed once it is, or the new picture waits for input.
+  bool redraw_owed_ = false;
   input_cursor input_cursor_;
   gfx::metal_idle_stats idle_stats_;
   double measurement_start_seconds_ = 0.0;

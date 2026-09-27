@@ -378,7 +378,7 @@ private struct ListTitleBar: View {
       .buttonStyle(.borderless)
       .fixedSize()
       .foregroundStyle(MVTheme.title)
-      .help("Close the results and return to the folder")
+      .help("Close the results and return to the folder (Esc)")
       Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 4)
       Image(systemName: "magnifyingglass").foregroundStyle(MVTheme.body)
       // "Search: <query>", the Windows breadcrumb's wording.

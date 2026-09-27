@@ -562,9 +562,10 @@ public static partial class IslandHost
             switch (e.Key)
             {
                 case Windows.System.VirtualKey.Escape:
-                    // Milestone H: Esc from a result list's grid goes back to
-                    // the folder the search came from (native folder_up).
-                    Send(_listOpen ? Command.FolderUp : Command.CloseGallery);
+                    // The grid closes, over a result list too; the next Esc,
+                    // on the canvas, is "Back to folder" (plan/16 `Esc`, the
+                    // native router's result_list step, same as the Mac).
+                    Send(Command.CloseGallery);
                     e.Handled = true;
                     break;
                 case Windows.System.VirtualKey.Left:

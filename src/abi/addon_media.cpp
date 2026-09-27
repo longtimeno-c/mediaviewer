@@ -7,7 +7,6 @@
 #include "abi/addon_media.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <mutex>
 
 #include "edit/clip_sample.h"
@@ -78,12 +77,20 @@ result<image::thumb_store*> thumbs() {
 
 result<image::thumb_key> moment_key(const std::string& path, std::int64_t pts_ms) {
   MV_TRY(io::file_stat st, io::stat_path(path));
-  // A moment is its own cache row beside the file's poster: the same path
-  // column with the moment appended, which no real file name can collide with
-  // because the cache keys absolute paths ("#t=" never ends one).
-  char suffix[40];
-  std::snprintf(suffix, sizeof(suffix), "#t=%lld", static_cast<long long>(pts_ms));
-  return image::thumb_key{path + suffix, st.mtime_unix, st.size};
+  // A moment is its own cache row beside the file's poster (image/thumb.h).
+  return image::moment_thumb_key(path, pts_ms, st.mtime_unix, st.size);
+}
+
+// Straight-alpha RGBA from packed RGB, what the JPEG-512 encoder takes.
+std::vector<std::uint8_t> rgba_of(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h) {
+  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * h * 4);
+  for (std::size_t i = 0, n = static_cast<std::size_t>(w) * h; i < n; ++i) {
+    rgba[i * 4] = rgb[i * 3];
+    rgba[i * 4 + 1] = rgb[i * 3 + 1];
+    rgba[i * 4 + 2] = rgb[i * 3 + 2];
+    rgba[i * 4 + 3] = 255;
+  }
+  return rgba;
 }
 
 }  // namespace
@@ -183,13 +190,7 @@ result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_m
       image->rgb.size() < static_cast<std::size_t>(image->width) * image->height * 3) {
     return err(status::invalid_arg);
   }
-  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(image->width) * image->height * 4);
-  for (std::size_t i = 0, n = static_cast<std::size_t>(image->width) * image->height; i < n; ++i) {
-    rgba[i * 4] = image->rgb[i * 3];
-    rgba[i * 4 + 1] = image->rgb[i * 3 + 1];
-    rgba[i * 4 + 2] = image->rgb[i * 3 + 2];
-    rgba[i * 4 + 3] = 255;
-  }
+  std::vector<std::uint8_t> rgba = rgba_of(image->rgb.data(), image->width, image->height);
   std::uint32_t w = image->width, h = image->height;
   if (std::max(w, h) > image::kThumbLongEdge) {
     rgb_image small = fit_rgb(rgba.data(), w, h, image::kThumbLongEdge);
@@ -204,6 +205,17 @@ result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_m
   }
   MV_TRY(auto jpeg, image::encode_thumb_rgba(rgba, w, h));
   return store.store(key, jpeg);
+}
+
+result<std::vector<std::uint8_t>> encode_moment_thumb(const std::string& path, std::int64_t pts_ms,
+                                                      const std::atomic<bool>* cancel) {
+  MV_TRY(auto f, edit::clip::frame_rgb_at(path, pts_ms, image::kThumbLongEdge, cancel));
+  if (f.width == 0 || f.height == 0 ||
+      f.rgb.size() < static_cast<std::size_t>(f.width) * f.height * 3) {
+    return err(status::corrupt);
+  }
+  const std::vector<std::uint8_t> rgba = rgba_of(f.rgb.data(), f.width, f.height);
+  return image::encode_thumb_rgba(rgba, f.width, f.height);
 }
 
 }  // namespace mv::addon::media

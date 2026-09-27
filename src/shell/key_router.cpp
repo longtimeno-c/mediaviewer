@@ -59,6 +59,10 @@ back_target resolve_back(const view_state& s) noexcept {
   // it before it moves focus, so one press is enough wherever focus is.
   if (s.game) return back_target::game;
   if (s.focus != focus_kind::canvas) return back_target::canvas_focus;
+  // Milestone H: a result list is a place, not an overlay: the outermost level.
+  // Every overlay and window state above goes first (the grid over the list
+  // closes, then the next Esc is "Back to folder").
+  if (s.list_open) return back_target::result_list;
   return back_target::none;
 }
 

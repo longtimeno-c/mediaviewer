@@ -42,6 +42,9 @@ struct view_state {
   bool crop = false;       // PR 10: crop mode on the canvas
   bool trim = false;       // PR 13: trim armed on the current clip
   bool game = false;       // the empty-window runner is up (Space on an empty view)
+  // Milestone H: a search result list ("Search: ...") is open in place of a
+  // folder and there is somewhere to go back to (plan/16 `Esc`).
+  bool list_open = false;
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
@@ -62,6 +65,7 @@ enum class back_target : std::uint8_t {
   fullscreen,
   canvas_focus,
   game,  // leave the empty-window runner (dino_game.h)
+  result_list,  // Milestone H: back from a result list to its folder ("Back to folder")
 };
 
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;

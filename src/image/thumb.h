@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/job_system.h"
@@ -27,6 +28,18 @@ struct thumb_key {
   std::int64_t mtime_unix = 0;
   std::uint64_t size = 0;
 };
+
+// Milestone H (plan/17): a clip moment is its own row beside the file's poster,
+// under the file's own stamp and its path with "#t=<ms>" appended. The cache
+// keys absolute paths and no real file name ends that way, so the two cannot
+// collide. The AI pack stores these rows (host table moment_thumbnail); result
+// list tiles and a clip opened on its moment read them. One spelling, here.
+[[nodiscard]] inline thumb_key moment_thumb_key(std::string path, std::int64_t pts_ms,
+                                                std::int64_t mtime_unix, std::uint64_t size) {
+  path += "#t=";
+  path += std::to_string(pts_ms);
+  return thumb_key{std::move(path), mtime_unix, size};
+}
 
 class thumb_store {
  public:

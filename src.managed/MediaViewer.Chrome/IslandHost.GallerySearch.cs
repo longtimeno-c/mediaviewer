@@ -280,7 +280,7 @@ public static partial class IslandHost
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
 
-        _gsBack = EditButton("Back to folder", () => Send(Command.FolderUp), tip: "Back to the folder (Esc)");
+        _gsBack = EditButton("Back to folder", () => Send(Command.FolderUp), tip: "Back to the folder (Esc from the viewer)");
         _gsBack.Margin = new Thickness(8, 0, 0, 0);
         _gsIndexSlot = new Border { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
 

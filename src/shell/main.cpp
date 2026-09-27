@@ -3970,6 +3970,9 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   if (app->ws.open) s.pane_open = true;  // PR 29: Esc closes the Edit workspace
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
+  // Milestone H: Esc from a result list is the path bar's "Back to folder"
+  // (leave_result_list's own condition, so the key is never swallowed).
+  s.list_open = !app->list_title.empty() && !app->current_dir.empty();
   return s;
 }
 
@@ -4503,9 +4506,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       focus_canvas(app);
       return;
     case back_target::gallery:
-      // Milestone H: Esc from a result list's grid goes back to the folder.
-      if (leave_result_list(app)) return;
+      // Milestone H: the grid over a result list closes like any gallery; the
+      // next Esc (result_list) goes back to the folder, as on the Mac.
       set_gallery(app, false);
+      return;
+    case back_target::result_list:
+      (void)leave_result_list(app);
       return;
     case back_target::pane:
       // Esc from the canvas closes what is open: the Edit workspace (PR 29;

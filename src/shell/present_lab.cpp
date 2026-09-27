@@ -560,6 +560,12 @@ void present_lab::render_thread_main() noexcept {
         if (device_.d3d()) device_.d3d()->QueryInterface(IID_PPV_ARGS(mine.GetAddressOf()));
         if (!ready->device || !mine || ready->device.Get() != mine.Get()) {
           mv::abi::release_gpu_image(ready);
+        } else if (ready->quality == image::gpu_quality::preview && current_video_.texture &&
+                   current_video_.generation == ready->view_generation) {
+          // Milestone H: a clip's placeholder (abi.cpp open_video_worker) that
+          // lost the race to the clip's own first frame. A paused clip presents
+          // that frame once, so it must not be covered.
+          mv::abi::release_gpu_image(ready);
         } else {
           const float old_w = media_width();
           const float old_h = media_height();
