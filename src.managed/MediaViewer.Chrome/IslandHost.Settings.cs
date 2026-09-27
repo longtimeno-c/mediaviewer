@@ -72,16 +72,17 @@ public static partial class IslandHost
             Foreground = Brush(Title),
             Width = 180,
         };
-        _background.Items.Add("Dark");
+        _background.Items.Add("System");
         _background.Items.Add("Grey");
         _background.Items.Add("White");
         _background.Items.Add("Checkerboard");
+        _background.Items.Add("Dark");
         _background.SelectedIndex = (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
         _background.SelectionChanged += (_, _) =>
         {
             if (_updatingSettingsUi || _background.SelectedIndex < 0) return;
             int next = (_settingFlags & ~SettingFlag.BackgroundMask) |
-                       ((_background.SelectedIndex & 3) << SettingFlag.BackgroundShift);
+                       (_background.SelectedIndex << SettingFlag.BackgroundShift);
             Send(Command.SetSettings, next);
         };
 
