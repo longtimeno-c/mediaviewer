@@ -98,12 +98,17 @@ struct ImportView: View {
 
   // MARK: pre-copy confirmation (issue #41)
 
+  private var confirmationCounts: String {
+    let items: String = model.importCount == 1 ? "item" : "items"
+    let files: String = model.confirmFiles == 1 ? "file" : "files"
+    let bytes: String = ByteCountFormatter.string(fromByteCount: model.confirmBytes, countStyle: .file)
+    return "\(model.importCount) \(items) (\(model.confirmFiles) \(files), \(bytes))"
+  }
+
   private var importConfirmationSheet: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Import these files?").font(.title3)
-      Text("\(model.importCount) item" + (model.importCount == 1 ? "" : "s") +
-           " (\(model.confirmFiles) file" + (model.confirmFiles == 1 ? "" : "s") + ", " +
-           ByteCountFormatter.string(fromByteCount: model.confirmBytes, countStyle: .file) + ")")
+      Text(confirmationCounts)
       Text("From: \(model.selectedSource)").font(.caption).foregroundStyle(bodyColor)
       Text("To: \(model.destinationPreview.isEmpty ? "(not set)" : model.destinationPreview)")
         .font(.caption).foregroundStyle(bodyColor)
