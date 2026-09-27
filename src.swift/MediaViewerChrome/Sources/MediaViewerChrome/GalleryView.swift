@@ -39,8 +39,11 @@ struct GalleryView: View {
       let foldersOnly = !store.folders.isEmpty && store.names.isEmpty
       // The layout (strip or big tiles) follows the folder, not the filter,
       // so typing never flips it; the filter picks the tiles inside it.
-      let shownItems = search.items ?? Array(store.names.indices)
-      let shownFolders = search.folders ?? Array(store.folders.indices)
+      // Clamped to the listing on screen: the filter's indices are one render
+      // behind when the listing is swapped (a result list opening in place of
+      // the folder has no folders), and a stale index traps in folders[index].
+      let shownItems = (search.items ?? Array(store.names.indices)).filter { $0 < store.names.count }
+      let shownFolders = (search.folders ?? Array(store.folders.indices)).filter { $0 < store.folders.count }
       let filteredEmpty = search.items != nil && shownItems.isEmpty && shownFolders.isEmpty
       let contentsNotice = search.contentsMode && search.active &&
         [.nothing, .failed, .notIndexed].contains(search.contents)
