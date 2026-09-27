@@ -24,6 +24,10 @@ public static partial class IslandHost
 {
     private static UpdateService? _updater;
     private static Button? _updateButton;
+    private static ProgressBar? _updateProgress;
+    // Checking / downloading are status, not an action: smaller than the bar's
+    // buttons. "Update ready — restart" keeps the bar's size.
+    private const double UpdateStatusFontSize = 12;
     private static ToggleSwitch? _autoUpdate;
     private static ComboBox? _updateChannel;
     // Set when Settings sends a channel change; the check runs once native has
@@ -55,13 +59,26 @@ public static partial class IslandHost
         try { Console.Error.WriteLine(message); } catch (IOException) { }
     }
 
-    private static Button BuildUpdateButton()
+    private static StackPanel BuildUpdateButton()
     {
         _updateButton = TextButton("Update ready — restart", () => Send(Command.UpdateRestart, 0));
         _updateButton.Visibility = Visibility.Collapsed;
         ToolTipService.SetToolTip(_updateButton,
             "A new version is downloaded. Restart to use it, or it installs when you close MediaViewer.");
-        return _updateButton;
+        _updateProgress = new ProgressBar
+        {
+            Width = 90,
+            Minimum = 0,
+            Maximum = 100,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetName(_updateProgress, "Update download progress");
+        var group = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        group.Children.Add(_updateButton);
+        group.Children.Add(_updateProgress);
+        return group;
     }
 
     private static void ShowUpdateStatus(UpdateStatus s)
@@ -106,12 +123,22 @@ public static partial class IslandHost
                 text = "Update undone";
                 tip = $"Version {s.RolledBackFrom} did not start, so the previous version was restored.";
             }
+            bool downloading = text is not null && s.Phase == UpdatePhase.Downloading;
+            if (_updateProgress is not null)
+            {
+                // Determinate once Velopack has reported a percent.
+                _updateProgress.IsIndeterminate = s.Percent is null;
+                _updateProgress.Value = s.Percent ?? 0;
+                _updateProgress.Visibility = downloading ? Visibility.Visible : Visibility.Collapsed;
+            }
             if (text is null)
             {
                 _updateButton.Visibility = Visibility.Collapsed;
                 return;
             }
             SetButtonText(_updateButton, text);
+            if (_updateButton.Content is TextBlock label)
+                label.FontSize = clickable ? UiFontSize : UpdateStatusFontSize;
             ToolTipService.SetToolTip(_updateButton, tip);
             _updateButton.IsEnabled = clickable;
             _updateButton.Visibility = Visibility.Visible;

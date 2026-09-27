@@ -418,7 +418,9 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
    new `v<version>` in `--download-url-prefix`, and upload the new files to a new release.
    Keep earlier zips in `updates/` so `generate_appcast` keeps them in the feed.
 3. Test the update path before announcing: install the *previous* release from its `.dmg`,
-   publish the new one, and confirm the old build offers **Update ready — restart**.
+   publish the new one, and confirm the old build's command bar, right after About, shows
+   *Checking for updates…*, then *Downloading update x.y.z…* with a bar, then **Update ready
+   — restart**.
    Installed copies accept only a feed and archive signed with the key baked in at build
    time.
 4. First install is the disk image; every update after that is the zip, applied by Sparkle
