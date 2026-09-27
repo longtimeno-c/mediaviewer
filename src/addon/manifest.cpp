@@ -5,6 +5,7 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <set>
@@ -355,8 +356,29 @@ struct verified_snapshot {
 };
 std::mutex g_verified_m;
 std::map<std::string, verified_snapshot> g_verified;
+// Folders being hashed now (keys as above). A second caller for the same
+// folder waits for the first and takes its answer instead of hashing the same
+// gigabytes beside it: at launch the pack's load and Settings' installed-state
+// read both verified the AI pack at once, each taking the full time
+// (2026-09-27, "Settings forgets what is installed").
+std::condition_variable g_verified_cv;
+std::set<std::string> g_hashing;
 
 }  // namespace
+
+void note_verified_move(const std::string& from_dir, const std::string& to_dir) {
+  // A rename keeps every file's size and modification time, so what was
+  // hashed in staging is what now sits in the version folder (store::install).
+  std::lock_guard lock(g_verified_m);
+  const std::string prefix = from_dir + '\n';
+  std::vector<std::pair<std::string, verified_snapshot>> moved;
+  for (auto it = g_verified.lower_bound(prefix);
+       it != g_verified.end() && it->first.compare(0, prefix.size(), prefix) == 0;) {
+    moved.emplace_back(to_dir + it->first.substr(from_dir.size()), std::move(it->second));
+    it = g_verified.erase(it);
+  }
+  for (auto& [key, snap] : moved) g_verified[key] = std::move(snap);
+}
 
 rejection verify_files(const std::string& dir, const manifest& m) {
   std::set<std::string> listed;
@@ -376,11 +398,24 @@ rejection verify_files(const std::string& dir, const manifest& m) {
   }
   bool hashed = false;
   {
-    std::lock_guard lock(g_verified_m);
+    std::unique_lock lock(g_verified_m);
+    // Another thread hashing this folder: its answer is this one's.
+    g_verified_cv.wait(lock, [&] { return g_hashing.count(key) == 0; });
     const auto it = g_verified.find(key);
     hashed = it != g_verified.end() && it->second.files == now.files;
+    if (!hashed) g_hashing.insert(key);
   }
   if (!hashed) {
+    struct done_hashing {
+      const std::string& key;
+      ~done_hashing() {
+        {
+          std::lock_guard lock(g_verified_m);
+          g_hashing.erase(key);
+        }
+        g_verified_cv.notify_all();
+      }
+    } const release{key};
     for (const manifest_file& f : m.files) {
       if (sha256_file(io::join_path(dir, io::native_relative(f.path))) != f.sha256) {
         std::lock_guard lock(g_verified_m);
@@ -388,6 +423,10 @@ rejection verify_files(const std::string& dir, const manifest& m) {
         return rejection::file_mismatch;
       }
     }
+    // Recorded before the waiters wake so they find it; the walk for extra
+    // files below still runs for every caller and takes it back out.
+    std::lock_guard lock(g_verified_m);
+    g_verified[key] = now;
   }
   for (const manifest_file& f : m.files) listed.insert(f.path);
   // Nothing else may sit beside them: a dropped-in DLL would otherwise ride
@@ -415,10 +454,10 @@ rejection verify_files(const std::string& dir, const manifest& m) {
     extra = rejection::unexpected_file;
     return false;
   });
-  if (extra == rejection::none && !walked) return rejection::file_missing;
-  if (extra == rejection::none && !hashed) {
+  if (extra == rejection::none && !walked) extra = rejection::file_missing;
+  if (extra != rejection::none) {
     std::lock_guard lock(g_verified_m);
-    g_verified[key] = std::move(now);
+    g_verified.erase(key);
   }
   return extra;
 }

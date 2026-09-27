@@ -426,6 +426,14 @@ public static partial class IslandHost
         card.Children.Add(what);
         card.Children.Add(WrappedLabel("It runs entirely on this computer. Nothing about your files, and no search, ever leaves it."));
 
+        if (!_addonStatesRead)
+        {
+            // What is installed is still being read (it verifies every file):
+            // quiet, and nothing offered for download until it is known.
+            card.Children.Add(WrappedLabel("Checking installed add-ons…"));
+            _localSearchPanel.Children.Add(card);
+            return;
+        }
         if (!AiSlot.State.Installed)
         {
             AddonOffer offer = AiSlot.Offer;
@@ -532,7 +540,13 @@ public static partial class IslandHost
         row.Children.Add(sizeText);
 
         FrameworkElement action;
-        if (slot.State.Installed)
+        if (slot.Busy && slot.Phase is not null)
+        {
+            // Installing: "412 MB of 1.08 GB" and the percentage, then the
+            // checking and installing steps (the Mac's AddonProgressView).
+            action = ProgressFor(slot, 200);
+        }
+        else if (slot.State.Installed)
         {
             Button remove = SettingsButton("Remove", () =>
             {
@@ -725,6 +739,7 @@ public static partial class IslandHost
         DispatcherQueueControllerTryEnqueue(() =>
         {
             slot.Busy = false;
+            slot.Phase = null;
             ApplyAddonStates(states);
             _aiUsed = used;
             _aiCeiling = ceiling;
@@ -758,7 +773,7 @@ public static partial class IslandHost
 
     private static void StartPieceInstall(AddonSlot slot)
     {
-        if (AnyAiBusy()) return;
+        if (AnyAiBusy() || !_addonStatesRead) return;
         if (BudgetRefusal(slot, slot.Offer.InstalledSize) is string refused)
         {
             SetLocalSearchStatus(refused);
@@ -771,9 +786,10 @@ public static partial class IslandHost
         string? update = UpdateVersion(slot);
         bool coreRunning = slot == AiSlot && AiSlot.Chrome is not null;
         SetLocalSearchStatus(update is null ? $"Downloading {what}…" : $"Downloading {what} {update}…");
+        slot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
+        IProgress<AddonPhase> progress = PhaseReporter(slot);
         RefreshLocalSearch();
         long ceiling = (long)_aiCeiling;
-        var progress = new Progress<double>(f => SetLocalSearchStatus($"Downloading {what}… {f * 100:0}%"));
         _ = Task.Run(async () =>
         {
             string message;

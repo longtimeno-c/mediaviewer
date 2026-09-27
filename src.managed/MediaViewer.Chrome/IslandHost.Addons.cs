@@ -8,6 +8,7 @@ using System.Runtime.Loader;
 using System.Text.Json;
 using MediaViewer.Interop;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 
 namespace MediaViewer.Chrome;
@@ -73,6 +74,10 @@ public static partial class IslandHost
         public AddonOffer Offer { get; set; } = new(OfferKind.Unknown, 0);
         public bool ProbeRunning { get; set; }
         public bool Busy { get; set; }
+        // The install in progress (null: none) and its bar, kept and updated in
+        // place: a rebuilt row would drop keyboard focus at every 1 %.
+        public AddonPhase? Phase { get; set; }
+        public AddonProgressView? Progress { get; set; }
         public IAddonChrome? Chrome { get; set; }
         public AddonLoadContext? Alc { get; set; }
         public bool Usable => State.Installed && State.State == "ok";
@@ -86,7 +91,93 @@ public static partial class IslandHost
     private static readonly AddonSlot AudioSlot = new("ai-audio", "Audio", null, "ai");
     private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, AudioSlot, CudaSlot };
 
+    /// <summary>What an install is doing, for the bar under its button (the
+    /// Mac's AddonChannel.Phase): a determinate download, then the checking
+    /// and installing steps, which have no fraction to show.</summary>
+    private enum AddonPhaseKind { Downloading, Checking, Installing }
+
+    private readonly record struct AddonPhase(AddonPhaseKind Kind, long Done = 0, long Total = 0)
+    {
+        public double? Fraction => Kind == AddonPhaseKind.Downloading && Total > 0
+            ? Math.Min(1.0, (double)Done / Total) : null;
+
+        public string Text => Kind switch
+        {
+            AddonPhaseKind.Downloading => Total > 0 ? $"{MbText(Done)} of {MbText(Total)}" : MbText(Done),
+            AddonPhaseKind.Checking => "Checking the download…",
+            _ => "Installing…",
+        };
+    }
+
+    // "412 MB", "1.08 GB": decimal units, as Explorer's download sizes.
+    private static string MbText(long bytes) => bytes >= 1_000_000_000
+        ? $"{bytes / 1e9:0.00} GB"
+        : $"{Math.Max(0, (long)Math.Round(bytes / 1e6))} MB";
+
+    /// <summary>An install's bar: "412 MB of 1.08 GB" and the percentage
+    /// under it while downloading, an indeterminate bar after.</summary>
+    private sealed class AddonProgressView
+    {
+        private readonly ProgressBar _bar;
+        private readonly TextBlock _text;
+        private readonly TextBlock _percent;
+
+        public AddonProgressView(double width)
+        {
+            _bar = new ProgressBar { Minimum = 0, Maximum = 1, Height = 4 };
+            _text = Label("");
+            _text.FontSize = 12;
+            _percent = Label("");
+            _percent.FontSize = 12;
+            _percent.HorizontalAlignment = HorizontalAlignment.Right;
+            var lines = new Grid();
+            lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            lines.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            lines.Children.Add(_text);
+            Grid.SetColumn(_percent, 1);
+            lines.Children.Add(_percent);
+            Root = new StackPanel { Spacing = 4, Width = width, HorizontalAlignment = HorizontalAlignment.Left };
+            Root.Children.Add(_bar);
+            Root.Children.Add(lines);
+        }
+
+        public StackPanel Root { get; }
+
+        public void Show(AddonPhase p)
+        {
+            double? f = p.Fraction;
+            _bar.IsIndeterminate = f is null;
+            if (f is double v) _bar.Value = v;
+            _text.Text = p.Text;
+            _percent.Text = f is double pct ? $"{Math.Floor(pct * 100):0} %" : "";
+            AutomationProperties.SetName(Root, f is double a ? $"{p.Text}, {Math.Floor(a * 100):0} percent" : p.Text);
+        }
+    }
+
+    // The slot's bar, moved into the row being built.
+    private static FrameworkElement ProgressFor(AddonSlot slot, double width)
+    {
+        slot.Progress ??= new AddonProgressView(width);
+        if (slot.Progress.Root.Parent is Panel old) old.Children.Remove(slot.Progress.Root);
+        slot.Progress.Show(slot.Phase ?? new AddonPhase(AddonPhaseKind.Downloading));
+        return slot.Progress.Root;
+    }
+
+    // UI thread: Progress<T> made here reports on the dispatcher.
+    private static IProgress<AddonPhase> PhaseReporter(AddonSlot slot) => new Progress<AddonPhase>(p =>
+    {
+        if (!slot.Busy) return;  // a late report after the install finished
+        slot.Phase = p;
+        slot.Progress?.Show(p);
+    });
+
     private static bool _addonsStarted;
+    // The first installed-state read has landed (StartAddons). It verifies
+    // every installed file, seconds for the AI pack; until then Settings says
+    // it is checking and offers no Install: the channel probe answering first
+    // made it offer a download of what was already installed (owner report,
+    // 2026-09-27).
+    private static bool _addonStatesRead;
     private static StackPanel? _addonRow;
     private static TextBlock? _addonStatus;
     private static Button? _importHint;
@@ -156,6 +247,7 @@ public static partial class IslandHost
             AddonState next = states.GetValueOrDefault(slot.Id) ?? new AddonState(false, "", "", 0, false);
             slot.State = next with { Loaded = slot.Chrome is not null };
         }
+        _addonStatesRead = true;
     }
 
     // ---- loading -------------------------------------------------------------
@@ -448,6 +540,9 @@ public static partial class IslandHost
     // and Import is offered from Settings only.
     private static void OfferImportHint()
     {
+        // Not before the installed state is known: "not installed" is only
+        // the default until then.
+        if (!_addonStatesRead) return;
         if (ImportSlot.Offer.Kind == OfferKind.Available)
         {
             ShowImportHint(true);
@@ -477,7 +572,8 @@ public static partial class IslandHost
                 if (slot == ImportSlot && _hintAfterProbe)
                 {
                     _hintAfterProbe = false;
-                    if (offer.Kind == OfferKind.Available && !ImportSlot.State.Installed && !ImportHintDismissed())
+                    if (offer.Kind == OfferKind.Available && _addonStatesRead && !ImportSlot.State.Installed &&
+                        !ImportHintDismissed())
                     {
                         ShowImportHint(true);
                     }
@@ -635,7 +731,19 @@ public static partial class IslandHost
         var about = Label("Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.");
         about.TextWrapping = TextWrapping.Wrap;
         _addonRow.Children.Add(about);
+        if (!_addonStatesRead)
+        {
+            // Quiet, and no button while what is installed is unknown.
+            _addonRow.Children.Add(WrappedLabel("Checking installed add-ons…"));
+            return;
+        }
         AddonState state = ImportSlot.State;
+        if (ImportSlot.Busy && ImportSlot.Phase is not null)
+        {
+            // Installing: the bar in place of the buttons.
+            _addonRow.Children.Add(ProgressFor(ImportSlot, 320));
+            return;
+        }
         if (!state.Installed)
         {
             switch (ImportSlot.Offer.Kind)
@@ -724,19 +832,22 @@ public static partial class IslandHost
 
     private static void StartImportInstall()
     {
-        if (ImportSlot.Busy) return;
+        if (ImportSlot.Busy || !_addonStatesRead) return;
         ImportSlot.Busy = true;
         // An update of a running Import installs beside it and takes over at
         // the next start (the store keeps the running copy until then).
         string? update = UpdateVersion(ImportSlot);
         bool running = ImportSlot.Chrome is not null;
         SetAddonStatus(update is null ? "Downloading Import…" : $"Downloading Import {update}…");
+        ImportSlot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
+        IProgress<AddonPhase> progress = PhaseReporter(ImportSlot);
+        RefreshAddonRow();
         _ = Task.Run(async () =>
         {
             string message;
             try
             {
-                await DownloadAndInstall(ImportSlot, null).ConfigureAwait(false);
+                await DownloadAndInstall(ImportSlot, null, progress).ConfigureAwait(false);
                 message = update is null ? "Import installed."
                     : running ? $"Import {update} is installed. It takes over the next time MediaViewer starts."
                     : $"Import updated to {update}.";
@@ -758,6 +869,7 @@ public static partial class IslandHost
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 ImportSlot.Busy = false;
+                ImportSlot.Phase = null;
                 ApplyAddonStates(states);
                 SetAddonStatus(message);
                 RefreshAddonRow();
@@ -772,7 +884,7 @@ public static partial class IslandHost
     // `admit` sees the verified manifest before the archive is requested and
     // may refuse it (the AI family's 3 GB rule) by throwing.
     private static async Task DownloadAndInstall(AddonSlot slot, Action<JsonElement>? admit,
-                                                 IProgress<double>? progress = null)
+                                                 IProgress<AddonPhase>? progress = null)
     {
         byte[] manifest = await GetBytes(slot.Channel + ".json").ConfigureAwait(false)
                           ?? throw new AddonNotPublishedException();
@@ -794,6 +906,7 @@ public static partial class IslandHost
         string zipPath = Path.Combine(Path.GetDirectoryName(staging)!, Path.GetFileName(staging) + ".zip");
         try
         {
+            progress?.Report(new AddonPhase(AddonPhaseKind.Downloading, 0, archiveSize));
             using (HttpResponseMessage r = await AddonHttp.GetAsync(UpdateReleaseBase + archiveName,
                        HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
             {
@@ -809,19 +922,24 @@ public static partial class IslandHost
                     total += n;
                     if (total > archiveSize) throw new InvalidDataException("archive larger than signed");
                     await file.WriteAsync(buffer.AsMemory(0, n)).ConfigureAwait(false);
-                    if (progress is not null && archiveSize > 0 && total - reported > archiveSize / 200)
+                    // ~1 % steps: each report is a hop to the UI thread.
+                    if (progress is not null && archiveSize > 0 &&
+                        (total - reported >= Math.Max(archiveSize / 100, 1) || total == archiveSize))
                     {
                         reported = total;
-                        progress.Report((double)total / archiveSize);
+                        progress.Report(new AddonPhase(AddonPhaseKind.Downloading, total, archiveSize));
                     }
                 }
             }
+            // Size and SHA-256 of a gigabyte: seconds, with no fraction to show.
+            progress?.Report(new AddonPhase(AddonPhaseKind.Checking));
             if (new FileInfo(zipPath).Length != archiveSize || AddonNative.Sha256File(zipPath) != archiveSha)
             {
                 throw new InvalidDataException("archive does not match the signed manifest");
             }
             // Authenticated bytes only from here. ExtractToDirectory refuses
             // entries that would land outside `staging`.
+            progress?.Report(new AddonPhase(AddonPhaseKind.Installing));
             ZipFile.ExtractToDirectory(zipPath, staging);
             File.WriteAllBytes(Path.Combine(staging, "manifest.json"), manifest);
             File.WriteAllBytes(Path.Combine(staging, "manifest.json.sig"), sig);

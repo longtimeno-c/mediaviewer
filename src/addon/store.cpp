@@ -270,6 +270,9 @@ result<installed> store::install(const std::string& staged_dir) const {
   }
   MV_TRY(const io::rename_outcome moved, io::rename_no_replace(staged_dir, target));
   if (moved != io::rename_outcome::renamed) return err(status::io);
+  // The files hashed in staging are the ones now in `target` (a rename): the
+  // inspect below stats and walks them rather than hashing gigabytes again.
+  note_verified_move(staged_dir, target);
 
   // Older versions go at the next start (startup_cleanup), not now: the one
   // this replaces may be running, and a pack opens its model files long

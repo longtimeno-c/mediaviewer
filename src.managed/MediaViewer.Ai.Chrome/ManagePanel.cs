@@ -330,7 +330,10 @@ internal sealed class ManagePanel
 
     // ---- index videos for --------------------------------------------------------------
 
-    private bool AudioAvailable => _audioReady || _chrome.Host.IsPieceInstalled("ai-audio");
+    // Loaded, not only installed: between an install and the pack picking the
+    // piece up there are no sound models to index with (owner report,
+    // 2026-09-27: Sound / Both chosen before the piece was ready).
+    private bool AudioAvailable => _audioReady;
 
     private void ShowVideoIndex()
     {

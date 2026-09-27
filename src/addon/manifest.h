@@ -125,6 +125,11 @@ struct decision {
 
 // Every listed file present with its size and SHA-256, and nothing else in
 // `dir` besides manifest.json and manifest.json.sig.
+// Hashed once per process per folder; a concurrent call for the same folder
+// waits for the one hashing it and takes its answer.
 [[nodiscard]] rejection verify_files(const std::string& dir, const manifest& m);
+// Verified `from_dir` was renamed to `to_dir`: carry the verification over,
+// so an install does not hash the same bytes a second time.
+void note_verified_move(const std::string& from_dir, const std::string& to_dir);
 
 }  // namespace mv::addon

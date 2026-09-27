@@ -212,6 +212,11 @@ final class AddonStore: ObservableObject {
   static let shared = AddonStore()
 
   @Published private(set) var installed = false
+  /// The first installed-state read has landed. Until then nothing offers an
+  /// install: that read verifies every installed file (seconds), and a probe
+  /// of the channel answering first made Settings offer Import again on every
+  /// start (owner report, 2026-09-27).
+  @Published private(set) var stateKnown = false
   @Published private(set) var version = ""
   @Published private(set) var state = ""
   @Published private(set) var loaded = false
@@ -254,7 +259,7 @@ final class AddonStore: ObservableObject {
   private func poll() {
     let s = Self.readString { mv_addons_status($0, $1) }
     if s != status { status = s }
-    let pending = mv_addons_hint_pending() && !installed
+    let pending = mv_addons_hint_pending() && stateKnown && !installed
     if pending, !hintProbed, Self.automaticChecksOn(), offer == .unknown || offer == .unreachable {
       hintProbed = true
       probe()
@@ -284,6 +289,7 @@ final class AddonStore: ObservableObject {
         self.version = obj["version"] as? String ?? ""
         self.state = obj["state"] as? String ?? ""
         self.loaded = mv_addons_loaded()
+        self.stateKnown = true
       }
     }
   }
@@ -326,7 +332,7 @@ final class AddonStore: ObservableObject {
   }
 
   func install() {
-    guard !busy else { return }
+    guard !busy, stateKnown else { return }
     busy = true
     // An update of a running Import installs beside it and takes over at the
     // next start: a loaded bundle cannot be replaced in the running app.
@@ -388,7 +394,10 @@ struct AddonsSection: View {
       Text("Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.")
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
-      if !store.installed {
+      if !store.stateKnown {
+        // Never an Install button while what is installed is unknown.
+        note("Checking installed add-ons…")
+      } else if !store.installed {
         switch store.offer {
         case .available(let bytes):
           Button("Install Import, \(AddonStore.sizeText(bytes))") { store.install() }.disabled(store.busy)

@@ -266,8 +266,9 @@ struct rig {
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<fake_embedder> fast = std::make_shared<fake_embedder>("fake-fast/fp16/pre1");
   std::shared_ptr<fake_embedder> high = std::make_shared<fake_embedder>("fake-high/fp16/pre1", 0.01f);
-  bool faces_available = true;
-  bool audio_available = false;
+  std::atomic<bool> faces_available{true};
+  std::atomic<bool> audio_available{false};
+  std::atomic<int> clip_opens{0};
   std::shared_ptr<fake_sound> sound = std::make_shared<fake_sound>();
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
   std::unique_ptr<engine> eng;
@@ -325,6 +326,7 @@ struct rig {
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
     d.open_clip = [this](std::uint32_t quality, std::uint32_t) -> mv::result<mv::ai::loaded_clip> {
+      ++clip_opens;
       mv::ai::loaded_clip c;
       c.model = quality == 2 ? std::static_pointer_cast<mv::infer::embedder>(high)
                              : std::static_pointer_cast<mv::infer::embedder>(fast);
@@ -878,4 +880,124 @@ TEST_CASE("audio: without the ai-audio piece nothing changes", "[ai][engine][aud
   CHECK((r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0);
   CHECK(r.status().sound_total == 0);
   CHECK(r.search("birthday anna").empty());
+}
+
+// Owner report (2026-09-27): choosing Sound or Both before the Sound piece was
+// ready crashed the app. Whatever the chrome lets through, the engine must
+// hold: the setting and a folder's media flip while the piece comes and goes
+// ("reload" from the host after an install or a removal), workers index, and
+// searches, status and the JSON reads run from other threads.
+TEST_CASE("audio: video_index flips while the Sound piece comes and goes", "[ai][engine][audio][stress]") {
+  for (int round = 0; round < 4; ++round) {
+    rig r;
+    r.file("party_talk_bark.mp4");
+    r.file("more_talk_bark_slow.mp4");
+    r.file("quiet_rgb.mp4");
+    r.file("red_photo.jpg");
+    r.file("green_photo.jpg");
+    r.audio_available = round % 2 == 1;
+    r.start();
+    auto root = r.eng->index_folder(utf8(r.photos()), false);
+    REQUIRE(root);
+
+    std::atomic<bool> done{false};
+    // Readers the chrome runs: the status pill, Settings, the search panel.
+    std::thread reader([&] {
+      int i = 0;
+      while (!done) {
+        mv_ai_status s{};
+        r.eng->status(s);
+        (void)r.eng->settings_json();
+        (void)r.eng->roots_json();
+        (void)r.eng->folder_coverage(utf8(r.photos()));
+        const std::uint64_t id = r.eng->search_text(i % 2 ? "a dog barking" : "birthday red", "",
+                                                    MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+        (void)r.eng->wait_search(id, 2000);
+        if (auto n = r.eng->result_count(id); n && *n > 0) {
+          (void)r.eng->result_at(id, 0);
+          (void)r.eng->result_snippet(id, 0);
+          (void)r.eng->clip_matches(id, utf8(r.photos() / "party_talk_bark.mp4"));
+        }
+        r.eng->search_release(id);
+        ++i;
+      }
+    });
+    for (int i = 0; i < 60; ++i) {
+      switch (i % 6) {
+        case 0: (void)r.eng->set_setting("video_index", std::to_string(i / 6 % 4)); break;
+        case 1: (void)r.eng->root_set_media(*root, static_cast<std::uint32_t>(i / 6 % 4)); break;
+        case 2:
+          // The piece installed or removed, then the host's reload.
+          r.audio_available = !r.audio_available;
+          (void)r.eng->set_setting("reload", "1");
+          break;
+        case 3: (void)r.eng->set_setting("video_index", "3"); break;
+        case 4:
+          (void)r.eng->set_setting("video_index", "2");
+          // People on, and its piece coming and going too.
+          if (i % 12 == 4) (void)r.eng->faces_enable(true);
+          r.faces_available = !r.faces_available;
+          break;
+        default: r.eng->note_folder_opened(utf8(r.photos())); break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(15 + (i * 7) % 40));
+    }
+    // Settle with the piece in, indexing for both: everything completes.
+    r.audio_available = true;
+    REQUIRE(r.eng->set_setting("reload", "1"));
+    REQUIRE(r.eng->set_setting("video_index", "3"));
+    REQUIRE(r.eng->root_set_media(*root, MV_AI_MEDIA_DEFAULT));
+    done = true;
+    reader.join();
+    // The reload lands on the control thread: wait for it and for the work
+    // it queues, not only for an idle moment before it.
+    bool settled = false;
+    mv_ai_status s{};
+    for (int t = 0; t < 600 && !settled; ++t) {
+      if (!r.idle(100)) continue;
+      s = r.status();
+      settled = s.state == MV_AI_STATE_IDLE && (s.flags & MV_AI_STATUS_AUDIO_READY) != 0 && s.sound_total == 3 &&
+                s.sound_done == s.sound_total && s.speech_done == s.speech_total;
+    }
+    REQUIRE(settled);
+  }
+}
+
+// Installing Sound (the host's "reload") picks the piece up without reopening
+// the picture towers: on a Mac that was a second Core ML compile of the tower
+// (minutes, gigabytes written) with indexing and search stopped meanwhile.
+TEST_CASE("audio: a piece installed under a running pack keeps the picture towers", "[ai][engine][audio]") {
+  rig r;
+  r.file("party_talk_bark.mp4");
+  r.file("red_photo.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle(30000));
+  const int opens = r.clip_opens.load();
+  CHECK((r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0);
+
+  r.audio_available = true;
+  REQUIRE(r.eng->set_setting("reload", "1"));
+  bool ready = false;
+  for (int t = 0; t < 300 && !ready; ++t) {
+    const mv_ai_status s = r.status();
+    ready = (s.flags & MV_AI_STATUS_AUDIO_READY) != 0 && s.sound_total == 1 && s.sound_done == 1 &&
+            s.speech_done == 1 && s.state == MV_AI_STATE_IDLE;
+    if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  REQUIRE(ready);
+  CHECK(r.clip_opens.load() == opens);
+  CHECK(r.search("red").front().first == "red_photo.jpg");
+
+  // And removing it clears what it answered, still without a tower reload.
+  r.audio_available = false;
+  REQUIRE(r.eng->set_setting("reload", "1"));
+  bool gone = false;
+  for (int t = 0; t < 300 && !gone; ++t) {
+    gone = (r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0;
+    if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(gone);
+  CHECK(r.search("birthday anna").empty());
+  CHECK(r.clip_opens.load() == opens);
 }

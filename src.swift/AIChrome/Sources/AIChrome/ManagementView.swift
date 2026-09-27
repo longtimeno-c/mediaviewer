@@ -158,6 +158,16 @@ final class ManagementModel: ObservableObject {
     pollStatus()
   }
 
+  /// Settings "Index videos for". Sound and Both need the Sound piece loaded:
+  /// the control disables them, and this refuses them as well.
+  func setVideoIndex(_ media: Int) {
+    guard media == Int(MV_AI_MEDIA_PICTURES) || (audioReady && (media == Int(MV_AI_MEDIA_SOUND) ||
+                                                                 media == Int(MV_AI_MEDIA_BOTH))) else {
+      return
+    }
+    set("video_index", Int64(media))
+  }
+
   func modelName(_ q: Int) -> String { models.first(where: { $0.quality == q })?.name ?? "" }
 
   // MARK: roots
@@ -183,7 +193,7 @@ final class ManagementModel: ObservableObject {
 
   /// Per folder: Default / Pictures / Sound / Both (root_set_media).
   func setRootMedia(_ id: UInt64, _ media: UInt32) {
-    guard table.has(\mv_ai_api.root_set_media) else { return }
+    guard table.has(\mv_ai_api.root_set_media), media & MV_AI_MEDIA_SOUND == 0 || audioReady else { return }
     _ = table.a.root_set_media?(table.ctx, id, media)
     reloadRoots()
     pollStatus()
@@ -369,13 +379,14 @@ struct ManagementView: View {
             detail: model.audioReady
               ? "Pictures finds what a clip shows. Sound also finds what it sounds like (“dog barking”) and what is said. Each folder can differ, from its menu below."
               : "Pictures finds what a clip shows. To find videos by sound and speech, install Sound above.") {
-          Picker("Index videos for", selection: Binding(get: { model.videoIndex },
-                                                        set: { model.set("video_index", Int64($0)) })) {
-            Text("Pictures").tag(Int(MV_AI_MEDIA_PICTURES))
-            Text("Sound").tag(Int(MV_AI_MEDIA_SOUND)).disabled(!model.audioReady)
-            Text("Both").tag(Int(MV_AI_MEDIA_BOTH)).disabled(!model.audioReady)
+          // Not a .segmented Picker: macOS ignores .disabled on its items, so
+          // Sound and Both stayed clickable before the piece was in (owner
+          // report, 2026-09-27). NSSegmentedControl disables per segment.
+          VideoIndexControl(selection: model.videoIndex, audioReady: model.audioReady) {
+            model.setVideoIndex($0)
           }
-          .pickerStyle(.segmented).frame(width: 240)
+          .frame(width: 240)
+          .help(model.audioReady ? "" : "Sound and Both need the Sound piece: install it above.")
         }
       }
       section("Indexed folders") {
@@ -571,5 +582,48 @@ struct ManagementView: View {
     .padding(12)
     .background(Color.accentColor.opacity(0.08))
     .transition(.opacity)
+  }
+}
+
+/// Settings "Index videos for": Pictures · Sound · Both. An NSSegmentedControl
+/// so Sound and Both are really disabled until the Sound piece is loaded
+/// (setEnabled(_:forSegment:)); a click the control lets through is still
+/// checked against `audioReady` before it reaches `choose`.
+struct VideoIndexControl: NSViewRepresentable {
+  let selection: Int      // MV_AI_MEDIA_PICTURES / _SOUND / _BOTH
+  let audioReady: Bool
+  let choose: (Int) -> Void
+
+  fileprivate static let values = [Int(MV_AI_MEDIA_PICTURES), Int(MV_AI_MEDIA_SOUND), Int(MV_AI_MEDIA_BOTH)]
+
+  func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+  func makeNSView(context: Context) -> NSSegmentedControl {
+    let control = NSSegmentedControl(labels: ["Pictures", "Sound", "Both"], trackingMode: .selectOne,
+                                     target: context.coordinator, action: #selector(Coordinator.changed(_:)))
+    control.segmentDistribution = .fillEqually
+    control.setAccessibilityLabel("Index videos for")
+    return control
+  }
+
+  func updateNSView(_ control: NSSegmentedControl, context: Context) {
+    context.coordinator.parent = self
+    for i in 1..<Self.values.count { control.setEnabled(audioReady, forSegment: i) }
+    control.selectedSegment = Self.values.firstIndex(of: selection) ?? 0
+  }
+
+  @MainActor
+  final class Coordinator: NSObject {
+    var parent: VideoIndexControl
+    init(_ parent: VideoIndexControl) { self.parent = parent }
+
+    @objc func changed(_ sender: NSSegmentedControl) {
+      let i = sender.selectedSegment
+      guard i >= 0, i < VideoIndexControl.values.count, i == 0 || parent.audioReady else {
+        sender.selectedSegment = VideoIndexControl.values.firstIndex(of: parent.selection) ?? 0
+        return
+      }
+      parent.choose(VideoIndexControl.values[i])
+    }
   }
 }
