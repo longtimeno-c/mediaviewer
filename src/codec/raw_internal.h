@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Private to src/codec/raw.cpp and tests/test_raw.cpp. Not part of the codec
 // registry: decode.h's decode_raw / decode_raw_preview / looks_like_raw are
 // the only entry points the pipeline uses. These knobs exist so the choices

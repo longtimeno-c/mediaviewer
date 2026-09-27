@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5c transport policy, headless. No clip, no device, no clock.
 #include <catch2/catch_test_macros.hpp>
 

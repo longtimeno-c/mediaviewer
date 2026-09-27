@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9: the host cache in front of meta::read, and the sort orders that use it.
 // The reader is injected, so these prove *when* the file is read, not what is in it.
 #include <catch2/catch_test_macros.hpp>

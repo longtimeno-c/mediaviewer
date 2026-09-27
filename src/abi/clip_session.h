@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The session's clip state behind mediaviewer_clip.h (PR 13 / 14): the job
 // queue and the keyframe-index answers. Portable (no windows.h), so the ABI's
 // clip half is tested on every platform; abi.cpp owns one per session and

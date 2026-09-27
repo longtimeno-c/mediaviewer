@@ -1,5 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "meta/tables.h"
+
+#include "meta/write.h"
 
 namespace mv::meta {
 namespace {
@@ -47,6 +50,18 @@ std::string properties_table(const metadata& m) {
   for (const auto& p : m.properties) {
     out += std::string(origin_name(p.space)) + "\t" + flat(p.group) + "\t" + flat(p.label) + "\t" +
            flat(p.value) + "\t" + flat(p.raw_tag) + "\n";
+  }
+  return out;
+}
+
+std::string editable_properties_table(const metadata& m) {
+  const write_target target = m.writes_in_file ? write_target::in_file : write_target::sidecar;
+  std::string out;
+  for (const auto& p : m.properties) {
+    const tag_access a = access_of(p.raw_tag, target);
+    const char* access = a == tag_access::editable ? "e" : a == tag_access::via_sidecar ? "s" : "r";
+    out += std::string(origin_name(p.space)) + "\t" + flat(p.group) + "\t" + flat(p.label) + "\t" +
+           flat(p.value) + "\t" + flat(p.raw_tag) + "\t" + flat(p.raw) + "\t" + access + "\n";
   }
   return out;
 }

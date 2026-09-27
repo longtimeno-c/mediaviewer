@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 13 / 14 (plan/08 "Execution & UX"): the state the Jobs pane reads -- the
 // host's clip job queue (abi/clip_session, the same queue the Windows ABI
 // drives), polled through the bridge. Nothing here waits on a job: every call

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The default map (plan/16-commands.md "Default map"). FastStone / IrfanView
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"
@@ -252,6 +253,13 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_ctrl, kVideo | kTrim, edge, clip_tools),
     row(C('B'), mod_ctrl, kVideo | kTrim, edge, clip_split),
     row(C('X'), mod_ctrl, kTrim, edge, trim_remove_middle),
+    // PR 15 (plan/16 View): the keyboard twins of drag-out. Appended. Ctrl+C
+    // copies the file(s); the Shift twin their path(s); Ctrl+Alt+C what the
+    // canvas shows with the edits baked (stills: a clip's frame is PR 14's
+    // frame export). Ctrl+Shift+S is Share; Ctrl+S stays Export / clip tools.
+    row(C('C'), mod_ctrl | mod_shift, kViewing, edge, copy_path),
+    row(C('C'), mod_ctrl | mod_alt, kBrowse, edge, copy_flattened),
+    row(C('S'), mod_ctrl | mod_shift, kViewing, edge, share),
     // PR 29 (plan/20): the Edit workspace. Appended so every row above keeps
     // its Settings index. Enter was unbound in browse and video; inside the
     // workspace it keeps meaning Apply (crop) / Save (trim), since crop and
@@ -410,6 +418,9 @@ constexpr command_info kCommands[] = {
     {clip_tools, "Clip tools…"},
     {clip_split, "Split clip at playhead"},
     {trim_remove_middle, "Trim: remove in–out"},
+    {copy_path, "Copy path"},
+    {copy_flattened, "Copy edited image"},
+    {share, "Share…"},
     {edit_workspace, "Edit image / Edit video"},
     {crop_aspect_cycle, "Crop: next aspect ratio"},
     {crop_aspect_swap, "Crop: portrait / landscape"},

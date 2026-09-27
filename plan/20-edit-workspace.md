@@ -1,7 +1,8 @@
 # 20 — The Edit workspace (one visible way in to crop, colour, metadata and trim)
 
 **Status: planned 2026-09-26 from issue #39. Standalone PR 29, both platforms (D9). Phase 1 is
-written and run on Mac (the `MV_EDIT_SELFTEST` rig); the Windows half is owed. Revised the same
+written and run on Mac and on Windows (the `MV_EDIT_SELFTEST` rig on both, and real keys on
+Windows; see "What was run"). Revised the same
 day on the owner's review (below: "Owner review").** It adds no new edit engine. It puts a visible door and one pane in
 front of what PRs 10–14 already built, so that a first-time user can find crop without reading
 `?`.
@@ -132,7 +133,8 @@ same strip.
 | Core, shared | `shell/commands.h`, `command_table.cpp` | `edit_workspace` (`Enter` in browse and video), `crop_aspect_cycle` (`A` in crop), `crop_aspect_swap` (`X` in crop), `show_original` / `show_original_release` (`Y` held, stills), and the island-only `crop_aspect_set` and `crop_straighten_set` |
 | Mac host | `main_mac.mm`, SwiftUI | `EditStripView`, `CropPane` and `TrimPane` (`EditStore` polls one POD view by generation, like the other stores). The right-edge panes hang under the strip while it is open, and the canvas docks beside them. An Edit menu. The command-bar button. The metadata pane's tag editor (`MetadataView`) |
 | Core, shared | `meta/write` | `write_fields::tags` (any Exif / Iptc / Xmp key, set or remove) and `date_taken`; `access_of()`; a whole-metadata snapshot (a JPEG's metadata segments and the sidecar, byte for byte) that `revert` splices back |
-| Windows host | `main.cpp`, WinUI | The same strip and panes in `IslandHost.Edit.cs`, pushed through one new blittable `SetEditView` entry, as `SetAdjustView` is. The command-bar button. **Written, not yet compiled** (no MSVC on the machine this was written on) |
+| Windows host | `main.cpp`, WinUI | A fifth panel island (`IslandHost.Edit.cs`): the strip, and under it the Crop or Trim pane; on Colour / Info / Jobs the island is the strip alone and native places that pane under it. One blittable `SetEditView` entry (`chrome_edit_args`, as `SetAdjustView`) feeds the strip, the panes and the command bar's **Edit image / Edit video** button (between View and Settings). The island sends keyed command ids plus four notifications (`edit_tab`, `edit_action`, `meta_tags`, `meta_date`). The canvas docks through the same `chrome_right_px` (`present_lab.cpp` `usable_canvas`). The metadata pane (`IslandHost.Panels.cs`) gets the owner-review editor: Date taken, Remove location, per-tag Edit / Remove with a lock on read-only rows, Add tag, Revert all |
+| Core, shared | `meta/tables` | `editable_properties_table`: the properties table plus each tag's raw value and access, the form the Mac bridge already wrote by hand |
 
 Rules: nothing here blocks the UI thread (the view is POD and the work is PR 10–14's existing
 jobs), and no new canvas path is added (Show original publishes an identity `edit_view` on the
@@ -173,8 +175,35 @@ original's SHA-1 is unchanged after the revert. On a clip: Trim → arm → Jobs
 both render. `mv_tests`: 464 pass. The 15 failures need `tests/data` fixtures this checkout lacks
 (HEIF/AVIF, unrelated).
 
-Not yet run: VoiceOver, 200 % on a non-Retina display, both present-loop gates with the pane
-docked, and anything on Windows.
+Not yet run on Mac: VoiceOver, 200 % on a non-Retina display, the Mac present-loop gate with the
+pane docked.
+
+## What was run (Windows, 2026-09-27)
+
+The same `MV_EDIT_SELFTEST` rig on Windows (`PrintWindow` captures, swapchain and islands
+included). On a 2000 × 1500 JPEG: open → **3:2** → Apply → Colour → Info (`Exif.Image.Artist`
+and the date written in place and read back) → Original → Save copy → Esc → Revert. The copy is
+**2000 × 1333** (3:2 within a pixel) and the original's SHA-1 is unchanged after the revert. The
+canvas refits beside the docked pane (`chrome_right_px` 340 at 96 DPI) and back when it closes.
+On a clip: `Enter` opens on Trim → arm → Jobs → Esc, Esc.
+
+Verify 2–4 were then run with **real key input** (SendInput) on the running app: `Enter` opens
+the workspace; `Shift+C`, `A` ×4 lands on 3:2, `Enter` applies, `Ctrl+S` and `Enter` save a
+2000 × 1333 copy; holding `Y` shows the uncropped original and releasing restores it; `Ctrl+Z`
+steps back; with a new crop draft, `Esc` drops only the draft and a second `Esc` closes the
+workspace. `mv_tests`: 631 pass, 24 skipped (fixtures not in this checkout), 0 fail, including
+`test_edit_workspace`, the new `test_edit_session` / `test_meta_write` cases and
+`editable_properties_table`.
+
+**Present-loop gate (Windows PR 1): inconclusive, not passed.** `frametime --seconds 60` was run
+five times on this branch and, interleaved, twice on unmodified `origin/main` on the same machine
+while it was in use. Every run failed a gate, `main` included (its worst run: 5 drops, a 117 ms
+frame; this branch's worst: 1 drop, a 67 ms frame; p50 16.70 ms on all). The soak never opens the
+workspace, so the only path it exercises here is `chrome_right_px == 0`, a no-op. A quiet-machine
+run, and a soak with the pane docked, are owed before merge.
+
+Not yet run on Windows: Narrator, a light-theme pass (the pane uses the chrome's theme
+brushes; only dark was looked at), and 200 %.
 
 ## Verify (both platforms)
 

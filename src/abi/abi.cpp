@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The C ABI implementation. Every exported symbol in this file is `noexcept`
 // and does its real work inside mv::abi::guard.
 

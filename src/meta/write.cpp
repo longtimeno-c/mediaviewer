@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12 metadata writer (meta/write.h). The rules it exists to keep:
 //   * never open an original for writing (rule 5): a JPEG is rewritten as new
 //     bytes and swapped in by the io replace port; everything else gets a

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Small perspective scene shared by the D3D11 and Metal hosts. World-space
 // boxes are lit, projected and depth-sorted into the existing ImGui renderer;
 // no extra device, assets, shaders, allocations or present path are needed.

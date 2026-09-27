@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ICO: ICONDIR of BMP (no BITMAPFILEHEADER) or PNG images. Largest size is
 // the still; other sizes are Ctrl+PageUp/PageDown inside one folder stop.
 //

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // OS-codec probe (D3). try_os_decode is declared on decode.h; this header holds
 // what the Windows TU needs from the portable decoders to decide whether the
 // OS codec may take a file at all. Do not include windows.h here (D9).

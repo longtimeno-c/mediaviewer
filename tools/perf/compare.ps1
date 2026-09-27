@@ -1,3 +1,5 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Drives MediaViewer, Windows Photos and Media Player through identical scripted work while an elevated
 # PresentMon records every present; writes runs.json next to the PresentMon CSV. Analyse with compare-analyse.py.
 # Needs Intel PresentMon (winget install Intel.PresentMon). PresentMon asks for administrator once (UAC).

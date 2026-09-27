@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 13 (two-path trim) and PR 14 (extract & remux), shared core.
 // plan/10 Milestone E verify lines, walked on synthetic clips (clip_fixture.h):
 //   * keyframe trim is proportional in size and snaps to the keyframe grid;

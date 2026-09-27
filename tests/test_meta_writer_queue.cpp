@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 12: the host-shared write queue behind the rating keys and the comment
 // field (shell/meta_writer.h): coalescing, one write at a time, optimistic
 // state, and the job that runs on the pool.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 7 verify clause: "nothing in the broken corpus crashes or hangs".
 //
 // For every seed in tests/data/seeds/<family>/ this derives hostile variants

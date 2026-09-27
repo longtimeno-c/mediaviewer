@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // LoadLibraryExW half of the add-on loader. The add-on's own folder is on the
 // search path for its dependencies and the current directory is not: a DLL
 // planted beside a photo can never be picked up.

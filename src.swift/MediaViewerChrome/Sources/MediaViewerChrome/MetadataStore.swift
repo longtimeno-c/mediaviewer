@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9 (plan/06, plan/16): the state the metadata pane reads. It mirrors a record
 // the host already holds -- summary rows, the full tag tree, per-stream inspector
 // -- and re-reads it only when the host's metadata generation moves. Nothing here

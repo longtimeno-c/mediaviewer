@@ -1,0 +1,619 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+using System.Runtime.InteropServices;
+using Microsoft.UI;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Media;
+
+namespace MediaViewer.Chrome;
+
+/// <summary>
+/// PR 29 (plan/20): the Edit workspace — one visible door to the PR 10–14 edits.
+/// A fifth panel island at the top of the right column: the strip (title, tabs,
+/// Undo / Reset / Original / Save copy) and, under it, the Crop or Trim pane.
+/// The Colour, Info and Jobs tabs are the adjust, metadata and Jobs panes,
+/// which native places under the strip. The Mac twin is EditView.swift.
+/// </summary>
+/// <remarks>
+/// Every control sends a command the keyboard already has, and its tooltip and
+/// accessible name say which key, so the pane teaches the keys rather than
+/// replacing them. Native owns the workspace (shell/edit_workspace.h) and the
+/// crop draft (shell/edit_session.h) and pushes what to show (SetEditView,
+/// <c>chrome_edit_args</c>); nothing here edits pixels or reads a file. The
+/// buttons never take focus on a click, so the crop and trim keys stay with
+/// the canvas.
+/// </remarks>
+public static partial class IslandHost
+{
+    // chrome_host.h chrome_edit_args: 12 int/float words, two pointers, two lengths.
+    internal const int EditArgsSize = 72;
+
+    private static DesktopWindowXamlSource? _editPane;
+    private static bool _editPaneVisible;
+
+    // Mirrors chrome_edit_action (chrome_host.h).
+    private static class EditActions
+    {
+        public const int CancelCrop = 0;
+        public const int OriginalOff = 1;
+        public const int OriginalOn = 2;
+        public const int SaveCopy = 3;
+    }
+
+    // shell::edit_tab and shell::crop_aspect values (both stable on the wire).
+    private const int TabCrop = 0, TabColour = 1, TabInfo = 2, TabTrim = 3, TabJobs = 4;
+    private const int SubjectNone = 0, SubjectClip = 2;
+    private static readonly string[] AspectLabels = { "Free", "Original", "1:1", "4:3", "3:2", "16:9", "5:4" };
+
+    // chrome_host.h kEditTrim*.
+    private const int TrimArmedFlag = 1, TrimPreviewingFlag = 2, TrimHasMarkerFlag = 4;
+
+    // Last view native pushed.
+    private static bool _editOpen;
+    private static int _editTab;
+    private static int _editSubject;
+    private static bool _editCropActive;
+    private static int _editAspect;
+    private static bool _editPortrait;
+    private static float _editStraighten;
+    private static int _editCount;
+    private static bool _editOriginal;
+    private static int _editCropW;
+    private static int _editCropH;
+    private static int _editTrimFlags;
+    private static string _editName = "";
+    private static string _editTrimLabel = "";
+
+    // What the island was built for; anything else is updated in place, so a
+    // straighten drag is never interrupted by a rebuild.
+    private static string _editShape = "";
+    private static bool _updatingEdit;
+
+    private static Button? _editBarButton;
+    private static TextBlock? _editNameText;
+    private static TextBlock? _editCountText;
+    private static Button? _editUndo;
+    private static Button? _editReset;
+    private static Button? _editOriginalButton;
+    private static TextBlock? _editCropSize;
+    private static Button? _editOrient;
+    private static Slider? _editStraightenSlider;
+    private static TextBlock? _editStraightenText;
+    private static readonly List<(Button Button, int Tab)> EditTabButtons = new();
+    private static readonly List<Button> EditAspectButtons = new();
+
+    private static void DropEditUi()
+    {
+        _editShape = "";
+        _editNameText = null;
+        _editCountText = null;
+        _editUndo = null;
+        _editReset = null;
+        _editOriginalButton = null;
+        _editCropSize = null;
+        _editOrient = null;
+        _editStraightenSlider = null;
+        _editStraightenText = null;
+        EditTabButtons.Clear();
+        EditAspectButtons.Clear();
+    }
+
+    public static int ShowEditPane(IntPtr arg, int sizeBytes) => ShowPanel(
+        arg, sizeBytes, _editPane, BuildEditPane,
+        onShown: () => _editPaneVisible = true,
+        onHidden: () =>
+        {
+            _editPaneVisible = false;
+            DropEditUi();
+        });
+
+    /// <summary>
+    /// Native pushes the workspace, the crop draft and the trim state whenever
+    /// any of them changes, open or not (the bar button follows the item).
+    /// In: chrome_edit_args (EditArgsSize bytes; pointers valid for the call).
+    /// </summary>
+    public static int SetEditView(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < EditArgsSize) return unchecked((int)0x80070057);
+            _editOpen = Marshal.ReadInt32(arg, 0) != 0;
+            _editTab = Marshal.ReadInt32(arg, 4);
+            _editSubject = Marshal.ReadInt32(arg, 8);
+            _editCropActive = Marshal.ReadInt32(arg, 12) != 0;
+            _editAspect = Math.Clamp(Marshal.ReadInt32(arg, 16), 0, AspectLabels.Length - 1);
+            _editPortrait = Marshal.ReadInt32(arg, 20) != 0;
+            _editStraighten = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 24));
+            _editCount = Marshal.ReadInt32(arg, 28);
+            _editOriginal = Marshal.ReadInt32(arg, 32) != 0;
+            _editCropW = Marshal.ReadInt32(arg, 36);
+            _editCropH = Marshal.ReadInt32(arg, 40);
+            _editTrimFlags = Marshal.ReadInt32(arg, 44);
+            static string Utf8(long ptr, int len) =>
+                ptr == 0 || len <= 0 ? "" : Marshal.PtrToStringUTF8(checked((IntPtr)ptr), len) ?? "";
+            _editName = Utf8(Marshal.ReadInt64(arg, 48), Marshal.ReadInt32(arg, 64));
+            _editTrimLabel = Utf8(Marshal.ReadInt64(arg, 56), Marshal.ReadInt32(arg, 68));
+            RenderEditBarButton();
+            if (_editPaneVisible) RenderEdit();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    private static bool EditIsClip => _editSubject == SubjectClip;
+    private static string EditTitle => EditIsClip ? "Edit video" : "Edit image";
+
+    // ---- the command bar's button ----------------------------------------------
+
+    private static Button BuildEditBarButton()
+    {
+        _editBarButton = EditButton("Edit image", () => Send(Command.EditWorkspace), compact: false);
+        RenderEditBarButton();
+        return _editBarButton;
+    }
+
+    private static void RenderEditBarButton()
+    {
+        if (_editBarButton is null) return;
+        string label = _editOpen ? "Done" : EditTitle;
+        SetButtonText(_editBarButton, label);
+        _editBarButton.IsEnabled = _editSubject != SubjectNone;
+        _editBarButton.Background = _editOpen ? Brush(Hairline) : Brush(Colors.Transparent);
+        string tip = _editOpen ? "Close the editor  Enter or Esc"
+                     : EditIsClip ? "Edit video: trim, split, clip tools  Enter"
+                                  : "Edit image: crop, rotate, colour, info  Enter";
+        ToolTipService.SetToolTip(_editBarButton, tip);
+        AutomationProperties_SetName(_editBarButton, _editOpen ? "Done editing" : EditTitle);
+    }
+
+    // ---- buttons in the chrome's flat style --------------------------------------
+
+    private static ControlTemplate? _editButtonTemplate;
+
+    // The bar's flat look (IslandHost FlatButtonTemplate) with the background
+    // and padding bound, so a chosen tab or preset keeps a wash and the panes
+    // can use the tighter padding. Disabled dims the whole button.
+    private static ControlTemplate? EditButtonTemplate()
+    {
+        if (_editButtonTemplate is not null) return _editButtonTemplate;
+        const string xaml =
+            """
+            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                             TargetType="Button">
+              <Border x:Name="Root" Background="{TemplateBinding Background}"
+                      Padding="{TemplateBinding Padding}" CornerRadius="4">
+                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="Center"
+                                  Content="{TemplateBinding Content}"
+                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                  FontFamily="{TemplateBinding FontFamily}"
+                                  FontSize="{TemplateBinding FontSize}"
+                                  Foreground="{TemplateBinding Foreground}"/>
+                <VisualStateManager.VisualStateGroups>
+                  <VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal"/>
+                    <VisualState x:Name="PointerOver">
+                      <VisualState.Setters>
+                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+                      </VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Pressed">
+                      <VisualState.Setters>
+                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
+                      </VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Disabled">
+                      <VisualState.Setters>
+                        <Setter Target="Root.Opacity" Value="0.4"/>
+                      </VisualState.Setters>
+                    </VisualState>
+                  </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+              </Border>
+            </ControlTemplate>
+            """;
+        try
+        {
+            _editButtonTemplate = (ControlTemplate)XamlReader.Load(xaml);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _editButtonTemplate = null;
+        }
+        return _editButtonTemplate;
+    }
+
+    private static Button EditButton(string label, Action click, bool compact = true, string? tip = null,
+                                     bool stretch = false)
+    {
+        double size = compact ? UiFontSize - 2 : UiFontSize;
+        var b = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = label, FontFamily = UiFont, FontSize = size, Foreground = Brush(Title),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            },
+            Background = Brush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = compact ? new Thickness(8, 4, 8, 4) : new Thickness(14, 7, 14, 7),
+            FontFamily = UiFont,
+            FontSize = size,
+            HorizontalAlignment = stretch ? HorizontalAlignment.Stretch : HorizontalAlignment.Left,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            // A click must not park the keyboard on the island: the crop and
+            // trim keys belong to the canvas (the Mac host re-focuses its view).
+            AllowFocusOnInteraction = false,
+        };
+        ControlTemplate? template = EditButtonTemplate();
+        if (template is not null) b.Template = template;
+        b.Click += (_, _) =>
+        {
+            try
+            {
+                click();
+            }
+            catch (Exception ex)
+            {
+                // Never let an exception out of a XAML event: that is a fail-fast.
+                System.Diagnostics.Debug.WriteLine(ex);
+            }
+        };
+        AutomationProperties_SetName(b, label);
+        if (tip is not null) ToolTipService.SetToolTip(b, tip);
+        return b;
+    }
+
+    private static void SetSelected(Button b, bool selected)
+    {
+        b.Background = selected ? Brush(Hairline) : Brush(Colors.Transparent);
+    }
+
+    private static TextBlock SectionTitle(string text)
+    {
+        TextBlock t = Text(text, Body, UiFontSize - 2);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHeadingLevel(
+            t, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        return t;
+    }
+
+    private static TextBlock Hint(string text) => Text(text, Body, UiFontSize - 4);
+
+    private static StackPanel Row(params UIElement[] children)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        foreach (UIElement c in children) row.Children.Add(c);
+        return row;
+    }
+
+    // ---- the island --------------------------------------------------------------
+
+    private static UIElement BuildEditPane()
+    {
+        DropEditUi();
+        _editShape = EditShape();
+        var root = new Grid
+        {
+            Background = Brush(PanelBg),
+            RequestedTheme = ElementTheme.Default,
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1, 0, 0, 0),
+        };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Children.Add(BuildEditStrip());
+        var rule = new Border { Height = 1, Background = Brush(Hairline) };
+        Grid.SetRow(rule, 1);
+        root.Children.Add(rule);
+        if (_editTab == TabCrop || _editTab == TabTrim)
+        {
+            var pane = new StackPanel { Spacing = 14, Padding = new Thickness(14, 12, 14, 14) };
+            if (_editTab == TabTrim) BuildTrimPane(pane);
+            else BuildCropPane(pane);
+            var scroll = new ScrollViewer { Content = pane, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            Grid.SetRow(scroll, 2);
+            root.Children.Add(scroll);
+        }
+        AutomationProperties_SetName(root, EditTitle);
+        RenderEditInPlace();
+        return root;
+    }
+
+    // What forces a rebuild: the tab, the subject, the crop draft starting or
+    // ending, trim arming or previewing (their panes list different buttons).
+    private static string EditShape() =>
+        $"{_editTab}|{_editSubject}|{_editCropActive}|{_editTrimFlags}|{_editTrimLabel}";
+
+    private static void RenderEdit()
+    {
+        if (_editPane is null) return;
+        if (EditShape() != _editShape)
+        {
+            _editPane.Content = BuildEditPane();
+            return;
+        }
+        RenderEditInPlace();
+    }
+
+    private static UIElement BuildEditStrip()
+    {
+        var col = new StackPanel { Spacing = 6, Padding = new Thickness(12, 10, 8, 8) };
+
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock title = Text(EditTitle, Title, UiFontSize, bold: true);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(title);
+        _editNameText = Text("", Body, UiFontSize - 2, maxLines: 1);
+        _editNameText.TextTrimming = TextTrimming.CharacterEllipsis;
+        _editNameText.VerticalAlignment = VerticalAlignment.Center;
+        _editNameText.Margin = new Thickness(8, 0, 4, 0);
+        Grid.SetColumn(_editNameText, 1);
+        head.Children.Add(_editNameText);
+        Button done = EditButton("Done", () => Send(Command.EditWorkspace),
+                                 tip: "Close the editor  Esc, or Enter again");
+        Grid.SetColumn(done, 2);
+        head.Children.Add(done);
+        col.Children.Add(head);
+
+        // Tabs: a row of plain buttons so each can carry its key.
+        var tabs = new Grid { ColumnSpacing = 4 };
+        (int Tab, string Label, string Key)[] list = EditIsClip
+            ? new[] { (TabTrim, "Trim", "Ctrl+T"), (TabJobs, "Jobs", "Ctrl+J") }
+            : new[] { (TabCrop, "Crop", "Shift+C"), (TabColour, "Colour", "Shift+A"), (TabInfo, "Info", "I") };
+        for (int i = 0; i < list.Length; i++)
+        {
+            (int tab, string label, string key) = list[i];
+            tabs.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Button b = EditButton(label, () => Send(Command.EditTab, tab), tip: $"{label}  {key}", stretch: true);
+            Grid.SetColumn(b, i);
+            tabs.Children.Add(b);
+            EditTabButtons.Add((b, tab));
+        }
+        col.Children.Add(tabs);
+
+        if (EditIsClip)
+        {
+            col.Children.Add(Row(EditButton("Clip tools…", () => Send(Command.ClipToolsFlyout),
+                                            tip: "Rotate, split, remux, save a frame, audio, GIF  Ctrl+S")));
+        }
+        else
+        {
+            _editUndo = EditButton("Undo", () => Send(Command.UndoEdit), tip: "Undo the last edit  Ctrl+Z");
+            _editReset = EditButton("Reset", () => Send(Command.ResetEdits),
+                                    tip: "Reset to the original, exactly  Ctrl+R");
+            _editOriginalButton = EditButton("Original",
+                () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn),
+                tip: "Show the original while on (or hold Y); nothing is changed");
+            Button save = EditButton("Save copy…", () => Send(Command.EditAction, EditActions.SaveCopy),
+                                     tip: "Write a new file with these edits; the original is never changed  Ctrl+S");
+            var actions = new Grid();
+            actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            actions.Children.Add(Row(_editUndo, _editReset, _editOriginalButton));
+            Grid.SetColumn(save, 1);
+            actions.Children.Add(save);
+            col.Children.Add(actions);
+        }
+        _editCountText = Hint("");
+        col.Children.Add(_editCountText);
+        return col;
+    }
+
+    private static void BuildCropPane(StackPanel pane)
+    {
+        // Start / apply / cancel.
+        var crop = new StackPanel { Spacing = 6 };
+        crop.Children.Add(SectionTitle("Crop"));
+        if (_editCropActive)
+        {
+            _editCropSize = Text("", Title, UiFontSize - 2);
+            crop.Children.Add(_editCropSize);
+            crop.Children.Add(Row(
+                EditButton("Apply", () => Send(Command.CropCommit), tip: "Apply the crop  Enter"),
+                EditButton("Cancel", () => Send(Command.EditAction, EditActions.CancelCrop),
+                           tip: "Drop this crop  Esc")));
+        }
+        else
+        {
+            crop.Children.Add(Row(EditButton("Crop and straighten", () => Send(Command.CropMode),
+                                             tip: "Start cropping  Shift+C")));
+        }
+        pane.Children.Add(crop);
+
+        // Aspect presets: two rows of plain buttons, the chosen one washed.
+        var aspect = new StackPanel { Spacing = 6 };
+        aspect.Children.Add(SectionTitle("Aspect ratio"));
+        var grid = new Grid { ColumnSpacing = 4, RowSpacing = 4 };
+        for (int c = 0; c < 4; c++)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (int a = 0; a < AspectLabels.Length; a++)
+        {
+            int preset = a;
+            Button b = EditButton(AspectLabels[a],
+                () => Send(Command.CropAspectSet, preset + (_editPortrait && HasOrientation(preset) ? 16 : 0)),
+                tip: $"Aspect {AspectLabels[a]}  A cycles while cropping", stretch: true);
+            AutomationProperties_SetName(b, $"Aspect {AspectLabels[a]}");
+            Grid.SetRow(b, a / 4);
+            Grid.SetColumn(b, a % 4);
+            grid.Children.Add(b);
+            EditAspectButtons.Add(b);
+        }
+        aspect.Children.Add(grid);
+        _editOrient = EditButton("Landscape",
+            () => Send(Command.CropAspectSet, _editAspect + (_editPortrait ? 0 : 16)),
+            tip: "Swap portrait / landscape  X while cropping");
+        aspect.Children.Add(_editOrient);
+        aspect.Children.Add(Hint("A next ratio · X swap, while cropping"));
+        pane.Children.Add(aspect);
+
+        // Straighten: ±45°, half-degree steps; the value is native's.
+        var straighten = new StackPanel { Spacing = 6 };
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock st = SectionTitle("Straighten");
+        st.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(st);
+        _editStraightenText = Text("", Body, UiFontSize - 2);
+        _editStraightenText.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(_editStraightenText, 1);
+        head.Children.Add(_editStraightenText);
+        Button level = EditButton("Level", () => Send(Command.CropStraightenSet, 0f), tip: "Back to 0°");
+        level.Margin = new Thickness(6, 0, 0, 0);
+        AutomationProperties_SetName(level, "Straighten to zero");
+        Grid.SetColumn(level, 2);
+        head.Children.Add(level);
+        straighten.Children.Add(head);
+        _editStraightenSlider = new Slider
+        {
+            Minimum = -45,
+            Maximum = 45,
+            StepFrequency = 0.5,
+            SmallChange = 0.5,
+            LargeChange = 5,
+            IsThumbToolTipEnabled = false,
+        };
+        AutomationProperties_SetName(_editStraightenSlider, "Straighten, degrees");
+        _editStraightenSlider.ValueChanged += (_, e) =>
+        {
+            if (_updatingEdit) return;
+            _editStraighten = (float)e.NewValue;
+            if (_editStraightenText is not null) _editStraightenText.Text = $"{e.NewValue:+0.0;-0.0;0.0}°";
+            Send(Command.CropStraightenSet, (float)e.NewValue);
+        };
+        straighten.Children.Add(_editStraightenSlider);
+        straighten.Children.Add(Hint(", . tilt 0.5° while cropping"));
+        pane.Children.Add(straighten);
+
+        // Rotate and flip: the PR 10 keys.
+        var turn = new StackPanel { Spacing = 6 };
+        turn.Children.Add(SectionTitle("Rotate and flip"));
+        turn.Children.Add(Row(
+            EditButton("⟲ Left", () => Send(Command.RotateCcw), tip: "Rotate left  ["),
+            EditButton("⟳ Right", () => Send(Command.RotateCw), tip: "Rotate right  ]"),
+            EditButton("Flip H", () => Send(Command.FlipHorizontal), tip: "Flip horizontal  H"),
+            EditButton("Flip V", () => Send(Command.FlipVertical), tip: "Flip vertical  V")));
+        turn.Children.Add(Hint("A JPEG with only turns is rewritten losslessly."));
+        pane.Children.Add(turn);
+
+        pane.Children.Add(Hint("While cropping: arrows move · Shift+arrows resize · Enter apply · Esc cancel"));
+    }
+
+    private static void BuildTrimPane(StackPanel pane)
+    {
+        bool armed = (_editTrimFlags & TrimArmedFlag) != 0;
+        bool previewing = (_editTrimFlags & TrimPreviewingFlag) != 0;
+        bool marked = (_editTrimFlags & TrimHasMarkerFlag) != 0;
+        var trim = new StackPanel { Spacing = 6 };
+        trim.Children.Add(SectionTitle("Trim"));
+        if (armed)
+        {
+            if (_editTrimLabel.Length > 0) trim.Children.Add(Text(_editTrimLabel, Title, UiFontSize - 2));
+            trim.Children.Add(Row(
+                EditButton("Set in", () => Send(Command.TrimIn), tip: "Set in  ["),
+                EditButton("Set out", () => Send(Command.TrimOut), tip: "Set out  ]"),
+                EditButton(previewing ? "Stop preview" : "Preview", () => Send(Command.TrimPreview),
+                           tip: "Loop the cut  P")));
+            Button save = EditButton("Save", () => Send(Command.TrimKeyframe),
+                                     tip: "Keyframe cut: instant, no re-encode  Enter");
+            Button exact = EditButton("Save exact", () => Send(Command.TrimReencode),
+                                      tip: "Frame-accurate re-encode, slower  Shift+Enter");
+            Button without = EditButton("Copy without in–out", () => Send(Command.TrimRemoveMiddle),
+                                        tip: "A copy without the marked range  Ctrl+X");
+            save.IsEnabled = exact.IsEnabled = without.IsEnabled = marked;
+            trim.Children.Add(Row(save, exact));
+            trim.Children.Add(Row(without, EditButton("Clear", () => Send(Command.TrimClear),
+                                                      tip: "Clear in and out  Backspace")));
+            trim.Children.Add(Row(EditButton("Stop trimming", () => Send(Command.TrimMode), tip: "Ctrl+T")));
+        }
+        else
+        {
+            trim.Children.Add(Row(EditButton("Start trimming", () => Send(Command.TrimMode),
+                                             tip: "Set in and out points on the scrub bar  Ctrl+T")));
+        }
+        pane.Children.Add(trim);
+
+        var tools = new StackPanel { Spacing = 6 };
+        tools.Children.Add(SectionTitle("Tools"));
+        tools.Children.Add(Row(EditButton("Split at playhead", () => Send(Command.ClipSplit), tip: "Ctrl+B")));
+        tools.Children.Add(Row(EditButton("More clip tools…", () => Send(Command.ClipToolsFlyout), tip: "Ctrl+S")));
+        pane.Children.Add(tools);
+        pane.Children.Add(Hint("Space play · , . frame step · J K L shuttle · Q E skip"));
+    }
+
+    private static bool HasOrientation(int aspect) => aspect >= 3;  // 4:3 and up; Free, Original, 1:1 have none
+
+    // Everything that moves without a rebuild: labels, washes, enabled states,
+    // and the slider (guarded, so native's echo of a drag is not re-sent).
+    private static void RenderEditInPlace()
+    {
+        if (_editNameText is not null) _editNameText.Text = _editName;
+        if (_editCountText is not null)
+        {
+            _editCountText.Text = EditIsClip
+                ? "Trims and tools write new files; the clip is never changed."
+                : (_editCount == 1 ? "1 edit" : $"{_editCount} edits") + " · the original is never changed";
+        }
+        foreach ((Button b, int tab) in EditTabButtons)
+        {
+            bool on = tab == _editTab;
+            SetSelected(b, on);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? "Selected" : "");
+        }
+        bool canEdit = _editSubject != SubjectNone;
+        if (_editUndo is not null) _editUndo.IsEnabled = _editCount > 0;
+        if (_editReset is not null) _editReset.IsEnabled = _editCount > 0 || _editCropActive;
+        if (_editOriginalButton is not null)
+        {
+            SetSelected(_editOriginalButton, _editOriginal);
+            _editOriginalButton.IsEnabled = canEdit;
+        }
+        if (_editCropSize is not null)
+        {
+            _editCropSize.Text = _editCropW > 0 ? $"{_editCropW} × {_editCropH} px" : "";
+            AutomationProperties_SetName(_editCropSize, $"Crop size {_editCropW} by {_editCropH} pixels");
+        }
+        for (int i = 0; i < EditAspectButtons.Count; i++)
+        {
+            SetSelected(EditAspectButtons[i], i == _editAspect);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(
+                EditAspectButtons[i], i == _editAspect ? "Selected" : "");
+        }
+        if (_editOrient is not null)
+        {
+            SetButtonText(_editOrient, _editPortrait ? "Portrait" : "Landscape");
+            _editOrient.IsEnabled = HasOrientation(_editAspect);
+        }
+        if (_editStraightenText is not null) _editStraightenText.Text = $"{_editStraighten:+0.0;-0.0;0.0}°";
+        if (_editStraightenSlider is not null && Math.Abs(_editStraightenSlider.Value - _editStraighten) > 1e-3)
+        {
+            _updatingEdit = true;
+            try
+            {
+                _editStraightenSlider.Value = _editStraighten;
+            }
+            finally
+            {
+                _updatingEdit = false;
+            }
+        }
+    }
+}

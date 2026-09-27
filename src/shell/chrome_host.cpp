@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/chrome_host.h"
 
 #include <algorithm>
@@ -271,9 +272,14 @@ expected chrome_host::load() noexcept {
   // PR 13 / 14, optional the same way.
   show_jobs_pane_ = get_entry(L"ShowJobsPane");
   set_trim_ = get_entry(L"SetTrim");
+  // PR 29, optional the same way: without it there is no Edit workspace.
+  show_edit_pane_ = get_entry(L"ShowEditPane");
+  set_edit_view_ = get_entry(L"SetEditView");
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
+  // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
+  share_files_ = get_entry(L"ShareFiles");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -645,6 +651,7 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   tree_visible_ = false;
   adjust_visible_ = false;
   jobs_visible_ = false;
+  edit_visible_ = false;
 
   chrome_filmstrip_args args{};
   args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
@@ -706,6 +713,18 @@ void chrome_host::show_jobs_pane(bool visible, int x, int y, int width, int heig
   if (!panels_attached_ || !show_jobs_pane_) return;
   show_panel(show_jobs_pane_, visible, x, y, width, height, focus, y + height + 1);
   jobs_visible_ = visible;
+}
+
+void chrome_host::show_edit_pane(bool visible, int x, int y, int width, int height,
+                                 bool focus) noexcept {
+  if (!panels_attached_ || !show_edit_pane_) return;
+  show_panel(show_edit_pane_, visible, x, y, width, height, focus, y + height + 1);
+  edit_visible_ = visible;
+}
+
+void chrome_host::set_edit_view(const chrome_edit_args& args) noexcept {
+  if (!attached_ || !set_edit_view_) return;
+  (void)set_edit_view_(const_cast<chrome_edit_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::set_trim(const chrome_trim_args& args) noexcept {
@@ -800,6 +819,19 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
+bool chrome_host::share_files(HWND window, const std::string& paths_json) noexcept {
+  if (!attached_ || !share_files_ || !window || paths_json.empty()) return false;
+  // { int64 hwnd; int32 byte count; int32 reserved; UTF-8 JSON }, mirrored by
+  // IslandHost.ShareFiles.
+  std::vector<std::uint8_t> buf(16 + paths_json.size());
+  const auto hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
+  const auto len = static_cast<std::int32_t>(paths_json.size());
+  std::memcpy(buf.data(), &hwnd, 8);
+  std::memcpy(buf.data() + 8, &len, 4);
+  std::memcpy(buf.data() + 16, paths_json.data(), paths_json.size());
+  return share_files_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
 void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) noexcept {
   if (!attached_ || !show_import_) return;
   // { int32 kind; int32 byte count; UTF-8 JSON }, mirrored by IslandHost.ShowImport.
@@ -866,7 +898,8 @@ void chrome_host::detach() noexcept {
     meta_visible_ = false;
     tree_visible_ = false;
     adjust_visible_ = false;
-  jobs_visible_ = false;
+    jobs_visible_ = false;
+    edit_visible_ = false;
   }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 19 -- VideoToolbox hardware decode. Metal host (D9 / plan/15-platforms.md):
 // the counterpart of hwdecode_win.cpp and the only player/ file that names
 // CoreVideo or Metal.

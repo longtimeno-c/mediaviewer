@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // child_process on POSIX (macOS, and Linux for the core tests): posix_spawn
 // with two pipes. SIGPIPE is ignored by the writes (MSG_NOSIGNAL is not
 // available on a pipe), so a helper that died never takes the caller with it.

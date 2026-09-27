@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Windows half of the volume port (io/volume.h).
 //
 // Arrival: WM_DEVICECHANGE (DBT_DEVTYP_VOLUME) on a hidden top-level window

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Decode and resample on a worker; only fixed float blocks reach the audio pump.
 #include "player/video_internal.h"
 #include "player/transport.h"

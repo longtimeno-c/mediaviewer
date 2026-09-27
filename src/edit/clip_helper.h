@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Running one clip job in MediaViewerClipJob (tools/clipjob; protocol in
 // edit/clip_wire.h). Worker thread only: this blocks until the helper exits.
 #pragma once

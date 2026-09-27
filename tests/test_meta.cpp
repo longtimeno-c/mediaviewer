@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 9 verify (plan/10): a JPEG with EXIF, a PNG with XMP, a HEIC and an MP4
 // all populate; missing metadata renders as empty fields, never an error.
 // Fixtures are built in the test — nothing here needs a corpus.
@@ -124,9 +125,9 @@ bool encode_into(AVFormatContext* oc, AVCodecContext* enc, AVStream* st, AVFrame
   return ok;
 }
 
-bool write_mp4(const std::string& path) {
+bool write_mp4(const std::string& path, const char* muxer = "mp4") {
   AVFormatContext* oc = nullptr;
-  if (avformat_alloc_output_context2(&oc, nullptr, "mp4", path.c_str()) < 0) return false;
+  if (avformat_alloc_output_context2(&oc, nullptr, muxer, path.c_str()) < 0) return false;
   const AVCodec* vcodec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
   const AVCodec* acodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
   if (!vcodec || !acodec) return false;
@@ -361,6 +362,22 @@ TEST_CASE("an MP4 populates the container card and per-stream inspector", "[meta
   CHECK(title->value == "Fixture clip");
 }
 
+TEST_CASE("a clip's facts are also numbers (PR 15, Spotlight)", "[meta][clip]") {
+  for (const char* muxer : {"mp4", "matroska"}) {
+    temp_file f(std::string("numbers.") + (muxer[0] == 'm' && muxer[1] == 'a' ? "mkv" : "mp4"));
+    REQUIRE(write_mp4(f.utf8(), muxer));
+    auto m = mv::meta::read(f.utf8());
+    REQUIRE(m);
+    CHECK(m->s.duration_seconds > 0.1);
+    CHECK(m->s.duration_seconds < 10.0);
+    CHECK(m->s.audio_channels == 2);
+    CHECK(m->s.audio_sample_rate == 44100);
+    REQUIRE(m->s.codecs.size() == 2);
+    CHECK(m->s.codecs[0].find("MPEG-4") != std::string::npos);
+    CHECK(m->s.codecs[1].find("AAC") != std::string::npos);
+  }
+}
+
 TEST_CASE("a HEIC populates", "[meta][heif]") {
   const fs::path here = fs::path(__FILE__).parent_path() / "data" / "heif" / "iphone_like.heic";
   if (!fs::exists(here)) SKIP("tests/data/heif/iphone_like.heic not present");
@@ -549,4 +566,36 @@ TEST_CASE("the pane tables are one record per line with flattened values", "[met
   CHECK(mv::meta::properties_table(empty).empty());
   CHECK(mv::meta::streams_table(empty).empty());
   CHECK_FALSE(mv::meta::summary_table(empty).empty());  // every row, all blank
+  CHECK(mv::meta::editable_properties_table(empty).empty());
+}
+
+// PR 29 (owner, 2026-09-26): the editing pane's form adds the raw value and
+// what an edit may do, decided by where the file's writes land.
+TEST_CASE("the editable properties table carries the raw value and the access", "[meta][tables]") {
+  mv::meta::metadata m;
+  mv::meta::property artist;
+  artist.space = mv::meta::origin::exif;
+  artist.group = "Exif.Image";
+  artist.label = "Artist";
+  artist.value = "Ann\tLee";
+  artist.raw = "Ann\tLee";
+  artist.raw_tag = "Exif.Image.Artist";
+  m.properties.push_back(artist);
+  mv::meta::property codec;
+  codec.space = mv::meta::origin::container;
+  codec.group = "Container";
+  codec.label = "Codec";
+  codec.value = "h264";
+  codec.raw = "h264";
+  codec.raw_tag = "Container.codec";
+  m.properties.push_back(codec);
+
+  m.writes_in_file = true;  // a plain JPEG: EXIF is rewritten in place
+  CHECK(mv::meta::editable_properties_table(m) ==
+        "exif\tExif.Image\tArtist\tAnn Lee\tExif.Image.Artist\tAnn Lee\te\n"
+        "container\tContainer\tCodec\th264\tContainer.codec\th264\tr\n");
+  m.writes_in_file = false;  // a RAW, a HEIC, a clip: the EXIF value goes to the sidecar
+  CHECK(mv::meta::editable_properties_table(m) ==
+        "exif\tExif.Image\tArtist\tAnn Lee\tExif.Image.Artist\tAnn Lee\ts\n"
+        "container\tContainer\tCodec\th264\tContainer.codec\th264\tr\n");
 }
