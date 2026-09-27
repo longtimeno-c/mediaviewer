@@ -254,6 +254,10 @@ whose entire selling point is smoothness.
 - **Yield policy:** indexing **pauses** during video playback, slideshow, and any window where
   the render loop is animating (springs, pan, fullscreen transitions), and on battery below a
   threshold, and when the F3 frame-time overlay's rolling p99 exceeds budget. Idle → resume.
+  The battery pause has a session override (owner, 2026-09-27): **Index anyway** wherever
+  "Paused on battery" shows (search footer, Settings, the gallery index control, the command-bar
+  pill's menu on Mac) sets `battery_override`, never saved; going back to AC or a restart ends
+  it. The viewer's own yields are not overridable.
 - **GPU:** a vendor provider runs at low GPU priority where it exposes one; the CPU backend is the pressure valve. If a
   present is late while an inference dispatch is in flight, the yield policy backs off — this is
   measured, not assumed (see verify).

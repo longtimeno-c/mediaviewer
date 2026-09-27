@@ -382,7 +382,8 @@ public static partial class IslandHost
         }
     }
 
-    private static void ShowGallerySearchNote(string? title, bool offerContents = false, bool offerIndex = false)
+    private static void ShowGallerySearchNote(string? title, bool offerContents = false, bool offerIndex = false,
+                                              bool offerBrowse = false, bool offerRetry = false)
     {
         if (_gsNote is null) return;
         _gsNote.Children.Clear();
@@ -420,10 +421,25 @@ public static partial class IslandHost
             {
                 try { pack.IndexGalleryFolder(folder, recursive); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-                ShowGallerySearchNote("Indexing this folder. Results appear as the index grows: search again in a moment.");
+                ShowGallerySearchNote("Indexing this folder in the background: keep browsing while it works, " +
+                                      "its progress is in the command bar. Results appear as the index grows.",
+                                      offerBrowse: true, offerRetry: true);
             }
             buttons.Children.Add(SettingsButton("Index this folder", () => Index(false)));
             buttons.Children.Add(SettingsButton("Index this folder and subfolders", () => Index(true)));
+        }
+        if (offerRetry)
+        {
+            buttons.Children.Add(SettingsButton("Search again", RunContentsQuery));
+        }
+        if (offerBrowse)
+        {
+            // Never a dead end: the files are one click away, indexing or not.
+            buttons.Children.Add(SettingsButton("Show all files", () =>
+            {
+                _gsField?.SetText("");
+                OnGallerySearchText();
+            }));
         }
         if (buttons.Children.Count > 0) _gsNote.Children.Add(buttons);
         _gsNote.Visibility = Visibility.Visible;
@@ -799,10 +815,11 @@ public static partial class IslandHost
                 // The pack's own rule: nothing it would show. Back to the folder
                 // rather than leave an older query's results under this one.
                 if (_gsListFromBar && _listOpen) Send(Command.FolderUp);
-                ShowGallerySearchNote($"Nothing in this folder matches “{text}”.");
+                ShowGallerySearchNote($"Nothing in this folder matches “{text}”.", offerBrowse: true);
                 break;
             case GallerySearchOutcome.NotIndexed:
-                ShowGallerySearchNote("This folder is not indexed yet.", offerIndex: true);
+                ShowGallerySearchNote("This folder is not indexed yet. Indexing runs in the background: " +
+                                      "you can keep browsing while it works.", offerIndex: true);
                 break;
             default:
                 ShowGallerySearchNote("Search is not available right now. Local search may still be getting ready.");

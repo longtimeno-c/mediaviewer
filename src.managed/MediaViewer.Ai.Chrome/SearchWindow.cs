@@ -80,6 +80,8 @@ internal sealed class SearchWindow : Window, IDisposable
     private readonly ToggleButton[] _scopeChips = new ToggleButton[3];
     private readonly ToggleButton[] _kindChips = new ToggleButton[3];
     private readonly ToggleButton[] _findChips = new ToggleButton[3];
+    private readonly string[] _scopeTips = new string[3];
+    private bool _findAudio;  // the audio availability ShowFind last drew
     private StackPanel _findRow = null!;
     private TextBlock _count = null!;
     private ScrollViewer _scroll = null!;
@@ -92,6 +94,8 @@ internal sealed class SearchWindow : Window, IDisposable
     private Border _badge = null!;
     private TextBlock _badgeText = null!;
     private Button _pause = null!;
+    private Button _indexAnyway = null!;
+    private TextBlock _hint = null!;
 
     private List<ResultTile> _tiles = new();
     private int _sel = -1;
@@ -109,6 +113,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private ulong _lastRunFrames;
     private int _batch;
     private bool _indexOffered;
+    private bool? _startedIndexing;  // Index chosen in this showing (recursive?)
 
     public event Action? Hidden;
 
@@ -235,63 +240,80 @@ internal sealed class SearchWindow : Window, IDisposable
         };
         body.Children.Add(queryCard);
 
-        // Scope · kind, as chips.
-        var chips = new Grid { ColumnSpacing = 6 };
-        chips.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        chips.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        chips.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var scopes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        string[] scopeNames = { "This folder", "This folder and subfolders", "Everything indexed" };
+        // Filters (2026-09-27): three captioned groups instead of nine look-alike
+        // chips. "Look in" and "Show" are single-choice segmented tracks; "Match
+        // by" is toggle tokens, all on at rest (the last one on stays on). Sound
+        // and Speech without the Audio piece stay visible, dimmed, with a tooltip
+        // that says how to get them: a disabled control shows no tooltip. High
+        // contrast keeps the system's own toggle visuals.
+        bool hc = HighContrast();
+        (string Name, string Tip)[] scopeNames =
+        {
+            ("This folder", "Search the open folder only."),
+            ("+ Subfolders", "Search the open folder and the folders inside it."),
+            ("Everywhere", "Search every folder in the index."),
+        };
+        var scopes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
         for (int i = 0; i < 3; ++i)
         {
             int s = i;
-            _scopeChips[i] = Chip(scopeNames[i], () => SetScope((MvAiScope)s));
+            _scopeTips[i] = scopeNames[i].Tip;
+            _scopeChips[i] = Segment(scopeNames[i].Name, () => SetScope((MvAiScope)s), hc);
+            ToolTipService.SetToolTip(_scopeChips[i], scopeNames[i].Tip);
             scopes.Children.Add(_scopeChips[i]);
         }
-        var kinds = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(18, 0, 0, 0) };
-        (string Name, MvAiKinds Kind)[] kindNames =
+        (string Name, string Tip, MvAiKinds Kind)[] kindNames =
         {
-            ("All", MvAiKinds.All), ("Photos", MvAiKinds.Photos), ("Videos", MvAiKinds.Videos),
+            ("All", "Show photos and videos.", MvAiKinds.All),
+            ("Photos", "Show photos only.", MvAiKinds.Photos),
+            ("Videos", "Show videos only.", MvAiKinds.Videos),
         };
+        var kinds = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
         for (int i = 0; i < 3; ++i)
         {
             MvAiKinds k = kindNames[i].Kind;
-            _kindChips[i] = Chip(kindNames[i].Name, () => SetKinds(k));
+            _kindChips[i] = Segment(kindNames[i].Name, () => SetKinds(k), hc);
+            ToolTipService.SetToolTip(_kindChips[i], kindNames[i].Tip);
             kinds.Children.Add(_kindChips[i]);
         }
         _count = _look.Text("", 13, AddonColour.Body, wrap: false);
         _count.HorizontalAlignment = HorizontalAlignment.Right;
         _count.VerticalAlignment = VerticalAlignment.Center;
-        chips.Children.Add(scopes);
-        Grid.SetColumn(kinds, 1);
-        chips.Children.Add(kinds);
+        var chips = new Grid { ColumnSpacing = 22 };
+        chips.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        chips.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        chips.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        UIElement scopeGroup = Group("Look in", Track(scopes, hc));
+        chips.Children.Add(scopeGroup);
+        UIElement kindGroup = Group("Show", Track(kinds, hc));
+        Grid.SetColumn(kindGroup, 1);
+        chips.Children.Add(kindGroup);
         Grid.SetColumn(_count, 2);
         chips.Children.Add(_count);
 
-        // Audio (2026-09-27): what to look for — multi-select; none or all is all.
-        // Shown once the Audio piece is loaded; before that everything is pictures.
-        _findRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Visibility = Visibility.Collapsed };
-        var findLabel = _look.Text("Find in", 13, AddonColour.Body, wrap: false);
-        findLabel.VerticalAlignment = VerticalAlignment.Center;
-        findLabel.Margin = new Thickness(2, 0, 4, 0);
-        _findRow.Children.Add(findLabel);
+        // What the words are matched against (audio, 2026-09-27).
+        var tokens = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         (string Name, string Glyph, MvAiKinds Bit)[] finds =
         {
-            ("Pictures", GlyphPicture, MvAiKinds.FindPictures),
-            ("Sounds", GlyphSound, MvAiKinds.FindSounds),
+            ("Picture", GlyphPicture, MvAiKinds.FindPictures),
+            ("Sound", GlyphSound, MvAiKinds.FindSounds),
             ("Speech", GlyphSpeech, MvAiKinds.FindSpeech),
         };
         for (int i = 0; i < 3; ++i)
         {
             MvAiKinds bit = finds[i].Bit;
-            _findChips[i] = Chip(finds[i].Name, () => ToggleFind(bit), finds[i].Glyph);
-            _findRow.Children.Add(_findChips[i]);
+            _findChips[i] = Token(finds[i].Name, finds[i].Glyph, () => ToggleFind(bit), hc);
+            tokens.Children.Add(_findChips[i]);
         }
+        _findRow = new StackPanel { Orientation = Orientation.Horizontal };
+        _findRow.Children.Add(Group("Match by", tokens));
         WireArrows(_scopeChips);
         WireArrows(_kindChips);
         WireArrows(_findChips);
+        _findAudio = AudioReady;
+        ShowFind();
 
-        var chipRows = new StackPanel { Spacing = 8 };
+        var chipRows = new StackPanel { Spacing = 10 };
         chipRows.Children.Add(chips);
         chipRows.Children.Add(_findRow);
         Grid.SetRow(chipRows, 1);
@@ -389,21 +411,33 @@ internal sealed class SearchWindow : Window, IDisposable
             VerticalAlignment = VerticalAlignment.Center,
         };
         _pause = _look.Button("Pause", TogglePause);
-        _pause.VerticalAlignment = VerticalAlignment.Center;
+        // Paused on battery: carry on until the machine is next on AC (never saved).
+        _indexAnyway = _look.Button("Index anyway", IndexAnyway);
+        _indexAnyway.Visibility = Visibility.Collapsed;
+        ToolTipService.SetToolTip(_indexAnyway,
+            "Carry on indexing on battery until this PC is next plugged in. " +
+            "The battery setting in Settings → Local search stays as it is.");
         Button manage = _look.Button("Manage…", () =>
         {
             Hide();
             _chrome.Host.ShowSettings();
         });
-        manage.VerticalAlignment = VerticalAlignment.Center;
-        var hint = _look.Text("Enter open · Ctrl+Enter gallery · Esc close", 12, AddonColour.Body, wrap: false);
+        // Always there: closing never stops indexing or a search.
+        Button close = _look.Button("Close", Hide);
+        ToolTipService.SetToolTip(close, "Close the panel (Esc). Indexing carries on in the background.");
+        var hint = _look.Text("Enter open · Ctrl+Enter gallery", 13, AddonColour.Body, wrap: false);
         hint.VerticalAlignment = VerticalAlignment.Center;
-        hint.Opacity = 0.8;
+        hint.Visibility = Visibility.Collapsed;  // with results only
+        _hint = hint;
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        actions.Children.Add(_indexAnyway);
+        actions.Children.Add(_pause);
+        actions.Children.Add(manage);
+        actions.Children.Add(close);
         var footer = new Grid { ColumnSpacing = 8 };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.Children.Add(pill);
@@ -411,10 +445,8 @@ internal sealed class SearchWindow : Window, IDisposable
         footer.Children.Add(_badge);
         Grid.SetColumn(hint, 3);
         footer.Children.Add(hint);
-        Grid.SetColumn(_pause, 4);
-        footer.Children.Add(_pause);
-        Grid.SetColumn(manage, 5);
-        footer.Children.Add(manage);
+        Grid.SetColumn(actions, 4);
+        footer.Children.Add(actions);
         Grid.SetRow(footer, 3);
         body.Children.Add(footer);
 
@@ -426,29 +458,138 @@ internal sealed class SearchWindow : Window, IDisposable
         return _root;
     }
 
-    private ToggleButton Chip(string label, Action click, string? glyph = null)
+    // ---- filter controls --------------------------------------------------------------------
+
+    private static bool HighContrast()
     {
-        object content = label;
-        if (glyph is not null)
+        try { return new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast; }
+        catch (Exception ex)
         {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            row.Children.Add(new FontIcon { Glyph = glyph, FontFamily = IconFont, FontSize = 12 });
-            row.Children.Add(new TextBlock { Text = label, FontFamily = _look.Font, FontSize = 13 });
-            content = row;
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            return false;
         }
-        var chip = new ToggleButton
+    }
+
+    /// <summary>"Look in  [track]": a caption and its control on one line.</summary>
+    private UIElement Group(string caption, UIElement control)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        TextBlock label = _look.Text(caption, 13, AddonColour.Body, wrap: false);
+        label.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(label);
+        if (control is FrameworkElement fe) fe.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(control);
+        return row;
+    }
+
+    /// <summary>The recessed track a single-choice group sits in (a segmented control).</summary>
+    private Border Track(UIElement segments, bool hc) => new()
+    {
+        Child = segments,
+        Padding = new Thickness(2),
+        CornerRadius = new CornerRadius(7),
+        Background = hc ? new SolidColorBrush(Microsoft.UI.Colors.Transparent) : _look.LiveTint(AddonColour.Body, 22),
+        BorderBrush = _look[AddonColour.Hairline],
+        BorderThickness = new Thickness(1),
+    };
+
+    /// <summary>
+    /// One segment of a track: quiet until chosen, then raised on the surface
+    /// colour with the title colour and a hairline. Lightweight styling (the
+    /// template's own resource keys), so pointer, pressed and the system focus
+    /// visual stay Fluent; high contrast keeps the system's toggle look.
+    /// </summary>
+    private ToggleButton Segment(string label, Action click, bool hc)
+    {
+        var b = new ToggleButton
         {
-            Content = content,
+            Content = label,
             FontFamily = _look.Font,
             FontSize = 13,
-            Padding = new Thickness(12, 4, 12, 5),
-            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(10, 2, 10, 3),
             MinHeight = 0,
+            MinWidth = 0,
+            Height = 24,
+            CornerRadius = new CornerRadius(5),
+            BorderThickness = new Thickness(1),
         };
-        AutomationProperties.SetName(chip, label);
-        chip.Click += (_, _) => click();
-        return chip;
+        if (!hc)
+        {
+            var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            Brushes(b, "Background", clear, _look.LiveTint(AddonColour.Body, 26), _look.LiveTint(AddonColour.Body, 40),
+                    _look[AddonColour.Surface], _look[AddonColour.Surface], _look.LiveTint(AddonColour.Surface, 210));
+            Brushes(b, "Foreground", _look[AddonColour.Body], _look[AddonColour.Title], _look[AddonColour.Title],
+                    _look[AddonColour.Title], _look[AddonColour.Title], _look[AddonColour.Title]);
+            Brushes(b, "BorderBrush", clear, clear, clear,
+                    _look[AddonColour.Hairline], _look[AddonColour.Hairline], _look[AddonColour.Hairline]);
+        }
+        AutomationProperties.SetName(b, label);
+        b.Click += (_, _) => click();
+        return b;
     }
+
+    /// <summary>
+    /// A toggle token with its icon (Finder / Photos style): outlined when off,
+    /// an accent tint and accent outline when on, never colour alone. Icons are
+    /// Segoe Fluent at 12, centred on the 13 pt label.
+    /// </summary>
+    private ToggleButton Token(string label, string glyph, Action click, bool hc)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        row.Children.Add(new FontIcon
+        {
+            Glyph = glyph,
+            FontFamily = IconFont,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontFamily = _look.Font,
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var b = new ToggleButton
+        {
+            Content = row,
+            Padding = new Thickness(10, 2, 12, 3),
+            MinHeight = 0,
+            MinWidth = 0,
+            Height = 26,
+            CornerRadius = new CornerRadius(13),
+            BorderThickness = new Thickness(1),
+        };
+        if (!hc)
+        {
+            var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            Brushes(b, "Background", clear, _look.LiveTint(AddonColour.Body, 26), _look.LiveTint(AddonColour.Body, 40),
+                    _look.LiveTint(AddonColour.Accent, 44), _look.LiveTint(AddonColour.Accent, 64),
+                    _look.LiveTint(AddonColour.Accent, 88));
+            Brushes(b, "Foreground", _look[AddonColour.Body], _look[AddonColour.Title], _look[AddonColour.Title],
+                    _look[AddonColour.Title], _look[AddonColour.Title], _look[AddonColour.Title]);
+            Brushes(b, "BorderBrush", _look[AddonColour.Hairline], _look[AddonColour.Hairline], _look[AddonColour.Hairline],
+                    _look[AddonColour.Accent], _look[AddonColour.Accent], _look[AddonColour.Accent]);
+        }
+        AutomationProperties.SetName(b, label);
+        b.Click += (_, _) => click();
+        return b;
+    }
+
+    /// <summary>ToggleButton lightweight styling: rest, pointer over, pressed, then the checked three.</summary>
+    private static void Brushes(ToggleButton b, string part, Brush rest, Brush over, Brush pressed,
+                                Brush on, Brush onOver, Brush onPressed)
+    {
+        b.Resources[$"ToggleButton{part}"] = rest;
+        b.Resources[$"ToggleButton{part}PointerOver"] = over;
+        b.Resources[$"ToggleButton{part}Pressed"] = pressed;
+        b.Resources[$"ToggleButton{part}Checked"] = on;
+        b.Resources[$"ToggleButton{part}CheckedPointerOver"] = onOver;
+        b.Resources[$"ToggleButton{part}CheckedPressed"] = onPressed;
+    }
+
+    /// <summary>Dimmed but still hoverable and focusable, so its tooltip can say why.</summary>
+    private static void SetAvailable(ToggleButton b, bool available) => b.Opacity = available ? 1 : 0.4;
 
     // Left / Right walk a chip group, like a toolbar; Tab moves between groups.
     private static void WireArrows(ToggleButton[] group)
@@ -480,20 +621,63 @@ internal sealed class SearchWindow : Window, IDisposable
     private static FontFamily? _iconFont;
     private static FontFamily IconFont => _iconFont ??= new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
 
+    private const MvAiKinds AllFinds = MvAiKinds.FindPictures | MvAiKinds.FindSounds | MvAiKinds.FindSpeech;
+
+    // What can be matched: sounds and speech need the Audio piece.
+    private MvAiKinds AvailableFinds => AudioReady ? AllFinds : MvAiKinds.FindPictures;
+
+    // The ones shown on: every available one when none is chosen (the stored
+    // "all"), else the chosen ones. The row reads "all on" at rest.
+    private MvAiKinds Matching
+    {
+        get
+        {
+            MvAiKinds chosen = _find & AvailableFinds;
+            return chosen == 0 ? AvailableFinds : chosen;
+        }
+    }
+
     private void ToggleFind(MvAiKinds bit)
     {
-        _find ^= bit;
-        // All three on is the same search as none: show it as none.
-        if (_find == (MvAiKinds.FindPictures | MvAiKinds.FindSounds | MvAiKinds.FindSpeech)) _find = 0;
+        MvAiKinds available = AvailableFinds;
+        MvAiKinds on = Matching;
+        if ((available & bit) == 0 || on == bit)
+        {
+            // Not installed, or the last one on (a search matches something):
+            // the click changes nothing; the tooltip says why.
+            ShowFind();
+            return;
+        }
+        on ^= bit;
+        // All available on is the same search as none: store it as none.
+        _find = on == available ? 0 : on;
         ShowFind();
         RunQuery(quiet: false);
     }
 
     private void ShowFind()
     {
-        _findChips[0].IsChecked = (_find & MvAiKinds.FindPictures) != 0;
-        _findChips[1].IsChecked = (_find & MvAiKinds.FindSounds) != 0;
-        _findChips[2].IsChecked = (_find & MvAiKinds.FindSpeech) != 0;
+        MvAiKinds available = AvailableFinds, on = Matching;
+        (MvAiKinds Bit, string Tip)[] finds =
+        {
+            (MvAiKinds.FindPictures, "Match what is in the picture or the video frame."),
+            (MvAiKinds.FindSounds, "Match what you hear in videos: “dog barking”, “applause”."),
+            (MvAiKinds.FindSpeech, "Match words said in videos."),
+        };
+        for (int i = 0; i < 3; ++i)
+        {
+            bool can = (available & finds[i].Bit) != 0;
+            bool isOn = (on & finds[i].Bit) != 0;
+            _findChips[i].IsChecked = isOn;
+            SetAvailable(_findChips[i], can);
+            string tip = !can
+                ? "Needs the Audio piece: install it in Settings → Local search to find videos by what you hear."
+                : isOn && on == finds[i].Bit ? finds[i].Tip + " At least one stays on."
+                : isOn ? finds[i].Tip + " On: click to leave it out."
+                : finds[i].Tip + " Off: click to include it.";
+            ToolTipService.SetToolTip(_findChips[i], tip);
+            AutomationProperties.SetHelpText(_findChips[i], tip);
+        }
     }
 
     private bool AudioReady => _chrome.StatusValid && (_chrome.Status.Flags & MvAiStatus.FlagAudioReady) != 0;
@@ -534,11 +718,14 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             Activate();
         }
+        _chrome.ReadStatus();  // fresh counts: what was indexed while it was closed
         OnStatus();
         FocusQuery();
-        if (_similar is not null || (_query.Text.Trim().Length > 0 && _tiles.Count == 0 && _pending == 0))
+        bool grew = _chrome.StatusValid && _chrome.Status.FramesIndexed != _lastRunFrames;
+        if (_similar is not null || (_query.Text.Trim().Length > 0 && _pending == 0 && (_tiles.Count == 0 || grew)))
         {
-            RunQuery(quiet: false);
+            // Closed while it indexed: the same words answer from the grown index.
+            RunQuery(quiet: _tiles.Count > 0);
         }
         else if (_query.Text.Trim().Length == 0 && _similar is null)
         {
@@ -550,6 +737,7 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (!_visible) return;
         _visible = false;
+        _startedIndexing = null;
         _poll.Stop();
         _debounce.Stop();
         _look.PanelOut(_card, () =>
@@ -584,6 +772,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private void OnQueryChanged()
     {
         if (_settingText) return;
+        _startedIndexing = null;
         if (_similar is not null && _query.Text.Length > 0) ClearSimilar(runQuery: false);
         _openWhenReady = null;
         _debounce.Stop();
@@ -615,28 +804,36 @@ internal sealed class SearchWindow : Window, IDisposable
     private void SetScope(MvAiScope scope, bool run = true)
     {
         if (scope != MvAiScope.All && _chrome.Folder is null) scope = MvAiScope.All;
+        bool changed = scope != _scope;
         _scope = scope;
+        // Re-checked every time: a click on the chosen segment unchecks it.
         for (int i = 0; i < 3; ++i) _scopeChips[i].IsChecked = i == (int)scope;
-        if (run) RunQuery(quiet: false);
+        if (run && changed) RunQuery(quiet: false);
     }
 
     private void UpdateScopeAvailability()
     {
+        // Without a folder the first two are dimmed, not disabled, so their
+        // tooltip can still say why; SetScope keeps the choice on Everywhere.
         bool folder = _chrome.Folder is not null;
-        _scopeChips[0].IsEnabled = folder;
-        _scopeChips[1].IsEnabled = folder;
-        string tip = folder ? System.IO.Path.GetFileName(_chrome.Folder!.TrimEnd('\\', '/')) : "No folder is open";
-        ToolTipService.SetToolTip(_scopeChips[0], tip);
-        ToolTipService.SetToolTip(_scopeChips[1], tip);
+        string name = folder ? System.IO.Path.GetFileName(_chrome.Folder!.TrimEnd('\\', '/')) : "";
+        for (int i = 0; i < 2; ++i)
+        {
+            SetAvailable(_scopeChips[i], folder);
+            ToolTipService.SetToolTip(_scopeChips[i], folder
+                ? $"{_scopeTips[i]} (“{name}”)"
+                : "Open a folder to search just that folder.");
+        }
     }
 
     private void SetKinds(MvAiKinds kinds, bool run = true)
     {
+        bool changed = kinds != _kinds;
         _kinds = kinds;
         _kindChips[0].IsChecked = kinds == MvAiKinds.All;
         _kindChips[1].IsChecked = kinds == MvAiKinds.Photos;
         _kindChips[2].IsChecked = kinds == MvAiKinds.Videos;
-        if (run) RunQuery(quiet: false);
+        if (run && changed) RunQuery(quiet: false);
     }
 
     private string? ScopeDir => _scope == MvAiScope.All ? null : _chrome.Folder;
@@ -762,6 +959,7 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         ++_batch;
         _tiles = tiles;
+        _hint.Visibility = _tiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         _repeater.ItemsSource = _tiles;
         int keep = selectedPath is null ? -1 : _tiles.FindIndex(t => t.Path == selectedPath && t.PtsMs == selectedPts);
         _sel = keep >= 0 ? keep : (_gridHost.FocusState != FocusState.Unfocused && _tiles.Count > 0 ? 0 : -1);
@@ -773,6 +971,11 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private void ShowStart()
     {
+        if (_startedIndexing is not null)
+        {
+            ShowIndexing();
+            return;
+        }
         // The folder offer lives here, never as a banner over the viewer.
         if (_chrome.Folder is not null && _chrome.Coverage == 0 && _scope != MvAiScope.All)
         {
@@ -786,6 +989,11 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private void ShowNothing()
     {
+        if (_startedIndexing is not null && _similar is null)
+        {
+            ShowIndexing();
+            return;
+        }
         if (_scope != MvAiScope.All && _chrome.Folder is not null && _chrome.Coverage == 0)
         {
             ShowIndexOffer();
@@ -796,7 +1004,7 @@ internal sealed class SearchWindow : Window, IDisposable
         if (_similar is not null)
         {
             ShowEmpty("Nothing similar found here.",
-                      indexing ? "Results appear as the index grows." : "Try “Everything indexed”.");
+                      indexing ? "Results appear as the index grows." : "Try Look in: Everywhere.");
             return;
         }
         ShowEmpty($"Nothing matches “{q}”.",
@@ -814,8 +1022,8 @@ internal sealed class SearchWindow : Window, IDisposable
         string name = System.IO.Path.GetFileName(_chrome.Folder!.TrimEnd('\\', '/'));
         _empty.Children.Add(Centre(_look.Text($"“{name}” is not indexed yet.", 18, AddonColour.Title)));
         _empty.Children.Add(Centre(_look.Text(
-            "Indexing runs in the background at low priority and pauses while you watch or pan. " +
-            "You can search as soon as the first files are done.", 14)));
+            "Indexing runs in the background at low priority and pauses while you watch or pan: " +
+            "you can close this panel and keep viewing. You can search as soon as the first files are done.", 14)));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center };
         Button here = _look.Button("Index this folder", () => IndexFolder(false), accent: true);
         buttons.Children.Add(here);
@@ -863,10 +1071,41 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         _chrome.RefreshCoverage();
         _chrome.ReadStatus();
-        ShowEmpty(recursive ? "Indexing this folder and its subfolders." : "Indexing this folder.",
-                  "Type what you are looking for: results appear as the index grows.");
+        _startedIndexing = recursive;
+        ShowIndexing();
         FocusQuery();
         if (_query.Text.Trim().Length > 0) RunQuery(quiet: false);
+    }
+
+    /// <summary>
+    /// Just asked to index: say plainly that it carries on without the panel,
+    /// and offer the way out. Shown until typing, a result, or the panel closes.
+    /// </summary>
+    private void ShowIndexing()
+    {
+        bool recursive = _startedIndexing ?? false;
+        _indexOffered = false;
+        _gridHost.Visibility = Visibility.Collapsed;
+        _empty.Children.Clear();
+        _count.Text = "";
+        string name = _chrome.Folder is string f ? System.IO.Path.GetFileName(f.TrimEnd('\\', '/')) : "this folder";
+        _empty.Children.Add(Centre(_look.Text(recursive
+            ? $"Indexing “{name}” and its subfolders in the background"
+            : $"Indexing “{name}” in the background", 18, AddonColour.Title)));
+        string q = _query.Text.Trim();
+        _empty.Children.Add(Centre(_look.Text(
+            "You can close this and carry on: indexing continues on its own, at low priority, and pauses " +
+            "while you watch or pan. Its progress is in the command bar. " +
+            (q.Length == 0 ? "Search whenever you like: results appear as it goes."
+                           : $"Results for “{q}” appear here as it goes."), 14)));
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center };
+        Button done = _look.Button("Continue in background", Hide, accent: true);
+        ToolTipService.SetToolTip(done, "Close the panel (Esc). Indexing carries on; Ctrl+F opens search again.");
+        buttons.Children.Add(done);
+        buttons.Children.Add(_look.Button("Search now", FocusQuery));
+        _empty.Children.Add(buttons);
+        _empty.Visibility = Visibility.Visible;
+        FadeIn(_empty);
     }
 
     internal void OnFolderChanged()
@@ -894,7 +1133,12 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         MvAiStatus s = _chrome.Status;
         _footerText.Text = Look.StatusLine(s);
-        _findRow.Visibility = (s.Flags & MvAiStatus.FlagAudioReady) != 0 ? Visibility.Visible : Visibility.Collapsed;
+        bool audio = (s.Flags & MvAiStatus.FlagAudioReady) != 0;
+        if (audio != _findAudio)
+        {
+            _findAudio = audio;
+            ShowFind();
+        }
         // The ring spins only while indexing.
         bool busy = Look.Busy(s);
         _footerRing.IsActive = busy && _visible;
@@ -904,6 +1148,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _badge.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(_badge, s.ModelText.Length > 0 ? s.ModelText : null);
         bool paused = s.State == MvAiState.Paused;
+        _indexAnyway.Visibility = Look.OnBattery(s) ? Visibility.Visible : Visibility.Collapsed;
         _pause.Content = paused ? "Resume" : "Pause";
         _pause.Visibility = s.State == MvAiState.Idle && s.AssetsDone >= s.AssetsTotal ? Visibility.Collapsed : Visibility.Visible;
 
@@ -921,6 +1166,13 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         bool paused = _chrome.StatusValid && _chrome.Status.State == MvAiState.Paused;
         try { _api.Pause(!paused); }
+        catch (MediaViewerException) { }
+        _chrome.ReadStatus();
+    }
+
+    private void IndexAnyway()
+    {
+        try { _api.IndexAnyway(); }
         catch (MediaViewerException) { }
         _chrome.ReadStatus();
     }

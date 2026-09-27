@@ -149,7 +149,7 @@ internal sealed class GalleryControl
             VerticalAlignment = VerticalAlignment.Center,
             Flyout = _menu,
         };
-        ToolTipService.SetToolTip(_button, "Local search for this folder");
+        ToolTipService.SetToolTip(_button, "Local search for this folder. Indexing runs in the background while you keep browsing.");
 
         _poll = _button.DispatcherQueue?.CreateTimer();
         if (_poll is not null)
@@ -239,15 +239,19 @@ internal sealed class GalleryControl
         (_chrome.StatusValid && (_chrome.Status.Flags & MvAiStatus.FlagAudioReady) != 0) ||
         _chrome.Host.IsPieceInstalled("ai-audio");
 
+    private bool OnBattery => _chrome.StatusValid && Look.OnBattery(_chrome.Status);
+
     private void Show()
     {
         if (_detached) return;
         GalleryRoot? r = _root;
         bool indexing = _coverage == 1;
         bool paused = r is not null && !r.Enabled;
+        bool battery = indexing && !paused && OnBattery;
         string text;
         if (_coverage == 0) text = "Index…";
         else if (paused) text = r!.Assets > 0 ? $"Paused · {r.Done:N0} of {r.Assets:N0}" : "Paused";
+        else if (battery) text = r is not null && r.Assets > 0 ? $"Paused on battery · {r.Done:N0} of {r.Assets:N0}" : "Paused on battery";
         else if (indexing) text = r is not null && r.Assets > 0 ? $"Indexing {r.Done:N0} of {r.Assets:N0}" : "Indexing…";
         else text = "Indexed";
         _text.Text = text;
@@ -265,7 +269,7 @@ internal sealed class GalleryControl
         if (poll && _poll is not null && !_poll.IsRunning) _poll.Start();
         else if (!poll) _poll?.Stop();
 
-        string key = $"{_folder}|{_coverage}|{r?.Id}|{r?.Enabled}|{r?.Media}|{AudioAvailable}";
+        string key = $"{_folder}|{_coverage}|{r?.Id}|{r?.Enabled}|{r?.Media}|{AudioAvailable}|{battery}";
         if (key == _menuKey) return;
         _menuKey = key;
         FillMenu();
@@ -296,6 +300,16 @@ internal sealed class GalleryControl
             _menu.Items.Add(new MenuFlyoutSeparator());
         }
         ulong id = r.Id;
+        if (_coverage == 1 && r.Enabled && OnBattery)
+        {
+            // Until this PC is next plugged in; never saved.
+            _menu.Items.Add(Item("Index anyway, on battery", () =>
+            {
+                try { _api.IndexAnyway(); }
+                catch (MediaViewerException) { }
+                _chrome.ReadStatus();
+            }));
+        }
         if (_coverage == 1 || !r.Enabled)
         {
             bool enabled = r.Enabled;

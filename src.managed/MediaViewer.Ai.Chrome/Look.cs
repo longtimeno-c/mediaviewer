@@ -55,9 +55,28 @@ internal sealed class Look
         return new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
     }
 
+    /// <summary>A tinted variant of a role, shared and recoloured in place on a theme
+    /// change like the role brushes (for control resources set once).</summary>
+    public SolidColorBrush LiveTint(AddonColour role, byte alpha)
+    {
+        if (!_tints.TryGetValue((role, alpha), out SolidColorBrush? b))
+        {
+            b = Tint(role, alpha);
+            _tints[(role, alpha)] = b;
+        }
+        return b;
+    }
+
+    private readonly Dictionary<(AddonColour, byte), SolidColorBrush> _tints = new();
+
     public void Refresh()
     {
         foreach ((AddonColour role, SolidColorBrush brush) in _brushes) brush.Color = ToColor(_host.Colour(role));
+        foreach (((AddonColour role, byte alpha), SolidColorBrush brush) in _tints)
+        {
+            Color c = ToColor(_host.Colour(role));
+            brush.Color = Color.FromArgb(alpha, c.R, c.G, c.B);
+        }
         Changed?.Invoke();
     }
 
@@ -228,6 +247,10 @@ internal sealed class Look
     public static bool PillVisible(in MvAiStatus s) =>
         s.State is MvAiState.Indexing or MvAiState.Yielding ||
         (s.State == MvAiState.Paused && s.AssetsDone < s.AssetsTotal);
+
+    /// <summary>Indexing waits on battery: "Index anyway" can override it for now.</summary>
+    public static bool OnBattery(in MvAiStatus s) =>
+        s.State == MvAiState.Yielding && s.YieldReason == MvAiYield.Battery;
 
     // Work is running: the ring spins. A load waiting for the viewer is still.
     public static bool Busy(in MvAiStatus s) =>

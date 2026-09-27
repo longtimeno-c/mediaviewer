@@ -431,6 +431,10 @@ public sealed unsafe class AiApi
     /// <summary>After a piece (ai-faces, ai-cuda) is installed or removed while Core is loaded.</summary>
     public void Reload() => SetSetting("reload", "1");
 
+    /// <summary>"Index anyway": ignore the battery pause until the machine is next on AC
+    /// (or the app restarts). Never saved; the threshold setting is unchanged.</summary>
+    public void IndexAnyway() => SetSetting("battery_override", "1");
+
     public ulong SearchThisPerson(string path, long ptsMs)
     {
         ulong id;

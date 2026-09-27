@@ -29,6 +29,7 @@ internal sealed class ManagePanel
     private readonly TextBlock _status;
     private readonly TextBlock _compute;
     private readonly Button _pause;
+    private readonly Button _indexAnyway;
     private readonly ComboBox _computeBox;
     private readonly ComboBox _qualityBox;
     private readonly TextBlock _qualityLine;
@@ -84,9 +85,16 @@ internal sealed class ManagePanel
         statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         statusRow.Children.Add(statusText);
-        Grid.SetColumn(_pause, 1);
-        _pause.VerticalAlignment = VerticalAlignment.Center;
-        statusRow.Children.Add(_pause);
+        // Paused on battery: "Index anyway" until the machine is next on AC (never saved).
+        _indexAnyway = _look.Button("Index anyway", IndexAnyway);
+        _indexAnyway.Visibility = Visibility.Collapsed;
+        ToolTipService.SetToolTip(_indexAnyway,
+            "Carry on indexing on battery until this PC is next plugged in. The setting below stays as it is.");
+        var statusActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        statusActions.Children.Add(_indexAnyway);
+        statusActions.Children.Add(_pause);
+        Grid.SetColumn(statusActions, 1);
+        statusRow.Children.Add(statusActions);
         Root.Children.Add(_look.Card(statusRow));
         Root.Children.Add(Row("Search", "Open the search panel. Ctrl+F in the viewer; Ctrl+Shift+F finds similar.",
             _look.Button("Open search", () => _chrome.RunCommand(SearchCommand.Open))));
@@ -181,7 +189,7 @@ internal sealed class ManagePanel
             if (_updating || _batteryBox.SelectedIndex < 0) return;
             Set("pause_on_battery_percent", BatteryValues[_batteryBox.SelectedIndex].ToString());
         };
-        Root.Children.Add(Row("Pause on battery", "Indexing waits while the battery is below this.", _batteryBox));
+        Root.Children.Add(Row("Pause on battery", "Indexing waits while the battery is below this. Index anyway, beside the status, carries on until you next plug in.", _batteryBox));
 
         // People: a separate opt-in (PR 24; biometric data, stricter than the frame index).
         Root.Children.Add(Heading("People"));
@@ -307,6 +315,7 @@ internal sealed class ManagePanel
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
         _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;
         _pause.Content = s.State == MvAiState.Paused ? "Resume indexing" : "Pause indexing";
+        _indexAnyway.Visibility = Look.OnBattery(s) ? Visibility.Visible : Visibility.Collapsed;
         // "Sound: 12 of 40 clips · Speech: 8 of 40", while there is sound work.
         bool audio = (s.Flags & MvAiStatus.FlagAudioReady) != 0;
         _audioLine.Visibility = audio && (s.SoundTotal > 0 || s.SpeechTotal > 0) ? Visibility.Visible : Visibility.Collapsed;
@@ -346,6 +355,13 @@ internal sealed class ManagePanel
         _videoIndexValue = media;
         ShowVideoIndex();
         Set("video_index", ((uint)media).ToString());
+    }
+
+    private void IndexAnyway()
+    {
+        try { _api.IndexAnyway(); }
+        catch (MediaViewerException) { }
+        _chrome.ReadStatus();
     }
 
     private void TogglePause()

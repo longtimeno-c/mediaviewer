@@ -251,6 +251,14 @@ public static partial class IslandHost
     {
         if (_indexingPill is null || _indexingText is null || _indexingRing is null) return;
         _indexingPill.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+        if (text != _indexingText.Text)
+        {
+            // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
+            bool battery = text?.Contains("battery", StringComparison.OrdinalIgnoreCase) == true;
+            ToolTipService.SetToolTip(_indexingPill, battery
+                ? "Local search waits on battery. Click to search (Ctrl+F); Index anyway is in the panel's footer."
+                : "Local search is indexing in the background. Click to search (Ctrl+F)");
+        }
         _indexingText.Text = text ?? "";
         // The ring spins only while indexing: a still app shows a still bar.
         _indexingRing.IsActive = busy && text is not null;
