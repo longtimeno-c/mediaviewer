@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Settings → Local search, once Core is loaded (the chrome brief, "Management
 // panel"; plan/17 PRs 20, 21, 23, 24): status, Compute (Auto / Core ML / CPU
-// only), Search quality, the indexed folders, the index size and Clear, the
+// only), Search quality, Precision, the indexed folders, the index size and Clear, the
 // battery rule, and People. The base app embeds this view (MVAIChrome
 // -settingsView) under its install / remove rows.
 //
@@ -51,6 +51,8 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var flags: UInt32 = 0
   @Published private(set) var compute: Int = 0
   @Published private(set) var quality: Int = 0
+  /// Settings "Precision": 0 broader … 2 as calibrated … 4 stricter.
+  @Published private(set) var precision: Int = 2
   @Published private(set) var batteryPercent: Int = 30
   @Published private(set) var capBytes: Int64 = 0
   @Published private(set) var facesOn = false
@@ -156,6 +158,7 @@ final class ManagementModel: ObservableObject {
             as? [String: Any] else { return }
     compute = Int(int64(obj["compute"]))
     quality = Int(int64(obj["quality"]))
+    precision = obj["precision"] == nil ? 2 : min(4, max(0, Int(int64(obj["precision"]))))
     batteryPercent = Int(int64(obj["pause_on_battery_percent"]))
     capBytes = int64(obj["index_cap_bytes"])
     facesOn = obj["faces"] as? Bool ?? false
@@ -172,6 +175,15 @@ final class ManagementModel: ObservableObject {
     table.setSetting(key, String(value))
     reloadSettings()
     pollStatus()
+  }
+
+  /// Settings "Precision": read by each search as it starts, so the open
+  /// search answers again at once; nothing is re-indexed.
+  func setPrecision(_ level: Int) {
+    let clamped = min(4, max(0, level))
+    guard clamped != precision else { return }
+    set("precision", Int64(clamped))
+    chrome?.precisionChanged()
   }
 
   /// Settings "Index videos for". Sound and Both need the Sound piece loaded:
@@ -404,6 +416,28 @@ final class ManagementModel: ObservableObject {
   func showPhotos(of person: Person) { chrome?.showPerson(id: person.id, name: person.name) }
 }
 
+/// Settings "Precision": a five-step slider, Broader … Stricter, the middle
+/// the calibrated rule. The arrow keys step it (the slider's own keyboard).
+struct PrecisionControl: View {
+  let level: Int
+  let changed: (Int) -> Void
+
+  private static let names = ["Broadest", "Broader", "Balanced", "Stricter", "Strictest"]
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Text("Broader").font(AITheme.font(11)).foregroundStyle(AITheme.body)
+      Slider(value: Binding(get: { Double(level) }, set: { changed(Int($0.rounded())) }),
+             in: 0...4, step: 1) {
+        Text("Precision")
+      }
+      .labelsHidden()
+      .accessibilityValue(Self.names[min(4, max(0, level))])
+      Text("Stricter").font(AITheme.font(11)).foregroundStyle(AITheme.body)
+    }
+  }
+}
+
 struct ManagementView: View {
   @ObservedObject var model: ManagementModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -439,6 +473,13 @@ struct ManagementView: View {
             Text("High").tag(Int(MV_AI_QUALITY_HIGH.rawValue))
           }
           .pickerStyle(.menu).frame(width: 160)
+        }
+      }
+      section("Search") {
+        row("Precision",
+            detail: "Stricter shows only close matches and says “nothing found” rather than showing near misses (a plane for “helicopter”). Broader shows more, including looser matches.") {
+          PrecisionControl(level: model.precision) { model.setPrecision($0) }
+            .frame(width: 240)
         }
       }
       section("Videos") {
@@ -560,7 +601,8 @@ struct ManagementView: View {
   private var qualityDetail: String {
     let fast = model.modelName(Int(MV_AI_QUALITY_FAST.rawValue))
     let high = model.modelName(Int(MV_AI_QUALITY_HIGH.rawValue))
-    return "Fast — smaller model, quick on any computer" + (fast.isEmpty ? "" : " (\(fast))") + ". " +
+    return "Which model reads your photos: speed against accuracy. " +
+      "Fast — smaller model, quick on any computer" + (fast.isEmpty ? "" : " (\(fast))") + ". " +
       "High — best matches, needs a GPU or Apple silicon to be quick" + (high.isEmpty ? "" : " (\(high))") + ". " +
       "Changing it re-indexes in the background; the old index answers until the new one is ready."
   }

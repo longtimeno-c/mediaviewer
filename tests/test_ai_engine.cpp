@@ -21,6 +21,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -55,6 +56,10 @@ rgb colour_named(const std::string& name) {
   if (name.find("red") != std::string::npos) return {220, 20, 20};
   if (name.find("green") != std::string::npos) return {20, 220, 20};
   if (name.find("blue") != std::string::npos) return {20, 20, 220};
+  // Near misses for "red" (Precision): coral beats the generic prompts by
+  // ~0.023, blush by ~0.008 (the fake meta's result margin is 0.015).
+  if (name.find("coral") != std::string::npos) return {200, 70, 70};
+  if (name.find("blush") != std::string::npos) return {200, 75, 75};
   return {128, 128, 128};
 }
 
@@ -660,6 +665,67 @@ TEST_CASE("indexing pauses on a low battery until the user says index anyway", "
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
   CHECK(r.stills_decoded.load() == 4);
+}
+
+TEST_CASE("precision: stricter answers a subset, broader a superset, and the setting persists", "[ai][engine]") {
+  rig r;
+  for (const char* name : {"red_1.jpg", "red_2.jpg", "red_3.jpg", "coral_1.jpg", "coral_2.jpg", "blush_1.jpg",
+                           "blush_2.jpg", "grey_1.jpg", "grey_2.jpg"}) {
+    r.file(name);
+  }
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto found = [&](const std::string& q) {
+    std::set<std::string> names;
+    for (const auto& row : r.search(q)) names.insert(row.first);
+    return names;
+  };
+  const auto includes = [](const std::set<std::string>& big, const std::set<std::string>& small) {
+    return std::includes(big.begin(), big.end(), small.begin(), small.end());
+  };
+  // The default is the calibrated rule, and setting it changes nothing.
+  CHECK(r.eng->settings_json().find("\"precision\":2") != std::string::npos);
+  const auto base = found("red");
+  CHECK(base == std::set<std::string>{"coral_1.jpg", "coral_2.jpg", "red_1.jpg", "red_2.jpg", "red_3.jpg"});
+  REQUIRE(r.eng->set_setting("precision", "2"));
+  CHECK(found("red") == base);
+
+  // Stricter: a subset, without the near miss; no re-index, no reload.
+  const int opens = r.clip_opens.load();
+  REQUIRE(r.eng->set_setting("precision", "3"));
+  const auto strict3 = found("red");
+  REQUIRE(r.eng->set_setting("precision", "4"));
+  const auto strict4 = found("red");
+  CHECK(includes(base, strict3));
+  CHECK(includes(strict3, strict4));
+  CHECK(strict4 == std::set<std::string>{"red_1.jpg", "red_2.jpg", "red_3.jpg"});
+  CHECK(found("xyzzy plugh").empty());
+  CHECK(r.clip_opens.load() == opens);
+
+  // Broader: a superset, with the looser match.
+  REQUIRE(r.eng->set_setting("precision", "1"));
+  const auto loose1 = found("red");
+  REQUIRE(r.eng->set_setting("precision", "0"));
+  const auto loose0 = found("red");
+  CHECK(includes(loose1, base));
+  CHECK(includes(loose0, loose1));
+  CHECK(loose0.count("blush_1.jpg") == 1);
+  CHECK(base.count("blush_1.jpg") == 0);
+
+  // Out of range clamps; anything but a number is refused.
+  REQUIRE(r.eng->set_setting("precision", "9"));
+  CHECK(r.eng->settings_json().find("\"precision\":4") != std::string::npos);
+  REQUIRE(r.eng->set_setting("precision", "-3"));
+  CHECK(r.eng->settings_json().find("\"precision\":0") != std::string::npos);
+  CHECK_FALSE(r.eng->set_setting("precision", "\"strict\""));
+
+  // Saved with the other settings: a restart keeps it.
+  REQUIRE(r.eng->set_setting("precision", "3"));
+  r.start();
+  CHECK(r.eng->settings_json().find("\"precision\":3") != std::string::npos);
+  REQUIRE(r.idle());
+  CHECK(found("red") == strict3);
 }
 
 TEST_CASE("a quality change migrates without ever mixing vector spaces", "[ai][engine]") {

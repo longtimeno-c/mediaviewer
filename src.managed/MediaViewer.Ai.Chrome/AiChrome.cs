@@ -258,6 +258,12 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
         ReadStatus();
     }
 
+    /// <summary>
+    /// Settings → Precision changed: the panel's open search answers again under
+    /// the new rule. The gallery search bar picks it up with its next query.
+    /// </summary>
+    internal void PrecisionChanged() => _window?.OnPrecisionChanged();
+
     internal void RefreshCoverage()
     {
         if (_api is null || _folder is null) return;

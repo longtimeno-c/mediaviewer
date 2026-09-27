@@ -2704,3 +2704,22 @@ a running pack keeps its files (the Mac deleted them under it; Windows could not
 DLL and left half a folder). A new piece is picked up at once (reload); a new Import or Core
 takes over at the next start, because a loaded bundle's classes cannot be replaced in the
 running app. Add-ons still ship on stable releases only; previews carry none.
+
+## 2026-09-27 — Local search: a Precision scale over the calibrated "nothing found" rule
+
+**Amends** plan/17 *"Nothing found"* (the fixed calibration, amended twice today) with a user
+setting. The owner: the model "seems to confuse helicopter with plane … maybe have a scale in
+Settings (default in the middle, which is what we have now)".
+
+**What.** Settings -> Local search -> Precision, five steps (Broader … Stricter). The middle is
+the calibrated rule, unchanged row for row (a test runs the old code beside the new). Levels
+scale the stand-out factor, the query and row margins and the row z, and at 3-4 keep only rows
+near the best one; "nothing found" always reads the calibrated rows, so a stricter level answers
+a subset of a looser one. Read per search: no reload, no re-index. Numbers in plan/17
+*Precision scale*.
+
+**Why these numbers.** Measured, not chosen: on 300 and 1,000 COCO photos, level 3 is where
+L/14 stops answering "helicopter" with planes (captions still found 139-143 / 150), level 4
+where B/32 does too (131-137 / 150). B/32 cannot separate "a helicopter" from "a dog" (both
+1.33 x noise), so its level 4 also says nothing found for "a dog"; recorded, not hidden. Level 0
+finds at least today's captions and more rows, and answers 5-10 of 25 nonsense strings.

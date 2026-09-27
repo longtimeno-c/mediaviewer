@@ -192,6 +192,8 @@ void engine::load_settings() {
   settings_.index_cap = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("index_cap_bytes").value_or(8'000'000'000)));
   settings_.faces = doc->boolean("faces").value_or(false);
   settings_.video_index = static_cast<std::uint32_t>(std::clamp<std::int64_t>(doc->integer("video_index").value_or(0), 0, 3));
+  settings_.precision = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+      doc->integer("precision").value_or(kPrecisionDefault), 0, kPrecisionLevels - 1));
 }
 
 void engine::save_settings() const {
@@ -205,6 +207,7 @@ void engine::save_settings() const {
     w.key("index_cap_bytes").integer(static_cast<std::int64_t>(settings_.index_cap));
     w.key("faces").boolean(settings_.faces);
     w.key("video_index").integer(settings_.video_index);
+    w.key("precision").integer(settings_.precision);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -235,6 +238,7 @@ std::string engine::settings_json() const {
   // or Both once the ai-audio piece is installed (default_media).
   w.key("video_index").integer(default_media());
   w.key("video_index_setting").integer(s.video_index);
+  w.key("precision").integer(s.precision);
   {
     std::lock_guard lock(models_m_);
     w.key("faces_ready").boolean(static_cast<bool>(faces_model_));
@@ -297,6 +301,10 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     } else if (key == "video_index") {
       if (x < 0 || x > 3) return err(status::invalid_arg);
       settings_.video_index = static_cast<std::uint32_t>(x);
+    } else if (key == "precision") {
+      // Read by each search as it starts: no reload, no re-index (plan/17
+      // "Precision scale"). Out of range clamps to the nearest end.
+      settings_.precision = static_cast<std::uint32_t>(std::clamp(std::round(x), 0.0, static_cast<double>(kPrecisionLevels - 1)));
     } else {
       return err(status::invalid_arg);
     }
@@ -1958,7 +1966,7 @@ bool stop_word(const std::string& w) {
 }  // namespace
 
 void engine::merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
-                         std::uint32_t find) {
+                         std::uint32_t find, std::uint32_t precision) {
   loaded_sound sound;
   {
     std::lock_guard lock(models_m_);
@@ -1967,13 +1975,21 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   // What it sounds like: CLAP, with its own generic prompts and margins.
   if ((find & MV_AI_FIND_SOUNDS) && sound.model) {
     if (auto v = sound.model->embed_text(query)) {
-      const auto hits = sounds_.scan(*v, allow, 2000, true, sound.result_margin, -1.0f);
-      group(st, hits, true, sound.query_margin, MV_AI_MATCH_SOUND);
+      // The margin rule alone (query_z 0: CLAP has no z calibration yet), its
+      // margins scaled by Precision as the picture tower's are.
+      text_thresholds t;
+      t.query_margin = sound.query_margin;
+      t.result_margin = sound.result_margin;
+      t.query_z = 0;
+      t.result_z = 0;
+      const auto hits = find_text(sounds_, *v, allow, t, precision_scale::at(precision), true, 2000);
+      group(st, hits, true, -1.0f, MV_AI_MATCH_SOUND, true);
     }
   }
   // What is said: the transcript's words. A result must hold most of the
   // query's words (a few-word phrase: all of them); a word of four letters or
-  // more also matches its longer forms ("land" -> "landing").
+  // more also matches its longer forms ("land" -> "landing"). Precision moves
+  // the share (speech_coverage_needed).
   if (!(find & MV_AI_FIND_SPEECH)) return;
   std::vector<std::string> want;
   for (std::string& w : infer::speech_words(query)) {
@@ -1982,7 +1998,7 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   if (want.empty()) return;
   std::string phrase;
   for (const std::string& w : infer::speech_words(query)) phrase += (phrase.empty() ? "" : " ") + w;
-  const double need = want.size() <= 2 ? 1.0 : 0.6;
+  const double need = speech_coverage_needed(want.size(), precision);
   std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string>> found;
   {
     std::lock_guard lock(speech_m_);
@@ -2040,6 +2056,11 @@ std::uint64_t engine::search_text(const std::string& query, const std::string& s
                                   std::uint32_t scope, std::uint32_t kinds) {
   return submit([this, query, scope_dir, scope, kinds](search_state& st) {
     if (!models_ready_) return;
+    std::uint32_t precision;
+    {
+      std::lock_guard lock(settings_m_);
+      precision = settings_.precision;
+    }
     std::string q = query;
     std::uint32_t k = kinds;
     // People (PR 24): "photos of Anna", "videos of Anna", or a name inside a
@@ -2108,36 +2129,22 @@ std::uint64_t engine::search_text(const std::string& query, const std::string& s
     if (find & MV_AI_FIND_PICTURES) {
       const std::vector<float> v = query_vector(q);
       if (!v.empty()) {
-        float result_margin, query_margin, query_z, result_z;
+        text_thresholds t;
         {
           std::lock_guard lock(models_m_);
-          result_margin = answer_.meta.result_margin;
-          query_margin = answer_.meta.query_margin;
-          query_z = answer_.meta.query_z;
-          result_z = answer_.meta.result_z;
+          t.result_margin = answer_.meta.result_margin;
+          t.query_margin = answer_.meta.query_margin;
+          t.query_z = answer_.meta.query_z;
+          t.result_z = answer_.meta.result_z;
         }
-        vector_store::scan_stats stats;
-        auto hits = store_.scan(v, allow, 5000, true, result_margin, -1.0f, &stats);
-        // Against what noise scores in an index this size (scan_stats): at
-        // 1,000 COCO photos every nonsense query cleared a fixed z of 2.5
-        // (2.56-2.88) while real ones sat at 3.49 and up; one nonsense query's
-        // best margin was 0.050 at 300 (plan/17, 2026-09-27).
-        const bool stands_out = stats.stands_out(query_z);
-        const float margin_needed = stats.margin_needed(query_margin);
-        if (stands_out && stats.sd > 0) {
-          // A short query clears few rows by the margin; the rows that stand
-          // out as far as a match does are results as well (plan/17).
-          std::set<std::pair<std::int64_t, std::int64_t>> have;
-          for (const auto& h : hits) have.insert({h.asset, h.pts_ms});
-          for (const auto& h : store_.scan(v, allow, 5000, false, 0, stats.mean + result_z * stats.sd)) {
-            if (have.insert({h.asset, h.pts_ms}).second) hits.push_back(h);
-          }
-          std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
-        }
-        group(st, hits, true, person_assets.empty() ? margin_needed : -1.0f, MV_AI_MATCH_PICTURE, stands_out);
+        // The rule, its noise scaling and the Precision setting: find_text
+        // (vectors.h), the same function the calibration runs (plan/17).
+        const auto hits = find_text(store_, v, allow, t, precision_scale::at(precision), person_assets.empty());
+        // Already through the "nothing found" test: group only ranks.
+        group(st, hits, true, -1.0f, MV_AI_MATCH_PICTURE, true);
       }
     }
-    merge_audio(st, q, allow, find);
+    merge_audio(st, q, allow, find, precision);
     finish(st);
   });
 }

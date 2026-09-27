@@ -171,14 +171,17 @@ typedef struct mv_ai_api {
   /* {"compute":0..4,"quality":0..2,"pause_on_battery_percent":30,
    *  "battery_override":false, "video_index":1..3 (in effect: an unset choice is Pictures, or Both once
    *  ai-audio is installed), "video_index_setting":0..3, "audio_ready":bool,
-   *  "index_cap_bytes":N,"faces":false,"min_score":0.2,
+   *  "index_cap_bytes":N,"faces":false,"min_score":0.2,"precision":0..4,
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
    *  "runtime":"1.30.0"}  [no-block] */
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
    * | "index_cap_bytes" | "min_score" | "reload" | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
-   * Sound once the ai-audio piece is installed); value: a JSON number. Compute re-creates the
+   * Sound once the ai-audio piece is installed) | "precision" (0 broader .. 2 the calibrated
+   * "nothing found" rule, the default .. 4 stricter; out of range clamps; saved; read by each
+   * search as it starts, so it needs no reload or re-index, and the chrome re-runs an open
+   * search; plan/17 "Precision scale"); value: a JSON number. Compute re-creates the
    * sessions (no re-index); quality starts a migration. "reload" (any value)
    * re-reads the installed pieces after one is installed or removed: People
    * (ai-faces) and Sound (ai-audio) are picked up at once, without reopening

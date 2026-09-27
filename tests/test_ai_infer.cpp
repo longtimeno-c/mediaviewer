@@ -17,6 +17,7 @@
 #include "catch_compat.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -24,8 +25,11 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <random>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "addons/ai/index_db.h"
@@ -220,6 +224,154 @@ TEST_CASE("scan stats: the top ten stand out per asset, not per frame", "[ai][in
     (void)s.scan(query, {}, 100, false, 0, -1, &st);
     CHECK(st.assets == 12);
     CHECK(st.top10_z == 0.0f);
+  }
+}
+
+namespace {
+
+// The picture search as engine::search_text ran it before the Precision
+// setting (18f7998), kept verbatim to prove level 2 unchanged: the scan, the
+// z rows, then group()'s "nothing found" gate. `person` is a name in the query
+// (no gate).
+std::vector<mv::ai::vector_store::hit> search_before_precision(const mv::ai::vector_store& store,
+                                                               std::span<const float> v, float result_margin,
+                                                               float query_margin, float query_z, float result_z,
+                                                               bool person) {
+  mv::ai::vector_store::scan_stats stats;
+  auto hits = store.scan(v, {}, 5000, true, result_margin, -1.0f, &stats);
+  const bool stands_out = stats.stands_out(query_z);
+  const float margin_needed = stats.margin_needed(query_margin);
+  if (stands_out && stats.sd > 0) {
+    std::set<std::pair<std::int64_t, std::int64_t>> have;
+    for (const auto& h : hits) have.insert({h.asset, h.pts_ms});
+    for (const auto& h : store.scan(v, {}, 5000, false, 0, stats.mean + result_z * stats.sd)) {
+      if (have.insert({h.asset, h.pts_ms}).second) hits.push_back(h);
+    }
+    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+  }
+  if (hits.empty()) return hits;
+  float best = -1;
+  for (std::size_t i = 0; i < hits.size() && i < 10; ++i) best = std::max(best, hits[i].score - hits[i].generic);
+  if (best < (person ? -1.0f : margin_needed) && !stands_out) return {};
+  return hits;
+}
+
+// CLAP's search before the setting: the margin rows and group()'s gate.
+std::vector<mv::ai::vector_store::hit> sounds_before_precision(const mv::ai::vector_store& store,
+                                                               std::span<const float> v, float result_margin,
+                                                               float query_margin) {
+  auto hits = store.scan(v, {}, 2000, true, result_margin, -1.0f);
+  if (hits.empty()) return hits;
+  float best = -1;
+  for (std::size_t i = 0; i < hits.size() && i < 10; ++i) best = std::max(best, hits[i].score - hits[i].generic);
+  if (best < query_margin) return {};
+  return hits;
+}
+
+bool same_hits(const std::vector<mv::ai::vector_store::hit>& a, const std::vector<mv::ai::vector_store::hit>& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].asset != b[i].asset || a[i].pts_ms != b[i].pts_ms || a[i].score != b[i].score ||
+        a[i].generic != b[i].generic) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+// A clustered fixture (stills and multi-row clips, generic prompts near the
+// middle of everything as CLIP's are): Precision 2 returns exactly what the
+// search returned before the setting existed, row for row, score for score,
+// and each stricter level a subset of the looser one.
+TEST_CASE("precision 2 is the calibrated rule, bit for bit; the levels nest", "[ai][infer][vectors]") {
+  constexpr std::uint32_t dim = 32;
+  std::mt19937 rng(20260927);
+  std::normal_distribution<float> normal(0.0f, 1.0f);
+  const auto unit = [&](std::vector<float> v) {
+    mv::infer::l2_normalise(v);
+    return v;
+  };
+  const auto random_unit = [&] {
+    std::vector<float> v(dim);
+    for (float& x : v) x = normal(rng);
+    return unit(v);
+  };
+  // What every image shares (CLIP's cone): the generic prompts sit near it.
+  const std::vector<float> common = random_unit();
+  std::vector<std::vector<float>> centres;
+  for (int c = 0; c < 12; ++c) centres.push_back(random_unit());
+  const auto around = [&](const std::vector<float>& centre, float spread) {
+    std::vector<float> v(dim);
+    for (std::uint32_t i = 0; i < dim; ++i) v[i] = 0.9f * common[i] + centre[i] * 0.5f + spread * normal(rng) / 6.0f;
+    return unit(v);
+  };
+  std::vector<std::vector<float>> generic;
+  for (int g = 0; g < 3; ++g) generic.push_back(around(random_unit(), 0.3f));
+  for (const std::size_t assets : {std::size_t{25}, std::size_t{400}}) {
+    mv::ai::vector_store store(dim);
+    std::int64_t id = 0;
+    for (std::size_t a = 0; a < assets; ++a) {
+      ++id;
+      // One in ten is a clip of four moments; a quarter of the assets hold
+      // one of the first three subjects, the rest spread over all twelve.
+      const int rows = a % 10 == 0 ? 4 : 1;
+      const auto& centre = centres[a % 4 == 0 ? a % 3 : a % centres.size()];
+      for (int r = 0; r < rows; ++r) {
+        const auto v = around(centre, 1.0f + static_cast<float>(r));
+        float g = -1;
+        for (const auto& p : generic) g = std::max(g, mv::infer::dot(v, p));
+        std::vector<std::int8_t> q;
+        float scale = 0;
+        mv::ai::quantise(v, q, scale);
+        store.add(id, rows == 1 ? -1 : r * 2000, g, scale, q);
+      }
+    }
+    std::vector<std::vector<float>> queries;
+    for (const auto& c : centres) {
+      queries.push_back(around(c, 0.2f));
+      queries.push_back(around(c, 1.5f));
+      queries.push_back(unit(c));  // a subject far from the common cone
+    }
+    for (int i = 0; i < 12; ++i) queries.push_back(random_unit());  // off in another direction
+    // Nonsense as CLIP embeds it: near the generic prompts, favouring nothing.
+    for (const auto& g : generic) queries.push_back(g);
+    for (int i = 0; i < 6; ++i) {
+      std::vector<float> v(dim);
+      for (std::uint32_t d = 0; d < dim; ++d) v[d] = common[d] + normal(rng) / 20.0f;
+      queries.push_back(unit(v));
+    }
+    int answered = 0, empty = 0;
+    for (const auto& q : queries) {
+      for (const bool person : {false, true}) {
+        const mv::ai::text_thresholds t;  // model.json's defaults: 0.04, 0.015, 2.5, 2.0
+        const auto before = search_before_precision(store, q, t.result_margin, t.query_margin, t.query_z, t.result_z, person);
+        const auto now = mv::ai::find_text(store, q, {}, t, mv::ai::precision_scale::at(mv::ai::kPrecisionDefault), !person);
+        CHECK(same_hits(before, now));
+        (before.empty() ? empty : answered) += 1;
+      }
+      mv::ai::text_thresholds sound;
+      sound.query_z = 0;
+      sound.result_z = 0;
+      CHECK(same_hits(sounds_before_precision(store, q, sound.result_margin, sound.query_margin),
+                      mv::ai::find_text(store, q, {}, sound, mv::ai::precision_scale::at(2), true, 2000)));
+      // The levels nest: every row of a stricter level is a row of the looser.
+      std::vector<std::pair<std::int64_t, std::int64_t>> looser;
+      for (std::uint32_t level = 0; level < mv::ai::kPrecisionLevels; ++level) {
+        std::vector<std::pair<std::int64_t, std::int64_t>> rows;
+        for (const auto& h : mv::ai::find_text(store, q, {}, {}, mv::ai::precision_scale::at(level), true)) {
+          rows.push_back({h.asset, h.pts_ms});
+        }
+        std::sort(rows.begin(), rows.end());
+        if (level > 0) CHECK(std::includes(looser.begin(), looser.end(), rows.begin(), rows.end()));
+        looser = std::move(rows);
+      }
+    }
+    // The fixture reaches both answers.
+    INFO(assets << " assets: " << answered << " answered, " << empty << " empty");
+    CHECK(answered > 0);
+    CHECK(empty > 0);
   }
 }
 
@@ -605,9 +757,17 @@ TEST_CASE("bench: CLIP towers, CPU against Core ML", "[.bench][ai][coreml]") {
   }
 }
 
-// Held-out check of the "nothing found" rule (hidden: `mv_ai_tests
-// "[.calibration]"`): real captions of photos in the index should be
-// accepted, strings that describe nothing should not. Prints the rates.
+// Held-out check of the "nothing found" rule and the Precision scale (hidden:
+// `mv_ai_tests "[.calibration]"`), on the engine's own find_text over an int8
+// store of the labelled photos. Per tower, at 300 photos and at all of them,
+// per Precision level: real captions of photos in the index should find
+// something (and their own photo), strings that describe nothing should not;
+// "helicopter" (COCO has planes and no helicopters) should find nothing at
+// the strict levels; and for category queries where a near miss is plausible
+// (a bus / a truck, a cat / a dog, a horse / a cow, a sandwich / a pizza, a
+// plane) it prints how many rows came back and how many a caption keyword
+// says are relevant. Prints the table (plan/17 "Precision scale").
+// MV_AI_CALIBRATION_CACHE=<dir> keeps the image embeddings between runs.
 TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai][infer]") {
   const std::string pack = env("MV_AI_PACK_DIR");
   const std::string eval = env("MV_AI_EVAL_DIR");
@@ -622,6 +782,38 @@ TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai
       "hjkl hjkl", "fnord", "kwyjibo", "wibble wobble", "12345", "!!!", "the the the",
       "grbl", "snorfle", "aaaaa bbbbb", "mxyzptlk", "quux", "flibbertigibbet", "thx1138",
       "ooga booga", "blah", "nothing", "asdfghjkl", "vbnm"};
+  struct category {
+    const char* text;
+    std::vector<const char*> words;  // a caption holding one of these is relevant
+  };
+  const std::vector<const char*> plane{"plane", "planes", "airplane", "airplanes", "jet", "jets",
+                                       "aircraft", "airliner", "jetliner"};
+  const std::vector<category> categories{
+      {"helicopter", {"helicopter", "helicopters"}},
+      {"a helicopter", {"helicopter", "helicopters"}},
+      {"a plane", plane},
+      {"a bus", {"bus", "buses", "busses"}},
+      {"a truck", {"truck", "trucks"}},
+      {"a cat", {"cat", "cats", "kitten", "kittens", "kitty"}},
+      {"a dog", {"dog", "dogs", "puppy", "puppies"}},
+      {"a horse", {"horse", "horses", "pony"}},
+      {"a cow", {"cow", "cows", "cattle", "bull", "calf"}},
+      {"a sandwich", {"sandwich", "sandwiches"}},
+      {"a pizza", {"pizza", "pizzas"}},
+  };
+  const auto words_of = [](const std::string& text) {
+    std::vector<std::string> out;
+    std::string w;
+    for (char c : text + " ") {
+      if (std::isalpha(static_cast<unsigned char>(c))) {
+        w += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      } else if (!w.empty()) {
+        out.push_back(std::move(w));
+        w.clear();
+      }
+    }
+    return out;
+  };
   for (const char* folder : {"clip-b32", "clip-l14"}) {
     auto spec = mv::infer::read_clip_spec(utf8(fs::path(pack) / "models" / folder));
     REQUIRE(spec);
@@ -630,17 +822,63 @@ TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai
     auto model = mv::infer::clip_model::open(**rt, *spec, o);
     REQUIRE(model);
     const std::size_t n = std::min<std::size_t>(labels->a.size(), 1000);
+    // Embeddings (label index, vector), from the cache when it holds this
+    // model's for this many labels.
+    std::vector<std::uint32_t> which;
     std::vector<std::vector<float>> embs;
+    const std::string cache_dir = env("MV_AI_CALIBRATION_CACHE");
+    std::string key = spec->spec_key();
+    std::replace(key.begin(), key.end(), '/', '_');
+    const fs::path cache = cache_dir.empty() ? fs::path() : fs::path(cache_dir) / (key + "-" + std::to_string(n) + ".emb");
+    if (!cache.empty()) {
+      std::ifstream in(cache, std::ios::binary);
+      std::uint32_t count = 0, dim = 0;
+      if (in.read(reinterpret_cast<char*>(&count), 4) && in.read(reinterpret_cast<char*>(&dim), 4) && dim == spec->dim) {
+        for (std::uint32_t i = 0; i < count; ++i) {
+          std::uint32_t at = 0;
+          std::vector<float> e(dim);
+          if (!in.read(reinterpret_cast<char*>(&at), 4) ||
+              !in.read(reinterpret_cast<char*>(e.data()), static_cast<std::streamsize>(dim * 4)) || at >= n) {
+            which.clear();
+            embs.clear();
+            break;
+          }
+          which.push_back(at);
+          embs.push_back(std::move(e));
+        }
+      }
+    }
+    if (embs.empty()) {
+      for (std::size_t i = 0; i < n; ++i) {
+        const auto& item = labels->a[i];
+        auto still = mv::addon::media::decode_still(utf8(fs::path(eval) / "img" / *item.str("file")), 448);
+        if (!still) continue;
+        const mv::infer::rgb_view view{still->rgb.data(), still->width, still->height};
+        std::vector<float> e;
+        REQUIRE((*model)->embed_images(std::span<const mv::infer::rgb_view>(&view, 1), e));
+        which.push_back(static_cast<std::uint32_t>(i));
+        embs.push_back(std::move(e));
+      }
+      if (!cache.empty()) {
+        std::ofstream out(cache, std::ios::binary | std::ios::trunc);
+        const std::uint32_t count = static_cast<std::uint32_t>(embs.size()), dim = spec->dim;
+        out.write(reinterpret_cast<const char*>(&count), 4);
+        out.write(reinterpret_cast<const char*>(&dim), 4);
+        for (std::size_t i = 0; i < embs.size(); ++i) {
+          out.write(reinterpret_cast<const char*>(&which[i]), 4);
+          out.write(reinterpret_cast<const char*>(embs[i].data()), static_cast<std::streamsize>(embs[i].size() * 4));
+        }
+      }
+    }
+    REQUIRE(embs.size() >= 300);
     std::vector<std::string> first;
-    for (std::size_t i = 0; i < n; ++i) {
-      const auto& item = labels->a[i];
-      auto still = mv::addon::media::decode_still(utf8(fs::path(eval) / "img" / *item.str("file")), 448);
-      if (!still) continue;
-      const mv::infer::rgb_view view{still->rgb.data(), still->width, still->height};
-      std::vector<float> e;
-      REQUIRE((*model)->embed_images(std::span<const mv::infer::rgb_view>(&view, 1), e));
-      embs.push_back(e);
-      first.push_back(item.find("sentences")->a[0].s);
+    std::vector<std::vector<std::string>> caption_words;
+    for (std::uint32_t at : which) {
+      const auto& sentences = labels->a[at].find("sentences")->a;
+      first.push_back(sentences[0].s);
+      std::string all;
+      for (const auto& s : sentences) all += " " + s.s;
+      caption_words.push_back(words_of(all));
     }
     std::vector<std::vector<float>> generic;
     for (const auto& g : spec->generic_prompts) generic.push_back(*(*model)->embed_text(g));
@@ -648,43 +886,80 @@ TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai
     for (std::size_t i = 0; i < embs.size(); ++i) {
       for (const auto& g : generic) gen[i] = std::max(gen[i], cosine(embs[i], g));
     }
-    const auto accepted = [&](const std::string& text, std::size_t count) {
-      const auto q = *(*model)->embed_text(text);
-      std::vector<float> s(count);
-      for (std::size_t i = 0; i < count; ++i) s[i] = cosine(embs[i], q);
-      std::vector<std::size_t> by(count);
-      for (std::size_t i = 0; i < count; ++i) by[i] = i;
-      std::partial_sort(by.begin(), by.begin() + 10, by.end(), [&](std::size_t a, std::size_t b) { return s[a] > s[b]; });
-      float best_margin = -1;
-      for (std::size_t r = 0; r < 10; ++r) best_margin = std::max(best_margin, s[by[r]] - gen[by[r]]);
-      double mean = 0, var = 0;
-      for (float v : s) mean += v;
-      mean /= static_cast<double>(count);
-      for (float v : s) var += (v - mean) * (v - mean);
-      double top = 0;
-      for (std::size_t r = 0; r < 10; ++r) top += s[by[r]];
-      mv::ai::vector_store::scan_stats st;
-      st.assets = count;
-      st.top10_z = static_cast<float>((top / 10 - mean) / std::sqrt(var / static_cast<double>(count)));
-      // MV_AI_CALIBRATION_OLD=1: the fixed rule before 2026-09-27, for comparison.
-      if (const char* o = std::getenv("MV_AI_CALIBRATION_OLD"); o && *o == '1') {
-        return st.top10_z >= spec->query_z || best_margin >= spec->query_margin;
+    const auto embed = [&](const std::string& text) { return *(*model)->embed_text(text); };
+    mv::ai::text_thresholds t;
+    t.query_margin = spec->query_margin;
+    t.result_margin = spec->result_margin;
+    t.query_z = spec->query_z;
+    t.result_z = spec->result_z;
+    std::vector<std::vector<float>> caption_q, nonsense_q, category_q;
+    for (std::size_t i = 150; i < 300; ++i) caption_q.push_back(embed(first[i]));
+    for (const char* s : nonsense) nonsense_q.push_back(embed(s));
+    for (const category& c : categories) category_q.push_back(embed(c.text));
+    for (const std::size_t count : {std::size_t{300}, embs.size()}) {
+      // The engine's matrix: int8 rows, asset id = index + 1.
+      mv::ai::vector_store store(spec->dim);
+      for (std::size_t i = 0; i < count; ++i) {
+        std::vector<std::int8_t> q;
+        float scale = 0;
+        mv::ai::quantise(embs[i], q, scale);
+        store.add(static_cast<std::int64_t>(i + 1), -1, gen[i], scale, q);
       }
-      return st.stands_out(spec->query_z) || best_margin >= st.margin_needed(spec->query_margin);
-    };
-    for (const std::size_t count : {std::min<std::size_t>(300, embs.size()), embs.size()}) {
-      // Held out: captions of photos 150..299 (in both subsets).
-      int real_ok = 0, real_n = 0, junk_ok = 0;
-      for (std::size_t i = 150; i < 300 && i < count; ++i, ++real_n) real_ok += accepted(first[i], count) ? 1 : 0;
-      std::string passed;
-      for (const char* t : nonsense) {
-        if (accepted(t, count)) {
-          ++junk_ok;
-          passed += std::string(" \"") + t + "\"";
+      const auto find = [&](const std::vector<float>& q, std::uint32_t level) {
+        return mv::ai::find_text(store, q, {}, t, mv::ai::precision_scale::at(level), true);
+      };
+      std::vector<std::vector<std::int64_t>> looser;  // the previous level's rows, per query
+      for (std::uint32_t level = 0; level < mv::ai::kPrecisionLevels; ++level) {
+        std::vector<std::vector<std::int64_t>> rows;
+        const auto take = [&](const std::vector<float>& q) {
+          std::vector<std::int64_t> a;
+          for (const auto& h : find(q, level)) a.push_back(h.asset);
+          std::sort(a.begin(), a.end());
+          rows.push_back(a);
+          return a;
+        };
+        int found = 0, own = 0;
+        for (std::size_t i = 0; i < caption_q.size(); ++i) {
+          const auto a = take(caption_q[i]);
+          found += a.empty() ? 0 : 1;
+          own += std::binary_search(a.begin(), a.end(), static_cast<std::int64_t>(150 + i + 1)) ? 1 : 0;
         }
+        std::string junk;
+        int junk_n = 0;
+        for (std::size_t i = 0; i < nonsense_q.size(); ++i) {
+          if (!take(nonsense_q[i]).empty()) {
+            ++junk_n;
+            junk += std::string(" \"") + nonsense[i] + "\"";
+          }
+        }
+        std::ostringstream cats;
+        for (std::size_t c = 0; c < categories.size(); ++c) {
+          const auto a = take(category_q[c]);
+          const auto relevant = [&](std::size_t i) {
+            for (const std::string& w : caption_words[i]) {
+              for (const char* k : categories[c].words) {
+                if (w == k) return true;
+              }
+            }
+            return false;
+          };
+          std::size_t good = 0, pool = 0;
+          for (std::int64_t id : a) good += relevant(static_cast<std::size_t>(id - 1)) ? 1 : 0;
+          for (std::size_t i = 0; i < count; ++i) pool += relevant(i) ? 1 : 0;
+          cats << "\n    \"" << categories[c].text << "\": " << a.size() << " rows, " << good << " relevant (of "
+               << pool << ")";
+        }
+        WARN(spec->id << " at " << count << " photos, precision " << level << ": captions found " << found << "/"
+                      << caption_q.size() << " (own photo " << own << "), nonsense found " << junk_n << "/"
+                      << nonsense.size() << ":" << junk << cats.str());
+        // Each level answers a subset of the looser level's rows.
+        if (!looser.empty()) {
+          for (std::size_t q = 0; q < rows.size(); ++q) {
+            CHECK(std::includes(looser[q].begin(), looser[q].end(), rows[q].begin(), rows[q].end()));
+          }
+        }
+        looser = std::move(rows);
       }
-      WARN(spec->id << " at " << count << " photos: captions found " << real_ok << "/" << real_n
-                    << ", nonsense found " << junk_ok << "/" << nonsense.size() << ":" << passed);
     }
   }
 #else
