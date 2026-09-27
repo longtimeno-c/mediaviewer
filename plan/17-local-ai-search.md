@@ -446,6 +446,51 @@ nonsense (was 150 and 23), L/14 146 / 150 and 7 / 25 (was 150 and 25); at 300, 1
 `"[.calibration]"`). L/14's remaining nonsense passes are the next calibration item, on the
 owner's real set.
 
+**Precision scale (2026-09-27, owner: "the model seems to confuse helicopter with plane … a
+scale in Settings, default in the middle").** Settings -> Local search -> **Precision**, five
+steps from Broader to Stricter; the middle (2, the default) is the rule above, unchanged row for
+row (`"[ai][infer][vectors]"` proves it against the old code). The engine setting `precision`
+(0-4, saved with compute and quality) is read by each search as it starts: no reload, no
+re-index, and the chrome re-runs an open search. One function, `find_text` (`vectors.h`), is
+the engine's picture and sound search and what the calibration runs. Per level it scales the
+stand-out factor (the calibrated query_z with it), the query margin, the row margin and the row
+z, and at 3-4 keeps only rows within Δ SDs of the best row:
+
+| Level | stand-out x noise | query margin | row margin | row z | Δ (SD) |
+|---|---|---|---|---|---|
+| 0 Broadest | 1.10 | x 0.8 | x 0.33 | x 0.8 | - |
+| 1 | 1.12 | x 0.9 | x 0.67 | x 0.9 | - |
+| **2 (default)** | **1.15** | **x 1** | **x 1** | **x 1** | - |
+| 3 | 1.23 | x 1.125 | x 1.5 | x 1.2 | 3 |
+| 4 Strictest | 1.35 | x 1.25 | x 2 | x 1.4 | 2 |
+
+"Nothing found" always reads the calibrated rows, so each stricter level answers a subset of
+the looser one (checked on every query below). Measured on the COCO Karpathy-test set with the
+engine's int8 store (held-out captions of photos 150-299, 25 nonsense strings; "helicopter" /
+"a helicopter" rows, COCO has planes and no helicopters; category P / R: rows a caption keyword
+calls relevant, over the nine queries a plane, a bus, a truck, a cat, a dog, a horse, a cow, a
+sandwich, a pizza):
+
+| Tower, photos | Level | Captions found | Nonsense found | "helicopter" rows | Category P | Category R |
+|---|---|---|---|---|---|---|
+| B/32, 300 | 0 / 1 / **2** / 3 / 4 | 147 / 147 / **145** / 141 / 131 of 150 | 5 / 4 / **2** / 0 / 0 | 20 / 17 / **15** / 9 / 0 | .39 / .46 / **.59** / .85 / .90 | .81 / .80 / **.73** / .69 / .49 |
+| B/32, 1,000 | 0 / 1 / **2** / 3 / 4 | 150 / 150 / **150** / 145 / 137 | 7 / 5 / **2** / 1 / 0 | 67 / 47 / **36** / 22 / 0 | .36 / .46 / **.58** / .84 / .93 | .83 / .81 / **.78** / .71 / .43 |
+| L/14, 300 | 0 / 1 / **2** / 3 / 4 | 147 / 146 / **144** / 139 / 136 | 10 / 6 / **4** / 1 / 0 | 19 / 14 / **10** / 0 / 0 | .40 / .51 / **.59** / .85 / .92 | .88 / .88 / **.85** / .69 / .46 |
+| L/14, 1,000 | 0 / 1 / **2** / 3 / 4 | 147 / 147 / **146** / 143 / 140 | 10 / 9 / **7** / 2 / 1 | 65 / 44 / **27** / 0 / 0 | .42 / .51 / **.61** / .76 / .88 | .87 / .84 / **.81** / .70 / .50 |
+
+What the numbers say. L/14 (High, what Core ML and CUDA machines run) tells "helicopter" from a
+real one-word subject: its planes stand out at 1.19-1.21 x noise against 1.25-1.37 for "a dog"
+and "dog", so level 3 says nothing found for it on both sizes. B/32 (Fast, CPU-only machines)
+cannot: its "a helicopter" stands out at 1.33 x noise, exactly as its "a dog" does, with a
+better margin (0.039 against 0.022). Level 3 therefore still shows B/32's planes (fewer), and
+level 4, which rejects them, also says nothing found for "a dog" and "a sandwich" on B/32 (and
+for "a dog" on L/14 at 300 photos). The B/32 gap at level 4 is thin (1.327 against 1.35). Level
+0 finds at least what 2 finds and more rows (recall +0.03-0.08), at the price of 5-10 of 25
+nonsense strings answered. Knowing that a plane is not a helicopter needs the query compared
+with other words, not with the index; that is a later item (a vocabulary of labels embedded
+once per model), not a threshold. CLAP scales its two margins the same way (no z rule yet);
+spoken words need all the query's words at 3-4 and half at 0-1 (one word alone still whole).
+
 **Recall target for PR 22 (recorded here as plan/17 asked):** on the labelled set, the top five
 for each natural-language query hold at least four relevant items (P@5 >= 0.8), "guy on a
 skateboard" included; the COCO-1k proxy R@10 >= 0.88 (Fast) / >= 0.90 (High). The owner's real
@@ -491,7 +536,7 @@ offered Local search.
   previous matching moment; listed only while the pack is loaded.
 - **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
   status pill, scrub-bar match dots, Settings -> Local search with per-piece install, budget
-  bar, compute / quality, roots, People.
+  bar, compute / quality / precision, roots, People.
 
 ### Audio (added 2026-09-27, owner)
 

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <set>
+#include <utility>
 
 #include "addons/ai/index_db.h"
 
@@ -225,6 +227,83 @@ double normal_quantile(double p) {
          (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
 }
 }  // namespace
+
+precision_scale precision_scale::at(std::uint32_t level) noexcept {
+  // Calibrated on 300 and 1,000 COCO photos with both towers (plan/17
+  // "Precision scale (2026-09-27)", mv_ai_tests "[.calibration]"). Stricter:
+  // 3 is where L/14 stops answering "helicopter" with planes, 4 where B/32
+  // does too (its "a helicopter" stands out at 1.33 x noise, like its "a
+  // dog"), with captions still found >= 88 %. Looser: more rows, and a few
+  // more nonsense queries answered.
+  switch (level) {
+    case 0: return {1.10f, 0.80f, 0.33f, 0.80f, 0.0f};
+    case 1: return {1.12f, 0.90f, 0.67f, 0.90f, 0.0f};
+    case 3: return {1.23f, 1.125f, 1.5f, 1.2f, 3.0f};
+    case 4: return {1.35f, 1.25f, 2.0f, 1.4f, 2.0f};
+    default: return {};
+  }
+}
+
+std::vector<vector_store::hit> find_text(const vector_store& store, std::span<const float> query,
+                                         const std::function<bool(std::int64_t)>& allow,
+                                         const text_thresholds& t, const precision_scale& p, bool gate,
+                                         std::size_t k) {
+  vector_store::scan_stats stats;
+  // One pass at the lower of the calibrated and the level's row margin: the
+  // "nothing found" test below always reads the calibrated rows, so a level
+  // moves only its own thresholds, and every stricter answer is a subset of
+  // the calibrated one (every looser one a superset).
+  const float row_margin = t.result_margin * p.result_margin;
+  auto hits = store.scan(query, allow, k, true, std::min(t.result_margin, row_margin), -1.0f, &stats);
+  float best = -1;  // the best margin among the ten best calibrated rows
+  for (std::size_t i = 0, seen = 0; i < hits.size() && seen < 10; ++i) {
+    const float margin = hits[i].score - hits[i].generic;
+    if (margin < t.result_margin) continue;
+    best = std::max(best, margin);
+    ++seen;
+  }
+  if (row_margin > t.result_margin) {
+    hits.erase(std::remove_if(hits.begin(), hits.end(),
+                              [&](const vector_store::hit& h) { return h.score - h.generic < row_margin; }),
+               hits.end());
+  }
+  // query_z 0: the margin rule alone (CLAP, until it has its own z calibration).
+  const bool z_rule = t.query_z > 0;
+  // Against what noise scores in an index this size (scan_stats): at 1,000
+  // COCO photos every nonsense query cleared a fixed z of 2.5 (2.56-2.88)
+  // while real ones sat at 3.49 and up; one nonsense query's best margin was
+  // 0.050 at 300 (plan/17, 2026-09-27). The calibrated query_z moves with the
+  // level's stand-out factor, so a small index is as strict as a large one.
+  const float query_z = t.query_z * (p.stand_out / vector_store::scan_stats::kStandOutOverNoise);
+  const bool stands_out = z_rule && stats.stands_out(query_z, p.stand_out);
+  const float margin_needed = (z_rule ? stats.margin_needed(t.query_margin) : t.query_margin) * p.query_margin;
+  if (stands_out && stats.sd > 0) {
+    // A short query clears few rows by the margin; the rows that stand out as
+    // far as a match does are results as well (plan/17).
+    const float result_z = t.result_z * p.result_z;
+    std::set<std::pair<std::int64_t, std::int64_t>> have;
+    for (const auto& h : hits) have.insert({h.asset, h.pts_ms});
+    for (const auto& h : store.scan(query, allow, k, false, 0, stats.mean + result_z * stats.sd)) {
+      if (have.insert({h.asset, h.pts_ms}).second) hits.push_back(h);
+    }
+    std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+  }
+  if (hits.empty()) return hits;
+  // "Nothing found" (PR 20 calibration): a query that no top-ten row beats
+  // the generic prompts by the margin describes nothing in the index, unless
+  // its best assets stand out from the rest: a one-word subject ("dog") sits
+  // close to "a photo." and misses the margin while ranking correctly
+  // (2026-09-27, plan/17).
+  if (gate && !stands_out && best < margin_needed) return {};
+  if (z_rule && p.within > 0 && stats.sd > 0) {
+    // Stricter: only what scores close to the best match, so the near-miss
+    // category under a real one (the buses under "a truck") drops off.
+    const float cutoff = hits.front().score - p.within * stats.sd;
+    hits.erase(std::remove_if(hits.begin(), hits.end(), [&](const vector_store::hit& h) { return h.score < cutoff; }),
+               hits.end());
+  }
+  return hits;
+}
 
 float vector_store::scan_stats::null_top10_z() const noexcept {
   if (assets < 10) return 0.0f;

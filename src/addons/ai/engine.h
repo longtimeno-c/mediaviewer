@@ -156,7 +156,19 @@ struct settings {
   std::uint64_t index_cap = 8'000'000'000;   // bytes; 0 = no cap
   bool faces = false;                        // the separate People opt-in
   std::uint32_t video_index = MV_AI_MEDIA_DEFAULT;  // 0: Pictures, plus Sound once ai-audio is in
+  std::uint32_t precision = kPrecisionDefault;      // 0 broader .. 2 calibrated .. 4 stricter
 };
+
+// A spoken-phrase search's share of the query's words a transcript line must
+// hold, at a Precision level: 2 as calibrated (a phrase of one or two words
+// needs all of them, a longer one 60 %), 3-4 every word, 1 half of a phrase of
+// three words or more, 0 half of any phrase of two or more.
+[[nodiscard]] constexpr double speech_coverage_needed(std::size_t words, std::uint32_t precision) noexcept {
+  if (precision >= 3) return 1.0;
+  if (precision == 2) return words <= 2 ? 1.0 : 0.6;
+  if (precision == 1) return words <= 2 ? 1.0 : 0.5;
+  return words <= 1 ? 1.0 : 0.5;
+}
 
 class engine {
  public:
@@ -273,7 +285,7 @@ class engine {
   };
   void load_speech(const std::string& spec);
   void merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
-                   std::uint32_t find) ;
+                   std::uint32_t find, std::uint32_t precision);
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
   void process_video(const work_item& item, const loaded_clip& clip, bool faces_only);
   void faces_of(std::int64_t asset, const std::string& path, std::int64_t pts_ms, const rgb_frame& img);

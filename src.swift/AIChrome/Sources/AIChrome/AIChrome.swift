@@ -329,6 +329,10 @@ public final class MVAIChrome: NSObject {
     _ = host.perform(sel, with: NSNumber(value: ms))
   }
 
+  /// Settings → Precision changed: the panel's open search answers again.
+  /// The gallery bar's picks it up with its next query.
+  @MainActor func precisionChanged() { search?.precisionChanged() }
+
   /// People → "Show photos": the person as a search, in the panel.
   @MainActor func showPerson(id: UInt64, name: String) {
     guard let m = searchModel(), let p = panelController() else { return }

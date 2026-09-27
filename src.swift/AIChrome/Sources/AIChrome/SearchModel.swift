@@ -219,6 +219,14 @@ final class SearchModel: ObservableObject {
     if visible { refreshCoverage() }
   }
 
+  /// Settings → Precision changed: an open description answers again under
+  /// the new rule (nothing is re-indexed). Similar and a person's photos do not
+  /// read it.
+  func precisionChanged() {
+    guard reference == nil, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    run(keepSelection: true)
+  }
+
   func refreshCoverage() {
     guard !folder.isEmpty else { coverage = 2; return }
     var state: UInt32 = 2

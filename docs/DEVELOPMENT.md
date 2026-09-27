@@ -635,7 +635,10 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
 `MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`
 make `mv_ai_tests` run its model cases; `"[.bench]"` prints CPU / Core ML timings and
-`"[.calibration]"` the held-out "nothing found" rates. On a Mac the first Core ML open of a
+`"[.calibration]"` the held-out "nothing found" rates and, per Precision level (Settings →
+Local search), what captions, nonsense, "helicopter" and near-miss category queries return
+(plan/17 "Precision scale"). It embeds 1,000 photos per tower on CPU (minutes for L/14); set
+`MV_AI_CALIBRATION_CACHE=<folder>` to keep the embeddings between runs. On a Mac the first Core ML open of a
 tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
 
 ## Test

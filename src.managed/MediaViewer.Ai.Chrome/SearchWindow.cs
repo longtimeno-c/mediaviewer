@@ -1108,6 +1108,17 @@ internal sealed class SearchWindow : Window, IDisposable
         FadeIn(_empty);
     }
 
+    /// <summary>
+    /// Settings → Precision changed: an open description answers again (each
+    /// search reads it as it starts; nothing is re-indexed). Similar does not
+    /// read it.
+    /// </summary>
+    internal void OnPrecisionChanged()
+    {
+        if (_similar is not null || _query.Text.Trim().Length == 0) return;
+        RunQuery(quiet: true);
+    }
+
     internal void OnFolderChanged()
     {
         UpdateScopeAvailability();

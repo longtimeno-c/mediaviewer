@@ -33,6 +33,7 @@ internal sealed class ManagePanel
     private readonly ComboBox _computeBox;
     private readonly ComboBox _qualityBox;
     private readonly TextBlock _qualityLine;
+    private readonly Slider _precision;
     private readonly TextBlock _restart;
     private readonly ComboBox _batteryBox;
     private readonly StackPanel _roots;
@@ -55,6 +56,7 @@ internal sealed class ManagePanel
     private static readonly int[] BatteryValues = { 0, 20, 30, 50, 100 };
     private static readonly string[] BatteryNames =
         { "Never", "Below 20 %", "Below 30 %", "Below 50 %", "Always on battery" };
+    private static readonly string[] PrecisionNames = { "Broadest", "Broader", "Balanced", "Stricter", "Strictest" };
     private static readonly string[] QualityLines =
     {
         "Auto — High on a GPU, Fast otherwise",
@@ -125,8 +127,43 @@ internal sealed class ManagePanel
         var qualityDetail = new StackPanel { Spacing = 2 };
         qualityDetail.Children.Add(_qualityLine);
         qualityDetail.Children.Add(_look.Text(
-            "Changing it re-indexes in the background; the current index answers until the new one is ready.", 12));
+            "Which model reads your photos: speed against accuracy. Changing it re-indexes in the background; the current index answers until the new one is ready.", 12));
         Root.Children.Add(Row("Search quality", qualityDetail, _qualityBox));
+
+        // Precision (plan/17 "Precision scale"): five steps, the middle the
+        // calibrated rule. Each search reads it as it starts: no re-index.
+        _precision = new Slider
+        {
+            Minimum = 0,
+            Maximum = 4,
+            StepFrequency = 1,
+            SnapsTo = SliderSnapsTo.StepValues,
+            TickFrequency = 1,
+            TickPlacement = TickPlacement.Outside,
+            Value = 2,
+            Width = 160,
+            IsThumbToolTipEnabled = false,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetName(_precision, "Precision");
+        _precision.ValueChanged += (_, e) =>
+        {
+            AutomationProperties.SetItemStatus(_precision, PrecisionNames[(int)Math.Clamp(Math.Round(e.NewValue), 0, 4)]);
+            if (_updating) return;
+            Set("precision", ((int)Math.Clamp(Math.Round(e.NewValue), 0, 4)).ToString());
+            _chrome.PrecisionChanged();
+        };
+        var precisionControl = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        TextBlock broader = _look.Text("Broader", 12);
+        broader.VerticalAlignment = VerticalAlignment.Center;
+        TextBlock stricter = _look.Text("Stricter", 12);
+        stricter.VerticalAlignment = VerticalAlignment.Center;
+        precisionControl.Children.Add(broader);
+        precisionControl.Children.Add(_precision);
+        precisionControl.Children.Add(stricter);
+        Root.Children.Add(Row("Precision",
+            "Stricter shows only close matches and says “nothing found” rather than showing near misses (a plane for “helicopter”). Broader shows more, including looser matches.",
+            precisionControl));
 
         // Audio (2026-09-27): what videos are indexed for. Sound covers both
         // sounds ("dog barking") and speech, and needs the Audio piece.
@@ -284,6 +321,9 @@ internal sealed class ManagePanel
 
             _qualityBox.SelectedIndex = (int)Math.Min(2, quality);
             _qualityLine.Text = QualityLines[_qualityBox.SelectedIndex];
+            uint precision = r.TryGetProperty("precision", out JsonElement pr) ? pr.GetUInt32() : 2;
+            _precision.Value = Math.Min(4u, precision);
+            AutomationProperties.SetItemStatus(_precision, PrecisionNames[(int)Math.Min(4u, precision)]);
             int bi = Array.IndexOf(BatteryValues, battery);
             if (bi < 0) bi = Array.FindIndex(BatteryValues, v => v >= battery);
             _batteryBox.SelectedIndex = bi < 0 ? 0 : bi;
