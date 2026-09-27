@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The encode port (plan/10 PR 13): which HARDWARE encoders Path 2 may use.
 //
 // Portable header. edit/hwencode_win.cpp lists NVENC, Quick Sync, AMF and the

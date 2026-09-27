@@ -1,10 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Typed views over settings.ini. Every read here is the in-memory document and
 // every save is a coalesced write on the store's persist worker
 // (shell/settings_store.h) -- none of them touch the disk on the calling thread.
 #include "shell/settings.h"
 
 #include "io/sort_order.h"
+#include "shell/os_integration.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -15,6 +17,7 @@ namespace {
 
 constexpr char kView[] = "view";
 constexpr char kDestinations[] = "destinations";
+constexpr char kRecent[] = "recent";
 constexpr char kKeys[] = "keys";
 constexpr char kCrash[] = "crash";
 
@@ -65,7 +68,7 @@ view_settings load_view_settings(const settings_store& store) noexcept {
   s.wrap = doc->get_int(kView, "wrap", s.wrap ? 1 : 0) != 0;
   s.sticky_zoom = doc->get_int(kView, "sticky_zoom", s.sticky_zoom ? 1 : 0) != 0;
   const int bg = doc->get_int(kView, "background", s.background);
-  s.background = static_cast<std::uint8_t>(bg < 0 ? 0 : bg > 3 ? 3 : bg);
+  s.background = static_cast<std::uint8_t>(bg < 0 || bg > 4 ? 0 : bg);
   // Normalised, so a hand-edited or future value cannot leave an unknown key.
   s.sort = io::pack_sort(io::unpack_sort(doc->get_int(kView, "sort", 0)));
   return s;
@@ -77,7 +80,7 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     d.set(kView, "filmstrip_for_image", s.filmstrip_for_image ? "1" : "0");
     d.set(kView, "wrap", s.wrap ? "1" : "0");
     d.set(kView, "sticky_zoom", s.sticky_zoom ? "1" : "0");
-    d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background & 3)));
+    d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background <= 4 ? s.background : 0)));
     d.set(kView, "sort", std::to_string(s.sort));
   });
 }
@@ -102,6 +105,30 @@ void save_destinations(settings_store& store, const std::vector<std::string>& li
     d.erase_prefix(kDestinations, "d");
     for (std::size_t i = 0; i < kMaxDestinations && i < list.size(); ++i) {
       if (!list[i].empty()) d.set(kDestinations, "d" + std::to_string(i), list[i]);
+    }
+  });
+}
+
+std::vector<std::string> load_recent_folders(const settings_store& store) noexcept {
+  try {
+    std::vector<std::string> out;
+    const auto doc = store.snapshot();
+    if (!doc) return out;
+    for (std::size_t i = 0; i < kMaxRecentFolders; ++i) {
+      const std::string* v = doc->find(kRecent, "f" + std::to_string(i));
+      if (v && !v->empty()) out.push_back(*v);
+    }
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+
+void save_recent_folders(settings_store& store, const std::vector<std::string>& list) noexcept {
+  store.update([&](settings_doc& d) {
+    d.erase_prefix(kRecent, "f");
+    for (std::size_t i = 0; i < kMaxRecentFolders && i < list.size(); ++i) {
+      if (!list[i].empty()) d.set(kRecent, "f" + std::to_string(i), list[i]);
     }
   });
 }
@@ -164,6 +191,8 @@ view_settings load_view_settings() noexcept { return load_view_settings(app_sett
 void save_view_settings(const view_settings& s) noexcept { save_view_settings(app_settings(), s); }
 std::vector<std::string> load_destinations() noexcept { return load_destinations(app_settings()); }
 void save_destinations(const std::vector<std::string>& list) noexcept { save_destinations(app_settings(), list); }
+std::vector<std::string> load_recent_folders() noexcept { return load_recent_folders(app_settings()); }
+void save_recent_folders(const std::vector<std::string>& list) noexcept { save_recent_folders(app_settings(), list); }
 crash_settings load_crash_settings() noexcept { return load_crash_settings(app_settings()); }
 void save_crash_consent(bool accepted) noexcept { save_crash_consent(app_settings(), accepted); }
 

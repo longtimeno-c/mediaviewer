@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5b — the audio endpoint, behind a portable interface.
 //
 // D9 / plan/15: the WASAPI implementation is audio_win.cpp and NOTHING else.
@@ -20,6 +21,9 @@ enum class clock_fallback_reason : std::uint8_t {
   no_audio_track,
   device_open_failed,
   device_lost,
+  // The track played out; the host clock carries the rest of the video. Not a
+  // fault, and the next seek hands the clock back to the endpoint.
+  audio_ended,
 };
 
 struct audio_endpoint_info {

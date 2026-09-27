@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/present_lab.h"
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
@@ -866,11 +867,15 @@ void present_lab::render_thread_main() noexcept {
           (snapshot.clipping ? 0x8 : 0) | (snapshot.loupe ? 0x10 : 0) |
           (snapshot.hold_previous ? 0x20 : 0) | (snapshot.info_overlay ? 0x40 : 0) |
           (snapshot.item_marked ? 0x80 : 0));
-      if (flags != seen_view_flags_ || snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
+      if (flags != seen_view_flags_ || snapshot.background != seen_background_ ||
+          snapshot.home_background_rgb != seen_home_background_rgb_ ||
+          snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
           snapshot.loupe_steps_y != seen_loupe_steps_y_ ||
           snapshot.marked_count != seen_marked_count_ || snapshot.blackout != seen_blackout_ ||
           snapshot.item_index != seen_item_index_ || snapshot.item_count != seen_item_count_) {
         seen_view_flags_ = flags;
+        seen_background_ = snapshot.background;
+        seen_home_background_rgb_ = snapshot.home_background_rgb;
         seen_marked_count_ = snapshot.marked_count;
         seen_blackout_ = snapshot.blackout;
         seen_item_index_ = snapshot.item_index;
@@ -1101,13 +1106,18 @@ void present_lab::render_thread_main() noexcept {
     const float clear_level = gfx::background_clear(snapshot.background);
     const bool home = !current_image_ && !current_video_.texture && !video_open_ &&
                       !(sweep_mode_ && animating_) && !snapshot.blackout;
+    const bool system_background = home || snapshot.background == 0;
+    const float theme_rgb[3] = {
+        home_linear_channel(snapshot.home_background_rgb, 16),
+        home_linear_channel(snapshot.home_background_rgb, 8),
+        home_linear_channel(snapshot.home_background_rgb, 0)};
     const float clear[4] = {
-        home ? home_linear_channel(snapshot.home_background_rgb, 16)
-             : snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.016f : clear_level),
-        home ? home_linear_channel(snapshot.home_background_rgb, 8)
-             : snapshot.blackout ? 0.0f : clear_level,
-        home ? home_linear_channel(snapshot.home_background_rgb, 0)
-             : snapshot.blackout ? 0.0f : (snapshot.background == 0 ? 0.024f : clear_level),
+        snapshot.blackout ? 0.0f : system_background ? theme_rgb[0]
+            : snapshot.background == 4 ? 0.016f : clear_level,
+        snapshot.blackout ? 0.0f : system_background ? theme_rgb[1]
+            : snapshot.background == 4 ? 0.018f : clear_level,
+        snapshot.blackout ? 0.0f : system_background ? theme_rgb[2]
+            : snapshot.background == 4 ? 0.024f : clear_level,
         1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
@@ -1169,6 +1179,7 @@ void present_lab::render_thread_main() noexcept {
       bp.texture_w = static_cast<float>(shown->texture_width);
       bp.texture_h = static_cast<float>(shown->texture_height);
       bp.background = snapshot.background;
+      for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
       bp.clipping = snapshot.clipping;
       bp.time_seconds = static_cast<float>(elapsed);
 

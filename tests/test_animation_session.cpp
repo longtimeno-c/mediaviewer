@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The animation feed with a fake texture maker: bounds, order, loops, seek,
 // retire. No GPU; the GIF fixture is encoded in the test.
 #include <catch2/catch_test_macros.hpp>

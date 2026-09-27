@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Frame pacing measurement — PR 1's verify line, made falsifiable.
 //
 //   "Verify: presents at exactly display refresh, 0 dropped frames over 60 s,

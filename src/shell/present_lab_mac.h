@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Metal present lab — PR 16's instrument, kept as a debug harness the way
 // the Win32 lab is. No SwiftUI. plan/10, plan/15.
 #pragma once
@@ -314,6 +315,8 @@ class present_lab_mac {
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
+  std::uint8_t seen_background_ = 255;
+  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;
 

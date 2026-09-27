@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Catch2 v3 either as the installed package (vcpkg, every product build) or
 // as the amalgamated pair (a bare POSIX machine running cmake/portable).
 #pragma once

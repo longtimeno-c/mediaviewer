@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -30,11 +31,36 @@ public static partial class IslandHost
     private static void InitialiseTheme()
     {
         _themeDispatcher = DispatcherQueue.GetForCurrentThread();
-        _themeSettings = new UISettings();
-        _accessibilitySettings = new AccessibilitySettings();
-        _themeSettings.ColorValuesChanged += OnThemeColoursChanged;
-        _accessibilitySettings.HighContrastChanged += OnHighContrastChanged;
+        var settings = new UISettings();
+        var accessibility = new AccessibilitySettings();
+        _themeSettings = settings;
+        _accessibilitySettings = accessibility;
+        // Brushes first: every Brush(role) lookup depends on them, so a failed
+        // change hook below must still leave a complete palette.
         RefreshTheme();
+        // Appearance tracking is best effort. It must never cost the chrome:
+        // an exception here escapes EnsureApp and no island attaches.
+        TrySubscribe(() => settings.ColorValuesChanged += OnThemeColoursChanged);
+        // HighContrastChanged needs a CoreWindow; a Win32-hosted island gets
+        // E_NOTFOUND (0x80070490). UISettings.ColorValuesChanged also fires on
+        // a contrast-theme switch, and HighContrast is still readable.
+        _highContrastHooked = TrySubscribe(() => accessibility.HighContrastChanged += OnHighContrastChanged);
+    }
+
+    private static bool _highContrastHooked;
+
+    private static bool TrySubscribe(Action subscribe)
+    {
+        try
+        {
+            subscribe();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return false;
+        }
     }
 
     // UISettings can call on a worker thread. All XAML brushes and the HWND
@@ -117,7 +143,9 @@ public static partial class IslandHost
     private static void ShutdownTheme()
     {
         if (_themeSettings is not null) _themeSettings.ColorValuesChanged -= OnThemeColoursChanged;
-        if (_accessibilitySettings is not null) _accessibilitySettings.HighContrastChanged -= OnHighContrastChanged;
+        if (_accessibilitySettings is not null && _highContrastHooked)
+            _accessibilitySettings.HighContrastChanged -= OnHighContrastChanged;
+        _highContrastHooked = false;
         _themeSettings = null;
         _accessibilitySettings = null;
         _themeDispatcher = null;

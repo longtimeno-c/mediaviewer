@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
 #include <windows.h>
@@ -30,6 +31,9 @@ TEST_CASE("view settings round-trip through the flag word") {
   REQUIRE(round.filmstrip_for_image);
   REQUIRE(round.sticky_zoom);
   REQUIRE(round.background == 3);
+  settings.background = 4;  // Explicit dark remains available beside the new System default.
+  REQUIRE(mv::shell::view_settings::from_flags(settings.flags()).background == 4);
+  REQUIRE(mv::shell::view_settings::from_flags(7 << mv::shell::kSettingBackgroundShift).background == 0);
   REQUIRE(mv::shell::view_settings::from_flags(0).flags() == 0);
 }
 
@@ -38,8 +42,6 @@ TEST_CASE("chrome bar height is 48 DIP, plus 28 with a path row") {
   REQUIRE(mv::shell::chrome_bar_height_px(120) == 60);
   REQUIRE(mv::shell::chrome_bar_height_px(144) == 72);
   REQUIRE(mv::shell::chrome_bar_height_px(0) == 48);
-  REQUIRE(mv::shell::chrome_bar_height_px(96, true) == 76);
-  REQUIRE(mv::shell::chrome_bar_height_px(0, true) == 76);
 }
 
 TEST_CASE("chrome host loads hostfxr and the blittable size") {

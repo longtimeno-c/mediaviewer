@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10: the render thread's side of input_state.h's edit_view, shared by
 // both labs (present_lab.cpp, present_lab_mac.mm) so they place a texture
 // through its edit geometry the same way. Pure; no GPU, no platform header.

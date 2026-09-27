@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Clip jobs in MediaViewerClipJob (edit/clip_wire.h, owner's call plan/12
 // 2026-09-25): the viewer is not affected by what happens in the helper.
 // MV_CLIPJOB_PATH is the test build of the helper (hooks compiled in).

@@ -9,9 +9,9 @@ media-player control, so decoding never stands between you and the screen.
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
 apply while the app is open. The empty welcome screen and dinosaur runner follow
-the system window colour too. **Canvas background** remains a separate preference
-for the photo/video surround. Build and interactive checks are documented in
-[System appearance verification](docs/system-theme-verify.md).
+the system window colour too. The photo/video **Canvas background** now defaults
+to System; Grey, White, Checkerboard and Dark remain fixed choices. Build and
+interactive checks are documented in [System appearance verification](docs/system-theme-verify.md).
 
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
@@ -89,6 +89,8 @@ Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`�
 Then the **PR 12 metadata writes** (shared core and the **macOS half**; the Windows half is written but not yet compiled or run): keypad `0`–`5` (or `⌘⇧0`–`5`, `Ctrl+Shift+0`–`5` on Windows once built) rate the photo on screen, and `⌘I` puts the keyboard in the metadata pane's comment field. A plain JPEG is rewritten in place, checked against the original before it replaces anything; every other format (RAW, HEIC, PNG, video, …) gets an `IMG_1234.xmp` sidecar beside it and the original is never opened for writing. The pane has clickable stars, the comment and a "Revert metadata" button. **On a Mac, `⌘⇧3`/`4`/`5` are the system's screenshot shortcuts and never reach the app; use the keypad or turn those shortcuts off.** See [plan/12](plan/12-decision-log.md) 2026-09-25.
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core), not yet built on either platform: on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is tested on Linux ([tools/portable](tools/portable/README.md)); what is owed on each platform is in [plan/12](plan/12-decision-log.md) 2026-09-25. OS integration (PR 15) is not started.
+
+**PR 15 OS integration** is written on a branch (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). Several windows grouped as tabs come in a later update ([plan/10](plan/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -99,8 +101,16 @@ The keys below come from the command table specified in
 [plan/16-commands.md](plan/16-commands.md); press `?` in the app for the ones
 that apply to what you are doing.
 
-**Licence: GPL-2.0-or-later** ([LICENSE](LICENSE)). Settled in PR 1; the reasoning is in
-[plan/11-licensing.md](plan/11-licensing.md).
+**Licence: GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE](NOTICE)). Settled in PR 1 as
+GPL-2.0-or-later and moved to GPL-3.0-or-later on 2026-09-25; the reasoning is in
+[plan/11-licensing.md](plan/11-licensing.md) and [plan/12-decision-log.md](plan/12-decision-log.md).
+Nothing about selling or distributing it changed.
+
+**Attribution.** Copyright (C) 2026 longtimeno-c. Copies and forks must keep the copyright
+notices, `LICENSE`, `NOTICE` and the in-app legal notices (About: copyright line, licence line,
+links to `LICENSE`, `NOTICE` and `THIRD-PARTY.md`). They may charge money for it, as the GPL
+allows. Please do not present a fork as the original MediaViewer: the name and icon are a
+trademark request, not a licence term.
 
 ---
 
@@ -111,6 +121,8 @@ that apply to what you are doing.
 | **Mac, Apple Silicon, macOS 14+** | [MediaViewer-0.1.2.dmg](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2.dmg) |
 
 Windows may show a SmartScreen warning the first time. This installer is not Authenticode-signed. Checksums are on the [release page](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2).
+
+Setup's Finish page offers to delete the setup `.exe` once it closes. On a Mac, the first-launch setup sheet offers to eject the MediaViewer disk and move the `.dmg` to the Trash. Both boxes start ticked.
 
 ---
 
@@ -235,7 +247,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
 | **Metadata editing** | Rating, orientation and comments written safely, RAW ratings kept in sidecars |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
-| **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
+| **Windows and macOS integration** (PR 15, written) | Everything above is written; the installed-build verify on each platform is owed. Explorer's Details-pane properties (needs a machine-wide install) and tab-grouped windows come later |
 | **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume. In the code base ([plan/18](plan/18-import.md)) and installed from Settings → Add-ons once a stable release carries it; hardware verify still owed |
 | **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
 | **Voice search** (optional add-on) | Speak the query; speech runs on-device |
@@ -328,7 +340,8 @@ installed above includes it alongside libheif/LibRaw; no extra install is needed
 
 Open a folder with clips in it. `Space`/`K` play/pause, `,` `.` frame step, `Q`/`E` ±2 s,
 `J`/`L` ±10 s, `Shift+Q`/`Shift+E` speed 0.25–4×, `Shift+M` mute (`?` lists them; the transport
-strip appears above the filmstrip while a clip is on screen). `F3` names the decoder that is
+bar floats above the filmstrip while a clip is on screen and fades after 2.5 s of playback
+with no activity — see the transport paragraph below). `F3` names the decoder that is
 *actually* running (`SOFTWARE` is spelled out, never silent), the clock source, the A/V error
 and the counters. H.264 and HEVC (8- and 10-bit) decode in hardware; MPEG-2 and MPEG-4 fall
 back to software on Apple Silicon and say so.
@@ -511,7 +524,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 | Key | |
 |---|---|
-| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
+| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar and filmstrip; a clip's transport still floats and auto-hides, and the pointer hides with it over the video. `Esc` leaves |
 | `F3` | frame-time overlay — off at launch on Windows and macOS unless a soak is running |
 | Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves with a short outro. Switching views keeps your run and score |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
@@ -566,7 +579,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers, counts, and a path bar stay on screen. Labelled **Up** and **Root** buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
@@ -645,11 +658,27 @@ Space to jump, `Esc` to leave with a short outro); it stops presenting once the 
 soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The gallery and filmstrip accept the same drop, and you can drag a
 thumbnail or the fitted image out to Explorer.
 
-The playback transport is a **third island**: a bottom-centre strip that appears with a
-clip and goes away with it. Its height is reserved out of the canvas rectangle the same
-way the filmstrip's is, so it can never cover the video ([plan/16](plan/16-commands.md):
-do not grow an island over the canvas). Speed is owned by the core, so the dropdown and
-the keyboard cannot disagree.
+The playback transport is a **third island**: a centred bar floating over the bottom of the
+video, above the filmstrip, that appears with a clip and goes away with it. It works the
+same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
+
+- While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,
+  clicking, scrolling, a transport key (`Space`, `K`, `J`/`L`, `Q`/`E`, `,`/`.`, speed, mute,
+  `↑`/`↓` volume) or `Tab` brings it straight back.
+- It **stays up** while the clip is paused or has ended, while the pointer is over it, during
+  a scrub, while its More / speed menu is open, while it has keyboard focus, and whenever a
+  screen reader (Narrator, VoiceOver) is running. It is never shown over the gallery or
+  Settings.
+- In **fullscreen** the pointer hides with the bar while it is over the video. Windowed, the
+  system pointer is never hidden.
+- Hiding is **only visual**: the canvas does not refit, decode and audio carry on, and keys
+  keep working. A click where the hidden bar was lands on the video, not on a button you
+  cannot see. Idle playback adds one one-shot timer, not a repaint.
+
+The Mac bar fades; on Windows the island is an opaque child window, so it is moved
+off-screen instead. The bar covering the video bottom is a reversal of the old reserved
+strip ([plan/12](plan/12-decision-log.md) 2026-09-26). Speed is owned by the core, so the
+dropdown and the keyboard cannot disagree.
 
 Opening a single image lists its folder too, so `Left` / `Right` and the gallery work on the
 files beside it. Whether the filmstrip comes with it is a preference: **Settings** has
@@ -824,7 +853,7 @@ The v1 release is a **per-user** install under `%LocalAppData%\MediaViewer`, wit
 UAC** at any point. `Program Files` is not offered: a per-machine install needs elevation
 for every update, which is how update mechanisms stop working
 ([plan/13](plan/13-updates-and-telemetry.md)). There is no Microsoft Store channel — the
-app is GPL-2.0-or-later ([plan/11](plan/11-licensing.md)).
+app is GPL-3.0-or-later ([plan/11](plan/11-licensing.md)).
 
 First install is an Inno Setup wizard; every later update is Velopack, in the background,
 never re-opening the wizard.
@@ -1256,8 +1285,10 @@ machine:
 - The browse/play/pan/fullscreen/slideshow pass over a real camera dump, on the installed
   build rather than the build tree, and PR 1's present-loop verify against it.
 
-PR 8 creates no PR 15 file associations or handlers. The place they must be removed at
-uninstall is marked in `tools/package/mediaviewer.iss`.
+PR 8's wizard registers the file associations ("Open with", a Default Apps candidate) and
+removes every key on uninstall. PR 15's thumbnail handler is registered by the app on first
+start (`src/shell/shellext_install.cpp`); the wizard creates its keys so uninstall deletes them,
+and removes the versioned copies under `shellext\` (`tools/package/mediaviewer.iss`).
 
 ## Layout
 
@@ -1325,5 +1356,5 @@ native swapchain C++ owns (D3D11 on Windows), never XAML; first pixel is never t
 decode; zero dropped frames panning a cached image, measured rather than eyeballed; never
 modify an original; nothing about a user's files leaves the machine; never require a Store
 codec pack.
-GPL-2.0-or-later, see [LICENSE](LICENSE). Bundled libraries and their licences are listed in
+GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE). Bundled libraries and their licences are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md). Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "gfx/blit.h"
 
 #include <d3dcompiler.h>
@@ -40,6 +41,7 @@ cbuffer Camera : register(b0) {
   // mv_adjust on every sample; the kernel itself never reads adj1.w.
   float4 adj0;
   float4 adj1;
+  float4 theme_background;  // linear RGB, mode 0
 };
 )";
 
@@ -121,9 +123,10 @@ float4 sample_catmull(Texture2D tex, float2 uv, float2 tex_size) {
 
 // Linear values: the render target view is _SRGB and encodes on write.
 float3 background_at(float2 screen) {
-  if (background < 0.5) return float3(0.016, 0.018, 0.024);
+  if (background < 0.5) return theme_background.rgb;
   if (background < 1.5) return float3(0.214, 0.214, 0.214);
   if (background < 2.5) return float3(1.0, 1.0, 1.0);
+  if (background > 3.5) return float3(0.016, 0.018, 0.024);
   // Checkerboard: fixed 12 px cells in screen space, so it reads as "this is
   // transparency" at every zoom instead of scaling with the image.
   float2 cell = floor((screen - origin) / 12.0);
@@ -211,9 +214,10 @@ struct alignas(16) blit_cb {
   float source_size[4];
   float adj0[4];
   float adj1[4];
+  float theme_background[4];
 };
 
-static_assert(sizeof(blit_cb) == 176, "keep in sync with cbuffer Camera");
+static_assert(sizeof(blit_cb) == 192, "keep in sync with cbuffer Camera");
 
 struct alignas(16) tile_cb {
   float origin_x, origin_y;
@@ -362,6 +366,7 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   cb.clipping = p.clipping ? 1.0f : 0.0f;
   cb.time = p.time_seconds;
   cb.grid = p.pixel_grid ? 1.0f : 0.0f;
+  for (int i = 0; i < 3; ++i) cb.theme_background[i] = p.theme_background[i];
   // A zero map would sample one texel everywhere: always write it.
   cb.map0[0] = p.uv_map[0];
   cb.map0[1] = p.uv_map[1];

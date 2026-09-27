@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later
+/* Copyright (C) 2026 longtimeno-c
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Clip editing (PR 13 two-path trim, PR 14 extract & remux): the keyframe
  * index for the scrub-bar grid, and the clip job queue the Jobs pane shows.

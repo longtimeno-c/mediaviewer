@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The paths that decode: Path 2 frame-accurate re-encode on a hardware
 // encoder, frame -> PNG/JPEG, audio -> WAV/FLAC, and clip -> GIF/WebP.
 //

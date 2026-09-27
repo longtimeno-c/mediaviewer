@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Image blit, Metal twin of gfx/blit.cpp's HLSL (plan/15 "Shaders": hand-written
 // HLSL/MSL twins, same algorithm, register binding documented in a comment).
 // Single-texture path only — the tiled-pyramid path (vs_tile/ps_tile) is PR 4/7
@@ -25,8 +26,9 @@ struct blit_params_mac {
   float opacity = 1.0f;
   float origin_x = 0.0f;
   float origin_y = 0.0f;
-  // 0 canvas, 1 gray, 2 white, 3 checkerboard — same encoding as blit_params.
+  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark — same as blit_params.
   int background = 0;
+  float theme_background[3] = {0.016f, 0.018f, 0.024f};
   bool clipping = false;
   float time_seconds = 0.0f;
   bool pixel_grid = true;
@@ -44,7 +46,7 @@ struct blit_params_mac {
   float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
 };
 
-// Linear clear colour for `background` — same values as gfx::background_clear.
+// Linear clear colour for fixed backgrounds — mode 0 comes from the host.
 [[nodiscard]] constexpr float background_clear_mac(int background) noexcept {
   switch (background) {
     case 1: return 0.214f;

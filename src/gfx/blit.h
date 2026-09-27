@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Image blit: linear sample of an 8-bit sRGB texture into the 8-bit sRGB
 // swapchain. Filter follows plan/03: anisotropic/trilinear when zoomed out,
 // Catmull-Rom between 100 % and 400 %, nearest above 400 %.
@@ -31,8 +32,10 @@ struct blit_params {
   float origin_x = 0.0f;
   float origin_y = 0.0f;
   // plan/16 view overlays, all in the same draw (no extra pass):
-  // 0 canvas, 1 gray, 2 white, 3 checkerboard (the alpha case).
+  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark (the alpha case).
   int background = 0;
+  // Linear RGB for mode 0, resolved by the native host's UI thread.
+  float theme_background[3] = {0.016f, 0.018f, 0.024f};
   // Display-referred clipping blinkies; they animate on `time_seconds`.
   bool clipping = false;
   float time_seconds = 0.0f;
@@ -69,8 +72,7 @@ struct tile_quad {
   float content_h = 256.0f;
 };
 
-// Linear colour the canvas clears to for `background`, so the gutters around
-// the image match what the shader draws beside it.
+// Linear clear colour for fixed backgrounds; mode 0 is supplied by the host.
 [[nodiscard]] constexpr float background_clear(int background) noexcept {
   switch (background) {
     case 1: return 0.214f;  // sRGB 128

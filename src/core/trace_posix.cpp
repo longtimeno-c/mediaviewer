@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Darwin / POSIX trace sink. Same events as ETW, no paths, filenames, or pixels
 // (plan/13). os_signpost is the Instruments analog of PresentMon.
 #include "core/trace.h"

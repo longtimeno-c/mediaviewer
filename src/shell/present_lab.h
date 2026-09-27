@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The present lab: PR 1's instrument, and the app's actual render thread.
 //
 // plan/10-roadmap.md, PR 1: "Win32 + DComp + Dear ImGui host, D3D11 device,
@@ -348,6 +349,8 @@ class present_lab {
   // texture changed. Playing an animation must leave this where it was.
   std::uint32_t previous_image_changes_ = 0;
   std::uint8_t seen_view_flags_ = 0;
+  std::uint8_t seen_background_ = 255;
+  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
   std::int32_t seen_loupe_steps_x_ = 0;
   std::int32_t seen_loupe_steps_y_ = 0;
   std::uint32_t seen_marked_count_ = 0;

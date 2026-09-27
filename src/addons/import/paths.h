@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Path strings inside the add-on. It links no part of the core, so it keeps
 // its own two-line join rather than io/file_port.h's.
 #pragma once

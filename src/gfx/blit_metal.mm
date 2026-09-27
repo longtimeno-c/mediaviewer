@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "gfx/blit_metal.h"
 
 #import <Metal/Metal.h>
@@ -43,6 +44,7 @@ struct Camera {
   // mv_adjust, which never reads adj1.w itself.
   float4 adj0;
   float4 adj1;
+  float4 theme_background;  // linear RGB, mode 0
 };
 )";
 
@@ -86,9 +88,10 @@ static float4 sample_catmull(texture2d<float> tex, sampler samp_point, float2 uv
 }
 
 static float3 background_at(constant Camera& cam, float2 screen) {
-  if (cam.background < 0.5) return float3(0.016, 0.018, 0.024);
+  if (cam.background < 0.5) return cam.theme_background.rgb;
   if (cam.background < 1.5) return float3(0.214, 0.214, 0.214);
   if (cam.background < 2.5) return float3(1.0, 1.0, 1.0);
+  if (cam.background > 3.5) return float3(0.016, 0.018, 0.024);
   float2 cell = floor((screen - cam.origin) / 12.0);
   float odd = fmod(abs(cell.x + cell.y), 2.0);
   return odd < 0.5 ? float3(0.527, 0.527, 0.527) : float3(0.815, 0.815, 0.815);
@@ -158,9 +161,10 @@ struct alignas(16) camera_cb {
   float map1[4];
   float adj0[4];
   float adj1[4];
+  float theme_background[4];
 };
 
-static_assert(sizeof(camera_cb) == 128, "keep in sync with the MSL Camera struct");
+static_assert(sizeof(camera_cb) == 144, "keep in sync with the MSL Camera struct");
 
 }  // namespace
 
@@ -278,6 +282,7 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
   cb.clipping = p.clipping ? 1.0f : 0.0f;
   cb.time = p.time_seconds;
   cb.grid = p.pixel_grid ? 1.0f : 0.0f;
+  for (int i = 0; i < 3; ++i) cb.theme_background[i] = p.theme_background[i];
   cb.map0[0] = p.uv_map[0];
   cb.map0[1] = p.uv_map[1];
   cb.map0[2] = p.uv_map[2];

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -12,20 +13,22 @@ using Windows.Media;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// The playback transport: its own bottom island, centred, up only while a clip
-/// is open.
+/// The playback transport: its own island, a centred bar floating over the
+/// bottom of the video, up only while a clip is open.
 /// </summary>
 /// <remarks>
 /// It used to be a StackPanel inside the command bar, which put the scrubber at
 /// the top of the window and left it there — collapsed, but still holding a slot
-/// — for every photo. As a strip it follows the filmstrip's contract: native
-/// owns the geometry, the canvas rectangle shrinks by the strip height while it
-/// is up, and so the bar can never cover the video (plan/16, "do not grow an
-/// island over the canvas").
+/// — for every photo. Then it was a full-width strip the canvas shrank for.
+/// Issue #38 (plan/12 2026-09-26) made it float like the Mac's and leave after
+/// an idle interval while the clip plays: native owns the geometry and the idle
+/// rule (shell/transport_autohide.h), and parks the island — content kept —
+/// when it hides, so the canvas never refits.
 ///
 /// Show/hide is driven from here because this is where playback state is
 /// already polled: <see cref="UpdateVideoControls"/> posts
-/// <c>Command.VideoActive</c> on a change and native decides the layout.
+/// <c>Command.VideoActive</c> (0 none, 1 paused, 2 playing) on a change, and
+/// <c>Command.TransportHold</c> while a scrub or the More flyout holds it up.
 /// </remarks>
 public static partial class IslandHost
 {
@@ -40,6 +43,8 @@ public static partial class IslandHost
     private static long _loopA;
     private static long _lastScrub;
     private static bool _videoActive;
+    private static bool _videoPlaying;
+    private static bool _transportHeld;
 
     private const int TransportDip = 52;
 
@@ -90,9 +95,10 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
-            ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
-            Move(_transport, args.Width, args.Height, args.Y);
+            if (arg == IntPtr.Zero || sizeBytes < PanelArgsSize) return unchecked((int)0x80070057);
+            ChromePanelArgs args = Marshal.PtrToStructure<ChromePanelArgs>(arg);
+            // Also issue #38's park and unpark: a move, never a rebuild.
+            MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
             return 0;
         }
         catch (Exception ex)
@@ -102,17 +108,47 @@ public static partial class IslandHost
         }
     }
 
-    public static int ShowTransport(IntPtr arg, int sizeBytes) => ShowIsland(
-        arg, sizeBytes, _transport, BuildTransport,
-        onShown: () => { UpdateVideoControls(); RenderTrim(); },
-        onHidden: () =>
+    // ShowIsland's contract (build on show, drop and park on hide), with the
+    // bar's x as well: it is centred, not full width.
+    public static int ShowTransport(IntPtr arg, int sizeBytes)
+    {
+        try
         {
-            _seek = null;
-            _play = null;
-            _videoTime = null;
-            _audioTracks = null;
-            DropTrimUi();
-        });
+            if (arg == IntPtr.Zero || sizeBytes < PanelArgsSize) return unchecked((int)0x80070057);
+            if (_transport is null) return 1;
+            ChromePanelArgs args = Marshal.PtrToStructure<ChromePanelArgs>(arg);
+            if (args.Visible == 0)
+            {
+                _seek = null;
+                _play = null;
+                _videoTime = null;
+                _audioTracks = null;
+                DropTrimUi();
+                SetTransportHeld(false);
+                _transport.Content = null;
+                MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
+                return 0;
+            }
+            MoveAt(_transport, args.X, args.Y, args.Width, args.Height);
+            _transport.Content = BuildTransport();
+            UpdateVideoControls();
+            RenderTrim();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    // Tell native once per change; it keeps the bar up while this is set.
+    private static void SetTransportHeld(bool held)
+    {
+        if (held == _transportHeld) return;
+        _transportHeld = held;
+        Send(Command.TransportHold, held ? 1 : 0);
+    }
 
     public static int DetachTransport(IntPtr arg, int sizeBytes)
     {
@@ -129,6 +165,8 @@ public static partial class IslandHost
             _audioTracks = null;
             DropTrimUi();
             _videoActive = false;
+            _videoPlaying = false;
+            _transportHeld = false;
             return 0;
         }
         catch (Exception ex)
@@ -150,7 +188,7 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Center,
         };
         _seek.AddHandler(UIElement.PointerPressedEvent,
-                         new PointerEventHandler((_, _) => { _draggingSeek = true; }), true);
+                         new PointerEventHandler((_, _) => { _draggingSeek = true; SetTransportHeld(true); }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,
                          new PointerEventHandler((_, _) => { FinishSeek(); RestoreCanvasFocus(); }), true);
         _seek.PointerCaptureLost += (_, _) => FinishSeek();
@@ -204,6 +242,10 @@ public static partial class IslandHost
             Placement = FlyoutPlacementMode.Top,
             FlyoutPresenterStyle = FlyoutPresenterStyle(),
         };
+        // The flyout is its own popup: the pointer over it is not over the bar,
+        // so it holds the bar up explicitly (issue #38).
+        flyout.Opened += (_, _) => SetTransportHeld(true);
+        flyout.Closed += (_, _) => SetTransportHeld(false);
         FlyoutBase.SetAttachedFlyout(more, flyout);
         more.Click += (_, _) => FlyoutBase.ShowAttachedFlyout(more);
 
@@ -224,19 +266,17 @@ public static partial class IslandHost
         row.Children.Add(BuildTrimBar());
         row.Children.Add(more);
 
-        var root = new Grid
+        // A floating bar over the video (issue #38): hairline all round, the
+        // controls centred. The island window is rectangular, so no rounding.
+        var root = new Border
         {
             RequestedTheme = ElementTheme.Default,
             Background = Brush(Canvas),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
             Height = TransportDip,
+            Child = row,
         };
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var rule = new Border { Background = Brush(Hairline) };
-        Grid.SetRow(rule, 0);
-        root.Children.Add(rule);
-        Grid.SetRow(row, 1);
-        root.Children.Add(row);
         return root;
     }
 
@@ -244,6 +284,7 @@ public static partial class IslandHost
     {
         if (!_draggingSeek || _seek is null) return;
         _draggingSeek = false;
+        SetTransportHeld(false);
         _folderSession?.VideoSeek((long)(_seek.Value * 1e9), true);
     }
 
@@ -304,14 +345,17 @@ public static partial class IslandHost
         var info = _folderSession.VideoInfo;
         uint state = _folderSession.VideoState;
         bool video = info.Width > 0 && state != 0;
+        bool playing = video && state == 1;
 
-        // Auto show/hide. Native owns the geometry (and the canvas rectangle it
-        // steals from), so this reports the fact and does not move a window.
-        if (video != _videoActive)
+        // Auto show/hide. Native owns the geometry and the idle rule, so this
+        // reports the facts and does not move a window. Playing vs paused rides
+        // on the same notification: pause and the end bring the bar back.
+        if (video != _videoActive || playing != _videoPlaying)
         {
+            if (video != _videoActive) SetSpeedVisible(video);
             _videoActive = video;
-            Send(Command.VideoActive, video ? 1 : 0);
-            SetSpeedVisible(video);
+            _videoPlaying = playing;
+            Send(Command.VideoActive, video ? (playing ? 2 : 1) : 0);
         }
         if (_smtc is not null) _smtc.IsEnabled = video;
         if (!video) return;

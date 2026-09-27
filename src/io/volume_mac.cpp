@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // macOS half of the volume port (io/volume.h): statfs + DiskArbitration.
 //
 // plan/18 names NSWorkspace mount notifications for arrival. DiskArbitration's

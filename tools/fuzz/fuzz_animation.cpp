@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // libFuzzer harness: open_animation (GIF, WebP, APNG, HEIC, AVIF by magic),
 // stepping frames, rewinding, and decode_animation under a small byte budget.
 #include "fuzz_common.h"

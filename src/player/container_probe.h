@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5 — is this file a clip we can open?
 //
 // CLAUDE.md: "Probe by magic bytes, never extension." A camera dump is full of

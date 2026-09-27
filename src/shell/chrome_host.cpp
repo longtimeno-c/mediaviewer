@@ -1,6 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/chrome_host.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -273,6 +275,8 @@ expected chrome_host::load() noexcept {
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
+  // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
+  share_files_ = get_entry(L"ShareFiles");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -343,6 +347,15 @@ bool chrome_host::cursor_over_island() const noexcept {
     if (::GetWindowRect(root, &r) && ::PtInRect(&r, pt)) return true;
   }
   return false;
+}
+
+bool chrome_host::cursor_over_transport() const noexcept {
+  POINT pt{};
+  if (!::GetCursorPos(&pt)) return false;
+  const HWND root = island_hwnds_[static_cast<int>(focus_kind::transport)];
+  if (!root || !::IsWindowVisible(root)) return false;
+  RECT r{};
+  return ::GetWindowRect(root, &r) && ::PtInRect(&r, pt);
 }
 
 focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
@@ -506,7 +519,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
     show_gallery(false, width, client_height, dpi);
     return;
   }
-  const int bar = chrome_bar_height_px(dpi, path_row_);
+  const int bar = chrome_bar_height_px(dpi);
   chrome_resize_args args{};
   args.width = width;
   args.height = client_height > bar ? client_height - bar : 1;
@@ -518,7 +531,7 @@ void chrome_host::resize_gallery(int width, int client_height, std::uint32_t dpi
 void chrome_host::show_gallery(bool visible, int width, int client_height,
                                std::uint32_t dpi) noexcept {
   if (!gallery_attached_ || !show_gallery_) return;
-  const int bar = chrome_bar_height_px(dpi, path_row_);
+  const int bar = chrome_bar_height_px(dpi);
   chrome_show_args args{};
   args.visible = visible ? 1 : 0;
   args.width = visible ? width : 1;
@@ -528,14 +541,30 @@ void chrome_host::show_gallery(bool visible, int width, int client_height,
   gallery_visible_ = visible;
 }
 
-// The transport stacks ON TOP of the filmstrip, not over it: `filmstrip_px` is
-// the bottom chrome already spoken for, and the strip's top edge is measured up
-// from there. Native owns this maths for the same reason it owns the
+// The transport floats over the bottom of the canvas (issue #38), centred and
+// above the filmstrip, never over it: `filmstrip_px` is the bottom chrome
+// already spoken for. Native owns this maths for the same reason it owns the
 // filmstrip's — the island must never have to guess where "offscreen" is.
 namespace {
-int transport_top(int client_height, int filmstrip_px, int strip) noexcept {
-  const int bottom = client_height - filmstrip_px;
-  return bottom > strip ? bottom - strip : 0;
+int dip_px(int dip, std::uint32_t dpi) noexcept {
+  if (dpi == 0) dpi = 96;
+  return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96);
+}
+
+chrome_panel_args transport_rect(bool visible, bool parked, int width, int client_height,
+                                 int filmstrip_px, std::uint32_t dpi) noexcept {
+  chrome_panel_args args{};
+  args.visible = visible ? 1 : 0;
+  const int strip = chrome_transport_height_px(dpi);
+  const int bar = std::max(1, std::min(dip_px(kTransportMaxWidthDip, dpi),
+                                       width - 2 * dip_px(kTransportSideDip, dpi)));
+  args.width = visible ? bar : 1;
+  args.height = visible ? strip : 1;
+  args.x = visible ? std::max(0, (width - bar) / 2) : 0;
+  const int bottom = client_height - filmstrip_px - dip_px(kTransportMarginDip, dpi);
+  // Parked (hidden, or auto-hidden) is one client height down: off screen.
+  args.y = visible && !parked ? std::max(0, bottom - strip) : client_height;
+  return args;
 }
 }  // namespace
 
@@ -576,26 +605,26 @@ void chrome_host::resize_transport(int width, int client_height, int filmstrip_p
     show_transport(false, width, client_height, filmstrip_px, dpi);
     return;
   }
-  const int strip = chrome_transport_height_px(dpi);
-  chrome_resize_args args{};
-  args.width = width;
-  args.height = strip;
-  args.dpi = static_cast<std::int32_t>(dpi);
-  args.y = transport_top(client_height, filmstrip_px, strip);
+  chrome_panel_args args =
+      transport_rect(true, transport_parked_, width, client_height, filmstrip_px, dpi);
   (void)resize_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_transport(bool visible, int width, int client_height, int filmstrip_px,
                                  std::uint32_t dpi) noexcept {
   if (!transport_attached_ || !show_transport_) return;
-  const int strip = chrome_transport_height_px(dpi);
-  chrome_show_args args{};
-  args.visible = visible ? 1 : 0;
-  args.width = visible ? width : 1;
-  args.height = visible ? strip : 1;
-  args.y = visible ? transport_top(client_height, filmstrip_px, strip) : client_height;
+  // A clip arrives with its controls up; the auto-hide rule parks them later.
+  transport_parked_ = false;
+  chrome_panel_args args = transport_rect(visible, false, width, client_height, filmstrip_px, dpi);
   (void)show_transport_(&args, static_cast<std::int32_t>(sizeof(args)));
   transport_visible_ = visible;
+}
+
+void chrome_host::park_transport(bool parked, int width, int client_height, int filmstrip_px,
+                                 std::uint32_t dpi) noexcept {
+  if (!transport_attached_ || !transport_visible_ || transport_parked_ == parked) return;
+  transport_parked_ = parked;
+  resize_transport(width, client_height, filmstrip_px, dpi);
 }
 
 void chrome_host::apply_settings(std::int32_t flags, std::int32_t sort) noexcept {
@@ -774,6 +803,19 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
+bool chrome_host::share_files(HWND window, const std::string& paths_json) noexcept {
+  if (!attached_ || !share_files_ || !window || paths_json.empty()) return false;
+  // { int64 hwnd; int32 byte count; int32 reserved; UTF-8 JSON }, mirrored by
+  // IslandHost.ShareFiles.
+  std::vector<std::uint8_t> buf(16 + paths_json.size());
+  const auto hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
+  const auto len = static_cast<std::int32_t>(paths_json.size());
+  std::memcpy(buf.data(), &hwnd, 8);
+  std::memcpy(buf.data() + 8, &len, 4);
+  std::memcpy(buf.data() + 16, paths_json.data(), paths_json.size());
+  return share_files_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
 void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) noexcept {
   if (!attached_ || !show_import_) return;
   // { int32 kind; int32 byte count; UTF-8 JSON }, mirrored by IslandHost.ShowImport.
@@ -803,7 +845,6 @@ void chrome_host::apply_browse(std::int32_t folder_cursor, bool can_go_up,
                                const std::string& crumbs, bool finding,
                                const std::string& query) noexcept {
   if (!attached_ || !apply_browse_) return;
-  path_row_ = !crumbs.empty();
   chrome_browse_args args{};
   args.folder_cursor = folder_cursor;
   args.can_go_up = can_go_up ? 1 : 0;

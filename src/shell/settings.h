@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Persisted view preferences for the Windows host.
 //
 // These are host chrome preferences, not core state: which strips the shell
@@ -29,7 +30,7 @@ inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
 inline constexpr std::int32_t kSettingWrap = 1 << 2;  // plan/16: wrap at folder ends
 inline constexpr std::int32_t kSettingStickyZoom = 1 << 3;
 inline constexpr std::int32_t kSettingBackgroundShift = 4;
-inline constexpr std::int32_t kSettingBackgroundMask = 3 << kSettingBackgroundShift;
+inline constexpr std::int32_t kSettingBackgroundMask = 7 << kSettingBackgroundShift;
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
 // its 112 DIP. Opening one image is a viewing intent: the folder is still
@@ -42,7 +43,7 @@ struct view_settings {
   // first. On by default (plan/16).
   bool wrap = true;
   bool sticky_zoom = false;
-  std::uint8_t background = 0;  // 0 canvas, 1 gray, 2 white, 3 checkerboard
+  std::uint8_t background = 0;  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
   // PR 9: the folder sort, packed by io::pack_sort (key in bits 0-2, descending
   // in bit 3). Not part of flags(): the chrome gets it beside them.
   std::int32_t sort = 0;
@@ -52,7 +53,7 @@ struct view_settings {
            (filmstrip_for_image ? kSettingFilmstripImage : 0) |
            (wrap ? kSettingWrap : 0) |
            (sticky_zoom ? kSettingStickyZoom : 0) |
-           ((static_cast<std::int32_t>(background) & 3) << kSettingBackgroundShift);
+           ((static_cast<std::int32_t>(background <= 4 ? background : 0)) << kSettingBackgroundShift);
   }
 
   [[nodiscard]] static view_settings from_flags(std::int32_t flags) noexcept {
@@ -61,7 +62,8 @@ struct view_settings {
     s.filmstrip_for_image = (flags & kSettingFilmstripImage) != 0;
     s.wrap = (flags & kSettingWrap) != 0;
     s.sticky_zoom = (flags & kSettingStickyZoom) != 0;
-    s.background = static_cast<std::uint8_t>((flags & kSettingBackgroundMask) >> kSettingBackgroundShift);
+    const auto background = (flags & kSettingBackgroundMask) >> kSettingBackgroundShift;
+    s.background = static_cast<std::uint8_t>(background <= 4 ? background : 0);
     return s;
   }
 };
@@ -91,6 +93,14 @@ inline constexpr std::size_t kMaxDestinations = 5;
 void save_destinations(settings_store& store, const std::vector<std::string>& list) noexcept;
 [[nodiscard]] std::vector<std::string> load_destinations() noexcept;
 void save_destinations(const std::vector<std::string>& list) noexcept;
+
+// PR 15: the jump list's recent folders, most recent first, at most
+// kMaxRecentFolders (os_integration.h, which also owns the MRU rule). Local
+// only, like the destinations: a jump list never leaves the machine.
+[[nodiscard]] std::vector<std::string> load_recent_folders(const settings_store& store) noexcept;
+void save_recent_folders(settings_store& store, const std::vector<std::string>& list) noexcept;
+[[nodiscard]] std::vector<std::string> load_recent_folders() noexcept;
+void save_recent_folders(const std::vector<std::string>& list) noexcept;
 
 // Pure: the list after `utf8_dir` was used. Moves it to the front, drops an
 // earlier spelling of the same folder (Windows paths ignore ASCII case and a

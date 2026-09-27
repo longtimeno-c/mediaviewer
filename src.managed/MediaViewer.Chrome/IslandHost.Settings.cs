@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
@@ -72,16 +73,17 @@ public static partial class IslandHost
             Foreground = Brush(Title),
             Width = 180,
         };
-        _background.Items.Add("Dark");
+        _background.Items.Add("System");
         _background.Items.Add("Grey");
         _background.Items.Add("White");
         _background.Items.Add("Checkerboard");
+        _background.Items.Add("Dark");
         _background.SelectedIndex = (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
         _background.SelectionChanged += (_, _) =>
         {
             if (_updatingSettingsUi || _background.SelectedIndex < 0) return;
             int next = (_settingFlags & ~SettingFlag.BackgroundMask) |
-                       ((_background.SelectedIndex & 3) << SettingFlag.BackgroundShift);
+                       (_background.SelectedIndex << SettingFlag.BackgroundShift);
             Send(Command.SetSettings, next);
         };
 
@@ -358,7 +360,7 @@ public static partial class IslandHost
                 _settingsHost.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _settingsHost.VerticalAlignment = VerticalAlignment.Stretch;
                 Grid.SetRow(_settingsHost, 0);
-                Grid.SetRowSpan(_settingsHost, 4);
+                Grid.SetRowSpan(_settingsHost, 3);
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();

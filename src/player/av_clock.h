@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5b — the A/V clock. plan/05: "Budget 2-4 weeks and treat it as a
 // first-class subsystem, not glue."
 //
@@ -162,6 +163,14 @@ class av_clock {
   // [decode-thread][no-block] False when the ring is full; the caller backs off
   // rather than blocking.
   [[nodiscard]] bool submit(const audio_block& block) noexcept;
+
+  // [decode-thread][no-block] Every block of `generation` has been submitted.
+  // Once the pump has handed the last of them to the endpoint, the host clock
+  // continues from the audio clock's position. A starved endpoint holds its
+  // position (Core Audio's played_ns does, by design), so without this the clock
+  // freezes at the last sample: video longer than its audio stalls, and a clip
+  // never reaches its duration, so it never reports ended (issue #43).
+  void audio_ended(std::uint32_t generation) noexcept;
 
   // [any-thread][no-block] The master clock: stream-relative ns, rate-scaled.
   [[nodiscard]] time_ns now_ns() const noexcept;

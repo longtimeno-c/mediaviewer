@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The clock's behaviour against a FAKE endpoint.
 //
 // Two of the three clauses in PR 5b's verify line — "unplugging the audio device
@@ -343,6 +344,72 @@ TEST_CASE("the ring reports full rather than blocking the decoder", "[clock]") {
   }
   INFO("ring accepted " << accepted << " of " << audio_ring_slots * 4 << " blocks");
   CHECK(accepted < static_cast<int>(audio_ring_slots) * 4);
+
+  clock.stop();
+}
+
+TEST_CASE("a track that has played out hands the clock to the host", "[clock]") {
+  // Issue #43. A starved endpoint holds its position — the test above requires
+  // it — so once the last sample has played the clock would freeze there. Video
+  // longer than its audio would stall, and a clip whose duration runs past its
+  // last sample would never reach it and never report ended.
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+
+  REQUIRE(clock.submit(make_block(0)));
+  REQUIRE(wait_until([&] { return sink->frames_taken.load() > 0; }));
+  sink->position_ns.store(ns_per_second);
+  CHECK(clock.stats().audio_master);
+
+  // The decoder has submitted everything. The endpoint now holds at 1 s.
+  clock.audio_ended(0);
+  REQUIRE(wait_until([&] { return !clock.stats().audio_master; }));
+  CHECK(clock.stats().fallback == clock_fallback_reason::audio_ended);
+  const auto silence_before = clock.stats().counters.silence_fills;
+
+  const time_ns handed_over = clock.now_ns();
+  CHECK(static_cast<double>(handed_over) / ns_per_second == Approx(1.0).margin(0.05));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  const time_ns later = clock.now_ns();
+  INFO("clock moved " << (later - handed_over) << " ns after the track ended");
+  CHECK(later - handed_over > 150 * 1'000'000);  // keeps pace, does not freeze
+  CHECK(later - handed_over < 400 * 1'000'000);
+  // Running out of audio at the end is not an underrun.
+  CHECK(clock.stats().counters.silence_fills == silence_before);
+
+  clock.stop();
+}
+
+TEST_CASE("an ended track only ends its own generation", "[clock]") {
+  // A seek (Space at EOF restarts from 0) hands the clock back to the endpoint,
+  // and a late end-of-audio from before the seek must not take it away again.
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+
+  REQUIRE(clock.submit(make_block(0)));
+  REQUIRE(wait_until([&] { return sink->frames_taken.load() > 0; }));
+  clock.audio_ended(0);
+  REQUIRE(wait_until([&] { return !clock.stats().audio_master; }));
+
+  clock.seeked(0, /*generation=*/1);
+  REQUIRE(wait_until([&] { return clock.stats().audio_master; }));
+  CHECK(clock.stats().fallback == clock_fallback_reason::none);
+
+  clock.audio_ended(0);  // stale: generation 0 is gone
+  const auto taken = sink->frames_taken.load();
+  REQUIRE(clock.submit(make_block(0, /*generation=*/1)));
+  REQUIRE(wait_until([&] { return sink->frames_taken.load() > taken; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  CHECK(clock.stats().audio_master);
+
+  // Master again means frozen with the endpoint, as it should be.
+  const time_ns anchored = clock.now_ns();
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  CHECK(std::llabs(clock.now_ns() - anchored) < 5 * 1'000'000);
 
   clock.stop();
 }

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // mv_minidump_scrub — run the app's privacy scrub (src/shell/minidump_scrub)
 // on one dump, outside the app. For the PR 7 verify and the PR 15 upload step.
 //
