@@ -3942,9 +3942,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   long long bestVersion = -1;
   for (id r in (NSArray*)root) {
     if (![r isKindOfClass:[NSDictionary class]]) continue;
-    id draft = r[@"draft"];
+    NSDictionary* release = (NSDictionary*)r;
+    id draft = release[@"draft"];
     if ([draft isKindOfClass:[NSNumber class]] && [draft boolValue]) continue;
-    id tag = r[@"tag_name"];
+    id tag = release[@"tag_name"];
     if (![tag isKindOfClass:[NSString class]] || ![tag hasPrefix:@"v"]) continue;
     NSArray<NSString*>* parts = [[tag substringFromIndex:1] componentsSeparatedByString:@"."];
     if (parts.count < 3) continue;
@@ -3957,11 +3958,13 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       version = version * 1000000 + n;
     }
     if (!ok || version <= bestVersion) continue;
-    id assets = r[@"assets"];
+    id assets = release[@"assets"];
     if (![assets isKindOfClass:[NSArray class]]) continue;
     for (id a in (NSArray*)assets) {
-      if (![a isKindOfClass:[NSDictionary class]] || ![a[@"name"] isEqual:@"appcast.xml"]) continue;
-      id url = a[@"browser_download_url"];
+      if (![a isKindOfClass:[NSDictionary class]]) continue;
+      NSDictionary* asset = (NSDictionary*)a;
+      if (![asset[@"name"] isEqual:@"appcast.xml"]) continue;
+      id url = asset[@"browser_download_url"];
       if ([url isKindOfClass:[NSString class]] && [url hasPrefix:prefix]) {
         best = url;
         bestVersion = version;

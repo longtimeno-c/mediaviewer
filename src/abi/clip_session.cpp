@@ -136,7 +136,7 @@ void clip_session::index_worker() noexcept {
 }
 
 bool clip_session::to_request(const mv_clip_request& in, std::string source, clip::request& out) noexcept {
-  // 0.10 callers end at `reserved`; 0.12 added the ranges.
+  // 0.10 callers end at `reserved`; 0.13 added the ranges.
   constexpr std::size_t kV10 = offsetof(mv_clip_request, ranges_ns);
   if (in.struct_size < kV10) return false;
   const bool v12 = in.struct_size >= sizeof(mv_clip_request);

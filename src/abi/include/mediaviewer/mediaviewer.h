@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 12 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: PR 30 keep_ranges */
+#define MV_ABI_VERSION_MINOR 13 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -67,7 +67,14 @@ typedef enum mv_status {
   MV_ERR_CORRUPT = 5,
   MV_ERR_CANCELLED = 6,
   MV_ERR_DEVICE_LOST = 7,
-  MV_ERR_INTERNAL = 8
+  MV_ERR_INTERNAL = 8,
+  /* Added for issue #42 (Import eject error categories); mv::status in
+   * core/status.h mirrors these values exactly. */
+  MV_ERR_BUSY = 9,             /* an active job or another process holds it open */
+  MV_ERR_NOT_REMOVABLE = 10,   /* eject offered/attempted on a fixed or network volume */
+  MV_ERR_PERMISSION_DENIED = 11,
+  MV_ERR_NOT_FOUND = 12,       /* the volume or device is already gone */
+  MV_ERR_TIMEOUT = 13
 } mv_status;
 
 /* Stable, allocation-free name for a status. Points at a string literal that

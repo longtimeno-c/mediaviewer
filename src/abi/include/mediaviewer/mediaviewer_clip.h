@@ -3,7 +3,7 @@
  *
  * Clip editing (PR 13 two-path trim, PR 14 extract & remux): the keyframe
  * index for the scrub-bar grid, and the clip job queue the Jobs pane shows.
- * plan/08-video-editing.md, plan/14-abi.md. ABI 0.10; 0.12 adds KEEP_RANGES
+ * plan/08-video-editing.md, plan/14-abi.md. ABI 0.10; 0.13 adds KEEP_RANGES
  * (plan/21, the Video Editor).
  *
  * Same rules as mediaviewer.h: opaque session, POD structs with explicit
@@ -47,7 +47,7 @@ typedef enum mv_clip_op {
   MV_CLIP_FRAME = 7,          /* the frame at in_ns as PNG / JPEG */
   MV_CLIP_AUDIO = 8,          /* first audio track: copy / WAV / FLAC */
   MV_CLIP_ANIMATION = 9,      /* [in, out) as GIF / WebP, at most 60 s */
-  MV_CLIP_KEEP_RANGES = 10    /* ABI 0.12: ranges_ns pairs, in order, in one file (keyframe cuts) */
+  MV_CLIP_KEEP_RANGES = 10    /* ABI 0.13: ranges_ns pairs, in order, in one file (keyframe cuts) */
 } mv_clip_op;
 
 typedef enum mv_clip_job_state {
@@ -73,7 +73,7 @@ typedef struct mv_clip_request {
   uint32_t animation_width;   /* long edge, 0 = 480 */
   uint32_t animation_fps;     /* 0 = 15 */
   uint32_t reserved;
-  /* ABI 0.12 (PR 30). KEEP_RANGES: range_count [in, out) pairs, flattened
+  /* ABI 0.13 (PR 30). KEEP_RANGES: range_count [in, out) pairs, flattened
    * (in0, out0, in1, out1, ...), ascending; out < 0 = the end. Read during
    * the call only. A request of the 0.10 size is still accepted. */
   const int64_t* ranges_ns;

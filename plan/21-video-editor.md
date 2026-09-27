@@ -56,7 +56,7 @@ keyframed effects, compositing, multicam or third-party plug-ins.
 |---|---|
 | The cut list: pieces of one clip, split / delete / set in / set out, undo / redo, source ↔ program clocks, where playback jumps | `shell/video_timeline.{h,cpp}` (shared, tested) |
 | The timeline strip: keyframe thumbnails (sRGB, display rotation, HDR tone-mapped like the canvas) and an audio peak envelope | `edit/clip_strip.h`, in `edit/clip_encode.cpp` (tested) |
-| Export: `clip::op::keep_ranges` — the pieces in one file, cut on keyframes (packets copied, instant), or *exact* (every piece decoded and re-encoded on the hardware encoder, in the `MediaViewerClipJob` helper) | `edit/clip_run.cpp`, `clip_encode.cpp` (the Path 2 loop, generalised to pieces); ABI 0.12 appends `ranges_ns` / `range_count` to `mv_clip_request` |
+| Export: `clip::op::keep_ranges` — the pieces in one file, cut on keyframes (packets copied, instant), or *exact* (every piece decoded and re-encoded on the hardware encoder, in the `MediaViewerClipJob` helper) | `edit/clip_run.cpp`, `clip_encode.cpp` (the Path 2 loop, generalised to pieces); ABI 0.13 appends `ranges_ns` / `range_count` to `mv_clip_request` |
 | The window: the canvas **moves into its preview** while it is open (one canvas, one CAMetalLayer, one present path, rule 2) and back when it closes; the viewer shows where it went | `main_mac.mm` (`setEditorOpen:`, `moveCanvasToEditor:`) |
 | Playback over the edit: a 60 Hz main-thread tick jumps the player over each cut and pauses at the end | `main_mac.mm` (`editorFollowPlayback`) |
 | The timeline UI: transport, timecode, cut tools, thumbnail and waveform tracks, a draggable playhead, piece selection, Export / Export exact, keyboard-complete | `VideoEditorView.swift` |
@@ -74,7 +74,7 @@ does, so a join can carry up to a packet of the cut's audio. The timeline fits t
 
 ## What was built (PR 30, Windows, 2026-09-27)
 
-The WinUI twin, on the same shared core (`video_timeline`, `clip_strip`, `keep_ranges`, ABI 0.12):
+The WinUI twin, on the same shared core (`video_timeline`, `clip_strip`, `keep_ranges`, ABI 0.13):
 
 | Piece | Code |
 |---|---|

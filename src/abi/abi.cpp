@@ -64,6 +64,13 @@ static_assert(static_cast<int>(mv::status::corrupt) == MV_ERR_CORRUPT, "mv_statu
 static_assert(static_cast<int>(mv::status::cancelled) == MV_ERR_CANCELLED, "mv_status drift");
 static_assert(static_cast<int>(mv::status::device_lost) == MV_ERR_DEVICE_LOST, "mv_status drift");
 static_assert(static_cast<int>(mv::status::internal) == MV_ERR_INTERNAL, "mv_status drift");
+static_assert(static_cast<int>(mv::status::busy) == MV_ERR_BUSY, "mv_status drift");
+static_assert(static_cast<int>(mv::status::not_removable) == MV_ERR_NOT_REMOVABLE,
+              "mv_status drift");
+static_assert(static_cast<int>(mv::status::permission_denied) == MV_ERR_PERMISSION_DENIED,
+              "mv_status drift");
+static_assert(static_cast<int>(mv::status::not_found) == MV_ERR_NOT_FOUND, "mv_status drift");
+static_assert(static_cast<int>(mv::status::timeout) == MV_ERR_TIMEOUT, "mv_status drift");
 
 static_assert(sizeof(mv_completion) == 40, "mv_completion layout is part of the ABI");
 static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the ABI");
@@ -71,7 +78,7 @@ static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the 
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
-// ABI 0.12 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
+// ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
 static_assert(sizeof(mv_clip_request) == 56, "mv_clip_request layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, in_ns) == 8, "mv_clip_request layout is part of the ABI");
