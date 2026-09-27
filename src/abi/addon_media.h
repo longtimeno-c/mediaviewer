@@ -8,9 +8,11 @@
 // no GPU, no OS UI. Worker threads only: every call reads and decodes.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "addon/media.h"
 #include "core/result.h"
@@ -27,6 +29,12 @@ namespace media {
 // looks one up (status::io on a miss). Returns the JPEG's path.
 [[nodiscard]] result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
                                                    const rgb_image* image);
+// The JPEG-512 bytes (cache spec) of the frame on screen at `pts_ms`: one
+// software decode from the keyframe before it. For a host that keeps the row
+// in its own store under image::moment_thumb_key (a result list's clip tile
+// whose moment the pack has not thumbed). `cancel` is polled when given.
+[[nodiscard]] result<std::vector<std::uint8_t>> encode_moment_thumb(
+    const std::string& path, std::int64_t pts_ms, const std::atomic<bool>* cancel = nullptr);
 [[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
                                                                std::uint32_t sample_rate,
                                                                std::int64_t start_ms);

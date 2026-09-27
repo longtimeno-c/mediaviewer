@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "abi/addon_bridge.h"
+#include "abi/addon_media.h"
 #include "abi/animation_session.h"
 #include "abi/clip_session.h"
 #include "abi/folder_reselect.h"
@@ -464,24 +465,64 @@ bool video_path(const std::string& path) {
   auto head = mv::io::read_prefix(path, mv::player::probe_bytes);
   return head && mv::player::is_video(mv::player::probe(head.value()));
 }
+// Milestone H, rule 3 for a clip landing on a moment: its cached JPEG-512 (the
+// moment's row, else the clip's poster) goes up as a preview of the item while
+// the clip opens and decodes forward to the sought frame, which replaces it. A
+// cache lookup and a 512-px decode; nothing cached, nothing shown early.
+void publish_clip_placeholder(mv_session* session, const std::string& path, std::int64_t moment_ms,
+                              std::int64_t mtime_unix, std::uint64_t size,
+                              const mv::job_context& ctx) {
+  if (!session->thumbs.is_open()) return;
+  std::string file;
+  if (auto mhit = session->thumbs.lookup(
+          mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size));
+      mhit && !mhit.value().empty()) {
+    file = std::move(mhit).value();
+  } else if (auto phit = session->thumbs.lookup(mv::image::thumb_key{path, mtime_unix, size});
+             phit && !phit.value().empty()) {
+    file = std::move(phit).value();
+  }
+  if (file.empty() || ctx.cancelled()) return;
+  auto bytes = mv::io::read_all(file);
+  if (!bytes || ctx.cancelled()) return;
+  auto decoded = mv::image::decode_bytes(bytes.value(), &ctx, 1);
+  if (!decoded) return;
+  auto dev = session->copy_device();
+  if (!dev) return;
+  auto uploaded = mv::image::upload(dev.Get(), decoded.value(), ctx.gen(), &ctx, 1);
+  if (!uploaded) return;
+  auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+  gpu->quality = mv::image::gpu_quality::preview;
+  std::lock_guard lock(session->image_mutex);
+  if (ctx.gen() != session->jobs.current_generation()) return;
+  // session->info is left as it was: the placeholder is not the clip's size.
+  publish_locked(session, key_for(path), session->info, nullptr, std::move(gpu));
+}
+
 status open_video_worker(mv_session* session, const std::string& path, const mv::job_context& ctx) {
   auto device = session->copy_device();
   if (!device) return status::device_lost;
+  // Milestone H: a clip opened from search results lands paused on its moment
+  // (plan/17 "Enter on a video tile opens the clip and seeks to that PTS").
+  std::int64_t moment_ms = -1;
+  std::int64_t item_mtime = 0;
+  std::uint64_t item_size = 0;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_is_list && session->folder_selected < session->folder_items.size() &&
+        session->folder_items[session->folder_selected].path == path) {
+      const auto& selected_item = session->folder_items[session->folder_selected];
+      moment_ms = selected_item.moment_ms;
+      item_mtime = selected_item.mtime_unix;
+      item_size = selected_item.size;
+    }
+  }
+  if (moment_ms >= 0) publish_clip_placeholder(session, path, moment_ms, item_mtime, item_size, ctx);
   auto result = mv::player::open_media(path.c_str(), device.Get());
   if (!result) return result.error();
   auto* source = result.value();
   if (ctx.cancelled()) { mv::player::close_media(source); return status::cancelled; }
   const auto info = source->info();
-  // Milestone H: a clip opened from search results lands paused on its moment
-  // (plan/17 "Enter on a video tile opens the clip and seeks to that PTS").
-  std::int64_t moment_ms = -1;
-  {
-    std::lock_guard lock(session->folder_mutex);
-    if (session->folder_is_list && session->folder_selected < session->folder_items.size() &&
-        session->folder_items[session->folder_selected].path == path) {
-      moment_ms = session->folder_items[session->folder_selected].moment_ms;
-    }
-  }
   session->video.publish(source, ctx.gen());
   if (moment_ms >= 0) {
     const std::int64_t at_ns = moment_ms * 1'000'000;
@@ -624,6 +665,32 @@ void submit_thumb_at(mv_session* session, uint32_t index) {
       [session, item, index, folder_gen](const mv::job_context& ctx) -> status {
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
+        }
+        // Milestone H: a result list's clip tile shows its matched moment (the
+        // pack's `path#t=ms` row, image/thumb.h), made here from that one frame
+        // when the pack has not stored it; the poster below if it cannot be.
+        if (item.moment_ms >= 0 && video_path(item.path)) {
+          const mv::image::thumb_key mkey =
+              mv::image::moment_thumb_key(item.path, item.moment_ms, item.mtime_unix, item.size);
+          std::string moment_file;
+          if (auto mhit = session->thumbs.lookup(mkey); mhit && !mhit.value().empty()) {
+            moment_file = std::move(mhit).value();
+          } else if (auto frame = mv::addon::media::encode_moment_thumb(item.path, item.moment_ms)) {
+            if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+              return status::cancelled;
+            }
+            if (auto mstored = session->thumbs.store(mkey, frame.value())) {
+              moment_file = std::move(mstored).value();
+            }
+          }
+          if (!moment_file.empty()) {
+            std::lock_guard lock(session->folder_mutex);
+            if (index < session->folder_items.size() &&
+                session->folder_items[index].path == item.path) {
+              session->folder_items[index].thumb_path = std::move(moment_file);
+            }
+            return status::ok;
+          }
         }
         mv::image::thumb_key key{item.path, item.mtime_unix, item.size};
         if (auto hit = session->thumbs.lookup(key)) {

@@ -301,5 +301,8 @@ private struct GalleryCell: View {
         .frame(width: size)
     }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
+    // Cells are identified by index: a new listing (a result list replacing
+    // the folder) reuses them without a fresh onAppear, so ask again.
+    .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }

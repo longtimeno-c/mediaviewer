@@ -496,7 +496,7 @@ first; turn that off under Settings.
 | `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` focuses the search bar at the top of the grid. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
-| `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
+| `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
 
 **Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the

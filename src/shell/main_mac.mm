@@ -2331,6 +2331,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     return;
   }
   _options.jobs = &_jobs;
+  // Milestone H: a clip opened on its moment shows its cached thumbnail first.
+  // _folder lives as long as the process (MvLabApp is never destroyed).
+  {
+    const mv::shell::folder_model* folder = &_folder;
+    _options.clip_thumb = [folder](const std::string& path, std::int64_t mtime, std::uint64_t size,
+                                   std::int64_t moment_ms) {
+      return folder->cached_clip_thumb(path, mtime, size, moment_ms);
+    };
+  }
   if (auto started = _lab.start((__bridge void*)self.view, _options); !started) {
     MV_LOG_ERROR("present lab failed to start");
     [NSApp terminate:nil];
@@ -3266,6 +3275,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // for, which is exactly why mv_chrome_bridge.h keys the callback by name
   // rather than by the index this request started at.
   const std::string name = [self displayNameAt:static_cast<std::size_t>(index)];
+  // Milestone H: a result list's clip tile shows its matched moment.
+  const auto at = static_cast<std::size_t>(index);
+  const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
   _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
                         [name](std::string /*path_utf8*/, std::string thumb_path) {
                           dispatch_async(dispatch_get_main_queue(), ^{
@@ -3274,7 +3286,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                                       ? nullptr
                                                                       : thumb_path.c_str());
                           });
-                        });
+                        },
+                        moment);
 }
 
 - (BOOL)filmstripVisible {
@@ -4432,6 +4445,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
+  // Milestone H: Esc from a result list is the path bar's "Back to folder".
+  s.list_open = _listOpen;
   return s;
 }
 
@@ -4578,6 +4593,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
           ++_snap.game_exit_seq;
           [self pokeSnapshot];
           break;
+        case mv::shell::back_target::result_list: [self closeList]; break;
         default: break;
       }
       return YES;
@@ -7258,6 +7274,10 @@ static std::uint64_t MvNowMs() {
   (void)notification;
   _snap.window_active = true;
   [self.view publish];
+  // The render thread presents only while the window is key (present_policy).
+  // What landed while another window was (the search panel: a clip opened on
+  // its moment, a still) is owed a frame now, not at the next key press.
+  _lab.wake();
 }
 - (void)windowDidResignKey:(NSNotification*)notification {
   (void)notification;

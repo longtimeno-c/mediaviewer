@@ -49,6 +49,8 @@ constexpr binding kBindings[] = {
     row(key::end, mod_none, kWalk, edge, last),
     row(key::page_up, mod_none, kWalk, repeat, skip_back),
     row(key::page_down, mod_none, kWalk, repeat, skip_forward),
+    // Esc walks out (key_router's resolve_back): ... gallery, fullscreen, the
+    // canvas, and last a result list's "Back to folder" (Milestone H).
     row(key::escape, mod_none, kAllModes, edge, back),
     row(key::f5, mod_none, kBrowse | kVideo, edge, slideshow_start),
     row(C('F'), mod_none, kAllModes, edge, fullscreen),

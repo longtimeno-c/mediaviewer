@@ -175,6 +175,10 @@ final class FolderStore: ObservableObject {
     if index != currentIndex {
       currentIndex = index
       prefetch(around: index)
+    } else if listingChanged {
+      // A new listing at the same index (a result list over a folder whose
+      // first item was selected) still wants its neighbours warm.
+      prefetch(around: index)
     }
   }
 

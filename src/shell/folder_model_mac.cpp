@@ -4,6 +4,8 @@
 
 #include <utility>
 
+#include "abi/addon_media.h"
+#include "image/thumb.h"
 #include "io/file.h"
 #include "io/file_port.h"
 #include "io/paths.h"
@@ -231,8 +233,21 @@ void folder_model::request_summary(std::string dir_utf8, summary_ready_fn on_rea
                    });
 }
 
+std::string folder_model::cached_clip_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
+                                            std::uint64_t size, std::int64_t moment_ms) const {
+  image::thumb_store& thumbs = state_->thumbs;
+  if (moment_ms >= 0) {
+    auto hit = thumbs.lookup(image::moment_thumb_key(path_utf8, moment_ms, mtime_unix, size));
+    if (hit && !hit.value().empty()) return std::move(hit).value();
+  }
+  auto poster = thumbs.lookup(image::thumb_key{path_utf8, mtime_unix, size});
+  if (poster && !poster.value().empty()) return std::move(poster).value();
+  return {};
+}
+
 void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
-                                 std::uint64_t size, thumb_ready_fn on_ready) {
+                                 std::uint64_t size, thumb_ready_fn on_ready,
+                                 std::int64_t moment_ms) {
   if (!jobs_) {
     if (on_ready) on_ready(std::move(path_utf8), {});
     return;
@@ -251,8 +266,8 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
   // destructor runs before it starts or finishes.
   jobs_->submit_at(background_generation,
                    [state = state_, path = std::move(path_utf8), mtime_unix, size,
-                    on_ready = std::move(on_ready), requested_generation](
-                       const job_context& ctx) -> status {
+                    on_ready = std::move(on_ready), requested_generation,
+                    moment_ms](const job_context& ctx) -> status {
                      const auto stale = [&] {
                        return state->generation.load(std::memory_order_acquire) !=
                               requested_generation;
@@ -260,6 +275,28 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                      if (stale()) {
                        if (on_ready) on_ready(path, {});
                        return status::cancelled;
+                     }
+
+                     // A result list's clip tile: the matched moment, not the
+                     // clip's head. Made from that one frame when the pack has
+                     // not stored it; the poster below if it cannot be.
+                     if (moment_ms >= 0 && is_video_name(path)) {
+                       const image::thumb_key mkey =
+                           image::moment_thumb_key(path, moment_ms, mtime_unix, size);
+                       if (auto hit = state->thumbs.lookup(mkey); hit && !hit.value().empty()) {
+                         if (on_ready) on_ready(path, hit.value());
+                         return status::ok;
+                       }
+                       if (auto frame = addon::media::encode_moment_thumb(path, moment_ms)) {
+                         if (stale()) {
+                           if (on_ready) on_ready(path, {});
+                           return status::cancelled;
+                         }
+                         if (auto stored = state->thumbs.store(mkey, frame.value())) {
+                           if (on_ready) on_ready(path, stored.value());
+                           return status::ok;
+                         }
+                       }
                      }
 
                      const image::thumb_key key{path, mtime_unix, size};

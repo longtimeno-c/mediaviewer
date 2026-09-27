@@ -274,7 +274,14 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       moment, within one GOP-decode of the PTS (compare against a burned-in timecode clip); the
       path row reads "Search: <query>" and "N results", like the Windows breadcrumb. No
       audio blip, no frames of the clip's head shown first.
+      Opened from the search panel (the panel key, then the viewer), the sought frame is on the
+      canvas without a key press; the moment's thumbnail (else the clip's poster) shows first
+      when it is cached; then the F3 overlay's present count stops (idle).
 - [ ] Cmd+Enter opens the same list as the gallery grid; "Back to folder" returns to the folder.
+      Esc from the viewer is "Back to folder"; with the grid open, the first Esc closes the grid
+      and the second goes back.
+- [ ] Filmstrip and gallery tiles of a result list fill in (a clip result shows its matched
+      moment, not its head), including right after leaving a folder whose first item was open.
 - [ ] Two results named `IMG_0001.JPG` from different folders show distinct names
       ("IMG_0001.JPG — DCIM") and distinct thumbnails in the gallery and filmstrip.
 - [ ] **Match markers:** on a clip from the results, accent dots sit above the scrub bar at every
