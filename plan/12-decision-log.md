@@ -2434,6 +2434,24 @@ were not compiled on this machine. Run the issue's acceptance on both: mouse, ke
 touchpad, seek drag, Narrator / VoiceOver, pause, end, fullscreen ↔ windowed, both themes, and
 PresentMon / Instruments on idle playback for no extra repaint, plus both present-loop gates.
 
+## 2026-09-27 — The Windows transport hugs its controls
+
+**Amends** 2026-09-26 (issue #38) on Windows only. The island was a fixed ≤ 880 DIP box with
+its controls centred inside, so at most window sizes it was a long, mostly empty opaque bar
+(an island is an opaque child HWND; nothing behind the controls can be transparent). The owner
+asked for the container to go.
+
+**What.** The island reports its row's natural width in DIPs on
+`chrome_cmd_transport_width` (1018) whenever it changes (trim arming adds its label and save
+buttons). Native sizes the bar to that plus `kTransportPadDip` (14, the Mac pill's padding)
+each side, bounded only by the window's side gaps, so trim's wider row is no longer clipped.
+880 DIP is now only the width before the first report. The Mac pill already fitted its
+controls; no Mac change.
+
+**Verified** on Windows (build `ui/transport-pill`): the bar fits Play · scrubber · clock ·
+More, grows for trim without clipping, and still auto-hides while playing. `mv_tests` green.
+The present-loop soak was not re-run: other sessions were soaking on the same machine.
+
 ## 2026-09-26 — PR 29: the Edit workspace, and every metadata tag editable (owner)
 
 **Issue #39.** Nothing on screen led to crop, rotate, colour, metadata or trim; every edit was
@@ -2487,9 +2505,10 @@ made on the way:
   `usable_canvas` — a refit on the one swapchain, never a resize.
 - **One view push.** `SetEditView` (`chrome_edit_args`, 72 bytes) feeds the strip, the Crop / Trim
   pane and the command bar's **Edit image / Edit video** button. The island sends keyed command
-  ids plus four notifications: `edit_tab` 1018, `edit_action` 1019, `meta_tags` 1020,
-  `meta_date` 1021. They were written as 1017–1020 and moved up one when main's issue #38
-  (`transport_hold`) took 1017; both sides' checksum test pins the numbering.
+  ids plus four notifications: `edit_tab` 1019, `edit_action` 1020, `meta_tags` 1021,
+  `meta_date` 1022. They were written as 1017–1020 and moved up one when main's issue #38
+  (`transport_hold`) took 1017, then up one more (2026-09-27) when main's `transport_width`
+  took 1018; both sides' checksum test pins the numbering.
 - **Tag edits batch.** The pane parks one edit per line; *Remove location* is therefore one
   checked rewrite for every GPS tag, not one per tag (the Mac sends them one by one, and the
   writer queue merges them).
