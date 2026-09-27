@@ -7,12 +7,9 @@
 //
 // From the host:  -attachWithTable:host:, -deliverEvent:status:identifier:payload:,
 //                 -shutdown (the selectors Import's chrome answers too), and the
-//                 optional -runCommand:, -folderChanged:, -itemChanged:, -settingsView,
-//                 and the gallery search bar's -galleryAccessory, -galleryVisible:,
-//                 -galleryQuery: (2026-09-27).
+//                 optional -runCommand:, -folderChanged:, -itemChanged:, -settingsView.
 // To the host:    selectors on the host object (MvAddonHostMac): openList:,
-//                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow,
-//                 galleryAnswer:.
+//                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow.
 // The chrome never calls a host dispatcher from native code, and nothing here
 // logs a path, a query, or a name (rule 6).
 import AppKit
@@ -28,15 +25,9 @@ public final class MVAIChrome: NSObject {
   private var panel: SearchPanelController?
   private var settingsHost: NSView?
   private var folder = ""
-  // The gallery search bar (plan/17, 2026-09-27): its index control and its
-  // own search, apart from the panel's so neither stomps the other's query.
-  private var galleryIndex: GalleryIndexModel?
-  private var galleryHost: NSView?
-  private var gallerySearch: SearchModel?
   /// People → a person, opened in the gallery: its own search, apart from
-  /// the panel's and the bar's.
+  /// the panel's.
   private var personSearch: SearchModel?
-  private var galleryShown = false
   /// The model whose results the viewer lists now: its clip matches are the
   /// scrub markers and N / Shift+N.
   private weak var lister: SearchModel?
@@ -85,9 +76,7 @@ public final class MVAIChrome: NSObject {
       switch event {
       case MV_ADDON_EVENT_AI_SEARCH_DONE.rawValue:
         // To its owner only: a model releases an answer it does not own.
-        if let g = gallerySearch, g.owns(identifier) {
-          g.searchDone(identifier, status: status, count: payload)
-        } else if let p = personSearch, p.owns(identifier) {
+        if let p = personSearch, p.owns(identifier) {
           p.searchDone(identifier, status: status, count: payload)
         } else {
           search?.searchDone(identifier, status: status, count: payload)
@@ -95,11 +84,9 @@ public final class MVAIChrome: NSObject {
       case MV_ADDON_EVENT_AI_STATUS.rawValue:
         search?.pollStatus()
         manage?.statusChanged()
-        galleryIndex?.statusChanged()
       case MV_ADDON_EVENT_AI_ROOTS.rawValue:
         search?.refreshCoverage()
         manage?.reloadRoots()
-        galleryIndex?.rootsChanged()
       case MV_ADDON_EVENT_AI_COMPUTE.rawValue:
         manage?.reloadSettings()
         manage?.statusChanged()
@@ -132,11 +119,6 @@ public final class MVAIChrome: NSObject {
         guard v["video"] as? Bool == true, let m = lister ?? searchModel() else { return false }
         return m.stepMatch(forward: name == "search_next_match", path: v["path"] as? String ?? "",
                            positionMs: int64(v["position_ms"]))
-      // The gallery search bar's "This folder is not indexed yet" buttons.
-      case "gallery_index_folder", "gallery_index_tree":
-        guard !folder.isEmpty, let g = galleryIndexModel() else { return false }
-        g.index(recursive: name == "gallery_index_tree")
-        return true
       // The command bar pill's "Index anyway" while it waits on battery.
       case "index_anyway":
         guard let table else { return false }
@@ -154,7 +136,6 @@ public final class MVAIChrome: NSObject {
   public func folderChanged(_ dir: String) {
     MainActor.assumeIsolated {
       folder = dir
-      galleryIndex?.folderChanged(dir)
       if let search {
         search.folderChanged(dir)
       } else if let table, !dir.isEmpty {
@@ -186,82 +167,6 @@ public final class MVAIChrome: NSObject {
     }
   }
 
-  // MARK: the gallery search bar (plan/17 "Gallery search bar", 2026-09-27)
-
-  @MainActor private func galleryIndexModel() -> GalleryIndexModel? {
-    if let galleryIndex { return galleryIndex }
-    guard let table else { return nil }
-    let m = GalleryIndexModel(table: table)
-    m.folderChanged(folder)
-    if galleryShown { m.setVisible(true) }
-    galleryIndex = m
-    return m
-  }
-
-  /// The index control for the right end of the gallery's field. Kept, like
-  /// the Settings view; it sizes itself.
-  @objc public func galleryAccessory() -> NSView {
-    MainActor.assumeIsolated {
-      if let galleryHost { return galleryHost }
-      guard let m = galleryIndexModel() else { return NSView() }
-      let hosting = NSHostingView(rootView: GalleryIndexControl(model: m))
-      hosting.sizingOptions = [.intrinsicContentSize]
-      galleryHost = hosting
-      return hosting
-    }
-  }
-
-  /// The grid was shown or hidden: the control polls only while it is shown.
-  @objc(galleryVisible:)
-  public func galleryVisible(_ visible: NSNumber) {
-    MainActor.assumeIsolated {
-      galleryShown = visible.boolValue
-      galleryIndex?.setVisible(galleryShown)
-    }
-  }
-
-  /// Contents mode: {"text", "folder", "seq"}. @1 when the folder is not in
-  /// the index (nothing runs: the bar offers to index it); @0 when the search
-  /// runs, its answer coming back through the host's -galleryAnswer:.
-  @objc(galleryQuery:)
-  public func galleryQuery(_ request: NSDictionary) -> NSNumber {
-    MainActor.assumeIsolated {
-      let text = (request["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      let dir = request["folder"] as? String ?? ""
-      let seq = (request["seq"] as? NSNumber)?.uint64Value ?? 0
-      guard !text.isEmpty, !dir.isEmpty, seq != 0, let table, let index = galleryIndexModel() else {
-        return NSNumber(value: -1)
-      }
-      var state: UInt32 = 0
-      guard table.call({ table.a.folder_coverage?(table.ctx, dir, &state) }) == MV_OK, state != 0 else {
-        return NSNumber(value: 1)
-      }
-      let m: SearchModel
-      if let gallerySearch {
-        m = gallerySearch
-      } else {
-        m = SearchModel(table: table)
-        m.chrome = self
-        gallerySearch = m
-      }
-      // The folder's own root, or a recursive one above it: its subfolders too.
-      let tree = index.folder == dir && index.recursive
-      m.galleryQuery(text, dir: dir, tree: tree, seq: seq)
-      return NSNumber(value: 0)
-    }
-  }
-
-  func galleryAnswer(seq: UInt64, state: Int32, count: Int) {
-    let sel = NSSelectorFromString("galleryAnswer:")
-    guard let host, host.responds(to: sel) else { return }
-    let answer: NSDictionary = [
-      "seq": NSNumber(value: seq),
-      "state": NSNumber(value: state),
-      "count": NSNumber(value: count),
-    ]
-    _ = host.perform(sel, with: answer)
-  }
-
   /// Before the host unloads the pack. Closes the table: a detached read
   /// still running fails instead of calling into an unloaded library, and
   /// this waits (at most 2 s) for the calls already inside the pack.
@@ -290,13 +195,8 @@ public final class MVAIChrome: NSObject {
       manage?.stop()
       manage = nil
       settingsHost = nil
-      gallerySearch?.releaseAll()
-      gallerySearch = nil
       personSearch?.releaseAll()
       personSearch = nil
-      galleryIndex?.stop()
-      galleryIndex = nil
-      galleryHost = nil
       lister = nil
       hostSetMarkers(path: "", ms: [], current: -1)
       let idle = table?.close(timeout: wait) ?? true
@@ -349,7 +249,6 @@ public final class MVAIChrome: NSObject {
   }
 
   /// Settings → Precision changed: the panel's open search answers again.
-  /// The gallery bar's picks it up with its next query.
   @MainActor func precisionChanged() { search?.precisionChanged() }
 
   /// People → a person: their photos in the gallery as a result list; the

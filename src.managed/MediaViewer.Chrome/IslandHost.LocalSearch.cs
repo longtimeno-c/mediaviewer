@@ -174,8 +174,8 @@ public static partial class IslandHost
             try { SearchChrome?.OnFolderChanged(_openedFolder); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         }
-        // The gallery bar's Names · Contents toggle and index control (IslandHost.GallerySearch.cs).
-        OnGallerySearchPackChanged();
+        // The folder trail's search icon (IslandHost.Gallery.cs).
+        UpdatePathSearchButton();
     }
 
     private static void OnSearchChromeDetached()
@@ -184,7 +184,7 @@ public static partial class IslandHost
         HostSetIndexingPill(null, false);
         HostSetScrubMarkers(Array.Empty<long>(), -1);
         _pendingListGallery = null;
-        OnGallerySearchPackChanged();
+        UpdatePathSearchButton();
     }
 
     // From the drain, after a listing or a selection landed.

@@ -24,9 +24,6 @@ void MvAddonsImportNow(const std::vector<std::string>& paths);
 // Both are cheap message sends; with the AI pack absent they do nothing.
 void MvAddonsFolderOpened(const std::string& dir);
 void MvAddonsItemChanged(const std::string& path);
-// The gallery grid was shown or hidden: the search bar's index control, which
-// the AI chrome vends (plan/17 "Gallery search bar"), polls only while it is.
-void MvAddonsGalleryVisible(bool visible);
 // search_open / search_similar / search_next_match / search_prev_match, from
 // the command router. False when the AI chrome is not loaded or declined.
 bool MvAddonsRunCommand(const char* name);

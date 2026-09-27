@@ -116,13 +116,6 @@ public final class MVChromeHost: NSObject {
     _ = empty[Int.random(in: 1...2)]
   }
 
-  /// Gallery `/` (plan/16, plan/17 "Gallery search bar"): the bar's field takes
-  /// the keyboard with its text selected. main_mac.mm has already made the
-  /// gallery's hosting view first responder.
-  @objc public static func focusGallerySearch() {
-    MainActor.assumeIsolated { GallerySearchStore.shared.requestFocus() }
-  }
-
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {

@@ -293,6 +293,12 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       Return (opens paused on the moment) → N / ⇧N step next / previous match (exact seek,
       stays paused if paused; the larger dot moves) → ⌘F → Esc (grid → field) → Esc (closes).
       Previous query is pre-selected on reopen. Also: scope and kind chips reachable with Tab.
+- [ ] **Path bar search icon** (2026-09-28): with the pack loaded, a magnifier ends the command
+      bar's folder path (tooltip "Search photos and videos (⌘F)", VoiceOver "Search"); a click
+      opens the panel exactly as ⌘F does. While a result list is shown it sits beside
+      "Search: …" and reopens the panel in one click. With the pack not loaded (or removed in
+      Settings) the icon is absent, not dimmed. The gallery has no search bar; `/` on its
+      folder row finds a tile by name.
 - [ ] **Folder offer:** open an un-indexed folder, ⌘F: "This folder is not indexed yet" with
       "Index this folder" / "Index this folder and subfolders"; choosing one starts indexing and
       results appear as the index grows (the panel re-runs every ~4 s while indexing without

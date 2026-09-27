@@ -174,17 +174,6 @@ int32_t mv_chrome_folder_cursor(void);
 // The in-progress folder-name query (`/`, folder row active). False when idle;
 // an empty string means the query is open and nothing has been typed yet.
 bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
-// Gallery search bar (2026-09-27, plan/17 "Gallery search bar"). The field
-// gives the keyboard back to the grid (Esc on an empty field, Down, Return).
-void mv_chrome_gallery_blur(void);
-// What the Names filter shows, in grid order: item indices and child-folder
-// indices of the listing `listing_generation` (mv_chrome_listing_generation).
-// While `active` and the gallery is up, its keys move among these only and a
-// selection the filter hides moves to the first tile shown; the viewer still
-// walks the whole folder. A stale generation is ignored until the next push.
-void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool active,
-                                  const int32_t* items, int32_t item_count,
-                                  const int32_t* folders, int32_t folder_count);
 
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.
@@ -357,25 +346,10 @@ bool mv_addon2_remove(const char* id, bool keep_data);                     // [m
 bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling);  // [worker]
 // The loaded chrome's Settings view (an NSView*, owned by the chrome), or NULL.
 void* mv_addon2_settings_view(const char* id);                             // [main-thread]
-// Runs an add-on command by name ("search_open"), as its key would. The
-// gallery search bar also runs "gallery_index_folder" / "gallery_index_tree"
-// (index the folder the viewer last opened; false from an older pack), and
-// the indexing pill "index_anyway" (set_setting battery_override: ignore the
+// Runs an add-on command by name ("search_open"), as its key would. Also the
+// indexing pill's "index_anyway" (set_setting battery_override: ignore the
 // battery pause until the Mac is next on power; false from an older pack).
 bool mv_addon2_run_command(const char* name);                              // [main-thread]
-// Gallery search bar (2026-09-27, plan/17). The loaded chrome's index control
-// (an NSView*, owned by the chrome) for the right end of the bar, or NULL: no
-// pack, or a pack from before the bar, and then the bar is Names only.
-void* mv_addon2_gallery_accessory(const char* id);                         // [main-thread]
-// Contents mode: the pack's text search in `folder` (and its subfolders when
-// the folder's root is recursive), its answer opened as the gallery's
-// "Search: <text>" list. 0 running (the answer comes to the callback with
-// `seq`), 1 the folder is not indexed (nothing ran), -1 nothing ran.
-int32_t mv_addon2_gallery_query(const char* text, const char* folder, uint64_t seq);  // [main-thread]
-// state 0 the results are open as the list, 1 nothing found, 2 the search
-// did not finish. Always called on the main thread.
-typedef void (*mv_addon2_gallery_answer_fn)(uint64_t seq, int32_t state, int32_t count);
-void mv_addon2_set_gallery_answer_callback(mv_addon2_gallery_answer_fn callback);
 // The command bar's indexing pill: mv.ai.1 status (mediaviewer_ai.h), POD.
 // False while the AI pack is not loaded. [main-thread][no-block]
 typedef struct mv_chrome_ai_status {

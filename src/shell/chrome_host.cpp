@@ -288,8 +288,6 @@ expected chrome_host::load() noexcept {
   share_files_ = get_entry(L"ShareFiles");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
-  // Optional the same way: the gallery search bar (`/`, its Esc and filter steps).
-  gallery_search_ = get_entry(L"GallerySearch");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -918,13 +916,6 @@ void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) n
   // Two int32 fields, mirrored by ChromeGalleryNavigationArgs in the island.
   std::int32_t args[] = {direction, index};
   (void)navigate_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
-}
-
-bool chrome_host::gallery_search(gallery_search_action action, std::int32_t arg) noexcept {
-  if (!attached_ || !gallery_attached_ || !gallery_search_) return false;
-  // Two int32 fields: action and its argument. 0 back: the bar took it.
-  std::int32_t args[] = {static_cast<std::int32_t>(action), arg};
-  return gallery_search_(args, static_cast<std::int32_t>(sizeof(args))) == 0;
 }
 
 void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noexcept {
