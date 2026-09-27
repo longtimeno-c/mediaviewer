@@ -46,6 +46,24 @@ add_library(mv_addon STATIC
 )
 target_include_directories(mv_addon PUBLIC "${R}/src" "${R}/src/abi/include")
 target_link_libraries(mv_addon PUBLIC mv_io PRIVATE ${MV_SODIUM_TARGET})
+# Milestone H validation: a developer build may trust a development add-on key
+# (64 lowercase hex, the public half of a key tools/package/addon-pack.py signs
+# with) so a locally built pack can be sideloaded. Empty in every release build.
+set(MV_ADDON_DEV_PUBLIC_KEY "" CACHE STRING "Developer builds only: trust this add-on public key instead of the release key")
+if(MV_ADDON_DEV_PUBLIC_KEY)
+  if(NOT MV_ADDON_DEV_PUBLIC_KEY MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "MV_ADDON_DEV_PUBLIC_KEY must be 64 lowercase hex digits")
+  endif()
+  if(DEFINED ENV{GITHUB_ACTIONS})
+    message(FATAL_ERROR "MV_ADDON_DEV_PUBLIC_KEY is for local validation; CI and releases trust the release key only")
+  endif()
+  message(WARNING "Developer build: add-ons are verified against MV_ADDON_DEV_PUBLIC_KEY, NOT the release key. Never ship this build.")
+  target_compile_definitions(mv_addon PRIVATE MV_ADDON_DEV_PUBLIC_KEY_HEX="${MV_ADDON_DEV_PUBLIC_KEY}")
+  # ...and honours MV_DEV_ADDONS_DIR / MV_DEV_THUMBS_DIR (io/paths_win.cpp).
+  if(TARGET mv_io)
+    target_compile_definitions(mv_io PRIVATE MV_DEV_OVERRIDES=1)
+  endif()
+endif()
 if(NOT WIN32)
   target_link_libraries(mv_addon PRIVATE ${CMAKE_DL_LIBS})
 endif()

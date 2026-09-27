@@ -303,6 +303,84 @@ int32_t mv_addons_status(char* buf, int32_t size);
 bool mv_addons_hint_pending(void);
 void mv_addons_hint_done(bool never_again);
 
+// Milestone H (plan/17): the same management by add-on id, for the AI pack
+// ("ai" = Core, "ai-faces" = People) beside Import. Also addons_mac.mm. The
+// mv_addons_* functions above stay Import's, unchanged. mv_addons_check_manifest
+// now also reports "id", "part_of" and "installed_size"; mv_addons_install and
+// mv_addons_make_staging / mv_addons_sha256 serve every add-on.
+// False for "ai-cuda" (Windows only) and, on an Intel Mac, for the whole AI
+// family: ONNX Runtime ships no x86_64 macOS build, so Local search is hidden.
+bool mv_addon2_supported(const char* id);
+// {"id","supported","installed","version","size","state":"ok|needs_update|invalid","why"}
+int32_t mv_addon2_state_json(const char* id, char* buf, int32_t size);   // [worker]
+bool mv_addon2_loaded(const char* id);                                     // [main-thread]
+bool mv_addon2_loading(const char* id);                                    // [main-thread]
+// "" or why the last load failed (a status name, "bundle", "chrome").
+int32_t mv_addon2_load_error(const char* id, char* buf, int32_t size);     // [main-thread]
+// Import loads at once; "ai" verifies and starts on a worker and attaches
+// later (poll mv_addon2_loaded / mv_addon2_loading). [main-thread]
+bool mv_addon2_load(const char* id);
+// After a piece is installed or removed: the loaded "ai" pack re-reads its
+// pieces (mv.ai.1 set_setting "reload"); People is picked up at once.
+bool mv_addon2_reload(const char* id);                                     // [main-thread]
+// Removing "ai" also removes its pieces; keep_data keeps the search index.
+bool mv_addon2_remove(const char* id, bool keep_data);                     // [main-thread]
+// A family's installed bytes and ceiling (0 = none); "ai" has 3 GB.
+bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling);  // [worker]
+// The loaded chrome's Settings view (an NSView*, owned by the chrome), or NULL.
+void* mv_addon2_settings_view(const char* id);                             // [main-thread]
+// Runs an add-on command by name ("search_open"), as its key would.
+bool mv_addon2_run_command(const char* name);                              // [main-thread]
+// The command bar's indexing pill: mv.ai.1 status (mediaviewer_ai.h), POD.
+// False while the AI pack is not loaded. [main-thread][no-block]
+typedef struct mv_chrome_ai_status {
+  int32_t state;           // mv_ai_state: 0 idle 1 indexing 2 paused 3 yielding 4 loading 5 error
+  int32_t yield_reason;    // mv_ai_yield: 1 viewer 2 battery 3 frames
+  int32_t backend;         // mv_ai_backend: 0 CPU 3 Core ML
+  int32_t provider_fault;
+  uint32_t flags;          // MV_AI_STATUS_*: 1 index full, 2 faces on, 4 faces ready, 8 no models
+  uint32_t reserved;
+  uint64_t assets_total;
+  uint64_t assets_done;
+  uint64_t frames_indexed;
+  double eta_low_seconds;  // -1 unknown
+  double eta_high_seconds;
+} mv_chrome_ai_status;
+bool mv_addon2_ai_status(mv_chrome_ai_status* out);
+
+// ---- Milestone H: result listings and match markers (plan/17) -----------------
+//
+// The Mac twin of mv_folder_open_list (mediaviewer.h 0.11). A listing that is
+// not a directory: search results shown by the same gallery, filmstrip,
+// selection and keyboard model as a folder. Items keep the order given (best
+// match first; no sort), are not paired or watched; a clip with a moment >= 0
+// opens PAUSED on that frame (exact seek). While a list is open
+// mv_chrome_current_folder is "" and mv_chrome_list_title is the query;
+// opening a directory ends the list. [main-thread] for all of these.
+//
+// `moments_ms` may be NULL (all -1). `select_index` is the tile to show.
+// `gallery` opens the gallery grid (Cmd+Enter) instead of the canvas.
+bool mv_chrome_open_list(const char* title_utf8, const char* const* paths_utf8,
+                         const int64_t* moments_ms, int32_t count, int32_t select_index,
+                         bool gallery);
+bool mv_chrome_list_open(void);
+// The list's title; "" when a directory is open. Length needed, as the tables.
+int32_t mv_chrome_list_title(char* buf, int32_t size);
+// Back to the folder the list replaced (the path row's "Back to folder").
+void mv_chrome_close_list(void);
+// The full path of the item on the canvas ("" none). Length needed.
+int32_t mv_chrome_current_item_path(char* buf, int32_t size);
+// Match markers over the scrub bar for the clip at `clip_path_utf8` (the AI
+// chrome's clip_matches for the active search). `current` is the index drawn
+// larger, -1 none. count 0 clears. Markers for a clip that is not on screen
+// are never reported.
+void mv_chrome_set_scrub_markers(const char* clip_path_utf8, const int64_t* ms, int32_t count,
+                                 int32_t current);
+// Moves whenever the markers or the item on screen change.
+uint64_t mv_chrome_scrub_markers_generation(void);
+// Up to `cap` marker times (ms) for the clip on screen; returns the full count.
+int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current);
+
 // ---- PR 11: adjust pane (plan/10 "SwiftUI adjust pane", plan/07) -------------
 //
 // The twin of the Windows adjust pane (IslandHost.Adjust.cs). The host owns the

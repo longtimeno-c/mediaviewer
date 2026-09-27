@@ -174,6 +174,8 @@ public struct CommandBarView: View {
         }
         // Milestone G: the one-time Import hint and a running import's line.
         AddonBarItems()
+        // Milestone H: the indexing pill, only while the AI pack is indexing.
+        LocalSearchBarItem()
         Spacer()
         // PR 12: what a rating key or a metadata write just did.
         if !notice.text.isEmpty {
@@ -198,7 +200,7 @@ public struct CommandBarView: View {
       }
       .padding(.horizontal, 6)
       .frame(maxHeight: .infinity)
-      if !store.crumbs.isEmpty {
+      if !store.crumbs.isEmpty || store.listTitle != nil {
         PathBar()
           .frame(height: 27)
       }
@@ -216,6 +218,15 @@ struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
 
   var body: some View {
+    // Milestone H: a result list has no folder trail; its title stands in.
+    if let title = store.listTitle {
+      ListTitleBar(title: title)
+    } else {
+      trail
+    }
+  }
+
+  @ViewBuilder private var trail: some View {
     let crumbs = store.crumbs
     let shown = display(crumbs)
     HStack(spacing: 4) {
@@ -309,6 +320,46 @@ struct PathBar: View {
       PathPiece(id: crumbs[n - 2].index, index: crumbs[n - 2].index, name: crumbs[n - 2].name, isEllipsis: false),
       PathPiece(id: crumbs[n - 1].index, index: crumbs[n - 1].index, name: crumbs[n - 1].name, isEllipsis: false),
     ]
+  }
+}
+
+/// The path row while search results are open (plan/17 "Results are the
+/// gallery"): what was searched, how many results, and the way back.
+private struct ListTitleBar: View {
+  @ObservedObject private var store = FolderStore.shared
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Button { store.closeList() } label: {
+        Label("Back to folder", systemImage: "chevron.backward")
+      }
+      .buttonStyle(.borderless)
+      .fixedSize()
+      .foregroundStyle(MVTheme.title)
+      .help("Close the results and return to the folder")
+      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 4)
+      Image(systemName: "magnifyingglass").foregroundStyle(MVTheme.body)
+      // "Search: <query>", the Windows breadcrumb's wording.
+      Text(title.isEmpty ? "Search results" : "Search: " + title)
+        .font(MVTheme.font(14))
+        .fontWeight(.semibold)
+        .foregroundStyle(MVTheme.title)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .layoutPriority(1)
+      Text(store.itemCount == 1 ? "1 result" : "\(store.itemCount) results")
+        .font(MVTheme.font(13))
+        .foregroundStyle(MVTheme.body)
+        .contentTransition(.numericText())
+      Spacer(minLength: 0)
+    }
+    .font(MVTheme.font(14))
+    .padding(.horizontal, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(MVTheme.canvas)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Search results for \(title)")
   }
 }
 

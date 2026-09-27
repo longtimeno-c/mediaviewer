@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Settings → Local search, once Core is loaded (the chrome brief, "Management
+// panel"; plan/17 PRs 20, 21, 23, 24): status, Compute (Auto / Core ML / CPU
+// only), Search quality, the indexed folders, the index size and Clear, the
+// battery rule, and People. The base app embeds this view (MVAIChrome
+// -settingsView) under its install / remove rows.
+//
+// Reads of the index (roots_json, people_json, person_faces_json) are
+// [worker-thread] and run detached; settings and status are [no-block].
+// Status is polled at ≤ 4 Hz only while this view is on screen.
+import AppKit
+import CAiApi
+import SwiftUI
+
+struct RootRow: Identifiable, Equatable {
+  let id: UInt64
+  let path: String
+  let recursive: Bool
+  let enabled: Bool
+  let assets: Int64
+  let done: Int64
+  let bytes: Int64
+}
+
+struct Person: Identifiable, Equatable {
+  let id: UInt64
+  var name: String
+  let faces: Int
+  let coverFace: UInt64     // face_thumb(cover_face), cropped with coverBox
+  let coverBox: [Double]
+}
+
+struct Face: Identifiable, Equatable {
+  let id: UInt64
+  let path: String
+  let ptsMs: Int64
+  let box: [Double]
+}
+
+@MainActor
+final class ManagementModel: ObservableObject {
+  let table: AITable
+  weak var chrome: MVAIChrome?
+
+  @Published private(set) var status = StatusLine()
+  @Published private(set) var indexBytes: UInt64 = 0
+  @Published private(set) var flags: UInt32 = 0
+  @Published private(set) var compute: Int = 0
+  @Published private(set) var quality: Int = 0
+  @Published private(set) var batteryPercent: Int = 30
+  @Published private(set) var capBytes: Int64 = 0
+  @Published private(set) var facesOn = false
+  @Published private(set) var coreMLAvailable = true
+  @Published private(set) var models: [(quality: Int, name: String)] = []
+  @Published private(set) var roots: [RootRow] = []
+  @Published private(set) var people: [Person] = []
+  @Published var confirming: Confirm?
+  @Published var message = ""
+
+  enum Confirm: Equatable {
+    case clearIndex, removeRoot(UInt64), facesOff
+  }
+
+  private var timer: Timer?
+  private var visible = 0
+
+  init(table: AITable) {
+    self.table = table
+    reloadSettings()
+    pollStatus()
+  }
+
+  var facesReady: Bool { flags & MV_AI_STATUS_FACES_READY != 0 }
+
+  func appeared() {
+    visible += 1
+    guard visible == 1 else { return }
+    reloadSettings()
+    reloadRoots()
+    reloadPeople()
+    pollStatus()
+    timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.pollStatus() }
+    }
+  }
+
+  func disappeared() {
+    visible = max(0, visible - 1)
+    guard visible == 0 else { return }
+    timer?.invalidate()
+    timer = nil
+  }
+
+  func stop() {
+    timer?.invalidate()
+    timer = nil
+    visible = 0
+  }
+
+  func statusChanged() { pollStatus() }
+
+  private func pollStatus() {
+    guard let s = table.status() else { return }
+    if s.index_bytes != indexBytes { indexBytes = s.index_bytes }
+    if s.flags != flags {
+      let facesAppeared = (s.flags & MV_AI_STATUS_FACES_READY) != 0 && !facesReady
+      flags = s.flags
+      if facesAppeared { reloadPeople() }
+    }
+    let line = StatusLine(s)
+    if line != status { status = line }
+  }
+
+  func setPaused(_ paused: Bool) {
+    _ = table.a.pause?(table.ctx, paused ? 1 : 0)
+    pollStatus()
+  }
+
+  // MARK: settings
+
+  func reloadSettings() {
+    guard let obj = parseJSON(table.json { table.a.settings_json?(table.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG })
+            as? [String: Any] else { return }
+    compute = Int(int64(obj["compute"]))
+    quality = Int(int64(obj["quality"]))
+    batteryPercent = Int(int64(obj["pause_on_battery_percent"]))
+    capBytes = int64(obj["index_cap_bytes"])
+    facesOn = obj["faces"] as? Bool ?? false
+    coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
+    models = (obj["models"] as? [[String: Any]] ?? []).map {
+      (quality: Int(int64($0["quality"])), name: $0["name"] as? String ?? "")
+    }
+  }
+
+  func set(_ key: String, _ value: Int64) {
+    table.setSetting(key, String(value))
+    reloadSettings()
+    pollStatus()
+  }
+
+  func modelName(_ q: Int) -> String { models.first(where: { $0.quality == q })?.name ?? "" }
+
+  // MARK: roots
+
+  func reloadRoots() {
+    let t = table
+    Task.detached {
+      let json = t.json { t.a.roots_json?(t.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+      let rows: [RootRow] = (parseJSON(json) as? [[String: Any]] ?? []).map {
+        RootRow(id: UInt64(clamping: int64($0["id"])), path: $0["path"] as? String ?? "",
+                recursive: $0["recursive"] as? Bool ?? false, enabled: $0["enabled"] as? Bool ?? true,
+                assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]))
+      }
+      await MainActor.run { if rows != self.roots { self.roots = rows } }
+    }
+  }
+
+  func setRootEnabled(_ id: UInt64, _ on: Bool) {
+    _ = table.a.root_set_enabled?(table.ctx, id, on ? 1 : 0)
+    reloadRoots()
+  }
+
+  func rescan(_ id: UInt64) {
+    _ = table.a.root_rescan?(table.ctx, id)
+    reloadRoots()
+  }
+
+  func removeRoot(_ id: UInt64) {
+    confirming = nil
+    _ = table.a.root_remove?(table.ctx, id)
+    reloadRoots()
+  }
+
+  func addFolder(recursive: Bool) {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.prompt = "Index"
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    var root: UInt64 = 0
+    _ = table.a.index_folder?(table.ctx, url.path, recursive ? 1 : 0, &root)
+    reloadRoots()
+    pollStatus()
+  }
+
+  func clearIndex() {
+    confirming = nil
+    let ok = table.a.clear_index?(table.ctx) == MV_OK
+    message = ok ? "The search index was cleared. Thumbnails were kept." : "The index could not be cleared."
+    reloadRoots()
+    pollStatus()
+  }
+
+  // MARK: people (PR 24)
+
+  func setFaces(_ on: Bool) {
+    if !on {
+      confirming = .facesOff
+      return
+    }
+    _ = table.a.faces_enable?(table.ctx, 1)
+    reloadSettings()
+    pollStatus()
+  }
+
+  func facesOffConfirmed() {
+    confirming = nil
+    let ok = table.a.faces_enable?(table.ctx, 0) == MV_OK
+    message = ok ? "All face data was deleted." : "Face data could not be deleted."
+    people = []
+    reloadSettings()
+    pollStatus()
+  }
+
+  func reloadPeople() {
+    guard facesOn else {
+      if !people.isEmpty { people = [] }
+      return
+    }
+    let t = table
+    Task.detached {
+      let json = t.json { t.a.people_json?(t.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+      let list: [Person] = (parseJSON(json) as? [[String: Any]] ?? []).map {
+        Person(id: UInt64(clamping: int64($0["id"])), name: $0["name"] as? String ?? "",
+               faces: Int(int64($0["faces"])), coverFace: UInt64(clamping: int64($0["cover_face"])),
+               coverBox: ($0["cover_box"] as? [NSNumber] ?? []).map { $0.doubleValue })
+      }
+      await MainActor.run { if list != self.people { self.people = list } }
+    }
+  }
+
+  func rename(_ id: UInt64, _ name: String) {
+    _ = table.a.person_rename?(table.ctx, id, name)
+    if let i = people.firstIndex(where: { $0.id == id }) { people[i].name = name }
+  }
+
+  func merge(into: UInt64, from: UInt64) {
+    _ = table.a.person_merge?(table.ctx, into, from)
+    reloadPeople()
+  }
+
+  func faces(of person: UInt64) async -> [Face] {
+    let t = table
+    return await Task.detached {
+      let json = t.json { t.a.person_faces_json?(t.ctx, person, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+      return (parseJSON(json) as? [[String: Any]] ?? []).map {
+        Face(id: UInt64(clamping: int64($0["face"])), path: $0["path"] as? String ?? "",
+             ptsMs: ($0["pts_ms"] as? NSNumber)?.int64Value ?? -1,
+             box: ($0["box"] as? [NSNumber] ?? []).map { $0.doubleValue })
+      }
+    }.value
+  }
+
+  func reject(_ face: UInt64) {
+    _ = table.a.face_reject?(table.ctx, face)
+    reloadPeople()
+  }
+
+  func split(_ faces: [UInt64]) {
+    guard !faces.isEmpty else { return }
+    var person: UInt64 = 0
+    _ = faces.withUnsafeBufferPointer { table.a.face_split?(table.ctx, $0.baseAddress, UInt32($0.count), &person) }
+    reloadPeople()
+  }
+
+  func showPhotos(of person: Person) { chrome?.showPerson(id: person.id, name: person.name) }
+}
+
+struct ManagementView: View {
+  @ObservedObject var model: ManagementModel
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var subfolders = true
+  @State private var openPerson: Person?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      StatusPill(line: model.status) { model.setPaused($0) }
+      if !model.message.isEmpty {
+        Text(model.message).font(AITheme.font(12)).foregroundStyle(AITheme.body)
+      }
+      section("Compute") {
+        row("Where search runs",
+            detail: "Auto uses Core ML (the Neural Engine and GPU) when it is faster than the CPU, and falls back on its own. Changing it does not re-index.") {
+          Picker("Compute", selection: Binding(get: { model.compute }, set: { model.set("compute", Int64($0)) })) {
+            Text("Auto").tag(Int(MV_AI_COMPUTE_AUTO.rawValue))
+            Text("Core ML").tag(Int(MV_AI_COMPUTE_COREML.rawValue)).disabled(!model.coreMLAvailable)
+            Text("CPU only").tag(Int(MV_AI_COMPUTE_CPU_ONLY.rawValue))
+          }
+          .pickerStyle(.menu).frame(width: 160)
+        }
+        row("Search quality", detail: qualityDetail) {
+          Picker("Search quality", selection: Binding(get: { model.quality }, set: { model.set("quality", Int64($0)) })) {
+            Text("Auto").tag(Int(MV_AI_QUALITY_AUTO.rawValue))
+            Text("Fast").tag(Int(MV_AI_QUALITY_FAST.rawValue))
+            Text("High").tag(Int(MV_AI_QUALITY_HIGH.rawValue))
+          }
+          .pickerStyle(.menu).frame(width: 160)
+        }
+      }
+      section("Indexed folders") {
+        if model.roots.isEmpty {
+          Text("No folders yet. Open a folder and press ⌘F to index it, or add one here.")
+            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .padding(12)
+        }
+        ForEach(model.roots) { root in
+          rootRow(root)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+          Rectangle().fill(AITheme.hairline).frame(height: 1)
+        }
+        HStack {
+          Button("Add a folder…") { model.addFolder(recursive: subfolders) }
+          Toggle("and its subfolders", isOn: $subfolders).toggleStyle(.checkbox)
+          Spacer()
+        }
+        .font(AITheme.font(12))
+        .padding(12)
+      }
+      section("Index") {
+        row("Search index",
+            detail: "\(bytesText(model.indexBytes)) on disk" +
+              (model.capBytes > 0 ? " of at most \(bytesText(UInt64(model.capBytes)))" : "") +
+              ". Your thumbnails are kept when it is cleared.") {
+          Picker("Index size limit", selection: Binding(get: { model.capBytes }, set: { model.set("index_cap_bytes", $0) })) {
+            ForEach([Int64(2), 5, 10, 20, 50], id: \.self) { gb in
+              Text("\(gb) GB").tag(gb * 1_000_000_000)
+            }
+          }
+          .pickerStyle(.menu).frame(width: 110)
+          Button("Clear index…") { model.confirming = .clearIndex }
+        }
+        if model.confirming == .clearIndex {
+          confirmRow("Delete every indexed moment? Folders stay remembered and will be indexed again.",
+                     action: "Clear index", destructive: true) { model.clearIndex() }
+        }
+        row("On battery",
+            detail: "Indexing pauses on battery below this charge and resumes on power.") {
+          Picker("Pause on battery", selection: Binding(get: { model.batteryPercent },
+                                                        set: { model.set("pause_on_battery_percent", Int64($0)) })) {
+            Text("Always pause").tag(100)
+            Text("Below 50 %").tag(50)
+            Text("Below 30 %").tag(30)
+            Text("Below 20 %").tag(20)
+            Text("Never pause").tag(0)
+          }
+          .pickerStyle(.menu).frame(width: 160)
+        }
+      }
+      section("People") {
+        row("Find people in your photos",
+            detail: "Face data stays on this computer, is never shared, and can be deleted at any time. Off by default.") {
+          Toggle("Find people in your photos", isOn: Binding(get: { model.facesOn }, set: { model.setFaces($0) }))
+            .toggleStyle(.switch)
+        }
+        if model.confirming == .facesOff {
+          confirmRow("Turn off people search? Every face, crop and name is deleted now.",
+                     action: "Delete face data", destructive: true) { model.facesOffConfirmed() }
+        }
+        if model.facesOn && !model.facesReady {
+          Text("Install People above to find faces. Until then nothing about faces is computed.")
+            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .padding(.horizontal, 12).padding(.bottom, 10)
+        }
+        if model.facesOn && model.facesReady {
+          PeopleGrid(model: model, open: { openPerson = $0 })
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: model.roots)
+    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: model.confirming)
+    .onAppear { model.appeared() }
+    .onDisappear { model.disappeared() }
+    .sheet(item: $openPerson) { person in
+      PersonSheet(model: model, person: person) { openPerson = nil }
+    }
+  }
+
+  private var qualityDetail: String {
+    let fast = model.modelName(Int(MV_AI_QUALITY_FAST.rawValue))
+    let high = model.modelName(Int(MV_AI_QUALITY_HIGH.rawValue))
+    return "Fast — smaller model, quick on any computer" + (fast.isEmpty ? "" : " (\(fast))") + ". " +
+      "High — best matches, needs a GPU or Apple silicon to be quick" + (high.isEmpty ? "" : " (\(high))") + ". " +
+      "Changing it re-indexes in the background; the old index answers until the new one is ready."
+  }
+
+  private func rootRow(_ root: RootRow) -> some View {
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 6) {
+          Image(systemName: "folder").foregroundStyle(AITheme.body)
+          Text(root.path).font(AITheme.font(13)).foregroundStyle(AITheme.title)
+            .lineLimit(1).truncationMode(.middle)
+          if root.recursive {
+            Text("and subfolders").font(AITheme.font(11)).foregroundStyle(AITheme.body)
+          }
+        }
+        ProgressView(value: root.assets == 0 ? 0 : min(1, Double(root.done) / Double(root.assets)))
+          .progressViewStyle(.linear)
+          .tint(root.enabled ? .accentColor : .secondary)
+        Text("\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(max(0, root.assets)))) · \(bytesText(UInt64(max(0, root.bytes))))" +
+             (root.enabled ? "" : " · paused"))
+          .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
+      Button("Rescan") { model.rescan(root.id) }
+      if model.confirming == .removeRoot(root.id) {
+        Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
+        Button("Cancel") { model.confirming = nil }
+      } else {
+        Button("Remove…") { model.confirming = .removeRoot(root.id) }
+          .help("Forget this folder and delete its rows from the index. Your files are not touched.")
+      }
+    }
+    .font(AITheme.font(12))
+    .padding(12)
+  }
+
+  private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text(title).font(AITheme.font(15)).fontWeight(.semibold).foregroundStyle(AITheme.title)
+        .padding(.top, 8).padding(.bottom, 6)
+      VStack(alignment: .leading, spacing: 0) { content() }
+        .background(RoundedRectangle(cornerRadius: 8).fill(AITheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AITheme.hairline, lineWidth: 1))
+    }
+  }
+
+  private func row<Content: View>(_ title: String, detail: String,
+                                  @ViewBuilder _ content: () -> Content) -> some View {
+    HStack(spacing: 20) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title).font(AITheme.font(14)).foregroundStyle(AITheme.title)
+        Text(detail).font(AITheme.font(12)).foregroundStyle(AITheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      content().labelsHidden()
+    }
+    .padding(12)
+  }
+
+  private func confirmRow(_ text: String, action: String, destructive: Bool,
+                          perform: @escaping () -> Void) -> some View {
+    HStack(spacing: 10) {
+      Text(text).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Button(action, role: destructive ? .destructive : nil, action: perform)
+      Button("Cancel") { model.confirming = nil }.keyboardShortcut(.cancelAction)
+    }
+    .padding(12)
+    .background(Color.accentColor.opacity(0.08))
+    .transition(.opacity)
+  }
+}

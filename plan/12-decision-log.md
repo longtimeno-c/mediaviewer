@@ -2276,3 +2276,31 @@ open item.
 version, see "Update ready — restart", restart into it; switch back to Stable and see no
 downgrade. Mac: the same with Sparkle, and the first Xcode build of `main_mac.mm` with the new
 delegate methods (only the release-picking function was compiled and tested on its own).
+
+## 2026-09-26 — Milestone H: two CLIP towers, host table v2, pieces, and a dev key
+
+**Towers.** The PR 20 spike (plan/17 "Implementation notes") measured ViT-L/14 at +6 points R@1
+over ViT-B/32 but 1.9 img/s on CPU. Both ship; Auto picks by the backend. int8 weights rejected;
+int8 *stored vectors* accepted (<= 0.5 points).
+
+**"Nothing found".** A generic-prompt margin, not an absolute cosine floor (which cannot
+separate nonsense from real queries on CLIP).
+
+**Host table v2 without breaking Import.** Versions only append, so the host now serves
+every layout from `MV_ADDON_HOST_API_OLDEST` up and hands an add-on the newest both know. The
+alternative, bumping Import's range, would have made every installed Import 1.0.0 "need an
+update" the day Local search shipped.
+
+**Pieces.** Per-piece Install/Remove (plan/17) is one add-on id per piece with `part_of`:
+`ai`, `ai-faces`, `ai-cuda`. A vendor piece carries its own ORT build (ORT loads provider DLLs
+from its own folder), so it takes effect at the next start. NVIDIA's CUDA runtime and cuDNN are
+user-supplied until their licence review is done.
+
+**Mac arm64 only.** ORT 1.30 has no x86_64 macOS binary.
+
+**`MV_ADDON_DEV_PUBLIC_KEY`.** A developer build may trust a local key so a pack can be
+sideloaded and the full path validated; with it set, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR`
+keep the run out of the user's install. CMake warns, and refuses it under GitHub Actions.
+
+**Results are a listing.** `mv_folder_open_list` (ABI 0.11) puts results in the existing gallery
+rather than a second grid, as plan/17 asks.

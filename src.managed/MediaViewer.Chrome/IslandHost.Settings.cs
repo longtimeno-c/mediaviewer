@@ -120,6 +120,11 @@ public static partial class IslandHost
         var addons = new StackPanel { Spacing = 8, Margin = new Thickness(0, 20, 0, 0) };
         AddAddonsSettingsRow(addons);
         view.Children.Add(addons);
+        // Milestone H (IslandHost.LocalSearch.cs): the one surface the AI pack
+        // has while it is not installed.
+        var localSearch = new StackPanel { Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
+        AddLocalSearchSettings(localSearch);
+        view.Children.Add(localSearch);
 
         var keysHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
         keysHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

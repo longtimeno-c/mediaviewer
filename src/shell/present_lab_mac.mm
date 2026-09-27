@@ -260,14 +260,15 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
 // PR 19. open_media() blocks on I/O and probing, so it runs here on a worker;
 // the render thread only ever sees the finished media_source. A clip the user
 // navigated away from before it opened is closed here, never posted.
-void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept {
+void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t item_id,
+                                        std::int64_t moment_ms) noexcept {
   if (path_utf8.empty() || !options_.jobs) return;
   void* mtl_device = device_.native_device();
   video_opening_.store(item_id, std::memory_order_release);
   wake();  // present at vblank while it loads (present_request::video_loading)
 
   options_.jobs->submit(
-      [this, path = std::move(path_utf8), mtl_device, item_id](const job_context& ctx) -> status {
+      [this, path = std::move(path_utf8), mtl_device, item_id, moment_ms](const job_context& ctx) -> status {
         const double t0 = monotonic_seconds();
         auto opened = player::open_media(path.c_str(), mtl_device);
         std::uint64_t expected = item_id;
@@ -282,7 +283,7 @@ void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t ite
           return status::cancelled;
         }
         MV_LOG_INFO("open: video ready in %.0f ms", (monotonic_seconds() - t0) * 1000.0);
-        auto* pm = new pending_media{opened.value(), item_id};
+        auto* pm = new pending_media{opened.value(), item_id, moment_ms};
         if (pending_media* old = pending_media_.exchange(pm)) {
           player::close_media(old->source);  // a clip superseded before it was shown
           delete old;
@@ -568,7 +569,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   return changed;
 }
 
-std::uint64_t present_lab_mac::open_item(std::string path_utf8) noexcept {
+std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t moment_ms) noexcept {
   if (path_utf8.empty() || !options_.jobs) return 0;
   // Abandons whatever the previous open_item() call had in flight (folder
   // navigation is a new view intent) without touching folder_model_mac's own
@@ -577,7 +578,7 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8) noexcept {
   options_.jobs->bump_generation();
   const std::uint64_t item = ++item_counter_;
   if (is_video_name(path_utf8)) {
-    submit_video_open(std::move(path_utf8), item);
+    submit_video_open(std::move(path_utf8), item, moment_ms);
   } else {
     submit_image_load(std::move(path_utf8), item);
   }
@@ -1117,11 +1118,20 @@ void present_lab_mac::render_thread_main() noexcept {
           retire_media();
           media_ = pm->source;
           media_item_ = pm->item;
+          const std::int64_t moment_ms = pm->moment_ms;
           delete pm;
           speed_rung_ = 2;
           video_muted_ = false;
           media_->set_volume(video_volume_);
-          media_->play();
+          if (moment_ms >= 0) {
+            // Milestone H: a search result lands paused on its moment. The
+            // exact seek decodes forward from the keyframe before it and
+            // presents that one frame (media_source preview), then idles.
+            media_->pause();
+            media_->seek(static_cast<player::time_ns>(moment_ms) * 1'000'000, /*exact=*/true);
+          } else {
+            media_->play();
+          }
           redraw = true;
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
@@ -1229,7 +1239,12 @@ void present_lab_mac::render_thread_main() noexcept {
         req.elapsed_seconds = elapsed;
         req.last_input_time = last_input_time_;
         const auto decision = gfx::decide_present(req);
-        mv::shell::g_present_busy.store(decision.live, std::memory_order_relaxed);
+        if (const std::uint64_t drops = pacer_.dropped_frames_so_far(); drops > busy_drops_seen_) {
+          busy_drops_seen_ = drops;
+          busy_drop_at_ = elapsed;
+        }
+        const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
+        mv::shell::g_present_busy.store(decision.live || frame_pressure, std::memory_order_relaxed);
 
         CAMetalDisplayLink* live_link = (__bridge CAMetalDisplayLink*)display_link_;
         if (!decision.wants_frame) {

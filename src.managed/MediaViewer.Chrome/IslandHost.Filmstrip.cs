@@ -142,6 +142,7 @@ public static partial class IslandHost
         int select = -1;
         bool? busy = null;
         bool video = false;
+        bool itemChanged = false;
         foreach (var c in _folderSession.Drain())
         {
             if (AddonCompletion.TryFrom(c, out AddonCompletion addon))
@@ -157,6 +158,7 @@ public static partial class IslandHost
                 ReloadItems();
                 select = -1;
                 busy = null;
+                itemChanged = true;
             }
             else if (c.Kind == MvCompletionKind.ThumbReady && c.Status == MvStatus.Ok)
             {
@@ -171,6 +173,7 @@ public static partial class IslandHost
             {
                 select = (int)c.Payload;
                 busy = true;
+                itemChanged = true;
             }
             else if (c.Kind is MvCompletionKind.ImageOpened or MvCompletionKind.VideoOpened)
             {
@@ -193,6 +196,7 @@ public static partial class IslandHost
         if (select >= 0) SetSelected(select);
         if (busy is bool want) SetBusy(want);
         if (video) UpdateVideoControls();
+        if (itemChanged) NotifySearchItem();  // Milestone H (IslandHost.LocalSearch.cs)
     }
 
     private static void ReloadItems()
@@ -201,16 +205,20 @@ public static partial class IslandHost
         Items.Clear();
         _selectedIndex = -1;
         uint count = _folderSession.FolderCount;
+        // Milestone H: a result list (mv_folder_open_list) rather than a
+        // directory. Its clips carry the moment they open on, shown as m:ss.
+        bool list = IsResultList();
         for (uint i = 0; i < count; ++i)
         {
             MvFolderItem rec = _folderSession.FolderItemAt(i);
+            long moment = list ? _folderSession.ItemMoment(i) : -1;
             Items.Add(new FolderItemVm
             {
                 Index = (int)i,
                 Name = _folderSession.FolderItemName(i),
                 Path = _folderSession.FolderItemPath(i),
                 PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
-                Badge = BadgeFor(rec),
+                Badge = moment >= 0 ? MomentLabel(moment) : BadgeFor(rec),
                 ThumbPath = _folderSession.FolderItemThumbPath(i),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
@@ -233,6 +241,39 @@ public static partial class IslandHost
             _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.FolderReady, listed));
         else
             Send(Command.FolderReady, listed);
+
+        // Milestone H: Local search learns the folder (its index offer and
+        // "This folder" scope), and a list asked for from the panel shows in
+        // the view it asked for.
+        _listOpen = list;
+        if (list)
+        {
+            ApplyPendingListView();
+        }
+        else
+        {
+            _pendingListGallery = null;
+            string dir = _folderSession.FolderDirectory;
+            if (dir.Length > 0 && !string.Equals(dir, _openedFolder, StringComparison.OrdinalIgnoreCase))
+            {
+                _openedFolder = dir;
+                NotifySearchFolder(dir);
+            }
+        }
+    }
+
+    // False on a core older than ABI 0.11, which has no result lists.
+    private static bool IsResultList()
+    {
+        if (_folderSession is null) return false;
+        try { return _folderSession.ListTitle.Length > 0; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    private static string MomentLabel(long ms)
+    {
+        long s = ms / 1000;
+        return s >= 3600 ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}" : $"{s / 60}:{s % 60:00}";
     }
 
     // PR 7 (plan/04): "LIVE" on a Live Photo stop, "RAW" on a RAW+JPEG stop and

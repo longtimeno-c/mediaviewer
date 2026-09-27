@@ -69,6 +69,37 @@ private struct TrimMarks: View {
   }
 }
 
+/// Milestone H (plan/17 "the scrub bar marking the other matches from the same
+/// clip"): accent dots just above the track, the current match larger. They
+/// fade in when a clip in the search opens and move with a spring, never on
+/// the canvas's render path (this is SwiftUI chrome over it).
+private struct MatchMarks: View {
+  @ObservedObject private var store = VideoStore.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let inset: CGFloat = 10  // same track inset as TrimMarks
+
+  var body: some View {
+    GeometryReader { geo in
+      let span = max(geo.size.width - 2 * inset, 1)
+      let duration = Double(max(store.durationMs, 1))
+      ForEach(Array(store.matchMs.enumerated()), id: \.offset) { i, ms in
+        let current = i == store.matchCurrent
+        let d: CGFloat = current ? 7 : 4
+        Circle()
+          .fill(Color.accentColor.opacity(current ? 1 : 0.75))
+          .frame(width: d, height: d)
+          .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor).opacity(current ? 0.9 : 0), lineWidth: 1))
+          .position(x: inset + span * CGFloat(min(max(Double(ms) / duration, 0), 1)),
+                    y: geo.size.height / 2 - 9)
+          .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8), value: current)
+      }
+    }
+    .opacity(store.matchMs.isEmpty ? 0 : 1)
+    .animation(.easeOut(duration: 0.2), value: store.matchMs)
+    .accessibilityHidden(true)
+  }
+}
+
 struct TransportView: View {
   @ObservedObject private var store = VideoStore.shared
 
@@ -98,6 +129,8 @@ struct TransportView: View {
         // PR 13: the keyframe grid, the kept range and the markers, drawn over
         // the track (not hit-testable, so the thumb still drags).
         .overlay { TrimMarks().allowsHitTesting(false) }
+        // Milestone H: this clip's other matches in the active search.
+        .overlay { MatchMarks().allowsHitTesting(false) }
       Text(Self.clock(store.durationMs)).monospacedDigit().font(.caption)
         .frame(minWidth: 40, alignment: .leading)
 

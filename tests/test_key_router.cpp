@@ -671,8 +671,9 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     pos = end + 1;
     ++lines;
   }
-  // Import's two rows are absent while the add-on is (plan/18).
-  REQUIRE(lines + 2 >= default_bindings().size());
+  // Import's two rows (plan/18) and the AI pack's four (plan/17) are absent
+  // while their add-ons are.
+  REQUIRE(lines + 6 >= default_bindings().size());
 }
 
 TEST_CASE("Import's commands exist only while the add-on is installed", "[shell][router]") {

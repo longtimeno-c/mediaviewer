@@ -376,6 +376,9 @@ add_library(mv_clip STATIC
   src/edit/clip_common.cpp
   src/edit/clip_copy.cpp
   src/edit/clip_encode.cpp
+  src/edit/clip_pixels.h
+  src/edit/clip_sample.cpp
+  src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
   src/edit/clip_jobs.h
@@ -407,6 +410,17 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
 set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_CURRENT_LIST_DIR}/import.cmake")
+
+# Milestone H: host table v2's pixels (src/addon/media.h) over the still
+# pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
+# add-on. The AI pack itself is cmake/ai.cmake.
+add_library(mv_addon_media STATIC src/addon/media.cpp src/addon/media.h)
+target_include_directories(mv_addon_media PUBLIC src)
+target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_clip)
+
+# Milestone H: the AI pack (libmv_ai.dylib, arm64, packed and signed
+# separately; never in the app bundle). cmake/ai.cmake.
+include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
 
 # playprobe -- headless pipeline check (tools/playprobe): decoder actually used,
 # presenter counters, drift slope. Not shipped.
@@ -466,7 +480,7 @@ add_library(mv_shell STATIC
   src/abi/clip_session.h
 )
 target_include_directories(mv_shell PUBLIC src/abi/include)
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_clip)
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_addon_media mv_clip)
 add_library(mv::shell ALIAS mv_shell)
 
 find_package(imgui CONFIG REQUIRED)
@@ -619,6 +633,47 @@ add_custom_command(
   COMMENT "swift build: Import.bundle (Milestone G add-on chrome)"
   VERBATIM)
 add_custom_target(mv_import_chrome ALL DEPENDS "${MV_IMPORT_BUNDLE}/Contents/MacOS/Import" mv_import)
+
+# ---------------------------------------------------------------------------
+# Milestone H: AI.bundle, the AI pack's SwiftUI chrome (plan/17): the search
+# panel and the Settings -> Local search management view, principal class
+# MVAIChrome. Built beside libmv_ai.dylib in build/addons/ai (cmake/ai.cmake)
+# and packed with it by tools/package/addon-pack.py -- never copied into
+# MediaViewer.app. The pack is arm64 only; the chrome itself builds anywhere
+# (CI's mac-chrome job compiles it), and joins `all` only where mv_ai exists.
+# ---------------------------------------------------------------------------
+set(MV_AI_CHROME_DIR "${CMAKE_SOURCE_DIR}/src.swift/AIChrome")
+set(MV_AI_CHROME_BUILD "${CMAKE_BINARY_DIR}/swift-ai-chrome")
+set(MV_AI_BUNDLE "${CMAKE_BINARY_DIR}/addons/ai/AI.bundle")
+if(DEFINED MV_AI_VERSION)
+  set(MV_AI_CHROME_VERSION "${MV_AI_VERSION}")
+else()
+  set(MV_AI_CHROME_VERSION "1.0.0")
+endif()
+file(GLOB MV_AI_CHROME_SOURCES CONFIGURE_DEPENDS
+  "${MV_AI_CHROME_DIR}/Sources/AIChrome/*.swift"
+  "${MV_AI_CHROME_DIR}/Sources/CAiApi/include/*.h")
+add_custom_command(
+  OUTPUT "${MV_AI_BUNDLE}/Contents/MacOS/AI"
+  COMMAND swift build -c release
+          --package-path "${MV_AI_CHROME_DIR}"
+          --build-path "${MV_AI_CHROME_BUILD}"
+  COMMAND /bin/sh "${CMAKE_SOURCE_DIR}/cmake/make-import-bundle.sh"
+          "${MV_AI_CHROME_BUILD}" "${MV_AI_BUNDLE}" "${MV_AI_CHROME_VERSION}"
+          AIChrome AI org.mediaviewer.addon.ai MVAIChrome
+  DEPENDS
+    "${MV_AI_CHROME_DIR}/Package.swift"
+    ${MV_AI_CHROME_SOURCES}
+    "${CMAKE_SOURCE_DIR}/src/abi/include/mediaviewer/mediaviewer_ai.h"
+    "${CMAKE_SOURCE_DIR}/src/abi/include/mediaviewer/mediaviewer_addon.h"
+    "${CMAKE_SOURCE_DIR}/cmake/make-import-bundle.sh"
+  COMMENT "swift build: AI.bundle (Milestone H add-on chrome)"
+  VERBATIM)
+if(TARGET mv_ai)
+  add_custom_target(mv_ai_chrome ALL DEPENDS "${MV_AI_BUNDLE}/Contents/MacOS/AI" mv_ai)
+else()
+  add_custom_target(mv_ai_chrome DEPENDS "${MV_AI_BUNDLE}/Contents/MacOS/AI")
+endif()
 
 add_custom_command(TARGET mediaviewer_lab POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different

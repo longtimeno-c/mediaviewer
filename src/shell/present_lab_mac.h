@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <thread>
 
 #include "canvas/camera.h"
@@ -68,7 +69,13 @@ class present_lab_mac {
   // unaffected by the bump.
   // Returns the item id the images of this open will carry (PR 10: the UI tags
   // edit geometry with it, input_state.h edit_view).
-  std::uint64_t open_item(std::string path_utf8) noexcept;
+  std::uint64_t open_item(std::string path_utf8) noexcept { return open_item(std::move(path_utf8), -1); }
+  // Milestone H (plan/17 "Enter on a video tile opens the clip and seeks to
+  // that PTS, paused on the frame"): a clip with `moment_ms` >= 0 does not
+  // start playing; it is paused and sought exactly to the moment as the
+  // render thread adopts it, so no frame of the clip's head is shown or heard.
+  // A still ignores the moment.
+  std::uint64_t open_item(std::string path_utf8, std::int64_t moment_ms) noexcept;
 
   // [any-thread] PR 10: the full-resolution size of the still on screen, if it
   // belongs to `item`. What the edit session constrains a crop against.
@@ -137,7 +144,8 @@ class present_lab_mac {
   bool write_json_report() const noexcept;
   void submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept;
   // PR 19: opens a clip on a worker (open_media blocks on I/O) and posts it.
-  void submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept;
+  void submit_video_open(std::string path_utf8, std::uint64_t item_id,
+                         std::int64_t moment_ms) noexcept;
   // [render-thread] Frees the current clip: releases its frames now, closes the
   // media_source (which joins its threads) on a worker, never here.
   void retire_media() noexcept;
@@ -224,6 +232,9 @@ class present_lab_mac {
   struct pending_media {
     player::media_source* source = nullptr;
     std::uint64_t item = 0;
+    // Milestone H: >= 0 opens the clip paused on this moment (open_item's
+    // moment_ms), the Mac twin of the core's open_video_worker seek.
+    std::int64_t moment_ms = -1;
   };
   gfx::video_blitter_mac video_blitter_;
   std::atomic<pending_media*> pending_media_{nullptr};
@@ -297,6 +308,10 @@ class present_lab_mac {
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
   bool was_presenting_ = false;
+  // plan/17 "Yield policy": the last dropped frame holds the busy signal for
+  // background add-on work (the AI indexer) for two seconds.
+  std::uint64_t busy_drops_seen_ = 0;
+  double busy_drop_at_ = -1.0e9;
   bool painted_static_ = false;
   input_cursor input_cursor_;
   gfx::metal_idle_stats idle_stats_;

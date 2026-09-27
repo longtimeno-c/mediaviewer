@@ -132,6 +132,8 @@ class metal_pacer {
   void frame_end(const display_link_tick& tick) noexcept;
   void reset_window() noexcept;
   [[nodiscard]] metal_pace_stats stats() const noexcept;
+  // Presents that missed their vblank so far (the busy signal's hold-off).
+  [[nodiscard]] std::uint64_t dropped_frames_so_far() const noexcept { return dropped_frames_; }
 
   static constexpr std::size_t history_size = 240;
   [[nodiscard]] const std::array<float, history_size>& history() const noexcept {

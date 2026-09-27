@@ -121,38 +121,90 @@ std::vector<installed> store::list() const {
   auto dirs = io::child_directories(root_);
   if (!dirs) return out;
   for (const std::string& name : *dirs) {
-    const std::string addon_dir = io::join_path(root_, name);
-    if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) continue;  // being removed
-    auto versions = io::child_directories(addon_dir);
-    if (!versions) continue;
-    std::vector<std::string> sorted;
-    for (const std::string& v : *versions) {
-      if (v != "data") sorted.push_back(v);
-    }
-    std::sort(sorted.begin(), sorted.end(),
-              [](const std::string& a, const std::string& b) { return compare_versions(a, b) > 0; });
-    // The newest version that verifies wins; a tampered newer copy does not
-    // hide a good older one, and is reported only if nothing verifies.
     installed best;
-    bool have = false;
-    for (const std::string& v : sorted) {
-      installed i = inspect(io::join_path(addon_dir, v), name);
-      if (!have || (best.state != install_state::ok && i.state == install_state::ok)) {
-        best = std::move(i);
-        have = true;
-      }
-      if (best.state == install_state::ok) break;
-    }
-    if (have) out.push_back(std::move(best));
+    if (best_in(name, best)) out.push_back(std::move(best));
   }
   return out;
 }
 
+namespace {
+
+std::vector<std::string> versions_newest_first(const std::string& addon_dir) {
+  std::vector<std::string> sorted;
+  auto versions = io::child_directories(addon_dir);
+  if (!versions) return sorted;
+  for (const std::string& v : *versions) {
+    if (v != "data") sorted.push_back(v);
+  }
+  std::sort(sorted.begin(), sorted.end(),
+            [](const std::string& a, const std::string& b) { return compare_versions(a, b) > 0; });
+  return sorted;
+}
+
+}  // namespace
+
+bool store::best_in(const std::string& name, installed& best) const {
+  const std::string addon_dir = io::join_path(root_, name);
+  if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) return false;  // being removed
+  // The newest version that verifies wins; a tampered newer copy does not
+  // hide a good older one, and is reported only if nothing verifies.
+  bool have = false;
+  for (const std::string& v : versions_newest_first(addon_dir)) {
+    installed i = inspect(io::join_path(addon_dir, v), name);
+    if (!have || (best.state != install_state::ok && i.state == install_state::ok)) {
+      best = std::move(i);
+      have = true;
+    }
+    if (best.state == install_state::ok) break;
+  }
+  return have;
+}
+
+bool store::peek(const std::string& name, manifest& out) const {
+  const std::string addon_dir = io::join_path(root_, name);
+  if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) return false;
+  for (const std::string& v : versions_newest_first(addon_dir)) {
+    const std::string dir = io::join_path(addon_dir, v);
+    auto bytes = read_small(io::join_path(dir, "manifest.json"));
+    auto sig = read_small(io::join_path(dir, "manifest.json.sig"));
+    if (!bytes || !sig) continue;
+    const decision d = check_manifest(*bytes, *sig, key_, host_api_);
+    if (d.trusted() || d.why == rejection::needs_update) {
+      out = d.m;
+      return true;
+    }
+  }
+  return false;
+}
+
 result<installed> store::find(const std::string& id) const {
+  auto dirs = io::child_directories(root_);
+  if (dirs) {
+    for (const std::string& name : *dirs) {
+      manifest m;
+      if (!peek(name, m) || m.id != id) continue;
+      installed best;
+      if (best_in(name, best)) return best;
+    }
+  }
+  // Not found by a signed manifest: a tampered or half-removed folder still
+  // answers as list() reports it (state invalid), not as absent.
   for (installed& i : list()) {
     if (i.id == id) return std::move(i);
   }
   return err(status::invalid_arg);
+}
+
+store::family_room store::family_usage(std::string_view family) const {
+  family_room room;
+  room.ceiling = family_ceiling(family);
+  auto dirs = io::child_directories(root_);
+  if (!dirs) return room;
+  for (const std::string& name : *dirs) {
+    manifest m;
+    if (peek(name, m) && family_of(m) == family) room.used += m.installed_size;
+  }
+  return room;
 }
 
 result<std::string> store::make_staging() const {
@@ -186,6 +238,21 @@ result<installed> store::install(const std::string& staged_dir) const {
       current && current->state == install_state::ok &&
       compare_versions(current->version, d.m.version) > 0) {
     return err(status::corrupt);
+  }
+
+  // plan/17: a family (the AI pack's Core, vendor piece and Faces) has one
+  // installed-size ceiling. The manifest's own size is signed; so are the
+  // installed ones this sums. Replacing a version replaces its size.
+  if (const std::uint64_t ceiling = family_ceiling(family_of(d.m)); ceiling != 0) {
+    std::uint64_t total = d.m.installed_size;
+    if (auto dirs = io::child_directories(root_)) {
+      for (const std::string& name : *dirs) {
+        manifest other;
+        if (!peek(name, other) || other.id == d.m.id) continue;
+        if (family_of(other) == family_of(d.m)) total += other.installed_size;
+      }
+    }
+    if (total > ceiling) return err(status::unsupported_format);
   }
 
   const std::string name = dir_name_for(d.m);

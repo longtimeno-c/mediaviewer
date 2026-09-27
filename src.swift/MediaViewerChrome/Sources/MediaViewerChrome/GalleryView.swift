@@ -30,7 +30,7 @@ struct GalleryView: View {
       let mixed = !store.folders.isEmpty && !store.names.isEmpty
       let foldersOnly = !store.folders.isEmpty && store.names.isEmpty
       VStack(spacing: 0) {
-        if !store.crumbs.isEmpty {
+        if !store.crumbs.isEmpty || store.listTitle != nil {
           PathBar()
         }
         if (mixed || foldersOnly), let query = store.folderQuery {

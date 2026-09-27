@@ -94,6 +94,9 @@ public static partial class IslandHost
             _ = DwmSetWindowAttribute(_themeWindow, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */,
                                      ref useDark, sizeof(int));
         }
+
+        // Milestone H: an add-on's own window follows (IAddonHost2.ThemeChanged).
+        RaiseHostThemeChanged();
     }
 
     private static void Set(ChromeColour role, Color colour)

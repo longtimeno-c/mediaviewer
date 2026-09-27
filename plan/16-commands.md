@@ -211,6 +211,9 @@ next one slides into its place (the previous one at the end).
 | Windows | Mac | Command |
 |---|---|---|
 | `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
+| `Ctrl+F` | `⌘F` | Local search (AI pack, plan/17): the search panel, keyboard-focused. Only while the pack is loaded |
+| `Ctrl+Shift+F` | `⌘⇧F` | Find similar to the still or paused frame on screen |
+| `N` / `Shift+N` | `N` / `⇧N` | On a clip opened from results: next / previous matching moment |
 | `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
 
 Both rows are in the one command table and are listed, routed and shown in `?` / Settings **only while

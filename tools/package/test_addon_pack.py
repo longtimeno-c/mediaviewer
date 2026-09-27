@@ -140,5 +140,94 @@ class AddonPackTest(unittest.TestCase):
             self.pack()
 
 
+class AiPackTest(unittest.TestCase):
+    """Milestone H (plan/17 "The AI pack"): the Core pack and its pieces."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        key = Ed25519PrivateKey.generate()
+        seed = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                                 serialization.NoEncryption())
+        self.key_file = self.tmp / "addon.key"
+        self.key_file.write_text(seed.hex())
+        self.out = self.tmp / "dist"
+        core = self.tmp / "ai"
+        (core / "models/clip-b32").mkdir(parents=True)
+        (core / "models/clip-tokenizer").mkdir(parents=True)
+        for name in ("mv_ai.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll",
+                     "MediaViewer.Ai.Chrome.dll"):
+            (core / name).write_bytes(b"MZ" + os.urandom(512))
+        (core / "MediaViewer.Ai.Chrome.deps.json").write_text("{}")
+        (core / "sqlite3.dll").write_bytes(b"not shipped: the app has it")
+        (core / "models/clip-b32/image.onnx").write_bytes(os.urandom(1024))
+        (core / "models/clip-b32/model.json").write_text("{}")
+        (core / "models/clip-tokenizer/vocab.json").write_text("{}")
+        (core / "licences.json").write_text(json.dumps({
+            "models/clip-b32/image.onnx": "MIT", "models/clip-b32/model.json": "GPL-2.0-or-later",
+            "models/clip-tokenizer/vocab.json": "MIT"}))
+        self.core = core
+        faces = self.tmp / "ai-faces"
+        (faces / "models/faces").mkdir(parents=True)
+        (faces / "models/faces/yunet.onnx").write_bytes(os.urandom(256))
+        (faces / "licences.json").write_text(json.dumps({"models/faces/yunet.onnx": "MIT"}))
+        self.faces = faces
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def pack(self, addon, src, platform="win-x64"):
+        addon_pack.main(["pack", "--addon", addon, "--platform", platform, "--src", str(src),
+                         "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
+        return json.loads((self.out / f"mediaviewer-addon-{addon}-{platform}.json").read_bytes())
+
+    def test_core_pack_lists_runtime_models_and_licences(self):
+        m = self.pack("ai", self.core)
+        self.assertEqual(m["id"], "ai")
+        self.assertEqual(m["host_api"], {"min": 2, "max": 2})
+        self.assertEqual(m["native"], "mv_ai.dll")
+        self.assertNotIn("part_of", m)
+        lic = {f["path"]: f["licence"] for f in m["files"]}
+        self.assertEqual(lic["onnxruntime.dll"], "MIT")
+        self.assertEqual(lic["models/clip-b32/image.onnx"], "MIT")
+        self.assertEqual(lic["mv_ai.dll"], "GPL-2.0-or-later")
+        self.assertNotIn("sqlite3.dll", lic)
+        self.assertNotIn("licences.json", lic)
+
+    def test_a_piece_has_no_native_entry_and_names_its_parent(self):
+        m = self.pack("ai-faces", self.faces)
+        self.assertEqual(m["part_of"], "ai")
+        self.assertEqual(m["native"], "")
+        self.assertEqual(m["chrome"], "")
+        self.assertEqual(m["name"], "AI Faces")
+
+    def test_the_mac_pack_is_arm64_only(self):
+        m = self.pack("ai-faces", self.faces, "macos")
+        self.assertEqual(m["arch"], "arm64")
+
+    def test_non_commercial_weights_fail_the_pack(self):
+        (self.faces / "licences.json").write_text(json.dumps({"models/faces/yunet.onnx": "CC-BY-NC-4.0"}))
+        with self.assertRaises(ValueError):
+            self.pack("ai-faces", self.faces)
+
+    def test_the_family_ceiling(self):
+        core = self.pack("ai", self.core)
+        faces = self.pack("ai-faces", self.faces)
+        self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),
+                                          str(self.out / "mediaviewer-addon-ai-faces-win-x64.json")]), 0)
+        big = dict(faces)
+        big["id"] = "ai-cuda"
+        big["installed_size"] = 3_000_000_000 - core["installed_size"] + 1
+        big["files"] = [{"path": "onnxruntime_providers_cuda.dll", "sha256": "0" * 64, "size": 1, "licence": "MIT"}]
+        (self.out / "big.json").write_text(json.dumps(big))
+        self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),
+                                          str(self.out / "big.json")]), 1)
+
+    def test_model_list_passes_the_licence_gate(self):
+        gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
+        mod = importlib.util.module_from_spec(gate)
+        gate.loader.exec_module(mod)
+        self.assertEqual(mod.main(["check"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

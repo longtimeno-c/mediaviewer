@@ -18,6 +18,7 @@
 #include "abi/guard.h"
 #include "addon/host.h"
 #include "addon/manifest.h"
+#include "addon/media.h"
 #include "addon/store.h"
 #include "core/json.h"
 #include "image/thumb.h"
@@ -173,6 +174,9 @@ MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32
       w.key("state").string(state_name(i.state));
       w.key("why").string(mv::addon::rejection_name(i.why));
       w.key("loaded").boolean(loaded);
+      // Milestone H: pieces name their parent ("ai-faces" is part_of "ai").
+      w.key("part_of").string(i.m.part_of);
+      w.key("installed_size").integer(static_cast<std::int64_t>(i.m.installed_size));
       w.end_object();
     }
     w.end_array();
@@ -245,6 +249,19 @@ MV_API mv_status MV_CALL mv_addon_install(const char* staged_dir_utf8) {
   }));
 }
 
+MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out_used,
+                                               uint64_t* out_ceiling) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_family_usage", [&] {
+    MV_REQUIRE(family && out_used && out_ceiling, "bad arguments");
+    auto s = open_store();
+    if (!s) return s.error();
+    const auto room = s->family_usage(family);
+    *out_used = room.used;
+    *out_ceiling = room.ceiling;
+    return status::ok;
+  }));
+}
+
 MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
   return static_cast<mv_status>(mv::abi::guard("mv_addon_unload", [&] {
     MV_REQUIRE(id, "id is required");
@@ -304,6 +321,11 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
         mv::abi::push_addon_completion(session, c);
       };
       if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
+      // Host table v2 (Milestone H): pixels from the viewer's own decoders.
+      svc.still_rgb = &mv::addon::media::decode_still;
+      svc.open_sampler = &mv::addon::media::open_sampler;
+      svc.video_frame = &mv::addon::media::video_frame;
+      svc.moment_thumbnail = &mv::addon::media::moment_thumbnail;
       auto loaded = mv::addon::loaded_addon::load(*s, id, std::move(svc));
       if (!loaded) return loaded.error();
       (void)mv_session_retain(session);

@@ -325,6 +325,145 @@ mv_status MV_CALL t_library(void* host, char* out, uint32_t cap) {
   });
 }
 
+// ---- v2: pixels -----------------------------------------------------------
+
+// Copies an image into the caller's buffer; a short buffer reports its size.
+mv_status give_rgb(const rgb_image& img, uint8_t* out, uint64_t cap, uint32_t* w, uint32_t* h) {
+  if (w) *w = img.width;
+  if (h) *h = img.height;
+  if (!out || cap < img.rgb.size()) return MV_ERR_INVALID_ARG;
+  std::memcpy(out, img.rgb.data(), img.rgb.size());
+  return MV_OK;
+}
+
+mv_status MV_CALL t_still_rgb(void* host, const char* path, uint32_t max_edge, uint8_t* out,
+                              uint64_t cap, uint32_t* w, uint32_t* h) {
+  return guarded([&] {
+    if (!path || max_edge == 0) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().still_rgb;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto img = fn(path, max_edge);
+    return img ? give_rgb(*img, out, cap, w, h) : to_mv(img.error());
+  });
+}
+
+// A sampler handed across the table: the host's object plus the one frame
+// that did not fit the caller's buffer, kept until it asks again.
+struct sampler_box {
+  std::unique_ptr<video_sampler> s;
+  bool pending = false;
+  sampled_frame held;
+};
+
+mv_status MV_CALL t_sampler_open(void* host, const char* path, const mv_addon_sampler_options* o,
+                                 mv_addon_video_info* info, void** out) {
+  return guarded([&] {
+    if (!path || !out) return MV_ERR_INVALID_ARG;
+    *out = nullptr;
+    const auto& fn = self(host).services().open_sampler;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    sampler_options opts;
+    if (o && o->struct_size >= sizeof(mv_addon_sampler_options)) {
+      opts.min_gap_ms = o->min_gap_ms;
+      opts.max_gap_ms = o->max_gap_ms;
+      opts.max_long_edge = o->max_long_edge ? o->max_long_edge : 512;
+      opts.start_ms = o->start_ms;
+    }
+    auto s = fn(path, opts);
+    if (!s) return to_mv(s.error());
+    if (info) {
+      const video_facts& f = (*s)->facts();
+      *info = mv_addon_video_info{};
+      info->duration_ms = f.duration_ms;
+      info->width = f.width;
+      info->height = f.height;
+      info->hdr = f.hdr ? 1u : 0u;
+    }
+    auto box = std::make_unique<sampler_box>();
+    box->s = std::move(*s);
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_sampler_next(void*, void* sampler, uint8_t* out, uint64_t cap,
+                                 mv_addon_sampled_frame* frame) {
+  return guarded([&] {
+    if (!sampler || !frame) return MV_ERR_INVALID_ARG;
+    auto& box = *static_cast<sampler_box*>(sampler);
+    if (!box.pending) {
+      auto f = box.s->next();
+      if (!f) return to_mv(f.error());
+      box.held = std::move(*f);
+      box.pending = true;
+    }
+    const sampled_frame& f = box.held;
+    *frame = mv_addon_sampled_frame{};
+    frame->width = f.image.width;
+    frame->height = f.image.height;
+    frame->pts_ms = f.pts_ms;
+    frame->pts_tb = f.pts_tb;
+    frame->tb_num = f.tb_num;
+    frame->tb_den = f.tb_den;
+    frame->flags = f.end ? MV_ADDON_FRAME_END
+                         : (f.keyframe ? MV_ADDON_FRAME_KEYFRAME : MV_ADDON_FRAME_GRID_FILL);
+    if (f.end) {
+      box.pending = false;
+      return MV_OK;
+    }
+    if (!out || cap < f.image.rgb.size()) return MV_ERR_INVALID_ARG;  // kept for the retry
+    std::memcpy(out, f.image.rgb.data(), f.image.rgb.size());
+    box.pending = false;
+    return MV_OK;
+  });
+}
+
+void MV_CALL t_sampler_close(void*, void* sampler) {
+  try {
+    delete static_cast<sampler_box*>(sampler);
+  } catch (...) {
+  }
+}
+
+mv_status MV_CALL t_video_frame(void* host, const char* path, int64_t pts_ms, uint32_t max_edge,
+                                uint8_t* out, uint64_t cap, uint32_t* w, uint32_t* h) {
+  return guarded([&] {
+    if (!path || max_edge == 0) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().video_frame;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto img = fn(path, pts_ms, max_edge);
+    return img ? give_rgb(*img, out, cap, w, h) : to_mv(img.error());
+  });
+}
+
+mv_status MV_CALL t_moment_thumb(void* host, const char* path, int64_t pts_ms, const uint8_t* rgb,
+                                 uint32_t width, uint32_t height, char* out, uint32_t cap) {
+  return guarded([&] {
+    if (!path) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().moment_thumbnail;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    rgb_image img;
+    if (rgb) {
+      if (width == 0 || height == 0 || width > 16384 || height > 16384) return MV_ERR_INVALID_ARG;
+      img.width = width;
+      img.height = height;
+      img.rgb.assign(rgb, rgb + static_cast<std::size_t>(width) * height * 3);
+    }
+    auto r = fn(path, pts_ms, rgb ? &img : nullptr);
+    return r ? copy_out(*r, out, cap) : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_piece_dir(void* host, const char* piece, char* out, uint32_t cap) {
+  return guarded([&] {
+    if (!piece) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().piece_dir;
+    if (!fn) return MV_ERR_IO;
+    auto r = fn(piece);
+    return r ? copy_out(*r, out, cap) : to_mv(r.error());
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -356,7 +495,16 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.data_dir = &t_data_dir;
   api_.default_library_dir = &t_library;
   api_.log = &t_log;
+  api_.decode_still_rgb = &t_still_rgb;
+  api_.sampler_open = &t_sampler_open;
+  api_.sampler_next = &t_sampler_next;
+  api_.sampler_close = &t_sampler_close;
+  api_.video_frame_rgb = &t_video_frame;
+  api_.moment_thumbnail = &t_moment_thumb;
+  api_.piece_dir = &t_piece_dir;
 }
+
+void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
 
 host_table::~host_table() { stop_watch(); }
 
@@ -411,16 +559,29 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   if (info.state == install_state::needs_update) return err(status::unsupported_format);
   if (info.state != install_state::ok) return err(status::corrupt);
   if (services.data_dir.empty()) services.data_dir = info.data_dir;
+  if (!services.piece_dir) {
+    // Only this add-on's own verified pieces; a store copy is a root, a key
+    // and a version, and every call re-verifies (plan/18 verify-before-load).
+    services.piece_dir = [s, parent = info.id](const std::string& piece) -> result<std::string> {
+      MV_TRY(installed p, s.find(piece));
+      if (p.m.part_of != parent) return err(status::invalid_arg);
+      if (p.state != install_state::ok) return err(status::corrupt);
+      return p.dir;
+    };
+  }
   std::unique_ptr<loaded_addon> out(new loaded_addon());
   out->info_ = info;
   out->table_ = std::make_unique<host_table>(std::move(services));
+  // The newest table both sides know (mediaviewer_addon.h "Negotiation").
+  const std::uint32_t version = negotiated_host_api(info.m, MV_ADDON_HOST_API);
+  out->table_->set_negotiated(version);
   MV_TRY(shared_library lib,
          shared_library::open(io::join_path(info.dir, io::native_relative(info.m.native))));
   out->lib_ = std::move(lib);
   auto get = reinterpret_cast<mv_addon_get_fn>(out->lib_.symbol(MV_ADDON_ENTRY_SYMBOL));
   if (!get) return err(status::corrupt);
   mv_addon_api api{};
-  const mv_status st = get(MV_ADDON_HOST_API, out->table_->api(), &api);
+  const mv_status st = get(version, out->table_->api(), &api);
   if (st != MV_OK) return err(static_cast<status>(st));
   if (api.struct_size < sizeof(mv_addon_api) || !api.query || !api.shutdown) {
     if (api.shutdown && api.addon) api.shutdown(api.addon);

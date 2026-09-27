@@ -89,6 +89,9 @@ final class FolderStore: ObservableObject {
   @Published private(set) var folderQuery: String?
   /// A staged update is waiting for the user (plan/13 "Update ready — restart").
   @Published private(set) var updateReady = false
+  /// Milestone H: a search result list is open instead of a folder; its title
+  /// (the query, or "Similar to …") replaces the breadcrumb. Nil for a folder.
+  @Published private(set) var listTitle: String?
 
   private var cards: [String: FolderCard] = [:]
   private var requestedCards: Set<String> = []
@@ -132,6 +135,7 @@ final class FolderStore: ObservableObject {
     let listingChanged = generation != listingGeneration || count != names.count
     if listingChanged {
       listingGeneration = generation
+      reloadListTitle()
       reloadNames(count: count)
       reloadFolders()
     }
@@ -157,6 +161,27 @@ final class FolderStore: ObservableObject {
       prefetch(around: index)
     }
   }
+
+  /// A result list and a folder (or two lists) can hold different files under
+  /// one name, and slots are keyed by name: moving between them starts clean.
+  private func reloadListTitle() {
+    let title: String? = mv_chrome_list_open() ? Self.bridgeString { mv_chrome_list_title($0, $1) } : nil
+    guard title != listTitle else { return }
+    listTitle = title
+    slots.removeAll()
+    requested.removeAll()
+    decoded.removeAll()
+  }
+
+  nonisolated private static func bridgeString(_ call: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> String {
+    let need = Int(call(nil, 0))
+    guard need > 0 else { return "" }
+    var buf = [CChar](repeating: 0, count: need + 1)
+    _ = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, Int32($0.count)) }
+    return String(cString: buf)
+  }
+
+  func closeList() { mv_chrome_close_list() }
 
   private func reloadNames(count: Int) {
     var fresh: [String] = []

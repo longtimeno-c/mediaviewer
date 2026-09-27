@@ -38,6 +38,32 @@ class folder_model {
   [[nodiscard]] expected open(std::string_view dir_utf8, job_system& jobs) noexcept;
   void close() noexcept;
 
+  // Milestone H (plan/17 "UI and commands"; the Mac twin of mv_folder_open_list
+  // in abi/abi.cpp): a listing that is not a directory -- search results. The
+  // items keep the order given (best match first; no sort), are not paired
+  // and are not watched; a file that no longer exists drops out. An item with
+  // a moment (>= 0) is a clip that opens paused on that frame. directory() is
+  // "" while a list is open; open() of a directory ends it. Real I/O (a stat
+  // per item, the thumbnail cache): call it on a worker, as open() is.
+  struct list_entry {
+    std::string path_utf8;
+    std::int64_t moment_ms = -1;
+  };
+  [[nodiscard]] expected open_list(std::string title_utf8, std::vector<list_entry> entries,
+                                   job_system& jobs) noexcept;
+
+  // Everything a relist replaced, read under one lock so the pieces agree
+  // (moments[i] belongs to items[i]; empty unless is_list).
+  struct listing {
+    std::vector<io::dir_entry> items;
+    std::vector<io::subdir_entry> subdirs;
+    std::vector<std::int64_t> moments;
+    std::string title;
+    std::string dir;
+    bool is_list = false;
+  };
+  [[nodiscard]] listing snapshot() const;
+
   // A snapshot of the current listing. Copies under the lock — callers are
   // expected to poll this at UI-refresh cadence, not per frame; a filmstrip
   // holding thousands of items should diff by name/mtime rather than take
@@ -85,6 +111,10 @@ class folder_model {
     std::string dir;
     std::vector<io::dir_entry> items;
     std::vector<io::subdir_entry> subdirs;
+    // Milestone H result lists: parallel to `items`, and the list's title.
+    std::vector<std::int64_t> moments;
+    std::string list_title;
+    bool is_list = false;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
     // Bumped by every open(): `thumbs` is one mutable object re-pointed at a

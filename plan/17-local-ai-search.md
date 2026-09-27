@@ -365,6 +365,107 @@ intact and leaves no face vectors on disk (checked by scanning the index and pac
 a forced crash minidump contains no face vectors or crops; PR 1's present-loop holds while
 faces are indexing.
 
+## Implementation notes (2026-09-26, Milestone H branch `milestone-h-local-ai-search`)
+
+All five slices (PRs 20-24) are written as one change, like Import's four, because they share
+one engine. **Windows: built and tested. Mac: written, not yet compiled** (the Mac checklist is
+`src.swift/AIChrome/MAC-VALIDATION.md`). Every present-loop gate and hardware timing on both
+platforms is still owed unless listed as done below.
+
+### PR 20 spike results (measured on this dev box: Ryzen 16 threads, RTX 4070, ORT 1.30)
+
+Eval: 1,000 COCO Karpathy-test images, text -> image with each image's first caption, plus
+eight labelled natural-language queries (P@10 by caption keywords, 1,225 images).
+
+| Tower (ONNX, Xenova export of OpenAI CLIP, MIT) | R@1 | R@5 | R@10 | mean P@10 | "guy on a skateboard" P@10 | CPU img/s (4 thr) | CUDA img/s | size |
+|---|---|---|---|---|---|---|---|---|
+| ViT-B/32 fp32 | 0.494 | 0.777 | 0.888 | 0.86 | 1.0 | 20.1 | - | 606 MB |
+| **ViT-B/32 fp16** | 0.493 | 0.777 | 0.888 | 0.86 | 1.0 | 23.3 | 150.8 | 303 MB |
+| ViT-B/32 int8 | 0.398 | 0.695 | 0.822 | 0.88 | 1.0 | 31.5 | - | 154 MB |
+| ViT-B/16 fp16 | 0.500 | 0.794 | 0.885 | 0.84 | - | 8.5 | 135.7 | 300 MB |
+| **ViT-L/14 fp16** | 0.555 | 0.812 | 0.905 | 0.90 | 1.0 | 1.9 | 98.0 | 856 MB |
+
+**Selected (owner rule: "prefer the better model up to 3 GB when the recall gain is real"):**
+both **ViT-L/14 fp16** (quality "High", +6 points R@1 over B/32) and **ViT-B/32 fp16** ("Fast")
+ship in the Core pack. Auto picks High where an accelerated provider runs it (CUDA, Core ML) and
+Fast on CPU only, where L/14's 1.9 img/s would take days on a 300,000-asset library. int8
+rejected (-6.6 points R@10); B/16 rejected (no R@10 gain at 2.7x B/32's CPU cost). Stored
+vectors are int8 with a per-vector scale: measured loss <= 0.5 points R@1 on both towers.
+Changing quality migrates (PR 23): the old index answers until the new one completes.
+
+**"Nothing found" (the min-score cutoff).** An absolute cosine floor does not separate
+nonsense from real queries on CLIP (their top scores overlap), and a collection z-score does
+little better. What works: each stored vector also stores its best cosine against five generic
+prompts ("a photo.", ...); a query is "nothing found" unless one of its top ten rows beats its
+generic score by **0.04**, and a result row must beat it by 0.015. At 0.04: 96-99 % of real
+queries kept, 69-100 % of nonsense rejected (B/32 and L/14, 300 and 1,000 images). Recorded in
+each model.json.
+
+**Recall target for PR 22 (recorded here as plan/17 asked):** on the labelled set, the top five
+for each natural-language query hold at least four relevant items (P@5 >= 0.8), "guy on a
+skateboard" included; the COCO-1k proxy R@10 >= 0.88 (Fast) / >= 0.90 (High). The owner's real
+camera-dump eval set (kept out of git) is still to be labelled and run.
+
+**Licence gate:** CLIP weights MIT (OpenAI's model card discourages "deployed use"; that is a
+usage note, not a licence term; flagged to the owner), YuNet MIT, SFace Apache-2.0, ONNX
+Runtime MIT. `tools/package/ai-models.py check` enforces the allow-list; a CC-BY-NC file fails
+the pack (tested).
+
+**Sizes:** Core ~1.18 GB installed (both towers, tokenizer, ORT CPU, mv_ai, chrome), People
+piece 39 MB, NVIDIA piece ~205 MB (ORT's CUDA 13 build only: the CUDA runtime and cuDNN are
+**user-supplied**, NVIDIA's EULA review against GPL-2.0-or-later not done). Worst supported
+combination ~1.4-1.85 GB of 3 GB. OpenVINO has a code path but no piece yet (no Intel dev box).
+**macOS: arm64 only** - Microsoft ships no x86_64 macOS build of ORT 1.30; Intel Macs are not
+offered Local search.
+
+### What was built
+
+- **Host table v2** (`mediaviewer_addon.h`): stills and sampled video frames as pixels, moment
+  thumbnails in the existing JPEG-512 cache (`path#t=ms` rows), and verified family pieces.
+  Versions only append; the host serves every layout from 1 up and negotiates, so Import 1.0.0
+  keeps loading (plan/18). Manifests gain `part_of` (pieces) and `arch`; the store enforces the
+  3 GB family ceiling and hashes only the add-on being loaded.
+- **Sampler** (`src/edit/clip_sample.*`): its own software decoder, keyframes via
+  `skip_frame = NONKEY`, grid fill for long GOPs from kept packets, min/max gap, rotation, SAR,
+  the SDR tone map for PQ/HLG (the clip core's `rgba_converter`, now shared). Hardware decode
+  (D3D11VA / VideoToolbox) for the sampler is a later optimisation, not done.
+- **`src/infer`**: ORT loaded at run time (never linked; telemetry events off), the CLIP BPE
+  tokenizer (matches the checkpoint's tokenizer.json on 19 golden strings), PIL-exact bicubic
+  preprocessing, CPU / CUDA / OpenVINO / Core ML sessions, the Auto self-test (agree with CPU
+  within cosine 0.99, and be faster, else CPU with the reason), YuNet + SFace.
+- **`src/addons/ai`** (`mv_ai`, `mv.ai.1` in `mediaviewer_ai.h`): index.db, remembered roots
+  with delta scans and pairing (one row per Live Photo / RAW+JPEG pair), background workers at
+  OS background priority yielding to the viewer (and for two seconds after any dropped frame),
+  battery and user pause, dedupe, resume per asset, stale detection, the in-memory int8 matrix
+  (deviation: loaded, not mapped; ~77 MB at 100 k L/14 frames), per-clip grouping, find-similar,
+  people in a separate faces.db with rename / merge / not-this-person / split, one-click
+  deletion.
+- **Results in the gallery**: base ABI 0.11 `mv_folder_open_list` - the same gallery, filmstrip,
+  keys and thumbnails over a result list; a clip opens paused on its moment.
+- **Commands** (plan/16): `Ctrl+F` search, `Ctrl+Shift+F` find similar, `N` / `Shift+N` next /
+  previous matching moment; listed only while the pack is loaded.
+- **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
+  status pill, scrub-bar match dots, Settings -> Local search with per-piece install, budget
+  bar, compute / quality, roots, People.
+
+### Verified on Windows (2026-09-26)
+
+- Embeddings within cosine 0.999 of the ORT-Python reference on CPU for both towers and
+  three cards; CUDA 0.9991-0.99999 (`mv_ai_tests`, `tests/data/ai/reference.json`).
+- Labelled ranking: >= 4 of top 5 relevant for every query on both towers, "guy on a
+  skateboard" included; nonsense finds nothing.
+- Engine suite (fake models over the real host table): indexing, resume without redoing
+  committed frames, re-queue on edit, delta on reopen, removal, scope, grouping, dedupe, yield,
+  pause, migration never mixing specs, clear, size cap, find-similar, people corrections that
+  persist, and face deletion leaving no faces.db.
+- Tamper / extra-file / non-pinned-key refusal and the ceiling (`test_addon_pack.py`), Import's
+  41 cases, the full `mv_tests` suite, a full Release build with `/W4 /WX`.
+
+Owed (both platforms unless stated): the present-loop gates idle with the pack and while
+indexing, the 1-hour 4K HEVC timing, the 300,000-asset range, `< 100 ms` over 100 k frames on
+target hardware, Enter-lands-on-frame, the keyboard-only flow, HDR clip check, the minidump
+check, the index / manifest fuzzers, Core ML coverage and throughput, and every Mac build.
+
 ## Open decisions (owner)
 
 1. ~~**D3D12 / DirectML.**~~ **Settled 2026-09-24:** vendor providers (OpenVINO, CUDA/TensorRT)

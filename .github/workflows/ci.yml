@@ -70,6 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: swift build --package-path src.swift/MediaViewerChrome -c release
       - run: swift build --package-path src.swift/ImportChrome -c release
+      - run: swift build --package-path src.swift/AIChrome -c release
 
   windows-chrome:
     name: WinUI chrome

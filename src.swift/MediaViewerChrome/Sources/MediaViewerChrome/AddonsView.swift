@@ -6,9 +6,134 @@
 // cookies, no identifier, nothing about the user's files (rule 6). The host
 // (src/shell/addons_mac.mm) checks the signed manifest before the archive is
 // requested and every extracted file before install, and again at every load.
+//
+// Milestone H: the channel steps live in AddonChannel so Settings → Local
+// search (LocalSearchView.swift) installs the AI pack's pieces the same way.
+// Import's behaviour is unchanged.
 import Foundation
 import SwiftUI
 import MVChromeBridge
+
+/// One release channel: the fixed URLs of an add-on or piece and the steps
+/// every add-on shares. Manifest and signature first; the archive only after
+/// the host trusts them; size and SHA-256 before it is opened; the host's full
+/// verify-and-install last. A plain GET of a fixed URL: no query, no cookies,
+/// no identifier (rule 6, plan/17 "The AI pack").
+struct AddonChannel: Sendable {
+  static let base = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/"
+  /// "mediaviewer-addon-import-macos", "mediaviewer-addon-ai-macos", …
+  let name: String
+  private var url: String { Self.base + name }
+
+  enum Probe: Equatable, Sendable {
+    case available(archiveBytes: Int, installedBytes: Int)
+    case notPublished, needsNewerApp, unreachable
+  }
+
+  struct AddonError: Error { let text: String }
+  /// The channel has no such add-on (a 404): say so rather than blaming the
+  /// connection.
+  struct NotPublished: Error {}
+
+  static let session: URLSession = {
+    let c = URLSessionConfiguration.ephemeral
+    c.httpCookieAcceptPolicy = .never
+    c.httpShouldSetCookies = false
+    c.urlCache = nil
+    c.httpAdditionalHeaders = ["User-Agent": "MediaViewer"]
+    return URLSession(configuration: c)
+  }()
+
+  /// nil for a 404; throws for anything else that is not a 200.
+  static func getIfPresent(_ url: String) async throws -> Data? {
+    let (data, response) = try await session.data(from: URL(string: url)!)
+    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+    if code == 404 { return nil }
+    guard code == 200 else { throw URLError(.badServerResponse) }
+    return data
+  }
+
+  static func checkManifest(_ manifest: Data, _ sig: Data) -> [String: Any] {
+    let json = manifest.withUnsafeBytes { m in
+      sig.withUnsafeBytes { s in
+        AddonStore.readString {
+          mv_addons_check_manifest(m.bindMemory(to: UInt8.self).baseAddress, Int32(m.count),
+                                   s.bindMemory(to: UInt8.self).baseAddress, Int32(s.count), $0, $1)
+        }
+      }
+    }
+    return (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+  }
+
+  /// Two small GETs, then the host verifies the manifest. Only a manifest that
+  /// verifies counts: nothing is offered that does not exist or that the host
+  /// would refuse.
+  func probe() async -> Probe {
+    do {
+      guard let manifest = try await Self.getIfPresent(url + ".json"),
+            let sig = try await Self.getIfPresent(url + ".json.sig")
+      else { return .notPublished }
+      let obj = Self.checkManifest(manifest, sig)
+      if obj["ok"] as? Bool == true,
+         let archive = obj["archive"] as? [String: Any], let size = archive["size"] as? Int {
+        return .available(archiveBytes: size, installedBytes: obj["installed_size"] as? Int ?? 0)
+      }
+      // A signed add-on for a newer host API; anything else that does not
+      // verify is, to this build, nothing to offer.
+      return obj["why"] as? String == "needs_update" ? .needsNewerApp : .notPublished
+    } catch {
+      return .unreachable
+    }
+  }
+
+  // Manifest (signature first), archive (size + SHA-256 before it is
+  // opened), extraction into staging with ditto, then the host's full
+  // verify-and-install. Worker only.
+  func downloadAndInstall() async throws {
+    guard let manifest = try await Self.getIfPresent(url + ".json"),
+          let sig = try await Self.getIfPresent(url + ".json.sig")
+    else { throw NotPublished() }
+    let obj = Self.checkManifest(manifest, sig)
+    guard obj["ok"] as? Bool == true,
+          let archive = obj["archive"] as? [String: Any],
+          let name = archive["path"] as? String,
+          let sha = archive["sha256"] as? String,
+          let size = archive["size"] as? Int
+    else {
+      throw AddonError(text: "The download did not verify, so nothing was installed.")
+    }
+    let staging = AddonStore.readString { mv_addons_make_staging($0, $1) }
+    guard !staging.isEmpty else { throw AddonError(text: "Could not prepare the add-ons folder.") }
+    let zip = staging + ".zip"
+    defer {
+      try? FileManager.default.removeItem(atPath: zip)
+      try? FileManager.default.removeItem(atPath: staging)
+    }
+    let (tmp, response) = try await Self.session.download(from: URL(string: Self.base + name)!)
+    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NotPublished() }
+    try FileManager.default.moveItem(at: tmp, to: URL(fileURLWithPath: zip))
+    let attrs = try FileManager.default.attributesOfItem(atPath: zip)
+    let got = AddonStore.readString { mv_addons_sha256(zip, $0, $1) }
+    guard (attrs[.size] as? Int) == size, got == sha else {
+      throw AddonError(text: "The download did not verify, so nothing was installed.")
+    }
+    // Authenticated bytes only from here. ditto keeps the bundle's code
+    // signature intact, which library validation checks at load.
+    let ditto = Process()
+    ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+    ditto.arguments = ["-x", "-k", zip, staging]
+    try ditto.run()
+    ditto.waitUntilExit()
+    guard ditto.terminationStatus == 0 else {
+      throw AddonError(text: "The download could not be unpacked.")
+    }
+    try manifest.write(to: URL(fileURLWithPath: staging + "/manifest.json"))
+    try sig.write(to: URL(fileURLWithPath: staging + "/manifest.json.sig"))
+    guard mv_addons_install(staging) else {
+      throw AddonError(text: "The download did not verify, so nothing was installed.")
+    }
+  }
+}
 
 @MainActor
 final class AddonStore: ObservableObject {
@@ -35,8 +160,7 @@ final class AddonStore: ObservableObject {
   /// The card hint checks the channel at most once a session.
   private var hintProbed = false
 
-  nonisolated private static let base = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/"
-  nonisolated private static let channel = base + "mediaviewer-addon-import-macos"
+  nonisolated private static let channel = AddonChannel(name: "mediaviewer-addon-import-macos")
   private var timer: Timer?
 
   private init() {
@@ -104,42 +228,17 @@ final class AddonStore: ObservableObject {
     probing = true
     offer = .checking
     Task.detached {
-      let result = await Self.readOffer()
+      let result = await Self.channel.probe()
       await MainActor.run {
         self.probing = false
-        self.offer = result
-      }
-    }
-  }
-
-  nonisolated private static func readOffer() async -> Offer {
-    do {
-      guard let manifest = try await getIfPresent(channel + ".json"),
-            let sig = try await getIfPresent(channel + ".json.sig")
-      else { return .notPublished }
-      let obj = checkManifest(manifest, sig)
-      if obj["ok"] as? Bool == true,
-         let archive = obj["archive"] as? [String: Any], let size = archive["size"] as? Int {
-        return .available(archiveBytes: size)
-      }
-      // A signed Import for a newer host API; anything else that does not
-      // verify is, to this build, nothing to offer.
-      return obj["why"] as? String == "needs_update" ? .needsNewerApp : .notPublished
-    } catch {
-      return .unreachable
-    }
-  }
-
-  nonisolated private static func checkManifest(_ manifest: Data, _ sig: Data) -> [String: Any] {
-    let json = manifest.withUnsafeBytes { m in
-      sig.withUnsafeBytes { s in
-        readString {
-          mv_addons_check_manifest(m.bindMemory(to: UInt8.self).baseAddress, Int32(m.count),
-                                   s.bindMemory(to: UInt8.self).baseAddress, Int32(s.count), $0, $1)
+        switch result {
+        case .available(let archiveBytes, _): self.offer = .available(archiveBytes: archiveBytes)
+        case .notPublished: self.offer = .notPublished
+        case .needsNewerApp: self.offer = .needsNewerApp
+        case .unreachable: self.offer = .unreachable
         }
       }
     }
-    return (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
   }
 
   func install() {
@@ -150,12 +249,12 @@ final class AddonStore: ObservableObject {
     Task.detached {
       let result: String
       do {
-        try await Self.downloadAndInstall()
+        try await Self.channel.downloadAndInstall()
         result = "Import installed."
-      } catch is NotPublished {
+      } catch is AddonChannel.NotPublished {
         result = ""
         await MainActor.run { self.offer = .notPublished }
-      } catch let e as AddonError {
+      } catch let e as AddonChannel.AddonError {
         result = e.text
       } catch {
         result = "Import could not be downloaded. Check the connection and try again."
@@ -177,77 +276,6 @@ final class AddonStore: ObservableObject {
       ? "Import removed."
       : "Import will finish uninstalling the next time MediaViewer starts."
     refresh()
-  }
-
-  struct AddonError: Error { let text: String }
-  /// The channel has no Import (a 404): the section says so rather than
-  /// blaming the connection.
-  struct NotPublished: Error {}
-
-  nonisolated private static let session: URLSession = {
-    let c = URLSessionConfiguration.ephemeral
-    c.httpCookieAcceptPolicy = .never
-    c.httpShouldSetCookies = false
-    c.urlCache = nil
-    c.httpAdditionalHeaders = ["User-Agent": "MediaViewer"]
-    return URLSession(configuration: c)
-  }()
-
-  /// nil for a 404; throws for anything else that is not a 200.
-  nonisolated private static func getIfPresent(_ url: String) async throws -> Data? {
-    let (data, response) = try await session.data(from: URL(string: url)!)
-    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-    if code == 404 { return nil }
-    guard code == 200 else { throw URLError(.badServerResponse) }
-    return data
-  }
-
-  // Manifest (signature first), archive (size + SHA-256 before it is
-  // opened), extraction into staging with ditto, then the host's full
-  // verify-and-install. Worker only.
-  nonisolated private static func downloadAndInstall() async throws {
-    guard let manifest = try await getIfPresent(channel + ".json"),
-          let sig = try await getIfPresent(channel + ".json.sig")
-    else { throw NotPublished() }
-    let obj = checkManifest(manifest, sig)
-    guard obj["ok"] as? Bool == true,
-          let archive = obj["archive"] as? [String: Any],
-          let name = archive["path"] as? String,
-          let sha = archive["sha256"] as? String,
-          let size = archive["size"] as? Int
-    else {
-      throw AddonError(text: "The download did not verify, so nothing was installed.")
-    }
-    let staging = readString { mv_addons_make_staging($0, $1) }
-    guard !staging.isEmpty else { throw AddonError(text: "Could not prepare the add-ons folder.") }
-    let zip = staging + ".zip"
-    defer {
-      try? FileManager.default.removeItem(atPath: zip)
-      try? FileManager.default.removeItem(atPath: staging)
-    }
-    let (tmp, response) = try await session.download(from: URL(string: base + name)!)
-    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NotPublished() }
-    try FileManager.default.moveItem(at: tmp, to: URL(fileURLWithPath: zip))
-    let attrs = try FileManager.default.attributesOfItem(atPath: zip)
-    let got = readString { mv_addons_sha256(zip, $0, $1) }
-    guard (attrs[.size] as? Int) == size, got == sha else {
-      throw AddonError(text: "The download did not verify, so nothing was installed.")
-    }
-    // Authenticated bytes only from here. ditto keeps the bundle's code
-    // signature intact, which library validation checks at load.
-    let ditto = Process()
-    ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-    ditto.arguments = ["-x", "-k", zip, staging]
-    try ditto.run()
-    ditto.waitUntilExit()
-    guard ditto.terminationStatus == 0 else {
-      throw AddonError(text: "The download could not be unpacked.")
-    }
-    try manifest.write(to: URL(fileURLWithPath: staging + "/manifest.json"))
-    try sig.write(to: URL(fileURLWithPath: staging + "/manifest.json.sig"))
-    guard mv_addons_install(staging) else {
-      throw AddonError(text: "The download did not verify, so nothing was installed.")
-    }
   }
 }
 

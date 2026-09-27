@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "io/file.h"
+#include "io/file_port.h"
 #include "io/paths.h"
 #include "player/poster.h"
 #include "shell/media_kind.h"
@@ -21,6 +22,12 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->dir.assign(dir_utf8);
+    // A result list's items are not this folder's: never let a relist that
+    // has not landed yet be read as them.
+    if (state_->is_list) state_->items.clear();
+    state_->is_list = false;
+    state_->list_title.clear();
+    state_->moments.clear();
     state_->generation.fetch_add(1, std::memory_order_acq_rel);
   }
 
@@ -39,6 +46,64 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
   return {};
 }
 
+expected folder_model::open_list(std::string title_utf8, std::vector<list_entry> entries,
+                                 job_system& jobs) noexcept {
+  jobs_ = &jobs;
+  // Nothing to watch: a result list changes only when the user searches again.
+  watcher_.stop();
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->dir.clear();  // a queued relist of the old folder now drops itself
+    state_->generation.fetch_add(1, std::memory_order_acq_rel);
+  }
+  auto cache = io::thumb_cache_dir();
+  if (!cache) return err(cache.error());
+  if (!state_->thumbs.is_open()) {
+    if (auto opened = state_->thumbs.open(cache.value()); !opened) return opened;
+  }
+  // One stat per result: size and mtime key the thumbnail cache. A file
+  // deleted or moved since it was indexed simply drops out.
+  std::vector<io::dir_entry> items;
+  std::vector<std::int64_t> moments;
+  items.reserve(entries.size());
+  moments.reserve(entries.size());
+  for (list_entry& e : entries) {
+    auto st = io::stat_path(e.path_utf8);
+    if (!st || st.value().is_directory) continue;
+    io::dir_entry d;
+    d.name_utf8 = std::string(io::file_name_of(e.path_utf8));
+    d.size = st.value().size;
+    d.mtime_unix = st.value().mtime_unix;
+    d.path_utf8 = std::move(e.path_utf8);
+    items.push_back(std::move(d));
+    moments.push_back(e.moment_ms);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->is_list = true;
+    state_->list_title = std::move(title_utf8);
+    state_->items = std::move(items);
+    state_->moments = std::move(moments);
+    state_->subdirs.clear();
+  }
+  state_->changed.store(true, std::memory_order_release);
+  return {};
+}
+
+folder_model::listing folder_model::snapshot() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  listing out;
+  out.items = state_->items;
+  out.subdirs = state_->subdirs;
+  out.is_list = state_->is_list;
+  if (state_->is_list) {
+    out.moments = state_->moments;
+    out.title = state_->list_title;
+  }
+  out.dir = state_->dir;
+  return out;
+}
+
 void folder_model::close() noexcept {
   // Stops and joins the FSEvents watch thread first, so watch_callback (which
   // captures `this`, not shared_state) cannot fire again after this point.
@@ -49,6 +114,9 @@ void folder_model::close() noexcept {
     state_->dir.clear();
     state_->items.clear();
     state_->subdirs.clear();
+    state_->moments.clear();
+    state_->list_title.clear();
+    state_->is_list = false;
   }
   // Jobs already submitted to `jobs_` (relist/thumb) keep their own
   // std::shared_ptr<shared_state> and finish safely against it; this object

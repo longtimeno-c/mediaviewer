@@ -395,18 +395,30 @@ def notarize(path: Path, profile: str) -> None:
                          "`xcrun notarytool log <id>` has the reasons")
 
 
-def sign_addon(addon: Path, identity: str) -> list[Path]:
-    """Developer ID-sign an add-on folder (plan/18 "Mac chrome"): every loose
-    dylib, then every bundle, inside out. The app loads it under library
-    validation, so it must carry the app's Team ID. Returns what it signed."""
+def sign_addon(addon: Path, identity: str, piece: bool = False) -> list[Path]:
+    """Developer ID-sign an add-on folder (plan/18 "Mac chrome"): every dylib
+    outside a bundle (at any depth: the AI pack keeps ONNX Runtime beside its
+    own library, plan/17), then every bundle, inside out. The app loads them
+    under library validation, so they must carry the app's Team ID. Returns
+    what it signed.
+
+    `piece`: a family piece that carries no code (the AI pack's People models,
+    "ai-faces") may have nothing to sign; its manifest hashes are what protect
+    it. Anything else with nothing to sign is a packing mistake."""
     signed: list[Path] = []
-    for dylib in sorted(addon.glob("*.dylib")):
+    dylibs = [p for p in addon.rglob("*.dylib")
+              if p.is_file() and not any(part.endswith(".bundle") for part in p.relative_to(addon).parts)]
+    # Deepest first, so a library is signed before anything that could seal it.
+    for dylib in sorted(dylibs, key=lambda p: (-len(p.relative_to(addon).parts), str(p))):
         codesign(dylib, identity, hardened=True)
         signed.append(dylib)
     for bundle in sorted(addon.glob("*.bundle")):
         codesign(bundle, identity, hardened=True)
         signed.append(bundle)
     if not signed:
+        if piece:
+            print(f"macpack: {addon.name} carries no code; nothing to sign")
+            return signed
         raise SystemExit(f"macpack: nothing to sign in {addon}")
     for item in signed:
         run(["codesign", "--verify", "--strict", "--verbose=2", str(item)])
@@ -419,9 +431,9 @@ def cmd_addon(args: argparse.Namespace) -> None:
     addon = Path(args.dir)
     if not addon.is_dir():
         raise SystemExit(f"macpack: add-on folder {addon} not found")
-    sign_addon(addon, args.identity)
-    if args.skip_notarize:
-        return
+    signed = sign_addon(addon, args.identity, piece=args.piece)
+    if args.skip_notarize or not signed:
+        return  # a code-free piece has nothing for the notary service
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "addon-notarize.zip"
         run(["ditto", "-c", "-k", str(addon), str(archive)])
@@ -559,6 +571,8 @@ def main(argv: list[str]) -> None:
                    help='"Developer ID Application: …" (or $MV_SIGN_IDENTITY); the app\'s Team ID')
     d.add_argument("--notary-profile", default=os.environ.get("MV_NOTARY_PROFILE"))
     d.add_argument("--skip-notarize", action="store_true", help="local dry run only")
+    d.add_argument("--piece", action="store_true",
+                   help="a family piece that may carry no code (the AI pack's ai-faces models)")
     d.set_defaults(func=cmd_addon)
 
     args = parser.parse_args(argv)

@@ -1001,7 +1001,14 @@ void present_lab::render_thread_main() noexcept {
     live_presenting_ = live;
     // plan/18 "Priority": a background import waits between buffers while
     // this loop is presenting frames. One relaxed store; never blocks.
-    mv_present_set_busy(live ? 1u : 0u);
+    // plan/17 "Yield policy": a dropped frame keeps the signal up for two
+    // seconds, so the AI indexer also backs off when presents run late.
+    if (const std::uint64_t drops = pacer_.dropped_frames_so_far(); drops > busy_drops_seen_) {
+      busy_drops_seen_ = drops;
+      busy_drop_at_ = elapsed;
+    }
+    const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
+    mv_present_set_busy(live || frame_pressure ? 1u : 0u);
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || options_.present_when_inactive ||
                           snapshot.window_active);

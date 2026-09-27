@@ -1,0 +1,470 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+using System.Collections.ObjectModel;
+using System.Text.Json;
+using MediaViewer.Interop;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.UI.Xaml.Shapes;
+using Windows.System;
+
+namespace MediaViewer.Ai.Chrome;
+
+internal sealed record PersonVm(ulong Id, string Name, long Faces, ulong CoverFace, double[] Box)
+{
+    public string Label => Name.Length > 0 ? Name : "Unnamed";
+}
+
+internal sealed record FaceVm(ulong Id, string Path, long PtsMs, double[] Box);
+
+/// <summary>
+/// People (plan/17 PR 24): the clusters as circular covers, a person's faces,
+/// and the minimum corrections — rename, "Not this person" (Delete), "Split
+/// into new person" on a multi-selection, and "Merge into…". A window of its
+/// own because naming needs a text field, which the Settings island cannot
+/// host.
+/// </summary>
+/// <remarks>
+/// Crops are made in the view from the stored box (an ImageBrush transform);
+/// nothing is ever written to disk. Rule 6: names and paths are shown, never
+/// logged. Keyboard: arrows move in either grid, Enter opens a person, F2
+/// names them, Delete says "not this person", Esc goes back, then closes.
+/// </remarks>
+internal sealed class PeopleWindow : Window
+{
+    private const double Circle = 88, FaceSize = 104;
+
+    private readonly AiChrome _chrome;
+    private readonly AiApi _api;
+    private readonly Look _look;
+    private readonly ObservableCollection<PersonVm> _peopleItems = new();
+    private readonly ObservableCollection<FaceVm> _faceItems = new();
+    private readonly GridView _peopleGrid;
+    private readonly GridView _faceGrid;
+    private readonly TextBox _name;
+    private readonly TextBlock _detailTitle;
+    private readonly Button _reject;
+    private readonly Button _split;
+    private readonly Button _photos;
+    private readonly DropDownButton _merge;
+    private readonly Grid _detail;
+    private PersonVm? _person;
+    private int _loadGeneration;
+
+    internal PeopleWindow(AiChrome chrome)
+    {
+        _chrome = chrome;
+        _api = chrome.Api;
+        _look = chrome.Look;
+        Title = "People";
+        try { SystemBackdrop = new MicaBackdrop(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+        Native.Adopt(WinRT.Interop.WindowNative.GetWindowHandle(this), chrome.Host.MainWindow);
+
+        _peopleGrid = new GridView
+        {
+            SelectionMode = ListViewSelectionMode.Single,
+            IsItemClickEnabled = true,
+            ItemsSource = _peopleItems,
+            Padding = new Thickness(12),
+        };
+        _peopleGrid.ContainerContentChanging += (_, e) =>
+        {
+            if (e.InRecycleQueue || e.Item is not PersonVm p) return;
+            e.ItemContainer.Content = PersonTile(p);
+            AutomationProperties.SetName(e.ItemContainer, $"{p.Label}, {p.Faces} photos");
+        };
+        _peopleGrid.ItemClick += (_, e) => { if (e.ClickedItem is PersonVm p) ShowPerson(p, focusFaces: true); };
+        _peopleGrid.SelectionChanged += (_, _) =>
+        {
+            if (_peopleGrid.SelectedItem is PersonVm p && p.Id != _person?.Id) ShowPerson(p, focusFaces: false);
+        };
+
+        _faceGrid = new GridView
+        {
+            SelectionMode = ListViewSelectionMode.Extended,
+            ItemsSource = _faceItems,
+            Padding = new Thickness(8),
+        };
+        _faceGrid.ContainerContentChanging += (_, e) =>
+        {
+            if (e.InRecycleQueue || e.Item is not FaceVm f) return;
+            e.ItemContainer.Content = FaceTile(f);
+            AutomationProperties.SetName(e.ItemContainer, System.IO.Path.GetFileName(f.Path));
+        };
+        _faceGrid.SelectionChanged += (_, _) => UpdateButtons();
+
+        _detailTitle = _look.Text("", 18, AddonColour.Title, wrap: false);
+        _name = new TextBox { PlaceholderText = "Add a name", FontFamily = _look.Font, FontSize = 16, MinWidth = 240 };
+        AutomationProperties.SetName(_name, "Name");
+        _name.KeyDown += (_, e) =>
+        {
+            if (e.Key != VirtualKey.Enter) return;
+            CommitName();
+            _faceGrid.Focus(FocusState.Keyboard);
+            e.Handled = true;
+        };
+        _name.LostFocus += (_, _) => CommitName();
+        _merge = new DropDownButton { Content = "Merge into…", Flyout = new MenuFlyout() };
+        ((MenuFlyout)_merge.Flyout).Opening += (_, _) => FillMergeMenu();
+        _photos = _look.Button("Show their photos", ShowPhotos);
+        _reject = _look.Button("Not this person", RejectSelected);
+        ToolTipService.SetToolTip(_reject, "The face leaves this person and never rejoins them (Delete)");
+        _split = _look.Button("Split into new person", SplitSelected);
+
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        head.Children.Add(_name);
+        head.Children.Add(_merge);
+        head.Children.Add(_photos);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(_reject);
+        actions.Children.Add(_split);
+        actions.Children.Add(_look.Text("Select faces (Ctrl / Shift for several) to correct them.", 12));
+        _detail = new Grid { RowSpacing = 10, Padding = new Thickness(16), Visibility = Visibility.Collapsed };
+        _detail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _detail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _detail.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _detail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _detail.Children.Add(_detailTitle);
+        Grid.SetRow(head, 1);
+        _detail.Children.Add(head);
+        Grid.SetRow(_faceGrid, 2);
+        _detail.Children.Add(_faceGrid);
+        Grid.SetRow(actions, 3);
+        _detail.Children.Add(actions);
+
+        var left = new Grid();
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var leftHead = new StackPanel { Padding = new Thickness(16, 16, 16, 0), Spacing = 4 };
+        leftHead.Children.Add(_look.Text("People", 20, AddonColour.Title));
+        leftHead.Children.Add(_look.Text("Found on this computer only. Face data is never shared, and can be deleted in Settings.", 12));
+        left.Children.Add(leftHead);
+        Grid.SetRow(_peopleGrid, 1);
+        left.Children.Add(_peopleGrid);
+
+        var root = new Grid();
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.3, GridUnitType.Star) });
+        root.Children.Add(left);
+        Grid.SetColumn(_detail, 1);
+        root.Children.Add(_detail);
+        root.KeyDown += OnKeyDown;
+        Content = root;
+        UpdateButtons();
+    }
+
+    internal void Present()
+    {
+        AppWindow.MoveAndResize(Native.CentreOver(_chrome.Host.MainWindow, 1100, 720));
+        Activate();
+        Refresh();
+        _peopleGrid.Focus(FocusState.Programmatic);
+    }
+
+    internal void OnThemeChanged()
+    {
+        // Brushes are shared and recolour in place; the crops keep theirs.
+    }
+
+    // ---- loading (worker) --------------------------------------------------------------
+
+    internal void Refresh()
+    {
+        int generation = ++_loadGeneration;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            var people = new List<PersonVm>();
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(api.PeopleJson());
+                foreach (JsonElement p in doc.RootElement.EnumerateArray())
+                {
+                    people.Add(new PersonVm(
+                        p.GetProperty("id").GetUInt64(),
+                        p.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? "" : "",
+                        p.TryGetProperty("faces", out JsonElement f) ? f.GetInt64() : 0,
+                        p.TryGetProperty("cover_face", out JsonElement c) ? c.GetUInt64() : 0,
+                        Box(p, "cover_box")));
+                }
+            }
+            catch (Exception ex) when (ex is MediaViewerException or JsonException or InvalidOperationException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (generation != _loadGeneration) return;
+                ulong? keep = _person?.Id;
+                _peopleItems.Clear();
+                foreach (PersonVm p in people) _peopleItems.Add(p);
+                PersonVm? again = keep is ulong id ? people.FirstOrDefault(p => p.Id == id) : null;
+                if (again is not null)
+                {
+                    _peopleGrid.SelectedItem = again;
+                    ShowPerson(again, focusFaces: false);
+                }
+                else
+                {
+                    _person = null;
+                    _detail.Visibility = Visibility.Collapsed;
+                }
+            });
+        });
+    }
+
+    private static double[] Box(JsonElement e, string key)
+    {
+        if (!e.TryGetProperty(key, out JsonElement b) || b.ValueKind != JsonValueKind.Array || b.GetArrayLength() != 4)
+        {
+            return new[] { 0.0, 0.0, 1.0, 1.0 };
+        }
+        return b.EnumerateArray().Select(v => v.GetDouble()).ToArray();
+    }
+
+    private void ShowPerson(PersonVm p, bool focusFaces)
+    {
+        _person = p;
+        _detail.Visibility = Visibility.Visible;
+        _detailTitle.Text = p.Faces == 1 ? $"{p.Label} · 1 photo" : $"{p.Label} · {p.Faces:N0} photos";
+        _name.Text = p.Name;
+        _faceItems.Clear();
+        UpdateButtons();
+        ulong id = p.Id;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            var faces = new List<FaceVm>();
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(api.PersonFacesJson(id));
+                foreach (JsonElement f in doc.RootElement.EnumerateArray())
+                {
+                    faces.Add(new FaceVm(
+                        f.GetProperty("face").GetUInt64(),
+                        f.TryGetProperty("path", out JsonElement path) ? path.GetString() ?? "" : "",
+                        f.TryGetProperty("pts_ms", out JsonElement pts) ? pts.GetInt64() : -1,
+                        Box(f, "box")));
+                }
+            }
+            catch (Exception ex) when (ex is MediaViewerException or JsonException or InvalidOperationException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_person?.Id != id) return;
+                _faceItems.Clear();
+                foreach (FaceVm f in faces) _faceItems.Add(f);
+                if (focusFaces) _faceGrid.Focus(FocusState.Keyboard);
+            });
+        });
+    }
+
+    // ---- tiles -----------------------------------------------------------------------------
+
+    private UIElement PersonTile(PersonVm p)
+    {
+        var panel = new StackPanel { Width = Circle + 24, Spacing = 6, Padding = new Thickness(4) };
+        panel.Children.Add(Crop(p.CoverFace, p.Box, Circle, round: true, p.Label));
+        TextBlock name = _look.Text(p.Label, 13, p.Name.Length > 0 ? AddonColour.Title : AddonColour.Body, wrap: false);
+        name.HorizontalAlignment = HorizontalAlignment.Center;
+        panel.Children.Add(name);
+        TextBlock count = _look.Text($"{p.Faces:N0}", 11, AddonColour.Body, wrap: false);
+        count.HorizontalAlignment = HorizontalAlignment.Center;
+        panel.Children.Add(count);
+        return panel;
+    }
+
+    private UIElement FaceTile(FaceVm f)
+    {
+        FrameworkElement crop = Crop(f.Id, f.Box, FaceSize, round: false, System.IO.Path.GetFileName(f.Path));
+        ToolTipService.SetToolTip(crop, f.PtsMs >= 0
+            ? $"{System.IO.Path.GetFileName(f.Path)} at {Look.Moment(f.PtsMs)}"
+            : System.IO.Path.GetFileName(f.Path));
+        return crop;
+    }
+
+    // face id -> the JPEG it was found in (face_thumb); a person's faces are
+    // often one photo, and the grid re-realises tiles as it scrolls.
+    private readonly Dictionary<ulong, string> _thumbPaths = new();
+    private readonly SemaphoreSlim _thumbGate = new(3);
+
+    /// <summary>
+    /// The face region, cropped by an ImageBrush transform in the view from
+    /// the JPEG face_thumb hands out (the still's JPEG-512 or the moment's
+    /// thumb, any format). Nothing is ever written.
+    /// </summary>
+    private FrameworkElement Crop(ulong face, double[] box, double size, bool round, string label)
+    {
+        Shape shape = round ? new Ellipse() : new Rectangle { RadiusX = 8, RadiusY = 8 };
+        shape.Width = size;
+        shape.Height = size;
+        shape.Fill = _look.Tint(AddonColour.Surface, 255);
+        var initial = _look.Text(label.Length > 0 ? label[..1].ToUpperInvariant() : "?", size / 2.6, AddonColour.Body, wrap: false);
+        initial.HorizontalAlignment = HorizontalAlignment.Center;
+        initial.VerticalAlignment = VerticalAlignment.Center;
+        var grid = new Grid { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center };
+        grid.Children.Add(shape);
+        grid.Children.Add(initial);
+        if (face == 0) return grid;
+        double x = box[0], y = box[1], w = Math.Max(0.01, box[2]), h = Math.Max(0.01, box[3]);
+        // Pad the face a little so a crop reads as a portrait, not a mask.
+        const double Pad = 0.25;
+        double px = Math.Max(0, x - w * Pad), py = Math.Max(0, y - h * Pad);
+        double pw = Math.Min(1 - px, w * (1 + 2 * Pad)), ph = Math.Min(1 - py, h * (1 + 2 * Pad));
+        void Show(string path)
+        {
+            try
+            {
+                var bitmap = new BitmapImage { DecodePixelWidth = (int)Math.Min(1024, size * 2 / pw) };
+                bitmap.UriSource = new Uri(path);
+                var brush = new ImageBrush
+                {
+                    ImageSource = bitmap,
+                    Stretch = Stretch.Fill,
+                    // Relative coordinates: the box [px, px+pw] maps to [0, 1].
+                    RelativeTransform = new CompositeTransform
+                    {
+                        ScaleX = 1 / pw,
+                        ScaleY = 1 / ph,
+                        TranslateX = -px / pw,
+                        TranslateY = -py / ph,
+                    },
+                };
+                bitmap.ImageOpened += (_, _) =>
+                {
+                    shape.Fill = brush;
+                    initial.Visibility = Visibility.Collapsed;
+                };
+            }
+            catch (Exception ex) when (ex is UriFormatException or ArgumentException) { }
+        }
+
+        if (_thumbPaths.TryGetValue(face, out string? known))
+        {
+            Show(known);
+            return grid;
+        }
+        AiApi api = _api;
+        _ = Task.Run(async () =>
+        {
+            await _thumbGate.WaitAsync().ConfigureAwait(false);
+            string? path = null;
+            try { path = api.FaceThumb(face); }  // [worker-thread]: may make the JPEG
+            catch (MediaViewerException) { }
+            finally { _thumbGate.Release(); }
+            if (string.IsNullOrEmpty(path)) return;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _thumbPaths[face] = path;
+                Show(path);
+            });
+        });
+        return grid;
+    }
+
+    // ---- corrections ------------------------------------------------------------------------
+
+    private List<ulong> SelectedFaces() => _faceGrid.SelectedItems.OfType<FaceVm>().Select(f => f.Id).ToList();
+
+    private void UpdateButtons()
+    {
+        int n = _faceGrid.SelectedItems.Count;
+        _reject.IsEnabled = n > 0;
+        _split.IsEnabled = n > 0 && n < _faceItems.Count;
+        _merge.IsEnabled = _person is not null && _peopleItems.Count > 1;
+        _photos.IsEnabled = _person is not null;
+    }
+
+    private void CommitName()
+    {
+        if (_person is null) return;
+        string name = _name.Text.Trim();
+        if (name == _person.Name) return;
+        try { _api.PersonRename(_person.Id, name); }
+        catch (MediaViewerException) { return; }
+        _person = _person with { Name = name };
+        _detailTitle.Text = _person.Faces == 1 ? $"{_person.Label} · 1 photo" : $"{_person.Label} · {_person.Faces:N0} photos";
+    }
+
+    private void RejectSelected()
+    {
+        List<ulong> faces = SelectedFaces();
+        if (faces.Count == 0) return;
+        foreach (ulong f in faces)
+        {
+            try { _api.FaceReject(f); }
+            catch (MediaViewerException) { }
+        }
+        foreach (FaceVm vm in _faceItems.Where(v => faces.Contains(v.Id)).ToList()) _faceItems.Remove(vm);
+        UpdateButtons();
+    }
+
+    private void SplitSelected()
+    {
+        List<ulong> faces = SelectedFaces();
+        if (faces.Count == 0) return;
+        try { _api.FaceSplit(faces); }
+        catch (MediaViewerException) { return; }
+        foreach (FaceVm vm in _faceItems.Where(v => faces.Contains(v.Id)).ToList()) _faceItems.Remove(vm);
+        UpdateButtons();
+        // AI_PEOPLE brings the new person into the list.
+    }
+
+    private void FillMergeMenu()
+    {
+        var menu = (MenuFlyout)_merge.Flyout;
+        menu.Items.Clear();
+        if (_person is null) return;
+        foreach (PersonVm other in _peopleItems.Where(p => p.Id != _person.Id))
+        {
+            ulong into = other.Id;
+            var item = new MenuFlyoutItem { Text = $"{other.Label} ({other.Faces:N0})" };
+            item.Click += (_, _) =>
+            {
+                if (_person is null) return;
+                try { _api.PersonMerge(into, _person.Id); }
+                catch (MediaViewerException) { return; }
+                _person = other;
+            };
+            menu.Items.Add(item);
+        }
+    }
+
+    private void ShowPhotos()
+    {
+        if (_person is null) return;
+        ulong search;
+        try { search = _api.SearchPerson(_person.Id, null, MvAiScope.All); }
+        catch (MediaViewerException) { return; }
+        _chrome.OpenSearchAsList(search, _person.Name.Length > 0 ? $"Photos of {_person.Name}" : "Photos of this person");
+    }
+
+    private void OnKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        object? focused = FocusManager.GetFocusedElement(Content.XamlRoot);
+        if (focused is TextBox) return;
+        bool inFaces = focused is GridViewItem item && ReferenceEquals(ItemsControl.ItemsControlFromItemContainer(item), _faceGrid);
+        switch (e.Key)
+        {
+            case VirtualKey.Delete when inFaces || _faceGrid.SelectedItems.Count > 0:
+                RejectSelected();
+                e.Handled = true;
+                break;
+            case VirtualKey.F2 when _person is not null:
+                _name.Focus(FocusState.Keyboard);
+                _name.SelectAll();
+                e.Handled = true;
+                break;
+            case VirtualKey.Enter when focused is GridViewItem { Content: not null } g &&
+                                       _peopleGrid.ItemFromContainer(g) is PersonVm p:
+                ShowPerson(p, focusFaces: true);
+                e.Handled = true;
+                break;
+            case VirtualKey.Escape:
+                if (inFaces) _peopleGrid.Focus(FocusState.Keyboard);
+                else Close();
+                e.Handled = true;
+                break;
+        }
+    }
+}

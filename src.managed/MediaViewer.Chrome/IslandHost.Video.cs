@@ -129,6 +129,7 @@ public static partial class IslandHost
             _audioTracks = null;
             DropTrimUi();
             _videoActive = false;
+            _matchMs = Array.Empty<long>();
             return 0;
         }
         catch (Exception ex)
@@ -317,6 +318,7 @@ public static partial class IslandHost
         if (!video) return;
 
         long position = Math.Max(0, _folderSession.VideoPosition);
+        UpdateMatchDuration(Math.Max(0, info.DurationNs) / 1_000_000);
         if (_seek is not null && _play is not null && _videoTime is not null && _audioTracks is not null)
         {
             _updatingVideo = true;

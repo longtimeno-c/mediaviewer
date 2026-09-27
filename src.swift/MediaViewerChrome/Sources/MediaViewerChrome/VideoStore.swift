@@ -40,6 +40,13 @@ final class VideoStore: ObservableObject {
   @Published private(set) var trimLabel = ""
   private var trimGeneration: UInt64 = .max
 
+  // Milestone H (plan/17): the other matching moments of this clip in the
+  // active search, drawn above the scrub bar; N / Shift+N walk them. Set by
+  // the AI chrome through the host; empty for a clip not in the search.
+  @Published private(set) var matchMs: [Int64] = []
+  @Published private(set) var matchCurrent: Int = -1
+  private var matchGeneration: UInt64 = .max
+
   private var timer: Timer?
 
   private init() {
@@ -62,6 +69,24 @@ final class VideoStore: ObservableObject {
     if rate != rateX100 { rateX100 = rate }
     if draggingVolume == nil, vol != volume { volume = vol }
     pollTrim()
+    pollMatches()
+  }
+
+  private func pollMatches() {
+    let g = mv_chrome_scrub_markers_generation()
+    guard g != matchGeneration else { return }
+    matchGeneration = g
+    var current: Int32 = -1
+    let n = Int(mv_chrome_scrub_markers(nil, 0, &current))
+    var fresh: [Int64] = []
+    if n > 0 {
+      var buf = [Int64](repeating: 0, count: n)
+      let got = buf.withUnsafeMutableBufferPointer { mv_chrome_scrub_markers($0.baseAddress, Int32(n), &current) }
+      fresh = Array(buf.prefix(Int(min(Int32(n), got))))
+    }
+    if fresh != matchMs { matchMs = fresh }
+    let c = fresh.isEmpty ? -1 : Int(current)
+    if c != matchCurrent { matchCurrent = c }
   }
 
   private func pollTrim() {

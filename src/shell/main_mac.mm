@@ -145,7 +145,10 @@ static bool MvCommandSupported(mv::shell::command_id c) {
       return true;
     // Milestone G: only while the Import add-on is loaded (plan/18).
     case open_import: case import_now:
-      return mv::shell::addon_commands_available();
+      return mv::shell::addon_commands_available(mv::shell::addon_family::import);
+    // Milestone H: only while the AI pack is loaded (plan/17 "UI and commands").
+    case search_open: case search_similar: case search_next_match: case search_prev_match:
+      return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
       return false;
   }
@@ -425,6 +428,22 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaBlur;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
+// Milestone H (plan/17): result listings from the AI pack's search panel, and
+// its match markers on the scrub bar. The Mac twin of mv_folder_open_list.
+- (BOOL)openListTitled:(const std::string&)title
+                 paths:(std::vector<std::string>)paths
+               moments:(std::vector<std::int64_t>)moments
+                select:(std::size_t)select
+               gallery:(BOOL)gallery;
+- (void)closeList;
+- (BOOL)listOpen;
+- (std::string)listTitle;
+- (std::string)currentItemPath;
+- (void)setScrubMarkers:(std::vector<std::int64_t>)ms
+                current:(int32_t)current
+                forPath:(const std::string&)path;
+- (uint64_t)scrubGeneration;
+- (int32_t)scrubMarkersInto:(int64_t*)out cap:(int32_t)cap current:(int32_t*)current;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -628,6 +647,59 @@ extern "C" int32_t mv_chrome_folder_cursor(void) {
 extern "C" bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size) {
   return g_chrome_app && [g_chrome_app folderQueryInto:out_buf size:out_buf_size] == YES;
 }
+// ---- Milestone H: result listings and scrub markers (plan/17) -------------------
+extern "C" bool mv_chrome_open_list(const char* title_utf8, const char* const* paths_utf8,
+                                    const int64_t* moments_ms, int32_t count, int32_t select_index,
+                                    bool gallery) {
+  if (!g_chrome_app || !paths_utf8 || count <= 0) return false;
+  (void)mv::shell::crash::note_native_call();
+  std::vector<std::string> paths;
+  std::vector<std::int64_t> moments;
+  paths.reserve(static_cast<std::size_t>(count));
+  moments.reserve(static_cast<std::size_t>(count));
+  for (int32_t i = 0; i < count; ++i) {
+    if (!paths_utf8[i] || !*paths_utf8[i]) continue;
+    paths.emplace_back(paths_utf8[i]);
+    moments.push_back(moments_ms ? moments_ms[i] : -1);
+  }
+  if (paths.empty()) return false;
+  // An empty path was skipped above, so find the chosen tile by its path.
+  std::size_t select = 0;
+  if (select_index >= 0 && select_index < count && paths_utf8[select_index]) {
+    const std::string want(paths_utf8[select_index]);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      if (paths[i] == want) {
+        select = i;
+        break;
+      }
+    }
+  }
+  return [g_chrome_app openListTitled:std::string(title_utf8 ? title_utf8 : "")
+                                paths:std::move(paths)
+                              moments:std::move(moments)
+                               select:select
+                              gallery:gallery ? YES : NO] == YES;
+}
+extern "C" bool mv_chrome_list_open(void) { return g_chrome_app && [g_chrome_app listOpen] == YES; }
+extern "C" void mv_chrome_close_list(void) {
+  if (g_chrome_app) [g_chrome_app closeList];
+}
+extern "C" void mv_chrome_set_scrub_markers(const char* clip_path_utf8, const int64_t* ms,
+                                            int32_t count, int32_t current) {
+  if (!g_chrome_app) return;
+  std::vector<std::int64_t> v;
+  if (ms && count > 0) v.assign(ms, ms + count);
+  [g_chrome_app setScrubMarkers:std::move(v)
+                        current:current
+                        forPath:std::string(clip_path_utf8 ? clip_path_utf8 : "")];
+}
+extern "C" uint64_t mv_chrome_scrub_markers_generation(void) {
+  return g_chrome_app ? [g_chrome_app scrubGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current) {
+  if (current) *current = -1;
+  return g_chrome_app ? [g_chrome_app scrubMarkersInto:out cap:cap current:current] : 0;
+}
 // ---- PR 9 bridge: metadata pane, folder tree, sort -------------------------------
 namespace {
 
@@ -672,6 +744,13 @@ const char* MvKindName(mv::meta::stream_kind k) {
 }
 
 }  // namespace
+
+extern "C" int32_t mv_chrome_list_title(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app listTitle] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_current_item_path(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app currentItemPath] : std::string{}, buf, size);
+}
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
   return g_chrome_app ? [g_chrome_app metaGeneration] : 0;
@@ -1406,6 +1485,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   NSTimer* _histogramDebounce;
   mv::io::sort_order _sort;
   std::string _currentDir;
+  // Milestone H (plan/17): a result listing is open. `_currentDir` is "" then,
+  // `_moments` is parallel to `_items` (the moment a clip opens paused on, -1
+  // none) and `_listNames` holds display names made unique within the list
+  // (two folders' IMG_0001.JPG), which also key Swift's thumbnail slots.
+  BOOL _listOpen;
+  std::string _listTitle;
+  std::string _listReturnDir;
+  std::vector<std::int64_t> _moments;
+  std::vector<std::string> _listNames;
+  // The AI chrome's match markers for one clip (mv_chrome_set_scrub_markers).
+  std::vector<std::int64_t> _scrubMs;
+  std::string _scrubPath;
+  int32_t _scrubCurrent;
+  std::uint64_t _scrubGeneration;
 #if MV_WITH_SPARKLE
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
@@ -1862,6 +1955,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   _folderFind = NO;
   _folderQuery.clear();
+  // Opening a directory ends a result listing (mv_folder_open_list's rule).
+  if (_listOpen) {
+    _listOpen = NO;
+    _listTitle.clear();
+    _listReturnDir.clear();
+    _moments.clear();
+    _listNames.clear();
+    ++_listingGeneration;
+  }
   if (navigation) {
     _browsePath.visit(dir);
   } else {
@@ -1923,6 +2025,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                     return mv::status::ok;
                   });
   [self updateChromeBarHeight];
+  // Milestone H: the AI chrome notes the folder (note_folder_opened) so a
+  // covered root queues its delta and the search panel knows its scope.
+  MvAddonsFolderOpened(dir);
   return YES;
 }
 
@@ -1939,16 +2044,29 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
   // items, the current one still selected, no image reload.
-  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken) {
+  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
     [self resortKeepingSelection];
   }
   if (!_folder.consume_changed()) return;
-  _items = _folder.items();
-  _subdirs = _folder.subfolders();
+  mv::shell::folder_model::listing listing = _folder.snapshot();
+  // A relist that belongs to the other kind of listing (a folder's watch
+  // firing just as a result list opens, or the list a folder open is
+  // replacing) is not what is on screen now.
+  if (listing.is_list != static_cast<bool>(_listOpen)) return;
+  _items = std::move(listing.items);
+  _subdirs = std::move(listing.subdirs);
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
     _folderCursor = static_cast<NSInteger>(_subdirs.size()) - 1;
   }
-  [self sortItems];
+  if (_listOpen) {
+    // Best match first: a result list keeps the order it was given.
+    _moments = std::move(listing.moments);
+    _moments.resize(_items.size(), -1);
+    _listTitle = listing.title;
+    [self makeListNames];
+  } else {
+    [self sortItems];
+  }
   ++_listingGeneration;
 
   // Marks are kept by path specifically so they survive a relist that
@@ -2013,7 +2131,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _index.reset(_items.size(), new_index);
   [self trimItemChanged];
 
+  if (!_scrubMs.empty()) ++_scrubGeneration;  // markers belong to one clip
   if (_items.empty()) {
+    MvAddonsItemChanged(std::string());
     _wantSelectedPath.clear();
     _edits.clear_item();
     _itemId = 0;
@@ -2024,7 +2144,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
-    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
+    // Milestone H: a clip from a result list opens paused on its moment.
+    const std::size_t at = _index.current();
+    const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
+    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8, moment)];
+    MvAddonsItemChanged(entry.path_utf8);
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
@@ -2362,7 +2486,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return NO;
-  const std::string& name = _items[static_cast<std::size_t>(index)].name_utf8;
+  const std::string& name = [self displayNameAt:static_cast<std::size_t>(index)];
   const std::size_t n = std::min(name.size(), static_cast<std::size_t>(size) - 1);
   std::memcpy(buf, name.data(), n);
   buf[n] = '\0';
@@ -2382,7 +2506,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // callback firing, `name` still names the file this thumbnail is actually
   // for, which is exactly why mv_chrome_bridge.h keys the callback by name
   // rather than by the index this request started at.
-  const std::string name = entry.name_utf8;
+  const std::string name = [self displayNameAt:static_cast<std::size_t>(index)];
   _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
                         [name](std::string /*path_utf8*/, std::string thumb_path) {
                           dispatch_async(dispatch_get_main_queue(), ^{
@@ -2615,7 +2739,9 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 
 - (CGFloat)chromeBarHeight {
-  return _currentDir.empty() ? kChromeBarHeightPoints : kChromeBarHeightPoints + kPathRowPoints;
+  // A result list shows its title in the path row.
+  return _currentDir.empty() && !_listOpen ? kChromeBarHeightPoints
+                                           : kChromeBarHeightPoints + kPathRowPoints;
 }
 
 - (void)updateChromeBarHeight {
@@ -3407,6 +3533,19 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
       MvAddonsImportNow(paths);
       return !paths.empty();
+    }
+    // Milestone H (plan/17 "UI and commands"): the AI chrome runs these; the
+    // key falls through, as if unbound, while the pack is not loaded.
+    case search_open:
+    case search_similar:
+    case search_next_match:
+    case search_prev_match: {
+      if (!mv::shell::addon_command_available(command)) return NO;
+      const char* name = command == search_open         ? "search_open"
+                         : command == search_similar    ? "search_similar"
+                         : command == search_next_match ? "search_next_match"
+                                                        : "search_prev_match";
+      return MvAddonsRunCommand(name) ? YES : NO;
     }
     case reveal_in_explorer: {
       NSString* path = [self currentItemPathForDrag];
@@ -4524,7 +4663,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 }
 
 - (void)resortKeepingSelection {
-  if (_items.empty()) return;
+  // A result list is ranked, not sorted (plan/17 "best match first").
+  if (_items.empty() || _listOpen) return;
   const std::size_t at = std::min(_index.current(), _items.size() - 1);
   const std::string current = _items[at].path_utf8;
   [self sortItems];
@@ -4541,6 +4681,145 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   ++_listingGeneration;
   [self updateMarkSnapshot];
   [self publish];
+}
+
+// ---- Milestone H: result listings (plan/17; mv_folder_open_list's twin) -------
+- (const std::string&)displayNameAt:(std::size_t)index {
+  if (_listOpen && index < _listNames.size()) return _listNames[index];
+  return _items[index].name_utf8;
+}
+
+// Two results can share a file name (every camera writes IMG_0001.JPG). The
+// gallery keys thumbnails by name, so a repeated name gets its folder added.
+- (void)makeListNames {
+  _listNames.clear();
+  _listNames.reserve(_items.size());
+  std::vector<std::string> sorted;
+  sorted.reserve(_items.size());
+  for (const auto& e : _items) sorted.push_back(e.name_utf8);
+  std::sort(sorted.begin(), sorted.end());
+  for (const auto& e : _items) {
+    const auto range = std::equal_range(sorted.begin(), sorted.end(), e.name_utf8);
+    if (range.second - range.first < 2) {
+      _listNames.push_back(e.name_utf8);
+      continue;
+    }
+    const std::string parent = mv::shell::browse_path::parent_of(e.path_utf8);
+    _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
+  }
+  // Still equal (same name in two folders of the same name): the full path is
+  // unique, so every name falls back to it.
+  std::vector<std::string> check = _listNames;
+  std::sort(check.begin(), check.end());
+  if (std::adjacent_find(check.begin(), check.end()) != check.end()) {
+    for (std::size_t i = 0; i < _items.size(); ++i) _listNames[i] = _items[i].path_utf8;
+  }
+}
+
+- (BOOL)openListTitled:(const std::string&)title
+                 paths:(std::vector<std::string>)paths
+               moments:(std::vector<std::int64_t>)moments
+                select:(std::size_t)select
+               gallery:(BOOL)gallery {
+  if (paths.empty()) return NO;
+  moments.resize(paths.size(), -1);
+  if (!_listOpen) _listReturnDir = _currentDir;
+  _listOpen = YES;
+  _listTitle = title;
+  _listNames.clear();
+  _moments.clear();
+  _folderFind = NO;
+  _folderQuery.clear();
+  _browsePath.reset("");
+  _folderCursor = -1;
+  _subdirs.clear();
+  _siblings.clear();
+  _siblingIndex = -1;
+  _revealChild.clear();
+  _galleryIfEmptyDir.clear();
+  _wantSelectedPath = select < paths.size() ? paths[select] : std::string();
+  // mv_folder_directory reports "" while a list is open; so does this host.
+  _currentDir.clear();
+  _items.clear();
+  _index.reset(0);
+  _metaRecord.reset();
+  ++_metaGeneration;
+  ++_listingGeneration;
+
+  std::vector<mv::shell::folder_model::list_entry> entries;
+  entries.reserve(paths.size());
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    entries.push_back({std::move(paths[i]), moments[i]});
+  }
+  // A stat per result and the thumbnail cache: never on the main thread
+  // (rule 1). Superseded like -openPath:'s own open.
+  mv::shell::folder_model* folder = &_folder;
+  mv::job_system* jobs = &_jobs;
+  const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  std::atomic<std::uint64_t>* open_generation = &_openGeneration;
+  _jobs.submit_at(mv::background_generation,
+                  [folder, jobs, title, entries = std::move(entries), my_generation,
+                   open_generation](const mv::job_context&) mutable -> mv::status {
+                    if (open_generation->load(std::memory_order_acquire) != my_generation) {
+                      return mv::status::cancelled;
+                    }
+                    auto opened = folder->open_list(title, std::move(entries), *jobs);
+                    if (!opened) {
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        NSBeep();
+                      });
+                      return opened.error();
+                    }
+                    return mv::status::ok;
+                  });
+  // Enter shows the chosen result on the canvas; Cmd+Enter the whole list as
+  // the gallery grid (the chrome brief, plan/17 "Results are the gallery").
+  [self setGalleryVisible:gallery];
+  [self updateChromeBarHeight];
+  return YES;
+}
+
+- (void)closeList {
+  if (!_listOpen) return;
+  const std::string back = _listReturnDir;
+  if (!back.empty() && [self openPath:back.c_str() navigation:NO]) return;
+  // Nothing to return to: an empty window, as before anything was opened.
+  _listOpen = NO;
+  _listTitle.clear();
+  _listReturnDir.clear();
+  _moments.clear();
+  _listNames.clear();
+  _items.clear();
+  ++_listingGeneration;
+  [self selectIndex:0];
+  [self updateChromeBarHeight];
+}
+
+- (BOOL)listOpen { return _listOpen; }
+- (std::string)listTitle { return _listOpen ? _listTitle : std::string(); }
+- (std::string)currentItemPath {
+  if (_items.empty() || _index.current() >= _items.size()) return {};
+  return _items[_index.current()].path_utf8;
+}
+
+- (void)setScrubMarkers:(std::vector<std::int64_t>)ms
+                current:(int32_t)current
+                forPath:(const std::string&)path {
+  _scrubMs = std::move(ms);
+  _scrubPath = _scrubMs.empty() ? std::string() : path;
+  _scrubCurrent = current;
+  ++_scrubGeneration;
+}
+- (uint64_t)scrubGeneration { return _scrubGeneration; }
+- (int32_t)scrubMarkersInto:(int64_t*)out cap:(int32_t)cap current:(int32_t*)current {
+  // Only the clip on screen: markers for a clip the user has left are stale.
+  if (_scrubMs.empty() || _scrubPath != [self currentItemPath]) return 0;
+  if (current) *current = _scrubCurrent;
+  const auto n = static_cast<int32_t>(_scrubMs.size());
+  if (out && cap > 0) {
+    std::memcpy(out, _scrubMs.data(), sizeof(int64_t) * static_cast<std::size_t>(std::min(n, cap)));
+  }
+  return n;
 }
 
 - (int32_t)sortOrder { return mv::io::pack_sort(_sort); }

@@ -44,6 +44,7 @@
 #include "image/upload.h"
 #include "io/dir.h"
 #include "io/file.h"
+#include "io/file_port.h"
 #include "io/pairing.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
@@ -180,6 +181,7 @@ struct mv_session {
     std::int64_t mtime_unix = 0;
     mv::io::pair_kind pair = mv::io::pair_kind::none;
     bool primary_raw = false;
+    std::int64_t moment_ms = -1;  // Milestone H result listing: open paused here
   };
   struct lru_slot {
     std::string path;
@@ -216,6 +218,10 @@ struct mv_session {
   };
   std::vector<folder_card> folder_subdirs;
   std::string folder_dir;
+  // Milestone H: a result listing instead of a directory (mv_folder_open_list).
+  bool folder_is_list = false;
+  std::string folder_list_title;
+  std::unordered_map<std::string, std::int64_t> folder_list_moments;  // by path
   std::string folder_select_path;
   std::uint32_t folder_selected = 0;
   std::atomic<std::uint32_t> folder_generation{1};
@@ -433,7 +439,24 @@ status open_video_worker(mv_session* session, const std::string& path, const mv:
   auto* source = result.value();
   if (ctx.cancelled()) { mv::player::close_media(source); return status::cancelled; }
   const auto info = source->info();
+  // Milestone H: a clip opened from search results lands paused on its moment
+  // (plan/17 "Enter on a video tile opens the clip and seeks to that PTS").
+  std::int64_t moment_ms = -1;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_is_list && session->folder_selected < session->folder_items.size() &&
+        session->folder_items[session->folder_selected].path == path) {
+      moment_ms = session->folder_items[session->folder_selected].moment_ms;
+    }
+  }
   session->video.publish(source, ctx.gen());
+  if (moment_ms >= 0) {
+    const std::int64_t at_ns = moment_ms * 1'000'000;
+    session->video.command([at_ns](mv::player::media_source& s) {
+      s.pause();
+      s.seek(at_ns, true);
+    });
+  }
   mv_completion c{};
   c.kind = MV_COMPLETION_VIDEO_OPENED; c.status = MV_OK;
   c.generation = ctx.gen(); c.payload = info.duration_ns;
@@ -1073,10 +1096,17 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     std::lock_guard lock(session->folder_mutex);
     session->folder_listing = listed;
   }
-  refresh_subdirs(session);
-  sort_listed(session, listed);
-  if (mv::io::unpack_sort(session->sort_packed.load()).key == mv::io::sort_key::date_taken) {
-    resolve_date_stamps(session);
+  bool is_list = false;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    is_list = session->folder_is_list;
+  }
+  if (!is_list) {
+    refresh_subdirs(session);
+    sort_listed(session, listed);
+    if (mv::io::unpack_sort(session->sort_packed.load()).key == mv::io::sort_key::date_taken) {
+      resolve_date_stamps(session);
+    }
   }
   std::string want;
   std::string previous_path;
@@ -1101,6 +1131,11 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
       it.mtime_unix = e.primary.mtime_unix;
       it.secondary_path = std::move(e.secondary.path_utf8);
       it.pair = e.kind;
+      if (session->folder_is_list) {
+        if (auto m = session->folder_list_moments.find(it.path); m != session->folder_list_moments.end()) {
+          it.moment_ms = m->second;
+        }
+      }
       session->folder_items.push_back(std::move(it));
     }
     // A watcher refresh keeps the stop the user is on (or lets the next one
@@ -1470,6 +1505,9 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
     {
       std::lock_guard lock(session->folder_mutex);
       session->folder_dir = dir;
+      session->folder_is_list = false;
+      session->folder_list_title.clear();
+      session->folder_list_moments.clear();
       session->folder_select_path = select;
       session->folder_listing.clear();
       session->folder_items.clear();
@@ -1506,6 +1544,96 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
         });
     if (id == mv::invalid_job) return status::internal;
     if (out_job_id) *out_job_id = id;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_open_list(mv_session_t session, const char* title_utf8,
+                                      const char* const* paths_utf8, const int64_t* moments_ms,
+                                      uint32_t count, uint32_t select_index, uint64_t* out_job_id) {
+  return static_cast<mv_status>(guard("mv_folder_open_list", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(paths_utf8 != nullptr || count == 0, "paths must not be null");
+    std::vector<std::string> paths;
+    paths.reserve(count);
+    std::unordered_map<std::string, std::int64_t> moments;
+    for (uint32_t i = 0; i < count; ++i) {
+      MV_REQUIRE(paths_utf8[i] != nullptr && paths_utf8[i][0] != '\0', "a path is empty");
+      paths.emplace_back(paths_utf8[i]);
+      moments.emplace(paths.back(), moments_ms ? moments_ms[i] : -1);
+    }
+    std::string select = select_index < count ? paths[select_index] : std::string{};
+    session->watcher.stop();
+    session->folder_generation.fetch_add(1, std::memory_order_relaxed);
+    {
+      std::lock_guard lock(session->folder_mutex);
+      session->folder_dir.clear();
+      session->folder_is_list = true;
+      session->folder_list_title = title_utf8 ? title_utf8 : "";
+      session->folder_list_moments = std::move(moments);
+      session->folder_select_path = select;
+      session->folder_listing.clear();
+      session->folder_items.clear();
+      session->folder_subdirs.clear();
+      session->folder_selected = 0;
+    }
+    if (!session->thumbs.is_open()) {
+      if (auto cache = mv::io::thumb_cache_dir()) (void)session->thumbs.open(cache.value());
+    }
+    const auto correlation = mv::abi::current_correlation_id();
+    const mv::job_id id = session->jobs.submit_at(
+        mv::background_generation,
+        [session, paths = std::move(paths)](const mv::job_context&) -> status {
+          // One stat per result (size and mtime key the thumbnail cache); a
+          // file deleted since it was indexed simply drops out.
+          std::vector<mv::io::listed_item> listed;
+          listed.reserve(paths.size());
+          for (const std::string& p : paths) {
+            auto st = mv::io::stat_path(p);
+            if (!st || st->is_directory) continue;
+            mv::io::listed_item item;
+            item.primary.path_utf8 = p;
+            item.primary.name_utf8 = std::string(mv::io::file_name_of(p));
+            item.primary.size = st->size;
+            item.primary.mtime_unix = st->mtime_unix;
+            listed.push_back(std::move(item));
+          }
+          apply_folder_list(session, std::move(listed), false);
+          return status::ok;
+        },
+        [session, correlation](mv::job_id id, mv::generation gen, status result) {
+          if (result == status::ok) return;
+          mv_completion c{};
+          c.kind = MV_COMPLETION_FOLDER_READY;
+          c.status = static_cast<uint32_t>(result);
+          c.job_id = id;
+          c.correlation_id = correlation;
+          c.generation = gen;
+          session->push_completion(c);
+        });
+    if (id == mv::invalid_job) return status::internal;
+    if (out_job_id) *out_job_id = id;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_list_title(mv_session_t session, char* utf8, uint32_t cap,
+                                       uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_list_title", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    return copy_utf8(session->folder_is_list ? session->folder_list_title : std::string{}, utf8,
+                     cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index, int64_t* out_ms) {
+  return static_cast<mv_status>(guard("mv_folder_item_moment", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_ms != nullptr, "out_ms must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    if (index >= session->folder_items.size()) return status::invalid_arg;
+    *out_ms = session->folder_items[index].moment_ms;
     return status::ok;
   }));
 }
@@ -1706,6 +1834,9 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
     session->folder_generation.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lock(session->folder_mutex);
     session->folder_dir.clear();
+    session->folder_is_list = false;
+    session->folder_list_title.clear();
+    session->folder_list_moments.clear();
     session->folder_select_path.clear();
     session->folder_items.clear();
     session->folder_subdirs.clear();

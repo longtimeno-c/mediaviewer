@@ -78,13 +78,60 @@ const char* rejection_name(rejection r) noexcept {
     case rejection::file_mismatch: return "file_mismatch";
     case rejection::unexpected_file: return "unexpected_file";
     case rejection::needs_update: return "needs_update";
+    case rejection::over_ceiling: return "over_ceiling";
   }
   return "unknown";
 }
 
+std::uint32_t negotiated_host_api(const manifest& m, std::uint32_t host_api) noexcept {
+  return std::min(host_api, m.host_api_max);
+}
+
+std::string_view current_arch() noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+  return "x86_64";
+#else
+  return "other";
+#endif
+}
+
+std::uint64_t family_ceiling(std::string_view family) noexcept {
+  // plan/17 "The AI pack": Core + the selected vendor piece + Faces <= 3 GB.
+  // Decimal GB, the unit the Settings page shows.
+  if (family == "ai") return 3'000'000'000ull;
+  return 0;
+}
+
+#if defined(MV_ADDON_DEV_PUBLIC_KEY_HEX)
+// A developer build (CMake MV_ADDON_DEV_PUBLIC_KEY, never set by the release
+// workflow) trusts a development key instead, so a locally signed pack can be
+// sideloaded and the whole install / load / run path exercised without the
+// release key (Milestone H validation). The warning at configure time says so.
+namespace {
+constexpr std::uint8_t nibble(char c) {
+  return static_cast<std::uint8_t>(c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' + 10 : 0));
+}
+constexpr char kDevHex[] = MV_ADDON_DEV_PUBLIC_KEY_HEX;
+static_assert(sizeof(kDevHex) == 65, "MV_ADDON_DEV_PUBLIC_KEY must be 64 lowercase hex digits");
+struct dev_key {
+  std::uint8_t b[32]{};
+  constexpr dev_key() {
+    for (int i = 0; i < 32; ++i) b[i] = static_cast<std::uint8_t>(nibble(kDevHex[2 * i]) << 4 | nibble(kDevHex[2 * i + 1]));
+  }
+};
+constexpr dev_key kDevKey{};
+}  // namespace
+
+std::span<const std::uint8_t, 32> pinned_public_key() noexcept {
+  return std::span<const std::uint8_t, 32>(kDevKey.b);
+}
+#else
 std::span<const std::uint8_t, 32> pinned_public_key() noexcept {
   return std::span<const std::uint8_t, 32>(kPinnedKey);
 }
+#endif
 
 bool safe_relative_path(std::string_view path) noexcept {
   if (path.empty() || path.size() > 512) return false;
@@ -107,7 +154,7 @@ bool safe_relative_path(std::string_view path) noexcept {
 
 decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std::uint8_t> signature,
                         std::span<const std::uint8_t> public_key, std::uint32_t host_api,
-                        std::string_view expected_platform) {
+                        std::string_view expected_platform, std::uint32_t host_api_oldest) {
   decision d;
   // 1. Signature first. Nothing below runs on unauthenticated bytes.
   if (public_key.size() != 32 ||
@@ -144,6 +191,13 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   const json::value* host = doc->find("host_api");
   const json::value* files = doc->find("files");
   const json::value* archive = doc->find("archive");
+  // Optional (Milestone H). Absent is "", present must be a string.
+  const json::value* part_of_v = doc->find("part_of");
+  const json::value* arch_v = doc->find("arch");
+  if ((part_of_v && part_of_v->k != json::kind::string) ||
+      (arch_v && arch_v->k != json::kind::string)) {
+    return d;
+  }
   if (!id || !name || !version || !platform || !native || !chrome || !size || *size < 0 || !host ||
       host->k != json::kind::object || !files || files->k != json::kind::array || files->a.empty() ||
       !archive) {
@@ -171,6 +225,14 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   m.platform = *platform;
   m.native = *native;
   m.chrome = *chrome;
+  m.part_of = part_of_v ? part_of_v->s : std::string();
+  m.arch = arch_v ? arch_v->s : std::string();
+  if (!m.part_of.empty() &&
+      (m.part_of.size() > 32 || m.part_of == m.id ||
+       !std::all_of(m.part_of.begin(), m.part_of.end(),
+                    [](char c) { return (c >= 'a' && c <= 'z') || c == '-'; }))) {
+    return d;
+  }
   m.installed_size = static_cast<std::uint64_t>(*size);
   m.host_api_min = static_cast<std::uint32_t>(*host_min);
   m.host_api_max = static_cast<std::uint32_t>(*host_max);
@@ -200,8 +262,14 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
       return f.path == p || f.path.rfind(p + "/", 0) == 0;
     });
   };
-  if (!safe_relative_path(m.native) || !safe_relative_path(m.chrome) || !listed(m.native) ||
-      !listed(m.chrome)) {
+  if (m.part_of.empty()) {
+    if (!safe_relative_path(m.native) || !safe_relative_path(m.chrome) || !listed(m.native) ||
+        !listed(m.chrome)) {
+      d.why = rejection::unsafe_path;
+      return d;
+    }
+  } else if (!m.native.empty() || !m.chrome.empty()) {
+    // A piece runs nothing of its own: the parent loads it.
     d.why = rejection::unsafe_path;
     return d;
   }
@@ -215,7 +283,13 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
     d.why = rejection::wrong_platform;
     return d;
   }
-  if (host_api < m.host_api_min || host_api > m.host_api_max) {
+  // Only this build's own platform knows its architecture; the packing
+  // tool's cross-check (another platform) does not judge it.
+  if (!m.arch.empty() && expected_platform == kPlatform && m.arch != current_arch()) {
+    d.why = rejection::wrong_platform;
+    return d;
+  }
+  if (m.host_api_min > host_api || m.host_api_max < host_api_oldest) {
     d.why = rejection::needs_update;
     return d;
   }

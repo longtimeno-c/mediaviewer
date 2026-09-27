@@ -537,7 +537,9 @@ public static partial class IslandHost
             switch (e.Key)
             {
                 case Windows.System.VirtualKey.Escape:
-                    Send(Command.CloseGallery);
+                    // Milestone H: Esc from a result list's grid goes back to
+                    // the folder the search came from (native folder_up).
+                    Send(_listOpen ? Command.FolderUp : Command.CloseGallery);
                     e.Handled = true;
                     break;
                 case Windows.System.VirtualKey.Left:

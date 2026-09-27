@@ -227,6 +227,19 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 
 ---
 
+## Local search (optional AI pack, in progress)
+
+An optional add-on, installed from **Settings → Local search**, that lets you type what you
+are looking for ("guy on a skateboard") and get the photos and the exact moments in videos, all
+computed on this computer. Nothing is uploaded, and the base app never contains it. It uses
+OpenAI CLIP (two sizes, picked by your hardware) through ONNX Runtime, with optional NVIDIA
+acceleration on Windows and Core ML on Apple silicon, plus an opt-in, deletable People index.
+`Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, `N` / `Shift+N` walk the matching
+moments in a clip. Status, measured numbers and what is still owed:
+[plan/17](plan/17-local-ai-search.md#implementation-notes-2026-09-26-milestone-h-branch-milestone-h-local-ai-search).
+Build the pack locally with `tools/package/ai-models.py` and `tools/package/addon-pack.py
+--addon ai` (see docs/DEVELOPMENT.md and `src.swift/AIChrome/MAC-VALIDATION.md`).
+
 ## Coming next
 
 | Soon | |

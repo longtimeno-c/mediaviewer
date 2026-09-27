@@ -179,6 +179,24 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_request_summary(MvSessionHandle session, uint index);
 
+    // ABI 0.11 (Milestone H): result listings. [any-thread][no-block]
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static unsafe partial MvStatus mv_folder_open_list(MvSessionHandle session, byte* titleUtf8,
+                                                                byte** pathsUtf8, long* momentsMs,
+                                                                uint count, uint selectIndex,
+                                                                out ulong jobId);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_list_title(MvSessionHandle session, IntPtr utf8,
+                                                          uint cap, out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_item_moment(MvSessionHandle session, uint index,
+                                                           out long ms);
+
     // ABI 0.6 (PR 9): the folder tree's one directory read. Worker threads only.
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
