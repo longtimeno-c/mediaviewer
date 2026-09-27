@@ -21,7 +21,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | Planned |
 | 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
 | 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](../plan/18-import.md)) | In main, optional download; release packing is `tools/package/release-addon.patch`, to apply; hardware verify owed |
-| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Proposed |
+| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed |
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
 | 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete / Set in / Set out / Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.13 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
@@ -610,6 +610,31 @@ keep the header and Done button visible while the content scrolls.
 
 For the settings and path-bar smoke checks on Windows and macOS, see
 [the UI verification checklist](settings-navigation-verify.md).
+
+### Local search (the AI pack) from a source build
+
+Developer builds only; a release build refuses a dev-signed pack. Numbers, state and what is
+owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
+`src.swift/AIChrome/MAC-VALIDATION.md`.
+
+1. Stage the models (pinned revisions and SHA-256s):
+   `python3 tools/package/ai-models.py stage --piece ai --out <staged>/ai` (and `ai-audio`,
+   `ai-faces`).
+2. Configure with `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>` and build `mv_ai`,
+   `mv_ai_chrome` (Mac) or the WinUI chrome, `mv_ai_tests` and `ai-bench`. On the Mac the AI
+   targets exist on arm64 only.
+3. Pack, sign and install into a scratch folder:
+   `python3 tools/package/ai-sideload.py --build <build> --models <staged> --key <key file>
+   --addons <folder> --platform win-x64|macos --pieces ai,ai-audio,ai-faces`.
+4. Run the app or `ai-bench --addons <folder> --index <media folder> --query "a dog"` with
+   `MV_DEV_ADDONS_DIR=<folder>` and `MV_DEV_THUMBS_DIR=<another folder>`, so a real install
+   is untouched.
+
+Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
+`MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`
+make `mv_ai_tests` run its model cases; `"[.bench]"` prints CPU / Core ML timings and
+`"[.calibration]"` the held-out "nothing found" rates. On a Mac the first Core ML open of a
+tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
 
 ## Test
 
