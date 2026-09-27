@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 
 namespace MediaViewer.Ai.Chrome;
@@ -24,7 +25,9 @@ internal sealed record FaceVm(ulong Id, string Path, long PtsMs, double[] Box);
 /// <summary>
 /// People (plan/17 PR 24): the clusters as circular covers, a person's faces,
 /// and the minimum corrections — rename, "Not this person" (Delete), "Split
-/// into new person" on a multi-selection, and "Merge into…". A window of its
+/// into new person" on a multi-selection, and merging: drag a person onto
+/// another, Ctrl-click several and "Merge into…", or the detail pane's
+/// "Merge into…" (owner report, 2026-09-27: merge was hard to find). A window of its
 /// own because naming needs a text field, which the Settings island cannot
 /// host.
 /// </summary>
@@ -52,8 +55,19 @@ internal sealed class PeopleWindow : Window
     private readonly Button _photos;
     private readonly DropDownButton _merge;
     private readonly Grid _detail;
+    private readonly StackPanel _mergeBar;
+    private readonly TextBlock _mergeCount;
+    private readonly DropDownButton _mergeSelected;
+    private readonly TextBlock _hint;
+    private readonly TextBlock _note;
     private PersonVm? _person;
     private int _loadGeneration;
+    // people_json in flight; more AI_PEOPLE events while it runs fold into one
+    // more read after it (a face landing posts one for every face).
+    private bool _loading;
+    private bool _loadAgain;
+    private int _noteGeneration;
+    private const string DragPrefix = "mediaviewer-person:";
 
     internal PeopleWindow(AiChrome chrome)
     {
@@ -67,8 +81,10 @@ internal sealed class PeopleWindow : Window
 
         _peopleGrid = new GridView
         {
-            SelectionMode = ListViewSelectionMode.Single,
+            // Ctrl / Shift picks several people to merge.
+            SelectionMode = ListViewSelectionMode.Extended,
             IsItemClickEnabled = true,
+            CanDragItems = true,
             ItemsSource = _peopleItems,
             Padding = new Thickness(12),
         };
@@ -78,10 +94,30 @@ internal sealed class PeopleWindow : Window
             e.ItemContainer.Content = PersonTile(p);
             AutomationProperties.SetName(e.ItemContainer, $"{p.Label}, {p.Faces} photos");
         };
-        _peopleGrid.ItemClick += (_, e) => { if (e.ClickedItem is PersonVm p) ShowPerson(p, focusFaces: true); };
+        _peopleGrid.ItemClick += (_, e) =>
+        {
+            if (Modified()) return;  // Ctrl / Shift-click only selects
+            if (e.ClickedItem is PersonVm p) ShowPerson(p, focusFaces: true);
+        };
         _peopleGrid.SelectionChanged += (_, _) =>
         {
-            if (_peopleGrid.SelectedItem is PersonVm p && p.Id != _person?.Id) ShowPerson(p, focusFaces: false);
+            UpdateMergeBar();
+            if (_peopleGrid.SelectedItems.Count == 1 && _peopleGrid.SelectedItem is PersonVm p && p.Id != _person?.Id)
+            {
+                ShowPerson(p, focusFaces: false);
+            }
+        };
+        // Drag a person (or the selected people) onto another to merge them.
+        _peopleGrid.DragItemsStarting += (_, e) =>
+        {
+            string ids = string.Join(",", e.Items.OfType<PersonVm>().Select(p => p.Id));
+            if (ids.Length == 0)
+            {
+                e.Cancel = true;
+                return;
+            }
+            e.Data.SetText(DragPrefix + ids);
+            e.Data.RequestedOperation = DataPackageOperation.Move;
         };
 
         _faceGrid = new GridView
@@ -110,6 +146,7 @@ internal sealed class PeopleWindow : Window
         };
         _name.LostFocus += (_, _) => CommitName();
         _merge = new DropDownButton { Content = "Merge into…", Flyout = new MenuFlyout() };
+        ToolTipService.SetToolTip(_merge, "This person is someone else in the list: their faces join them");
         ((MenuFlyout)_merge.Flyout).Opening += (_, _) => FillMergeMenu();
         _photos = _look.Button("Show their photos", ShowPhotos);
         _reject = _look.Button("Not this person", RejectSelected);
@@ -140,9 +177,32 @@ internal sealed class PeopleWindow : Window
         var left = new Grid();
         left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var leftHead = new StackPanel { Padding = new Thickness(16, 16, 16, 0), Spacing = 4 };
+        var leftHead = new StackPanel { Padding = new Thickness(16, 16, 16, 0), Spacing = 6 };
         leftHead.Children.Add(_look.Text("People", 20, AddonColour.Title));
         leftHead.Children.Add(_look.Text("Found on this computer only. Face data is never shared, and can be deleted in Settings.", 12));
+        _hint = _look.Text("The same person twice? Drag one onto the other, or Ctrl-click several and merge them.", 12);
+        leftHead.Children.Add(_hint);
+        // "3 people selected · Merge into… · Cancel": the target keeps its name.
+        _mergeCount = _look.Text("", 12, AddonColour.Title, wrap: false);
+        _mergeCount.VerticalAlignment = VerticalAlignment.Center;
+        _mergeSelected = new DropDownButton { Content = "Merge into…", Flyout = new MenuFlyout() };
+        ((MenuFlyout)_mergeSelected.Flyout).Opening += (_, _) => FillMergeSelectedMenu();
+        _mergeBar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Padding = new Thickness(10, 6, 10, 6),
+            CornerRadius = new CornerRadius(6),
+            Background = _look.Tint(AddonColour.Accent, 28),
+            Visibility = Visibility.Collapsed,
+        };
+        _mergeBar.Children.Add(_mergeCount);
+        _mergeBar.Children.Add(_mergeSelected);
+        _mergeBar.Children.Add(_look.Button("Cancel", () => _peopleGrid.SelectedItems.Clear()));
+        leftHead.Children.Add(_mergeBar);
+        _note = _look.Text("", 12, AddonColour.Title);
+        _note.Visibility = Visibility.Collapsed;
+        leftHead.Children.Add(_note);
         left.Children.Add(leftHead);
         Grid.SetRow(_peopleGrid, 1);
         left.Children.Add(_peopleGrid);
@@ -175,6 +235,12 @@ internal sealed class PeopleWindow : Window
 
     internal void Refresh()
     {
+        if (_loading)
+        {
+            _loadAgain = true;
+            return;
+        }
+        _loading = true;
         int generation = ++_loadGeneration;
         AiApi api = _api;
         _ = Task.Run(() =>
@@ -193,26 +259,70 @@ internal sealed class PeopleWindow : Window
                         Box(p, "cover_box")));
                 }
             }
-            catch (Exception ex) when (ex is MediaViewerException or JsonException or InvalidOperationException) { }
+            // FormatException too: a read that throws must still clear _loading,
+            // or the list would stop following the index.
+            catch (Exception ex) when (ex is MediaViewerException or JsonException or InvalidOperationException
+                                           or FormatException) { }
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (generation != _loadGeneration) return;
-                ulong? keep = _person?.Id;
-                _peopleItems.Clear();
-                foreach (PersonVm p in people) _peopleItems.Add(p);
-                PersonVm? again = keep is ulong id ? people.FirstOrDefault(p => p.Id == id) : null;
-                if (again is not null)
+                if (generation == _loadGeneration) Apply(people);
+                if (!_loadAgain)
                 {
-                    _peopleGrid.SelectedItem = again;
-                    ShowPerson(again, focusFaces: false);
+                    _loading = false;
+                    return;
                 }
-                else
+                // While faces stream in: at most two reads a second.
+                _loadAgain = false;
+                _ = Task.Delay(500).ContinueWith(_ => DispatcherQueue.TryEnqueue(() =>
                 {
-                    _person = null;
-                    _detail.Visibility = Visibility.Collapsed;
-                }
+                    _loading = false;
+                    Refresh();
+                }), TaskScheduler.Default);
             });
         });
+    }
+
+    private static bool Same(PersonVm a, PersonVm b) =>
+        a.Id == b.Id && a.Name == b.Name && a.Faces == b.Faces && a.CoverFace == b.CoverFace;
+
+    /// <summary>
+    /// The new list, changed in place where it can be: a rebuilt grid loses
+    /// its scroll, selection and crops every time a face lands.
+    /// </summary>
+    private void Apply(List<PersonVm> people)
+    {
+        var selected = _peopleGrid.SelectedItems.OfType<PersonVm>().Select(p => p.Id).ToHashSet();
+        ulong? keep = _person?.Id;
+        if (_peopleItems.Select(p => p.Id).SequenceEqual(people.Select(p => p.Id)))
+        {
+            for (int i = 0; i < people.Count; ++i)
+            {
+                if (!Same(_peopleItems[i], people[i])) _peopleItems[i] = people[i];
+            }
+        }
+        else
+        {
+            _peopleItems.Clear();
+            foreach (PersonVm p in people) _peopleItems.Add(p);
+        }
+        foreach (PersonVm p in _peopleItems)
+        {
+            if (selected.Contains(p.Id) && !_peopleGrid.SelectedItems.Contains(p)) _peopleGrid.SelectedItems.Add(p);
+        }
+        PersonVm? again = keep is ulong id ? _peopleItems.FirstOrDefault(p => p.Id == id) : null;
+        if (again is null)
+        {
+            _person = null;
+            _detail.Visibility = Visibility.Collapsed;
+        }
+        else if (_person is null || !Same(_person, again))
+        {
+            // Its faces changed (more found, a merge): read them again.
+            if (selected.Count <= 1 && !_peopleGrid.SelectedItems.Contains(again)) _peopleGrid.SelectedItem = again;
+            ShowPerson(again, focusFaces: false);
+        }
+        UpdateMergeBar();
+        UpdateButtons();
     }
 
     private static double[] Box(JsonElement e, string key)
@@ -264,7 +374,46 @@ internal sealed class PeopleWindow : Window
 
     private UIElement PersonTile(PersonVm p)
     {
-        var panel = new StackPanel { Width = Circle + 24, Spacing = 6, Padding = new Thickness(4) };
+        var panel = new StackPanel
+        {
+            Width = Circle + 24,
+            Spacing = 6,
+            Padding = new Thickness(4),
+            AllowDrop = true,
+            CornerRadius = new CornerRadius(8),
+        };
+        ToolTipService.SetToolTip(panel, "Drag onto another person to merge them");
+        panel.DragOver += (_, e) =>
+        {
+            if (!e.DataView.Contains(StandardDataFormats.Text)) return;
+            e.AcceptedOperation = DataPackageOperation.Move;
+            e.DragUIOverride.Caption = $"Merge into {p.Label}";
+            e.DragUIOverride.IsGlyphVisible = false;
+            panel.Background = _look.Tint(AddonColour.Accent, 40);
+        };
+        panel.DragLeave += (_, _) => panel.Background = null;
+        panel.Drop += async (_, e) =>
+        {
+            panel.Background = null;
+            if (!e.DataView.Contains(StandardDataFormats.Text)) return;
+            DragOperationDeferral deferral = e.GetDeferral();
+            try
+            {
+                string text = await e.DataView.GetTextAsync();
+                if (!text.StartsWith(DragPrefix, StringComparison.Ordinal)) return;
+                var ids = text[DragPrefix.Length..].Split(',')
+                    .Select(t => ulong.TryParse(t, out ulong v) ? v : 0)
+                    .Where(v => v != 0 && v != p.Id)
+                    .ToList();
+                PersonVm? target = _peopleItems.FirstOrDefault(x => x.Id == p.Id);
+                if (target is not null && ids.Count > 0) Merge(target, ids);
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException) { }
+            finally
+            {
+                deferral.Complete();
+            }
+        };
         panel.Children.Add(Crop(p.CoverFace, p.Box, Circle, round: true, p.Label));
         TextBlock name = _look.Text(p.Label, 13, p.Name.Length > 0 ? AddonColour.Title : AddonColour.Body, wrap: false);
         name.HorizontalAlignment = HorizontalAlignment.Center;
@@ -423,12 +572,87 @@ internal sealed class PeopleWindow : Window
             item.Click += (_, _) =>
             {
                 if (_person is null) return;
-                try { _api.PersonMerge(into, _person.Id); }
-                catch (MediaViewerException) { return; }
-                _person = other;
+                Merge(other, new List<ulong> { _person.Id });
             };
             menu.Items.Add(item);
         }
+    }
+
+    private static bool Modified() =>
+        Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down) ||
+        Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+    private void UpdateMergeBar()
+    {
+        int n = _peopleGrid.SelectedItems.Count;
+        bool several = n >= 2;
+        _mergeBar.Visibility = several ? Visibility.Visible : Visibility.Collapsed;
+        _hint.Visibility = several || _peopleItems.Count < 2 ? Visibility.Collapsed : Visibility.Visible;
+        _mergeCount.Text = $"{n} people selected";
+    }
+
+    private void FillMergeSelectedMenu()
+    {
+        var menu = (MenuFlyout)_mergeSelected.Flyout;
+        menu.Items.Clear();
+        List<PersonVm> chosen = _peopleGrid.SelectedItems.OfType<PersonVm>().ToList();
+        foreach (PersonVm target in chosen)
+        {
+            var item = new MenuFlyoutItem { Text = $"{target.Label} ({target.Faces:N0})" };
+            item.Click += (_, _) => Merge(target, chosen.Select(p => p.Id).ToList());
+            menu.Items.Add(item);
+        }
+    }
+
+    /// <summary>
+    /// Several people are one: their faces move to <paramref name="target"/>,
+    /// which keeps its name (or takes the first name among them, as faces_db
+    /// does). The list changes now; person_merge can wait for the indexer, so
+    /// the rows are rewritten on a worker and AI_PEOPLE brings the truth.
+    /// </summary>
+    private void Merge(PersonVm target, List<ulong> ids)
+    {
+        List<ulong> from = ids.Where(id => id != target.Id).Distinct().ToList();
+        List<PersonVm> moved = _peopleItems.Where(p => from.Contains(p.Id)).ToList();
+        if (moved.Count == 0) return;
+        string name = target.Name.Length > 0 ? target.Name : moved.FirstOrDefault(p => p.Name.Length > 0)?.Name ?? "";
+        PersonVm merged = target with { Name = name, Faces = target.Faces + moved.Sum(p => p.Faces) };
+        _peopleGrid.SelectedItems.Clear();
+        foreach (PersonVm p in moved) _peopleItems.Remove(p);
+        int at = _peopleItems.IndexOf(target);
+        if (at >= 0) _peopleItems[at] = merged;
+        ShowNote(moved.Count == 1
+            ? $"Merged into {merged.Label}."
+            : $"Merged {moved.Count + 1} people into {merged.Label}.");
+        _peopleGrid.SelectedItem = merged;
+        ShowPerson(merged, focusFaces: false);
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            bool failed = false;
+            foreach (ulong f in from)
+            {
+                try { api.PersonMerge(target.Id, f); }
+                catch (MediaViewerException) { failed = true; }
+            }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (failed) ShowNote("Some faces could not be merged. Try again.");
+                Refresh();
+            });
+        });
+    }
+
+    /// <summary>A line under the header that clears itself after a few seconds.</summary>
+    private void ShowNote(string text)
+    {
+        int g = ++_noteGeneration;
+        _note.Text = text;
+        _note.Visibility = Visibility.Visible;
+        _ = Task.Delay(5000).ContinueWith(_ => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (g == _noteGeneration) _note.Visibility = Visibility.Collapsed;
+        }), TaskScheduler.Default);
     }
 
     private void ShowPhotos()

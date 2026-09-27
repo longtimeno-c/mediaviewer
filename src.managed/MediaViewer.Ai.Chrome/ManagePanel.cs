@@ -51,6 +51,11 @@ internal sealed class ManagePanel
     private readonly TextBlock _audioLine;
     private MvAiMedia _videoIndexValue = MvAiMedia.Pictures;
     private bool _audioReady;
+    // The faces bits and people count the People rows were last drawn for:
+    // the piece coming or going, or people being found, redraws them now
+    // rather than at the next start (owner report, 2026-09-27).
+    private uint _facesFlags = uint.MaxValue;
+    private uint _peopleShown = uint.MaxValue;
     private readonly List<MvAiCompute> _computeValues = new();
 
     private static readonly int[] BatteryValues = { 0, 20, 30, 50, 100 };
@@ -366,6 +371,8 @@ internal sealed class ManagePanel
             ShowVideoIndex();
         }
         RefreshIndexRow(s);
+        uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
+        if (faces != _facesFlags || s.People != _peopleShown) RefreshPeople();
     }
 
     // ---- index videos for --------------------------------------------------------------
@@ -654,8 +661,10 @@ internal sealed class ManagePanel
             _people.Children.Add(_look.Card(box));
             return;
         }
-        if (!_faces.IsOn) return;
         MvAiStatus s = _chrome.Status;
+        _facesFlags = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
+        _peopleShown = s.People;
+        if (!_faces.IsOn) return;
         bool ready = _chrome.StatusValid && (s.Flags & MvAiStatus.FlagFacesReady) != 0;
         if (!ready && !_chrome.Host.IsPieceInstalled("ai-faces"))
         {
@@ -663,7 +672,7 @@ internal sealed class ManagePanel
             return;
         }
         string found = s.People == 0 ? "No people found yet." : s.People == 1 ? "1 person found." : $"{s.People:N0} people found.";
-        _people.Children.Add(Row("People", found + " Name them, merge and split them in the people window.",
+        _people.Children.Add(Row("People", found + " Name them, merge the same person found twice, and split them in the people window.",
             _look.Button("People…", _chrome.OpenPeople)));
     }
 }

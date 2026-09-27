@@ -546,6 +546,16 @@ public static partial class IslandHost
             // checking and installing steps (the Mac's AddonProgressView).
             action = ProgressFor(slot, 200);
         }
+        else if (slot.Busy && slot.State.Installed)
+        {
+            // Removing: said at once, not a greyed Remove (owner report,
+            // 2026-09-27); Install comes back when it has gone.
+            var removing = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            removing.Children.Add(new ProgressRing { IsActive = true, Width = 16, Height = 16 });
+            removing.Children.Add(Small("Removing…"));
+            AutomationProperties.SetName(removing, $"Removing {title}");
+            action = removing;
+        }
         else if (slot.State.Installed)
         {
             Button remove = SettingsButton("Remove", () =>
@@ -719,7 +729,7 @@ public static partial class IslandHost
             try
             {
                 AddonNative.Remove(slot.Id, keepData);
-                done = $"{slot.Name} removed.";
+                done = $"{slot.Name} removed. Install it again here whenever you like.";
             }
             catch (MediaViewerException)
             {
@@ -745,6 +755,11 @@ public static partial class IslandHost
             _aiCeiling = ceiling;
             _aiUsageRead = true;
             SetLocalSearchStatus(message);
+            // A piece just removed offers Install again: its size must be known.
+            foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot })
+            {
+                if (!piece.State.Installed && piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
+            }
             RefreshLocalSearch();
             if (load && AiSlot.Usable && AiSlot.Chrome is null) LoadAddon(AiSlot);
             // A piece came or went under a loaded pack: it picks People up at
