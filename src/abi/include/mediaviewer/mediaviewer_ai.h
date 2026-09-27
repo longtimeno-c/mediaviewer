@@ -113,6 +113,9 @@ typedef enum mv_ai_scope {
 #define MV_AI_STATUS_FACES_READY 4u    /* ...and the ai-faces piece is loaded */
 #define MV_AI_STATUS_NO_MODELS 8u      /* the Core pack's models failed to load */
 #define MV_AI_STATUS_AUDIO_READY 16u   /* the ai-audio piece is loaded (sounds + speech) */
+#define MV_AI_STATUS_FIRST_COMPILE 32u /* LOADING, and the model is being prepared for this
+                                          machine for the first time (Core ML's first compile,
+                                          minutes; later starts read its cache) */
 
 /* Polled by the status line (~4 Hz while visible). [no-block] */
 typedef struct mv_ai_status {
@@ -178,7 +181,8 @@ typedef struct mv_ai_api {
    * Sound once the ai-audio piece is installed); value: a JSON number. Compute re-creates the
    * sessions (no re-index); quality starts a migration. "reload" (any value)
    * re-reads the installed pieces after one is installed or removed: People
-   * (ai-faces) is picked up at once; a vendor piece (ai-cuda) carries its own
+   * (ai-faces) and Sound (ai-audio) are picked up at once, without reopening
+   * the picture towers (indexing and search go on); a vendor piece (ai-cuda) carries its own
    * runtime and takes effect the next time the app starts. [no-block] */
   mv_status(MV_CALL* set_setting)(void* ctx, const char* key, const char* value_json);
   /* Pause / resume all indexing. [no-block] */

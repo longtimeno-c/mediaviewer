@@ -139,6 +139,10 @@ struct engine_deps {
   // A vendor piece installed or removed since the runtime loaded: the
   // change needs the app to start again (the runtime cannot be swapped live).
   std::function<bool()> restart_needed;
+  // Opening this tower on this compute choice compiles it for this machine
+  // with nothing cached yet (Core ML's first compile: minutes). Cheap: a look
+  // at the cache folder, after `prepare`. Null or false: an ordinary load.
+  std::function<bool(std::uint32_t quality, std::uint32_t compute)> first_compile;
 };
 
 struct settings {
@@ -276,6 +280,17 @@ class engine {
   void refresh_counts();
   // models
   void load_models();
+  // People and Sound only ("reload", People turned on); the towers stay.
+  void load_pieces();
+  struct faces_parts {
+    std::shared_ptr<face_analyzer> model;
+    std::unique_ptr<faces_db> db;
+    std::set<std::int64_t> scanned;
+  };
+  // With the opt-in on: `model` (opened when null) and its database.
+  faces_parts open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model = nullptr);
+  // `replacing`: a piece reload, so an absent piece clears what it answered.
+  void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends
   // with the present loop for the GPU. False when stopping.
   bool wait_viewer_quiet();
@@ -323,6 +338,8 @@ class engine {
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};
+  std::atomic<bool> reload_pieces_{false};
+  std::atomic<bool> first_compile_{false};  // this load compiles a tower for the first time
 
   vector_store store_;
   mutable std::mutex assets_m_;

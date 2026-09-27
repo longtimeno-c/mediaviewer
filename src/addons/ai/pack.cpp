@@ -484,6 +484,26 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     const bool piece = st && st->is_directory;
     return p->rt && piece != p->from_piece;
   };
+  // Core ML compiles a tower once per machine and keeps it under data/cache
+  // (ORT writes <cache>/<hash>/model.txt naming the model it compiled). No
+  // entry for this tower: this open is the slow first one.
+  d.first_compile = [p](std::uint32_t quality, std::uint32_t compute) {
+    if (!p->ready || !p->rt) return false;
+    if (compute == MV_AI_COMPUTE_CPU_ONLY) return false;
+    const infer::backend want = compute == MV_AI_COMPUTE_AUTO ? accelerated(*p->rt)
+                                : compute == MV_AI_COMPUTE_COREML ? infer::backend::coreml
+                                                                  : infer::backend::cpu;
+    if (want != infer::backend::coreml || !p->rt->has_provider(want)) return false;
+    auto it = p->towers.find(quality);
+    if (it == p->towers.end()) return false;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(fs_path(coreml_cache(*p)), ec)) {
+      std::ifstream in(e.path() / "model.txt", std::ios::binary);
+      std::string model;
+      if (in && std::getline(in, model) && model == it->second.image_file) return false;
+    }
+    return true;
+  };
   d.runtime_version = [p] {
     if (!p->ready) return std::string();
     return p->rt ? p->rt->version() : std::string();
