@@ -37,8 +37,13 @@ final class LocalSearchStore: ObservableObject {
 
     var channel: AddonChannel { AddonChannel(name: "mediaviewer-addon-\(id)-macos") }
     var offeredBytes: (archive: Int, installed: Int)? {
-      if case .available(let a, let i) = probe { return (a, i) }
+      if case .available(let a, let i, _) = probe { return (a, i) }
       return nil
+    }
+    /// A newer published version of an installed piece, or nil.
+    var updateVersion: String? {
+      guard installed, let v = probe?.version, !v.isEmpty, AddonChannel.isNewer(v, than: version) else { return nil }
+      return v
     }
   }
 
@@ -229,7 +234,12 @@ final class LocalSearchStore: ObservableObject {
       return
     }
     busyPiece = id
-    message = "Downloading \(piece.title)…"
+    // An update installs beside the running copy (the store keeps it until the
+    // next start). A new Core takes over then: its chrome cannot be replaced in
+    // the running app. A new piece is picked up at once by "reload".
+    let update = piece.updateVersion
+    let coreRunning = loaded
+    message = update.map { "Downloading \(piece.title) \($0)…" } ?? "Downloading \(piece.title)…"
     let channel = piece.channel
     let title = piece.title
     Task.detached {
@@ -255,11 +265,14 @@ final class LocalSearchStore: ObservableObject {
         if ok {
           // Core loads now (verified again, on a worker); a new piece is
           // picked up by the loaded pack at once ("reload").
-          if id == "ai" {
+          if id == "ai" && coreRunning, let v = update {
+            text = "Local search \(v) is installed. It takes over the next time MediaViewer starts."
+          } else if id == "ai" {
             if !mv_addon2_load("ai") { text = "Local search is installed but could not be started." }
           } else if self.loaded {
             _ = mv_addon2_reload("ai")
           }
+          if let v = update, text == result { text = "\(title) updated to \(v)." }
         }
         self.message = text
         self.refresh()
@@ -408,7 +421,7 @@ struct LocalSearchSection: View {
         HStack(spacing: 6) {
           Text(piece.title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
           if piece.installed {
-            Text(piece.state == "ok" ? "Installed · \(LocalSearchStore.sizeText(piece.size))"
+            Text(piece.state == "ok" ? "Installed · \(piece.version) · \(LocalSearchStore.sizeText(piece.size))"
                  : piece.state == "needs_update" ? "Needs an update" : "Did not verify")
               .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           } else if let bytes = piece.offeredBytes {
@@ -423,6 +436,11 @@ struct LocalSearchSection: View {
       if store.busyPiece == piece.id {
         ProgressView().controlSize(.small)
       } else if piece.installed {
+        if let v = piece.updateVersion {
+          Button("Update to \(v)") { store.install(piece.id) }
+            .disabled(store.busyPiece != nil || store.refusal(for: piece) != nil)
+            .help(store.refusal(for: piece) ?? "")
+        }
         if piece.state != "ok" {
           Button("Reinstall") { store.install(piece.id) }.disabled(store.busyPiece != nil)
         }

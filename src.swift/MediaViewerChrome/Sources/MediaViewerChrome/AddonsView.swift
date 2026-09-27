@@ -27,8 +27,25 @@ struct AddonChannel: Sendable {
   private var url: String { Self.base + name }
 
   enum Probe: Equatable, Sendable {
-    case available(archiveBytes: Int, installedBytes: Int)
+    case available(archiveBytes: Int, installedBytes: Int, version: String)
     case notPublished, needsNewerApp, unreachable
+
+    var version: String? {
+      if case .available(_, _, let v) = self { return v }
+      return nil
+    }
+  }
+
+  /// Dotted numeric versions ("0.1.10" > "0.1.9"), as the store compares
+  /// them; a published version is an update only when strictly newer.
+  static func isNewer(_ published: String, than installed: String) -> Bool {
+    let a = published.split(separator: ".").map { Int($0) ?? 0 }
+    let b = installed.split(separator: ".").map { Int($0) ?? 0 }
+    for i in 0..<max(a.count, b.count) {
+      let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+      if x != y { return x > y }
+    }
+    return false
   }
 
   struct AddonError: Error { let text: String }
@@ -77,7 +94,8 @@ struct AddonChannel: Sendable {
       let obj = Self.checkManifest(manifest, sig)
       if obj["ok"] as? Bool == true,
          let archive = obj["archive"] as? [String: Any], let size = archive["size"] as? Int {
-        return .available(archiveBytes: size, installedBytes: obj["installed_size"] as? Int ?? 0)
+        return .available(archiveBytes: size, installedBytes: obj["installed_size"] as? Int ?? 0,
+                          version: obj["version"] as? String ?? "")
       }
       // A signed add-on for a newer host API; anything else that does not
       // verify is, to this build, nothing to offer.
@@ -157,6 +175,13 @@ final class AddonStore: ObservableObject {
     case unknown, checking, available(archiveBytes: Int), notPublished, needsNewerApp, unreachable
   }
   @Published private(set) var offer: Offer = .unknown
+  /// The version the channel offers, once probed.
+  @Published private(set) var published = ""
+  /// A newer Import than the installed one, or nil.
+  var updateVersion: String? {
+    guard installed, !published.isEmpty, AddonChannel.isNewer(published, than: version) else { return nil }
+    return published
+  }
   private var probing = false
   /// The card hint checks the channel at most once a session.
   private var hintProbed = false
@@ -225,7 +250,8 @@ final class AddonStore: ObservableObject {
   /// Settings opening, the hint, or Try again: two small GETs of fixed URLs
   /// (the same channel as updates), then the host verifies the manifest.
   func probe() {
-    guard !probing, !installed else { return }
+    // Installed too: Settings offers a newer version (plan/18).
+    guard !probing else { return }
     probing = true
     offer = .checking
     Task.detached {
@@ -233,7 +259,9 @@ final class AddonStore: ObservableObject {
       await MainActor.run {
         self.probing = false
         switch result {
-        case .available(let archiveBytes, _): self.offer = .available(archiveBytes: archiveBytes)
+        case .available(let archiveBytes, _, let v):
+          self.offer = .available(archiveBytes: archiveBytes)
+          self.published = v
         case .notPublished: self.offer = .notPublished
         case .needsNewerApp: self.offer = .needsNewerApp
         case .unreachable: self.offer = .unreachable
@@ -245,7 +273,11 @@ final class AddonStore: ObservableObject {
   func install() {
     guard !busy else { return }
     busy = true
-    message = "Downloading Import…"
+    // An update of a running Import installs beside it and takes over at the
+    // next start: a loaded bundle cannot be replaced in the running app.
+    let update = updateVersion
+    let running = loaded
+    message = update.map { "Downloading Import \($0)…" } ?? "Downloading Import…"
     mv_addons_hint_done(false)
     Task.detached {
       let result: String
@@ -263,8 +295,14 @@ final class AddonStore: ObservableObject {
       await MainActor.run {
         self.busy = false
         self.message = result
-        if result == "Import installed." && !mv_addons_load() {
-          self.message = "Import is installed but did not pass verification, so it was not loaded."
+        if result == "Import installed." {
+          if let v = update, running {
+            self.message = "Import \(v) is installed. It takes over the next time MediaViewer starts."
+          } else if !mv_addons_load() {
+            self.message = "Import is installed but did not pass verification, so it was not loaded."
+          } else if let v = update {
+            self.message = "Import updated to \(v)."
+          }
         }
         self.refresh()
       }
@@ -321,6 +359,10 @@ struct AddonsSection: View {
              : "The installed copy did not pass verification and is not loaded.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         HStack {
+          if let v = store.updateVersion, case .available(let bytes) = store.offer {
+            Button("Update to \(v), \(AddonStore.sizeText(bytes))") { store.install() }
+              .disabled(store.busy)
+          }
           if store.state != "ok" { Button("Reinstall") { store.install() }.disabled(store.busy) }
           if store.loaded { Button("Open Import") { mv_addons_open_import() } }
           Button("Remove…") { store.confirmingRemove = true }
