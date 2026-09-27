@@ -371,6 +371,9 @@ struct AddonsSection: View {
       if !store.message.isEmpty {
         Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
+      // The second add-on: install-only until Core is loaded, then the pack's
+      // own management view (LocalSearchView.swift).
+      LocalSearchSection().padding(.top, 16)
     }
     // Opening Settings asks the channel, whatever the automatic-check switch
     // says: the person is looking at what can be installed.

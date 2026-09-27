@@ -320,7 +320,8 @@ struct LocalSearchSection: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Local search").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
+      // An item of Settings → Add-ons, titled like Import.
+      Text("Local search").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       if !store.coreInstalled {
         introCard
       }

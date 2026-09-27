@@ -267,9 +267,8 @@ struct SettingsView: View {
             .pickerStyle(.menu).frame(width: 180)
           }
         }
-        // Milestone H (plan/17): absent on an Intel Mac, install-only until
-        // Core is loaded, then the pack's own management view.
-        LocalSearchSection().padding(.top, 20)
+        // Import and (Milestone H, plan/17) Local search, as items of one
+        // Add-ons section; Local search is absent on an Intel Mac.
         AddonsSection().padding(.top, 20)
       }
       .padding(.horizontal, 24).padding(.bottom, 24)

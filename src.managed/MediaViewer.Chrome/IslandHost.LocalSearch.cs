@@ -336,7 +336,8 @@ public static partial class IslandHost
 
     private static void AddLocalSearchSettings(StackPanel view)
     {
-        TextBlock heading = SettingsSection("Local search");
+        // An item of Settings → Add-ons, titled like Import.
+        TextBlock heading = Label("Local search");
         _localSearchHeading = heading;
         view.Children.Add(heading);
         _localSearchPanel = new StackPanel { Spacing = 8 };
