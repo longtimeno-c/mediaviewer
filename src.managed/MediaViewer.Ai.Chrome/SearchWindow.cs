@@ -283,9 +283,9 @@ internal sealed class SearchWindow : Window, IDisposable
         chips.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         chips.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         chips.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        UIElement scopeGroup = Group("Look in", Track(scopes, hc));
+        FrameworkElement scopeGroup = Group("Look in", Track(scopes, hc));
         chips.Children.Add(scopeGroup);
-        UIElement kindGroup = Group("Show", Track(kinds, hc));
+        FrameworkElement kindGroup = Group("Show", Track(kinds, hc));
         Grid.SetColumn(kindGroup, 1);
         chips.Children.Add(kindGroup);
         Grid.SetColumn(_count, 2);
@@ -471,7 +471,7 @@ internal sealed class SearchWindow : Window, IDisposable
     }
 
     /// <summary>"Look in  [track]": a caption and its control on one line.</summary>
-    private UIElement Group(string caption, UIElement control)
+    private FrameworkElement Group(string caption, UIElement control)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         TextBlock label = _look.Text(caption, 13, AddonColour.Body, wrap: false);
