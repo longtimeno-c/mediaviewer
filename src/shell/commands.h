@@ -296,6 +296,16 @@ enum class command_id : std::uint16_t {
   copy_path,           // Ctrl/Cmd+Shift+C: the marked / current path(s) as text
   copy_flattened,      // Ctrl+Alt+C / Cmd+Opt+C: the current still, edits baked, as a PNG
   share,               // Ctrl/Cmd+Shift+S: the OS share sheet with the marked / current file(s)
+  // PR 29 (plan/20 the Edit workspace). Appended; every id above keeps its value.
+  edit_workspace,         // Enter (Return) on a still or a clip: open / close the Edit workspace
+  crop_aspect_cycle,      // A in crop: the next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4)
+  crop_aspect_swap,       // X in crop: portrait <-> landscape for the locked preset
+  show_original,          // Y held on a still: the original pixels, edits kept
+  show_original_release,
+  // Island-only, keyless: the Crop pane's preset buttons (argument = preset,
+  // + 16 for portrait) and its straighten slider (argument = degrees).
+  crop_aspect_set,
+  crop_straighten_set,
   count
 };
 

@@ -153,6 +153,8 @@ struct copy_spec {
 struct reencode_spec {
   time_ns in_ns = 0;
   time_ns out_ns = -1;
+  // PR 30: when not empty, these pieces back to back instead of [in, out).
+  std::vector<range> ranges;
   const char* muxer = nullptr;
   // FFmpeg encoder names to try in order.
   std::vector<std::string> encoders;

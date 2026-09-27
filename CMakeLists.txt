@@ -511,6 +511,7 @@ add_library(mv_clip STATIC
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
   src/edit/clip_jobs.h
+  src/edit/clip_strip.h
   src/edit/clip_wire.cpp
   src/edit/clip_wire.h
   src/edit/clip_helper.cpp
@@ -639,6 +640,10 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/edit_workspace.cpp
+  src/shell/edit_workspace.h
+  src/shell/video_timeline.cpp
+  src/shell/video_timeline.h
   src/shell/edit_view.h
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
@@ -760,6 +765,8 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Update.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Telemetry.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Addons.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Panels.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Edit.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/Addons.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
@@ -913,6 +920,12 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # PR 29: the Edit workspace's tab model.
+    tests/test_edit_workspace.cpp
+    src/shell/edit_workspace.cpp
+    # PR 30: the Video Editor's timeline.
+    tests/test_video_timeline.cpp
+    src/shell/video_timeline.cpp
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp

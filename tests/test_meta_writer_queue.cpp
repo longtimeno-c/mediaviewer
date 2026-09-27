@@ -188,3 +188,21 @@ TEST_CASE("the pool job writes through the snapshot store and reports where it l
   CHECK(bad.error != mv::status::ok);
   fs::remove_all(dir);
 }
+
+TEST_CASE("tag and date edits for one file coalesce, the later value winning", "[meta][queue][pr29]") {
+  mv::shell::meta_writer w;
+  mv::meta::write_fields a;
+  a.tags.push_back({"Exif.Image.Artist", mv::meta::change<std::string>::to("A")});
+  a.date_taken = mv::meta::change<std::string>::to("2020-01-01 00:00:00");
+  mv::meta::write_fields b;
+  b.tags.push_back({"Exif.Image.Artist", mv::meta::change<std::string>::to("B")});
+  b.tags.push_back({"Xmp.dc.title", mv::meta::change<std::string>::remove()});
+  w.submit("x.jpg", a);
+  w.submit("x.jpg", b);
+  const auto job = w.take_next();
+  REQUIRE(job);
+  REQUIRE(job->fields.tags.size() == 2);
+  CHECK(job->fields.tags[0].value.value == "B");
+  CHECK(job->fields.tags[1].key == "Xmp.dc.title");
+  CHECK(job->fields.date_taken.value == "2020-01-01 00:00:00");
+}

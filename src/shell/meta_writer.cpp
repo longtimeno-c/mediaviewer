@@ -13,6 +13,19 @@ void merge(meta::write_fields& into, const meta::write_fields& from) {
   if (from.rating.touches()) into.rating = from.rating;
   if (from.orientation.touches()) into.orientation = from.orientation;
   if (from.comment.touches()) into.comment = from.comment;
+  // PR 29: a later edit of a tag replaces an earlier one still queued.
+  for (const meta::tag_edit& t : from.tags) {
+    bool replaced = false;
+    for (meta::tag_edit& have : into.tags) {
+      if (have.key == t.key) {
+        have = t;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) into.tags.push_back(t);
+  }
+  if (from.date_taken.touches()) into.date_taken = from.date_taken;
 }
 
 }  // namespace

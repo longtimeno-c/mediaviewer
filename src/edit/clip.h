@@ -22,6 +22,12 @@
 //   frame          The frame shown at `in`, as PNG or JPEG, sRGB.
 //   audio          The first audio track: stream copy, WAV or FLAC.
 //   animation      [in, out) as GIF (two-pass palette) or animated WebP.
+//   keep_ranges    PR 30 (the Video Editor, plan/21): the listed ranges of
+//                  the source, in order, in one file. Each end snaps to the
+//                  nearest keyframe and the packets are copied, like
+//                  remove_middle (which is keep_ranges of two). With
+//                  `ranges_exact`, frame-accurate instead: every piece is
+//                  decoded and re-encoded (Path 2's encoder rules).
 //
 // Rule 5: the source is opened read-only and never written. Outputs go beside
 // the source (or into `out_dir`) under a name that is free when published;
@@ -83,6 +89,7 @@ struct clip_info {
 struct range {
   time_ns in_ns = 0;
   time_ns out_ns = 0;
+  friend constexpr bool operator==(const range&, const range&) = default;
 };
 [[nodiscard]] range keyframe_range(const clip_info& info, time_ns in_ns, time_ns out_ns) noexcept;
 
@@ -98,6 +105,7 @@ enum class op : std::uint8_t {
   frame = 7,
   audio = 8,
   animation = 9,
+  keep_ranges = 10,
 };
 
 enum class remux_target : std::uint8_t { mp4 = 1, mkv = 2 };
@@ -107,6 +115,8 @@ enum class anim_format : std::uint8_t { gif = 1, webp = 2 };
 
 // A GIF / WebP longer than this is refused: that is a clip, not an animation.
 inline constexpr time_ns kMaxAnimationNs = 60'000'000'000;
+// keep_ranges: an edit of more pieces than this is refused.
+inline constexpr std::size_t kMaxRanges = 1000;
 
 struct request {
   op kind = op::trim_keyframe;
@@ -125,6 +135,12 @@ struct request {
   std::uint32_t animation_width = 480;  // long edge in pixels, 16..1920
   std::uint32_t animation_fps = 15;     // 1..50
   int jpeg_quality = 92;
+  // keep_ranges: [in, out) pairs on the player's timeline, ascending and
+  // not overlapping; out < 0 = the end of the clip.
+  std::vector<range> ranges;
+  // keep_ranges: false = cut on keyframes, copying packets (instant); true =
+  // frame-accurate, re-encoded on a hardware encoder like Path 2 (slower).
+  bool ranges_exact = false;
 };
 
 struct outcome {

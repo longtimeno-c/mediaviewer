@@ -3,6 +3,7 @@
 #include "abi/clip_session.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 
 
@@ -135,8 +136,15 @@ void clip_session::index_worker() noexcept {
 }
 
 bool clip_session::to_request(const mv_clip_request& in, std::string source, clip::request& out) noexcept {
-  if (in.struct_size < sizeof(mv_clip_request)) return false;
-  if (in.op < MV_CLIP_TRIM_KEYFRAME || in.op > MV_CLIP_ANIMATION) return false;
+  // 0.10 callers end at `reserved`; 0.13 added the ranges.
+  constexpr std::size_t kV10 = offsetof(mv_clip_request, ranges_ns);
+  if (in.struct_size < kV10) return false;
+  const bool v12 = in.struct_size >= sizeof(mv_clip_request);
+  if (in.op < MV_CLIP_TRIM_KEYFRAME || in.op > MV_CLIP_KEEP_RANGES) return false;
+  if (in.op == MV_CLIP_KEEP_RANGES &&
+      (!v12 || in.ranges_ns == nullptr || in.range_count == 0 || in.range_count > clip::kMaxRanges)) {
+    return false;
+  }
   clip::request r;
   r.kind = static_cast<clip::op>(in.op);
   r.source = std::move(source);
@@ -155,6 +163,13 @@ bool clip_session::to_request(const mv_clip_request& in, std::string source, cli
       r.animation = in.option == 2 ? clip::anim_format::webp : clip::anim_format::gif;
       if (in.animation_width != 0) r.animation_width = in.animation_width;
       if (in.animation_fps != 0) r.animation_fps = in.animation_fps;
+      break;
+    case clip::op::keep_ranges:
+      r.ranges_exact = in.option == 2;
+      r.ranges.reserve(in.range_count);
+      for (std::uint32_t i = 0; i < in.range_count; ++i) {
+        r.ranges.push_back({in.ranges_ns[2 * i], in.ranges_ns[2 * i + 1]});
+      }
       break;
     default: break;
   }

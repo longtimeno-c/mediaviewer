@@ -78,8 +78,11 @@ static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the 
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
-static_assert(sizeof(mv_clip_request) == 40, "mv_clip_request layout is part of the ABI");
+// ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
+// the first 40 bytes and is still accepted (clip_session::to_request).
+static_assert(sizeof(mv_clip_request) == 56, "mv_clip_request layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, in_ns) == 8, "mv_clip_request layout is part of the ABI");
+static_assert(offsetof(mv_clip_request, ranges_ns) == 40, "mv_clip_request 0.10 prefix is part of the ABI");
 static_assert(sizeof(mv_clip_progress) == 368, "mv_clip_progress layout is part of the ABI");
 static_assert(offsetof(mv_clip_progress, title_utf8) == 48, "mv_clip_progress layout is part of the ABI");
 static_assert(MV_COMPLETION_CLIP_INDEX == MV_COMPLETION_FOLDER_SUMMARY + 1, "clip completion kinds follow");

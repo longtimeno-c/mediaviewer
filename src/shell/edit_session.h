@@ -52,6 +52,22 @@ enum class edit_effect : std::uint8_t {
   export_image,    // run an export of `export_geometry()` for the current item
 };
 
+// PR 29 (plan/20): the Crop pane's aspect presets. `original` is the frame's
+// own ratio (after the stack's turns). Values are stable: the chromes send them.
+enum class crop_aspect : std::uint8_t {
+  free = 0,
+  original = 1,
+  square = 2,
+  r4_3 = 3,
+  r3_2 = 4,
+  r16_9 = 5,
+  r5_4 = 6,
+  count
+};
+inline constexpr int kCropAspectCount = static_cast<int>(crop_aspect::count);
+// "Free", "Original", "1:1", "4:3", ... (landscape spelling).
+[[nodiscard]] const char* crop_aspect_label(crop_aspect a) noexcept;
+
 struct rotation_write {
   std::string path;
   std::uint64_t size = 0;  // the bytes the op was made against
@@ -87,6 +103,21 @@ class edit_session {
   // Crop mode: the draft rect, normalised to the preview's output frame.
   [[nodiscard]] edit::rect crop_overlay() const noexcept { return draft_rect_; }
   [[nodiscard]] float crop_angle() const noexcept { return draft_angle_; }
+
+  // PR 29 (plan/20). The aspect preset is kept for the session, like an
+  // app's last-used ratio. Outside crop mode setting it starts cropping
+  // (refused while a lossless rotation is still being written). A locked
+  // preset fits the largest rect of that ratio, centred on the draft; a
+  // resize (Shift+arrows) keeps the ratio; a straighten shrinks it evenly.
+  [[nodiscard]] edit_effect set_crop_aspect(crop_aspect a, bool portrait);
+  [[nodiscard]] crop_aspect aspect() const noexcept { return aspect_; }
+  [[nodiscard]] bool aspect_portrait() const noexcept { return portrait_; }
+  // The Crop pane's slider: an absolute angle, clamped to ±kMaxStraighten.
+  // Starts cropping when not already (the angle is part of the draft).
+  [[nodiscard]] edit_effect set_straighten(float degrees);
+  // Ops on the current item's stack: the strip's "3 edits" and whether Undo
+  // and Reset do anything.
+  [[nodiscard]] std::size_t edit_count() const noexcept;
 
   [[nodiscard]] edit::geometry export_geometry() const;
   [[nodiscard]] const edit::edit_stack* stack() const;
@@ -131,7 +162,15 @@ class edit_session {
   [[nodiscard]] bool awaiting_disk() const noexcept;  // a write in flight, or landed but not reloaded
   edit_effect turn(edit::op_kind k);
   edit_effect nudge(float dx, float dy, float dw, float dh);
+  edit_effect apply_angle(float degrees);
   void begin_crop();
+  // The locked preset's ratio as normalised w / h over frame(); 0 when free.
+  [[nodiscard]] float locked_ratio() const noexcept;
+  // The largest rect of the locked ratio centred on `centre_of`, inside the
+  // frame and, with an angle, inside the rotated source.
+  [[nodiscard]] edit::rect fit_locked(const edit::rect& centre_of) const noexcept;
+  // `r` shrunk evenly about its centre until no corner is uncovered.
+  [[nodiscard]] edit::rect shrink_to_fit(edit::rect r) const noexcept;
 
   edit_item item_{};
   bool has_item_ = false;
@@ -142,6 +181,8 @@ class edit_session {
   edit::rect draft_rect_{};
   float draft_angle_ = 0.0f;
   bool draft_auto_ = false;  // the rect is still the angle's largest fit
+  crop_aspect aspect_ = crop_aspect::free;
+  bool portrait_ = false;
 
   struct flight {
     std::string path;

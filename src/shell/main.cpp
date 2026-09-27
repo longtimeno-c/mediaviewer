@@ -54,6 +54,9 @@
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
+#include "shell/edit_workspace.h"
+#include "shell/video_timeline.h"
+#include "edit/clip_strip.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
@@ -66,6 +69,7 @@
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
+#include "meta/write.h"
 #include "core/json.h"
 #include "shell/marks.h"
 #include "shell/media_kind.h"
@@ -224,6 +228,35 @@ struct app_state {
   std::uint64_t trim_index_request = 0;
   bool jobs_pane_visible = false;
   bool focus_jobs_next = false;
+  // PR 29 (plan/20): the Edit workspace (shell/edit_workspace.h, shared with
+  // the Mac host) and Show original. `ws_shown` is what the panes were last
+  // synced to, so closing the workspace closes only the panes it opened.
+  mv::shell::edit_workspace ws;
+  bool ws_shown = false;
+  bool show_original = false;
+  // PR 30 (plan/21): the Video Editor window. While it is open it owns the
+  // canvas (input.canvas_window) and the keys aimed at it. `token` bumps on
+  // open and close, so a strip job that lands for an older clip is dropped;
+  // `retired` is a closed window waiting for the swapchain to leave it.
+  struct video_editor {
+    HWND window = nullptr;
+    HWND retired = nullptr;
+    int release_tries = 0;
+    bool open = false;
+    bool active = false;
+    bool minimized = false;
+    std::string path;
+    mv::shell::video_timeline timeline;
+    std::int32_t selected = -1;
+    std::uint64_t generation = 0;
+    std::uint64_t token = 0;
+    std::vector<mv::edit::clip::strip_frame> strip;
+    std::vector<float> peaks;
+    std::int64_t last_seek = -1;
+    std::int64_t pushed_playhead = -1;
+    bool pushed_playing = false;
+  } editor;
+  bool main_active = true;  // the viewer's own WM_ACTIVATE (input.window_active also counts the editor)
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
   // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
@@ -509,6 +542,10 @@ void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
 void stop_motion(app_state* app) noexcept;
+// PR 29 (plan/20): the Edit workspace.
+void push_edit_view(app_state* app) noexcept;
+void workspace_item_changed(app_state* app) noexcept;
+void set_editor_open(app_state* app, bool open);  // PR 30
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index);
 std::string subfolder_name_at(app_state* app, std::uint32_t index);
@@ -1016,13 +1053,14 @@ void set_adjust_pane(app_state* app, bool on);
 // The pane shows the record already held: three text tables, formatted here once
 // per record. No record yet means "reading" while something is wanted, and the
 // pane renders its empty states. Never reads the file. PR 12: the rating,
-// comment and Revert state ride along (push_meta_edit).
+// comment and Revert state ride along (push_meta_edit). PR 29: the tags carry
+// their raw form and what an edit may do (editable_properties_table).
 void push_meta_pane(app_state* app) noexcept {
   if (!app || !app->chrome.meta_pane_visible()) return;
   push_meta_edit(app);
   if (app->meta_record) {
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
-                              mv::meta::properties_table(*app->meta_record),
+                              mv::meta::editable_properties_table(*app->meta_record),
                               mv::meta::streams_table(*app->meta_record));
     return;
   }
@@ -1193,6 +1231,82 @@ void revert_current_metadata(app_state* app) noexcept {
   }
 }
 
+// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree, its Add tag
+// form and Summary's Remove location. The island parks one edit per line
+// ("S\tkey\tvalue" sets, "R\tkey" removes); they go as one queued write, so
+// removing a location is one checked rewrite, not one per GPS tag. The Mac
+// host's twin is main_mac.mm metaSetTag.
+void set_tags_from_pane(app_state* app) noexcept {
+  try {
+    std::string parked;
+    const bool took = app->chrome.take_parked_text(parked);
+    const std::string path = current_item_path(app);
+    if (!took || path.empty()) return;
+    const mv::meta::write_target target = app->meta_record && app->meta_record->writes_in_file
+                                              ? mv::meta::write_target::in_file
+                                              : mv::meta::write_target::sidecar;
+    mv::meta::write_fields f;
+    std::string refused;
+    std::size_t at = 0;
+    while (at < parked.size()) {
+      std::size_t end = parked.find('\n', at);
+      if (end == std::string::npos) end = parked.size();
+      const std::string line = parked.substr(at, end - at);
+      at = end + 1;
+      if (line.size() < 3 || line[1] != '\t' || (line[0] != 'S' && line[0] != 'R')) continue;
+      const bool remove = line[0] == 'R';
+      const std::size_t tab = remove ? std::string::npos : line.find('\t', 2);
+      const std::string key = line.substr(2, tab == std::string::npos ? std::string::npos : tab - 2);
+      if (key.empty() || (!remove && tab == std::string::npos)) continue;
+      const mv::meta::tag_access a = mv::meta::access_of(key, target);
+      if (a == mv::meta::tag_access::read_only || (a == mv::meta::tag_access::via_sidecar && remove)) {
+        refused = a == mv::meta::tag_access::read_only
+                      ? "That tag describes the file itself and cannot be changed"
+                      : "That tag is in the original, which is never rewritten";
+        continue;
+      }
+      if (f.tags.size() >= mv::meta::kMaxTagEdits) break;
+      f.tags.push_back({key, remove ? mv::meta::change<std::string>::remove()
+                                    : mv::meta::change<std::string>::to(line.substr(tab + 1))});
+    }
+    if (!refused.empty()) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, refused);
+    }
+    if (f.tags.empty()) return;
+    app->meta_writer.submit(path, f);
+    schedule_meta_write(app, kCommentDebounceMs);
+  } catch (...) {
+  }
+}
+
+// PR 29: Summary's Date taken. Every capture-time tag the file carries moves
+// together (meta::write_fields::date_taken), so no reader sees two dates.
+void set_date_from_pane(app_state* app, bool remove) noexcept {
+  try {
+    std::string value;
+    const bool took = remove || app->chrome.take_parked_text(value);
+    const std::string path = current_item_path(app);
+    if (!took || path.empty()) return;
+    mv::meta::write_fields f;
+    if (remove) {
+      f.date_taken = mv::meta::change<std::string>::remove();
+    } else {
+      std::string exif_form, xmp_form;
+      if (!mv::meta::exif_date_of(value, exif_form, xmp_form)) {
+        ::MessageBeep(MB_ICONWARNING);
+        notice_show(app, "Not a date: use YYYY-MM-DD HH:MM:SS");
+        push_meta_edit(app, true);
+        return;
+      }
+      f.date_taken = mv::meta::change<std::string>::to(value);
+    }
+    app->meta_writer.submit(path, f);
+    schedule_meta_write(app, kCommentDebounceMs);
+  } catch (...) {
+  }
+}
+
 void start_meta_write(app_state* app) {
   if (app->window) ::KillTimer(app->window, kMetaWriteTimerId);
   if (app->meta_writer.in_flight()) return;  // its completion starts the next
@@ -1240,9 +1354,12 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     (void)app->meta_writer.take_failure();
     ::MessageBeep(MB_ICONWARNING);
     MV_LOG_WARN("metadata write failed: %s", mv::status_name(out.error));  // never the path (rule 6)
-    notice_show(app, job.revert                    ? "Could not revert the metadata"
-                     : job.fields.rating.touches() ? "Could not save the rating"
-                                                   : "Could not save the comment");
+    notice_show(app, job.revert                     ? "Could not revert the metadata"
+                     : job.fields.rating.touches()  ? "Could not save the rating"
+                     : job.fields.comment.touches() ? "Could not save the comment"
+                     : out.error == mv::status::invalid_arg
+                         ? "That value does not fit the tag; nothing was changed"
+                         : "Could not save the metadata; nothing was changed");
     push_meta_edit(app);
     if (app->meta_writer.has_pending()) schedule_meta_write(app, 0);
     return;
@@ -1280,6 +1397,12 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     } else if (!job.revert && job.fields.comment.touches()) {
       text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed"
                                                                                 : "Comment saved";
+    } else if (!job.revert && job.fields.date_taken.touches()) {
+      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
+                                                                                   : "Date taken saved";
+    } else if (!job.revert && !job.fields.tags.empty()) {
+      text = job.fields.tags.size() == 1 ? std::string("Metadata saved")
+                                         : std::to_string(job.fields.tags.size()) + " tags saved";
     }
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of("\\/");
@@ -1422,7 +1545,17 @@ struct sibling_job_result {
 };
 
 void publish_edit(app_state* app) noexcept {
-  app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+  if (app->show_original && app->edits.has_item() && app->edit_key != 0) {
+    // PR 29 Show original (Y held, the strip's toggle): the item with no
+    // geometry and no colour, on the same blit. The stack is untouched.
+    mv::shell::edit_view v;
+    v.item = app->edit_key;
+    v.generation = app->edit_generation;
+    app->input.edit[0] = v;
+  } else {
+    app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+  }
+  push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
 
 void schedule_rotation_write(app_state* app) noexcept {
@@ -1444,8 +1577,10 @@ void edit_item_opened(app_state* app) {
       app->input.edit[1] = app->input.edit[0];
       app->edit_path.clear();
       app->edit_key = 0;
+      app->show_original = false;
       publish_edit(app);
       adjust_item_changed(app);
+      workspace_item_changed(app);
     }
     return;
   }
@@ -1478,9 +1613,12 @@ void edit_item_opened(app_state* app) {
     e.height = h;
   }
   const bool carried_turn = app->edits.set_item(e);
+  app->show_original = false;
   publish_edit(app);
   if (carried_turn) schedule_rotation_write(app);
   adjust_item_changed(app);
+  // PR 29: an open workspace follows the item to a tab it offers.
+  workspace_item_changed(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -1545,6 +1683,38 @@ void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   }
 }
 
+// What an edit_session call asked the host to do. Shared by the keys and (PR
+// 29) the Crop pane's preset buttons and straighten slider.
+void apply_edit_effect(app_state* app, mv::shell::edit_effect effect) {
+  switch (effect) {
+    case mv::shell::edit_effect::none:
+      return;
+    case mv::shell::edit_effect::refused:
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    case mv::shell::edit_effect::redraw:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      adjust_colour_changed(app);  // undo / reset may have moved a slider
+      return;
+    case mv::shell::edit_effect::write_rotation:
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      schedule_rotation_write(app);
+      adjust_colour_changed(app);
+      return;
+    case mv::shell::edit_effect::export_image:
+      if (app->chrome.attached()) {
+        app->chrome.show_export_dialog(app->export_choice);
+      } else {
+        start_export(app, mv::shell::unpack_export(app->export_choice));
+      }
+      return;
+  }
+}
+
 bool run_edit_command(app_state* app, mv::shell::command_id command) {
   // Stills only: a clip keeps `[` `]` for trim (PR 13), an animation has no
   // single frame to turn.
@@ -1559,33 +1729,7 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
     ::MessageBeep(MB_ICONWARNING);  // no pixels yet: nothing to frame a crop against
     return true;
   }
-  switch (app->edits.run(command)) {
-    case mv::shell::edit_effect::none:
-      return true;
-    case mv::shell::edit_effect::refused:
-      ::MessageBeep(MB_ICONWARNING);
-      return true;
-    case mv::shell::edit_effect::redraw:
-      publish_edit(app);
-      ++app->input.activity_seq;
-      publish(app);
-      adjust_colour_changed(app);  // undo / reset may have moved a slider
-      return true;
-    case mv::shell::edit_effect::write_rotation:
-      publish_edit(app);
-      ++app->input.activity_seq;
-      publish(app);
-      schedule_rotation_write(app);
-      adjust_colour_changed(app);
-      return true;
-    case mv::shell::edit_effect::export_image:
-      if (app->chrome.attached()) {
-        app->chrome.show_export_dialog(app->export_choice);
-      } else {
-        start_export(app, mv::shell::unpack_export(app->export_choice));
-      }
-      return true;
-  }
+  apply_edit_effect(app, app->edits.run(command));
   return true;
 }
 
@@ -1885,6 +2029,7 @@ void push_trim(app_state* app) noexcept {
   a.label_len = static_cast<std::int32_t>(label.size());
   a.previewing = t.previewing() ? 1 : 0;
   app->chrome.set_trim(a);
+  push_edit_view(app);  // PR 29: the Trim pane shows the same state
 }
 
 std::int64_t clip_position(app_state* app) noexcept {
@@ -1985,7 +2130,24 @@ mv_clip_request abi_request(const mv::edit::clip::request& r) noexcept {
 // modal progress dialog).
 bool submit_clip_job(app_state* app, const mv::edit::clip::request& r) noexcept {
   if (!app || !app->session || r.source.empty()) return false;
-  const mv_clip_request q = abi_request(r);
+  mv_clip_request q = abi_request(r);
+  // PR 30: the Video Editor's pieces, flattened for the ABI (read during the call).
+  std::vector<std::int64_t> flat;
+  if (r.kind == mv::edit::clip::op::keep_ranges) {
+    try {
+      flat.reserve(r.ranges.size() * 2);
+    } catch (...) {
+      ::MessageBeep(MB_ICONWARNING);
+      return true;
+    }
+    for (const mv::edit::clip::range& g : r.ranges) {
+      flat.push_back(g.in_ns);
+      flat.push_back(g.out_ns);
+    }
+    q.ranges_ns = flat.data();
+    q.range_count = static_cast<std::uint32_t>(r.ranges.size());
+    q.option = r.ranges_exact ? 2u : 1u;
+  }
   std::uint64_t job = 0;
   if (mv_clip_submit(app->session, r.source.c_str(), &q, &job) != MV_OK) {
     ::MessageBeep(MB_ICONWARNING);
@@ -2137,6 +2299,215 @@ void run_clip_tool(app_state* app, std::int32_t packed) noexcept {
     return;
   }
   (void)submit_clip_job(app, r);
+}
+
+// ---- PR 29: the Edit workspace (plan/20) -----------------------------------------
+// One visible door (the bar's Edit image / Edit video, Enter) to what PRs 10-14
+// built. shell/edit_workspace decides which tab a command lands on; the host
+// shows that tab's pane and runs the command's own work exactly as before. The
+// workspace docks in the right column, so the canvas frames the picture beside
+// it (input.chrome_right_px) instead of under it. The Mac host's twin is
+// main_mac.mm "PR 29".
+
+// DIP height of the strip (title, tabs, actions) at the top of the right column.
+constexpr int kEditStripDip = 140;
+
+mv::shell::edit_subject edit_subject_of(app_state* app) noexcept {
+  if (!app || app->mode == open_mode::none || app->edit_path.empty()) return mv::shell::edit_subject::none;
+  // A Live Photo's motion plays through the video path but the stop is a still.
+  if (mv::shell::is_video_name(app->edit_path) || (video_mode(app) && !app->motion_playing)) {
+    return mv::shell::edit_subject::clip;
+  }
+  if (app->lab.animation() != mv::shell::animation_state::none) return mv::shell::edit_subject::none;
+  return mv::shell::edit_subject::still;
+}
+
+void push_edit_view(app_state* app) noexcept {
+  if (!app) return;
+  try {
+    const mv::shell::edit_subject subject = edit_subject_of(app);
+    mv::shell::chrome_edit_args a{};
+    a.open = app->ws.open || app->editor.open ? 1 : 0;  // PR 30: the bar's button reads Done
+    a.tab = static_cast<std::int32_t>(app->ws.tab);
+    a.subject = static_cast<std::int32_t>(subject);
+    a.crop_active = app->edits.crop_active() ? 1 : 0;
+    a.aspect = static_cast<std::int32_t>(app->edits.aspect());
+    a.portrait = app->edits.aspect_portrait() ? 1 : 0;
+    a.straighten = app->edits.crop_active() ? app->edits.crop_angle() : app->edits.export_geometry().straighten;
+    a.edit_count = static_cast<std::int32_t>(app->edits.edit_count());
+    a.show_original = app->show_original ? 1 : 0;
+    if (subject == mv::shell::edit_subject::still && app->edits.has_item()) {
+      std::uint32_t w = 0, h = 0;
+      if (app->lab.still_size(app->edit_key, &w, &h)) {
+        app->edits.set_size(w, h);
+        const mv::edit::placement p = app->edits.preview_placement();
+        if (app->edits.crop_active()) {
+          const mv::edit::rect r = app->edits.crop_overlay();
+          a.crop_width = static_cast<std::int32_t>(std::lround(r.w * static_cast<float>(p.cropped.w)));
+          a.crop_height = static_cast<std::int32_t>(std::lround(r.h * static_cast<float>(p.cropped.h)));
+        } else {
+          a.crop_width = static_cast<std::int32_t>(p.cropped.w);
+          a.crop_height = static_cast<std::int32_t>(p.cropped.h);
+        }
+      }
+    }
+    std::string label;
+    if (subject == mv::shell::edit_subject::clip && app->trim.armed() && app->trim.path() == app->edit_path) {
+      a.trim_flags |= mv::shell::kEditTrimArmed;
+      if (app->trim.previewing()) a.trim_flags |= mv::shell::kEditTrimPreviewing;
+      if (app->trim.has_marker()) a.trim_flags |= mv::shell::kEditTrimHasMarker;
+      label = app->trim.label();
+    }
+    const std::size_t slash = app->edit_path.find_last_of("\\/");
+    const std::string name = slash == std::string::npos ? app->edit_path : app->edit_path.substr(slash + 1);
+    a.name_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(name.data()));
+    a.name_len = static_cast<std::int32_t>(name.size());
+    a.trim_label_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(label.data()));
+    a.trim_label_len = static_cast<std::int32_t>(label.size());
+    app->chrome.set_edit_view(a);
+  } catch (...) {
+  }
+}
+
+// Shows what app->ws says: the strip, the tab's pane, the right-edge pane the
+// tab is, and the canvas docked beside them. Closing hides only what the
+// workspace had shown.
+void sync_workspace(app_state* app) {
+  using mv::shell::edit_tab;
+  const bool open = app->ws.open;
+  const edit_tab tab = app->ws.tab;
+  // A crop draft belongs to the Crop tab: leaving it applies the draft
+  // (Lightroom's rule), so no crop is lost to a tab click.
+  if (app->edits.crop_active() && !(open && tab == edit_tab::crop)) {
+    (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+  }
+  if (open || app->ws_shown) {
+    // One right-edge pane at a time: each setter closes the others.
+    const bool colour = open && tab == edit_tab::colour;
+    const bool info = open && tab == edit_tab::info;
+    const bool jobs = open && tab == edit_tab::jobs;
+    if (!colour && app->adjust.visible()) set_adjust_pane(app, false);
+    if (!info && app->meta_pane_visible) set_meta_pane(app, false);
+    if (!jobs && app->jobs_pane_visible) set_jobs_pane(app, false);
+    if (colour) set_adjust_pane(app, true);
+    if (info) set_meta_pane(app, true);
+    if (jobs) set_jobs_pane(app, true, false);
+  }
+  app->ws_shown = open;
+  // The strip and its pane move in, and the canvas refits into the rect beside
+  // them (or back): one layout, one resize_seq, the same swapchain.
+  apply_view_state(app);
+  push_edit_view(app);
+  // Crop and Trim keys are the canvas's: keep the keyboard there.
+  if (open && (tab == edit_tab::crop || tab == edit_tab::trim)) focus_canvas(app);
+}
+
+void close_workspace(app_state* app) {
+  if (!app->ws.open) return;
+  app->ws.open = false;
+  sync_workspace(app);
+}
+
+// The item on the canvas changed (a select, a clip starting to play).
+// A reload can briefly leave nothing selected: a metadata write rewrites a
+// JPEG in place and the folder watcher relists it. Closing the workspace on
+// that would drop the user out of the Info tab mid-edit (seen 2026-09-27, 1 run
+// in 3), so "nothing to edit" is confirmed once more before it closes.
+constexpr UINT_PTR kWorkspaceFollowTimerId = 0x7A02;
+constexpr UINT kWorkspaceFollowMs = 400;
+
+void workspace_item_changed(app_state* app) noexcept {
+  if (!app) return;
+  try {
+    // PR 30: the Video Editor edits the clip it opened; another item ends it.
+    if (app->editor.open && current_item_path(app) != app->editor.path) set_editor_open(app, false);
+    const mv::shell::edit_subject subject = edit_subject_of(app);
+    if (app->ws.open && subject == mv::shell::edit_subject::none && app->window) {
+      ::SetTimer(app->window, kWorkspaceFollowTimerId, kWorkspaceFollowMs, nullptr);
+      push_edit_view(app);
+      return;
+    }
+    if (app->window) ::KillTimer(app->window, kWorkspaceFollowTimerId);
+    if (mv::shell::follow_subject(app->ws, subject)) sync_workspace(app);
+    else push_edit_view(app);
+  } catch (...) {
+  }
+}
+
+// The re-check: still nothing editable, so the workspace follows and closes.
+void workspace_follow_settled(app_state* app) noexcept {
+  if (!app) return;
+  if (app->window) ::KillTimer(app->window, kWorkspaceFollowTimerId);
+  try {
+    if (mv::shell::follow_subject(app->ws, edit_subject_of(app))) sync_workspace(app);
+    else push_edit_view(app);
+  } catch (...) {
+  }
+}
+
+// The strip's tab row.
+void edit_select_tab(app_state* app, int tab) {
+  if (tab < 0 || tab >= static_cast<int>(mv::shell::edit_tab::count)) return;
+  const auto t = static_cast<mv::shell::edit_tab>(tab);
+  if (!mv::shell::tab_offered(edit_subject_of(app), t)) return;
+  if (mv::shell::apply_step(app->ws, {mv::shell::workspace_action::select, t})) sync_workspace(app);
+}
+
+// The Crop pane's buttons and slider: stills only, once the pixels are known.
+bool prepare_still_edit(app_state* app) noexcept {
+  if (edit_subject_of(app) != mv::shell::edit_subject::still) return false;
+  std::uint32_t w = 0, h = 0;
+  if (!app->lab.still_size(app->edit_key, &w, &h)) return false;
+  app->edits.set_size(w, h);
+  return true;
+}
+
+// crop_aspect_set's argument: the preset, + 16 for portrait.
+void edit_set_aspect(app_state* app, int packed) {
+  const int aspect = packed & 15;
+  if (packed < 0 || aspect >= mv::shell::kCropAspectCount || !prepare_still_edit(app)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  apply_edit_effect(app, app->edits.set_crop_aspect(static_cast<mv::shell::crop_aspect>(aspect), (packed & 16) != 0));
+}
+
+void edit_set_straighten(app_state* app, float degrees) {
+  if (!prepare_still_edit(app)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  apply_edit_effect(app, app->edits.set_straighten(degrees));
+}
+
+void set_show_original(app_state* app, bool on) noexcept {
+  if (app->show_original == on) return;
+  app->show_original = on;
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+void run_edit_action(app_state* app, int action) {
+  switch (static_cast<mv::shell::chrome_edit_action>(action)) {
+    case mv::shell::chrome_edit_action::cancel_crop:
+      if (!app->edits.crop_active()) return;
+      app->edits.cancel_crop();
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      return;
+    case mv::shell::chrome_edit_action::original_off:
+    case mv::shell::chrome_edit_action::original_on:
+      if (edit_subject_of(app) != mv::shell::edit_subject::still) return;
+      set_show_original(app, action == static_cast<int>(mv::shell::chrome_edit_action::original_on));
+      return;
+    case mv::shell::chrome_edit_action::save_copy:
+      // Save copy…: apply a crop draft, then PR 10's export (a new file).
+      if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+      (void)run_edit_command(app, mv::shell::command_id::export_image);
+      return;
+  }
 }
 
 // Native decides the rate and then tells the dropdown, rather than the two
@@ -2493,6 +2864,602 @@ void toggle_filmstrip_setting(app_state* app) {
   apply_view_state(app);
 }
 
+// ---- PR 30: the Video Editor window (plan/21, owner 2026-09-26) ----------------
+//
+// Enter (or Edit video) on a clip opens a window of its own: the preview on top
+// -- the viewer's canvas, moved in, so there is still one swapchain and one
+// present path (rule 2): the render thread retargets its DComp visual to this
+// window (input.canvas_window) -- and the timeline island under it
+// (IslandHost.VideoEditor.cs). The cut list is shell::video_timeline, shared
+// with the Mac host; playback follows it by jumping the player over each cut;
+// Export is clip::op::keep_ranges through the Jobs queue. main_mac.mm "PR 30"
+// is the twin.
+
+constexpr wchar_t kEditorWindowClass[] = L"MediaViewer.VideoEditor";
+constexpr int kEditorTimelineDip = 280;        // the timeline island under the preview
+constexpr int kEditorWidthDip = 1180;
+constexpr int kEditorHeightDip = 820;
+constexpr int kEditorMinWidthDip = 720;
+constexpr int kEditorMinHeightDip = 520;
+constexpr int kEditorThumbs = 48;              // thumbnails across the source
+constexpr std::uint32_t kEditorThumbPx = 96;   // their height in pixels
+constexpr std::uint32_t kEditorPeaks = 1200;
+constexpr std::int64_t kEditorLeadNs = 20'000'000;  // a frame's worth, so a cut is not glimpsed
+// While the editor is open: playback skips what was cut. USER timers round to
+// the system tick (~15.6 ms), close to the Mac's 60 Hz NSTimer.
+constexpr UINT_PTR kEditorTickTimerId = 0x7B01;
+constexpr UINT kEditorTickMs = 15;
+// After close: the editor window is destroyed once the render thread has moved
+// the swapchain back out of it (lab.canvas_window()), never under it.
+constexpr UINT_PTR kEditorReleaseTimerId = 0x7B02;
+constexpr UINT kEditorReleaseMs = 16;
+constexpr int kEditorReleaseTries = 120;
+constexpr UINT kMsgEditorLoaded = WM_APP + 0x79;  // the probe + strip job finished (any thread posts)
+
+struct editor_load_result {
+  std::uint64_t token = 0;
+  std::int64_t duration_ns = 0;
+  std::vector<mv::edit::clip::strip_frame> strip;
+  std::vector<float> peaks;
+};
+
+void update_client_metrics(app_state* app, HWND hwnd) noexcept;
+int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
+void enable_dark_titlebar(HWND hwnd) noexcept;
+void set_editor_open(app_state* app, bool open);
+
+std::string editor_name(const app_state* app) {
+  const std::size_t slash = app->editor.path.find_last_of("\\/");
+  return slash == std::string::npos ? app->editor.path : app->editor.path.substr(slash + 1);
+}
+
+// Where the playhead is on the program (the edited timeline).
+std::int64_t editor_timeline_position(app_state* app) noexcept {
+  const mv::shell::video_timeline& tl = app->editor.timeline;
+  if (!tl.loaded() || !video_mode(app)) return 0;
+  const std::int64_t source = clip_position(app);
+  if (const auto t = tl.to_timeline(source)) return *t;
+  // In a cut (the jump has not landed yet): the start of the next piece.
+  const std::int64_t next = tl.next_play_start(source);
+  if (next < 0) return tl.length();
+  return tl.to_timeline(next).value_or(0);
+}
+
+bool editor_playing(app_state* app) noexcept {
+  std::uint32_t state = MV_PLAY_STOPPED;
+  return app->session && mv_video_state(app->session, &state) == MV_OK && state == MV_PLAY_PLAYING;
+}
+
+// What the timeline shows. `edit` bumps the generation (the pieces, the
+// selection or the strip changed); the tick pushes only a moved playhead.
+void push_editor_view(app_state* app, bool edit) noexcept {
+  if (!app || !app->editor.open) return;
+  try {
+    auto& ed = app->editor;
+    if (edit) ++ed.generation;
+    const std::int64_t playhead = editor_timeline_position(app);
+    const bool playing = editor_playing(app);
+    if (!edit && playhead == ed.pushed_playhead && playing == ed.pushed_playing) return;
+    ed.pushed_playhead = playhead;
+    ed.pushed_playing = playing;
+    std::vector<std::int64_t> flat;
+    flat.reserve(ed.timeline.pieces().size() * 2);
+    for (const auto& p : ed.timeline.pieces()) {
+      flat.push_back(p.in_ns);
+      flat.push_back(p.out_ns);
+    }
+    const std::string name = editor_name(app);
+    mv::shell::chrome_editor_view_args a{};
+    a.open = 1;
+    a.ready = ed.timeline.loaded() ? 1 : 0;
+    a.length_ns = ed.timeline.length();
+    a.playhead_ns = playhead;
+    a.source_ns = ed.timeline.source_duration();
+    a.playing = playing ? 1 : 0;
+    a.piece_count = static_cast<std::int32_t>(ed.timeline.pieces().size());
+    a.selected = ed.selected;
+    a.can_undo = ed.timeline.can_undo() ? 1 : 0;
+    a.can_redo = ed.timeline.can_redo() ? 1 : 0;
+    a.edited = ed.timeline.edited() ? 1 : 0;
+    a.generation = ed.generation;
+    a.pieces = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(flat.data()));
+    a.name_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(name.data()));
+    a.name_len = static_cast<std::int32_t>(name.size());
+    app->chrome.set_editor_view(a);
+  } catch (...) {
+  }
+}
+
+void push_editor_strip(app_state* app) noexcept {
+  if (!app || !app->editor.open) return;
+  try {
+    std::vector<mv::shell::chrome_editor_thumb> thumbs;
+    thumbs.reserve(app->editor.strip.size());
+    for (const auto& f : app->editor.strip) {
+      mv::shell::chrome_editor_thumb t{};
+      t.shown_ns = f.shown_ns;
+      t.width = static_cast<std::int32_t>(f.width);
+      t.height = static_cast<std::int32_t>(f.height);
+      t.rgba = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(f.rgba.data()));
+      thumbs.push_back(t);
+    }
+    mv::shell::chrome_editor_strip_args a{};
+    a.thumbs = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(thumbs.data()));
+    a.thumb_count = static_cast<std::int32_t>(thumbs.size());
+    a.peaks = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(app->editor.peaks.data()));
+    a.peak_count = static_cast<std::int32_t>(app->editor.peaks.size());
+    app->chrome.set_editor_strip(a);
+  } catch (...) {
+  }
+}
+
+int editor_timeline_px(int client_height, std::uint32_t dpi) noexcept {
+  return std::min(::MulDiv(kEditorTimelineDip, static_cast<int>(dpi), 96), std::max(client_height - 1, 1));
+}
+
+// The canvas's rectangle while the editor has it: the preview, above the
+// timeline, with nothing drawn over it.
+void editor_canvas_metrics(app_state* app) noexcept {
+  RECT rc{};
+  ::GetClientRect(app->editor.window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->editor.window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  app->input.width = static_cast<std::uint32_t>(std::max(width, 1));
+  app->input.height = static_cast<std::uint32_t>(std::max(height - editor_timeline_px(height, dpi), 1));
+  app->input.dpi_scale = static_cast<float>(dpi) / 96.0f;
+  app->input.chrome_height_px = 0;
+  app->input.chrome_bottom_px = 0;
+  app->input.chrome_left_px = 0;
+  app->input.chrome_right_px = 0;
+}
+
+// Both islands: the timeline under the preview, and the viewer's card over the
+// canvas area it left (beside a right-edge pane, so Jobs stays readable).
+void layout_editor(app_state* app, bool focus = false) noexcept {
+  if (!app || !app->editor.open || !app->editor.window) return;
+  RECT rc{};
+  ::GetClientRect(app->editor.window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->editor.window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  const int timeline = editor_timeline_px(height, dpi);
+  mv::shell::chrome_editor_layout_args a{};
+  a.x = 0;
+  a.y = height - timeline;
+  a.width = width;
+  a.height = timeline;
+  a.focus = focus ? 1 : 0;
+  if (app->window) {
+    RECT vr{};
+    ::GetClientRect(app->window, &vr);
+    const auto vdpi = ::GetDpiForWindow(app->window);
+    const int vw = vr.right - vr.left;
+    const int bar = app->chrome_on_screen && !app->fullscreen ? chrome_bar_px(app, vdpi) : 0;
+    const bool right_pane = app->chrome.jobs_pane_visible() || app->chrome.meta_pane_visible() ||
+                            app->chrome.adjust_pane_visible();
+    const int left =
+        app->chrome.folder_tree_visible() ? std::min(vw / 2, ::MulDiv(280, static_cast<int>(vdpi), 96)) : 0;
+    const int right = right_pane ? right_pane_px(vw, vdpi) : 0;
+    a.away_visible = 1;
+    a.away_x = left;
+    a.away_y = bar;
+    a.away_width = std::max(vw - left - right, 1);
+    a.away_height = std::max(static_cast<int>(vr.bottom - vr.top) - bar, 1);
+  }
+  app->chrome.layout_editor(a);
+}
+
+void editor_publish_canvas(app_state* app) noexcept {
+  editor_canvas_metrics(app);
+  ++app->input.resize_seq;
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+void editor_seek_source(app_state* app, std::int64_t source_ns) noexcept {
+  if (app->session) (void)mv_video_seek(app->session, std::max<std::int64_t>(0, source_ns), 1);
+}
+
+void editor_seek(app_state* app, std::int64_t timeline_ns) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded()) return;
+  const std::int64_t t = std::clamp<std::int64_t>(timeline_ns, 0, ed.timeline.length());
+  ed.last_seek = -1;
+  editor_seek_source(app, ed.timeline.to_source(t));
+  ed.selected = static_cast<std::int32_t>(ed.timeline.piece_at(t));
+  push_editor_view(app, true);
+}
+
+void editor_toggle_play(app_state* app) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || !app->session) return;
+  const bool playing = editor_playing(app);
+  // At the end, Play starts the program again.
+  if (!playing && ed.timeline.next_play_start(clip_position(app), kEditorLeadNs) < 0) {
+    editor_seek_source(app, ed.timeline.pieces().front().in_ns);
+  }
+  if (playing) (void)mv_video_pause(app->session);
+  else (void)mv_video_play(app->session);
+  push_editor_view(app, false);
+}
+
+// The tick: playback skips what was cut, and stops at the end of the program.
+void editor_follow_playback(app_state* app) noexcept {
+  auto& ed = app->editor;
+  if (!ed.open || !ed.timeline.loaded() || !video_mode(app)) return;
+  if (editor_playing(app)) {
+    const std::int64_t source = clip_position(app);
+    const std::int64_t want = ed.timeline.next_play_start(source, kEditorLeadNs);
+    if (want < 0) {
+      (void)mv_video_pause(app->session);  // the end of the edit: pause there
+      editor_seek_source(app, ed.timeline.pieces().back().out_ns - 1);
+    } else if (want != source && want != ed.last_seek) {
+      ed.last_seek = want;
+      editor_seek_source(app, want);
+    }
+  } else {
+    ed.last_seek = -1;
+  }
+  push_editor_view(app, false);
+}
+
+// 1 split at the playhead, 2 delete the selected piece, 3 set in, 4 set out,
+// 5 undo, 6 redo (chrome_editor_action, and the Mac bridge's codes).
+void editor_edit(app_state* app, int what) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded()) return;
+  const std::int64_t at = editor_timeline_position(app);
+  bool changed = false;
+  switch (what) {
+    case 1:
+      changed = ed.timeline.split(at);
+      if (changed) ed.selected = static_cast<std::int32_t>(ed.timeline.piece_at(at));
+      break;
+    case 2:
+      if (ed.selected < 0) ed.selected = static_cast<std::int32_t>(ed.timeline.piece_at(at));
+      changed = ed.timeline.remove(static_cast<std::size_t>(ed.selected));
+      if (changed) {
+        ed.selected = std::min<std::int32_t>(ed.selected, static_cast<std::int32_t>(ed.timeline.pieces().size()) - 1);
+        editor_seek(app, ed.timeline.piece_start(static_cast<std::size_t>(ed.selected)));
+      }
+      break;
+    case 3:
+      changed = ed.timeline.set_in(at);
+      if (changed) editor_seek(app, 0);
+      break;
+    case 4: changed = ed.timeline.set_out(at); break;
+    case 5: changed = ed.timeline.undo(); break;
+    case 6: changed = ed.timeline.redo(); break;
+    default: break;
+  }
+  if (!changed) ::MessageBeep(MB_ICONWARNING);
+  if (ed.selected >= static_cast<std::int32_t>(ed.timeline.pieces().size())) ed.selected = -1;
+  push_editor_view(app, true);
+}
+
+void editor_select(app_state* app, std::int32_t index) noexcept {
+  auto& ed = app->editor;
+  ed.selected = index >= 0 && index < static_cast<std::int32_t>(ed.timeline.pieces().size()) ? index : -1;
+  push_editor_view(app, true);
+}
+
+void editor_export(app_state* app, bool exact) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || ed.path.empty()) return;
+  if (!ed.timeline.edited()) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Nothing has been cut yet");
+    return;
+  }
+  try {
+    (void)submit_clip_job(app, ed.timeline.export_request(ed.path, exact));
+  } catch (...) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  notice_show(app, exact ? "Exporting the edit (exact) \xE2\x80\x94 see Jobs" : "Exporting the edit \xE2\x80\x94 see Jobs");
+  layout_editor(app);  // the Jobs pane took the viewer's right edge: the card steps aside
+  push_editor_view(app, true);
+}
+
+void editor_run_action(app_state* app, int action) {
+  using mv::shell::chrome_editor_action;
+  switch (static_cast<chrome_editor_action>(action)) {
+    case chrome_editor_action::split:
+    case chrome_editor_action::remove:
+    case chrome_editor_action::set_in:
+    case chrome_editor_action::set_out:
+    case chrome_editor_action::undo:
+    case chrome_editor_action::redo: editor_edit(app, action); break;
+    case chrome_editor_action::toggle_play: editor_toggle_play(app); break;
+    case chrome_editor_action::step_back:
+    case chrome_editor_action::step_forward:
+      if (app->session) {
+        (void)mv_video_step(app->session, action == static_cast<int>(chrome_editor_action::step_forward) ? 1 : -1);
+      }
+      break;
+    case chrome_editor_action::export_keyframe: editor_export(app, false); break;
+    case chrome_editor_action::export_exact: editor_export(app, true); break;
+    case chrome_editor_action::close: set_editor_open(app, false); break;
+    case chrome_editor_action::show:
+      if (app->editor.window) ::SetForegroundWindow(app->editor.window);
+      break;
+  }
+}
+
+// Every key aimed at the editor window (its preview or its timeline) comes
+// here, never to the browse router: A / D must not walk the folder out from
+// under the edit. Tab and Enter fall through to the island (focus, buttons).
+bool editor_key(app_state* app, const MSG& msg) {
+  if (msg.message != WM_KEYDOWN) return false;
+  const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  auto& ed = app->editor;
+  switch (msg.wParam) {
+    case VK_SPACE: editor_toggle_play(app); return true;
+    case VK_LEFT:
+    case VK_RIGHT: {
+      const int n = shift ? 10 : 1;
+      if (app->session) (void)mv_video_step(app->session, msg.wParam == VK_LEFT ? -n : n);
+      return true;
+    }
+    case VK_HOME: editor_seek(app, 0); return true;
+    case VK_END: editor_seek(app, ed.timeline.length()); return true;
+    case VK_DELETE:
+    case VK_BACK: editor_edit(app, 2); return true;
+    case VK_ESCAPE: set_editor_open(app, false); return true;
+    case 'J': if (!ctrl) editor_seek(app, editor_timeline_position(app) - 1'000'000'000); return true;
+    case 'K':
+      if (!ctrl && editor_playing(app)) editor_toggle_play(app);
+      return true;
+    case 'L': if (!ctrl) editor_seek(app, editor_timeline_position(app) + 1'000'000'000); return true;
+    case 'I': if (!ctrl) editor_edit(app, 3); return true;
+    case 'O': if (!ctrl) editor_edit(app, 4); return true;
+    case 'B': if (ctrl) editor_edit(app, 1); return true;
+    case 'Z': if (ctrl) editor_edit(app, shift ? 6 : 5); return true;
+    case 'Y': if (ctrl) editor_edit(app, 6); return true;
+    case 'E': if (ctrl) editor_export(app, shift); return true;
+    case 'W': if (ctrl) set_editor_open(app, false); return true;
+    default: return false;
+  }
+}
+
+void editor_load_clip(app_state* app) {
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->editor.path, token = app->editor.token, hwnd](const mv::job_context&) -> mv::status {
+                        auto info = mv::edit::clip::probe(path);
+                        auto* r = new (std::nothrow) editor_load_result{};
+                        if (!r) return mv::status::out_of_memory;
+                        r->token = token;
+                        r->duration_ns = info ? info->duration_ns : 0;
+                        std::vector<std::int64_t> times;
+                        for (int i = 0; i < kEditorThumbs && r->duration_ns > 0; ++i) {
+                          times.push_back(r->duration_ns * i / kEditorThumbs);
+                        }
+                        if (!times.empty()) {
+                          if (auto strip = mv::edit::clip::thumbnails(path, times, kEditorThumbPx)) {
+                            r->strip = std::move(*strip);
+                          }
+                          if (auto peaks = mv::edit::clip::audio_peaks(path, kEditorPeaks)) {
+                            r->peaks = std::move(*peaks);
+                          }
+                        }
+                        const mv::status st = info ? mv::status::ok : info.error();
+                        if (!::PostMessageW(hwnd, kMsgEditorLoaded, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return st;
+                      });
+}
+
+void on_editor_loaded(app_state* app, std::unique_ptr<editor_load_result> r) {
+  auto& ed = app->editor;
+  if (!r || r->token != ed.token || !ed.open) return;  // another clip, or closed
+  if (r->duration_ns <= 0) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "This clip could not be opened for editing");
+    set_editor_open(app, false);
+    return;
+  }
+  ed.timeline.load(r->duration_ns);
+  ed.strip = std::move(r->strip);
+  ed.peaks = std::move(r->peaks);
+  push_editor_strip(app);
+  push_editor_view(app, true);
+}
+
+LRESULT CALLBACK editor_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+  app_state* app = state_from(hwnd);
+  if (!app || app->editor.window != hwnd) return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  switch (msg) {
+    case WM_SIZE:
+      if (!app->editor.open) return 0;
+      app->editor.minimized = wparam == SIZE_MINIMIZED;
+      app->input.window_visible = !app->editor.minimized;
+      if (!app->editor.minimized) {
+        editor_canvas_metrics(app);
+        layout_editor(app);
+        ++app->input.resize_seq;
+      }
+      publish(app);
+      return 0;
+    case WM_DPICHANGED: {
+      const auto* suggested = reinterpret_cast<const RECT*>(lparam);
+      ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                     suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+      if (app->editor.open) {
+        layout_editor(app);
+        editor_publish_canvas(app);
+      }
+      return 0;
+    }
+    case WM_GETMINMAXINFO: {
+      auto* mm = reinterpret_cast<MINMAXINFO*>(lparam);
+      const int dpi = static_cast<int>(::GetDpiForWindow(hwnd));
+      mm->ptMinTrackSize.x = ::MulDiv(kEditorMinWidthDip, dpi, 96);
+      mm->ptMinTrackSize.y = ::MulDiv(kEditorMinHeightDip, dpi, 96);
+      return 0;
+    }
+    case WM_DISPLAYCHANGE:
+    case WM_MOVE:
+      ++app->input.display_change_seq;
+      publish(app);
+      return 0;
+    case WM_ACTIVATE:
+      app->editor.active = LOWORD(wparam) != WA_INACTIVE;
+      app->input.window_active = app->editor.active || app->main_active;
+      publish(app);
+      return 0;
+    case WM_TIMER:
+      if (wparam == kEditorTickTimerId) editor_follow_playback(app);
+      return 0;
+    case WM_ERASEBKGND:
+      return 1;  // the swapchain and the island own every pixel
+    case WM_CLOSE:
+      set_editor_open(app, false);
+      return 0;
+    default: break;
+  }
+  return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+bool register_editor_class() noexcept {
+  static bool registered = false;
+  if (registered) return true;
+  const HINSTANCE instance = ::GetModuleHandleW(nullptr);
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.style = CS_HREDRAW | CS_VREDRAW;
+  wc.lpfnWndProc = &editor_window_proc;
+  wc.hInstance = instance;
+  wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+  wc.hbrBackground = nullptr;  // the swapchain paints; GDI must not
+  const int dpi = static_cast<int>(::GetDpiForSystem());
+  (void)::LoadIconWithScaleDown(instance, MAKEINTRESOURCEW(MV_IDI_APP), ::GetSystemMetricsForDpi(SM_CXICON, dpi),
+                                ::GetSystemMetricsForDpi(SM_CYICON, dpi), &wc.hIcon);
+  (void)::LoadIconWithScaleDown(instance, MAKEINTRESOURCEW(MV_IDI_APP), ::GetSystemMetricsForDpi(SM_CXSMICON, dpi),
+                                ::GetSystemMetricsForDpi(SM_CYSMICON, dpi), &wc.hIconSm);
+  wc.lpszClassName = kEditorWindowClass;
+  registered = ::RegisterClassExW(&wc) != 0;
+  return registered;
+}
+
+// The window goes once the swapchain has left it (or the render thread has
+// stopped); until then it is hidden, and the canvas is back in the viewer.
+void editor_release_tick(app_state* app, bool force = false) noexcept {
+  auto& ed = app->editor;
+  const auto retired = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(ed.retired));
+  const bool free = force || !ed.retired || app->lab.canvas_window() != retired || app->lab.finished() ||
+                    ++ed.release_tries > kEditorReleaseTries;
+  if (!free) return;
+  if (app->window) ::KillTimer(app->window, kEditorReleaseTimerId);
+  if (ed.retired) ::DestroyWindow(ed.retired);
+  ed.retired = nullptr;
+  ed.release_tries = 0;
+}
+
+void set_editor_open(app_state* app, bool open) {
+  auto& ed = app->editor;
+  if (open == ed.open) {
+    if (open && ed.window) ::SetForegroundWindow(ed.window);
+    return;
+  }
+  if (open) {
+    if (edit_subject_of(app) != mv::shell::edit_subject::clip || app->motion_playing || !app->window ||
+        app->closing) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    const std::string path = current_item_path(app);
+    if (path.empty() || !register_editor_class()) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    // A window still waiting on the render thread would be a second target.
+    if (ed.retired && app->lab.canvas_window() == static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(ed.retired))) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    editor_release_tick(app, true);
+    if (app->ws.open) close_workspace(app);
+    if (app->trim.armed()) (void)set_trim_mode(app, false);
+    const int dpi = static_cast<int>(::GetDpiForWindow(app->window));
+    RECT main_rc{};
+    ::GetWindowRect(app->window, &main_rc);
+    const std::size_t slash = path.find_last_of("\\/");
+    const std::wstring title =
+        L"Video Editor — " + wide_from_utf8(slash == std::string::npos ? path : path.substr(slash + 1));
+    // Owned by the viewer: it stays above it, and minimises and closes with it.
+    const HWND hwnd = ::CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, kEditorWindowClass, title.c_str(),
+                                        WS_OVERLAPPEDWINDOW, main_rc.left + ::MulDiv(40, dpi, 96),
+                                        main_rc.top + ::MulDiv(40, dpi, 96), ::MulDiv(kEditorWidthDip, dpi, 96),
+                                        ::MulDiv(kEditorHeightDip, dpi, 96), app->window, nullptr,
+                                        ::GetModuleHandleW(nullptr), app);
+    if (!hwnd) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    ed.window = hwnd;
+    if (!app->chrome.attach_editor(hwnd, app->window)) {
+      ed.window = nullptr;
+      ::DestroyWindow(hwnd);
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    enable_dark_titlebar(hwnd);
+    ed.open = true;
+    ed.path = path;
+    ed.selected = -1;
+    ed.strip.clear();
+    ed.peaks.clear();
+    ed.timeline.load(0);
+    ed.last_seek = -1;
+    ed.pushed_playhead = -1;
+    ++ed.token;
+    // The canvas moves in: the render thread retargets on its next frame.
+    app->input.canvas_window = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(hwnd));
+    ::ShowWindow(hwnd, SW_SHOWNORMAL);
+    ::SetForegroundWindow(hwnd);
+    ::SetFocus(hwnd);
+    apply_view_state(app);  // the viewer's filmstrip and transport step aside; publishes the preview
+    layout_editor(app);
+    editor_load_clip(app);
+    ::SetTimer(hwnd, kEditorTickTimerId, kEditorTickMs, nullptr);
+    push_editor_view(app, true);
+    push_edit_view(app);  // the command bar's button reads Done
+  } else {
+    const HWND hwnd = ed.window;
+    ed.open = false;
+    ed.active = false;
+    ed.minimized = false;
+    ++ed.token;
+    if (hwnd) ::KillTimer(hwnd, kEditorTickTimerId);
+    app->chrome.detach_editor();
+    ed.window = nullptr;
+    // The canvas goes home; the hidden window waits for it to leave.
+    app->input.canvas_window = 0;
+    app->input.window_visible = app->window && !::IsIconic(app->window);
+    app->input.window_active = app->main_active;
+    if (hwnd) {
+      ::ShowWindow(hwnd, SW_HIDE);
+      ed.retired = hwnd;
+      ed.release_tries = 0;
+      if (app->window) ::SetTimer(app->window, kEditorReleaseTimerId, kEditorReleaseMs, nullptr);
+    }
+    if (app->window && !app->closing) {
+      ::SetForegroundWindow(app->window);
+      focus_canvas(app);
+    }
+    apply_view_state(app);  // metrics back to the viewer's window, and a resize
+    push_edit_view(app);
+  }
+}
+
 void chrome_on_command(void* ctx, int command, float arg) {
   auto* app = static_cast<app_state*>(ctx);
   // WM_CLOSE pumps messages after detaching; nothing the island queued before
@@ -2647,6 +3614,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
         app->muted = false;
       }
       apply_view_state(app);
+      workspace_item_changed(app);  // PR 29: a clip playing is Trim's subject
       return;
     }
     case mv::shell::chrome_cmd_open_path: {
@@ -2677,6 +3645,36 @@ void chrome_on_command(void* ctx, int command, float arg) {
       return;
     case mv::shell::chrome_cmd_clip_index:
       trim_index_arrived(app, static_cast<std::uint64_t>(arg));
+      return;
+    // PR 29 (plan/20): the Edit workspace's strip, and the Crop pane's presets
+    // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
+    case mv::shell::chrome_cmd_edit_tab:
+      edit_select_tab(app, static_cast<int>(arg));
+      return;
+    case mv::shell::chrome_cmd_edit_action:
+      run_edit_action(app, static_cast<int>(arg));
+      return;
+    // PR 30: the Video Editor's timeline.
+    case mv::shell::chrome_cmd_editor_seek:
+      editor_seek(app, static_cast<std::int64_t>(static_cast<double>(arg) * 1'000'000.0));
+      return;
+    case mv::shell::chrome_cmd_editor_action:
+      editor_run_action(app, static_cast<int>(arg));
+      return;
+    case static_cast<int>(mv::shell::command_id::crop_aspect_set):
+      edit_set_aspect(app, static_cast<int>(arg));
+      return;
+    case static_cast<int>(mv::shell::command_id::crop_straighten_set):
+      edit_set_straighten(app, arg);
+      return;
+    // PR 29: the metadata pane's tag editor and Date taken.
+    case mv::shell::chrome_cmd_meta_tags:
+      set_tags_from_pane(app);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
+      return;
+    case mv::shell::chrome_cmd_meta_date:
+      set_date_from_pane(app, arg != 0.0f);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
       return;
     // PR 11: the adjust pane's sliders carry their value; Reset carries none.
     case static_cast<int>(mv::shell::command_id::adjust_exposure):
@@ -2926,6 +3924,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.crop = app->edits.crop_active();
   s.trim = app->trim.armed() && s.item == mv::shell::item_kind::clip;
   if (app->chrome.jobs_pane_visible()) s.pane_open = true;
+  if (app->ws.open) s.pane_open = true;  // PR 29: Esc closes the Edit workspace
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
   return s;
@@ -3458,9 +4457,11 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       set_gallery(app, false);
       return;
     case back_target::pane:
-      // Esc from the canvas closes what is open; the tree first (it is the
-      // outermost on the left), then the metadata pane.
-      if (app->tree_visible) set_folder_tree(app, false);
+      // Esc from the canvas closes what is open: the Edit workspace (PR 29;
+      // a crop draft was cancelled one Esc earlier), else the tree first (it
+      // is the outermost on the left), then the metadata pane.
+      if (app->ws.open) close_workspace(app);
+      else if (app->tree_visible) set_folder_tree(app, false);
       else set_meta_pane(app, false);
       return;
     case back_target::popup:
@@ -4133,6 +5134,28 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     publish(app);
     return true;
   };
+  // PR 30 (plan/21, owner): video is edited in its own window, not a pane.
+  if (command == edit_workspace &&
+      (app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip)) {
+    set_editor_open(app, !app->editor.open);
+    return true;
+  }
+  // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
+  // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
+      command == trim_mode || command == metadata_pane || command == jobs_pane) {
+    const mv::shell::workspace_step step = mv::shell::route_workspace(app->ws, edit_subject_of(app), command);
+    if (step.action != mv::shell::workspace_action::none) {
+      if (mv::shell::apply_step(app->ws, step)) sync_workspace(app);
+      if (command != crop_mode && command != trim_mode) return true;
+    } else if (command == edit_workspace) {
+      ::MessageBeep(MB_ICONWARNING);  // nothing on the canvas to edit
+      return true;
+    } else if (app->ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
+      // A pane the workspace does not hold here takes the edge on its own.
+      close_workspace(app);
+    }
+  }
   switch (command) {
     case open:
       if (app->window) open_file_dialog(app, app->window);
@@ -4405,7 +5428,16 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
     case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
     case undo_edit: case reset_edits:
+    case crop_aspect_cycle: case crop_aspect_swap:  // PR 29: A / X in crop
       return run_edit_command(app, command);
+    // PR 29: Y held shows the original pixels; the stack is untouched.
+    case show_original:
+    case show_original_release:
+      if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
+      set_show_original(app, command == show_original);
+      return true;
+    case crop_aspect_set: case crop_straighten_set:
+      return false;  // island-only: they carry a value (chrome_on_command)
     // Marks (plan/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -4639,6 +5671,25 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   const bool is_down = msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN;
   const bool is_up = msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP;
   if (!is_down && !is_up) return false;
+  // PR 30: keys aimed at the Video Editor are its own (editor_key). While it
+  // is open the viewer's keys raise it instead: the canvas is over there, and
+  // A / D here would walk the folder out from under the edit. Alt+ keys still
+  // reach the system (Alt+F4, Alt+Tab).
+  if (app->editor.open && app->editor.window) {
+    const HWND editor = app->editor.window;
+    if (msg.hwnd == editor || ::IsChild(editor, msg.hwnd)) {
+      try {
+        return editor_key(app, msg);
+      } catch (...) {
+        return true;
+      }
+    }
+    if (msg.message == WM_KEYDOWN) {
+      ::SetForegroundWindow(editor);
+      return true;
+    }
+    if (msg.message == WM_KEYUP) return true;
+  }
   const auto event = translate_key(msg, is_up);
   if (event.k == mv::shell::key::none) return false;
   if (handle_folder_find(app, event, is_down)) return true;
@@ -4655,10 +5706,286 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   return run_command(app, routed.command);
 }
 
+// ---- PR 29: the Edit workspace's verify rig ----------------------------------------
+//
+// MV_EDIT_SELFTEST=<folder> (plan/20 verify; the Mac twin is main_mac.mm's).
+// Inert unless set. After launch it walks the workspace through the commands its
+// buttons and keys run -- open, a 3:2 crop, apply, the Colour and Info tabs (a
+// tag and the date set), Show original, Save copy, Esc, Revert -- or, on a clip,
+// the Video Editor (PR 30: split at a third and two thirds, delete the middle,
+// export both ways) -- and writes the window (PrintWindow, canvas included) as
+// BMPs plus state.txt into <folder>, then closes. The only files it writes
+// beside the media are Save copy's and the two exports; the metadata edits are
+// reverted byte for byte.
+constexpr UINT_PTR kEditSelfTestTimerId = 0x7A01;
+constexpr UINT kEditSelfTestStepMs = 1500;
+std::wstring g_edit_selftest_dir;
+int g_edit_selftest_step = 0;
+
+void edit_selftest_capture(HWND window, const std::wstring& path) noexcept {
+  RECT rc{};
+  if (!window || !::GetClientRect(window, &rc)) return;
+  const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+  if (w <= 0 || h <= 0) return;
+  HDC screen = ::GetDC(window);
+  HDC mem = ::CreateCompatibleDC(screen);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = h;  // bottom-up, as a BMP stores it
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP dib = ::CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (dib && bits) {
+    HGDIOBJ old = ::SelectObject(mem, dib);
+    // PW_RENDERFULLCONTENT (2): the DirectComposition content too -- the
+    // swapchain and the XAML islands, not just the GDI client.
+    (void)::PrintWindow(window, mem, PW_CLIENTONLY | 2);
+    ::SelectObject(mem, old);
+    const DWORD image = static_cast<DWORD>(w) * static_cast<DWORD>(h) * 4;
+    BITMAPFILEHEADER fh{};
+    fh.bfType = 0x4D42;  // "BM"
+    fh.bfOffBits = sizeof(fh) + sizeof(bi.bmiHeader);
+    fh.bfSize = fh.bfOffBits + image;
+    if (FILE* f = _wfopen(path.c_str(), L"wb")) {
+      std::fwrite(&fh, sizeof(fh), 1, f);
+      std::fwrite(&bi.bmiHeader, sizeof(bi.bmiHeader), 1, f);
+      std::fwrite(bits, image, 1, f);
+      std::fclose(f);
+    }
+  }
+  if (dib) ::DeleteObject(dib);
+  ::DeleteDC(mem);
+  ::ReleaseDC(window, screen);
+}
+
+void edit_selftest_snap(app_state* app, const char* name) noexcept {
+  try {
+    const std::wstring wide_name = wide_from_utf8(name);
+    edit_selftest_capture(app->window, g_edit_selftest_dir + L"\\" + wide_name + L".bmp");
+    // PR 30: the Video Editor window too, preview (the canvas) and timeline.
+    if (app->editor.window) {
+      edit_selftest_capture(app->editor.window, g_edit_selftest_dir + L"\\" + wide_name + L"-editor.bmp");
+    }
+    const mv::shell::edit_subject subject = edit_subject_of(app);
+    std::uint32_t w = 0, h = 0;
+    int crop_w = 0, crop_h = 0;
+    if (subject == mv::shell::edit_subject::still && app->lab.still_size(app->edit_key, &w, &h)) {
+      app->edits.set_size(w, h);
+      const mv::edit::placement p = app->edits.preview_placement();
+      const mv::edit::rect r = app->edits.crop_active() ? app->edits.crop_overlay() : mv::edit::rect{0, 0, 1, 1};
+      crop_w = static_cast<int>(std::lround(r.w * static_cast<float>(p.cropped.w)));
+      crop_h = static_cast<int>(std::lround(r.h * static_cast<float>(p.cropped.h)));
+    }
+    char line[512];
+    std::snprintf(line, sizeof(line),
+                  "%s open=%d tab=%d subject=%d crop=%d aspect=%d portrait=%d crop_px=%dx%d edits=%d "
+                  "original=%d edit_pane=%d adjust=%d meta=%d jobs=%d trim=%d right_px=%u\n",
+                  name, app->ws.open ? 1 : 0, static_cast<int>(app->ws.tab), static_cast<int>(subject),
+                  app->edits.crop_active() ? 1 : 0, static_cast<int>(app->edits.aspect()),
+                  app->edits.aspect_portrait() ? 1 : 0, crop_w, crop_h, static_cast<int>(app->edits.edit_count()),
+                  app->show_original ? 1 : 0, app->chrome.edit_pane_visible() ? 1 : 0,
+                  app->chrome.adjust_pane_visible() ? 1 : 0, app->chrome.meta_pane_visible() ? 1 : 0,
+                  app->chrome.jobs_pane_visible() ? 1 : 0, app->trim.armed() ? 1 : 0, app->input.chrome_right_px);
+    std::string text = line;
+    if (app->editor.open || app->editor.timeline.loaded()) {
+      std::snprintf(line, sizeof(line),
+                    "    editor: open=%d pieces=%zu length_ms=%lld edited=%d strip=%zu peaks=%zu canvas_moved=%d\n",
+                    app->editor.open ? 1 : 0, app->editor.timeline.pieces().size(),
+                    static_cast<long long>(app->editor.timeline.length() / 1'000'000),
+                    app->editor.timeline.edited() ? 1 : 0, app->editor.strip.size(), app->editor.peaks.size(),
+                    app->lab.canvas_window() != 0 ? 1 : 0);
+      text += line;
+      for (const auto& piece : app->editor.timeline.pieces()) {
+        std::snprintf(line, sizeof(line), "      piece %lld..%lld ms\n", static_cast<long long>(piece.in_ns / 1'000'000),
+                      static_cast<long long>(piece.out_ns / 1'000'000));
+        text += line;
+      }
+    }
+    // PR 30: the export jobs (no paths: the titles and the outcome).
+    if (app->session) {
+      std::uint32_t count = 0;
+      if (mv_clip_jobs(app->session, nullptr, 0, &count) == MV_OK && count > 0) {
+        std::vector<std::uint64_t> ids(count);
+        if (mv_clip_jobs(app->session, ids.data(), count, &count) == MV_OK) {
+          for (std::uint32_t i = 0; i < count && i < ids.size(); ++i) {
+            mv_clip_progress pr{};
+            if (mv_clip_job_progress(app->session, ids[i], &pr) != MV_OK) continue;
+            std::snprintf(line, sizeof(line), "    job: op=%u state=%u fraction=%.2f error=%u outputs=%u title=%s\n",
+                          pr.op, pr.state, pr.fraction, pr.error, pr.output_count, pr.title_utf8);
+            text += line;
+          }
+        }
+      }
+    }
+    if (app->meta_record) {
+      std::string artist;
+      for (const auto& p : app->meta_record->properties) {
+        if (p.raw_tag == "Exif.Image.Artist") artist = p.value;
+      }
+      text += "    meta: date=" + app->meta_record->s.date_taken + " artist=" + artist +
+              " in_file=" + (app->meta_record->writes_in_file ? "1" : "0") + "\n";
+    }
+    if (FILE* f = _wfopen((g_edit_selftest_dir + L"\\state.txt").c_str(), L"ab")) {
+      std::fwrite(text.data(), 1, text.size(), f);
+      std::fclose(f);
+    }
+  } catch (...) {
+  }
+}
+
+// PR 30: MV_EDIT_SELFTEST_KEYS=1 drives the Video Editor by key instead: each
+// step is a WM_KEYDOWN / WM_KEYUP pair through handle_app_key, the path a real
+// key takes from the message loop, with Ctrl / Shift in the thread's key state.
+// Synthesised, so it proves the routing and the bindings, not the keyboard.
+bool g_edit_selftest_keys = false;
+
+void edit_selftest_key(app_state* app, HWND target, UINT vk, bool ctrl = false, bool shift = false) noexcept {
+  BYTE state[256]{};
+  (void)::GetKeyboardState(state);
+  state[VK_CONTROL] = state[VK_LCONTROL] = ctrl ? 0x80 : 0;
+  state[VK_SHIFT] = state[VK_LSHIFT] = shift ? 0x80 : 0;
+  (void)::SetKeyboardState(state);
+  MSG msg{};
+  msg.hwnd = target;
+  msg.message = WM_KEYDOWN;
+  msg.wParam = vk;
+  msg.lParam = 1;
+  if (!handle_app_key(app, msg)) {
+    ::TranslateMessage(&msg);
+    ::DispatchMessageW(&msg);
+  }
+  msg.message = WM_KEYUP;
+  msg.lParam = 1 | (1 << 30) | static_cast<LPARAM>(1u << 31);
+  (void)handle_app_key(app, msg);
+  state[VK_CONTROL] = state[VK_LCONTROL] = 0;
+  state[VK_SHIFT] = state[VK_LSHIFT] = 0;
+  (void)::SetKeyboardState(state);
+}
+
+// Open (Enter), split at 5 s and 10 s (Home, L, Ctrl+B), select the middle
+// piece (J) and delete it (Delete), export both ways (Ctrl+E, Ctrl+Shift+E),
+// close (Esc). One key per step where a seek has to land first.
+bool edit_selftest_keys_tick(app_state* app, int step) {
+  const HWND ed = app->editor.window;
+  switch (step) {
+    case 0: break;  // let the clip load
+    case 1:
+      edit_selftest_snap(app, "k0-viewer");
+      if (app->session) (void)mv_video_pause(app->session);
+      focus_canvas(app);
+      edit_selftest_key(app, app->window, VK_RETURN);
+      break;
+    case 2: break;  // the strip is read on a worker
+    case 3: edit_selftest_snap(app, "k1-editor"); edit_selftest_key(app, ed, VK_HOME); break;
+    case 4: case 5: case 6: case 7: case 8: edit_selftest_key(app, ed, 'L'); break;
+    case 9: edit_selftest_key(app, ed, 'B', true); break;
+    case 10: case 11: case 12: case 13: case 14: edit_selftest_key(app, ed, 'L'); break;
+    case 15: edit_selftest_key(app, ed, 'B', true); break;
+    case 16: edit_selftest_key(app, ed, 'J'); break;  // into the middle piece: it is selected
+    case 17: edit_selftest_key(app, ed, VK_DELETE); break;
+    case 18:
+      edit_selftest_snap(app, "k2-cut");
+      edit_selftest_key(app, ed, 'E', true);
+      edit_selftest_key(app, ed, 'E', true, true);
+      break;
+    case 19: case 20: case 21: case 22: break;  // the exports run
+    case 23: edit_selftest_snap(app, "k3-exported"); edit_selftest_key(app, ed, VK_ESCAPE); break;
+    default: edit_selftest_snap(app, "k4-closed"); return true;
+  }
+  return false;
+}
+
+void edit_selftest_tick(app_state* app) {
+  using enum mv::shell::command_id;
+  const int step = g_edit_selftest_step++;
+  const bool clip = app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip;
+  bool done = false;
+  if (clip && g_edit_selftest_keys) {
+    done = edit_selftest_keys_tick(app, step);
+  } else if (clip) {
+    // PR 30: a clip opens the Video Editor window (the Mac rig's steps).
+    const std::int64_t third = app->editor.timeline.length() / 3;
+    switch (step) {
+      case 0: break;  // let the clip load
+      case 1:
+        edit_selftest_snap(app, "c0-viewer");
+        if (app->session) (void)mv_video_pause(app->session);  // cuts at fixed times, not wherever playback got to
+        (void)run_command(app, edit_workspace);
+        break;
+      case 2: break;  // the strip is read on a worker
+      case 3: edit_selftest_snap(app, "c1-editor"); editor_seek(app, third); break;
+      case 4: editor_edit(app, 1); editor_seek(app, 2 * third); break;
+      case 5: editor_edit(app, 1); editor_select(app, 1); editor_edit(app, 2); break;  // cut the middle third
+      case 6: edit_selftest_snap(app, "c2-cut"); editor_export(app, false); editor_export(app, true); break;
+      case 7: case 8: case 9: case 10: break;  // the exports run (exact re-encodes on the GPU)
+      case 11: edit_selftest_snap(app, "c3-exported"); set_editor_open(app, false); break;
+      default: edit_selftest_snap(app, "c4-closed"); done = true; break;
+    }
+  } else {
+    switch (step) {
+      case 0: break;  // let the photo decode
+      case 1: edit_selftest_snap(app, "s0-viewer"); (void)run_command(app, edit_workspace); break;
+      case 2: edit_selftest_snap(app, "s1-workspace"); edit_set_aspect(app, 4); break;  // 3:2
+      case 3: edit_selftest_snap(app, "s2-crop-3x2"); (void)run_command(app, crop_commit); break;
+      case 4: edit_selftest_snap(app, "s3-applied"); edit_select_tab(app, 1); break;
+      case 5: edit_selftest_snap(app, "s4-colour"); edit_select_tab(app, 2); break;
+      case 6: {
+        edit_selftest_snap(app, "s5-info");
+        // Any tag, and the date, from the Info tab (what its Enter sends).
+        const std::string path = current_item_path(app);
+        mv::meta::write_fields f;
+        f.tags.push_back({"Exif.Image.Artist", mv::meta::change<std::string>::to("MV self-test")});
+        f.date_taken = mv::meta::change<std::string>::to("2020-02-02 10:00:00");
+        app->meta_writer.submit(path, f);
+        schedule_meta_write(app, kCommentDebounceMs);
+        break;
+      }
+      case 7:
+        edit_selftest_snap(app, "s5b-info-edited");
+        edit_select_tab(app, 0);
+        run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_on));
+        break;
+      case 8:
+        edit_selftest_snap(app, "s6-original");
+        run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_off));
+        run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::save_copy));
+        break;
+      case 9:
+        edit_selftest_snap(app, "s7-save-copy");
+        // The dialog's Save with its defaults (what chrome_cmd_export runs).
+        app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
+        app->popup_open = false;
+        start_export(app, mv::shell::unpack_export(app->export_choice));
+        break;
+      case 10:
+        walk_back(app, mv::shell::back_target::pane);
+        revert_current_metadata(app);
+        break;
+      default: edit_selftest_snap(app, "s8-closed-reverted"); done = true; break;
+    }
+  }
+  if (done) {
+    ::KillTimer(app->window, kEditSelfTestTimerId);
+    ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+  }
+}
+
+// The right column's width: the metadata, adjust, Jobs and (PR 29) Edit panes.
+int right_pane_px(int client_width, std::uint32_t dpi) noexcept {
+  return std::min(client_width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+}
+
 // PR 9. The panes float over the canvas: the metadata pane on the right, the tree
 // on the left, both between the command bar and the bottom strips. Native owns the
 // maths (the island only moves), and none of it touches the canvas rectangle, so
 // opening one never refits the photo or the present path (plan/12 2026-09-24).
+// PR 29 (plan/20, plan/12 2026-09-26): the Edit workspace is the exception. It
+// docks: its strip heads the right column, the tab's pane hangs under it, and
+// the canvas frames the picture beside them (update_client_metrics sets
+// chrome_right_px). Still one swapchain, refitted, never resized.
 void layout_panels(app_state* app) noexcept {
   if (!app || !app->window || !app->chrome.panels_attached()) return;
   RECT rc{};
@@ -4676,7 +6003,7 @@ void layout_panels(app_state* app) noexcept {
   // Settings; the wish survives and the pane returns with them.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool covered = app->gallery_visible || app->settings_open || chrome_hidden;
-  const int side = std::min(width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+  const int side = right_pane_px(width, dpi);
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
   const bool want_meta = app->meta_pane_visible && !covered;
   const bool want_tree = app->tree_visible && !covered;
@@ -4685,10 +6012,25 @@ void layout_panels(app_state* app) noexcept {
   const bool want_jobs = app->jobs_pane_visible && !covered;
   // PR 11: the adjust pane takes the metadata pane's edge (one at a time).
   const bool want_adjust = app->adjust.visible() && !covered && !want_jobs;
-  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, width - side, top, side, span,
+  // PR 29: the Edit workspace. Crop and Trim are its own island's pane, so it
+  // spans the column; on Colour / Info / Jobs it is the strip alone and that
+  // pane starts under it.
+  const bool want_edit = app->ws.open && !covered;
+  int pane_top = top;
+  int pane_span = span;
+  if (want_edit) {
+    const int strip_h = std::min(::MulDiv(kEditStripDip, static_cast<int>(dpi), 96), span);
+    const bool own_pane = app->ws.tab == mv::shell::edit_tab::crop || app->ws.tab == mv::shell::edit_tab::trim;
+    app->chrome.show_edit_pane(true, width - side, top, side, own_pane ? span : strip_h);
+    pane_top = top + strip_h;
+    pane_span = std::max(span - strip_h, 1);
+  } else {
+    app->chrome.show_edit_pane(false, width - side, top, side, span);
+  }
+  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, width - side, pane_top, side, pane_span,
                              app->focus_meta_next);
-  app->chrome.show_adjust_pane(want_adjust, width - side, top, side, span, app->focus_adjust_next);
-  app->chrome.show_jobs_pane(want_jobs, width - side, top, side, span, app->focus_jobs_next);
+  app->chrome.show_adjust_pane(want_adjust, width - side, pane_top, side, pane_span, app->focus_adjust_next);
+  app->chrome.show_jobs_pane(want_jobs, width - side, pane_top, side, pane_span, app->focus_jobs_next);
   if (want_jobs) app->focus_jobs_next = false;
   app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
   if (want_meta && !want_adjust && !want_jobs) app->focus_meta_next = false;
@@ -4696,6 +6038,7 @@ void layout_panels(app_state* app) noexcept {
   if (want_tree) app->focus_tree_next = false;
   if (want_meta && !want_adjust && !want_jobs) push_meta_pane(app);
   if (want_adjust) push_adjust_pane(app);
+  layout_editor(app);  // PR 30: the card beside whatever pane is up
 }
 
 void layout_chrome(app_state* app) noexcept {
@@ -4748,6 +6091,11 @@ bool attach_chrome(app_state* app) {
 }
 
 void update_client_metrics(app_state* app, HWND hwnd) noexcept {
+  // PR 30: the Video Editor has the canvas; its preview is the rectangle.
+  if (app->editor.open && app->editor.window) {
+    editor_canvas_metrics(app);
+    return;
+  }
   RECT rc{};
   ::GetClientRect(hwnd, &rc);
   app->input.width = static_cast<std::uint32_t>(rc.right - rc.left);
@@ -4764,6 +6112,11 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
   app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
+  // PR 29: the docked Edit workspace; the canvas frames the picture left of it.
+  app->input.chrome_right_px =
+      app->chrome.edit_pane_visible()
+          ? static_cast<std::uint32_t>(right_pane_px(static_cast<int>(app->input.width), dpi))
+          : 0;
 }
 
 // Single place that decides which islands are on screen, so the strip, the
@@ -4784,8 +6137,10 @@ void apply_view_state(app_state* app) noexcept {
   // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool settings = app->settings_open;
+  // PR 30: the Video Editor has the canvas; the viewer's strip and transport
+  // step aside (a click on the strip would change the clip under the edit).
   const bool want_filmstrip =
-      have_media && !app->gallery_visible && !chrome_hidden && !settings &&
+      have_media && !app->gallery_visible && !chrome_hidden && !settings && !app->editor.open &&
       (app->mode == open_mode::image ? app->settings.filmstrip_for_image
        : app->mode == open_mode::folder ? app->settings.filmstrip_for_folder
                                         : false);
@@ -4801,7 +6156,7 @@ void apply_view_state(app_state* app) noexcept {
   // A Live Photo stop is a still (PR 7): its motion is a moment, not a clip to
   // scrub. Fullscreen keeps it (issue #38): it floats and auto-hides there as
   // it does windowed, instead of waiting for the ↓ / hot-edge reveal.
-  const bool want_transport = app->video_on && !app->gallery_visible && !settings &&
+  const bool want_transport = app->video_on && !app->gallery_visible && !settings && !app->editor.open &&
                               current_pair_kind(app) != MV_PAIR_LIVE_PHOTO;
   const int strip = app->chrome.filmstrip_visible()
                         ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
@@ -4951,7 +6306,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_ACTIVATE: {
-      app->input.window_active = LOWORD(wparam) != WA_INACTIVE;
+      app->main_active = LOWORD(wparam) != WA_INACTIVE;
+      app->input.window_active = app->main_active || app->editor.active;
       // A key held across Alt+Tab never sends its key-up here, so fire the
       // releases it owes: a loupe must not stick on, a skim must settle exact.
       if (!app->input.window_active) {
@@ -5121,6 +6477,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
       return 0;
 
+    case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip
+      on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
+      return 0;
+
     case kMsgOpenForwarded: {
       // A second start's paths (plan/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
@@ -5170,6 +6530,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_TIMER:
+      if (wparam == kEditorReleaseTimerId) {
+        editor_release_tick(app);
+        return 0;
+      }
       if (wparam == kRotateTimerId) {
         start_rotation_write(app);
         return 0;
@@ -5216,6 +6580,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         browse_tick(app);
         return 0;
       }
+      if (wparam == kWorkspaceFollowTimerId) {
+        workspace_follow_settled(app);
+        return 0;
+      }
+      if (wparam == kEditSelfTestTimerId) {
+        edit_selftest_tick(app);
+        return 0;
+      }
       if (wparam == kMotionTimerId) {
         motion_tick(app);
         return 0;
@@ -5252,6 +6624,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       // through here, so detach while the parent is still whole, let the
       // dispatcher run the dispose it queued, and only then destroy.
       if (app->closing) return 0;
+      if (app->editor.open) set_editor_open(app, false);  // PR 30: the canvas comes home first
       app->closing = true;
       app->chrome.detach();
       app->chrome_on_screen = false;
@@ -5427,8 +6800,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // a shortcut) hands its paths to the one already running and exits. Soaks,
   // --no-chrome, an update's restart (the old process may still be closing)
   // and --new-instance always run on their own.
+  // MV_EDIT_SELFTEST (PR 29 / 30) is a harness run too: handing its clip to a
+  // running viewer would walk someone else's window, and its scratch folder
+  // must not reach [recent].
+  const bool edit_selftest = ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", nullptr, 0) > 0;
   const bool harness_run = options.soak_seconds != 0.0 || options.av_soak_seconds != 0 || g_browse.enabled ||
-                           options.scripted_pan;
+                           options.scripted_pan || edit_selftest;
   const bool single_instance = chrome_enabled && !g_new_instance && !harness_run && g_restore.zoom_percent == 0 &&
                                !g_restore.fullscreen && !g_restore.gallery;
   // Claimed here, not once the window exists: starts that arrive while this
@@ -5582,6 +6959,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
   if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
+  // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (plan/20 verify).
+  if (wchar_t dir[MAX_PATH]{}; ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", dir, MAX_PATH) > 0) {
+    g_edit_selftest_dir = dir;
+    g_edit_selftest_keys = ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST_KEYS", nullptr, 0) > 0;
+    (void)::CreateDirectoryW(dir, nullptr);
+    MV_LOG_WARN("edit: MV_EDIT_SELFTEST armed; the app will close when it is done");
+    ::SetTimer(hwnd, kEditSelfTestTimerId, kEditSelfTestStepMs, nullptr);
+  }
   if (g_restore.fullscreen) set_fullscreen(&app, true);
   // Chrome attached (or was not asked for) and the window is up: start the
   // clock on "this version starts". A crash before it fires counts.

@@ -2451,3 +2451,164 @@ controls; no Mac change.
 **Verified** on Windows (build `ui/transport-pill`): the bar fits Play · scrubber · clock ·
 More, grows for trim without clipping, and still auto-hides while playing. `mv_tests` green.
 The present-loop soak was not re-run: other sessions were soaking on the same machine.
+
+## 2026-09-26 — PR 29: the Edit workspace, and every metadata tag editable (owner)
+
+**Issue #39.** Nothing on screen led to crop, rotate, colour, metadata or trim; every edit was
+a key. PR 29 adds one door — **Edit image / Edit video** in the command bar, `Enter`, and a Mac
+Edit menu — to a workspace of tabs over the existing panes ([20](20-edit-workspace.md)). It is
+a base feature, not an add-on: the engines are PR 10–14's and the workspace adds none.
+
+**Reverses, on the owner's review of the first build:**
+
+- **"The panes float instead of insetting the canvas"** (PR 9, 2026-09-24) — for the Edit
+  workspace only. It docks: `input_snapshot.chrome_right_px` narrows the rect the Mac canvas
+  frames the picture in, and the blit's `origin_x` moves it. The swapchain is not resized, so the
+  present path is unchanged; both present-loop gates are still owed with the pane open. The PR 9
+  panes keep floating when opened on their own.
+- **PR 12 "narrow on purpose" (rating, orientation, comment only)** and the matching CLAUDE.md
+  line. The owner asked for the rating/comment editor to go and for every tag to be editable:
+  timestamps changed, tags seen and removed. `meta::write` now takes any Exif / Iptc / Xmp key
+  and a date that moves every capture-time tag together, through the **same** checked in-place
+  JPEG rewrite (untouched tags identical, touched tags equal to a rehearsal, image data
+  unchanged) and the same sidecar rule (a RAW, HEIC, PNG or clip is never opened for writing; an
+  EXIF value on such a file goes to the sidecar under its XMP name, and cannot be removed).
+  Layout, maker-note and orientation tags stay read-only. It is still not a batch engine: one
+  file, one change set. The snapshot is now of **every** tag (a JPEG's metadata segments and the
+  sidecar, byte for byte), so Revert returns the file exactly; old three-field snapshots still
+  revert.
+- **Video editing as a pane.** The owner wants it in its own window with a timeline (iMovie /
+  Final Cut / DaVinci). The Trim tab is the interim; the Video Editor window is issue #40's
+  design ([21](21-video-editor.md)).
+
+**Keys** (checked free, appended so earlier Settings indices hold): `Enter` in browse / video,
+`A` / `X` in crop, hold `Y` for the original ([16](16-commands.md)).
+
+**Also fixed:** `main_mac.mm` stopped compiling after 427ab9e (`-[NSColor
+resolvedColorWithAppearance:]` does not exist); it now resolves inside
+`performAsCurrentDrawingAppearance:`.
+
+**Proved on Mac** with the `MV_EDIT_SELFTEST` rig: crop 1:1 → a 1200 × 1200 copy, the date and a
+tag written and read back, then revert → the original's bytes exactly. **Owed:** the Windows
+half (WinUI strip, panes, dock inset, tag editor; nothing was compiled for Windows), VoiceOver /
+Narrator passes, and both present-loop gates with the pane docked.
+
+## 2026-09-26 — PR 30: video is edited in its own window (owner); the Editor add-on is re-scoped
+
+**Owner, on reviewing PR 29:** "video editing should happen in a separate window similar to
+iMovie, Final Cut, DaVinci, with timelines." Issue #40 had proposed the whole editor as an
+optional add-on docked into the Edit workspace. The window is now **base** (it adds no payload:
+it is PR 13/14's clip core with a timeline), and the add-on keeps what does add weight —
+grading, audio clean-up, voice-isolation models ([21](21-video-editor.md)). Whether PR 31
+(several clips) is base or add-on is left to the owner there.
+
+**"Resist the NLE" ([10](10-roadmap.md)) is narrowed, not dropped:** a cut editor for camera
+clips is in; titles, keyframed effects, compositing, multicam and plug-ins stay out.
+
+**The preview is the viewer's canvas, moved.** The one `MvMetalView` (one CAMetalLayer) moves
+into the editor window while it is open and back when it closes: rule 2 and "one present path
+per OS" hold, with no second renderer. While it is there the canvas refuses first responder, so
+a click on the preview cannot hand the keys to the browse router (A / D would walk the folder
+out from under the edit).
+
+**Export is `clip::op::keep_ranges`** (ABI 0.13 — written as 0.12, renumbered 2026-09-27 when main shipped 0.12 for issue #42's eject error categories — appends `ranges_ns` / `range_count` to
+`mv_clip_request`; a 0.10-sized request is still accepted): keyframe cuts by default, or *exact*
+through Path 2's loop generalised to pieces, hardware encoders only, in the helper process.
+
+**Proved on the Mac:** a 16 s clip with its middle third cut exports to 11.13 s (keyframe cuts)
+and 10.69 s (exact, VideoToolbox) for a 10.71 s program; the source is untouched. **Owed:** the
+Windows half (a WinUI window hosting the D3D11 canvas the same way), both present-loop gates
+with the editor open, VoiceOver.
+
+## 2026-09-26 — The Editor add-on planned in full (proposed; [22](22-editor-addon.md))
+
+The owner asked for the complete plan for an advanced editor with colour grading. [22](22-editor-addon.md)
+replaces [21](21-video-editor.md)'s PRs 32–35 with Milestone K, PRs 32–47. Calls made in it (none
+reverses a D-decision; all await the owner's approval of the milestone):
+
+- **The engine lives in the add-on, not the core.** 21 had put the grade stage in the base core;
+  an engine of this size would make every viewer install carry it. Instead the host exposes a
+  **GPU port** of opaque handles (textures, buffers, kernels, command lists): the add-on ships its
+  own compiled kernels (HLSL → DXBC for D3D11 compute, MSL → metallib), the host validates them
+  against the signed manifest and runs them on its device. "The add-on never receives a device"
+  holds; so do one present path per OS and "no D3D12".
+- **Colour management through OpenColorIO (BSD-3), baked** into our kernels and LUTs at run time
+  — ACEScct for grading, scene-linear for compositing, per-clip input transforms chosen from
+  camera metadata, SDR and HDR outputs. HDR preview on the 8-bit swapchain is tone-mapped and
+  labelled (D6); HDR files are exact.
+- **Exports and models run out of process** (`MediaViewerRender`, `MediaViewerModel`), as the
+  base editor's encodes do.
+- **Still out:** third-party plug-ins, collaboration, control surfaces, Fusion-style compositing,
+  software H.264 / HEVC / AAC encoders.
+
+## 2026-09-27 — PR 29 Windows half
+
+The WinUI twin of the entry above, on the same shared core. No decision is reversed; the calls
+made on the way:
+
+- **One island for the strip and its pane.** `IslandHost.Edit.cs` is a fifth panel island heading
+  the right column. On Crop and Trim it spans the column (strip over pane); on Colour / Info /
+  Jobs it is the strip alone and `layout_panels` places that existing pane under it. The canvas
+  docks through the same `chrome_right_px` the Mac uses, applied in `present_lab.cpp`
+  `usable_canvas` — a refit on the one swapchain, never a resize.
+- **One view push.** `SetEditView` (`chrome_edit_args`, 72 bytes) feeds the strip, the Crop / Trim
+  pane and the command bar's **Edit image / Edit video** button. The island sends keyed command
+  ids plus four notifications: `edit_tab` 1019, `edit_action` 1020, `meta_tags` 1021,
+  `meta_date` 1022. They were written as 1017–1020 and moved up one when main's issue #38
+  (`transport_hold`) took 1017, then up one more (2026-09-27) when main's `transport_width`
+  took 1018; both sides' checksum test pins the numbering.
+- **Tag edits batch.** The pane parks one edit per line; *Remove location* is therefore one
+  checked rewrite for every GPS tag, not one per tag (the Mac sends them one by one, and the
+  writer queue merges them).
+- **`meta::editable_properties_table`** is the shared form of what the Mac bridge formatted by
+  hand (raw value + `access_of`), so the Windows host does not duplicate it.
+- **Also fixed:** the Mac-written `meta/write.cpp` did not compile under `/W4 /WX` (C4456); the
+  same fix also arrived on the branch from the Mac session and the two merged cleanly.
+
+**Proved on Windows** (2026-09-27): the `MV_EDIT_SELFTEST` rig (3:2 → a 2000 × 1333 copy from a
+2000 × 1500 JPEG; tag and date written in place and read back; revert → the original's SHA-1
+exactly; a clip opens on Trim), and verify 2–4 with real key input ([20](20-edit-workspace.md)
+"What was run (Windows)"). The Windows PR 1 gate was **inconclusive**: on a machine in use every
+run failed, unmodified `origin/main` included. **Owed:** that gate on a quiet machine (and with the
+pane docked), Narrator, a light-theme and 200 % pass, the pointer path of verify 1 with a real
+mouse, and VoiceOver / the Mac gate with the pane docked.
+
+## 2026-09-27 — PR 30 Windows half
+
+The WinUI twin of the 2026-09-26 PR 30 entry, on the same shared core. No decision is reversed;
+the calls made on the way:
+
+- **The canvas moves by retargeting its DComp visual.** The Windows canvas is a composition
+  swapchain in a DirectComposition visual on the viewer's window, so the Mac's "move the one
+  CAMetalLayer" becomes `gfx::swapchain::retarget`: the same visual goes onto a DComp target on the
+  editor window and comes back when it closes. There is no second swapchain and no second present
+  path (rule 2). The host asks for it through `input_snapshot::canvas_window`, an opaque handle
+  that the Mac leaves 0 (D9: no HWND in a portable header). The render thread retargets between
+  frames and publishes where the swapchain is (`present_lab::canvas_window()`). The closed editor
+  window is hidden and destroyed only once the swapchain has left it, never under a live target.
+- **The editor is a top-level Win32 window owned by the viewer**, with the timeline as a XAML
+  island on it (`IslandHost.VideoEditor.cs`). It is not a WinUI `Window`: the chrome has none, and
+  the islands and the canvas stay the host's.
+- **Keys go by window, not by focus.** Every key message aimed at the editor window or its island
+  goes to `editor_key` before the browse router sees it. While the editor is open, a key in the
+  viewer raises the editor, so A / D cannot walk the folder out from under the edit (the Mac's
+  refuse-first-responder rule, applied to the whole viewer window). Alt+ keys still reach the
+  system. The viewer shows a card where the picture was; its filmstrip and transport step aside;
+  and another item on the canvas closes the editor.
+- **Two notifications,** `editor_seek` 1023 and `editor_action` 1024 (after main's
+  `transport_width` moved PR 29's up to 1019–1022). Their codes 1–6 are the Mac bridge's edit codes.
+- **The Jobs pane's `ProgressBar` is replaced** by two borders. WinUI's `ProgressBar` has no
+  default template in this island app (no `XamlControlsResources`), and the first job row
+  fail-fasted the process inside XAML layout (0xC000027B), with no click and no flyout: it is not
+  the Edit-button template crash fixed the same day. PR 30's export found it by putting a row there.
+  Merging `XamlControlsResources` would restyle every control, so it was not done here. The
+  Import window still uses a `ProgressBar` and is owed the same check.
+- **`MV_EDIT_SELFTEST` is a harness run** (no single-instance handoff, no `[recent]`). It had been
+  forwarding its clip to whichever viewer was running.
+
+**Proved on Windows** (2026-09-27): the rig, three clean runs (a program of 10.667 s gives a 12.00 s
+keyframe-cut file and a 10.667 s exact file on NVENC, and the source's SHA-1 is unchanged), and the
+same walk by key ([21](21-video-editor.md) "What was run (Windows)"). The Windows PR 1 gate on the
+viewer's window passed twice after one run failed on a single 50 ms frame, on a machine in use.
+**Owed:** both present-loop gates with the editor open, a real keyboard and mouse on the
+interactive desktop, Narrator, 200 % and a light theme.

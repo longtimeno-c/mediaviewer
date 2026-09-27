@@ -262,7 +262,135 @@ void edit_session::begin_crop() {
   draft_angle_ = g.straighten;
   draft_rect_ = edit::constrain_crop(g.crop, draft_angle_, frame());
   draft_auto_ = g.crop == edit::rect{};
+  // A locked preset shows its ratio at once over an uncropped photo.
+  if (draft_auto_ && locked_ratio() > 0.0f) draft_rect_ = fit_locked(draft_rect_);
   crop_ = true;
+}
+
+const char* crop_aspect_label(crop_aspect a) noexcept {
+  switch (a) {
+    case crop_aspect::free: return "Free";
+    case crop_aspect::original: return "Original";
+    case crop_aspect::square: return "1:1";
+    case crop_aspect::r4_3: return "4:3";
+    case crop_aspect::r3_2: return "3:2";
+    case crop_aspect::r16_9: return "16:9";
+    case crop_aspect::r5_4: return "5:4";
+    default: return "";
+  }
+}
+
+float edit_session::locked_ratio() const noexcept {
+  const edit::size2 f = frame();
+  if (aspect_ == crop_aspect::free || f.w == 0 || f.h == 0) return 0.0f;
+  double pixels = 1.0;  // width / height, landscape spelling
+  switch (aspect_) {
+    case crop_aspect::original: pixels = static_cast<double>(f.w) / f.h; break;
+    case crop_aspect::r4_3: pixels = 4.0 / 3.0; break;
+    case crop_aspect::r3_2: pixels = 3.0 / 2.0; break;
+    case crop_aspect::r16_9: pixels = 16.0 / 9.0; break;
+    case crop_aspect::r5_4: pixels = 5.0 / 4.0; break;
+    default: break;  // square
+  }
+  if (aspect_ != crop_aspect::original && pixels < 1.0) pixels = 1.0 / pixels;
+  if (portrait_) pixels = 1.0 / pixels;
+  // Normalised to the frame: w_n / h_n = (w_px / fw) / (h_px / fh).
+  return static_cast<float>(pixels * f.h / f.w);
+}
+
+edit::rect edit_session::shrink_to_fit(edit::rect r) const noexcept {
+  if (draft_angle_ == 0.0f) return r;
+  const edit::size2 f = frame();
+  const auto scaled = [&](float k) {
+    edit::rect s = r;
+    s.w = r.w * k;
+    s.h = r.h * k;
+    s.x = r.x + (r.w - s.w) * 0.5f;
+    s.y = r.y + (r.h - s.h) * 0.5f;
+    return s;
+  };
+  const auto fits = [&](const edit::rect& s) {
+    return same_rect(edit::constrain_crop(s, draft_angle_, f), s);
+  };
+  if (fits(r)) return r;
+  float lo = 0.0f, hi = 1.0f;
+  for (int i = 0; i < 24; ++i) {
+    const float mid = (lo + hi) * 0.5f;
+    (fits(scaled(mid)) ? lo : hi) = mid;
+  }
+  return scaled(lo);
+}
+
+edit::rect edit_session::fit_locked(const edit::rect& centre_of) const noexcept {
+  const float k = locked_ratio();
+  if (k <= 0.0f) return centre_of;
+  float w = 1.0f, h = 1.0f;
+  if (k >= 1.0f) {
+    h = 1.0f / k;
+  } else {
+    w = k;
+  }
+  const auto around = [&](float cx, float cy) {
+    edit::rect r{cx - w * 0.5f, cy - h * 0.5f, w, h};
+    r.x = std::clamp(r.x, 0.0f, 1.0f - r.w);
+    r.y = std::clamp(r.y, 0.0f, 1.0f - r.h);
+    return shrink_to_fit(r);
+  };
+  edit::rect r = around(centre_of.x + centre_of.w * 0.5f, centre_of.y + centre_of.h * 0.5f);
+  // A centre near a corner of a straightened frame can leave almost nothing;
+  // the frame's centre is always inside the rotated source.
+  if (r.w < kMinCrop || r.h < kMinCrop) r = around(0.5f, 0.5f);
+  return r;
+}
+
+edit_effect edit_session::set_crop_aspect(crop_aspect a, bool portrait) {
+  if (a >= crop_aspect::count) return edit_effect::refused;
+  bool started = false;
+  if (!crop_) {
+    if (!has_item_ || awaiting_disk()) return edit_effect::refused;
+    begin_crop();
+    started = true;
+  }
+  const bool changed = aspect_ != a || portrait_ != portrait;
+  aspect_ = a;
+  portrait_ = portrait;
+  if (a == crop_aspect::free) return changed || started ? edit_effect::redraw : edit_effect::none;
+  draft_rect_ = fit_locked(draft_rect_);
+  draft_auto_ = true;  // still the largest fit: a straighten keeps it so
+  return edit_effect::redraw;
+}
+
+edit_effect edit_session::set_straighten(float degrees) {
+  if (!std::isfinite(degrees)) return edit_effect::refused;
+  bool started = false;
+  if (!crop_) {
+    if (!has_item_ || awaiting_disk()) return edit_effect::refused;
+    begin_crop();
+    started = true;
+  }
+  const edit_effect e = apply_angle(degrees);
+  return started ? edit_effect::redraw : e;
+}
+
+std::size_t edit_session::edit_count() const noexcept {
+  const edit::edit_stack* s = stack();
+  return s ? s->ops.size() : 0;
+}
+
+edit_effect edit_session::apply_angle(float degrees) {
+  float a = std::clamp(degrees, -edit::kMaxStraighten, edit::kMaxStraighten);
+  if (std::abs(a) < 1e-4f) a = 0.0f;
+  if (a == draft_angle_) return edit_effect::none;
+  draft_angle_ = a;
+  // An untouched rect follows the angle (largest fit); a placed one is
+  // only shrunk as far as the new angle needs -- evenly, if a ratio is locked.
+  if (locked_ratio() > 0.0f) {
+    draft_rect_ = draft_auto_ ? fit_locked(draft_rect_) : shrink_to_fit(draft_rect_);
+  } else {
+    draft_rect_ = draft_auto_ ? edit::auto_crop(a, frame())
+                              : edit::constrain_crop(draft_rect_, a, frame());
+  }
+  return edit_effect::redraw;
 }
 
 void edit_session::cancel_crop() noexcept { crop_ = false; }
@@ -293,8 +421,24 @@ edit_effect edit_session::turn(op_kind k) {
 edit_effect edit_session::nudge(float dx, float dy, float dw, float dh) {
   if (!crop_) return edit_effect::none;
   edit::rect r = draft_rect_;
-  r.w = std::clamp(r.w + dw, kMinCrop, 1.0f);
-  r.h = std::clamp(r.h + dh, kMinCrop, 1.0f);
+  if (const float k = locked_ratio(); k > 0.0f && (dw != 0.0f || dh != 0.0f)) {
+    // A locked ratio resizes both sides; a step past the frame is refused.
+    if (dw != 0.0f) {
+      r.w += dw;
+      r.h = r.w / k;
+    } else {
+      r.h += dh;
+      r.w = r.h * k;
+    }
+    if (r.w > 1.0f + 1e-5f || r.h > 1.0f + 1e-5f || r.w < kMinCrop || r.h < kMinCrop) {
+      return edit_effect::none;
+    }
+    r.w = std::min(r.w, 1.0f);
+    r.h = std::min(r.h, 1.0f);
+  } else {
+    r.w = std::clamp(r.w + dw, kMinCrop, 1.0f);
+    r.h = std::clamp(r.h + dh, kMinCrop, 1.0f);
+  }
   r.x = std::clamp(r.x + dx, 0.0f, 1.0f - r.w);
   r.y = std::clamp(r.y + dy, 0.0f, 1.0f - r.h);
   // With an angle, a step that would uncover a corner is refused rather than
@@ -357,16 +501,20 @@ edit_effect edit_session::run(command_id id) {
     case straighten_cw: {
       if (!crop_) return edit_effect::none;
       const float step = id == straighten_cw ? kStraightenStep : -kStraightenStep;
-      float a = std::clamp(draft_angle_ + step, -edit::kMaxStraighten, edit::kMaxStraighten);
-      if (std::abs(a) < 1e-4f) a = 0.0f;
-      if (a == draft_angle_) return edit_effect::none;
-      draft_angle_ = a;
-      // An untouched rect follows the angle (largest fit); a placed one is
-      // only shrunk as far as the new angle needs.
-      draft_rect_ = draft_auto_ ? edit::auto_crop(a, frame())
-                                : edit::constrain_crop(draft_rect_, a, frame());
-      return edit_effect::redraw;
+      return apply_angle(draft_angle_ + step);
     }
+
+    case crop_aspect_cycle: {
+      if (!crop_) return edit_effect::none;
+      const auto next = static_cast<crop_aspect>((static_cast<int>(aspect_) + 1) % kCropAspectCount);
+      return set_crop_aspect(next, portrait_);
+    }
+    case crop_aspect_swap:
+      // Free has no orientation; a square's swap is itself.
+      if (!crop_ || aspect_ == crop_aspect::free || aspect_ == crop_aspect::square) {
+        return edit_effect::none;
+      }
+      return set_crop_aspect(aspect_, !portrait_);
 
     case export_image:
       // Until the rewritten file is back on the canvas the stack still holds
