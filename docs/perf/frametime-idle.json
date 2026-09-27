@@ -2,7 +2,7 @@
   "schema": 2,
   "warmup_seconds_discarded": 1.000,
   "frames": 0,
-  "elapsed_seconds": 60.001886,
+  "elapsed_seconds": 60.000558,
   "refresh_interval_ms": 16.680289,
   "dropped_frames": 0,
   "missed_refreshes": 0,
@@ -19,10 +19,10 @@
   "displayed_presents": 0,
   "static": true,
   "measurement_complete": true,
-  "idle_elapsed_seconds": 60.001474,
-  "idle_cpu_percent": 0.520821,
-  "idle_presents": 1,
-  "idle_input_events": 1,
+  "idle_elapsed_seconds": 60.000129,
+  "idle_cpu_percent": 0.078125,
+  "idle_presents": 0,
+  "idle_input_events": 0,
   "animation_frames_shown": 0,
   "animation_frames_made": 0,
   "animation_late": 0,
@@ -46,5 +46,5 @@
   "tiles_vram_peak_mb": 0.0,
   "tiles_max_create_ms": 0.000,
   "tiles_incomplete_frames": 0,
-  "meets_pr1_gate": false
+  "meets_pr1_gate": true
 }
