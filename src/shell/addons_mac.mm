@@ -804,8 +804,8 @@ extern "C" bool mv_addon2_family_usage(const char* family, uint64_t* used, uint6
 
 // [main-thread] The chrome's management view for Settings, or NULL. The
 // chrome keeps it alive; the caller does not release it.
-extern "C" void* mv_addon2_settings_view(const char* id) {
-  if (!id || std::string(id) != "ai") return nullptr;
+extern "C" void* mv_addon2_settings_view(const char* addon_id) {
+  if (!addon_id || std::string(addon_id) != "ai") return nullptr;
   id<MVAIChrome> chrome = ai_chrome();
   if (!chrome || ![chrome respondsToSelector:@selector(settingsView)]) return nullptr;
   NSView* view = [chrome settingsView];

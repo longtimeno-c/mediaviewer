@@ -848,8 +848,35 @@ if(MV_BUILD_TESTS)
   target_include_directories(mv_import_tests PRIVATE src tests)
   target_compile_definitions(mv_import_tests PRIVATE
     MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+  if(MV_ADDON_DEV_PUBLIC_KEY)
+    # A developer build pins its own key (cmake/import.cmake); CI never sets it.
+    target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
+  endif()
   add_dependencies(mv_import_tests mv_import)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
+
+  # Milestone H (plan/17): the same AI suite as Windows. The pack-dependent
+  # cases skip unless MV_AI_PACK_DIR (MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP,
+  # MV_AI_EVAL_DIR) point at staged files. arm64 only, like the pack.
+  add_executable(mv_ai_tests
+    tests/test_ai_engine.cpp
+    tests/test_ai_infer.cpp
+    tests/test_ai_audio.cpp
+  )
+  target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_io
+    Catch2::Catch2WithMain)
+  target_include_directories(mv_ai_tests PRIVATE src tests)
+  target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE
+    MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")
+  set_target_properties(mv_ai_tests PROPERTIES OSX_ARCHITECTURES "arm64")
+  catch_discover_tests(mv_ai_tests TEST_PREFIX "ai_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
 endif()
+
+# ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
+add_executable(ai-bench tools/ai-bench/main.cpp)
+target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
+target_include_directories(ai-bench PRIVATE src src/abi/include)
+set_target_properties(ai-bench PROPERTIES OSX_ARCHITECTURES "arm64")
 
 message(STATUS "MediaViewer ${PROJECT_VERSION} — Darwin host (PR 16–20), GPL-3.0-or-later")
