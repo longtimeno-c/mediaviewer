@@ -4,7 +4,6 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
-using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 
 namespace MediaViewer.Chrome;
@@ -153,7 +152,10 @@ public static partial class IslandHost
 
     private static Button BuildEditBarButton()
     {
-        _editBarButton = EditButton("Edit image", () => Send(Command.EditWorkspace), compact: false);
+        // The bar's own TextButton, so it looks and behaves like Open / View
+        // (see FlattenButton for why nothing here takes a custom template).
+        _editBarButton = TextButton("Edit image", () => Send(Command.EditWorkspace));
+        FlattenButton(_editBarButton);  // disabled with nothing on the canvas
         RenderEditBarButton();
         return _editBarButton;
     }
@@ -174,61 +176,32 @@ public static partial class IslandHost
 
     // ---- buttons in the chrome's flat style --------------------------------------
 
-    private static ControlTemplate? _editButtonTemplate;
-
-    // The bar's flat look (IslandHost FlatButtonTemplate) with the background
-    // and padding bound, so a chosen tab or preset keeps a wash and the panes
-    // can use the tighter padding. Disabled dims the whole button.
-    private static ControlTemplate? EditButtonTemplate()
+    // No custom ControlTemplate here. In these islands a Button whose custom
+    // template actually loads fail-fasts in Microsoft.UI.Xaml (0xC000027B) once
+    // a bar flyout opens or closes afterwards (seen 2026-09-27; the bar's own
+    // FlatButtonTemplate has never loaded, which is why its buttons never hit
+    // it). WinUI's own Button template is restyled through its lightweight
+    // resources instead: no border, no fill at rest or disabled (a disabled
+    // button dims rather than turning grey, so it never reads as "selected"),
+    // the system hover wash, and `Background` as the selected wash.
+    private static void FlattenButton(Button b)
     {
-        if (_editButtonTemplate is not null) return _editButtonTemplate;
-        const string xaml =
-            """
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                             TargetType="Button">
-              <Border x:Name="Root" Background="{TemplateBinding Background}"
-                      Padding="{TemplateBinding Padding}" CornerRadius="4">
-                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                  VerticalAlignment="Center"
-                                  Content="{TemplateBinding Content}"
-                                  ContentTemplate="{TemplateBinding ContentTemplate}"
-                                  FontFamily="{TemplateBinding FontFamily}"
-                                  FontSize="{TemplateBinding FontSize}"
-                                  Foreground="{TemplateBinding Foreground}"/>
-                <VisualStateManager.VisualStateGroups>
-                  <VisualStateGroup x:Name="CommonStates">
-                    <VisualState x:Name="Normal"/>
-                    <VisualState x:Name="PointerOver">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Pressed">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Disabled">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Opacity" Value="0.4"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                  </VisualStateGroup>
-                </VisualStateManager.VisualStateGroups>
-              </Border>
-            </ControlTemplate>
-            """;
-        try
+        SolidColorBrush clear = Brush(Colors.Transparent);
+        foreach (string key in new[]
+                 {
+                     "ButtonBackgroundDisabled", "ButtonBorderBrush", "ButtonBorderBrushPointerOver",
+                     "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled",
+                 })
         {
-            _editButtonTemplate = (ControlTemplate)XamlReader.Load(xaml);
+            b.Resources[key] = clear;
         }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-            _editButtonTemplate = null;
-        }
-        return _editButtonTemplate;
+        b.BorderThickness = new Thickness(0);
+        // IsEnabledChanged is not raised for a button set disabled before it
+        // is in the live tree, so Loaded applies the dim as well.
+        void Dim() => b.Opacity = b.IsEnabled ? 1.0 : 0.4;
+        Dim();
+        b.IsEnabledChanged += (_, _) => Dim();
+        b.Loaded += (_, _) => Dim();
     }
 
     private static Button EditButton(string label, Action click, bool compact = true, string? tip = null,
@@ -254,8 +227,7 @@ public static partial class IslandHost
             // trim keys belong to the canvas (the Mac host re-focuses its view).
             AllowFocusOnInteraction = false,
         };
-        ControlTemplate? template = EditButtonTemplate();
-        if (template is not null) b.Template = template;
+        FlattenButton(b);
         b.Click += (_, _) =>
         {
             try
