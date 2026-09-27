@@ -71,6 +71,7 @@ public static partial class IslandHost
         {
             string? text = null;
             string tip = "";
+            bool clickable = false;
             if (s.Phase == UpdatePhase.Ready)
             {
                 text = s.Urgency == UpdateUrgency.Normal ? "Update ready — restart" : "Important update — restart";
@@ -82,6 +83,22 @@ public static partial class IslandHost
                         $"Version {s.Version} is downloaded and fixes a problem in this version. Restart to use it.",
                     _ => $"Version {s.Version} is downloaded. Restart to use it, or it installs when you close MediaViewer.",
                 };
+                clickable = true;
+            }
+            // Checking/Downloading are quiet, non-clickable states: same command-bar
+            // spot, no popup, nothing to click yet (plan/13 "never interrupt").
+            // Without these the button just stays hidden for the whole check +
+            // download, which reads as "nothing is happening" — most noticeable
+            // right after switching the update channel in Settings.
+            else if (s.Phase == UpdatePhase.Checking)
+            {
+                text = "Checking for updates…";
+                tip = "Asking GitHub for a newer version.";
+            }
+            else if (s.Phase == UpdatePhase.Downloading)
+            {
+                text = s.Version is null ? "Downloading update…" : $"Downloading update {s.Version}…";
+                tip = "Downloading in the background at low priority. This does not interrupt anything.";
             }
             if (text is null && s.RolledBackFrom is not null)
             {
@@ -96,6 +113,7 @@ public static partial class IslandHost
             }
             SetButtonText(_updateButton, text);
             ToolTipService.SetToolTip(_updateButton, tip);
+            _updateButton.IsEnabled = clickable;
             _updateButton.Visibility = Visibility.Visible;
         }
         catch (Exception ex)

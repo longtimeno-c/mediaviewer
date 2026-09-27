@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // encprobe: spike S1 for the video/audio editor add-on (plan/21-video-editor.md).
 //
 // What can THIS machine's build encode and filter, and how fast? Prints a

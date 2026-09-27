@@ -516,8 +516,10 @@ All in the add-on, none in the base app.
 | FFmpeg (the host's) | LGPL | Decode / encode through the host services only |
 | DirectWrite / Core Text | OS | Titles |
 
-No GPL-3 code (the app is GPL-2.0-or-later), nothing non-commercial, no software H.264 / HEVC /
-AAC encoders. The manifest names a licence per file and CI checks it, as for the AI pack.
+Nothing non-commercial, no software H.264 / HEVC / AAC encoders. The app moved to
+GPL-3.0-or-later on 2026-09-25 (plan/12-decision-log.md), so GPL-3 code combines cleanly;
+GPL-2-only code still does not. The manifest names a licence per file and CI checks it,
+as for the AI pack.
 
 ## 14. The UI
 

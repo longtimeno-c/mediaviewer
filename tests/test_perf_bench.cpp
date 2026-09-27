@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Headless timing of the paths a person waits on: first pixel (preview
 // decode), the full decode behind it, the colour stage, and listing and
 // sorting a camera-dump folder. Not part of the normal run:

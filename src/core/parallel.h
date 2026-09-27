@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Split one large, already-on-a-worker loop (a colour transform, a mip level)
 // into bands across a few extra threads. For work that is measured in tens of
 // milliseconds on one core; below min_per_thread items it stays serial, so
