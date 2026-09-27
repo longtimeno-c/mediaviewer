@@ -53,6 +53,7 @@ public final class MVImportChrome: NSObject {
       window?.makeKeyAndOrderFront(nil)
       model.refreshSources(select: source.isEmpty ? nil : source)
       model.checkUnfinished()
+      model.showFirstUseExplainerIfNeeded()
     }
   }
 

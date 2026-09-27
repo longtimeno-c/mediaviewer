@@ -48,8 +48,14 @@ struct volume_info {
 // Mounted, user-visible volumes, removable first.
 [[nodiscard]] result<std::vector<volume_info>> list_volumes();
 
-// Unmounts and ejects the volume at `root_utf8`. status::io if it is busy or
-// cannot be ejected (a fixed disk); nothing is deleted either way.
+// Unmounts and ejects the volume at `root_utf8`. Nothing is deleted either
+// way. Failure is one of a small set of categories the chrome can turn into
+// an actual message (issue #42): status::busy (something still has a file
+// open on it — including one of our own jobs), status::not_removable (a
+// fixed or network volume; eject should not have been offered),
+// status::permission_denied, status::not_found (already unplugged), or
+// status::timeout (macOS Disk Arbitration did not answer); status::io is the
+// fallback for anything else.
 [[nodiscard]] expected eject_volume(std::string_view root_utf8);
 
 enum class volume_event : std::uint8_t { arrived = 0, removed = 1 };
