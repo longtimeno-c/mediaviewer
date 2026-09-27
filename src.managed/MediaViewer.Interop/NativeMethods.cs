@@ -193,6 +193,9 @@ internal static partial class NativeMethods
     internal static partial MvStatus mv_video_pause(MvSessionHandle session);
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_video_set_hold(MvSessionHandle session, int hold, int resume);
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_video_seek(MvSessionHandle session, long position, int exact);
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]

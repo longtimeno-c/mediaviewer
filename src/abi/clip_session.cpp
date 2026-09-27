@@ -136,13 +136,13 @@ void clip_session::index_worker() noexcept {
 }
 
 bool clip_session::to_request(const mv_clip_request& in, std::string source, clip::request& out) noexcept {
-  // 0.10 callers end at `reserved`; 0.11 added the ranges.
+  // 0.10 callers end at `reserved`; 0.12 added the ranges.
   constexpr std::size_t kV10 = offsetof(mv_clip_request, ranges_ns);
   if (in.struct_size < kV10) return false;
-  const bool v11 = in.struct_size >= sizeof(mv_clip_request);
+  const bool v12 = in.struct_size >= sizeof(mv_clip_request);
   if (in.op < MV_CLIP_TRIM_KEYFRAME || in.op > MV_CLIP_KEEP_RANGES) return false;
   if (in.op == MV_CLIP_KEEP_RANGES &&
-      (!v11 || in.ranges_ns == nullptr || in.range_count == 0 || in.range_count > clip::kMaxRanges)) {
+      (!v12 || in.ranges_ns == nullptr || in.range_count == 0 || in.range_count > clip::kMaxRanges)) {
     return false;
   }
   clip::request r;

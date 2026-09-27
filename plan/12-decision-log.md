@@ -2511,7 +2511,7 @@ per OS" hold, with no second renderer. While it is there the canvas refuses firs
 a click on the preview cannot hand the keys to the browse router (A / D would walk the folder
 out from under the edit).
 
-**Export is `clip::op::keep_ranges`** (ABI 0.11 appends `ranges_ns` / `range_count` to
+**Export is `clip::op::keep_ranges`** (ABI 0.12 appends `ranges_ns` / `range_count` to
 `mv_clip_request`; a 0.10-sized request is still accepted): keyframe cuts by default, or *exact*
 through Path 2's loop generalised to pieces, hardware encoders only, in the helper process.
 

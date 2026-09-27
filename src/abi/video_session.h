@@ -8,6 +8,7 @@
 #include <vector>
 #include "core/spsc_ring.h"
 #include "player/media_source.h"
+#include "player/playback_hold.h"
 namespace mv::abi {
 // UI and loader only enqueue intent. The render thread owns current and held.
 // Retiring a decoder joins its workers on a separate cleanup thread.
@@ -43,6 +44,13 @@ class video_session {
   void command(std::function<void(player::media_source&)> command) {
     std::lock_guard lock(mutex_); commands_.push_back(std::move(command));
   }
+  // Issue #44: an overlay covers the canvas. The next tick pauses and remembers,
+  // or resumes (player/playback_hold.h); `resume` false leaves the clip paused.
+  void set_hold(bool on, bool resume) {
+    std::lock_guard lock(mutex_); hold_wanted_ = on; hold_resume_ = resume;
+  }
+  // Explicit play / pause: under a hold, release no longer second-guesses it.
+  void user_transport() { std::lock_guard lock(mutex_); hold_.user_transport(); }
   bool tick(std::uint32_t generation, player::time_ns vblank, player::video_frame& out, bool& active) {
     std::unique_lock lock(mutex_, std::try_to_lock);
     if (!lock.owns_lock()) { active = active_.load(); return false; }
@@ -56,9 +64,18 @@ class video_session {
       state_atomic_.store(static_cast<std::uint8_t>(player::play_state::stopped),
                           std::memory_order_release);
     }
+    if (hold_wanted_ != hold_.held()) {
+      const player::held_clip clip{current_ != nullptr, current_gen_,
+                                   current_ ? current_->state() : player::play_state::stopped};
+      const auto action = hold_wanted_ ? hold_.hold(generation, clip)
+                                       : hold_.release(generation, clip, hold_resume_);
+      if (action == player::hold_action::pause) current_->pause();
+      if (action == player::hold_action::play) current_->play();
+    }
     if (!current_ && pending_ && pending_gen_ == generation) {
       current_ = pending_; pending_ = nullptr; current_gen_ = generation;
-      current_->play();
+      // Opened paused on its first frame: a poster until Play (issue #44).
+      if (hold_.autoplay(generation)) current_->play();
     }
     bool changed = false;
     if (current_) {
@@ -95,6 +112,8 @@ class video_session {
   player::media_source* pending_ = nullptr;
   std::uint32_t pending_gen_ = 0;
   std::vector<std::function<void(player::media_source&)>> commands_;
+  player::playback_hold hold_;
+  bool hold_wanted_ = false, hold_resume_ = true;
   player::media_info info_{};
   player::clock_stats stats_{};
   player::time_ns position_ = 0;

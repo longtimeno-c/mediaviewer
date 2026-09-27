@@ -278,6 +278,7 @@ add_library(mv_player STATIC
   src/player/container_probe.cpp
   src/player/poster.cpp
   src/player/media_source.h
+  src/player/playback_hold.h
   src/player/video_source.h
   src/player/audio_sink.h
   src/player/audio_block.h
@@ -663,6 +664,13 @@ add_dependencies(mv_frametime mediaviewer_lab)
 if(MV_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 3 CONFIG REQUIRED)
+  # The README chart suite (tools/perf): charts reproduce from the committed
+  # reports and the suite plans every harness. Standard-library Python only.
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME perf_tools
+             COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/perf/test_perf_tools.py")
+  endif()
   add_executable(mv_tests
     tests/test_result.cpp
     tests/test_spsc_ring.cpp
@@ -685,6 +693,7 @@ if(MV_BUILD_TESTS)
     tests/test_gif_webp.cpp
     tests/test_heif_avif.cpp
     tests/test_raw.cpp
+    tests/test_perf_bench.cpp
     tests/test_anim.cpp
     tests/test_colour.cpp
     # PR 19: the portable player logic (clock, drift, presenter, transport, probe,
@@ -731,6 +740,8 @@ if(MV_BUILD_TESTS)
     src/shell/spotlight_fields.cpp
     # Issue #38: the transport's idle state, both hosts.
     tests/test_transport_autohide.cpp
+    # Issue #44: no clip plays under the gallery, both hosts.
+    tests/test_playback_hold.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

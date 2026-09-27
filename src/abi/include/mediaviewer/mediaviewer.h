@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 11 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: PR 30 keep_ranges */
+#define MV_ABI_VERSION_MINOR 12 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: PR 30 keep_ranges */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -448,6 +448,14 @@ MV_API mv_status MV_CALL mv_video_close(mv_session_t session);
 /* [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_video_play(mv_session_t session);
 MV_API mv_status MV_CALL mv_video_pause(mv_session_t session);
+
+/* [any-thread][no-block] Issue #44 (ABI 0.11). `hold` 1 while an overlay covers
+ * the canvas (the gallery): a playing clip pauses and a clip opened under the
+ * hold stays paused on its first frame. `hold` 0 lifts it: the clip that was
+ * playing on entry resumes if it is still the one on screen and `resume` is 1;
+ * anything selected meanwhile waits for mv_video_play. `resume` is ignored
+ * while holding. Play / pause under the hold are the user's and are kept. */
+MV_API mv_status MV_CALL mv_video_set_hold(mv_session_t session, int32_t hold, int32_t resume);
 
 /* [any-thread][no-block] `exact` 0 while dragging the scrubber (nearest
  * keyframe, no decode — instant); 1 on release or a typed position (decode

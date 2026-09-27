@@ -71,7 +71,7 @@ static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the 
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
-// ABI 0.11 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
+// ABI 0.12 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
 static_assert(sizeof(mv_clip_request) == 56, "mv_clip_request layout is part of the ABI");
 static_assert(offsetof(mv_clip_request, in_ns) == 8, "mv_clip_request layout is part of the ABI");
@@ -226,12 +226,29 @@ struct mv_session {
   mv::io::directory_watcher watcher;
   mv::image::thumb_store thumbs;
 
-  // A decode already queued or running for a path at this generation. Without
-  // it, a held arrow key re-submits the same neighbours every step as the LRU
-  // churns, and the pool decodes the same JPEG four times over.
+  // A decode already queued or running for a path. Without it, a held arrow
+  // key re-submits the same neighbours every step as the LRU churns, and the
+  // pool decodes the same JPEG four times over.
+  //
+  // `handoff` is the generation the job runs under (job_context::
+  // handed_off_via). It starts at the one it was submitted at and moves to a
+  // later one when the user lands on the path mid-decode, so the navigation
+  // keeps the prefetch's work instead of cancelling it and starting over.
+  // `shown` is set, under image_mutex, once a full-quality texture of it is
+  // on screen: a first-pixel preview must not land on top of that.
+  struct decode_ticket {
+    std::atomic<mv::generation> handoff{0};
+    std::atomic<bool> shown{false};
+  };
+  // [lru_mutex] `handoff_ok` is false until the job body is running (a
+  // queued job was already dropped by the pool's own generation check) and
+  // while it runs a one-thread RAW develop, which a fresh foreground decode
+  // at raw_foreground_threads() beats.
   struct inflight_decode {
     std::string path;
-    mv::generation gen = 0;
+    std::uint32_t folder_gen = 0;
+    bool handoff_ok = false;
+    std::shared_ptr<decode_ticket> ticket;
   };
 
   std::mutex lru_mutex;
@@ -448,6 +465,11 @@ status open_video_worker(mv_session* session, const std::string& path, const mv:
 
 bool path_is_selected(mv_session* session, const std::string& path) {
   std::lock_guard lock(session->folder_mutex);
+  // Before the listing lands, the file the folder was opened on is the one
+  // on screen: mv_folder_open starts its decode beside the scan, not after.
+  if (session->folder_items.empty()) {
+    return !path.empty() && path == session->folder_select_path;
+  }
   if (session->folder_selected >= session->folder_items.size()) return false;
   return session->folder_items[session->folder_selected].path == path;
 }
@@ -654,26 +676,70 @@ void push_image_opened(mv_session* session, std::uint64_t correlation, mv::gener
   session->push_completion(c);
 }
 
-bool claim_decode(mv_session* session, const std::string& path, mv::generation gen) {
+enum class decode_claim { submit, duplicate, handed_off };
+
+// `out` is the new job's ticket (submit) or the running job's (handed_off).
+decode_claim claim_decode(mv_session* session, const std::string& path, mv::generation gen,
+                          std::uint32_t folder_gen, std::shared_ptr<mv_session::decode_ticket>& out) {
   std::lock_guard lock(session->lru_mutex);
-  for (const auto& d : session->decode_inflight) {
-    // Only a job at *this* generation counts. An older one is already doomed by
-    // the navigation that bumped the counter, so it must not suppress the
-    // decode of the image the user has actually landed on.
-    if (d.gen == gen && d.path == path) return false;
+  for (auto& d : session->decode_inflight) {
+    if (d.path != path) continue;
+    const mv::generation running = d.ticket->handoff.load(std::memory_order_acquire);
+    if (running == gen) return decode_claim::duplicate;
+    // An older job is doomed by the navigation that bumped the counter, so it
+    // must not suppress the decode of the image the user has landed on -
+    // unless it is running and can be handed that navigation instead.
+    if (d.handoff_ok && d.folder_gen == folder_gen && running < gen) {
+      d.ticket->handoff.store(gen, std::memory_order_release);
+      out = d.ticket;
+      return decode_claim::handed_off;
+    }
   }
-  session->decode_inflight.push_back({path, gen});
-  return true;
+  auto ticket = std::make_shared<mv_session::decode_ticket>();
+  ticket->handoff.store(gen, std::memory_order_relaxed);
+  session->decode_inflight.push_back({path, folder_gen, false, ticket});
+  out = std::move(ticket);
+  return decode_claim::submit;
 }
 
-void release_decode(mv_session* session, const std::string& path, mv::generation gen) {
+void allow_handoff(mv_session* session, const mv_session::decode_ticket* ticket, bool ok) {
   std::lock_guard lock(session->lru_mutex);
-  for (auto it = session->decode_inflight.begin(); it != session->decode_inflight.end(); ++it) {
-    if (it->gen == gen && it->path == path) {
-      session->decode_inflight.erase(it);
+  for (auto& d : session->decode_inflight) {
+    if (d.ticket.get() == ticket) {
+      d.handoff_ok = ok;
       return;
     }
   }
+}
+
+// Returns the generation the job finished under: its own, or the one it was
+// handed. Read under the lock so no hand-off can land after the release.
+mv::generation release_decode(mv_session* session, const mv_session::decode_ticket* ticket) {
+  std::lock_guard lock(session->lru_mutex);
+  for (auto it = session->decode_inflight.begin(); it != session->decode_inflight.end(); ++it) {
+    if (it->ticket.get() == ticket) {
+      session->decode_inflight.erase(it);
+      break;
+    }
+  }
+  return ticket->handoff.load(std::memory_order_acquire);
+}
+
+// [worker] A folder decode's full-quality publish. Marks the ticket shown in
+// the same critical section, so a hand-off preview cannot follow it on.
+void publish_decoded(mv_session* session, mv_session::decode_ticket& ticket, std::uint64_t key,
+                     mv_image_info info, std::shared_ptr<mv::image::display_image> cpu,
+                     std::unique_ptr<mv::image::gpu_image> gpu) {
+  std::lock_guard lock(session->image_mutex);
+  publish_locked(session, key, info, std::move(cpu), std::move(gpu));
+  ticket.shown.store(true, std::memory_order_relaxed);
+}
+
+// Whether the full decode of `path` is what the session already shows: an
+// early open (mv_folder_open) can finish before the listing it raced lands.
+bool full_decode_shown(mv_session* session, const std::string& path) {
+  std::lock_guard lock(session->image_mutex);
+  return session->cpu && session->cpu_key == key_for(path);
 }
 
 // A folder decode is view-tied work, not background work. plan/02: "Navigating
@@ -723,21 +789,73 @@ void submit_animation_open(mv_session* session, std::string path, mv::generation
       });
 }
 
+// The user landed on a path whose prefetch decode is running and was handed
+// this navigation (claim_decode). That decode skipped the first-pixel preview,
+// which is only made for the image on screen, and rule 3 still owes one: this
+// makes it on its own and stands down once the full decode is up.
+void submit_handoff_preview(mv_session* session, std::string path, mv::generation gen,
+                            std::shared_ptr<mv_session::decode_ticket> ticket) {
+  const auto correlation = mv::abi::current_correlation_id();
+  (void)session->jobs.submit_at(
+      gen, [session, path = std::move(path), ticket = std::move(ticket),
+            correlation](const mv::job_context& ctx) -> status {
+        const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
+        if (ctx.cancelled() || ticket->shown.load(std::memory_order_relaxed)) return status::ok;
+        if (video_path(path)) return status::ok;  // never read a whole clip for a preview
+        auto bytes = mv::io::read_all(path);
+        if (!bytes) return status::ok;  // the decode it stands in for reports failures
+        if (ctx.cancelled() || ticket->shown.load(std::memory_order_relaxed)) return status::ok;
+        auto preview = mv::image::decode_preview(bytes.value(), &ctx);
+        if (!preview) return status::ok;  // no cheap first pixel for this format
+        auto dev = session->copy_device();
+        if (!dev) return status::ok;
+        auto uploaded = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx, 1);
+        if (!uploaded) return status::ok;
+        auto gpu = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
+        gpu->quality = mv::image::gpu_quality::preview;
+        if (!path_is_selected(session, path)) return status::ok;
+        {
+          std::lock_guard lock(session->image_mutex);
+          if (ticket->shown.load(std::memory_order_relaxed) ||
+              ctx.gen() != session->jobs.current_generation()) {
+            return status::ok;
+          }
+          publish_locked(session, key_for(path), info_from(preview.value()), nullptr,
+                         std::move(gpu));
+        }
+        push_image_opened(session, correlation, ctx.gen(), status::ok);
+        return status::ok;
+      });
+}
+
 void submit_decode_to_lru(mv_session* session, std::string path, mv::generation gen) {
-  if (!claim_decode(session, path, gen)) return;
   const std::uint32_t folder_gen = session->folder_generation.load(std::memory_order_relaxed);
+  std::shared_ptr<mv_session::decode_ticket> ticket;
+  switch (claim_decode(session, path, gen, folder_gen, ticket)) {
+    case decode_claim::duplicate:
+      return;
+    case decode_claim::handed_off:
+      submit_handoff_preview(session, std::move(path), gen, std::move(ticket));
+      return;
+    case decode_claim::submit:
+      break;
+  }
   const auto correlation = mv::abi::current_correlation_id();
   (void)session->jobs.submit_at(
       gen,
-      [session, path, folder_gen, correlation](const mv::job_context& ctx) -> status {
+      [session, path, folder_gen, correlation, ticket](const mv::job_context& pool_ctx) -> status {
         const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
+        allow_handoff(session, ticket.get(), true);
+        const mv::job_context ctx = pool_ctx.handed_off_via(&ticket->handoff);
         if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
           return status::cancelled;
         }
         if (video_path(path)) {
           if (!path_is_selected(session, path)) return status::ok;
-          return open_video_worker(session, path, ctx);
+          const status opened = open_video_worker(session, path, ctx);
+          if (opened == status::ok) ticket->shown.store(true, std::memory_order_relaxed);
+          return opened;
         }
         auto bytes = mv::io::read_all(path);
         if (!bytes) return bytes.error();
@@ -769,9 +887,16 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
           }
         }
 
+        // A neighbour's RAW develops on one thread. Landing on it mid-develop
+        // is not handed off: a fresh decode at raw_foreground_threads(), with
+        // its own preview, finishes first. Closed before the selection is read,
+        // so a hand-off can never catch this job on its one-thread path.
+        const bool raw = mv::codec::looks_like_raw(bytes.value());
+        if (raw) allow_handoff(session, ticket.get(), false);
+        const bool foreground = path_is_selected(session, path);
         auto decoded = mv::image::decode_bytes(
-            bytes.value(), &ctx,
-            path_is_selected(session, path) ? mv::codec::raw_foreground_threads() : 1u);
+            bytes.value(), &ctx, foreground ? mv::codec::raw_foreground_threads() : 1u);
+        if (raw) allow_handoff(session, ticket.get(), true);
         if (!decoded) return decoded.error();
         if (ctx.cancelled()) return status::cancelled;
         if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
@@ -788,7 +913,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
           auto dev = session->copy_device();
           if (!dev) {
             if (path_is_selected(session, path)) {
-              publish_ready(session, key_for(path), info, cpu, nullptr);
+              publish_decoded(session, *ticket, key_for(path), info, cpu, nullptr);
             }
             return status::ok;
           }
@@ -798,7 +923,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
           if (ctx.cancelled()) return status::cancelled;
           lru_put(session, path, *gpu, info);
           if (path_is_selected(session, path)) {
-            publish_ready(session, key_for(path), info, cpu, std::move(gpu));
+            publish_decoded(session, *ticket, key_for(path), info, cpu, std::move(gpu));
             push_image_opened(session, correlation, ctx.gen(), status::ok);
           }
           return status::ok;
@@ -822,13 +947,23 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         maybe_publish_animation(session, path, std::move(bytes).value(), ctx);
         return status::ok;
       },
-      [session, path, correlation](mv::job_id, mv::generation gen, status result) {
-        release_decode(session, path, gen);
+      [session, path, correlation, ticket](mv::job_id, mv::generation submitted, status result) {
+        const mv::generation ended = release_decode(session, ticket.get());
+        if (result == status::ok || result == status::cancelled) {
+          // Handed this navigation just as it gave up on the last one, or as
+          // it finished without showing anything (a neighbour clip is only
+          // probed, a tiled one dropped): the hand-off promised the image, so
+          // decode it now.
+          if (ended != submitted && !ticket->shown.load(std::memory_order_relaxed) &&
+              ended == session->jobs.current_generation() && path_is_selected(session, path)) {
+            submit_decode_to_lru(session, path, ended);
+          }
+          return;
+        }
         // A failure on the visible image still has to clear the host's
         // "loading" state; success already reported at publish time.
-        if (result != status::ok && result != status::cancelled &&
-            path_is_selected(session, path)) {
-          push_image_opened(session, correlation, gen, result);
+        if (result != status::ok && path_is_selected(session, path)) {
+          push_image_opened(session, correlation, ended, result);
         }
       });
 }
@@ -1135,16 +1270,22 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
   for (uint32_t i = 0; i < n; ++i) {
     if (i != selected) submit_thumb_at(session, i);
   }
+  bool shown_early = false;
+  const mv::generation gen = session->jobs.current_generation();
   if (!selected_path.empty()) {
-    const mv::generation gen = session->jobs.current_generation();
     // A file appearing beside the current one is not a reason to decode it
-    // again: re-publishing would refit the camera under the user.
+    // again: re-publishing would refit the camera under the user. Nor is the
+    // file the folder was opened on, if its early decode already finished.
     if (!(changed && selected_path == previous_path)) {
-      submit_decode_to_lru(session, selected_path, gen);
+      shown_early = !changed && full_decode_shown(session, selected_path);
+      if (!shown_early) submit_decode_to_lru(session, selected_path, gen);
     }
     submit_prefetch(session, selected, gen);
   }
   push_folder_selected(session, selected);
+  // After the selection, which the host reads as "loading": the early decode
+  // reported its image before there was a listing to select it in.
+  if (shown_early) push_image_opened(session, mv::abi::current_correlation_id(), gen, status::ok);
 }
 
 void on_folder_watch(void* user) {
@@ -1509,6 +1650,24 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
           session->push_completion(c);
         });
     if (id == mv::invalid_job) return status::internal;
+    // The file the folder was opened on starts decoding now, beside the scan,
+    // not once a listing of a few thousand files has been read and sorted.
+    // Until the listing lands, path_is_selected() treats it as the selection;
+    // when it lands, apply_folder_list finds the decode running (claim_decode)
+    // or already on screen. A clip is left to the listing: this job only
+    // probes, so a clip never opens before there is a folder to play it in.
+    if (!select.empty()) {
+      const mv::generation gen = session->jobs.current_generation();
+      (void)session->jobs.submit_at(
+          gen, [session, select, gen](const mv::job_context& ctx) -> status {
+            if (ctx.cancelled() || !path_is_selected(session, select)) return status::ok;
+            auto head = mv::io::read_prefix(select, mv::player::probe_bytes);
+            if (!head) return status::ok;  // not a readable file: the listing decides
+            if (mv::player::is_video(mv::player::probe(head.value()))) return status::ok;
+            submit_decode_to_lru(session, select, gen);
+            return status::ok;
+          });
+    }
     if (out_job_id) *out_job_id = id;
     return status::ok;
   }));
@@ -1812,6 +1971,7 @@ mv_status MV_CALL mv_video_close(mv_session_t session) {
 mv_status MV_CALL mv_video_play(mv_session_t session) {
   return static_cast<mv_status>(guard("mv_video_play", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
+    session->video.user_transport();
     session->video.command([=](mv::player::media_source& s) { s.play(); });
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
@@ -1820,7 +1980,16 @@ mv_status MV_CALL mv_video_play(mv_session_t session) {
 mv_status MV_CALL mv_video_pause(mv_session_t session) {
   return static_cast<mv_status>(guard("mv_video_pause", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
+    session->video.user_transport();
     session->video.command([=](mv::player::media_source& s) { s.pause(); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_hold(mv_session_t session, int32_t hold, int32_t resume) {
+  return static_cast<mv_status>(guard("mv_video_set_hold", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.set_hold(hold != 0, resume != 0);
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
   }));

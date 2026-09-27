@@ -172,6 +172,65 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 // private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
 // functions below call through this pointer rather than duplicating state.
 MvLabApp* g_chrome_app = nullptr;
+
+constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+
+// --browse-soak (the Windows lab's harness, main.cpp browse_run): open a
+// folder, dwell on the first photo, jump to photos past its prefetched
+// neighbours (cold), then arrow forward with a dwell before each (warm).
+// Every step is timed from just before the selection to the present that
+// shows the new item. Writes the same JSON as Windows (tools/perf reads it).
+struct mac_browse_row {
+  std::string name;
+  int index = 0;
+  int cold = 0;
+  int cached = 0;
+  int timed_out = 0;
+  double ready_ms = -1.0;
+  double present_ms = -1.0;
+  double refresh_ms = 0.0;
+};
+enum class mac_browse_phase { wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm, finish };
+struct mac_browse_run {
+  bool enabled = false;
+  std::string json_path;
+  mac_browse_phase step = mac_browse_phase::wait_media;
+  mac_browse_phase after_dwell = mac_browse_phase::cold;
+  double t0 = 0.0;
+  double phase_t = 0.0;
+  std::size_t count = 0;
+  int cold_targets[6]{};
+  int cold_n = 0;
+  int cold_i = 0;
+  int warm_left = 0;
+  std::uint64_t seq = 0;
+  bool record = false;
+  int pending_index = 0;
+  int pending_cold = 0;
+  std::string pending_name;
+  std::vector<mac_browse_row> rows;
+  // Seconds the window spent covered or minimised. The display link stops for
+  // a hidden window, so its steps time out: the run is void, and says so.
+  double hidden_s = 0.0;
+  double last_tick = 0.0;
+} g_mac_browse;
+constexpr double kMacBrowseDwell = 3.0;
+constexpr double kMacBrowseStepTimeout = 20.0;
+constexpr double kMacBrowseOpenTimeout = 60.0;
+
+double browse_now() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void browse_json_string(FILE* f, const std::string& s) {
+  std::fputc('"', f);
+  for (const unsigned char c : s) {
+    if (c == '"' || c == '\\') std::fprintf(f, "\\%c", c);
+    else if (c < 0x20) std::fprintf(f, "\\u%04x", c);
+    else std::fputc(c, f);
+  }
+  std::fputc('"', f);
+}
 // Registered once by Swift via mv_chrome_set_thumb_ready_callback. A plain
 // C function pointer, not a std::function: this crosses the same boundary
 // mv_chrome_bridge.h's other declarations do, POD only.
@@ -346,6 +405,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // of that same bridge — declared here because they read `_items`/`_folder`,
 // private ivars only MvLabApp's own methods can reach.
 - (void)selectIndex:(std::size_t)new_index;
+// folder_model's change notify hops here on the main queue (and the 0.2 s
+// timer still calls it for everything else it polls).
+- (void)refreshFolderIfChanged;
 - (NSInteger)itemCount;
 - (NSInteger)currentIndex;
 - (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
@@ -583,7 +645,11 @@ extern "C" bool mv_chrome_gallery_visible(void) {
 }
 extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   if (!g_chrome_app || index < 0) return;
-  [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  // The tile already selected is "back to it": reselecting would reopen the
+  // clip, and the one held under the grid would not resume (issue #44).
+  if (index != [g_chrome_app currentIndex]) {
+    [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  }
   [g_chrome_app setGalleryVisible:NO];
 }
 extern "C" uint64_t mv_chrome_listing_generation(void) {
@@ -1581,6 +1647,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // this starts at 0 regardless.
   std::atomic<std::uint64_t> _openGeneration;
   NSTimer* _folderPollTimer;
+  // What -selectIndex: last handed to the lab, and the lab's item id for it.
+  // A relist that lands on the same file (same size and mtime) keeps that
+  // load instead of decoding it again; opening a file starts its load before
+  // the folder listing arrives, with the stamp unknown (_shownMtime ==
+  // kShownStampUnknown) until the listing confirms it.
+  std::string _shownPath;
+  std::int64_t _shownMtime;
+  std::uint64_t _shownSize;
+  std::uint64_t _shownItem;
+  NSTimer* _browseTimer;
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
   std::uint64_t _listingGeneration;
@@ -2128,6 +2204,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _askedDefaultViewer = YES;  // the lab never asks
   _installerChecked = YES;
 #endif
+  // A finished listing reaches the UI now, not on the poll timer's next tick
+  // (up to 0.2 s later, on every open). The pool thread only posts.
+  _folder.set_changed_notify(
+      [](void*) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [g_chrome_app refreshFolderIfChanged];
+        });
+      },
+      nullptr);
   _launched = YES;
   if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
     NSBeep();
@@ -2152,8 +2237,183 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                name:NSMenuDidEndTrackingNotification
                                              object:nil];
 
-  [self.window makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+  if (g_mac_browse.enabled) {
+    _browseTimer = [NSTimer scheduledTimerWithTimeInterval:0.01
+                                                    target:self
+                                                  selector:@selector(browseTick)
+                                                  userInfo:nil
+                                                   repeats:YES];
+  }
+
+  if (_options.soak_seconds > 0.0 || _options.harness) {
+    // A measuring run shows its window but does not take the keyboard: keys
+    // typed into another app must not land here (Delete would send the
+    // photo on screen to the Trash). It floats above other apps' windows so
+    // using the machine meanwhile does not cover it (a covered window stops
+    // presenting and voids the soak).
+    self.window.level = NSFloatingWindowLevel;
+    [self.window orderFrontRegardless];
+  } else {
+    [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+  }
+}
+
+// --- --browse-soak (see mac_browse_run) ------------------------------------
+
+- (BOOL)browseSelect:(std::size_t)index record:(BOOL)record cold:(BOOL)cold {
+  if (index >= _items.size()) return NO;
+  const std::uint64_t seq = _lab.mark_navigation();
+  if (seq == 0) return NO;
+  g_mac_browse.seq = seq;
+  g_mac_browse.record = record;
+  g_mac_browse.pending_index = static_cast<int>(index);
+  g_mac_browse.pending_cold = cold ? 1 : 0;
+  g_mac_browse.pending_name = _items[index].name_utf8;
+  g_mac_browse.phase_t = browse_now();
+  [self selectIndex:index];
+  return YES;
+}
+
+- (void)browseTake:(BOOL)timedOut {
+  if (!g_mac_browse.record) return;
+  mac_browse_row row;
+  row.name = g_mac_browse.pending_name;
+  row.index = g_mac_browse.pending_index;
+  row.cold = g_mac_browse.pending_cold;
+  row.timed_out = timedOut ? 1 : 0;
+  if (!timedOut) {
+    const auto sample = _lab.navigation_sample(g_mac_browse.seq);
+    row.cached = sample.cached;
+    row.ready_ms = sample.ready_ms;
+    row.present_ms = sample.present_ms;
+    row.refresh_ms = sample.refresh_ms;
+  }
+  g_mac_browse.rows.push_back(std::move(row));
+}
+
+- (BOOL)browseStepFinished {
+  if (_lab.navigation_done(g_mac_browse.seq)) {
+    [self browseTake:NO];
+    return YES;
+  }
+  if (browse_now() - g_mac_browse.phase_t > kMacBrowseStepTimeout) {
+    [self browseTake:YES];
+    return YES;
+  }
+  return NO;
+}
+
+- (void)browseFinish:(const char*)error {
+  if (g_mac_browse.step == mac_browse_phase::finish) return;
+  g_mac_browse.step = mac_browse_phase::finish;
+  char hidden[128];
+  if (!error && g_mac_browse.hidden_s > 0.5) {
+    std::snprintf(hidden, sizeof hidden, "window hidden for %.1f s; rerun with it on screen",
+                  g_mac_browse.hidden_s);
+    error = hidden;
+  }
+  [_browseTimer invalidate];
+  _browseTimer = nil;
+  if (FILE* f = std::fopen(g_mac_browse.json_path.c_str(), "wb")) {
+    std::fprintf(f, "{\n  \"schema\": 1,\n  \"dwell_s\": %.1f,\n  \"count\": %zu,\n  \"error\": ",
+                 kMacBrowseDwell, g_mac_browse.count);
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fputs(",\n  \"steps\": [\n", f);
+    for (std::size_t i = 0; i < g_mac_browse.rows.size(); ++i) {
+      const auto& row = g_mac_browse.rows[i];
+      std::fputs("    {\"name\": ", f);
+      browse_json_string(f, row.name);
+      std::fprintf(f,
+                   ", \"index\": %d, \"kind\": \"%s\", \"cached\": %d, \"timed_out\": %d, "
+                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f}%s\n",
+                   row.index, row.cold ? "cold" : "warm", row.cached, row.timed_out, row.ready_ms,
+                   row.present_ms, row.refresh_ms, i + 1 < g_mac_browse.rows.size() ? "," : "");
+    }
+    std::fputs("  ]\n}\n", f);
+    std::fclose(f);
+  }
+  [NSApp terminate:nil];
+}
+
+- (void)browseTick {
+  auto& b = g_mac_browse;
+  if (b.t0 == 0.0) b.t0 = b.phase_t = b.last_tick = browse_now();
+  {
+    const double now = browse_now();
+    if (b.step != mac_browse_phase::finish && !(self.window.occlusionState & NSWindowOcclusionStateVisible)) {
+      b.hidden_s += now - b.last_tick;
+    }
+    b.last_tick = now;
+  }
+  switch (b.step) {
+    case mac_browse_phase::wait_media:
+      if (_lab.showing_still() && !_items.empty()) {
+        b.count = _items.size();
+        if (b.count < 2) return [self browseFinish:"fewer than 2 items"];
+        b.cold_n = 0;
+        for (std::size_t i = 3; i < b.count && b.cold_n < 6; ++i) b.cold_targets[b.cold_n++] = static_cast<int>(i);
+        b.warm_left = static_cast<int>(std::min<std::size_t>(b.count - 1, 12));
+        b.step = mac_browse_phase::dwell;
+        b.after_dwell = b.cold_n > 0 ? mac_browse_phase::cold : mac_browse_phase::warm;
+        b.phase_t = browse_now();
+      } else if (browse_now() - b.t0 > kMacBrowseOpenTimeout) {
+        [self browseFinish:"no photo appeared"];
+      }
+      return;
+    case mac_browse_phase::dwell:
+      if (browse_now() - b.phase_t < kMacBrowseDwell) return;
+      b.step = b.after_dwell;
+      return [self browseTick];
+    case mac_browse_phase::cold:
+      if (b.cold_i >= b.cold_n) {
+        b.step = mac_browse_phase::warm;
+        return [self browseTick];
+      }
+      if (![self browseSelect:static_cast<std::size_t>(b.cold_targets[b.cold_i++]) record:YES cold:YES]) {
+        return [self browseFinish:"could not mark a jump"];
+      }
+      b.step = mac_browse_phase::wait_away;
+      return;
+    case mac_browse_phase::wait_away:
+      if (![self browseStepFinished]) return;
+      b.step = mac_browse_phase::go_home;
+      return [self browseTick];
+    case mac_browse_phase::go_home:
+      if (_index.current() == 0) {
+        b.step = mac_browse_phase::dwell;
+        b.after_dwell = mac_browse_phase::cold;
+        b.phase_t = browse_now();
+        return;
+      }
+      if (![self browseSelect:0 record:NO cold:NO]) return [self browseFinish:"could not return to the first photo"];
+      b.step = mac_browse_phase::wait_home;
+      return;
+    case mac_browse_phase::wait_home:
+      if (!_lab.navigation_done(b.seq) && browse_now() - b.phase_t <= kMacBrowseStepTimeout) return;
+      b.step = mac_browse_phase::dwell;
+      b.after_dwell = mac_browse_phase::cold;
+      b.phase_t = browse_now();
+      return;
+    case mac_browse_phase::warm:
+      if (b.warm_left <= 0 || _index.current() + 1 >= b.count) return [self browseFinish:nullptr];
+      --b.warm_left;
+      if (![self browseSelect:_index.current() + 1 record:YES cold:NO]) {
+        return [self browseFinish:"could not mark a step"];
+      }
+      b.step = mac_browse_phase::wait_warm;
+      return;
+    case mac_browse_phase::wait_warm:
+      if (![self browseStepFinished]) return;
+      if (b.warm_left <= 0) return [self browseFinish:nullptr];
+      b.step = mac_browse_phase::dwell;
+      b.after_dwell = mac_browse_phase::warm;
+      b.phase_t = browse_now();
+      return;
+    case mac_browse_phase::finish:
+      return;
+  }
 }
 
 - (BOOL)hasFolder {
@@ -2254,6 +2514,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _index.reset(0);
   _metaRecord.reset();
   ++_metaGeneration;
+  // Opening a file: start its decode now, beside the folder listing, rather
+  // than after it (rule 3's first pixel should not wait on a directory scan).
+  // -selectIndex: adopts this load when the listing selects the same path.
+  if (!select_path.empty()) {
+    _shownItem = _lab.open_item(select_path);
+    _shownPath = select_path;
+    _shownMtime = kShownStampUnknown;
+    _shownSize = 0;
+  }
 
   // folder_model::open() itself is real I/O -- opening, and maybe creating,
   // the thumbnail cache's SQLite file -- so it never runs on the UI thread
@@ -2389,6 +2658,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   if (_items.empty()) {
     _wantSelectedPath.clear();
+    _shownPath.clear();
+    _shownItem = 0;
     _edits.clear_item();
     _itemId = 0;
     [self publishEdit];
@@ -2398,7 +2669,31 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
-    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8)];
+    // Already on screen or loading: a relist (a file added elsewhere in the
+    // folder, a thumbnail written) or the listing that follows an open keeps
+    // that load. Every FSEvents change used to re-read and re-decode it.
+    const bool same = _shownItem != 0 && entry.path_utf8 == _shownPath &&
+                      (_shownMtime == kShownStampUnknown ||
+                       (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
+    if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size);
+    _shownPath = entry.path_utf8;
+    _shownMtime = entry.mtime_unix;
+    _shownSize = entry.size;
+    [self editItemOpened:entry item:_shownItem];
+    // Decode the neighbours behind it, so the next arrow shows a full image
+    // at once (Windows' ±2 prefetch). The lab skips clips, animations and
+    // what it already holds; the next navigation abandons the rest.
+    if (!same) {
+      std::vector<std::string> near;
+      const std::size_t cur = _index.current();
+      for (const int off : {1, -1, 2, -2}) {
+        const auto i = static_cast<std::ptrdiff_t>(cur) + off;
+        if (i >= 0 && static_cast<std::size_t>(i) < _items.size()) {
+          near.push_back(_items[static_cast<std::size_t>(i)].path_utf8);
+        }
+      }
+      _lab.prefetch(near);
+    }
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
@@ -2794,6 +3089,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)setGalleryVisible:(BOOL)visible {
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  // Issue #44: nothing plays under the grid. The lab pauses a playing clip,
+  // keeps one selected meanwhile on its first frame, and resumes only the clip
+  // that was playing when the grid opened (player/playback_hold.h).
+  if (_snap.video_hold != static_cast<bool>(visible)) {
+    _snap.video_hold = visible;
+    _snap.video_hold_resume = true;
+    [self pokeSnapshot];
+  }
 }
 - (void)toggleFilmstrip {
   // Nothing open: nothing to toggle, and no preference silently flipped for
@@ -4366,6 +4669,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   if (!_items.empty() && _index.current() < _items.size() &&
       _items[_index.current()].path_utf8 == path) {
+    _shownItem = 0;  // the bytes changed: reload even if the second-resolution stamp did not
     [self selectIndex:_index.current()];
   }
 }
@@ -6413,6 +6717,7 @@ void usage() {
                "mediaviewer_lab — Metal present lab (PR 16), still decode + pan/zoom (PR 17),\n"
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
+               "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
                "                folder with that file selected (plan/16-commands.md). Wheel to\n"
                "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
@@ -6440,6 +6745,8 @@ int main(int argc, char** argv) {
       options.overlay_visible = false;
     } else if (std::strcmp(arg, "--open") == 0) {
       options.open_path = next();
+    } else if (std::strcmp(arg, "--browse-soak") == 0) {
+      g_mac_browse.enabled = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
@@ -6459,6 +6766,16 @@ int main(int argc, char** argv) {
       usage();
       return 2;
     }
+  }
+  if (g_mac_browse.enabled) {
+    if (options.soak_seconds > 0.0 || options.json_report_path.empty() || options.open_path.empty()) {
+      std::fprintf(stderr, "mediaviewer_lab: --browse-soak needs --json PATH and a folder, not --soak\n");
+      return 2;
+    }
+    // The browse report is the host's; the lab's own soak report is not written.
+    g_mac_browse.json_path = std::move(options.json_report_path);
+    options.json_report_path.clear();
+    options.harness = true;
   }
   // The F3 overlay is an instrument: off until asked, so a launch shows the
   // welcome rather than a stats panel. A soak keeps it (Windows does the same).
