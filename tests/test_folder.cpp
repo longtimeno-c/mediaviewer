@@ -128,6 +128,48 @@ TEST_CASE("mv_folder_open lists stills and serves item names", "[abi][folder]") 
   mv::io::set_thumb_cache_dir_override({});
 }
 
+TEST_CASE("mv_folder_open decodes the file it was opened on beside the scan", "[abi][folder]") {
+  // The opened file starts decoding before the listing lands (it used to wait
+  // for the scan and sort of the whole folder). Whichever finishes first, the
+  // listing selects that file and the session ends up showing it.
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  {
+    const std::uint8_t rgba[] = {9, 9, 9, 255, 9, 9, 9, 255, 9, 9, 9, 255};
+    const auto bytes = fixtures::bmp_rgba(3, 1, rgba);
+    std::ofstream f(dir + L"\\b.bmp", std::ios::binary);
+    REQUIRE(f.good());
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  write_bmp(dir, L"c.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  const std::string opened = utf8(dir + L"\\b.bmp");
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), opened.c_str(), &job) == MV_OK);
+  mv_completion c{};
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  REQUIRE(c.payload == 3ll);
+  uint32_t selected = 99;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  REQUIRE(selected == 1);
+
+  mv_image_info info{};
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    REQUIRE(mv_session_image_info(session.handle, &info) == MV_OK);
+    if (info.width != 0) break;
+    std::this_thread::sleep_for(10ms);
+  }
+  REQUIRE(info.width == 3);  // b.bmp, not a neighbour's 2x2
+  REQUIRE(info.height == 1);
+
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("mv_folder_open lists child folders and summarises a tile", "[abi][folder][pr26]") {
   const auto dir = temp_dir();
   REQUIRE(::CreateDirectoryW((dir + L"\\2024").c_str(), nullptr));

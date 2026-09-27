@@ -538,7 +538,11 @@ springs back to centre. Drop a file on the window.
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
-past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too),
+past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too. The
+Windows lab adds `quick` steps — Right as soon as the last photo is on screen — and one
+`held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
+run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases
+the in-flight decode hand-off is for, and `perf-browse.svg` ignores them),
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
 the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
