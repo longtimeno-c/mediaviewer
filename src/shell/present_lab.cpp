@@ -741,7 +741,28 @@ void present_lab::render_thread_main() noexcept {
     if (session_) {
       std::uint32_t generation = 0;
       (void)mv_session_current_generation(session_, &generation);
-      if (current_video_.texture && current_video_.generation != generation) { current_video_ = {}; redraw = true; }
+      // Next/prev between two videos flashed the empty-window welcome for a
+      // couple of frames: this used to blank current_video_ the instant the
+      // generation bumped, well before the next clip's open + first frame
+      // (a real decode latency) landed — the video-to-video equivalent of
+      // the image LRU never having a "swap only when ready" hold-previous.
+      // A new frame (line ~1097, below) or a new still (publish_locked's
+      // `current_video_ = {}`) already overwrites/clears this the instant
+      // real content lands, so holding here costs nothing in the common
+      // case; the deadline only exists so a broken or non-video target does
+      // not leave a stale clip on screen forever.
+      if (current_video_.texture && current_video_.generation != generation) {
+        constexpr double kVideoGapGraceSeconds = 0.35;
+        if (video_gap_deadline_ < 0.0) {
+          video_gap_deadline_ = elapsed + kVideoGapGraceSeconds;
+        } else if (elapsed >= video_gap_deadline_) {
+          current_video_ = {};
+          video_gap_deadline_ = -1.0;
+          redraw = true;
+        }
+      } else {
+        video_gap_deadline_ = -1.0;
+      }
       player::video_frame unused;
       (void)mv::abi::poll_video(session_, -1, unused, video_active_);
       // A clip becoming open is a reason to paint. The loader signals the
@@ -1049,7 +1070,11 @@ void present_lab::render_thread_main() noexcept {
     if (!wants_frame) {
       if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
       was_presenting_ = false;
-      // Idle has no polling timer, except occlusion probes and soak deadlines.
+      // Idle has no polling timer, except occlusion probes, soak deadlines,
+      // and a video-to-video gap: without a bounded wait here, a target that
+      // never opens (a broken file) would park on wake_event_ forever with
+      // the old clip's frame stuck on screen instead of ever falling back to
+      // the welcome once video_gap_deadline_ passes.
       DWORD timeout = occluded_ ? 200u : INFINITE;
       if (options_.soak_seconds > 0.0) {
         const double remaining = warmed_up_
@@ -1057,6 +1082,11 @@ void present_lab::render_thread_main() noexcept {
             : kWarmupSeconds - elapsed;
         const auto deadline_ms = static_cast<DWORD>(std::ceil(std::max(0.0, remaining) * 1000.0));
         timeout = std::min(timeout, deadline_ms);
+      }
+      if (video_gap_deadline_ >= 0.0) {
+        const auto gap_ms = static_cast<DWORD>(
+            std::ceil(std::max(0.0, video_gap_deadline_ - elapsed) * 1000.0));
+        timeout = std::min(timeout, gap_ms);
       }
       HANDLE waits[2] = {wake_event_, nullptr};
       DWORD n = 1;
