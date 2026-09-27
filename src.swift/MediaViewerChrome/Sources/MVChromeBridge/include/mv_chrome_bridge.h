@@ -132,10 +132,13 @@ bool mv_chrome_is_marked(int32_t index);
 // Values < 1 are clamped to 1. [main-thread]
 void mv_chrome_set_gallery_columns(int32_t columns);
 
-// PR 20 updates (plan/13). True once Sparkle has a verified update staged and
-// is waiting for the user; always false in the bare lab. Restart installs it
-// and relaunches onto the same folder and file. [main-thread]
-bool mv_chrome_update_ready(void);
+// PR 20 updates (plan/13). Phase: 0 idle, 1 checking, 2 downloading, 3 a
+// verified update is staged and waiting for the user; always 0 in the bare
+// lab. The version is the one being downloaded or staged (false if none yet).
+// Restart installs a staged update and relaunches onto the same folder and
+// file. [main-thread]
+int32_t mv_chrome_update_phase(void);
+bool mv_chrome_update_version(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
 
 // Multi-folder browsing (plan/10 PR 26). The open folder's child folders are

@@ -223,6 +223,7 @@ public struct CommandBarView: View {
           }
         }
         .fixedSize()
+        UpdateBarItem()
         // Milestone G: the one-time Import hint and a running import's line.
         AddonBarItems()
         // Milestone H: the indexing pill, only while the AI pack is indexing.
@@ -261,6 +262,53 @@ public struct CommandBarView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(MVTheme.canvas)
+  }
+}
+
+/// PR 20 updates (plan/13), after About like the Windows bar: quiet text while
+/// Sparkle checks or downloads, then the one button that restarts the app for
+/// an update. Never a modal; quitting normally installs it too.
+private struct UpdateBarItem: View {
+  @ObservedObject private var store = FolderStore.shared
+
+  var body: some View {
+    let version = store.updateVersion
+    switch store.updatePhase {
+    case 1:
+      status("Checking for updates…", help: "Asking GitHub for a newer version.")
+    case 2:
+      // Sparkle does not report bytes for a silent background download, so the
+      // bar is indeterminate here (Windows shows Velopack's percent).
+      HStack(spacing: 0) {
+        status(version.map { "Downloading update \($0)…" } ?? "Downloading update…",
+               help: "Downloading in the background. This does not interrupt anything.")
+        ProgressView()
+          .progressViewStyle(.linear)
+          .controlSize(.small)
+          .frame(width: 90)
+          .padding(.trailing, 10)
+          .accessibilityLabel("Update download progress")
+      }
+    case 3:
+      Button("Update ready — restart") { mv_chrome_restart_to_update() }
+        .buttonStyle(FlatButtonStyle())
+        .help(version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
+              ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")
+    default:
+      EmptyView()
+    }
+  }
+
+  private func status(_ text: String, help: String) -> some View {
+    // Status, not an action: smaller than the bar's buttons.
+    Text(text)
+      .font(MVTheme.font(12))
+      .foregroundStyle(MVTheme.body)
+      .padding(.horizontal, 10)
+      .lineLimit(1)
+      .fixedSize()
+      .help(help)
+      .accessibilityLabel(text)
   }
 }
 

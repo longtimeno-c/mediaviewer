@@ -484,9 +484,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (NSInteger)markedCount;
 
 // PR 20 updates (plan/13): an update Sparkle has downloaded and staged waits
-// for the user. The command bar shows "Update ready — restart"; nothing
-// restarts the app on its own.
-- (BOOL)updateReady;
+// for the user. The command bar shows "Checking for updates…" /
+// "Downloading update…" quietly, then "Update ready — restart"; nothing
+// restarts the app on its own. Phase: 0 idle, 1 checking, 2 downloading,
+// 3 ready (mv_chrome_bridge.h).
+- (int32_t)updatePhase;
+- (NSString*)updateVersion;
 - (void)restartToUpdate;
 // PR 9
 - (BOOL)metaPaneVisible;
@@ -1341,8 +1344,14 @@ extern "C" void mv_chrome_jobs_blur(void) {
 extern "C" void mv_chrome_set_gallery_columns(int32_t columns) {
   g_gallery_columns = columns < 1 ? 1 : columns;
 }
-extern "C" bool mv_chrome_update_ready(void) {
-  return g_chrome_app && [g_chrome_app updateReady];
+extern "C" int32_t mv_chrome_update_phase(void) {
+  return g_chrome_app ? [g_chrome_app updatePhase] : 0;
+}
+extern "C" bool mv_chrome_update_version(char* out, int32_t cap) {
+  if (!g_chrome_app || !out || cap <= 0) return false;
+  NSString* v = [g_chrome_app updateVersion];
+  if (v.length == 0) return false;
+  return [v getCString:out maxLength:static_cast<NSUInteger>(cap) encoding:NSUTF8StringEncoding];
 }
 extern "C" void mv_chrome_restart_to_update(void) {
   if (g_chrome_app) [g_chrome_app restartToUpdate];
@@ -1951,6 +1960,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
   void (^_installUpdateNow)(void);
+  // What the command bar shows (-updatePhase): checking / downloading only
+  // while Sparkle is in that step; ready while _installUpdateNow is held.
+  int32_t _updateActivity;  // 0 idle, 1 checking, 2 downloading
+  NSString* _updateVersionShown;
   // The preview channel's appcast: the newest release's, stable or not
   // (-resolveFeedThenCheck:). nil = Info.plist SUFeedURL, the stable feed.
   NSString* _previewFeedURL;
@@ -4175,11 +4188,19 @@ enum MvMenuCmd : NSInteger {
   }
 }
 
-- (BOOL)updateReady {
+- (int32_t)updatePhase {
 #if MV_WITH_SPARKLE
-  return _installUpdateNow != nil;
+  return _installUpdateNow != nil ? 3 : _updateActivity;
 #else
-  return NO;
+  return 0;
+#endif
+}
+
+- (NSString*)updateVersion {
+#if MV_WITH_SPARKLE
+  return _updateVersionShown;
+#else
+  return nil;
 #endif
 }
 
@@ -4206,9 +4227,43 @@ enum MvMenuCmd : NSInteger {
     willInstallUpdateOnQuit:(SUAppcastItem*)item
     immediateInstallationBlock:(void (^)(void))immediateInstallHandler {
   (void)updater;
-  (void)item;
   _installUpdateNow = [immediateInstallHandler copy];
+  _updateActivity = 0;
+  _updateVersionShown = [item.displayVersionString copy];
   return YES;
+}
+
+// The steps before that, for the command bar's quiet status (plan/13 "never
+// interrupt": text only, nothing to click until the update is staged). A
+// check that finds nothing, or fails, just clears it.
+- (BOOL)updater:(SPUUpdater*)updater
+    mayPerformUpdateCheck:(SPUUpdateCheck)updateCheck
+                    error:(NSError* __autoreleasing*)error {
+  (void)updater;
+  (void)updateCheck;
+  (void)error;
+  if (_installUpdateNow == nil) _updateActivity = 1;
+  return YES;
+}
+
+- (void)updater:(SPUUpdater*)updater didFindValidUpdate:(SUAppcastItem*)item {
+  (void)updater;
+  _updateVersionShown = [item.displayVersionString copy];
+}
+
+- (void)updater:(SPUUpdater*)updater
+    willDownloadUpdate:(SUAppcastItem*)item
+           withRequest:(NSMutableURLRequest*)request {
+  (void)updater;
+  (void)request;
+  _updateActivity = 2;
+  _updateVersionShown = [item.displayVersionString copy];
+}
+
+- (void)updater:(SPUUpdater*)updater didAbortWithError:(NSError*)error {
+  (void)updater;
+  (void)error;
+  _updateActivity = 0;
 }
 
 - (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
@@ -4233,6 +4288,7 @@ enum MvMenuCmd : NSInteger {
   (void)updater;
   (void)updateCheck;
   (void)error;
+  _updateActivity = 0;
   [self resolveFeedThenCheck:NO];
 }
 
@@ -4280,6 +4336,23 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   return best;
 }
 
+// Sparkle drops -checkForUpdatesInBackground (logging only "called but
+// .sessionInProgress == YES") while a session of its own is open, and one is
+// briefly open just after launch, which is exactly when the preview listing
+// comes back. Retry once a second until it is idle, then give up: the
+// scheduled check still runs.
+- (void)checkForUpdatesWhenIdle:(int)attempts {
+  if (!_updater.updater.sessionInProgress) {
+    [_updater.updater checkForUpdatesInBackground];
+    return;
+  }
+  if (attempts <= 0) return;
+  __weak MvLabApp* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    [weakSelf checkForUpdatesWhenIdle:attempts - 1];
+  });
+}
+
 // Stable: check straight away (Info.plist feed). Preview: read the release
 // listing off the main thread first. `check` is the launch / channel-change
 // check; it still honours "Check for Updates Automatically".
@@ -4287,7 +4360,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   const BOOL wantCheck = check && _updater.updater.automaticallyChecksForUpdates;
   if ([self updateChannel] != 1) {
     _previewFeedURL = nil;
-    if (wantCheck) [_updater.updater checkForUpdatesInBackground];
+    if (wantCheck) [self checkForUpdatesWhenIdle:20];
     return;
   }
   NSURL* api = [NSURL URLWithString:@"https://api.github.com/repos/longtimeno-c/mediaviewer/releases?per_page=10"];
@@ -4308,7 +4381,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
             // A failed lookup keeps the last good feed; with none yet, the
             // check reads the stable feed, which is never wrong, only older.
             if (url) app->_previewFeedURL = url;
-            if (wantCheck) [app->_updater.updater checkForUpdatesInBackground];
+            if (wantCheck) [app checkForUpdatesWhenIdle:20];
           });
         }] resume];
 }

@@ -88,8 +88,11 @@ final class FolderStore: ObservableObject {
   /// `/` on the folder row. Nil when idle; empty while the query is open and
   /// nothing has been typed.
   @Published private(set) var folderQuery: String?
-  /// A staged update is waiting for the user (plan/13 "Update ready — restart").
-  @Published private(set) var updateReady = false
+  /// The updater's step, for the command bar (plan/13): 0 idle, 1 checking,
+  /// 2 downloading, 3 staged and waiting ("Update ready — restart").
+  @Published private(set) var updatePhase: Int32 = 0
+  /// The version being downloaded or staged; nil until Sparkle names one.
+  @Published private(set) var updateVersion: String?
   /// Milestone H: a search result list is open instead of a folder; its title
   /// (the query, or "Similar to …") replaces the breadcrumb. Nil for a folder.
   @Published private(set) var listTitle: String?
@@ -159,8 +162,16 @@ final class FolderStore: ObservableObject {
       reloadMarks()
     }
     if count != itemCount { itemCount = count }
-    let ready = mv_chrome_update_ready()
-    if ready != updateReady { updateReady = ready }
+    let phase = mv_chrome_update_phase()
+    if phase != updatePhase {
+      updatePhase = phase
+      var buf = [CChar](repeating: 0, count: 64)
+      let named = buf.withUnsafeMutableBufferPointer { ptr -> Bool in
+        guard let base = ptr.baseAddress else { return false }
+        return mv_chrome_update_version(base, Int32(ptr.count))
+      }
+      updateVersion = named ? String(cString: buf) : nil
+    }
     if index != currentIndex {
       currentIndex = index
       prefetch(around: index)

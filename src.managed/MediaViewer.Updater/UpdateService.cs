@@ -16,7 +16,9 @@ public enum UpdatePhase
     Failed,
 }
 
-public sealed record UpdateStatus(UpdatePhase Phase, string? Version, UpdateUrgency Urgency, string? RolledBackFrom);
+/// <param name="Percent">Download progress 0–100 while <see cref="UpdatePhase.Downloading"/>; null otherwise.</param>
+public sealed record UpdateStatus(UpdatePhase Phase, string? Version, UpdateUrgency Urgency, string? RolledBackFrom,
+    int? Percent = null);
 
 /// <summary>
 /// plan/13 Part 1 behaviour on top of Velopack. One background thread at
@@ -204,16 +206,23 @@ public sealed class UpdateService
             return;
         }
 
-        SetStatus(Status with { Phase = UpdatePhase.Downloading, Version = target.Version.ToString() });
+        SetStatus(Status with { Phase = UpdatePhase.Downloading, Version = target.Version.ToString(), Percent = 0 });
         try
         {
             KeepPriorPackage();
-            mgr.DownloadUpdates(info);
+            // Velopack reports whole percents, often repeated; forward changes only.
+            int shown = 0;
+            mgr.DownloadUpdates(info, p =>
+            {
+                if (p == shown) return;
+                shown = p;
+                SetStatus(Status with { Percent = Math.Clamp(p, 0, 100) });
+            });
         }
         catch (Exception ex)
         {
             _log("updater: download rejected " + ex.GetType().Name);
-            SetStatus(Status with { Phase = UpdatePhase.Failed, Version = null });
+            SetStatus(Status with { Phase = UpdatePhase.Failed, Version = null, Percent = null });
             return;
         }
         lock (_gate) _staged = target;
