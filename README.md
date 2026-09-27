@@ -233,7 +233,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 |---|---|
 | **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
 | **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
-| **Edit workspace** (PR 29, [plan/20](plan/20-edit-workspace.md)) | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane: crop with aspect presets, straighten, rotate, colour, and every metadata tag — date taken, location, any EXIF / IPTC / XMP tag — edited or removed, with a byte-exact Revert. Written and run on the Mac; the Windows half is owed |
+| **Edit workspace** (PR 29, [plan/20](plan/20-edit-workspace.md)) | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane: crop with aspect presets, straighten, rotate, colour, and every metadata tag — date taken, location, any EXIF / IPTC / XMP tag — edited or removed, with a byte-exact Revert. Written and run on the Mac and on Windows (self-test rig on both; real keys on Windows); Narrator / VoiceOver passes still owed |
 | **Video Editor** | A separate window with a timeline (thumbnails, waveform, split, delete, export) — [plan/21](plan/21-video-editor.md), in progress |
 | **Video trim, extract and remux** | Written (PR 13 / 14, above); first Windows and Mac builds and the hardware verify still owed |
 | **Windows integration** | Explorer thumbnails and properties for HEIC and RAW, "Open with" and Default Apps |
@@ -758,18 +758,24 @@ ctest --test-dir build -C Release -L cleanvm --output-on-failure
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
 ```
 
-### Edit workspace self-test (PR 29, macOS)
+### Edit workspace self-test (PR 29, macOS and Windows)
 
-The Mac app can drive its own Edit workspace and photograph each step, with no pointer and no
-screen-recording permission. Point it at a scratch copy (Save copy writes a new file beside it,
+Both apps can drive their own Edit workspace and photograph each step, with no pointer (and, on
+the Mac, no screen-recording permission). Point it at a scratch copy (Save copy writes a new file beside it,
 and the run edits then reverts its metadata):
 
 ```bash
 MV_EDIT_SELFTEST=/tmp/mv-edit build-darwin/MediaViewer.app/Contents/MacOS/MediaViewer ~/scratch/IMG_0001.jpg
 ```
 
-It quits when done, leaving `s0-viewer.png` … `s8-closed-reverted.png` (a clip gives `c0` … `c4`)
-and `state.txt` in the folder. `MV_EDIT_SELFTEST_DARK=1` or `0` forces Dark or Light Mode.
+```powershell
+$env:MV_EDIT_SELFTEST = "$env:TEMP\mv-edit"
+.\build\bin\Release\mediaviewer_lab.exe --open C:\scratch\IMG_0001.jpg
+```
+
+It quits when done, leaving `s0-viewer` … `s8-closed-reverted` captures (PNG on the Mac, BMP on
+Windows; a clip gives `c0` … `c4`) and `state.txt` in the folder. On the Mac,
+`MV_EDIT_SELFTEST_DARK=1` or `0` forces Dark or Light Mode; Windows follows the system theme.
 
 ### Crash reports (PR 7)
 

@@ -28,7 +28,7 @@ Mac are both at PR 9.** The order from here is:
 | 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | Proposed |
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
 | 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
-| **29** | **Edit workspace** (issue #39, [20](20-edit-workspace.md)): Edit button / `Enter`, docked pane, crop presets, every-tag metadata editing | both | **Mac half written and run** (2026-09-26, self-test rig); Windows half owed |
+| **29** | **Edit workspace** (issue #39, [20](20-edit-workspace.md)): Edit button / `Enter`, docked pane, crop presets, every-tag metadata editing | both | **Both halves written and run** (Mac 2026-09-26, Windows 2026-09-27: self-test rig, real keys); Narrator / VoiceOver passes owed |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.

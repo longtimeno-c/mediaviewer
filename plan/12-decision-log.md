@@ -2353,3 +2353,34 @@ resolvedColorWithAppearance:]` does not exist); it now resolves inside
 tag written and read back, then revert → the original's bytes exactly. **Owed:** the Windows
 half (WinUI strip, panes, dock inset, tag editor; nothing was compiled for Windows), VoiceOver /
 Narrator passes, and both present-loop gates with the pane docked.
+
+## 2026-09-27 — PR 29 Windows half
+
+The WinUI twin of the entry above, on the same shared core. No decision is reversed; the calls
+made on the way:
+
+- **One island for the strip and its pane.** `IslandHost.Edit.cs` is a fifth panel island heading
+  the right column. On Crop and Trim it spans the column (strip over pane); on Colour / Info /
+  Jobs it is the strip alone and `layout_panels` places that existing pane under it. The canvas
+  docks through the same `chrome_right_px` the Mac uses, applied in `present_lab.cpp`
+  `usable_canvas` — a refit on the one swapchain, never a resize.
+- **One view push.** `SetEditView` (`chrome_edit_args`, 72 bytes) feeds the strip, the Crop / Trim
+  pane and the command bar's **Edit image / Edit video** button. The island sends keyed command
+  ids plus four notifications: `edit_tab` 1018, `edit_action` 1019, `meta_tags` 1020,
+  `meta_date` 1021. They were written as 1017–1020 and moved up one when main's issue #38
+  (`transport_hold`) took 1017; both sides' checksum test pins the numbering.
+- **Tag edits batch.** The pane parks one edit per line; *Remove location* is therefore one
+  checked rewrite for every GPS tag, not one per tag (the Mac sends them one by one, and the
+  writer queue merges them).
+- **`meta::editable_properties_table`** is the shared form of what the Mac bridge formatted by
+  hand (raw value + `access_of`), so the Windows host does not duplicate it.
+- **Also fixed:** the Mac-written `meta/write.cpp` did not compile under `/W4 /WX` (C4456); the
+  same fix also arrived on the branch from the Mac session and the two merged cleanly.
+
+**Proved on Windows** (2026-09-27): the `MV_EDIT_SELFTEST` rig (3:2 → a 2000 × 1333 copy from a
+2000 × 1500 JPEG; tag and date written in place and read back; revert → the original's SHA-1
+exactly; a clip opens on Trim), and verify 2–4 with real key input ([20](20-edit-workspace.md)
+"What was run (Windows)"). The Windows PR 1 gate was **inconclusive**: on a machine in use every
+run failed, unmodified `origin/main` included. **Owed:** that gate on a quiet machine (and with the
+pane docked), Narrator, a light-theme and 200 % pass, the pointer path of verify 1 with a real
+mouse, and VoiceOver / the Mac gate with the pane docked.
