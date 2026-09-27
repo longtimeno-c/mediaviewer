@@ -440,6 +440,59 @@ TEST_CASE("a focused text control owns every key but Esc", "[shell][router]") {
   REQUIRE(esc.back == back_target::blur_text);
 }
 
+// Owner, 2026-09-27: "Cmd+A / Ctrl+A in the search bar selects the text."
+TEST_CASE("a focused text field gets the editing chords; the canvas keeps its commands",
+          "[shell][router]") {
+  key_router r;
+  struct chord {
+    key_event e;
+    text_edit edit;
+  };
+  const chord chords[] = {
+      {down(char_key('A'), mod_ctrl), text_edit::select_all},
+      {down(char_key('C'), mod_ctrl), text_edit::copy},
+      {down(char_key('X'), mod_ctrl), text_edit::cut},
+      {down(char_key('V'), mod_ctrl), text_edit::paste},
+      {down(char_key('Z'), mod_ctrl), text_edit::undo},
+      {down(char_key('Z'), mod_ctrl | mod_shift), text_edit::redo},
+  };
+  for (const view_state base : {still(), clip()}) {
+    view_state s = base;
+    s.gallery_open = true;  // the gallery search bar sits over the grid
+    s.focus = focus_kind::text;
+    for (const chord& c : chords) {
+      // Not the app's command (Ctrl+A would be Mark all, Ctrl+C Copy, Ctrl+Z
+      // Undo edit): not handled, so the key goes on to the field.
+      const route routed = r.on_key(c.e, s);
+      REQUIRE(routed.command == command_id::none);
+      REQUIRE_FALSE(routed.handled);
+      REQUIRE(text_edit_for(c.e) == c.edit);
+    }
+    // Word and line navigation belong to the field as well.
+    const std::uint8_t navigation_mods[] = {mod_none, mod_shift, mod_ctrl, mod_ctrl | mod_shift};
+    for (const std::uint8_t mods : navigation_mods) {
+      for (const key k : {key::left, key::right, key::home, key::end, key::backspace, key::del}) {
+        REQUIRE_FALSE(r.on_key(down(k, mods), s).handled);
+      }
+    }
+    // Esc still leaves the field first, before the gallery under it.
+    const route esc = r.on_key(down(key::escape), s);
+    REQUIRE(esc.command == command_id::back);
+    REQUIRE(esc.back == back_target::blur_text);
+  }
+  // With no text field focused the same chords are the viewer's own again.
+  const view_state canvas = still();
+  REQUIRE(r.on_key(down(char_key('A'), mod_ctrl), canvas).command == command_id::mark_all);
+  REQUIRE(r.on_key(down(char_key('C'), mod_ctrl), canvas).command == command_id::copy_clipboard);
+  REQUIRE(r.on_key(down(char_key('Z'), mod_ctrl), canvas).command == command_id::undo_edit);
+  // Only the chords: plain letters, Alt chords and key-ups are not edits.
+  REQUIRE(text_edit_for(down(char_key('A'))) == text_edit::none);
+  REQUIRE(text_edit_for(down(char_key('A'), mod_ctrl | mod_alt)) == text_edit::none);
+  REQUIRE(text_edit_for(down(char_key('A'), mod_ctrl | mod_shift)) == text_edit::none);
+  REQUIRE(text_edit_for(key_event{char_key('A'), mod_ctrl, false, true}) == text_edit::none);
+  REQUIRE(text_edit_for(down(char_key('O'), mod_ctrl)) == text_edit::none);
+}
+
 TEST_CASE("island focus keeps in-pane traversal and still takes global keys", "[shell][router]") {
   key_router r;
   view_state s = still();
