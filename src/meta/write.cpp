@@ -915,7 +915,7 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
     apply_xmp(xmp, f, /*sidecar=*/true);
     apply_tags(nullptr, nullptr, xmp, f, /*sidecar=*/true);
     apply_date(nullptr, xmp, f.date_taken, /*sidecar=*/true);
-    const auto want_rows = xmp_rows(xmp, no_keys(), &touched);
+    const auto touched_want = xmp_rows(xmp, no_keys(), &touched);
 
     sidecar_result r;
     if (xmp.empty()) {
@@ -927,7 +927,7 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
     Exiv2::XmpData check;
     if (Exiv2::XmpParser::decode(check, r.packet) != 0) return err(status::internal);
     if (xmp_rows(check, touched) != before) return err(status::internal);
-    if (xmp_rows(check, no_keys(), &touched) != want_rows) return err(status::internal);
+    if (xmp_rows(check, no_keys(), &touched) != touched_want) return err(status::internal);
     const detail::field_state got = detail::read_fields(Exiv2::ExifData{}, check);
     if (const auto w = wanted_rating(f)) {
       if (got.rating.value_or(0) != *w) return err(status::internal);

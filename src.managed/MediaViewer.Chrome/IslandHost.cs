@@ -78,6 +78,9 @@ public static partial class IslandHost
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
         public const int HomeColour = 1016;
+        // Issue #38: arg 1 while a scrub or the More flyout holds the transport
+        // up, 0 when it lets go (chrome_cmd_transport_hold).
+        public const int TransportHold = 1017;
         // PR 12: the comment field was committed (native pulls the text with
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
@@ -119,13 +122,13 @@ public static partial class IslandHost
         // (shell::edit_tab); EditAction: arg is an EditActions value. The
         // keyed ids below are what the strip and the Crop / Trim panes send
         // (chrome_host.h pins each).
-        public const int EditTab = 1017;
-        public const int EditAction = 1018;
+        public const int EditTab = 1018;
+        public const int EditAction = 1019;
         // PR 29 (owner): every tag editable. MetaTags: native pulls the parked
         // edits (tab-separated "S key value" / "R key" lines); MetaDate: the parked date,
         // or arg 1 to remove every date-taken tag.
-        public const int MetaTags = 1019;
-        public const int MetaDate = 1020;
+        public const int MetaTags = 1020;
+        public const int MetaDate = 1021;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
