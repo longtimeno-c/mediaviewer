@@ -75,7 +75,7 @@ public static partial class IslandHost
             GalleryTile = next;
             layout.MinItemWidth = GalleryTile;
             layout.MinItemHeight = GalleryTile + 24;
-            if (Folders.Count > 0 && Items.Count == 0 &&
+            if (GalleryFolders.Count > 0 && GalleryItems.Count == 0 &&
                 _folderRepeater?.Layout is UniformGridLayout folderLayout)
             {
                 folderLayout.MinItemWidth = GalleryTile;
@@ -179,14 +179,24 @@ public static partial class IslandHost
         try
         {
             if (arg == IntPtr.Zero || sizeBytes < 8) return unchecked((int)0x80070057);
-            if (!_galleryVisible || Items.Count == 0) return 1;
+            // Up / Down walk the grid as shown: with a search filter, its matches.
+            IList<FolderItemVm> view = GalleryItems;
+            if (!_galleryVisible || view.Count == 0) return 1;
             ChromeGalleryNavigationArgs args = Marshal.PtrToStructure<ChromeGalleryNavigationArgs>(arg);
-            if (args.Index < 0 || args.Index >= Items.Count) return 1;
+            int at = GalleryPos(args.Index);
+            if (at < 0 && _gsFiltering)
+            {
+                // The selection is filtered out: land on the first match.
+                Send(Command.SelectItem, view[0].Index);
+                GalleryScrollTo(view[0].Index);
+                return 0;
+            }
+            if (at < 0 || at >= view.Count) return 1;
             int columns = GalleryColumns;
             // Stay in the current row at the top/bottom; clamp into a short last row.
-            if ((args.Direction < 0 && args.Index < columns) ||
-                (args.Direction > 0 && args.Index / columns == (Items.Count - 1) / columns)) return 0;
-            int next = Math.Clamp(args.Index + Math.Sign(args.Direction) * columns, 0, Items.Count - 1);
+            if ((args.Direction < 0 && at < columns) ||
+                (args.Direction > 0 && at / columns == (view.Count - 1) / columns)) return 0;
+            int next = view[Math.Clamp(at + Math.Sign(args.Direction) * columns, 0, view.Count - 1)].Index;
             Send(Command.SelectItem, next);
             GalleryScrollTo(next);
             return 0;
@@ -278,6 +288,7 @@ public static partial class IslandHost
         {
             _galleryVisible = false;
             RenderEditBarButton();
+            GallerySearchHidden();
             ReleaseRepeater(ref _galleryRepeater);
             ReleaseRepeater(ref _folderRepeater);
             ReleaseRepeater(ref _folderChipRepeater);
@@ -308,6 +319,7 @@ public static partial class IslandHost
         try
         {
             UnhookFocus();
+            GallerySearchHidden();
             ReleaseRepeater(ref _galleryRepeater);
             ReleaseRepeater(ref _folderRepeater);
             ReleaseRepeater(ref _folderChipRepeater);
@@ -362,18 +374,20 @@ public static partial class IslandHost
     // ItemsSource in the constructor; that AV'd on every folder open once the
     // listing was populated. A fresh island content pass also does not always
     // realise tiles — force a layout, then bind, then layout again.
-    private static void Realise(ItemsRepeater? repeater, FrameworkElement? root)
+    // `source` is the gallery's search view when a filter is on (IslandHost.GallerySearch.cs).
+    private static void Realise(ItemsRepeater? repeater, FrameworkElement? root, IList<FolderItemVm>? source = null)
     {
         if (repeater is null) return;
+        source ??= Items;
         root?.UpdateLayout();
         try
         {
-            if (!ReferenceEquals(repeater.ItemsSource, Items))
-                repeater.ItemsSource = Items;
-            else if (Items.Count > 0 && repeater.TryGetElement(0) is null)
+            if (!ReferenceEquals(repeater.ItemsSource, source))
+                repeater.ItemsSource = source;
+            else if (source.Count > 0 && repeater.TryGetElement(0) is null)
             {
                 repeater.ItemsSource = null;
-                repeater.ItemsSource = Items;
+                repeater.ItemsSource = source;
             }
         }
         catch (Exception ex)
@@ -391,9 +405,10 @@ public static partial class IslandHost
 
     private static void RealiseGallery()
     {
-        RealiseSource(_folderRepeater, Folders, _galleryRoot);
-        RealiseSource(_folderChipRepeater, Folders, _galleryRoot);
-        Realise(_galleryRepeater, _galleryRoot);
+        RealiseSource(_folderRepeater, GalleryFolders, _galleryRoot);
+        RealiseSource(_folderChipRepeater, GalleryFolders, _galleryRoot);
+        Realise(_galleryRepeater, _galleryRoot, GalleryItems);
+        OnGalleryRealised();
         ReportGalleryColumns();
         UpdateGallerySections();
         RebuildPathBars();
@@ -427,7 +442,10 @@ public static partial class IslandHost
     private static void GalleryScrollTo(int index)
     {
         if (!_galleryVisible || index < 0 || index >= Items.Count) return;
-        UIElement? el = _galleryRepeater?.TryGetElement(index);
+        // The repeater counts the grid as shown, which a search filter narrows.
+        int at = GalleryPos(index);
+        if (at < 0) return;
+        UIElement? el = _galleryRepeater?.TryGetElement(at);
         if (el is not null)
         {
             el.StartBringIntoView(new BringIntoViewOptions
@@ -441,7 +459,7 @@ public static partial class IslandHost
         // Not realised yet: estimate from the uniform grid stride. Off by at
         // most one row, and the next realised BringIntoView corrects it.
         int columns = GalleryColumns;
-        double y = index / columns * GalleryRowStride - _galleryScroll.ViewportHeight * 0.5;
+        double y = at / columns * GalleryRowStride - _galleryScroll.ViewportHeight * 0.5;
         _galleryScroll.ChangeView(null, Math.Max(0, y), null, disableAnimation: true);
     }
 
@@ -508,6 +526,7 @@ public static partial class IslandHost
         };
 
         _galleryStack = new StackPanel { Padding = new Thickness(12, 8, 12, 12) };
+        _galleryStack.Children.Add(BuildGallerySearchNote());
         _galleryStack.Children.Add(_folderFindLabel);
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
@@ -522,8 +541,21 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollMode = ScrollMode.Disabled,
             VerticalScrollMode = ScrollMode.Enabled,
+            // The search field's Down / Return / second Esc hand it the keyboard.
+            IsTabStop = true,
+            UseSystemFocusVisuals = false,
         };
-        _galleryScroll.CharacterReceived += OnTypeahead;
+        _galleryScroll.CharacterReceived += (sender, e) =>
+        {
+            // `/` with the grid focused: the search field (plan/16 gallery_search).
+            if (e.Character == '/')
+            {
+                e.Handled = true;
+                FocusGallerySearch();
+                return;
+            }
+            OnTypeahead(sender, e);
+        };
         _galleryScroll.SizeChanged += (_, _) => ReportGalleryColumns();
         _galleryScroll.KeyDown += (_, e) =>
         {
@@ -546,13 +578,18 @@ public static partial class IslandHost
             }
         };
 
-        // The folder trail is in the command bar above (BuildBarPathRow).
+        // The folder trail is in the command bar above (BuildBarPathRow). The
+        // search bar is pinned over the grid, never over a tile.
         var root = new Grid
         {
             RequestedTheme = ElementTheme.Default,
             Background = Brush(Canvas),
         };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         WireFileDrop(root);
+        root.Children.Add(BuildGallerySearchBar());
+        Grid.SetRow(_galleryScroll, 1);
         root.Children.Add(_galleryScroll);
         _galleryRoot = root;
         UpdateGallerySections();
@@ -727,8 +764,9 @@ public static partial class IslandHost
 
     private static void UpdateGallerySections()
     {
-        bool folders = Folders.Count > 0;
-        bool photos = Items.Count > 0;
+        // What the grid shows: with a search filter, its matches.
+        bool folders = GalleryFolders.Count > 0;
+        bool photos = GalleryItems.Count > 0;
         bool mixed = folders && photos;
         bool foldersOnly = folders && !photos;
         if (_folderFindLabel is not null)
@@ -744,13 +782,13 @@ public static partial class IslandHost
             _folderRepeater.Visibility = foldersOnly ? Visibility.Visible : Visibility.Collapsed;
         if (_photosHeader is not null)
         {
-            _photosHeader.Text = $"Photos and videos  {Items.Count}";
+            _photosHeader.Text = $"Photos and videos  {GalleryItems.Count}";
             _photosHeader.Visibility = mixed ? Visibility.Visible : Visibility.Collapsed;
         }
         if (_galleryRepeater is not null)
             _galleryRepeater.Visibility = photos ? Visibility.Visible : Visibility.Collapsed;
         if (_galleryEmpty is not null)
-            _galleryEmpty.Visibility = !folders && !photos ? Visibility.Visible : Visibility.Collapsed;
+            _galleryEmpty.Visibility = !folders && !photos && !_gsFiltering ? Visibility.Visible : Visibility.Collapsed;
         if (_galleryCount is not null)
             _galleryCount.Text = Items.Count == 1 ? "1 item" : $"{Items.Count} items";
     }
@@ -765,9 +803,11 @@ public static partial class IslandHost
     private static void FolderScrollTo(int index)
     {
         if (!_galleryVisible || index < 0 || index >= Folders.Count) return;
-        UIElement? el = Items.Count > 0
-            ? _folderChipRepeater?.TryGetElement(index)
-            : _folderRepeater?.TryGetElement(index);
+        int at = GalleryFolderPos(index);
+        if (at < 0) return;
+        UIElement? el = GalleryItems.Count > 0
+            ? _folderChipRepeater?.TryGetElement(at)
+            : _folderRepeater?.TryGetElement(at);
         if (el is not null)
         {
             el.StartBringIntoView(new BringIntoViewOptions
@@ -1185,10 +1225,25 @@ internal sealed class FolderCardVm : INotifyPropertyChanged
     private int _subs;
     private bool _photosInside;
     private bool _searchStopped;
+    private string? _folded;
+    private string? _foldedFrom;
     public int Index { get; set; }
     public string Path { get; set; } = "";
     public string Name { get; set; } = "";
     public bool Requested { get; set; }
+    // The gallery search bar's key for Name, folded once per name.
+    public string FoldedName
+    {
+        get
+        {
+            if (_folded is null || !ReferenceEquals(_foldedFrom, Name))
+            {
+                _folded = IslandHost.FoldName(Name);
+                _foldedFrom = Name;
+            }
+            return _folded;
+        }
+    }
     public int MediaCount
     {
         get => _media;
