@@ -89,6 +89,9 @@ final class LocalSearchStore: ObservableObject {
 
   private func poll() {
     ticks += 1
+    // Nothing loaded and nothing loading: every 2 s is enough, unless
+    // Settings is open or a piece is being installed (it shows the change).
+    if !loaded, !loading, busyPiece == nil, !SettingsStore.shared.visible, ticks % 4 != 0 { return }
     let l = mv_addon2_loaded("ai")
     let busy = mv_addon2_loading("ai")
     if l != loaded {
@@ -110,7 +113,13 @@ final class LocalSearchStore: ObservableObject {
     }
     // Indexing (1) or waiting for the viewer / battery (3): work in progress.
     let visible = s.state == 1 || s.state == 3
-    if visible != pillVisible { pillVisible = visible }
+    if visible != pillVisible {
+      // The pill fades (and, without Reduce Motion, scales) in and out.
+      let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+      withAnimation(reduce ? .easeOut(duration: 0.15) : .spring(response: 0.32, dampingFraction: 0.86)) {
+        pillVisible = visible
+      }
+    }
     guard visible else { return }
     let text = Self.pillLine(s)
     if text != pillText { pillText = text }
@@ -261,6 +270,15 @@ final class LocalSearchStore: ObservableObject {
   func remove(_ id: String, keepData: Bool) {
     confirmingRemove = nil
     let title = pieces.first(where: { $0.id == id })?.title ?? id
+    if id == "ai" && loaded {
+      // The embedded management view stops using the table now, not at the
+      // next poll: the pack is unloaded by the call below.
+      loaded = false
+      chromeGeneration += 1
+      if pillVisible { pillVisible = false }
+    }
+    // On the main thread: unloading Core is [main-thread] in the host (the
+    // chrome shuts down first); the store work itself is queued there.
     message = mv_addon2_remove(id, keepData)
       ? (id == "ai" ? "Local search removed." + (keepData ? " The search index was kept." : "")
                     : "\(title) removed.")

@@ -189,7 +189,7 @@ struct PersonSheet: View {
   }
 
   private func reject(_ ids: [UInt64]) {
-    for id in ids { model.reject(id) }
+    model.reject(ids)
     withAnimation(.easeOut(duration: 0.18)) {
       faces.removeAll { ids.contains($0.id) }
       selection.subtract(ids)

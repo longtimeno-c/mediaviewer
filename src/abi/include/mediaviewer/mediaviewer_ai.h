@@ -195,13 +195,14 @@ typedef struct mv_ai_api {
                                    uint64_t* out_root_id);
   mv_status(MV_CALL* root_set_enabled)(void* ctx, uint64_t root_id, uint32_t enabled);
   mv_status(MV_CALL* root_rescan)(void* ctx, uint64_t root_id);
-  /* Forgets the root and deletes its rows (and its faces). */
+  /* Forgets the root and deletes its rows (and its faces). [worker-thread] */
   mv_status(MV_CALL* root_remove)(void* ctx, uint64_t root_id);
   /* 0 not covered, 1 covered and indexing, 2 covered and complete. [no-block] */
   mv_status(MV_CALL* folder_coverage)(void* ctx, const char* dir_utf8, uint32_t* out_state);
   /* The viewer opened `dir`: if a root covers it, queue its delta. [no-block] */
   mv_status(MV_CALL* note_folder_opened)(void* ctx, const char* dir_utf8);
-  /* Deletes every row and vector (the thumbnail cache is untouched). */
+  /* Deletes every row and vector (the thumbnail cache is untouched); waits
+   * for the indexer to let go. [worker-thread] */
   mv_status(MV_CALL* clear_index)(void* ctx);
 
   /* ---- search (PR 22, 23) ------------------------------------------------- */
@@ -244,10 +245,12 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* person_faces_json)(void* ctx, uint64_t person_id, char* out, uint32_t cap,
                                         uint32_t* needed);
   mv_status(MV_CALL* person_rename)(void* ctx, uint64_t person_id, const char* name_utf8);
+  /* [worker-thread] */
   mv_status(MV_CALL* person_merge)(void* ctx, uint64_t into_id, uint64_t from_id);
-  /* "Not this person": the face leaves the cluster and never rejoins it. */
+  /* "Not this person": the face leaves the cluster and never rejoins it.
+   * [worker-thread] */
   mv_status(MV_CALL* face_reject)(void* ctx, uint64_t face_id);
-  /* Split: these faces become a new person. */
+  /* Split: these faces become a new person. [worker-thread] */
   mv_status(MV_CALL* face_split)(void* ctx, const uint64_t* face_ids, uint32_t count,
                                  uint64_t* out_person_id);
   /* Photos and moments of a person. [no-block] */

@@ -83,7 +83,9 @@ private struct MatchMarks: View {
     GeometryReader { geo in
       let span = max(geo.size.width - 2 * inset, 1)
       let duration = Double(max(store.durationMs, 1))
-      ForEach(Array(store.matchMs.enumerated()), id: \.offset) { i, ms in
+      // Keyed by the moment (and the clip's length): another clip's dots are
+      // new dots that fade in where they belong, never old ones sliding over.
+      ForEach(Array(store.matchMs.enumerated()), id: \.element) { i, ms in
         let current = i == store.matchCurrent
         let d: CGFloat = current ? 7 : 4
         Circle()
@@ -95,6 +97,7 @@ private struct MatchMarks: View {
           .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8), value: current)
       }
     }
+    .id(store.durationMs)
     .opacity(store.matchMs.isEmpty ? 0 : 1)
     .animation(.easeOut(duration: 0.2), value: store.matchMs)
     .accessibilityHidden(true)

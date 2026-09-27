@@ -10,59 +10,127 @@ import Foundation
 import SwiftUI
 
 /// The table. [no-block] calls may run on the main actor; [worker-thread]
-/// calls (roots_json, result_thumb, people_json, person_faces_json) only from
-/// a detached task. The table lives until the chrome's -shutdown.
+/// calls (roots_json, result_thumb, people_json, person_faces_json, and the
+/// writes that may wait on the indexer) only from a detached task. The table
+/// lives until the chrome's -shutdown, which closes it: a call after that
+/// fails instead of reaching an unloaded pack, and -shutdown waits (bounded)
+/// for the calls already inside it.
 final class AITable: @unchecked Sendable {
   let api: UnsafePointer<mv_ai_api>
+  private let gate = NSCondition()
+  private var closed = false
+  private var inFlight = 0
 
   init(_ api: UnsafePointer<mv_ai_api>) { self.api = api }
 
-  var ctx: UnsafeMutableRawPointer? { api.pointee.ctx }
-  var a: mv_ai_api { api.pointee }
+  var ctx: UnsafeMutableRawPointer? { UnsafeRawPointer(api).load(fromByteOffset: 8, as: UnsafeMutableRawPointer?.self) }
+  /// The entries, read one at a time through the pointer: a pack built
+  /// before an entry was appended has a shorter table (struct_size), and
+  /// copying the whole struct would read past it.
+  var a: Entries { Entries(table: self) }
+
+  @dynamicMemberLookup
+  struct Entries {
+    let table: AITable
+    subscript<T>(dynamicMember field: KeyPath<mv_ai_api, T?>) -> T? {
+      guard table.isOpen, let offset = MemoryLayout<mv_ai_api>.offset(of: field),
+            table.structSize >= offset + MemoryLayout<T?>.size else { return nil }
+      return UnsafeRawPointer(table.api).load(fromByteOffset: offset, as: T?.self)
+    }
+  }
+
+  private var structSize: Int { Int(UnsafeRawPointer(api).load(as: UInt32.self)) }
+
+  private var isOpen: Bool {
+    gate.lock()
+    defer { gate.unlock() }
+    return !closed
+  }
+
+  /// Runs `body` while the table is open, counted so -shutdown can wait for
+  /// it; nil once closed. Everything a detached task calls goes through here
+  /// (json, path and status do it themselves).
+  func guarded<R>(_ body: () -> R) -> R? {
+    gate.lock()
+    if closed {
+      gate.unlock()
+      return nil
+    }
+    inFlight += 1
+    gate.unlock()
+    defer {
+      gate.lock()
+      inFlight -= 1
+      if inFlight == 0 { gate.broadcast() }
+      gate.unlock()
+    }
+    return body()
+  }
+
+  /// A status call through the guard; a closed table or a missing entry fails.
+  @discardableResult
+  func call(_ body: () -> mv_status?) -> mv_status {
+    (guarded(body) ?? nil) ?? MV_ERR_INVALID_ARG
+  }
+
+  /// -shutdown: no new calls, and up to `timeout` for the ones in flight.
+  func close(timeout: TimeInterval) {
+    gate.lock()
+    closed = true
+    let deadline = Date(timeIntervalSinceNow: timeout)
+    while inFlight > 0 && gate.wait(until: deadline) {}
+    gate.unlock()
+  }
 
   /// The buffer rule: retry with `needed`.
   func json(_ call: (UnsafeMutablePointer<CChar>?, UInt32, UnsafeMutablePointer<UInt32>?) -> mv_status) -> String? {
-    var cap: UInt32 = 64 * 1024
-    for _ in 0..<5 {
-      var buf = [CChar](repeating: 0, count: Int(cap))
-      var needed: UInt32 = 0
-      let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, cap, &needed) }
-      if s == MV_OK { return String(cString: buf) }
-      if s != MV_ERR_INVALID_ARG || needed <= cap { return nil }
-      cap = needed + 1024
-    }
-    return nil
+    guarded {
+      var cap: UInt32 = 64 * 1024
+      for _ in 0..<5 {
+        var buf = [CChar](repeating: 0, count: Int(cap))
+        var needed: UInt32 = 0
+        let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, cap, &needed) }
+        if s == MV_OK { return String(cString: buf) }
+        if s != MV_ERR_INVALID_ARG || needed <= cap { return nil }
+        cap = needed + 1024
+      }
+      return nil
+    } ?? nil
   }
 
   func path(_ call: (UnsafeMutablePointer<CChar>?, UInt32) -> mv_status) -> String? {
-    var buf = [CChar](repeating: 0, count: 8 * 1024)
-    let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, UInt32($0.count)) }
-    return s == MV_OK ? String(cString: buf) : nil
+    guarded {
+      var buf = [CChar](repeating: 0, count: 8 * 1024)
+      let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, UInt32($0.count)) }
+      return s == MV_OK ? String(cString: buf) : nil
+    } ?? nil
   }
 
   func status() -> mv_ai_status? {
-    var st = mv_ai_status()
-    st.struct_size = UInt32(MemoryLayout<mv_ai_status>.size)
-    guard let fn = a.status, fn(ctx, &st) == MV_OK else { return nil }
-    return st
+    guarded {
+      var st = mv_ai_status()
+      st.struct_size = UInt32(MemoryLayout<mv_ai_status>.size)
+      guard let fn = a.status, fn(ctx, &st) == MV_OK else { return nil }
+      return st
+    } ?? nil
   }
 
   /// face_thumb was appended to mv.ai.1 late in Milestone H: a pack whose
   /// table is shorter does not have it (struct_size says so).
-  var hasFaceThumb: Bool { has(\mv_ai_api.face_thumb) && api.pointee.face_thumb != nil }
+  var hasFaceThumb: Bool { a.face_thumb != nil }
 
   /// Whether the pack's table reaches `field` (an entry appended after the
   /// pack was built is past its struct_size and must not be read).
   func has(_ field: PartialKeyPath<mv_ai_api>) -> Bool {
-    guard let offset = MemoryLayout<mv_ai_api>.offset(of: field) else { return false }
-    return Int(api.pointee.struct_size) >= offset + MemoryLayout<UnsafeRawPointer>.size
+    guard isOpen, let offset = MemoryLayout<mv_ai_api>.offset(of: field) else { return false }
+    return structSize >= offset + MemoryLayout<UnsafeRawPointer>.size
   }
 
   /// 2026-09-27 audio entries: root_set_media, result_snippet.
-  var hasAudio: Bool { has(\mv_ai_api.result_snippet) && api.pointee.result_snippet != nil }
+  var hasAudio: Bool { a.result_snippet != nil }
 
   func setSetting(_ key: String, _ valueJSON: String) {
-    _ = a.set_setting?(ctx, key, valueJSON)
+    call { a.set_setting?(ctx, key, valueJSON) }
   }
 }
 
@@ -112,10 +180,16 @@ func momentText(_ ms: Int64) -> String {
   return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
 }
 
-func countText(_ n: UInt64) -> String {
+/// One formatter for every count (the status line is rebuilt at 4 Hz).
+/// NumberFormatter is thread-safe for formatting since macOS 10.9.
+private let decimalFormatter: NumberFormatter = {
   let f = NumberFormatter()
   f.numberStyle = .decimal
-  return f.string(from: NSNumber(value: n)) ?? String(n)
+  return f
+}()
+
+func countText(_ n: UInt64) -> String {
+  decimalFormatter.string(from: NSNumber(value: n)) ?? String(n)
 }
 
 func bytesText(_ n: UInt64) -> String {

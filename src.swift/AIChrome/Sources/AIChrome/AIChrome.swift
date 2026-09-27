@@ -149,7 +149,14 @@ public final class MVAIChrome: NSObject {
     }
   }
 
+  /// Before the host unloads the pack. Closes the table: a detached read
+  /// still running fails instead of calling into an unloaded library, and
+  /// this waits (at most 2 s) for the calls already inside the pack.
   @objc public func shutdown() {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.sync { self.shutdown() }
+      return
+    }
     MainActor.assumeIsolated {
       panel?.close()
       panel = nil
@@ -160,6 +167,7 @@ public final class MVAIChrome: NSObject {
       manage = nil
       settingsHost = nil
       hostSetMarkers(path: "", ms: [], current: -1)
+      table?.close(timeout: 2)
       table = nil
       host = nil
     }

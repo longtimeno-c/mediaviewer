@@ -15,7 +15,9 @@
 // Keyboard-complete (plan/17 PR 22 verify: "the whole flow … works without the
 // mouse"): typing searches; Down enters the grid; arrows move; Return opens the
 // results in the viewer on the chosen tile; Cmd+Return opens them as the gallery
-// grid; Esc goes from the grid back to the field, then closes.
+// grid; Esc goes from the grid back to the field, then closes. Down leaves the
+// field through a local key monitor: the field editor would take moveDown:
+// before a SwiftUI key handler on the TextField sees it.
 import AppKit
 import SwiftUI
 
@@ -30,6 +32,8 @@ final class PanelState: ObservableObject {
   @Published var shown = false
   /// Moves on every "focus the field" (Cmd+F again, a fresh open).
   @Published var focusSeq = 0
+  /// Moves on Down in the field: the grid takes the keyboard.
+  @Published var gridSeq = 0
 }
 
 @MainActor
@@ -39,6 +43,8 @@ final class SearchPanelController: NSObject {
   private let panel: SearchPanel
   private weak var parentWindow: NSWindow?
   private var hideSeq = 0
+  private var keyMonitor: Any?
+  private var observers: [NSObjectProtocol] = []
   /// Room around the rounded card for its soft shadow; transparent to clicks.
   static let margin: CGFloat = 28
 
@@ -61,6 +67,29 @@ final class SearchPanelController: NSObject {
     let hosting = NSHostingView(rootView: root)
     hosting.sizingOptions = []
     panel.contentView = hosting
+    keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      let window = event.windowNumber, code = event.keyCode, flags = event.modifierFlags
+      let taken = MainActor.assumeIsolated { self?.key(window: window, code: code, flags: flags) ?? false }
+      return taken ? nil : event
+    }
+    // hidesOnDeactivate hides the panel with the app: it stops polling too.
+    let center = NotificationCenter.default
+    for (name, active) in [(NSApplication.didResignActiveNotification, false),
+                           (NSApplication.didBecomeActiveNotification, true)] {
+      observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated { self?.model.appActiveChanged(active) }
+      })
+    }
+  }
+
+  /// Down in the search field enters the grid (when there is one).
+  private func key(window: Int, code: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
+    guard window == panel.windowNumber, state.shown, code == 125,  // kVK_DownArrow
+          flags.intersection([.command, .option, .control, .shift]).isEmpty,
+          let editor = panel.firstResponder as? NSTextView, editor.isFieldEditor,
+          !model.results.isEmpty else { return false }
+    state.gridSeq += 1
+    return true
   }
 
   var isVisible: Bool { panel.isVisible && state.shown }
@@ -113,6 +142,10 @@ final class SearchPanelController: NSObject {
     model.disappeared()
     parentWindow?.removeChildWindow(panel)
     panel.orderOut(nil)
+    if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+    keyMonitor = nil
+    observers.forEach { NotificationCenter.default.removeObserver($0) }
+    observers = []
   }
 }
 
@@ -137,9 +170,11 @@ struct SearchRootView: View {
   @FocusState private var focus: Focus?
   @Namespace private var ring
   @State private var columns = 5
+  @State private var scrollSeq = 0  // moves on a keyboard move: scroll to the selection
 
   enum Focus: Hashable { case field, grid }
 
+  private static let top = "top"
   private let tile: CGFloat = 138
   private let spacing: CGFloat = 12
 
@@ -161,7 +196,7 @@ struct SearchRootView: View {
     .opacity(panel.shown ? 1 : 0)
     .padding(SearchPanelController.margin)
     .onExitCommand {
-      if focus == .grid { focus = .field } else { close() }
+      if focus == .grid && model.reference == nil { focus = .field } else { close() }
     }
     .onKeyPress(characters: ["f"]) { press in
       guard press.modifiers.contains(.command) else { return .ignored }
@@ -169,10 +204,21 @@ struct SearchRootView: View {
       return .handled
     }
     .onChange(of: panel.focusSeq) { _, _ in focusField() }
+    .onChange(of: panel.gridSeq) { _, _ in if !model.results.isEmpty { focus = .grid } }
+    // A reference chip stands in for the text: the (hidden) field gives up
+    // the keyboard to the grid, so keys never go into an invisible field.
+    .onChange(of: model.reference) { _, r in if r != nil { focusField() } }
+    .onChange(of: model.results.isEmpty) { _, empty in
+      if !empty, model.reference != nil, focus == nil { focus = .grid }
+    }
     .onAppear { focusField() }
   }
 
   private func focusField() {
+    if model.reference != nil {
+      focus = model.results.isEmpty ? nil : .grid
+      return
+    }
     focus = .field
     // The previous query stays, selected, so typing replaces it.
     DispatchQueue.main.async {
@@ -196,6 +242,12 @@ struct SearchRootView: View {
             Image(systemName: "xmark.circle.fill").foregroundStyle(AITheme.body)
           }
           .buttonStyle(.plain)
+          .focusable()
+          .onKeyPress(keys: [.space, .return]) { _ in
+            model.clearReference()
+            focusField()
+            return .handled
+          }
           .accessibilityLabel("Remove \(reference.label)")
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
@@ -209,19 +261,17 @@ struct SearchRootView: View {
         .font(AITheme.font(22))
         .foregroundStyle(AITheme.title)
         .focused($focus, equals: .field)
+        .disabled(model.reference != nil)
         .opacity(model.reference == nil ? 1 : 0)
         .frame(maxWidth: model.reference == nil ? .infinity : 0)
         .onChange(of: model.query) { _, _ in model.queryChanged() }
         .onSubmit { open(gallery: NSEvent.modifierFlags.contains(.command)) }
-        .onKeyPress(.downArrow) {
-          guard !model.results.isEmpty else { return .ignored }
-          focus = .grid
-          return .handled
-        }
         .accessibilityLabel("Search photos and videos")
-      if model.searching {
-        ProgressView().controlSize(.small).transition(.opacity)
-      }
+      // Its room is kept while hidden, so the field does not change width.
+      ProgressView().controlSize(.small)
+        .opacity(model.searching ? 1 : 0)
+        .animation(.easeOut(duration: 0.15), value: model.searching)
+        .accessibilityHidden(!model.searching)
     }
     .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
     .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: model.reference)
@@ -292,6 +342,10 @@ struct SearchRootView: View {
         .controlSize(.large)
       } else if model.searching {
         Text("Searching…").font(AITheme.font(14)).foregroundStyle(AITheme.body)
+      } else if model.failed {
+        Image(systemName: "exclamationmark.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
+        Text("Search did not finish.").font(AITheme.font(15)).foregroundStyle(AITheme.title)
+        Text("Try again, or change the words.").font(AITheme.font(12)).foregroundStyle(AITheme.body)
       } else if model.finished && (model.reference != nil || !model.query.isEmpty) {
         Image(systemName: "sparkle.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         if let reference = model.reference {
@@ -302,7 +356,7 @@ struct SearchRootView: View {
             .font(AITheme.font(15)).foregroundStyle(AITheme.title)
             .multilineTextAlignment(.center).frame(maxWidth: 460)
         }
-        if model.status.indexing {
+        if model.indexing {
           Text("Indexing is still running; more may match soon.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
         }
@@ -310,7 +364,7 @@ struct SearchRootView: View {
         Text("Describe what you're looking for: “guy on a skateboard”, “sunset over water”, “birthday cake”.")
           .font(AITheme.font(14)).foregroundStyle(AITheme.body)
           .multilineTextAlignment(.center).frame(maxWidth: 460)
-        if model.status.indexing {
+        if model.indexing {
           Text("Results appear as the index grows.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
         }
@@ -326,14 +380,16 @@ struct SearchRootView: View {
       let cols = max(1, Int((geo.size.width - 32 + spacing) / (tile + spacing)))
       ScrollViewReader { proxy in
         ScrollView {
+          Color.clear.frame(height: 0).id(Self.top)
           LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: spacing), count: cols),
                     spacing: spacing) {
             ForEach(Array(model.results.enumerated()), id: \.element.id) { order, r in
               ResultTile(result: r, order: order, selected: order == model.selected && focus == .grid,
                          hinted: order == model.selected && focus != .grid,
                          ring: ring, slot: model.slot(for: r), size: tile)
-                .id(order)
+                .id(r.id)  // stable across a re-run: a kept tile does not play its entrance again
                 .onAppear { model.requestThumb(r) }
+                .onDisappear { model.tileGone(r) }
                 .onTapGesture(count: 2) {
                   model.selected = order
                   open(gallery: false)
@@ -349,9 +405,14 @@ struct SearchRootView: View {
           .padding(16)
           .id(model.resultsGeneration)  // a new result set starts its stagger again
         }
-        .onChange(of: model.selected) { _, i in
-          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(i) }
+        // Only a keyboard move scrolls: a re-run as the index grows leaves
+        // the scroll where the user put it.
+        .onChange(of: scrollSeq) { _, _ in
+          guard model.results.indices.contains(model.selected) else { return }
+          let id = model.results[model.selected].id
+          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(id) }
         }
+        .onChange(of: model.resultsGeneration) { _, _ in proxy.scrollTo(Self.top, anchor: .top) }
       }
       .onAppear { columns = cols }
       .onChange(of: cols) { _, c in columns = c }
@@ -378,7 +439,7 @@ struct SearchRootView: View {
     case .downArrow: i += columns
     case .upArrow:
       if i - columns < 0 {
-        focus = .field
+        if model.reference == nil { focus = .field }
         return .handled
       }
       i -= columns
@@ -387,6 +448,7 @@ struct SearchRootView: View {
     }
     i = min(max(i, 0), n - 1)
     withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.82)) { model.selected = i }
+    scrollSeq += 1
     return .handled
   }
 
@@ -398,7 +460,8 @@ struct SearchRootView: View {
 
   private var footer: some View {
     HStack(spacing: 12) {
-      StatusPill(line: model.status) { model.setPaused($0) }
+      // Its own view over the status: 4 Hz updates re-render the pill only.
+      SearchStatusPill(status: model.status) { model.setPaused($0) }
         .frame(maxWidth: 520, alignment: .leading)
       Spacer(minLength: 0)
       if !model.results.isEmpty {
@@ -409,6 +472,13 @@ struct SearchRootView: View {
     }
     .padding(.horizontal, 14).padding(.vertical, 9)
   }
+}
+
+private struct SearchStatusPill: View {
+  @ObservedObject var status: SearchStatus
+  let onPause: (Bool) -> Void
+
+  var body: some View { StatusPill(line: status.line, onPause: onPause) }
 }
 
 private struct Chip: View {
@@ -433,6 +503,12 @@ private struct Chip: View {
     }
     .buttonStyle(.plain)
     .disabled(disabled)
+    // Reachable with Tab, and Space or Return toggles it.
+    .focusable(!disabled)
+    .onKeyPress(keys: [.space, .return]) { _ in
+      action()
+      return .handled
+    }
     .opacity(disabled ? 0.45 : 1)
     .onHover { hover = $0 }
     .accessibilityAddTraits(on ? .isSelected : [])
@@ -453,8 +529,21 @@ private struct ResultTile: View {
   let size: CGFloat
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var appeared = false
+  @State private var appeared: Bool
   @State private var hover = false
+
+  init(result: AIResult, order: Int, selected: Bool, hinted: Bool, ring: Namespace.ID,
+       slot: ImageSlot, size: CGFloat) {
+    self.result = result
+    self.order = order
+    self.selected = selected
+    self.hinted = hinted
+    self.ring = ring
+    _slot = ObservedObject(wrappedValue: slot)
+    self.size = size
+    // The slot remembers the entrance: scrolled back into view, it is just there.
+    _appeared = State(initialValue: slot.appeared)
+  }
 
   private var badges: [String] {
     var out: [String] = []
@@ -533,9 +622,9 @@ private struct ResultTile: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       picture
-      if !result.snippet.isEmpty {
+      if !slot.snippet.isEmpty {
         // The words that matched, quoted, under the frame they were said over.
-        Text("“\(result.snippet)”")
+        Text("“\(slot.snippet)”")
           .font(AITheme.font(11))
           .foregroundStyle(AITheme.body)
           .lineLimit(2)
@@ -553,6 +642,7 @@ private struct ResultTile: View {
     .onHover { hover = $0 }
     .onAppear {
       guard !appeared else { return }
+      slot.appeared = true
       // Staggered ~25 ms apart, the first 16 only; the rest just appear.
       let delay = order < 16 ? Double(order) * 0.025 : 0
       withAnimation(.easeOut(duration: reduceMotion ? 0.15 : 0.22).delay(delay)) { appeared = true }
@@ -566,7 +656,7 @@ private struct ResultTile: View {
   private var accessibilityText: String {
     var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name
     if result.matchedSound { text += ", matched by sound" }
-    if result.matchedSpeech { text += ", matched by speech" + (result.snippet.isEmpty ? "" : ": \(result.snippet)") }
+    if result.matchedSpeech { text += ", matched by speech" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)") }
     return text
   }
 }

@@ -6,7 +6,9 @@
 // battery rule, and People. The base app embeds this view (MVAIChrome
 // -settingsView) under its install / remove rows.
 //
-// Reads of the index (roots_json, people_json, person_faces_json) are
+// Reads of the index (roots_json, people_json, person_faces_json) and the
+// writes that delete rows or regroup faces (root_remove, clear_index, faces
+// off, merge, split, reject: they may wait for the indexer to let go) are
 // [worker-thread] and run detached; settings and status are [no-block].
 // Status is polled at ≤ 4 Hz only while this view is on screen.
 import AppKit
@@ -188,8 +190,16 @@ final class ManagementModel: ObservableObject {
 
   func removeRoot(_ id: UInt64) {
     confirming = nil
-    _ = table.a.root_remove?(table.ctx, id)
-    reloadRoots()
+    // Gone from the list at once; the rows are deleted on a worker.
+    roots.removeAll { $0.id == id }
+    let t = table
+    Task.detached {
+      t.call { t.a.root_remove?(t.ctx, id) }
+      await MainActor.run {
+        self.reloadRoots()
+        self.pollStatus()
+      }
+    }
   }
 
   func addFolder(recursive: Bool) {
@@ -206,10 +216,17 @@ final class ManagementModel: ObservableObject {
 
   func clearIndex() {
     confirming = nil
-    let ok = table.a.clear_index?(table.ctx) == MV_OK
-    message = ok ? "The search index was cleared. Thumbnails were kept." : "The index could not be cleared."
-    reloadRoots()
-    pollStatus()
+    message = "Clearing the search index…"
+    let t = table
+    Task.detached {
+      // It waits for the indexer to stop (seconds): never on the main thread.
+      let ok = t.call { t.a.clear_index?(t.ctx) } == MV_OK
+      await MainActor.run {
+        self.message = ok ? "The search index was cleared. Thumbnails were kept." : "The index could not be cleared."
+        self.reloadRoots()
+        self.pollStatus()
+      }
+    }
   }
 
   // MARK: people (PR 24)
@@ -226,11 +243,17 @@ final class ManagementModel: ObservableObject {
 
   func facesOffConfirmed() {
     confirming = nil
-    let ok = table.a.faces_enable?(table.ctx, 0) == MV_OK
-    message = ok ? "All face data was deleted." : "Face data could not be deleted."
     people = []
-    reloadSettings()
-    pollStatus()
+    message = "Deleting face data…"
+    let t = table
+    Task.detached {
+      let ok = t.call { t.a.faces_enable?(t.ctx, 0) } == MV_OK
+      await MainActor.run {
+        self.message = ok ? "All face data was deleted." : "Face data could not be deleted."
+        self.reloadSettings()
+        self.pollStatus()
+      }
+    }
   }
 
   func reloadPeople() {
@@ -256,8 +279,11 @@ final class ManagementModel: ObservableObject {
   }
 
   func merge(into: UInt64, from: UInt64) {
-    _ = table.a.person_merge?(table.ctx, into, from)
-    reloadPeople()
+    let t = table
+    Task.detached {
+      t.call { t.a.person_merge?(t.ctx, into, from) }
+      await MainActor.run { self.reloadPeople() }
+    }
   }
 
   func faces(of person: UInt64) async -> [Face] {
@@ -272,16 +298,24 @@ final class ManagementModel: ObservableObject {
     }.value
   }
 
-  func reject(_ face: UInt64) {
-    _ = table.a.face_reject?(table.ctx, face)
-    reloadPeople()
+  /// "Not this person" for each face, then one reload.
+  func reject(_ faces: [UInt64]) {
+    guard !faces.isEmpty else { return }
+    let t = table
+    Task.detached {
+      for face in faces { t.call { t.a.face_reject?(t.ctx, face) } }
+      await MainActor.run { self.reloadPeople() }
+    }
   }
 
   func split(_ faces: [UInt64]) {
     guard !faces.isEmpty else { return }
-    var person: UInt64 = 0
-    _ = faces.withUnsafeBufferPointer { table.a.face_split?(table.ctx, $0.baseAddress, UInt32($0.count), &person) }
-    reloadPeople()
+    let t = table
+    Task.detached {
+      var person: UInt64 = 0
+      t.call { faces.withUnsafeBufferPointer { t.a.face_split?(t.ctx, $0.baseAddress, UInt32($0.count), &person) } }
+      await MainActor.run { self.reloadPeople() }
+    }
   }
 
   func showPhotos(of person: Person) { chrome?.showPerson(id: person.id, name: person.name) }

@@ -16,15 +16,49 @@ import ImageIO
 @MainActor
 final class ImageSlot: ObservableObject {
   @Published var image: CGImage?
-  var requested = false
+  /// The words that matched (a speech result), read with the thumbnail.
+  @Published var snippet = ""
+  var requested = false     // a read is in flight, or it landed
+  var snippetRead = false
+  var onScreen = false
+  /// The entrance played: a tile scrolled back into view does not play it again.
+  var appeared = false
+  var task: Task<Void, Never>?
 }
 
-/// NSCache is the LRU: bounded by count, evicted under memory pressure.
+/// At most a few result_thumb calls and decodes at once: a fast scroll through
+/// 500 results does not queue 500 of them, and a tile that scrolled away
+/// before its turn gives its place up (it is cancelled).
+actor ThumbGate {
+  static let shared = ThumbGate(4)
+  private var free: Int
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  init(_ n: Int) { free = n }
+
+  func acquire() async {
+    if free > 0 {
+      free -= 1
+      return
+    }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+
+  func release() {
+    if waiters.isEmpty { free += 1 } else { waiters.removeFirst().resume() }
+  }
+}
+
+/// NSCache is the LRU: bounded by count and by decoded bytes, evicted under
+/// memory pressure.
 final class ImageCache: @unchecked Sendable {
   static let shared = ImageCache()
   private let cache = NSCache<NSString, CGImageBox>()
 
-  private init() { cache.countLimit = 400 }
+  private init() {
+    cache.countLimit = 400
+    cache.totalCostLimit = 96 * 1024 * 1024
+  }
 
   final class CGImageBox {
     let image: CGImage
@@ -32,7 +66,9 @@ final class ImageCache: @unchecked Sendable {
   }
 
   func get(_ key: String) -> CGImage? { cache.object(forKey: key as NSString)?.image }
-  func put(_ key: String, _ image: CGImage) { cache.setObject(CGImageBox(image), forKey: key as NSString) }
+  func put(_ key: String, _ image: CGImage) {
+    cache.setObject(CGImageBox(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
+  }
 }
 
 enum ImageLoad {
@@ -51,14 +87,29 @@ enum ImageLoad {
   }
 
   /// The face at `box` (x, y, w, h in 0..1 of the oriented image), squared and
-  /// padded so a circle frames it. In memory only.
+  /// padded so a circle frames it. In memory only. Drawn into its own small
+  /// bitmap: a cropping(to:) view would keep the whole decode alive in the cache.
   static func crop(_ image: CGImage, box: [Double]) -> CGImage? {
-    guard box.count == 4, box[2] > 0, box[3] > 0 else { return image }
     let w = Double(image.width), h = Double(image.height)
-    let cx = (box[0] + box[2] / 2) * w, cy = (box[1] + box[3] / 2) * h
-    let side = min(max(box[2] * w, box[3] * h) * 1.6, min(w, h))
-    let x = min(max(cx - side / 2, 0), w - side), y = min(max(cy - side / 2, 0), h - side)
-    return image.cropping(to: CGRect(x: x, y: y, width: side, height: side).integral)
+    var rect = CGRect(x: 0, y: 0, width: w, height: h)
+    if box.count == 4, box[2] > 0, box[3] > 0 {
+      let cx = (box[0] + box[2] / 2) * w, cy = (box[1] + box[3] / 2) * h
+      let side = min(max(box[2] * w, box[3] * h) * 1.6, min(w, h))
+      let x = min(max(cx - side / 2, 0), w - side), y = min(max(cy - side / 2, 0), h - side)
+      rect = CGRect(x: x, y: y, width: side, height: side).integral
+    }
+    guard let cut = image.cropping(to: rect) else { return nil }
+    // A cover is at most 84 pt; 256 px covers 2x and the faces sheet.
+    let scale = min(1, 256 / max(Double(cut.width), Double(cut.height)))
+    let ow = max(1, Int((Double(cut.width) * scale).rounded()))
+    let oh = max(1, Int((Double(cut.height) * scale).rounded()))
+    guard let ctx = CGContext(data: nil, width: ow, height: oh, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+    ctx.interpolationQuality = .high
+    ctx.draw(cut, in: CGRect(x: 0, y: 0, width: ow, height: oh))
+    return ctx.makeImage()
   }
 
   /// A face, cropped from the picture it was found in (face_thumb, made on a

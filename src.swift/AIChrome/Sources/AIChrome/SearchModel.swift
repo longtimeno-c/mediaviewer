@@ -22,7 +22,6 @@ struct AIResult: Identifiable, Equatable, Sendable {
   let kind: UInt32
   let more: UInt32          // other matching moments in the same clip
   let match: UInt32         // MV_AI_MATCH_*: picture, sound, speech (0 from an older pack)
-  var snippet = ""          // the words said, for a speech match ("…happy birthday Anna…")
   var matchedPicture: Bool { match & MV_AI_MATCH_PICTURE != 0 }
   var matchedSound: Bool { match & MV_AI_MATCH_SOUND != 0 }
   var matchedSpeech: Bool { match & MV_AI_MATCH_SPEECH != 0 }
@@ -31,6 +30,15 @@ struct AIResult: Identifiable, Equatable, Sendable {
   var id: String { "\(path)|\(ptsMs)" }
   var name: String { (path as NSString).lastPathComponent }
   var isClip: Bool { ptsMs >= 0 }
+  /// The same tile on screen (a re-run moves only `search` and `index`).
+  func looksLike(_ o: AIResult) -> Bool { path == o.path && ptsMs == o.ptsMs && kind == o.kind && more == o.more && match == o.match }
+}
+
+/// The status line, apart from the model: it moves at up to 4 Hz, and only
+/// the footer reads it, so the grid does not re-render with it.
+@MainActor
+final class SearchStatus: ObservableObject {
+  @Published fileprivate(set) var line = StatusLine()
 }
 
 enum SearchScope: UInt32, CaseIterable, Identifiable {
@@ -88,11 +96,15 @@ final class SearchModel: ObservableObject {
     }
   }
 
-  /// The kinds word with the FIND bits OR'ed in (none set = all).
-  private var kindBits: UInt32 { finds.reduce(kinds.rawValue) { $0 | $1.rawValue } }
+  /// The kinds word with the FIND bits OR'ed in (none set = all). Without
+  /// the ai-audio piece every search is a picture search: no bits (the
+  /// Windows SearchKinds).
+  private var kindBits: UInt32 {
+    audioReady ? finds.reduce(kinds.rawValue) { $0 | $1.rawValue } : kinds.rawValue
+  }
 
   /// Sounds and speech exist only with the ai-audio piece loaded.
-  var audioReady: Bool { status.audioReady }
+  @Published private(set) var audioReady = false
   /// Find-similar / a person: shown as a removable chip in place of the text.
   @Published var reference: Reference?
 
@@ -107,23 +119,39 @@ final class SearchModel: ObservableObject {
   @Published var selected: Int = 0
   @Published private(set) var searching = false
   @Published private(set) var finished = false      // a search came back (maybe empty)
+  @Published private(set) var failed = false        // the last search did not finish
   @Published private(set) var coverage: UInt32 = 2  // 0 not indexed, 1 indexing, 2 complete
-  @Published private(set) var status = StatusLine()
+  let status = SearchStatus()
+  @Published private(set) var indexing = false      // status.line.indexing, published on change
   @Published private(set) var folder = ""           // the scope folder ("" none open)
   @Published private(set) var resultsGeneration = 0 // moves with every new result set
 
   private var slots: [String: ImageSlot] = [:]
+  /// Each shown result's search and index now: a re-run that shows the same
+  /// tiles does not republish `results`, only these.
+  private var refs: [String: (search: UInt64, index: Int)] = [:]
   private var pending: UInt64 = 0      // the search whose results are awaited
+  private var reading: UInt64 = 0      // the search whose results are being read
   private var shown: UInt64 = 0        // the search on screen
   private var listed: UInt64 = 0       // the search whose results the viewer lists
   private var debounce: Task<Void, Never>?
   private var statusTimer: Timer?
-  private var rerunTimer: Timer?
   private(set) var visible = false
+  private var appActive = true         // the panel hides with the app (hidesOnDeactivate)
+  /// Return pressed before the answer landed: open when it does (gallery or not).
+  private var openWhenReady: Bool?
+  /// The title the results on screen were asked for (not the live field).
+  private var shownTitle = ""
+
+  // Re-runs while indexing (the Windows OnStatus rule).
+  private var framesIndexed: UInt64 = 0
+  private var lastRunFrames: UInt64 = 0
+  private var lastRunTime = Date.distantPast
 
   // Scrub markers: the clip on screen and its matching moments.
   private var markerPath = ""
   private var markerMs: [Int64] = []
+  private var markerSeq = 0
 
   init(table: AITable) { self.table = table }
 
@@ -147,28 +175,41 @@ final class SearchModel: ObservableObject {
     visible = true
     refreshCoverage()
     pollStatus()
-    statusTimer?.invalidate()
-    statusTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.pollStatus() }
-    }
-    rerunTimer?.invalidate()
-    rerunTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.rerunWhileIndexing() }
-    }
+    updateTimer()
   }
 
   func disappeared() {
     visible = false
+    updateTimer()
+  }
+
+  /// The app resigned or became active: a panel hidden with the app does not poll.
+  func appActiveChanged(_ active: Bool) {
+    appActive = active
+    updateTimer()
+    if active && visible { pollStatus() }
+  }
+
+  private func updateTimer() {
+    let want = visible && appActive
+    guard want != (statusTimer != nil) else { return }
     statusTimer?.invalidate()
     statusTimer = nil
-    rerunTimer?.invalidate()
-    rerunTimer = nil
+    if want {
+      statusTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        MainActor.assumeIsolated { self?.pollStatus() }
+      }
+    }
   }
 
   func pollStatus() {
     guard let s = table.status() else { return }
     let line = StatusLine(s)
-    if line != status { status = line }
+    if line != status.line { status.line = line }
+    if line.indexing != indexing { indexing = line.indexing }
+    if line.audioReady != audioReady { audioReady = line.audioReady }
+    framesIndexed = s.frames_indexed
+    if s.state == MV_AI_STATE_INDEXING.rawValue { rerunWhileIndexing() }
   }
 
   func setPaused(_ paused: Bool) {
@@ -176,9 +217,15 @@ final class SearchModel: ObservableObject {
     pollStatus()
   }
 
+  /// Results appear as the index grows: re-ask now and then while it does —
+  /// not while typing (a debounce is pending), not over a search in flight,
+  /// and only once enough new moments were indexed to change the answer.
   private func rerunWhileIndexing() {
-    guard visible, status.indexing, !searching else { return }
-    if reference != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty { run(keepSelection: true) }
+    guard visible, appActive, debounce == nil, pending == 0, reading == 0 else { return }
+    guard reference != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+    guard Date().timeIntervalSince(lastRunTime) > 2.5,
+          framesIndexed > lastRunFrames + max(200, lastRunFrames / 10) else { return }
+    run(keepSelection: true)
   }
 
   // MARK: searching
@@ -186,11 +233,13 @@ final class SearchModel: ObservableObject {
   /// Typing: ~200 ms debounce, then search.
   func queryChanged() {
     if reference != nil { return }
+    openWhenReady = nil
     debounce?.cancel()
     debounce = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 200_000_000)
-      guard !Task.isCancelled else { return }
-      self?.run(keepSelection: false)
+      guard !Task.isCancelled, let self else { return }
+      self.debounce = nil
+      self.run(keepSelection: false)
     }
   }
 
@@ -199,14 +248,22 @@ final class SearchModel: ObservableObject {
   private var scopeDir: String? { scope == .all || folder.isEmpty ? nil : folder }
   private var effectiveScope: UInt32 { folder.isEmpty ? SearchScope.all.rawValue : scope.rawValue }
 
-  private var keepPath = ""
+  /// What a run asked for, by search id: read back when its answer lands.
+  private struct Run {
+    let seq: Int
+    let rerun: Bool         // a re-run as the index grows: keep the tiles still
+    let keep: String        // the selected tile's id to keep selected
+    let title: String
+  }
+  private var runs: [UInt64: Run] = [:]
   private var runSeq = 0
-  private var rerun = false
 
   func run(keepSelection: Bool) {
+    debounce?.cancel()
+    debounce = nil
     runSeq += 1
-    rerun = keepSelection
-    keepPath = keepSelection && results.indices.contains(selected) ? results[selected].path : ""
+    let keep = keepSelection && results.indices.contains(selected) ? results[selected].id : ""
+    let title = listTitle
     let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
     var id: UInt64 = 0
     var st = MV_ERR_INVALID_ARG
@@ -232,97 +289,140 @@ final class SearchModel: ObservableObject {
       releaseIfUnused(previous)
       searching = false
       finished = false
-      setResults([], search: 0)
+      failed = false
+      openWhenReady = nil
+      setResults([], search: 0, run: nil)
       return
     }
     guard st == MV_OK, id != 0 else {
-      searching = false
-      finished = true
+      // The search did not start: nothing older may answer for it.
+      let previous = pending
+      pending = 0
+      releaseIfUnused(previous)
+      showFailure()
       return
     }
     let previous = pending
     pending = id
     releaseIfUnused(previous)
+    runs[id] = Run(seq: runSeq, rerun: keepSelection, keep: keep, title: title)
+    lastRunTime = Date()
+    lastRunFrames = framesIndexed
     searching = true
+  }
+
+  /// "Search did not finish" (the Windows ShowEmpty): no results under a
+  /// query they were not for.
+  private func showFailure() {
+    openWhenReady = nil
+    searching = false
+    finished = true
+    failed = true
+    setResults([], search: 0, run: nil)
   }
 
   /// MV_ADDON_EVENT_AI_SEARCH_DONE: id = search, payload = count.
   func searchDone(_ id: UInt64, status: UInt32, count: Int64) {
     guard id == pending else {
+      runs[id] = nil
       releaseIfUnused(id)
       return
     }
     pending = 0
+    let info = runs.removeValue(forKey: id) ?? Run(seq: runSeq, rerun: false, keep: "", title: listTitle)
     guard status == MV_OK.rawValue else {
-      searching = false
-      finished = true
       releaseIfUnused(id)
+      showFailure()
       return
     }
+    reading = id
     let t = table
     let n = Int(max(0, min(count, 500)))
-    let seq = runSeq
     Task.detached {
       var out: [AIResult] = []
       var seen = Set<String>()
       out.reserveCapacity(n)
       for i in 0..<n {
         var r = mv_ai_result()
-        guard t.a.result_at?(t.ctx, id, UInt32(i), &r) == MV_OK else { continue }
+        guard t.call({ t.a.result_at?(t.ctx, id, UInt32(i), &r) }) == MV_OK else { continue }
         let path = t.path { t.a.result_path?(t.ctx, id, UInt32(i), $0, $1) ?? MV_ERR_INVALID_ARG } ?? ""
         guard !path.isEmpty else { continue }
-        var result = AIResult(index: i, search: id, path: path, ptsMs: r.pts_ms, kind: r.kind,
+        let result = AIResult(index: i, search: id, path: path, ptsMs: r.pts_ms, kind: r.kind,
                               more: r.more_in_clip, match: r.match)
-        // The words that matched (a speech result), read here on the worker.
-        if result.matchedSpeech, t.hasAudio {
-          result.snippet = t.path { t.a.result_snippet?(t.ctx, id, UInt32(i), $0, $1) ?? MV_ERR_INVALID_ARG } ?? ""
-        }
         guard seen.insert(result.id).inserted else { continue }
         out.append(result)
       }
       let list = out
       await MainActor.run {
+        if self.reading == id { self.reading = 0 }
         // A newer search started while this one was read: it is not shown.
-        guard seq == self.runSeq else {
+        guard info.seq == self.runSeq else {
           self.releaseIfUnused(id)
           return
         }
         self.searching = false
         self.finished = true
-        self.setResults(list, search: id)
+        self.failed = false
+        self.setResults(list, search: id, run: info)
+        // Return was pressed before this answer landed: open it now.
+        if let gallery = self.openWhenReady {
+          self.openWhenReady = nil
+          if !list.isEmpty { _ = self.openNow(gallery: gallery) }
+        }
       }
     }
   }
 
-  private func setResults(_ list: [AIResult], search: UInt64) {
+  private func setResults(_ list: [AIResult], search: UInt64, run: Run?) {
     let old = shown
     shown = search
     if old != search { releaseIfUnused(old) }
+    shownTitle = run?.title ?? ""
+    let rerun = run?.rerun ?? false
+    let keep = run?.keep ?? ""
+    var fresh: [String: (search: UInt64, index: Int)] = [:]
+    for r in list { fresh[r.id] = (r.search, r.index) }
+    refs = fresh
     if !rerun {
       // A new query: fresh tiles, and the staggered entrance plays again.
+      for s in slots.values { s.task?.cancel() }
       slots.removeAll()
       resultsGeneration += 1
-    }
-    rerun = false
-    results = list
-    if !keepPath.isEmpty, let i = list.firstIndex(where: { $0.path == keepPath }) {
-      selected = i
     } else {
-      selected = 0
+      // Tiles that were not found here are gone; a kept tile whose picture
+      // never came (its read failed against the older search) asks again.
+      for (key, s) in slots where fresh[key] == nil {
+        s.task?.cancel()
+        slots[key] = nil
+      }
     }
-    keepPath = ""
+    if !list.elementsEqual(results, by: { $0.looksLike($1) }) { results = list }
+    // The selection stays on its item (path and moment), or goes to the first.
+    let i = keep.isEmpty ? 0 : (list.firstIndex(where: { $0.id == keep }) ?? 0)
+    if i != selected { selected = i }
+    if rerun {
+      for r in list {
+        if let s = slots[r.id], s.onScreen, s.image == nil, !s.requested { requestThumb(r) }
+      }
+    }
   }
 
   private func releaseIfUnused(_ id: UInt64) {
-    guard id != 0, id != pending, id != shown, id != listed else { return }
+    guard id != 0, id != pending, id != reading, id != shown, id != listed else { return }
+    runs[id] = nil
     _ = table.a.search_release?(table.ctx, id)
   }
 
   func releaseAll() {
-    for id in Set([pending, shown, listed]) where id != 0 { _ = table.a.search_release?(table.ctx, id) }
+    debounce?.cancel()
+    debounce = nil
+    for s in slots.values { s.task?.cancel() }
+    for id in Set([pending, reading, shown, listed]) where id != 0 { _ = table.a.search_release?(table.ctx, id) }
     pending = 0
+    reading = 0
     shown = 0
     listed = 0
+    runs.removeAll()
   }
 
   func clearReference() {
@@ -350,22 +450,63 @@ final class SearchModel: ObservableObject {
   }
 
   /// A tile appeared: its thumbnail, from the viewer's JPEG-512 cache (made
-  /// on a miss by the pack, [worker-thread]), decoded off the main thread.
+  /// on a miss by the pack, [worker-thread]), decoded off the main thread,
+  /// a few at a time (ThumbGate); and, for a speech match, the words said.
   func requestThumb(_ r: AIResult) {
     let s = slot(for: r)
-    guard !s.requested else { return }
-    s.requested = true
+    s.onScreen = true
+    guard !s.requested, let ref = refs[r.id] else { return }
     let key = "tile|\(r.path)|\(r.ptsMs)"
-    if let hit = ImageCache.shared.get(key) {
-      s.image = hit
-      return
-    }
+    let wantSnippet = r.matchedSpeech && !s.snippetRead && table.hasAudio
+    if s.image == nil, let hit = ImageCache.shared.get(key) { s.image = hit }
+    guard s.image == nil || wantSnippet else { return }
+    s.requested = true
     let t = table
-    Task.detached(priority: .utility) {
-      let jpeg = t.path { t.a.result_thumb?(t.ctx, r.search, UInt32(r.index), $0, $1) ?? MV_ERR_INVALID_ARG }
-      let image = jpeg.flatMap { ImageLoad.decode(path: $0, maxPixel: 384) }
-      if let image { ImageCache.shared.put(key, image) }
-      await MainActor.run { s.image = image }
+    let needImage = s.image == nil
+    s.task = Task.detached(priority: .utility) {
+      // The words that matched first: a string read, no decode.
+      var snippet: String?
+      if wantSnippet {
+        snippet = t.path { t.a.result_snippet?(t.ctx, ref.search, UInt32(ref.index), $0, $1) ?? MV_ERR_INVALID_ARG }
+      }
+      var image: CGImage?
+      if needImage, !Task.isCancelled {
+        await ThumbGate.shared.acquire()
+        if !Task.isCancelled {
+          let jpeg = t.path { t.a.result_thumb?(t.ctx, ref.search, UInt32(ref.index), $0, $1) ?? MV_ERR_INVALID_ARG }
+          image = jpeg.flatMap { ImageLoad.decode(path: $0, maxPixel: 384) }
+          if let image { ImageCache.shared.put(key, image) }
+        }
+        await ThumbGate.shared.release()
+      }
+      let done = image, words = snippet
+      await MainActor.run {
+        s.task = nil
+        if let words {
+          s.snippetRead = true
+          if !words.isEmpty { withAnimation(.easeOut(duration: 0.18)) { s.snippet = words } }
+        }
+        if let done {
+          withAnimation(.easeOut(duration: 0.18)) { s.image = done }
+          s.requested = true
+        } else if needImage || (wantSnippet && words == nil) {
+          // Cancelled, or read against a search released meanwhile: ask again
+          // when the tile shows (or now, if a newer search holds it).
+          s.requested = false
+          if s.onScreen, let now = self.refs[r.id], now.search != ref.search { self.requestThumb(r) }
+        }
+      }
+    }
+  }
+
+  /// A tile scrolled away: a read that has not started gives its place up.
+  func tileGone(_ r: AIResult) {
+    guard let s = slots[r.id] else { return }
+    s.onScreen = false
+    if s.image == nil, let task = s.task {
+      task.cancel()
+      s.task = nil
+      s.requested = false
     }
   }
 
@@ -377,11 +518,22 @@ final class SearchModel: ObservableObject {
   }
 
   /// Enter: the results as a gallery listing, the chosen tile on the canvas
-  /// (a clip paused on its moment). Cmd+Enter: the gallery grid.
+  /// (a clip paused on its moment). Cmd+Enter: the gallery grid. Typed and
+  /// pressed Enter at once: the search runs now and opens when its answer
+  /// lands, never the older results under the new words.
   func openResults(gallery: Bool) -> Bool {
-    guard !results.isEmpty else { return false }
+    if debounce != nil || pending != 0 || reading != 0 {
+      openWhenReady = gallery
+      if debounce != nil { run(keepSelection: false) }
+      return true
+    }
+    return openNow(gallery: gallery)
+  }
+
+  private func openNow(gallery: Bool) -> Bool {
+    guard !results.isEmpty, shown != 0 else { return false }
     let request: NSDictionary = [
-      "title": listTitle,
+      "title": shownTitle.isEmpty ? "Search results" : shownTitle,
       "paths": results.map { $0.path },
       "moments": results.map { NSNumber(value: $0.ptsMs) },
       "select": NSNumber(value: min(max(selected, 0), results.count - 1)),
@@ -417,15 +569,19 @@ final class SearchModel: ObservableObject {
   /// its matches become the scrub markers; the current one is where it opened.
   func itemChanged(_ path: String, isVideo: Bool) {
     let search = listed != 0 ? listed : shown
+    markerSeq += 1
     guard isVideo, search != 0, !path.isEmpty else {
       if !markerPath.isEmpty { clearMarkers() }
       return
     }
-    let opened = results.first(where: { $0.path == path && $0.search == search })?.ptsMs ?? -1
+    let opened = search == shown ? (results.first(where: { $0.path == path })?.ptsMs ?? -1) : -1
     let t = table
+    let seq = markerSeq
     Task.detached {
       let ms = SearchModel.clipMatches(t, search: search, path: path)
       await MainActor.run {
+        // Another clip (or a step) since: these are not its markers.
+        guard seq == self.markerSeq else { return }
         self.markerPath = path
         self.markerMs = ms
         let current = opened >= 0 ? SearchModel.nearest(ms, to: opened) : -1
@@ -441,14 +597,16 @@ final class SearchModel: ObservableObject {
   }
 
   nonisolated static func clipMatches(_ t: AITable, search: UInt64, path: String) -> [Int64] {
-    guard let fn = t.a.clip_matches else { return [] }
-    var count: UInt32 = 0
-    guard fn(t.ctx, search, path, nil, nil, 0, &count) == MV_OK, count > 0 else { return [] }
-    var ms = [Int64](repeating: 0, count: Int(count))
-    var got: UInt32 = 0
-    let st = ms.withUnsafeMutableBufferPointer { fn(t.ctx, search, path, $0.baseAddress, nil, count, &got) }
-    guard st == MV_OK else { return [] }
-    return Array(ms.prefix(Int(min(got, count))))
+    t.guarded { () -> [Int64] in
+      guard let fn = t.a.clip_matches else { return [] }
+      var count: UInt32 = 0
+      guard fn(t.ctx, search, path, nil, nil, 0, &count) == MV_OK, count > 0 else { return [] }
+      var ms = [Int64](repeating: 0, count: Int(count))
+      var got: UInt32 = 0
+      let st = ms.withUnsafeMutableBufferPointer { fn(t.ctx, search, path, $0.baseAddress, nil, count, &got) }
+      guard st == MV_OK else { return [] }
+      return Array(ms.prefix(Int(min(got, count))))
+    } ?? []
   }
 
   nonisolated static func nearest(_ ms: [Int64], to t: Int64) -> Int {
@@ -465,6 +623,7 @@ final class SearchModel: ObservableObject {
     guard search != 0, !path.isEmpty else { return false }
     // Read now if the markers are for another clip (a no-block count and copy).
     if markerPath != path {
+      markerSeq += 1  // an older read still in flight does not overwrite these
       markerMs = SearchModel.clipMatches(table, search: search, path: path)
       markerPath = path
     }
