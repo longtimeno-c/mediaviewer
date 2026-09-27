@@ -20,6 +20,14 @@ enum class status : std::int32_t {
   cancelled,
   device_lost,
   internal,
+  // Added for issue #42 (Import eject error categories). Appended, never
+  // renumbered: mv_status in <mediaviewer/mediaviewer.h> mirrors these
+  // values exactly (the static_asserts in abi.cpp catch drift).
+  busy,               // an active job or another process still holds it open
+  not_removable,      // eject offered/attempted on a fixed or network volume
+  permission_denied,
+  not_found,          // the volume or device is already gone
+  timeout,
 };
 
 // Short, stable, allocation-free name. Suitable for logs and ETW.
@@ -34,6 +42,11 @@ constexpr const char* status_name(status s) noexcept {
     case status::cancelled:          return "CANCELLED";
     case status::device_lost:        return "DEVICE_LOST";
     case status::internal:           return "INTERNAL";
+    case status::busy:               return "BUSY";
+    case status::not_removable:      return "NOT_REMOVABLE";
+    case status::permission_denied:  return "PERMISSION_DENIED";
+    case status::not_found:          return "NOT_FOUND";
+    case status::timeout:            return "TIMEOUT";
   }
   return "UNKNOWN";
 }

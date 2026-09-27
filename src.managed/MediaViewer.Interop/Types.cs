@@ -16,6 +16,12 @@ public enum MvStatus
     Cancelled = 6,
     DeviceLost = 7,
     Internal = 8,
+    /// <summary>Added for issue #42 (Import eject error categories).</summary>
+    Busy = 9,
+    NotRemovable = 10,
+    PermissionDenied = 11,
+    NotFound = 12,
+    Timeout = 13,
 }
 
 /// <summary>Mirrors <c>mv_completion_kind</c>.</summary>

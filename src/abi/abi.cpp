@@ -64,6 +64,13 @@ static_assert(static_cast<int>(mv::status::corrupt) == MV_ERR_CORRUPT, "mv_statu
 static_assert(static_cast<int>(mv::status::cancelled) == MV_ERR_CANCELLED, "mv_status drift");
 static_assert(static_cast<int>(mv::status::device_lost) == MV_ERR_DEVICE_LOST, "mv_status drift");
 static_assert(static_cast<int>(mv::status::internal) == MV_ERR_INTERNAL, "mv_status drift");
+static_assert(static_cast<int>(mv::status::busy) == MV_ERR_BUSY, "mv_status drift");
+static_assert(static_cast<int>(mv::status::not_removable) == MV_ERR_NOT_REMOVABLE,
+              "mv_status drift");
+static_assert(static_cast<int>(mv::status::permission_denied) == MV_ERR_PERMISSION_DENIED,
+              "mv_status drift");
+static_assert(static_cast<int>(mv::status::not_found) == MV_ERR_NOT_FOUND, "mv_status drift");
+static_assert(static_cast<int>(mv::status::timeout) == MV_ERR_TIMEOUT, "mv_status drift");
 
 static_assert(sizeof(mv_completion) == 40, "mv_completion layout is part of the ABI");
 static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the ABI");

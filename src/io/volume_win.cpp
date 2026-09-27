@@ -189,9 +189,14 @@ result<std::vector<volume_info>> list_volumes() {
 expected eject_volume(std::string_view root_utf8) {
   const std::wstring root = wide(root_utf8);
   const std::wstring dev = device_path_for(root);
-  if (dev.empty()) return err(status::invalid_arg);
+  // No drive-letter device path: a mounted folder or UNC root. Nothing this
+  // function knows how to eject; the caller (engine::eject) is expected to
+  // have already turned away anything that is not removable, but answer the
+  // same way if it is called directly.
+  if (dev.empty()) return err(status::not_removable);
   STORAGE_DEVICE_NUMBER number{};
   const bool have_number = device_number(dev, number);
+  bool open_failed = false;
 
   {
     handle h(::CreateFileW(dev.c_str(), GENERIC_READ | GENERIC_WRITE,
@@ -199,11 +204,15 @@ expected eject_volume(std::string_view root_utf8) {
     if (h) {
       DWORD got = 0;
       bool locked = false;
-      for (int i = 0; i < 10 && !locked; ++i) {
+      // A scan or thumbnail read that just finished on this card can still be
+      // closing its handle (antivirus and Explorer's own thumbnail cache add
+      // to the delay); 3 s of retries on the eject worker thread — never the
+      // UI thread — clears that without mislabelling a truly idle card as busy.
+      for (int i = 0; i < 30 && !locked; ++i) {
         locked = ::DeviceIoControl(h.h, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &got, nullptr);
-        if (!locked) ::Sleep(100);  // the eject worker, never the UI thread
+        if (!locked) ::Sleep(100);
       }
-      if (!locked) return err(status::io);  // something still has a file open
+      if (!locked) return err(status::busy);  // something still has a file open
       if (::DeviceIoControl(h.h, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &got, nullptr)) {
         PREVENT_MEDIA_REMOVAL allow{};
         allow.PreventMediaRemoval = FALSE;
@@ -214,14 +223,23 @@ expected eject_volume(std::string_view root_utf8) {
           return {};
         }
       }
+    } else {
+      const DWORD code = ::GetLastError();
+      if (code == ERROR_ACCESS_DENIED) return err(status::permission_denied);
+      if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND ||
+          code == ERROR_DEV_NOT_EXIST) {
+        return err(status::not_found);
+      }
+      open_failed = true;
     }
   }
 
   // A drive whose medium is not removable (a USB stick or SSD): ask PnP to
   // remove the device, parent first, the way "Safely Remove" does.
-  if (!have_number) return err(status::io);
+  if (!have_number) return err(open_failed ? status::io : status::not_found);
   const DEVINST disk = disk_devinst(number.DeviceNumber);
-  if (!disk) return err(status::io);
+  if (!disk) return err(status::not_found);
+  bool vetoed = false;
   DEVINST parent = 0;
   for (DEVINST target : {DEVINST{0}, disk}) {
     if (target == 0) {
@@ -234,8 +252,11 @@ expected eject_volume(std::string_view root_utf8) {
         veto == PNP_VetoTypeUnknown) {
       return {};
     }
+    // A veto (device in use, another handle open, a policy) is the same
+    // "busy" story as the volume lock above, not a bare I/O failure.
+    if (veto != PNP_VetoTypeUnknown) vetoed = true;
   }
-  return err(status::io);
+  return err(vetoed ? status::busy : status::io);
 }
 
 // ---------------------------------------------------------------------------

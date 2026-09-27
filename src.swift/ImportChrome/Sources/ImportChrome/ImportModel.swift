@@ -37,6 +37,9 @@ struct ImportSource: Identifiable, Equatable {
   let label: String
   let detail: String
   let volumeID: String
+  /// Whether this source can ever be ejected (issue #41/#42): a card or a
+  /// USB/network drive, never an ordinary folder or a fixed disk.
+  let removable: Bool
   var id: String { root }
 }
 
@@ -100,11 +103,17 @@ final class ImportModel: ObservableObject {
   @Published var summary: [String] = []
   @Published var summaryTitle = ""
   @Published var canRetry = false
+  @Published var summaryOffersEject = false
+  @Published var ejectFailureSection: String?
   @Published var reportPath = ""
   @Published var banner = ""
   @Published var bannerJob: UInt64 = 0
   @Published var thumbs: [Int: NSImage] = [:]
   @Published var historyRows: [String] = []
+  /// Whether the current source can ever be ejected (issue #41/#42).
+  @Published var removable = false
+  @Published var explainerSection: String?
+  @Published var confirmingImport = false
 
   var marks: [String] = []
   private var presets: [[String: Any]] = []
@@ -114,6 +123,9 @@ final class ImportModel: ObservableObject {
   private(set) var job: UInt64 = 0
   private var destination = ""
   private var requested = Set<Int>()
+  private(set) var confirmFiles = 0
+  private(set) var confirmBytes: Int64 = 0
+  var destinationPreview: String { destination }
 
   init(table: ImportTable) { self.table = table }
 
@@ -152,11 +164,12 @@ final class ImportModel: ObservableObject {
       var detail = total > 0 ? ByteCountFormatter.string(fromByteCount: total, countStyle: .file) + " · " : ""
       detail += fresh >= 0 ? "\(fresh) new" : (kind == "network" ? "network (slower)" : "")
       let label = (s["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? root
-      list.append(ImportSource(root: root, label: label, detail: detail, volumeID: s["volume_id"] as? String ?? ""))
+      let removable = s["removable"] as? Bool ?? false
+      list.append(ImportSource(root: root, label: label, detail: detail, volumeID: s["volume_id"] as? String ?? "", removable: removable))
     }
     let current = select ?? (selectedSource.isEmpty ? nil : selectedSource)
     if let current, !list.contains(where: { $0.root == current }) {
-      list.insert(ImportSource(root: current, label: current, detail: "", volumeID: ""), at: 0)
+      list.insert(ImportSource(root: current, label: current, detail: "", volumeID: "", removable: false), at: 0)
     }
     sources = list
     if let pick = list.first(where: { $0.root == current }) ?? list.first, pick.root != selectedSource || scan == 0 {
@@ -167,6 +180,7 @@ final class ImportModel: ObservableObject {
   func load(_ source: ImportSource) {
     selectedSource = source.root
     volumeID = source.volumeID
+    removable = source.removable
     title = source.root + " · reading…"
     days = []
     thumbs = [:]
@@ -226,6 +240,7 @@ final class ImportModel: ObservableObject {
     }
     let source = root["source"] as? [String: Any] ?? [:]
     let label = (source["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? selectedSource
+    if let sourceRemovable = source["removable"] as? Bool { removable = sourceRemovable }
     let n = { (k: String) in totals[k] as? Int ?? 0 }
     title = "\(label) · \(n("new")) new of \(n("units")) · " +
       ByteCountFormatter.string(fromByteCount: Int64(n("bytes")), countStyle: .file)
@@ -269,6 +284,8 @@ final class ImportModel: ObservableObject {
       " · \(n("duplicates")) duplicates skipped" +
       (eta >= 0 ? " · ≈ \(max(1, eta / 60)) min at \(Int(rate / 1_000_000)) MB/s" : " · time shown after the first import from this device")
     importCount = n("selected_units")
+    confirmFiles = n("selected_files")
+    confirmBytes = Int64(n("selected_bytes"))
   }
 
   func thumbnail(for tile: ImportTile) {
@@ -339,7 +356,15 @@ final class ImportModel: ObservableObject {
 
   // MARK: jobs
 
+  /// Asks for a clear count-and-destination confirmation before anything is
+  /// copied (issue #41); `startConfirmed()` is what actually starts the job.
   func start() {
+    guard !copying, plan != 0 else { return }
+    confirmingImport = true
+  }
+
+  func startConfirmed() {
+    confirmingImport = false
     guard !copying, plan != 0, let id = table.id({ api.start!(table.ctx, plan, $0) }) else { return }
     job = id
     copying = true
@@ -387,6 +412,9 @@ final class ImportModel: ObservableObject {
     let copied = s["copied"] as? [String: Any] ?? [:]
     let skipped = s["skipped"] as? [[String: Any]] ?? []
     let failed = s["failed"] as? [[String: Any]] ?? []
+    // Eject is only ever offered where it could work (issue #41/#42): never
+    // for an ordinary folder or a fixed disk.
+    summaryOffersEject = s["source_removable"] as? Bool ?? false
     summaryTitle = "\(copied["files"] as? Int ?? 0) copied · \(skipped.count) skipped · \(failed.count) failed" +
       ((s["ejected"] as? Bool ?? false) ? " · card ejected" : "")
     summary = failed.map { "Failed: \($0["name"] as? String ?? "") — \($0["reason"] as? String ?? "")" } +
@@ -403,11 +431,38 @@ final class ImportModel: ObservableObject {
     chrome?.track(id, label: "retry")
   }
 
+  /// A short, specific reason for each eject failure category (issue #42),
+  /// instead of one "in use" message for everything.
+  private func ejectFailureMessage(_ status: mv_status) -> String {
+    switch status {
+    case MV_ERR_BUSY:
+      return "The card is still in use (a copy or scan is reading from it) and was not ejected."
+    case MV_ERR_NOT_REMOVABLE:
+      return "This is not a removable card or drive, so there is nothing to eject."
+    case MV_ERR_PERMISSION_DENIED:
+      return "macOS would not let this app eject the card. Try the Finder's own Eject."
+    case MV_ERR_NOT_FOUND:
+      return "The card is already gone — it looks like it was already removed."
+    case MV_ERR_TIMEOUT:
+      return "Ejecting the card took too long and was given up on. It may still be safe to remove."
+    default:
+      return "The card could not be ejected."
+    }
+  }
+
   func eject() {
     let t = table, root = selectedSource
     Task.detached {
-      let ok = t.api.pointee.eject!(t.ctx, root) == MV_OK
-      await MainActor.run { self.bottom = ok ? "Ejected. The card can be removed." : "The card is in use and was not ejected." }
+      let status = t.api.pointee.eject!(t.ctx, root)
+      await MainActor.run {
+        if status == MV_OK {
+          self.bottom = "Ejected. The card can be removed."
+          self.ejectFailureSection = nil
+        } else {
+          self.bottom = self.ejectFailureMessage(status)
+          self.ejectFailureSection = ExplainerSection.eject.rawValue
+        }
+      }
     }
   }
 
@@ -468,6 +523,76 @@ final class ImportModel: ObservableObject {
       let files = ((j["summary"] as? [String: Any])?["copied"] as? [String: Any])?["files"] as? Int
       return "\(when.formatted(date: .abbreviated, time: .shortened)) · \(j["kind"] as? String ?? "") · \(j["label"] as? String ?? "") \(j["source"] as? String ?? "") · \(j["state"] as? String ?? "")" +
         (files.map { " · \($0) files" } ?? "")
+    }
+  }
+
+  // MARK: first-use explainer and contextual help (issue #41)
+
+  private static let explainerSeenKey = "MediaViewer.Import.explainerSeen"
+
+  func showFirstUseExplainerIfNeeded() {
+    if UserDefaults.standard.bool(forKey: Self.explainerSeenKey) { return }
+    UserDefaults.standard.set(true, forKey: Self.explainerSeenKey)
+    explainerSection = ExplainerSection.overview.rawValue
+  }
+
+  func showExplainer(_ section: ExplainerSection = .overview) {
+    explainerSection = section.rawValue
+  }
+}
+
+/// A named section of the explainer sheet (issue #41), so an error or a
+/// contextual "?" can jump straight to the relevant part instead of always
+/// opening at the top.
+enum ExplainerSection: String, CaseIterable, Identifiable {
+  case overview, sources, filters, destination, verify, pause, eject
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .overview: return "What Import does"
+    case .sources: return "Cards vs. folders"
+    case .filters: return "New / All / Marked / date range, and duplicates"
+    case .destination: return "Destination and name preview"
+    case .verify: return "Verified copies"
+    case .pause: return "Pause and resume"
+    case .eject: return "Why Eject is (or isn't) offered"
+    }
+  }
+
+  var body: String {
+    switch self {
+    case .overview:
+      return "Import copies photos and video from a card or folder into your library. It never " +
+        "edits, deletes or overwrites anything at the source — files there are only read (an " +
+        "original is never modified, on the card or off it)."
+    case .sources:
+      return "A card, USB drive or network share appears on the left with its free space and how " +
+        "many files on it are new. A folder you add with “＋ Folder…” is scanned and copied the " +
+        "same way, but — because it is not removable media — Import never offers to eject it."
+    case .filters:
+      return "“New since last import” skips anything this source has given you before, tracked " +
+        "per card even after it is unplugged and replugged. “All” considers everything, “Marked” " +
+        "only what you starred in the viewer, and a date range limits by the date each file was " +
+        "taken. Before copying, every file's content is checked against what is already at the " +
+        "destination (or the whole library, with the wider duplicate scope); an exact match is " +
+        "skipped, never overwritten or duplicated."
+    case .destination:
+      return "“WHERE FILES GO” and the grid show exactly which folder — and, if renaming is " +
+        "turned on, which file name — each file will get before you click Import. Nothing is " +
+        "copied until you start the import."
+    case .verify:
+      return "Every copy is hashed and checked against the source as it is written; full verify " +
+        "also reads the copy back from the drive. A copy that does not match is reported as " +
+        "failed rather than left silently short."
+    case .pause:
+      return "Space pauses or resumes a running import. If it is interrupted, files already " +
+        "verified are kept and are not copied again when you resume."
+    case .eject:
+      return "Eject only appears for a card, USB drive or network share — never for an ordinary " +
+        "folder or your main disk, which cannot be ejected at all. It is also refused while a " +
+        "copy or scan is still reading from that source; if eject fails, the message says why " +
+        "(still busy, already gone, not removable, or macOS refused it)."
     }
   }
 }
