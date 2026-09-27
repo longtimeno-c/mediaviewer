@@ -400,6 +400,7 @@ add_library(mv_player STATIC
   src/player/poster.cpp
   # headers, listed so they show up in the IDE
   src/player/media_source.h
+  src/player/playback_hold.h
   src/player/video_source.h
   src/player/audio_sink.h
   src/player/audio_block.h
@@ -915,6 +916,8 @@ if(MV_BUILD_TESTS)
     tests/test_trim_state.cpp
     # Issue #38: the transport's idle state, both hosts.
     tests/test_transport_autohide.cpp
+    # Issue #44: no clip plays under the gallery, both hosts.
+    tests/test_playback_hold.cpp
     src/abi/clip_session.cpp
     src/shell/trim_state.cpp
     tests/test_corpus.cpp

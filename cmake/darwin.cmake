@@ -278,6 +278,7 @@ add_library(mv_player STATIC
   src/player/container_probe.cpp
   src/player/poster.cpp
   src/player/media_source.h
+  src/player/playback_hold.h
   src/player/video_source.h
   src/player/audio_sink.h
   src/player/audio_block.h
@@ -725,6 +726,8 @@ if(MV_BUILD_TESTS)
     src/shell/spotlight_fields.cpp
     # Issue #38: the transport's idle state, both hosts.
     tests/test_transport_autohide.cpp
+    # Issue #44: no clip plays under the gallery, both hosts.
+    tests/test_playback_hold.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

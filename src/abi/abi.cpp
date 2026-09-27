@@ -1809,6 +1809,7 @@ mv_status MV_CALL mv_video_close(mv_session_t session) {
 mv_status MV_CALL mv_video_play(mv_session_t session) {
   return static_cast<mv_status>(guard("mv_video_play", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
+    session->video.user_transport();
     session->video.command([=](mv::player::media_source& s) { s.play(); });
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
@@ -1817,7 +1818,16 @@ mv_status MV_CALL mv_video_play(mv_session_t session) {
 mv_status MV_CALL mv_video_pause(mv_session_t session) {
   return static_cast<mv_status>(guard("mv_video_pause", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
+    session->video.user_transport();
     session->video.command([=](mv::player::media_source& s) { s.pause(); });
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
+}
+mv_status MV_CALL mv_video_set_hold(mv_session_t session, int32_t hold, int32_t resume) {
+  return static_cast<mv_status>(guard("mv_video_set_hold", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->video.set_hold(hold != 0, resume != 0);
     if (session->image_ready_event) ::SetEvent(session->image_ready_event);
     return status::ok;
   }));

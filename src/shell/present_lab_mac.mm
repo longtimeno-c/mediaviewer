@@ -460,6 +460,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
     } else if (media_) {
       if (media_->state() == player::play_state::playing) media_->pause();
       else media_->play();
+      hold_.user_transport();
       changed = true;
     }
   }
@@ -1118,6 +1119,19 @@ void present_lab_mac::render_thread_main() noexcept {
           }
         }
 
+        // Issue #44: the gallery opened or closed over the canvas.
+        if (snapshot.video_hold != hold_.held()) {
+          const std::uint64_t live = item_counter_.load(std::memory_order_acquire);
+          const player::held_clip clip{media_ != nullptr, media_item_,
+                                       media_ ? media_->state() : player::play_state::stopped};
+          const auto action = snapshot.video_hold
+                                  ? hold_.hold(live, clip)
+                                  : hold_.release(live, clip, snapshot.video_hold_resume);
+          if (action == player::hold_action::pause) media_->pause();
+          if (action == player::hold_action::play) media_->play();
+          if (action != player::hold_action::none) redraw = true;
+        }
+
         // PR 19: a clip finished opening on a worker. The previous picture stays
         // up until the clip's first frame is ready.
         if (pending_media* pm = pending_media_.exchange(nullptr)) {
@@ -1128,7 +1142,8 @@ void present_lab_mac::render_thread_main() noexcept {
           speed_rung_ = 2;
           video_muted_ = false;
           media_->set_volume(video_volume_);
-          media_->play();
+          // Under the gallery it stays paused on its first frame (issue #44).
+          if (hold_.autoplay(media_item_)) media_->play();
           redraw = true;
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
