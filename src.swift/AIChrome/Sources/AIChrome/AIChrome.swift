@@ -162,15 +162,15 @@ public final class MVAIChrome: NSObject {
   }
 
   /// Settings → Local search: the management view. Kept, so the base Settings
-  /// can re-embed the same view; it sizes itself (intrinsic content size).
+  /// can re-embed the same view. It answers its height for a width
+  /// (-fittingHeightForWidth:) and says when that changes (SettingsHostView).
   @objc public func settingsView() -> NSView {
     MainActor.assumeIsolated {
       if let settingsHost { return settingsHost }
       guard let m = managementModel() else { return NSView() }
-      let hosting = NSHostingView(rootView: ManagementView(model: m))
-      hosting.sizingOptions = [.intrinsicContentSize]
-      settingsHost = hosting
-      return hosting
+      let host = SettingsHostView(ManagementView(model: m))
+      settingsHost = host
+      return host
     }
   }
 

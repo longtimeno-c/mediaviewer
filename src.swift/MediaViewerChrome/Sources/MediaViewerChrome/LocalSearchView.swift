@@ -60,6 +60,12 @@ final class LocalSearchStore: ObservableObject {
           detail: "Find videos by what you hear: sounds like “dog barking” and words that are said. Optional.",
           required: false),
   ]
+  /// The first installed-state read has landed. It verifies every installed
+  /// file (seconds for the 2.3 GB pack), and the channel probe used to answer
+  /// first: Settings offered "Install local search" on every start and a click
+  /// downloaded it all again (owner report, 2026-09-27). Nothing offers an
+  /// install or a download until this is true.
+  @Published private(set) var stateKnown = false
   @Published private(set) var used: UInt64 = 0
   @Published private(set) var ceiling: UInt64 = 3_000_000_000
   @Published private(set) var loaded = false
@@ -191,6 +197,7 @@ final class LocalSearchStore: ObservableObject {
           self.used = used
           if ceiling > 0 { self.ceiling = ceiling }
         }
+        self.stateKnown = true
       }
     }
   }
@@ -226,7 +233,7 @@ final class LocalSearchStore: ObservableObject {
   }
 
   func install(_ id: String) {
-    guard busyPiece == nil, let piece = pieces.first(where: { $0.id == id }) else { return }
+    guard stateKnown, busyPiece == nil, let piece = pieces.first(where: { $0.id == id }) else { return }
     if !piece.required && !coreInstalled {
       message = "Install Core first."
       return
@@ -327,52 +334,64 @@ struct LocalSearchSection: View {
     VStack(alignment: .leading, spacing: 10) {
       // An item of Settings → Add-ons, titled like Import.
       Text("Local search").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-      if !store.coreInstalled {
-        introCard
-      }
-      VStack(spacing: 0) {
-        ForEach(store.pieces) { piece in
-          pieceRow(piece)
-          if piece.id != store.pieces.last?.id {
-            Rectangle().fill(MVTheme.hairline).frame(height: 1)
-          }
-        }
-      }
-      .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-      .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
-      budgetBar
-      if let id = store.confirmingRemove {
-        removeConfirm(id)
-          .transition(.opacity.combined(with: .move(edge: .top)))
-      }
-      if !store.message.isEmpty {
-        Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-          .fixedSize(horizontal: false, vertical: true)
-          .transition(.opacity)
-      }
-      if store.loading {
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.small)
-          Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-        }
-      } else if store.coreInstalled && !store.loaded && !store.loadError.isEmpty {
-        Text(store.loadError == "UNSUPPORTED_FORMAT"
-             ? "This Local search needs a newer MediaViewer. Update MediaViewer, then reinstall it."
-             : "The installed Local search did not pass verification, so it was not started. Reinstall Core.")
-          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      // The pack's own management view: compute, quality, folders, index,
-      // People. Owned by AI.bundle; rebuilt when the chrome is re-attached.
-      if store.loaded {
-        AddonSettingsHost(addonID: "ai")
-          .id(store.chromeGeneration)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .transition(.opacity)
+      if !store.stateKnown {
+        // Quiet, and no button: nothing is offered for download while what
+        // is installed is still being read.
+        note("Checking installed add-ons…")
+      } else {
+        installed
       }
     }
     .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: store.confirmingRemove)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.loaded)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.stateKnown)
+  }
+
+  @ViewBuilder
+  private var installed: some View {
+    if !store.coreInstalled {
+      introCard
+    }
+    VStack(spacing: 0) {
+      ForEach(store.pieces) { piece in
+        pieceRow(piece)
+        if piece.id != store.pieces.last?.id {
+          Rectangle().fill(MVTheme.hairline).frame(height: 1)
+        }
+      }
+    }
+    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    budgetBar
+    if let id = store.confirmingRemove {
+      removeConfirm(id)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+    if !store.message.isEmpty {
+      Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+        .fixedSize(horizontal: false, vertical: true)
+        .transition(.opacity)
+    }
+    if store.loading {
+      HStack(spacing: 8) {
+        ProgressView().controlSize(.small)
+        Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+      }
+    } else if store.coreInstalled && !store.loaded && !store.loadError.isEmpty {
+      Text(store.loadError == "UNSUPPORTED_FORMAT"
+           ? "This Local search needs a newer MediaViewer. Update MediaViewer, then reinstall it."
+           : "The installed Local search did not pass verification, so it was not started. Reinstall Core.")
+        .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    // The pack's own management view: compute, quality, folders, index,
+    // People. Owned by AI.bundle; rebuilt when the chrome is re-attached.
+    if store.loaded {
+      AddonSettingsEmbed(addonID: "ai")
+        .id(store.chromeGeneration)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .transition(.opacity)
+    }
   }
 
   private var introCard: some View {
@@ -518,11 +537,42 @@ struct LocalSearchSection: View {
   }
 }
 
-/// The add-on chrome's own Settings view (an NSView from AI.bundle, kept alive
-/// by the chrome), placed in the SwiftUI Settings list. It sizes itself: the
-/// chrome's NSHostingView publishes its intrinsic content size.
-struct AddonSettingsHost: NSViewRepresentable {
+/// The add-on chrome's Settings view in the list, sized for the width it is
+/// given. The chrome's view answers -fittingHeightForWidth: and posts
+/// MVAddonSettingsViewHeightChanged when its content grows or shrinks (a
+/// status line wraps, a confirmation opens); an intrinsic size alone is the
+/// unwrapped one-line height, so wrapped text drew over the rows below it
+/// (owner report, 2026-09-27).
+struct AddonSettingsEmbed: View {
   let addonID: String
+  @State private var heightGeneration = 0
+
+  var body: some View {
+    AddonSettingsHost(addonID: addonID, heightGeneration: heightGeneration)
+      .onReceive(NotificationCenter.default.publisher(for: AddonSettingsHost.heightChanged)) { _ in
+        heightGeneration &+= 1
+      }
+  }
+}
+
+/// The add-on chrome's own Settings view (an NSView from AI.bundle, kept alive
+/// by the chrome), placed in the SwiftUI Settings list.
+struct AddonSettingsHost: NSViewRepresentable {
+  static let heightChanged = Notification.Name("MVAddonSettingsViewHeightChanged")
+  private static let fittingHeight = NSSelectorFromString("fittingHeightForWidth:")
+
+  let addonID: String
+  /// Moves when the chrome's content changed height: SwiftUI asks sizeThatFits again.
+  var heightGeneration = 0
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+    // A chrome from before the selector: its intrinsic size, as before.
+    guard let width = proposal.width, width.isFinite, width > 0,
+          nsView.responds(to: Self.fittingHeight) else { return nil }
+    typealias Fn = @convention(c) (AnyObject, Selector, CGFloat) -> CGFloat
+    let fn = unsafeBitCast(nsView.method(for: Self.fittingHeight), to: Fn.self)
+    return CGSize(width: width, height: fn(nsView, Self.fittingHeight, width))
+  }
 
   func makeNSView(context: Context) -> NSView {
     guard let raw = addonID.withCString({ mv_addon2_settings_view($0) }) else { return NSView() }

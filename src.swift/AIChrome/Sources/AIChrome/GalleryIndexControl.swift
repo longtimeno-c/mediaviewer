@@ -155,7 +155,8 @@ final class GalleryIndexModel: ObservableObject {
   }
 
   func setMedia(_ media: UInt32) {
-    guard let root, table.has(\mv_ai_api.root_set_media) else { return }
+    // Sound / Both only once the Sound piece is loaded (the menu disables them too).
+    guard let root, table.has(\mv_ai_api.root_set_media), media & MV_AI_MEDIA_SOUND == 0 || audioReady else { return }
     table.call { table.a.root_set_media?(table.ctx, root.id, media) }
     reloadRoots()
     refresh()

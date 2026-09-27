@@ -408,8 +408,9 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
 - [ ] **Settings:** a *Sound* row with its size beside Core and People; the budget bar adds its
       ~1.03 GB; a family over 3 GB is refused before download. Install while Core runs is picked
       up at once (`set_setting("reload")`); Remove asks, then sound search stops.
-- [ ] **"Index videos for: Pictures · Sound · Both"** (segmented): Sound and Both are disabled
-      with the hint "install Sound above" until the piece is ready; enabled after. Each indexed
+- [ ] **"Index videos for: Pictures · Sound · Both"** (an `NSSegmentedControl`: a `.segmented`
+      `Picker` ignored per-item `.disabled`, owner report 2026-09-27): Sound and Both cannot be
+      clicked, with the hint "install Sound above", until the piece is loaded; enabled after. Each indexed
       folder's menu offers Default / Pictures / Sound / Both (→ `root_set_media`; Sound/Both
       disabled without the piece) and shows its choice ("Videos: Sound").
 - [ ] **Status:** the management view and the panel footer show
@@ -518,5 +519,6 @@ Swift (AI chrome, `AIChrome`):
 - Audio (2026-09-27): `MemoryLayout<mv_ai_api>.offset(of:)` with a `PartialKeyPath` (`has(_:)`)
   guarding `root_set_media` / `result_snippet`; `mv_ai_result.match` and the appended
   `mv_ai_status` sound/speech fields read through the C import; `result_snippet` called on the
-  worker inside the result loop; a segmented `Picker` with disabled tags; `Menu` items with a
+  worker inside the result loop; `NSSegmentedControl.setEnabled(_:forSegment:)` in a
+  representable ("Index videos for"); `Menu` items with a
   `Label` checkmark; the chip `Set<Find>` OR'ed into `kinds`.
