@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // People (plan/17 PR 24; the chrome brief's management panel): circular covers
-// cut from the cover picture with cover_box in memory (never written to disk),
-// editable names, "Show photos", merging (drag a person onto another, ⌘-click
+// cut from the cover picture with cover_box in memory (never written to disk);
+// a click opens their photos in the gallery (Settings steps aside); editable
+// names, merging (drag a person onto another, ⌘-click
 // several then "Merge into…", or the context menu), and a person's faces with
 // "Not this person" (hover ✕ or Delete) and multi-select "Split into new
 // person". A grouping that cannot be corrected is worse than none.
@@ -54,7 +55,7 @@ struct PeopleGrid: View {
           mergeBar
             .transition(.opacity.combined(with: .move(edge: .top)))
         } else {
-          Text("The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
+          Text("Click a person to see their photos. The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -92,7 +93,8 @@ struct PeopleGrid: View {
     } else if !selection.isEmpty {
       selection = []
     } else {
-      open(person)
+      // A click shows who it is: their photos, in the gallery.
+      model.showPhotos(of: person)
     }
   }
 
@@ -139,6 +141,30 @@ private struct PersonCard: View {
                 monogram: String(person.name.prefix(1)).uppercased())
         .frame(width: 84, height: 84)
         .overlay(Circle().stroke(ring, lineWidth: selected || hover || dropTarget ? 2.5 : 1))
+        .overlay {
+          if model.opening == person.id {
+            ZStack {
+              Circle().fill(.black.opacity(0.35))
+              ProgressView().controlSize(.small).tint(.white)
+            }
+            .transition(.opacity)
+          }
+        }
+        .overlay(alignment: .topTrailing) {
+          // Correcting a person's faces: here on hover, and in the context menu.
+          if hover && !selected {
+            Button(action: open) {
+              Image(systemName: "ellipsis.circle.fill")
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.6))
+                .font(.system(size: 20))
+            }
+            .buttonStyle(.plain)
+            .help("Faces… — rename, merge, or remove faces that are someone else")
+            .accessibilityLabel("Faces")
+            .transition(.opacity)
+          }
+        }
         .overlay(alignment: .bottomTrailing) {
           if selected {
             Image(systemName: "checkmark.circle.fill")
@@ -167,9 +193,11 @@ private struct PersonCard: View {
           model.merge(into: person.id, from: ids)
           return true
         } isTargeted: { dropTarget = $0 }
-        .help("Click to see this person's faces. Drag onto another person to merge them.")
+        .help("Click to see this person's photos. Drag onto another person to merge them.")
         .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Shows their photos in the gallery")
+        .accessibilityAction(named: "Faces") { open() }
       TextField("Add a name", text: $name)
         .textFieldStyle(.plain)
         .multilineTextAlignment(.center)

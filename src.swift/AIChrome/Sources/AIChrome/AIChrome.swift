@@ -33,6 +33,9 @@ public final class MVAIChrome: NSObject {
   private var galleryIndex: GalleryIndexModel?
   private var galleryHost: NSView?
   private var gallerySearch: SearchModel?
+  /// People → a person, opened in the gallery: its own search, apart from
+  /// the panel's and the bar's.
+  private var personSearch: SearchModel?
   private var galleryShown = false
   /// The model whose results the viewer lists now: its clip matches are the
   /// scrub markers and N / Shift+N.
@@ -84,6 +87,8 @@ public final class MVAIChrome: NSObject {
         // To its owner only: a model releases an answer it does not own.
         if let g = gallerySearch, g.owns(identifier) {
           g.searchDone(identifier, status: status, count: payload)
+        } else if let p = personSearch, p.owns(identifier) {
+          p.searchDone(identifier, status: status, count: payload)
         } else {
           search?.searchDone(identifier, status: status, count: payload)
         }
@@ -276,6 +281,8 @@ public final class MVAIChrome: NSObject {
       settingsHost = nil
       gallerySearch?.releaseAll()
       gallerySearch = nil
+      personSearch?.releaseAll()
+      personSearch = nil
       galleryIndex?.stop()
       galleryIndex = nil
       galleryHost = nil
@@ -333,10 +340,22 @@ public final class MVAIChrome: NSObject {
   /// The gallery bar's picks it up with its next query.
   @MainActor func precisionChanged() { search?.precisionChanged() }
 
-  /// People → "Show photos": the person as a search, in the panel.
-  @MainActor func showPerson(id: UInt64, name: String) {
-    guard let m = searchModel(), let p = panelController() else { return }
-    m.showPerson(id: id, name: name)
-    p.show(over: viewerWindow())
+  /// People → a person: their photos in the gallery as a result list; the
+  /// host closes Settings as it opens (owner report, 2026-09-27: it used to
+  /// open the search panel over Settings). `done` hears how it went.
+  @MainActor func showPerson(id: UInt64, name: String, done: @escaping (SearchModel.PersonOpen) -> Void) {
+    guard let table else {
+      done(.failed)
+      return
+    }
+    let m: SearchModel
+    if let personSearch {
+      m = personSearch
+    } else {
+      m = SearchModel(table: table)
+      m.chrome = self
+      personSearch = m
+    }
+    m.openPerson(id: id, name: name, done: done)
   }
 }

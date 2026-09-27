@@ -6642,6 +6642,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                   });
   // Enter shows the chosen result on the canvas; Cmd+Enter the whole list as
   // the gallery grid (the chrome brief, plan/17 "Results are the gallery").
+  // A list opened from Settings (a person's photos) is what the person asked
+  // to see: Settings steps aside (owner report, 2026-09-27).
+  [self setSettingsVisible:NO];
   [self setGalleryVisible:gallery];
   [self updateChromeBarHeight];
   return YES;

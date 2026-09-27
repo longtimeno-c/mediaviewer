@@ -92,6 +92,10 @@ public static partial class IslandHost
             System.Diagnostics.Debug.WriteLine(ex.Message);
             return;
         }
+        // A list opened from Settings or People (a person's photos) is what
+        // the person asked to see: Settings steps aside (owner report,
+        // 2026-09-27). open_settings toggles.
+        if (_settingsVisible) Send(Command.OpenSettings);
         ActivateMainWindow();
     }
 

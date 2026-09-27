@@ -413,7 +413,24 @@ final class ManagementModel: ObservableObject {
     }
   }
 
-  func showPhotos(of person: Person) { chrome?.showPerson(id: person.id, name: person.name) }
+  /// A person's photos, in the gallery (Settings closes as it opens). The
+  /// search takes a moment: the card says so, and says if nothing came back.
+  @Published private(set) var opening: UInt64?
+
+  func showPhotos(of person: Person) {
+    guard let chrome, opening == nil else { return }
+    opening = person.id
+    let name = person.name.isEmpty ? "this person" : person.name
+    chrome.showPerson(id: person.id, name: person.name) { [weak self] outcome in
+      guard let self else { return }
+      self.opening = nil
+      switch outcome {
+      case .opened: break
+      case .nothing: self.note("No photos of \(name) are indexed yet.")
+      case .failed: self.note("Photos of \(name) could not be opened. Try again.")
+      }
+    }
+  }
 }
 
 /// Settings "Precision": a five-step slider, Broader … Stricter, the middle

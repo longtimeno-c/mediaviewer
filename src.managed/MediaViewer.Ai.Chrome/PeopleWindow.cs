@@ -107,6 +107,19 @@ internal sealed class PeopleWindow : Window
                 ShowPerson(p, focusFaces: false);
             }
         };
+        // Double-click: their photos in the gallery (a click selects and shows
+        // their faces here, for correcting).
+        _peopleGrid.DoubleTapped += (_, e) =>
+        {
+            DependencyObject? d = e.OriginalSource as DependencyObject;
+            while (d is not null and not GridViewItem) d = VisualTreeHelper.GetParent(d);
+            if (d is GridViewItem item && _peopleGrid.ItemFromContainer(item) is PersonVm p)
+            {
+                _person = p;
+                ShowPhotos();
+                e.Handled = true;
+            }
+        };
         // Drag a person (or the selected people) onto another to merge them.
         _peopleGrid.DragItemsStarting += (_, e) =>
         {
@@ -180,7 +193,7 @@ internal sealed class PeopleWindow : Window
         var leftHead = new StackPanel { Padding = new Thickness(16, 16, 16, 0), Spacing = 6 };
         leftHead.Children.Add(_look.Text("People", 20, AddonColour.Title));
         leftHead.Children.Add(_look.Text("Found on this computer only. Face data is never shared, and can be deleted in Settings.", 12));
-        _hint = _look.Text("The same person twice? Drag one onto the other, or Ctrl-click several and merge them.", 12);
+        _hint = _look.Text("Double-click a person to see their photos. The same person twice? Drag one onto the other, or Ctrl-click several and merge them.", 12);
         leftHead.Children.Add(_hint);
         // "3 people selected · Merge into… · Cancel": the target keeps its name.
         _mergeCount = _look.Text("", 12, AddonColour.Title, wrap: false);

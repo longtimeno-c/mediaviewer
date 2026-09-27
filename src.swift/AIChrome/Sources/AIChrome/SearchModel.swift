@@ -387,6 +387,10 @@ final class SearchModel: ObservableObject {
   /// query they were not for.
   private func showFailure() {
     openWhenReady = nil
+    if let done = personDone {
+      personDone = nil
+      done(.failed)
+    }
     searching = false
     finished = true
     failed = true
@@ -442,6 +446,10 @@ final class SearchModel: ObservableObject {
           self.openWhenReady = nil
           let opened = !list.isEmpty && self.openNow(gallery: gallery)
           self.answerGallery(opened ? 0 : (list.isEmpty ? 1 : 2), count: list.count)
+          if let done = self.personDone {
+            self.personDone = nil
+            done(opened ? .opened : list.isEmpty ? .nothing : .failed)
+          }
         }
       }
     }
@@ -683,6 +691,23 @@ final class SearchModel: ObservableObject {
 
   func showPerson(id: UInt64, name: String) {
     reference = Reference(kind: .person(id: id), label: name.isEmpty ? "This person" : "Photos of \(name)")
+    run(keepSelection: false)
+  }
+
+  enum PersonOpen { case opened, nothing, failed }
+  /// Hears how openPerson ended, once.
+  private var personDone: ((PersonOpen) -> Void)?
+
+  /// People → a person: their photos and moments, from every folder, opened
+  /// straight into the gallery as a result list, the panel never shown.
+  func openPerson(id: UInt64, name: String, done: @escaping (PersonOpen) -> Void) {
+    scope = .all
+    kinds = .all
+    finds = []
+    query = ""
+    reference = Reference(kind: .person(id: id), label: name.isEmpty ? "This person" : "Photos of \(name)")
+    personDone = done
+    openWhenReady = true
     run(keepSelection: false)
   }
 

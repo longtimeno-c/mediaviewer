@@ -346,7 +346,9 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       "Merge into…",
       "Not this person" (hover ✕ and the Delete key) and multi-select "Split into new person"
       persist and re-apply after a rescan.
-- [ ] Search "photos of <name>" returns that person; "Show photos" from a person opens the panel.
+- [ ] Search "photos of <name>" returns that person. Clicking a person in Settings (or "Show
+      photos") opens their photos in the gallery as a result list, not the panel, and Settings
+      closes; Esc goes back to the folder. A person with nothing indexed says so under People.
 - [ ] **Turning faces off deletes every face vector:** confirm the prompt, then scan the pack's
       data folder and the index (`sqlite3 …/index.db .tables`, and `faces.db` gone or empty) —
       no face vectors, crops or names remain on disk; the frame index is intact (searches still
