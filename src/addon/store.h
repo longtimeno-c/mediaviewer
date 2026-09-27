@@ -59,8 +59,8 @@ class store {
   // place. The folder is consumed either way. A family over its ceiling
   // (family_ceiling; the AI pack's 3 GB) is refused: status::unsupported_format,
   // like an add-on that needs a newer app; family_usage says which. An older version than one that
-  // is installed and verifies is refused (status::corrupt): no downgrades. Older versions are removed, or
-  // marked for removal at next start if they are loaded right now.
+  // is installed and verifies is refused (status::corrupt): no downgrades. Older versions stay until
+  // the next start (startup_cleanup): the one replaced may be running. The newest that verifies loads.
   [[nodiscard]] result<installed> install(const std::string& staged_dir) const;
 
   // Installed bytes of a family's verified members, and its ceiling (0 none).

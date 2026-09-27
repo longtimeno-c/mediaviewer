@@ -252,6 +252,14 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     stage(*new_stage, files, newer, k.sign(newer));
     REQUIRE(st.install(*new_stage));
     REQUIRE(st.list()[0].version == "1.10.0");
+    // The version it replaced may be running: it stays until the next start.
+    const fs::path addon_dir = fs::path(st.list()[0].dir).parent_path();
+    REQUIRE(fs::exists(addon_dir / "1.2.3"));
+    st.startup_cleanup();
+    CHECK_FALSE(fs::exists(addon_dir / "1.2.3"));
+    CHECK(fs::exists(addon_dir / "1.10.0"));
+    CHECK_FALSE(fs::exists(addon_dir / "prune.pending"));
+    CHECK(st.list()[0].version == "1.10.0");
   }
   SECTION("a manifest signed by someone else") {
     keypair other;

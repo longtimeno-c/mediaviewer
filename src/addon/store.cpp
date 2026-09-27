@@ -13,6 +13,9 @@ namespace mv::addon {
 namespace {
 
 constexpr const char* kRemoveMarker = "remove.pending";  // in <dir>/, not a version
+// An update names the version that replaced the older ones; they go at the
+// next start, never under a running copy (in <dir>/, not a version).
+constexpr const char* kPruneMarker = "prune.pending";
 
 result<std::vector<std::uint8_t>> read_small(const std::string& path) {
   auto st = io::stat_path(path);
@@ -268,11 +271,23 @@ result<installed> store::install(const std::string& staged_dir) const {
   MV_TRY(const io::rename_outcome moved, io::rename_no_replace(staged_dir, target));
   if (moved != io::rename_outcome::renamed) return err(status::io);
 
-  // Older versions go now, or at next start if one is loaded.
+  // Older versions go at the next start (startup_cleanup), not now: the one
+  // this replaces may be running, and a pack opens its model files long
+  // after it loads (and a Windows DLL cannot be deleted while loaded). Until
+  // then the newest version that verifies is the one that loads.
   if (auto versions = io::child_directories(addon_dir)) {
-    for (const std::string& v : *versions) {
-      if (v == "data" || v == d.m.version) continue;
-      (void)io::remove_tree(io::join_path(addon_dir, v));
+    const bool older = std::any_of(versions->begin(), versions->end(), [&](const std::string& v) {
+      return v != "data" && v != d.m.version;
+    });
+    if (older) {
+      io::file_writer w;
+      const std::string marker = io::join_path(addon_dir, kPruneMarker);
+      (void)io::remove_file(marker);
+      if (auto made = w.create_new(marker); made && *made == io::rename_outcome::renamed) {
+        (void)w.write(std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(d.m.version.data()), d.m.version.size()));
+        (void)w.close();
+      }
     }
   }
   installed out = inspect(target, name);
@@ -338,6 +353,19 @@ void store::startup_cleanup() const {
   if (!dirs) return;
   for (const std::string& name : *dirs) {
     const std::string addon_dir = io::join_path(root_, name);
+    // An update's older versions (install): nothing has loaded them yet.
+    const std::string prune = io::join_path(addon_dir, kPruneMarker);
+    if (auto kept = read_small(prune)) {
+      const std::string version(kept->begin(), kept->end());
+      if (!version.empty() && io::stat_path(io::join_path(addon_dir, version))) {
+        if (auto versions = io::child_directories(addon_dir)) {
+          for (const std::string& v : *versions) {
+            if (v != "data" && v != version) (void)io::remove_tree(io::join_path(addon_dir, v));
+          }
+        }
+      }
+      (void)io::remove_file(prune);
+    }
     const std::string marker = io::join_path(addon_dir, kRemoveMarker);
     auto text = read_small(marker);
     if (!text) continue;
