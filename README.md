@@ -90,7 +90,7 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 - **Folder tree** (`Ctrl+Shift+E`) and sort by name, date modified, size, type or EXIF date taken.
 - **Fit, fill, 100 %, or any zoom.** Wheel zoom toward the cursor with springy, physical-feeling pan and zoom.
 - **Animated GIF, APNG and WebP** play on the same frame clock.
-- **Light or dark.** Follows the system appearance on Windows and macOS; the canvas surround is its own setting.
+- **Light or dark.** Follows the system appearance on Windows and macOS, and so does the canvas surround unless you pick Grey, White, Checkerboard or Dark.
 
 | Gallery | Frame-time overlay (`F3`) |
 |---|---|
@@ -107,6 +107,7 @@ Arrow keys or `A`/`D` browse, `Space` advances, `Insert` marks, `F7`/`F8` copy o
 FFmpeg decode with D3D11 hardware acceleration on the same swapchain as photos. H.264, HEVC, VP9, AV1 and MPEG-2,
 including 10-bit HDR clips mapped to SDR. Audio is the master clock. Seek, frame step (`,` `.`), speed
 0.25x-4x, A-B loop, resume where you left off, and media keys. `;` plays a Live Photo's motion and returns to the still.
+The transport floats over the video and gets out of the way after a moment of playback; any movement brings it back.
 
 ## Know your shot
 

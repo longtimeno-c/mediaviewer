@@ -717,6 +717,8 @@ if(MV_BUILD_TESTS)
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
+    # Issue #38: the transport's idle state, both hosts.
+    tests/test_transport_autohide.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

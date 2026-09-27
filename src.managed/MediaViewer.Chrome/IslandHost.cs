@@ -78,6 +78,9 @@ public static partial class IslandHost
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
         public const int HomeColour = 1016;
+        // Issue #38: arg 1 while a scrub or the More flyout holds the transport
+        // up, 0 when it lets go (chrome_cmd_transport_hold).
+        public const int TransportHold = 1017;
         // PR 12: the comment field was committed (native pulls the text with
         // TakeTreePath, as for OpenPath); Revert puts the file's fields back.
         public const int MetaComment = 1012;
@@ -164,7 +167,7 @@ public static partial class IslandHost
         public const int Wrap = 1 << 2;
         public const int StickyZoom = 1 << 3;
         public const int BackgroundShift = 4;
-        public const int BackgroundMask = 3 << 4;
+        public const int BackgroundMask = 7 << 4;
         // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
         public const int UpdateAutoCheck = 1 << 8;
         // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).

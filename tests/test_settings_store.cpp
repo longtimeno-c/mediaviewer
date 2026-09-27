@@ -69,7 +69,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     view_settings v;
     v.wrap = false;
     v.sticky_zoom = true;
-    v.background = 3;
+    v.background = 4;
     v.sort = 2 | 8;  // PR 9: size, descending
     save_view_settings(store, v);
     save_destinations(store, {"D:\\Cull", "E:\\K\xC3\xA9" "ep"});  // non-ANSI survives
@@ -87,7 +87,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   const view_settings v = load_view_settings(again);
   REQUIRE_FALSE(v.wrap);
   REQUIRE(v.sticky_zoom);
-  REQUIRE(v.background == 3);
+  REQUIRE(v.background == 4);
   REQUIRE(v.sort == (2 | 8));
   // A hand-edited or future key is name, never an out-of-range order.
   again.set_int("view", "sort", 7);
@@ -100,7 +100,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   REQUIRE(again.get_int("update", "auto_check", 1) == 0);
 
   // The file stays readable by the Win32 profile API an older build used.
-  REQUIRE(::GetPrivateProfileIntW(L"view", L"background", -1, path.c_str()) == 3);
+  REQUIRE(::GetPrivateProfileIntW(L"view", L"background", -1, path.c_str()) == 4);
   wchar_t d1[64]{};
   ::GetPrivateProfileStringW(L"destinations", L"d1", L"", d1, 64, path.c_str());
   REQUIRE(std::wstring(d1) == L"E:\\K\u00E9ep");
