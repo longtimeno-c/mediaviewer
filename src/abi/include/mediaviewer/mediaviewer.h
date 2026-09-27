@@ -50,8 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 13 /* 0.13: Milestone H result listings (mv_folder_open_list);
-                                   0.12: issue #42 mv_status eject error categories */
+#define MV_ABI_VERSION_MINOR 14 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -390,7 +389,7 @@ MV_API mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8
  * decode or touch the file. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path);
 
-/* 0.13 (Milestone H, PR 22; plan/17 "UI and commands"). A listing that is
+/* 0.14 (Milestone H, PR 22; plan/17 "UI and commands"). A listing that is
  * not a directory: search results, shown by the same gallery, filmstrip,
  * selection, keyboard model and thumbnail cache as a folder. Items keep the
  * order given (best match first; the sort order does not apply), are never

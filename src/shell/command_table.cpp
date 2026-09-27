@@ -260,6 +260,15 @@ constexpr binding kBindings[] = {
     row(C('C'), mod_ctrl | mod_shift, kViewing, edge, copy_path),
     row(C('C'), mod_ctrl | mod_alt, kBrowse, edge, copy_flattened),
     row(C('S'), mod_ctrl | mod_shift, kViewing, edge, share),
+    // PR 29 (plan/20): the Edit workspace. Appended so every row above keeps
+    // its Settings index. Enter was unbound in browse and video; inside the
+    // workspace it keeps meaning Apply (crop) / Save (trim), since crop and
+    // trim resolve first. A and X are dead in crop (A/D do not walk mid-crop):
+    // Lightroom's keys. Y is Lightroom's before/after, held here.
+    row(key::enter, mod_none, kBrowse | kVideo, edge, edit_workspace),
+    row(C('A'), mod_none, kCrop, edge, crop_aspect_cycle),
+    row(C('X'), mod_none, kCrop, edge, crop_aspect_swap),
+    row(C('Y'), mod_none, kBrowse, momentary, show_original, none, show_original_release),
     // Milestone H, PR 22 (plan/17 "UI and commands"). Appended; only while
     // the AI pack is loaded. Ctrl+F is find everywhere else; `/` stays
     // find-by-name in the gallery. N / Shift+N walk the matching moments of
@@ -420,6 +429,13 @@ constexpr command_info kCommands[] = {
     {copy_path, "Copy path"},
     {copy_flattened, "Copy edited image"},
     {share, "Share…"},
+    {edit_workspace, "Edit image / Edit video"},
+    {crop_aspect_cycle, "Crop: next aspect ratio"},
+    {crop_aspect_swap, "Crop: portrait / landscape"},
+    {show_original, "Show original (hold)"},
+    {show_original_release, "Release original"},
+    {crop_aspect_set, "Crop: aspect ratio", true},
+    {crop_straighten_set, "Crop: straighten", true},
     {search_open, "Search photos and videos…"},
     {search_similar, "Find similar"},
     {search_next_match, "Next matching moment"},

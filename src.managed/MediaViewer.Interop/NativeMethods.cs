@@ -180,7 +180,7 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_request_summary(MvSessionHandle session, uint index);
 
-    // ABI 0.13 (Milestone H): result listings. [any-thread][no-block]
+    // ABI 0.14 (Milestone H): result listings. [any-thread][no-block]
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static unsafe partial MvStatus mv_folder_open_list(MvSessionHandle session, byte* titleUtf8,

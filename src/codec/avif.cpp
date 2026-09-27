@@ -31,6 +31,40 @@ constexpr std::uint32_t kMaxDim = 65535;
 // single AV1 frame (level 6.3 tops out at 35.6 MP) and a 102 MP grid still.
 constexpr std::uint64_t kMaxPixels = 128ull * 1000ull * 1000ull;
 
+// A second, tighter cap for the `avis` (animated) path only (issue #45,
+// nightly fuzz_avif OOM, CI run 36230124220: 2821 MB vs the 2560 MB harness
+// limit, ~424k execs into the run). The saved artifact does NOT reproduce a
+// large allocation in isolation — a single decode and a 300k-iteration
+// replay of it through this exact libavif/dav1d pair both stay under 6 MB,
+// so this was very likely libFuzzer's RSS poll catching whichever of the
+// ~424k distinct inputs that nightly session happened to be running when
+// long-run ASan allocator/quarantine growth crossed the limit, not one
+// input's decoder bug (libFuzzer saves "the current input", not necessarily
+// "the input that grew memory" — see fuzz_oom_avis_ref_frames test). That is
+// a tooling characteristic of a 20-minute, single-process ASan fuzzing
+// session, not evidence the 2560 MB limit undersizes real content: nothing
+// in this codebase decodes a `avis` sequence in one long-lived process the
+// way the harness does.
+//
+// The multi-frame path is still under-defended regardless: kMaxPixels above
+// was sized for exactly one frame's worst case (~1.93 GB, see the commit
+// that added it) with no accounting for avifDecoderNextImage() being called
+// repeatedly, or for dav1d's own reference-frame pool (AV1 allows up to 8
+// resident references plus the current frame) holding several decoded
+// pictures at once. A camera-dump animated AVIF is a Live-Photo-style burst
+// or a sticker, not a video (that is the FFmpeg pipeline, plan/05) — 10 MP
+// clears a 4K frame (3840x2160 = 8.3 MP) with room to spare, and 9 buffers
+// at 10 MP and 3 bytes/px (10-bit 4:2:0 worst case) is under 280 MB for the
+// codec pool alone, a comfortable multiple below kMaxPixels' one-frame
+// budget. This is defense-in-depth per the issue's "cumulative memory
+// budget" ask, not a proven fix for the specific saved artifact.
+constexpr std::uint64_t kMaxAnimatedPixels = 10ull * 1000ull * 1000ull;
+// Sanity cap on frame count for the same path: nothing in a camera dump is a
+// multi-thousand-frame animated AVIF (a few seconds at a sticker frame rate,
+// generously). Defends against a degenerate sample table claiming an
+// absurd imageCount even when every individual frame is small.
+constexpr std::uint32_t kMaxAnimationFrames = 4096;
+
 status map_result(avifResult r) noexcept {
   switch (r) {
     case AVIF_RESULT_OK: return status::ok;
@@ -121,11 +155,14 @@ struct frame_out {
 };
 
 // decoder->image (just decoded) → displayed RGBA8, transforms applied.
-result<frame_out> convert(const avifDecoder* decoder, const job_context* job) {
+// `max_pixels` is the still-image kMaxPixels for a one-shot decode, or the
+// tighter kMaxAnimatedPixels when called from the multi-frame avis path.
+result<frame_out> convert(const avifDecoder* decoder, const job_context* job,
+                           std::uint64_t max_pixels) {
   const avifImage* image = decoder->image;
   if (!image || image->width == 0 || image->height == 0) return err(status::corrupt);
   if (image->width > kMaxDim || image->height > kMaxDim ||
-      static_cast<std::uint64_t>(image->width) * image->height > kMaxPixels) {
+      static_cast<std::uint64_t>(image->width) * image->height > max_pixels) {
     return err(status::unsupported_format);
   }
   const bool hdr = image->icc.size == 0 && cicp::is_hdr(image->transferCharacteristics);
@@ -208,15 +245,19 @@ avif_colour colour_of(const avifImage* image) {
 
 class avif_source final : public animation_source {
  public:
-  avif_source(std::span<const std::uint8_t> bytes, std::shared_ptr<const void> keepalive) noexcept
-      : bytes_(bytes), keepalive_(std::move(keepalive)) {}
+  // `max_pixels`: kMaxPixels for a one-shot still decode (decode_avif), or
+  // kMaxAnimatedPixels for the multi-frame path (open_avif_animation) — see
+  // the comment on kMaxAnimatedPixels above.
+  avif_source(std::span<const std::uint8_t> bytes, std::shared_ptr<const void> keepalive,
+              std::uint64_t max_pixels = kMaxPixels) noexcept
+      : bytes_(bytes), keepalive_(std::move(keepalive)), max_pixels_(max_pixels) {}
 
   [[nodiscard]] expected open() {
     decoder_.reset(avifDecoderCreate());
     if (!decoder_) return err(status::out_of_memory);
     avifDecoder* d = decoder_.get();
     d->maxThreads = 1;  // already on a decode worker
-    d->imageSizeLimit = static_cast<std::uint32_t>(kMaxPixels);
+    d->imageSizeLimit = static_cast<std::uint32_t>(max_pixels_);
     d->imageDimensionLimit = kMaxDim;
     // pixi is missing from many real encoders' output; browsers accept it.
     d->strictFlags = AVIF_STRICT_CLAP_VALID | AVIF_STRICT_ALPHA_ISPE_REQUIRED;
@@ -230,8 +271,11 @@ class avif_source final : public animation_source {
       return err(s == status::unsupported_format ? s : status::corrupt);
     }
     if (d->imageCount < 1 || !d->image) return err(status::corrupt);
+    if (static_cast<std::uint32_t>(d->imageCount) > kMaxAnimationFrames) {
+      return err(status::unsupported_format);
+    }
     if (d->image->width > kMaxDim || d->image->height > kMaxDim ||
-        static_cast<std::uint64_t>(d->image->width) * d->image->height > kMaxPixels) {
+        static_cast<std::uint64_t>(d->image->width) * d->image->height > max_pixels_) {
       return err(status::unsupported_format);
     }
     // Displayed size: the transforms can swap or shrink it.
@@ -279,7 +323,7 @@ class avif_source final : public animation_source {
         if (next_index_ == 0) return err(map_result(r) == status::out_of_memory ? status::out_of_memory : status::corrupt);
         return false;  // truncated: the play ends at the last good frame
       }
-      auto frame = convert(decoder_.get(), ctx);
+      auto frame = convert(decoder_.get(), ctx, max_pixels_);
       if (!frame) return err(frame.error());
       if (frame.value().width != info_.width || frame.value().height != info_.height) {
         if (next_index_ == 0) return err(status::corrupt);
@@ -307,6 +351,7 @@ class avif_source final : public animation_source {
  private:
   std::span<const std::uint8_t> bytes_;
   std::shared_ptr<const void> keepalive_;
+  std::uint64_t max_pixels_;
   decoder_ptr decoder_;
   animation_info info_{};
   std::uint32_t next_index_ = 0;
@@ -318,7 +363,7 @@ result<raster> decode_avif(std::span<const std::uint8_t> bytes, const job_contex
   if (probe(bytes) != format_family::avif) return err(status::unsupported_format);
   if (ctx && ctx->cancelled()) return err(status::cancelled);
   try {
-    avif_source source(bytes, nullptr);
+    avif_source source(bytes, nullptr, kMaxPixels);  // one shot: single-frame worst case only
     if (auto opened = source.open(); !opened) return err(opened.error());
     canvas_frame frame;
     auto got = source.next(frame, ctx);
@@ -344,7 +389,10 @@ result<std::unique_ptr<animation_source>> open_avif_animation(
   if (probe(*bytes) != format_family::avif) return err(status::unsupported_format);
   try {
     const std::span<const std::uint8_t> view(*bytes);
-    auto source = std::make_unique<avif_source>(view, std::move(bytes));
+    // Multi-frame playback: dav1d's own reference-frame pool can hold several
+    // decoded frames at once, so this path gets the tighter per-frame cap
+    // (kMaxAnimatedPixels) rather than the one-shot still-image kMaxPixels.
+    auto source = std::make_unique<avif_source>(view, std::move(bytes), kMaxAnimatedPixels);
     if (auto opened = source->open(); !opened) return err(opened.error());
     if (source->info().frame_count < 2) return err(status::unsupported_format);  // a still
     return std::unique_ptr<animation_source>(std::move(source));

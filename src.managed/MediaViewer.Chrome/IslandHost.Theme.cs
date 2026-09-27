@@ -114,15 +114,22 @@ public static partial class IslandHost
         uint homeRgb = (uint)(canvas.R << 16 | canvas.G << 8 | canvas.B);
         _onCommand?.Invoke(_context, Command.HomeColour, homeRgb);
 
-        if (_themeWindow != IntPtr.Zero)
-        {
-            int useDark = dark && !contrast ? 1 : 0;
-            _ = DwmSetWindowAttribute(_themeWindow, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */,
-                                     ref useDark, sizeof(int));
-        }
+        _themeTitleDark = dark && !contrast;
+        ApplyTitleBarTheme(_themeWindow);
+        ApplyTitleBarTheme(_editorThemeWindow);  // PR 30: the Video Editor window
 
         // Milestone H: an add-on's own window follows (IAddonHost2.ThemeChanged).
         RaiseHostThemeChanged();
+    }
+
+    private static bool _themeTitleDark = true;
+    private static IntPtr _editorThemeWindow;
+
+    private static void ApplyTitleBarTheme(IntPtr window)
+    {
+        if (window == IntPtr.Zero) return;
+        int useDark = _themeTitleDark ? 1 : 0;
+        _ = DwmSetWindowAttribute(window, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, ref useDark, sizeof(int));
     }
 
     private static void Set(ChromeColour role, Color colour)

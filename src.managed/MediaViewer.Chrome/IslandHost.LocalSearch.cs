@@ -87,7 +87,7 @@ public static partial class IslandHost
         }
         catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
         {
-            // An older core without 0.13 result listings.
+            // An older core without 0.14 result listings.
             _pendingListGallery = null;
             System.Diagnostics.Debug.WriteLine(ex.Message);
             return;

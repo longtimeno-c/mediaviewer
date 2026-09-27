@@ -79,6 +79,18 @@ float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
                             static_cast<float>(s.chrome_bottom_px));
 }
 
+// PR 29 (plan/20): the same for width. A docked pane (chrome_right_px, the
+// Edit workspace) narrows the rect the picture is framed in; the swapchain
+// still spans the window and the blit's origin_x moves the frame, so docking
+// is a refit, never a resize.
+float usable_window_w(const mv::shell::input_snapshot& s) noexcept {
+  return std::max(1.0f, static_cast<float>(s.width) - static_cast<float>(s.chrome_left_px) -
+                            static_cast<float>(s.chrome_right_px));
+}
+float canvas_origin_x(const mv::shell::input_snapshot& s) noexcept {
+  return static_cast<float>(s.chrome_left_px);
+}
+
 void feed_imgui(const mv::shell::input_snapshot& s, float delta_seconds, float wheel) noexcept {
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(static_cast<float>(s.width), static_cast<float>(s.height));
@@ -547,12 +559,13 @@ void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept
   float pw = 0.0f, ph = 0.0f;
   if (!picture_size(&pw, &ph)) return;
   const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
-  const float win_w = static_cast<float>(snapshot.width);
+  const float win_w = usable_window_w(snapshot);
   const float win_h = usable_window_h(snapshot);
+  const float origin_x = canvas_origin_x(snapshot);
   const float origin_y = static_cast<float>(snapshot.chrome_height_px);
   const float zoom = camera_.zoom();
   const auto to_screen = [&](float ix, float iy) {
-    return ImVec2(win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+    return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
                   origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
   };
   const ImVec2 f0 = to_screen(0.0f, 0.0f);
@@ -868,8 +881,9 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
   if (!picture_size(&pw, &ph) || pw <= 0.0f || ph <= 0.0f) return;
 
   const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
-  const float win_w = static_cast<float>(snapshot.width);
+  const float win_w = usable_window_w(snapshot);
   const float win_h = usable_window_h(snapshot);
+  const float origin_x = canvas_origin_x(snapshot);
   const float origin_y = static_cast<float>(snapshot.chrome_height_px);
   const float zoom = camera_.zoom();
   ImDrawList* fg = ImGui::GetForegroundDrawList();
@@ -884,7 +898,7 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
   };
   // Image pixel <-> screen pixel, the inverse of the blit's own mapping.
   const auto to_screen = [&](float ix, float iy) {
-    return ImVec2(win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+    return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
                   origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
   };
 
@@ -949,7 +963,7 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
     // One texel, on demand: the source texture is CPU-visible (shared) so this
     // is a 4-byte read, never a download of the picture. Video frames are
     // planar YUV and are not sampled.
-    const float ix = camera_.pan_x() + (snapshot.mouse_x - win_w * 0.5f) / zoom;
+    const float ix = camera_.pan_x() + (snapshot.mouse_x - (origin_x + win_w * 0.5f)) / zoom;
     const float iy = camera_.pan_y() + (snapshot.mouse_y - (origin_y + win_h * 0.5f)) / zoom;
     if (current_image_ && !video_frame_ && ix >= 0.0f && iy >= 0.0f && ix < pw && iy < ph) {
       const void* native = anim_frame_ ? anim_frame_->texture : current_image_->texture;
@@ -990,7 +1004,7 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
         const float box = fs;
         float x = snapshot.mouse_x + 18.0f * scale;
         float y = snapshot.mouse_y + 18.0f * scale;
-        if (x + box + 8.0f * scale + size.x + pad > win_w) x = snapshot.mouse_x - (box + 8.0f * scale + size.x + 18.0f * scale);
+        if (x + box + 8.0f * scale + size.x + pad > origin_x + win_w) x = snapshot.mouse_x - (box + 8.0f * scale + size.x + 18.0f * scale);
         if (y + fs + pad > origin_y + win_h) y = snapshot.mouse_y - (fs + 18.0f * scale);
         fg->AddRectFilled(ImVec2(x - 6.0f * scale, y - 4.0f * scale),
                           ImVec2(x + box + 8.0f * scale + size.x + 6.0f * scale, y + fs + 4.0f * scale),
@@ -1223,7 +1237,7 @@ void present_lab_mac::render_thread_main() noexcept {
           }
           pacer_.set_refresh(layer_.refresh_interval_seconds());
           if (float pw = 0, ph = 0; picture_size(&pw, &ph) && camera_.fit_mode()) {
-            camera_.fit(pw, ph, static_cast<float>(snapshot.width), usable_window_h(snapshot),
+            camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot),
                         /*immediate=*/false);
           }
           redraw = true;
@@ -1275,14 +1289,14 @@ void present_lab_mac::render_thread_main() noexcept {
           if (refinement) {
             camera_.refine(old_w, old_h, static_cast<float>(landed.cropped.w),
                            static_cast<float>(landed.cropped.h),
-                           static_cast<float>(snapshot.width), usable_window_h(snapshot));
+                           usable_window_w(snapshot), usable_window_h(snapshot));
           } else {
             stills_shown_.fetch_add(1, std::memory_order_acq_rel);
             // plan/16 sticky zoom: off (default) fits every item; on keeps the
             // mode, or the zoom and pan fraction (same as the Windows lab).
             const auto new_w = static_cast<float>(landed.cropped.w);
             const auto new_h = static_cast<float>(landed.cropped.h);
-            const auto win_w = static_cast<float>(snapshot.width);
+            const auto win_w = usable_window_w(snapshot);
             const float win_h = usable_window_h(snapshot);
             const bool had_media = old_w > 0.0f;
             if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
@@ -1327,7 +1341,7 @@ void present_lab_mac::render_thread_main() noexcept {
             float pw = 0.0f, ph = 0.0f;
             if (geometry_changed && picture_size(&pw, &ph) && (pw != before_w || ph != before_h)) {
               camera_.reset();
-              camera_.fit(pw, ph, static_cast<float>(snapshot.width), usable_window_h(snapshot),
+              camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot),
                           /*immediate=*/true);
             }
             redraw = true;
@@ -1378,7 +1392,7 @@ void present_lab_mac::render_thread_main() noexcept {
         if (wheel != 0.0f) redraw = true;
 
         if (float image_w = 0, image_h = 0; picture_size(&image_w, &image_h)) {
-          const auto window_w = static_cast<float>(snapshot.width);
+          const auto window_w = usable_window_w(snapshot);
           // PR 18: the SwiftUI command bar covers the top chrome_height_px of
           // the canvas, the same "swapchain spans the client area, chrome is
           // composited over it" shape as blit.h's origin_x/origin_y on
@@ -1415,7 +1429,8 @@ void present_lab_mac::render_thread_main() noexcept {
           last_mouse_y_ = snapshot.mouse_y;
 
           if (wheel != 0.0f && snapshot.mouse_in_client) {
-            camera_.wheel_toward(snapshot.mouse_x, snapshot.mouse_y, wheel, window_w, window_h,
+            camera_.wheel_toward(snapshot.mouse_x - canvas_origin_x(snapshot), snapshot.mouse_y, wheel,
+                                 window_w, window_h,
                                  image_w, image_h);
           }
         }
@@ -1521,7 +1536,7 @@ void present_lab_mac::render_thread_main() noexcept {
               fade_.cancel();
               camera_.reset();
               camera_.fit(static_cast<float>(frame->width), static_cast<float>(frame->height),
-                          static_cast<float>(snapshot.width), usable_window_h(snapshot),
+                          usable_window_w(snapshot), usable_window_h(snapshot),
                           /*immediate=*/true);
               media_fitted_ = true;
             }
@@ -1673,8 +1688,9 @@ void present_lab_mac::render_thread_main() noexcept {
           vp.pan_x = camera_.pan_x();
           vp.pan_y = camera_.pan_y();
           vp.zoom = camera_.zoom();
-          vp.window_w = static_cast<float>(snapshot.width);
+          vp.window_w = usable_window_w(snapshot);
           vp.window_h = usable_window_h(snapshot);
+          vp.origin_x = canvas_origin_x(snapshot);
           vp.origin_y = static_cast<float>(snapshot.chrome_height_px);
           vp.image_w = static_cast<float>(video_frame_->width);
           vp.image_h = static_cast<float>(video_frame_->height);
@@ -1688,8 +1704,9 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.pan_x = camera_.pan_x();
           bp.pan_y = camera_.pan_y();
           bp.zoom = camera_.zoom();
-          bp.window_w = static_cast<float>(snapshot.width);
+          bp.window_w = usable_window_w(snapshot);
           bp.window_h = usable_window_h(snapshot);
+          bp.origin_x = canvas_origin_x(snapshot);
           bp.origin_y = static_cast<float>(snapshot.chrome_height_px);
           // PR 10: the edited picture is what the camera frames; the texture is
           // sampled through the output -> source map.

@@ -69,6 +69,10 @@ struct input_snapshot {
   // Folder tree strip (plan/16: a left island, hidden by default). 0 until the
   // tree lands (PR 8); the canvas maths already takes it.
   std::uint32_t chrome_left_px = 0;
+  // PR 29 (plan/20): a docked right pane (the Edit workspace on Mac). The
+  // canvas frames the picture in the rect left of it, so the pane never
+  // covers the image. 0 = nothing docked.
+  std::uint32_t chrome_right_px = 0;
   float dpi_scale = 1.0f;
 
   float mouse_x = 0.0f;
@@ -179,6 +183,11 @@ struct input_snapshot {
   // change, or the window moving to a monitor on a different adapter.
   std::uint32_t resize_seq = 0;
   std::uint32_t display_change_seq = 0;
+  // PR 30 (plan/21): the window the canvas presents into, as an opaque host
+  // handle (an HWND on Windows); 0 = the viewer's own window. The Video Editor
+  // sets it to its preview window, and the render thread moves the one
+  // swapchain there. The Mac host moves its view instead and leaves this 0.
+  std::uint64_t canvas_window = 0;
 };
 
 // Consumer-owned state: repeated reads of a snapshot never replay input.

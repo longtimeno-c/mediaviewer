@@ -266,18 +266,21 @@ TEST_CASE("visible gallery owns row navigation and Enter before focus moves", "[
     REQUIRE_FALSE(r.on_key(down(char_key('W')), s).handled);
     REQUIRE_FALSE(r.on_key(down(key::enter), s).handled);
   }
-  REQUIRE_FALSE(r.on_key(down(key::enter), still()).handled);
-  REQUIRE_FALSE(r.on_key(down(key::enter), clip()).handled);
+  // PR 29 (plan/20): outside the gallery, Enter opens the Edit workspace.
+  REQUIRE(r.on_key(down(key::enter), still()).command == command_id::edit_workspace);
+  REQUIRE(r.on_key(down(key::enter), clip()).command == command_id::edit_workspace);
   REQUIRE(r.on_key(down(key::f5), still()).command == command_id::slideshow_start);
   REQUIRE(r.on_key(down(key::f5), clip()).command == command_id::slideshow_start);
   // No default Enter binding can start fullscreen or a slideshow in any mode.
   // PR 10: Enter also commits a crop, in crop mode only. PR 13: and saves a
-  // keyframe trim, in trim mode only.
+  // keyframe trim, in trim mode only. PR 29: and opens the Edit workspace in
+  // browse and video.
   for (const auto& b : default_bindings()) {
     if (b.k != key::enter || b.mods != mod_none) continue;
     REQUIRE((b.command == command_id::gallery_open_selected ||
              (b.command == command_id::crop_commit && b.modes == kCrop) ||
-             (b.command == command_id::trim_keyframe && b.modes == kTrim)));
+             (b.command == command_id::trim_keyframe && b.modes == kTrim) ||
+             (b.command == command_id::edit_workspace && b.modes == (kBrowse | kVideo))));
   }
 }
 
@@ -722,7 +725,7 @@ TEST_CASE("unbound keys and Alt combinations fall through", "[shell][router]") {
   const auto s = still();
   REQUIRE_FALSE(r.on_key(down(key::f4, mod_alt), s).handled);  // Alt+F4 reaches DefWindowProc
   REQUIRE_FALSE(r.on_key(down(key::tab), s).handled);
-  REQUIRE_FALSE(r.on_key(down(char_key('Y')), s).handled);
+  REQUIRE_FALSE(r.on_key(down(char_key('N')), s).handled);  // Y is before/after since PR 29
   REQUIRE(r.on_key(down(char_key('W'), mod_ctrl), s).command == command_id::close_window);
   REQUIRE(r.on_key(down(char_key('O'), mod_ctrl), s).command == command_id::open);
   REQUIRE(r.on_key(down(char_key('O'), mod_ctrl | mod_shift), s).command == command_id::open_folder);
@@ -845,9 +848,12 @@ TEST_CASE("remapping a key updates the live table the router and ? share", "[she
   int row_d = -1;
   const auto def = default_bindings();
   for (int i = 0; i < static_cast<int>(def.size()); ++i) {
-    if (def[static_cast<std::size_t>(i)].k == char_key('A') && def[static_cast<std::size_t>(i)].mods == mod_none)
+    // By command: A is also "next aspect" in crop mode (PR 29).
+    if (def[static_cast<std::size_t>(i)].k == char_key('A') && def[static_cast<std::size_t>(i)].mods == mod_none &&
+        def[static_cast<std::size_t>(i)].command == command_id::prev)
       row_a = i;
-    if (def[static_cast<std::size_t>(i)].k == char_key('D') && def[static_cast<std::size_t>(i)].mods == mod_none)
+    if (def[static_cast<std::size_t>(i)].k == char_key('D') && def[static_cast<std::size_t>(i)].mods == mod_none &&
+        def[static_cast<std::size_t>(i)].command == command_id::next)
       row_d = i;
   }
   REQUIRE(row_a >= 0);
