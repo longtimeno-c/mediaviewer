@@ -38,6 +38,9 @@ final class GallerySearchStore: ObservableObject {
   @Published private(set) var items: [Int]?
   @Published private(set) var folders: [Int]?
   @Published private(set) var contents: Contents = .idle
+  /// The notice's Index was chosen for these words: indexing runs on in the
+  /// background, and the notice says so and offers the grid back.
+  @Published private(set) var indexingStarted = false
   /// The Local search pack is loaded and vends the bar's pieces.
   @Published private(set) var hasPack = false
   /// Moves when the pack's chrome is re-attached: the accessory is re-embedded.
@@ -106,6 +109,7 @@ final class GallerySearchStore: ObservableObject {
   func searchContentsInstead() { setMode(.contents) }
 
   private func textChanged() {
+    indexingStarted = false
     if contentsMode {
       debounce?.cancel()
       if !active {
@@ -244,8 +248,18 @@ final class GallerySearchStore: ObservableObject {
   /// same words run again (results grow as the index commits).
   func indexFolder(recursive: Bool) {
     guard mv_addon2_run_command(recursive ? "gallery_index_tree" : "gallery_index_folder") else { return }
+    indexingStarted = true
     runContents()
   }
+
+  /// "Show all files": the grid back, the index carrying on behind it.
+  func keepBrowsing() {
+    text = ""
+    leaveField(toFirst: false)
+  }
+
+  /// "Search again" while it indexes: what has been indexed so far.
+  func searchAgain() { runContents() }
 
   /// Return in the field in Contents mode: no need to wait for the debounce.
   func runNow() {
@@ -412,9 +426,25 @@ struct GallerySearchNotice: View {
           .buttonStyle(FlatButtonStyle())
       }
       if store.contentsMode && store.contents == .notIndexed {
+        Text("Indexing runs in the background: you can keep browsing while it works.")
+          .font(MVTheme.font(13))
+          .foregroundStyle(MVTheme.body)
+          .multilineTextAlignment(.center)
         HStack(spacing: 8) {
           Button("Index this folder") { store.indexFolder(recursive: false) }
           Button("Index this folder and subfolders") { store.indexFolder(recursive: true) }
+        }
+        .buttonStyle(FlatButtonStyle())
+      }
+      if store.contentsMode && store.contents != .notIndexed {
+        // Never a dead end: the files are one click away, indexing or not.
+        HStack(spacing: 8) {
+          if store.indexingStarted {
+            Button("Search again") { store.searchAgain() }
+              .help("Search what has been indexed so far")
+          }
+          Button("Show all files") { store.keepBrowsing() }
+            .help("Clear the search. Indexing carries on in the background.")
         }
         .buttonStyle(FlatButtonStyle())
       }
@@ -427,6 +457,10 @@ struct GallerySearchNotice: View {
 
   private var message: String {
     guard store.contentsMode else { return "No files named “\(query)” in this folder." }
+    if store.indexingStarted && store.contents == .nothing {
+      return "Indexing this folder in the background. Nothing matches “\(query)” yet: "
+        + "results appear as it goes. The progress is in the command bar."
+    }
     switch store.contents {
     case .notIndexed: return "This folder is not indexed yet"
     case .failed: return "The search did not finish."

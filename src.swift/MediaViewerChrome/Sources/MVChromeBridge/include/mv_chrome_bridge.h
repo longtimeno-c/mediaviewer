@@ -356,7 +356,9 @@ bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceilin
 void* mv_addon2_settings_view(const char* id);                             // [main-thread]
 // Runs an add-on command by name ("search_open"), as its key would. The
 // gallery search bar also runs "gallery_index_folder" / "gallery_index_tree"
-// (index the folder the viewer last opened; false from an older pack).
+// (index the folder the viewer last opened; false from an older pack), and
+// the indexing pill "index_anyway" (set_setting battery_override: ignore the
+// battery pause until the Mac is next on power; false from an older pack).
 bool mv_addon2_run_command(const char* name);                              // [main-thread]
 // Gallery search bar (2026-09-27, plan/17). The loaded chrome's index control
 // (an NSView*, owned by the chrome) for the right end of the bar, or NULL: no

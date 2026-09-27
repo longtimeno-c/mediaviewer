@@ -44,11 +44,20 @@ final class SearchStatus: ObservableObject {
 enum SearchScope: UInt32, CaseIterable, Identifiable {
   case folder = 0, tree = 1, all = 2
   var id: UInt32 { rawValue }
+  /// Short, so the three sit as one control: the group's caption ("Look in")
+  /// and the tooltip say the rest.
   var label: String {
     switch self {
     case .folder: return "This folder"
-    case .tree: return "This folder and subfolders"
-    case .all: return "Everything indexed"
+    case .tree: return "+ Subfolders"
+    case .all: return "Everywhere"
+    }
+  }
+  var help: String {
+    switch self {
+    case .folder: return "Search the open folder only."
+    case .tree: return "Search the open folder and the folders inside it."
+    case .all: return "Search every folder in the index."
     }
   }
 }
@@ -61,6 +70,13 @@ enum SearchKinds: UInt32, CaseIterable, Identifiable {
     case .all: return "All"
     case .photos: return "Photos"
     case .videos: return "Videos"
+    }
+  }
+  var help: String {
+    switch self {
+    case .all: return "Show photos and videos."
+    case .photos: return "Show photos only."
+    case .videos: return "Show videos only."
     }
   }
 }
@@ -80,10 +96,12 @@ final class SearchModel: ObservableObject {
   enum Find: UInt32, CaseIterable, Identifiable {
     case pictures = 0x10, sounds = 0x20, speech = 0x40
     var id: UInt32 { rawValue }
+    /// What in a file the words are matched against, under "Match by": how it
+    /// looks, what is heard, what is said.
     var label: String {
       switch self {
-      case .pictures: return "Pictures"
-      case .sounds: return "Sounds"
+      case .pictures: return "Picture"
+      case .sounds: return "Sound"
       case .speech: return "Speech"
       }
     }
@@ -94,6 +112,44 @@ final class SearchModel: ObservableObject {
       case .speech: return "text.bubble"
       }
     }
+    var help: String {
+      switch self {
+      case .pictures: return "Match what is in the picture or the video frame."
+      case .sounds: return "Match what you hear in videos: “dog barking”, “applause”."
+      case .speech: return "Match words said in videos."
+      }
+    }
+  }
+
+  /// What can be matched here: sounds and speech need the Sound piece.
+  var availableFinds: Set<Find> { audioReady ? Set(Find.allCases) : [.pictures] }
+
+  /// Shown on: every available one when none is chosen (the default, all
+  /// searched), else the chosen ones. The row reads as "all on" at rest,
+  /// never "none on means all".
+  func matchOn(_ f: Find) -> Bool { matching.contains(f) }
+
+  /// The ones on, as shown.
+  private var matching: Set<Find> {
+    let available = availableFinds
+    let chosen = finds.intersection(available)
+    return chosen.isEmpty ? available : chosen
+  }
+
+  /// Turns one off or on again. The last one on stays on (a search matches
+  /// something); all available on is stored as none (the engine's "all").
+  func toggleMatch(_ f: Find) {
+    let available = availableFinds
+    guard available.contains(f) else { return }
+    var on = matching
+    if on.contains(f) {
+      guard on.count > 1 else { return }
+      on.remove(f)
+    } else {
+      on.insert(f)
+    }
+    finds = on == available ? [] : on
+    chipsChanged()
   }
 
   /// The kinds word with the FIND bits OR'ed in (none set = all). Without
@@ -176,10 +232,17 @@ final class SearchModel: ObservableObject {
     refreshCoverage()
     pollStatus()
     updateTimer()
+    // Closed while it indexed: what was indexed meanwhile answers the same
+    // words now (the re-run above waits for more while it is still going).
+    if debounce == nil, pending == 0, reading == 0, framesIndexed != lastRunFrames,
+       reference != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty {
+      run(keepSelection: true)
+    }
   }
 
   func disappeared() {
     visible = false
+    startedIndexing = nil
     updateTimer()
   }
 
@@ -233,6 +296,7 @@ final class SearchModel: ObservableObject {
   /// Typing: ~200 ms debounce, then search.
   func queryChanged() {
     if reference != nil { return }
+    if startedIndexing != nil { startedIndexing = nil }
     openWhenReady = nil
     debounce?.cancel()
     debounce = Task { [weak self] in
@@ -434,11 +498,30 @@ final class SearchModel: ObservableObject {
 
   // MARK: the index offer
 
+  /// Set when the offer's Index was chosen in this showing of the panel: the
+  /// empty state then says indexing carries on in the background and offers
+  /// to close. Cleared by typing, a result, or the panel closing.
+  @Published private(set) var startedIndexing: Bool?  // recursive
+
+  var folderName: String {
+    let leaf = (folder as NSString).lastPathComponent
+    return leaf.isEmpty ? folder : leaf
+  }
+
   func indexFolder(recursive: Bool) {
     guard !folder.isEmpty else { return }
     var root: UInt64 = 0
-    _ = table.a.index_folder?(table.ctx, folder, recursive ? 1 : 0, &root)
+    let st = table.a.index_folder?(table.ctx, folder, recursive ? 1 : 0, &root)
     refreshCoverage()
+    pollStatus()
+    if st == MV_OK { startedIndexing = recursive }
+    // Results for words already typed grow as the index commits.
+    if reference != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty { run(keepSelection: false) }
+  }
+
+  /// "Index anyway" while paused on battery: until the Mac is next on power.
+  func indexAnyway() {
+    table.indexAnyway()
     pollStatus()
   }
 

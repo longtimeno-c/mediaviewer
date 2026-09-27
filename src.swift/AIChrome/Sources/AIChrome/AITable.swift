@@ -132,6 +132,10 @@ final class AITable: @unchecked Sendable {
   func setSetting(_ key: String, _ valueJSON: String) {
     call { a.set_setting?(ctx, key, valueJSON) }
   }
+
+  /// "Index anyway": ignore the battery pause until the Mac is next on power
+  /// (or MediaViewer restarts). Never saved. [no-block]
+  func indexAnyway() { setSetting("battery_override", "1") }
 }
 
 /// `body(nil)` for nil, else the C string: the table takes NULL for "no scope".
@@ -218,6 +222,7 @@ struct StatusLine: Equatable {
   var spinning = false
   var indexing = false     // something is in progress (indexing or waiting)
   var paused = false       // the user paused it
+  var onBattery = false    // waiting on battery: "Index anyway" can override it
   var idle = true
   var sound = ""           // "Sound: 12 of 40 clips · Speech: 8 of 40"; "" without the piece
   var audioReady = false   // the ai-audio piece is loaded
@@ -236,7 +241,9 @@ struct StatusLine: Equatable {
     case MV_AI_STATE_YIELDING.rawValue:
       switch s.yield_reason {
       case MV_AI_YIELD_VIEWER.rawValue: text = "Paused while a video plays"
-      case MV_AI_YIELD_BATTERY.rawValue: text = "Paused on battery"
+      case MV_AI_YIELD_BATTERY.rawValue:
+        text = "Paused on battery"
+        onBattery = true
       case MV_AI_YIELD_FRAMES.rawValue: text = "Paused to keep playback smooth"
       default: text = "Paused"
       }
@@ -325,9 +332,11 @@ struct AIProgressRing: View {
   }
 }
 
-/// The status pill: ring, text, compute badge, Pause / Resume.
+/// The status pill: ring, text, compute badge, Pause / Resume, and "Index
+/// anyway" while it waits on battery (when the owner passes `onIndexAnyway`).
 struct StatusPill: View {
   let line: StatusLine
+  var onIndexAnyway: (() -> Void)? = nil
   let onPause: (Bool) -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -343,20 +352,31 @@ struct StatusPill: View {
         Text(line.text).font(AITheme.font(13)).foregroundStyle(AITheme.title)
           .lineLimit(1).contentTransition(.numericText())
         if !line.detail.isEmpty {
-          Text(line.detail).font(AITheme.font(11)).foregroundStyle(AITheme.body)
+          Text(line.detail).font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .lineLimit(2)
+            .help(line.detail)
         }
       }
       Spacer(minLength: 8)
       Text(line.badge)
-        .font(AITheme.font(11))
+        .font(AITheme.font(12))
         .foregroundStyle(AITheme.body)
         .padding(.horizontal, 7).padding(.vertical, 2)
         .background(Capsule().stroke(AITheme.hairline, lineWidth: 1))
+        .fixedSize()
+      if line.onBattery, let onIndexAnyway {
+        Button("Index anyway", action: onIndexAnyway)
+          .buttonStyle(.borderless)
+          .font(AITheme.font(13))
+          .fixedSize()
+          .help("Carry on indexing on battery until the Mac is next on power. "
+                + "The battery setting in Settings → Local search stays as it is.")
+      }
       if line.indexing || line.paused {
         Button(line.paused ? "Resume" : "Pause") { onPause(!line.paused) }
           .buttonStyle(.borderless)
-          .font(AITheme.font(12))
+          .font(AITheme.font(13))
+          .fixedSize()
       }
     }
     .padding(.horizontal, 12).padding(.vertical, 6)

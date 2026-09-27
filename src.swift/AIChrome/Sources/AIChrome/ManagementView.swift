@@ -127,6 +127,12 @@ final class ManagementModel: ObservableObject {
     pollStatus()
   }
 
+  /// "Index anyway" while paused on battery: until the Mac is next on power.
+  func indexAnyway() {
+    table.indexAnyway()
+    pollStatus()
+  }
+
   // MARK: settings
 
   func reloadSettings() {
@@ -329,7 +335,7 @@ struct ManagementView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      StatusPill(line: model.status) { model.setPaused($0) }
+      StatusPill(line: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
       if !model.status.sound.isEmpty {
         // "Sound: 12 of 40 clips · Speech: 8 of 40", also once it is done.
         Label(model.status.sound, systemImage: "speaker.wave.2")
@@ -409,7 +415,8 @@ struct ManagementView: View {
                      action: "Clear index", destructive: true) { model.clearIndex() }
         }
         row("On battery",
-            detail: "Indexing pauses on battery below this charge and resumes on power.") {
+            detail: "Indexing pauses on battery below this charge and resumes on power. "
+                    + "“Index anyway” beside the status carries on until the Mac is next on power.") {
           Picker("Pause on battery", selection: Binding(get: { model.batteryPercent },
                                                         set: { model.set("pause_on_battery_percent", Int64($0)) })) {
             Text("Always pause").tag(100)

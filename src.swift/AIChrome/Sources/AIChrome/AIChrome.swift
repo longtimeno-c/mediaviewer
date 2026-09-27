@@ -132,6 +132,13 @@ public final class MVAIChrome: NSObject {
         guard !folder.isEmpty, let g = galleryIndexModel() else { return false }
         g.index(recursive: name == "gallery_index_tree")
         return true
+      // The command bar pill's "Index anyway" while it waits on battery.
+      case "index_anyway":
+        guard let table else { return false }
+        table.indexAnyway()
+        search?.pollStatus()
+        manage?.statusChanged()
+        return true
       default:
         return false
       }

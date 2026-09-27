@@ -28,6 +28,8 @@ final class GalleryIndexModel: ObservableObject {
   @Published private(set) var root: RootRow?
   /// The Sound piece is loaded: "Videos: Sound / Both" can be chosen.
   @Published private(set) var audioReady = false
+  /// Indexing waits on battery: the menu offers "Index anyway".
+  @Published private(set) var onBattery = false
   @Published var confirmingRemove = false
 
   private var roots: [RootRow] = []
@@ -86,8 +88,11 @@ final class GalleryIndexModel: ObservableObject {
       state = 0
     }
     if state != coverage { coverage = state }
-    let audio = (table.status()?.flags ?? 0) & MV_AI_STATUS_AUDIO_READY != 0
+    let status = table.status()
+    let audio = (status?.flags ?? 0) & MV_AI_STATUS_AUDIO_READY != 0
     if audio != audioReady { audioReady = audio }
+    let battery = status.map { $0.state == MV_AI_STATE_YIELDING.rawValue && $0.yield_reason == MV_AI_YIELD_BATTERY.rawValue } ?? false
+    if battery != onBattery { onBattery = battery }
   }
 
   /// roots_json is [worker-thread]: one read at a time, a request made while
@@ -161,6 +166,11 @@ final class GalleryIndexModel: ObservableObject {
     refresh()
   }
 
+  func indexAnyway() {
+    table.indexAnyway()
+    refresh()
+  }
+
   func rescan() {
     guard let root else { return }
     table.call { table.a.root_rescan?(table.ctx, root.id) }
@@ -193,7 +203,8 @@ final class GalleryIndexModel: ObservableObject {
     case 1:
       guard let root, root.assets > 0 else { return root?.enabled == false ? "Paused" : "Indexing" }
       let counts = "\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(root.assets)))"
-      return root.enabled ? "Indexing \(counts)" : "Paused · \(counts)"
+      if !root.enabled { return "Paused · \(counts)" }
+      return onBattery ? "Paused on battery · \(counts)" : "Indexing \(counts)"
     default: return "Indexed"
     }
   }
@@ -228,7 +239,7 @@ struct GalleryIndexControl: View {
           Label("Index…", systemImage: "square.stack.3d.up")
             .font(AITheme.font(13))
         }
-        .help("Add this folder to Local search")
+        .help("Add this folder to Local search. It indexes in the background while you keep browsing.")
       } else {
         Menu {
           covered
@@ -236,7 +247,7 @@ struct GalleryIndexControl: View {
           HStack(spacing: 6) {
             if model.coverage == 1 {
               AIProgressRing(progress: model.progress,
-                             spinning: model.root?.enabled != false && !reduceMotion)
+                             spinning: model.root?.enabled != false && !model.onBattery && !reduceMotion)
                 .frame(width: 12, height: 12)
             } else {
               Image(systemName: "checkmark.circle")
@@ -246,7 +257,8 @@ struct GalleryIndexControl: View {
               .contentTransition(.numericText())
           }
         }
-        .help(model.coverage == 1 ? "Local search is indexing this folder" : "This folder is in Local search")
+        .help(model.coverage == 1 ? "Local search is indexing this folder in the background: keep browsing."
+                                  : "This folder is in Local search")
       }
     }
     .menuStyle(.borderlessButton)
@@ -265,6 +277,9 @@ struct GalleryIndexControl: View {
 
   @ViewBuilder private var covered: some View {
     if let root = model.root {
+      if model.coverage == 1 && root.enabled && model.onBattery {
+        Button("Index anyway, on battery") { model.indexAnyway() }
+      }
       if model.coverage == 1 || !root.enabled {
         Button(root.enabled ? "Pause indexing this folder" : "Resume indexing this folder") {
           model.setPaused(root.enabled)

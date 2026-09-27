@@ -78,6 +78,8 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var pillText = ""
   @Published private(set) var pillProgress: Double = 0
   @Published private(set) var pillSpinning = false
+  /// Waiting on battery: the pill offers "Index anyway".
+  @Published private(set) var pillOnBattery = false
 
   private var timer: Timer?
   private var ticks = 0
@@ -134,6 +136,8 @@ final class LocalSearchStore: ObservableObject {
     if abs(p - pillProgress) > 0.001 { pillProgress = p }
     let spin = s.state == 1
     if spin != pillSpinning { pillSpinning = spin }
+    let battery = s.state == 3 && s.yield_reason == 2
+    if battery != pillOnBattery { pillOnBattery = battery }
   }
 
   nonisolated static func count(_ n: UInt64) -> String {
@@ -305,6 +309,8 @@ final class LocalSearchStore: ObservableObject {
   }
 
   func openSearch() { _ = mv_addon2_run_command("search_open") }
+  /// Ignore the battery pause until the Mac is next on power (not saved).
+  func indexAnyway() { _ = mv_addon2_run_command("index_anyway") }
 }
 
 /// Settings → Local search.
@@ -562,8 +568,17 @@ struct LocalSearchBarItem: View {
       }
       .buttonStyle(.plain)
       .onHover { hover = $0 }
-      .help("Local search is indexing. Click to search.")
+      .contextMenu {
+        Button("Open search") { store.openSearch() }
+        if store.pillOnBattery {
+          Button("Index anyway, on battery") { store.indexAnyway() }
+        }
+      }
+      .help(store.pillOnBattery
+            ? "Indexing waits on battery. Click to search; Control-click to index anyway until the Mac is next on power."
+            : "Local search is indexing in the background. Click to search.")
       .accessibilityLabel(store.pillText)
+      .accessibilityAction(named: "Index anyway") { if store.pillOnBattery { store.indexAnyway() } }
       .transition(.opacity.combined(with: .scale(scale: 0.96)))
       .padding(.leading, 6)
     }

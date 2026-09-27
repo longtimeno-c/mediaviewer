@@ -15,9 +15,15 @@
 // Keyboard-complete (plan/17 PR 22 verify: "the whole flow … works without the
 // mouse"): typing searches; Down enters the grid; arrows move; Return opens the
 // results in the viewer on the chosen tile; Cmd+Return opens them as the gallery
-// grid; Esc goes from the grid back to the field, then closes. Down leaves the
-// field through a local key monitor: the field editor would take moveDown:
-// before a SwiftUI key handler on the TextField sees it.
+// grid; Esc goes from the grid back to the field, then closes. Down and Esc go
+// through a local key monitor: the field editor would take moveDown: before a
+// SwiftUI key handler on the TextField sees it, and SwiftUI's exit command
+// needs a focused view (after a click on a button there is none).
+//
+// Never in the way (2026-09-27): Esc, the footer's Close, or a click on the
+// viewer closes it at any point, indexing included; indexing and searches run
+// on without it, the command bar's pill shows the progress, and reopening
+// shows the results that arrived meanwhile.
 import AppKit
 import SwiftUI
 
@@ -34,6 +40,9 @@ final class PanelState: ObservableObject {
   @Published var focusSeq = 0
   /// Moves on Down in the field: the grid takes the keyboard.
   @Published var gridSeq = 0
+  /// Moves on Esc anywhere in the panel (the key monitor): SwiftUI's exit
+  /// command needs a focused view, and after a click on a button there is none.
+  @Published var escSeq = 0
 }
 
 @MainActor
@@ -45,6 +54,7 @@ final class SearchPanelController: NSObject {
   private var hideSeq = 0
   private var keyMonitor: Any?
   private var observers: [NSObjectProtocol] = []
+  private var parentKeyObserver: NSObjectProtocol?
   /// Room around the rounded card for its soft shadow; transparent to clicks.
   static let margin: CGFloat = 28
 
@@ -82,12 +92,21 @@ final class SearchPanelController: NSObject {
     }
   }
 
-  /// Down in the search field enters the grid (when there is one).
+  /// Down in the search field enters the grid (when there is one); Esc
+  /// anywhere in the panel steps back or closes (never a modal: indexing and
+  /// searching carry on without it).
   private func key(window: Int, code: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
-    guard window == panel.windowNumber, state.shown, code == 125,  // kVK_DownArrow
-          flags.intersection([.command, .option, .control, .shift]).isEmpty,
-          let editor = panel.firstResponder as? NSTextView, editor.isFieldEditor,
-          !model.results.isEmpty else { return false }
+    guard window == panel.windowNumber, state.shown,
+          flags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
+    let editor = panel.firstResponder as? NSTextView
+    if code == 53 {  // kVK_Escape
+      // An input method's composition takes its own Esc.
+      if let editor, editor.hasMarkedText() { return false }
+      state.escSeq += 1
+      return true
+    }
+    guard code == 125,  // kVK_DownArrow
+          let editor, editor.isFieldEditor, !model.results.isEmpty else { return false }
     state.gridSeq += 1
     return true
   }
@@ -106,6 +125,18 @@ final class SearchPanelController: NSObject {
       if panel.parent !== parent {
         panel.parent?.removeChildWindow(panel)
         parent.addChildWindow(panel, ordered: .above)
+      }
+      if parentWindow !== parent || parentKeyObserver == nil {
+        // A click on the viewer steps the panel aside (the Windows panel does
+        // the same): it never stands between the user and the viewer.
+        if let parentKeyObserver { NotificationCenter.default.removeObserver(parentKeyObserver) }
+        parentKeyObserver = NotificationCenter.default.addObserver(
+          forName: NSWindow.didBecomeKeyNotification, object: parent, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+              guard let self, self.state.shown, self.panel.isVisible else { return }
+              self.hide()
+            }
+          }
       }
       parentWindow = parent
     } else {
@@ -146,6 +177,8 @@ final class SearchPanelController: NSObject {
     keyMonitor = nil
     observers.forEach { NotificationCenter.default.removeObserver($0) }
     observers = []
+    if let parentKeyObserver { NotificationCenter.default.removeObserver(parentKeyObserver) }
+    parentKeyObserver = nil
   }
 }
 
@@ -195,7 +228,7 @@ struct SearchRootView: View {
     .scaleEffect(panel.shown || reduceMotion ? 1 : 0.96)
     .opacity(panel.shown ? 1 : 0)
     .padding(SearchPanelController.margin)
-    .onExitCommand {
+    .onChange(of: panel.escSeq) { _, _ in
       if focus == .grid && model.reference == nil { focus = .field } else { close() }
     }
     .onKeyPress(characters: ["f"]) { press in
@@ -279,37 +312,87 @@ struct SearchRootView: View {
 
   // MARK: scope and kind chips
 
+  // Three groups, each captioned with what it does: where to look (one
+  // choice), what to show (one choice), and what to match by (any of the
+  // three, all on at rest). One row where it fits, else two; the captions go
+  // before the controls do.
   private var chips: some View {
-    HStack(spacing: 6) {
-      ForEach(SearchScope.allCases) { s in
-        Chip(label: s.label, on: model.scope == s, disabled: s != .all && model.folder.isEmpty) {
-          model.scope = s
-          model.refreshCoverage()
-          model.chipsChanged()
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 18) {
+        scopeGroup(captioned: true)
+        kindGroup(captioned: true)
+        matchGroup(captioned: true)
+        Spacer(minLength: 0)
+      }
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 18) {
+          scopeGroup(captioned: true)
+          kindGroup(captioned: true)
+          Spacer(minLength: 0)
+        }
+        HStack { matchGroup(captioned: true); Spacer(minLength: 0) }
+      }
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 12) { scopeGroup(captioned: false); Spacer(minLength: 0) }
+        HStack(spacing: 12) {
+          kindGroup(captioned: false)
+          matchGroup(captioned: false)
+          Spacer(minLength: 0)
         }
       }
-      Rectangle().fill(AITheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 6)
-      ForEach(SearchKinds.allCases) { k in
-        Chip(label: k.label, on: model.kinds == k, disabled: false) {
-          model.kinds = k
-          model.chipsChanged()
-        }
-      }
-      // 2026-09-27: what to find in them. None on = all three. Sounds and
-      // Speech need the Sound piece (Settings -> Local search).
-      Rectangle().fill(AITheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 6)
-      ForEach(SearchModel.Find.allCases) { f in
-        let needsAudio = f != .pictures && !model.audioReady
-        Chip(label: f.label, symbol: f.symbol, on: model.finds.contains(f), disabled: needsAudio) {
-          if !model.finds.insert(f).inserted { model.finds.remove(f) }
-          model.chipsChanged()
-        }
-        .help(needsAudio ? "Install Sound in Settings → Local search to find videos by what you hear."
-                         : "Find by \(f.label.lowercased()). With none chosen, all are searched.")
-      }
-      Spacer(minLength: 0)
     }
-    .padding(.horizontal, 16).padding(.bottom, 10)
+    .padding(.horizontal, 18).padding(.bottom, 12)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.audioReady)
+  }
+
+  private func scopeGroup(captioned: Bool) -> some View {
+    FilterGroup(caption: captioned ? "Look in" : nil) {
+      SegmentTrack {
+        ForEach(SearchScope.allCases) { s in
+          let needsFolder = s != .all && model.folder.isEmpty
+          FilterButton(label: s.label, on: model.scope == s, style: .segment,
+                       available: !needsFolder,
+                       help: needsFolder ? "Open a folder to search just that folder." : s.help) {
+            model.scope = s
+            model.refreshCoverage()
+            model.chipsChanged()
+          }
+        }
+      }
+    }
+  }
+
+  private func kindGroup(captioned: Bool) -> some View {
+    FilterGroup(caption: captioned ? "Show" : nil) {
+      SegmentTrack {
+        ForEach(SearchKinds.allCases) { k in
+          FilterButton(label: k.label, on: model.kinds == k, style: .segment, help: k.help) {
+            model.kinds = k
+            model.chipsChanged()
+          }
+        }
+      }
+    }
+  }
+
+  // 2026-09-27: what the words are matched against. Sound and Speech need
+  // the Sound piece (Settings → Local search); without it they stay visible,
+  // dimmed, and their tooltip says how to get them.
+  private func matchGroup(captioned: Bool) -> some View {
+    FilterGroup(caption: captioned ? "Match by" : nil) {
+      HStack(spacing: 6) {
+        ForEach(SearchModel.Find.allCases) { f in
+          let available = model.availableFinds.contains(f)
+          FilterButton(label: f.label, symbol: f.symbol, on: model.matchOn(f), style: .token,
+                       available: available,
+                       help: available
+                         ? f.help + (model.matchOn(f) ? "" : " Off: click to include it.")
+                         : "Needs the Sound piece: install it in Settings → Local search to find videos by what you hear.") {
+            model.toggleMatch(f)
+          }
+        }
+      }
+    }
   }
 
   // MARK: results or an empty state
@@ -327,25 +410,51 @@ struct SearchRootView: View {
   private var emptyState: some View {
     VStack(spacing: 12) {
       Spacer(minLength: 0)
-      if model.coverage == 0 && model.scope != .all && !model.folder.isEmpty {
-        Image(systemName: "rectangle.stack.badge.plus").font(.system(size: 34)).foregroundStyle(AITheme.body)
-        Text("This folder is not indexed yet")
+      if let recursive = model.startedIndexing, !model.searching {
+        // Just asked to index: say plainly that it carries on without the
+        // panel, and offer the way out.
+        Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 30)).foregroundStyle(AITheme.body)
+        Text(recursive ? "Indexing “\(model.folderName)” and its subfolders in the background"
+                       : "Indexing “\(model.folderName)” in the background")
           .font(AITheme.font(17)).foregroundStyle(AITheme.title)
-        Text("Indexing runs in the background, on this Mac, while you keep viewing. Results appear as it goes.")
+          .multilineTextAlignment(.center).frame(maxWidth: 480)
+        Text("You can close this and carry on: indexing continues on its own, at low priority, and "
+             + "pauses while you watch or pan. Its progress is in the command bar. "
+             + (model.query.isEmpty ? "Search whenever you like: results appear as it goes."
+                                    : "Results for “\(model.query)” appear here as it goes."))
           .font(AITheme.font(13)).foregroundStyle(AITheme.body)
-          .multilineTextAlignment(.center).frame(maxWidth: 420)
+          .multilineTextAlignment(.center).frame(maxWidth: 460)
+          .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 10) {
+          Button("Continue in background") { close() }  // Esc does the same
+            .help("Close this panel. Indexing carries on; reopen search (⌘F) any time.")
+          Button("Search now") { focusField() }
+        }
+        .controlSize(.large)
+        .padding(.top, 4)
+      } else if model.coverage == 0 && model.scope != .all && !model.folder.isEmpty {
+        Image(systemName: "rectangle.stack.badge.plus").font(.system(size: 34)).foregroundStyle(AITheme.body)
+        Text("“\(model.folderName)” is not indexed yet")
+          .font(AITheme.font(17)).foregroundStyle(AITheme.title)
+          .multilineTextAlignment(.center).frame(maxWidth: 480)
+        Text("Indexing runs in the background, on this Mac: you can close this panel and keep viewing. "
+             + "Results appear as it goes.")
+          .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+          .multilineTextAlignment(.center).frame(maxWidth: 440)
+          .fixedSize(horizontal: false, vertical: true)
         HStack(spacing: 10) {
           Button("Index this folder") { model.indexFolder(recursive: false) }
             .keyboardShortcut(.defaultAction)
           Button("Index this folder and subfolders") { model.indexFolder(recursive: true) }
         }
         .controlSize(.large)
+        .padding(.top, 4)
       } else if model.searching {
         Text("Searching…").font(AITheme.font(14)).foregroundStyle(AITheme.body)
       } else if model.failed {
         Image(systemName: "exclamationmark.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         Text("Search did not finish.").font(AITheme.font(15)).foregroundStyle(AITheme.title)
-        Text("Try again, or change the words.").font(AITheme.font(12)).foregroundStyle(AITheme.body)
+        Text("Try again, or change the words.").font(AITheme.font(13)).foregroundStyle(AITheme.body)
       } else if model.finished && (model.reference != nil || !model.query.isEmpty) {
         Image(systemName: "sparkle.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         if let reference = model.reference {
@@ -358,15 +467,16 @@ struct SearchRootView: View {
         }
         if model.indexing {
           Text("Indexing is still running; more may match soon.")
-            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .font(AITheme.font(13)).foregroundStyle(AITheme.body)
         }
       } else {
-        Text("Describe what you're looking for: “guy on a skateboard”, “sunset over water”, “birthday cake”.")
+        Text("Describe what you're looking for: “guy on a skateboard”, “sunset over water”, “birthday cake”."
+             + (model.audioReady ? " Or a sound, “dog barking”, or words someone said." : ""))
           .font(AITheme.font(14)).foregroundStyle(AITheme.body)
           .multilineTextAlignment(.center).frame(maxWidth: 460)
         if model.indexing {
           Text("Results appear as the index grows.")
-            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .font(AITheme.font(13)).foregroundStyle(AITheme.body)
         }
       }
       Spacer(minLength: 0)
@@ -459,60 +569,196 @@ struct SearchRootView: View {
   // MARK: footer
 
   private var footer: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 14) {
       // Its own view over the status: 4 Hz updates re-render the pill only.
-      SearchStatusPill(status: model.status) { model.setPaused($0) }
+      SearchStatusPill(status: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
         .frame(maxWidth: 520, alignment: .leading)
       Spacer(minLength: 0)
       if !model.results.isEmpty {
-        Text("↩ Open   ⌘↩ Gallery   esc Close")
-          .font(AITheme.font(11)).foregroundStyle(AITheme.body)
-          .lineLimit(1)
+        HStack(spacing: 10) {
+          KeyHint(key: "↩", label: "Open")
+          KeyHint(key: "⌘↩", label: "Gallery")
+        }
+        .fixedSize()
       }
+      // Always there: closing never stops indexing or a search.
+      Button { close() } label: { KeyHint(key: "esc", label: "Close") }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("Close the panel. Indexing carries on in the background.")
+        .accessibilityLabel("Close search")
     }
     .padding(.horizontal, 14).padding(.vertical, 9)
   }
 }
 
-private struct SearchStatusPill: View {
-  @ObservedObject var status: SearchStatus
-  let onPause: (Bool) -> Void
+/// "↩ Open": a keycap and what it does, in the footer.
+private struct KeyHint: View {
+  let key: String
+  let label: String
 
-  var body: some View { StatusPill(line: status.line, onPause: onPause) }
+  var body: some View {
+    HStack(spacing: 5) {
+      Text(key)
+        .font(AITheme.font(12))
+        .foregroundStyle(AITheme.title)
+        .padding(.horizontal, 5)
+        .frame(minWidth: 20, minHeight: 18)
+        .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.primary.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(AITheme.hairline, lineWidth: 1))
+      Text(label).font(AITheme.font(13)).foregroundStyle(AITheme.body)
+    }
+    .fixedSize()
+    .accessibilityElement(children: .combine)
+  }
 }
 
-private struct Chip: View {
+private struct SearchStatusPill: View {
+  @ObservedObject var status: SearchStatus
+  let onIndexAnyway: () -> Void
+  let onPause: (Bool) -> Void
+
+  var body: some View { StatusPill(line: status.line, onIndexAnyway: onIndexAnyway, onPause: onPause) }
+}
+
+// MARK: filter controls
+
+/// A caption and its control, on one baseline: "Look in  [This folder | …]".
+private struct FilterGroup<Content: View>: View {
+  let caption: String?
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    HStack(spacing: 8) {
+      if let caption {
+        Text(caption)
+          .font(AITheme.font(13))
+          .foregroundStyle(AITheme.body)
+          .fixedSize()
+          .accessibilityHidden(true)  // each control's own label carries it
+      }
+      content
+    }
+    .fixedSize()
+  }
+}
+
+/// The recessed track a single-choice group sits in (a segmented control).
+private struct SegmentTrack<Content: View>: View {
+  @ViewBuilder let content: Content
+  @Environment(\.colorSchemeContrast) private var contrast
+
+  var body: some View {
+    HStack(spacing: 2) { content }
+      .padding(2)
+      .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.06)))
+      .overlay {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+          .stroke(contrast == .increased ? AITheme.title.opacity(0.6) : AITheme.hairline.opacity(0.6), lineWidth: 1)
+      }
+  }
+}
+
+/// One filter: a segment of a single-choice track, or a token that toggles
+/// on its own (Finder / Photos filter tokens). House face at its 13 pt design
+/// size; icons 11 pt, centred on the text. Selected reads by fill, weight of
+/// colour and (Increase Contrast) an outline, never by colour alone.
+/// Unavailable is dimmed but still hovers, so its tooltip can say why (a
+/// disabled control shows no tooltip); clicking it does nothing.
+private struct FilterButton: View {
+  enum Style { case segment, token }
+
   let label: String
   var symbol: String? = nil
   let on: Bool
-  let disabled: Bool
+  let style: Style
+  var available = true
+  let help: String
   let action: () -> Void
+
+  @Environment(\.colorScheme) private var scheme
+  @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @FocusState private var focused: Bool
   @State private var hover = false
 
+  private var increased: Bool { contrast == .increased }
+  private var radius: CGFloat { style == .segment ? 5 : 12 }
+
   var body: some View {
-    Button(action: action) {
-      HStack(spacing: 4) {
-        if let symbol { Image(systemName: symbol).font(.system(size: 10, weight: .semibold)) }
-        Text(label)
+    HStack(spacing: 5) {
+      if let symbol {
+        Image(systemName: symbol)
+          .font(.system(size: 11, weight: .medium))
+          .frame(width: 14)
       }
-        .font(AITheme.font(12))
-        .foregroundStyle(on ? Color.white : AITheme.title)
-        .padding(.horizontal, 10).padding(.vertical, 4)
-        .background(Capsule().fill(on ? Color.accentColor : Color.primary.opacity(hover ? 0.10 : 0.06)))
-        .contentShape(Capsule())
+      Text(label).font(AITheme.font(13)).fixedSize()
     }
-    .buttonStyle(.plain)
-    .disabled(disabled)
-    // Reachable with Tab, and Space or Return toggles it.
-    .focusable(!disabled)
+    .foregroundStyle(foreground)
+    .padding(.horizontal, 10)
+    .frame(height: style == .segment ? 22 : 24)
+    .background { RoundedRectangle(cornerRadius: radius, style: .continuous).fill(fill) }
+    .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(stroke, lineWidth: 1) }
+    .shadow(color: style == .segment && on && scheme == .light ? .black.opacity(0.12) : .clear, radius: 1, y: 0.5)
+    .overlay {
+      // The keyboard focus ring, drawn: a custom control gets none of its own.
+      if focused {
+        RoundedRectangle(cornerRadius: radius + 2, style: .continuous)
+          .stroke(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2.5)
+          .padding(-2)
+      }
+    }
+    .opacity(available ? 1 : 0.4)
+    .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+    .onTapGesture { if available { action() } }
+    .onHover { hover = $0 }
+    // Reachable with Tab when it can do something; Space or Return acts.
+    .focusable(available)
+    .focused($focused)
+    .focusEffectDisabled()
     .onKeyPress(keys: [.space, .return]) { _ in
+      guard available else { return .ignored }
       action()
       return .handled
     }
-    .opacity(disabled ? 0.45 : 1)
-    .onHover { hover = $0 }
-    .accessibilityAddTraits(on ? .isSelected : [])
-    .animation(.easeOut(duration: 0.15), value: on)
+    .help(help)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: on)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hover)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(label)
+    .accessibilityHint(help)
+    .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+    .accessibilityAction { if available { action() } }
+  }
+
+  private var foreground: Color {
+    switch style {
+    case .segment: return on || hover ? AITheme.title : AITheme.body
+    case .token:
+      if !on { return hover && available ? AITheme.title : AITheme.body }
+      return increased ? AITheme.title : Color.accentColor
+    }
+  }
+
+  private var fill: Color {
+    switch style {
+    case .segment:
+      if on { return scheme == .dark ? Color.white.opacity(0.16) : Color.white }
+      return hover ? Color.primary.opacity(0.05) : .clear
+    case .token:
+      if on { return Color.accentColor.opacity(scheme == .dark ? 0.24 : 0.14) }
+      return hover && available ? Color.primary.opacity(0.06) : .clear
+    }
+  }
+
+  private var stroke: Color {
+    switch style {
+    case .segment:
+      return on && increased ? AITheme.title.opacity(0.7) : .clear
+    case .token:
+      if on { return increased ? AITheme.title : Color.accentColor.opacity(0.55) }
+      return increased ? AITheme.title.opacity(0.6) : AITheme.hairline
+    }
   }
 }
 
@@ -625,10 +871,10 @@ private struct ResultTile: View {
       if !slot.snippet.isEmpty {
         // The words that matched, quoted, under the frame they were said over.
         Text("“\(slot.snippet)”")
-          .font(AITheme.font(11))
+          .font(AITheme.font(12))
           .foregroundStyle(AITheme.body)
           .lineLimit(2)
-          .truncationMode(.middle)
+          .truncationMode(.tail)
           .frame(width: size, alignment: .leading)
           .transition(.opacity)
       }
