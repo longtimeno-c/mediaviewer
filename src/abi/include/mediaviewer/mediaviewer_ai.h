@@ -166,20 +166,25 @@ typedef struct mv_ai_api {
   /* ---- state and settings (PR 20, 23) ------------------------------------ */
   mv_status(MV_CALL* status)(void* ctx, mv_ai_status* out);                      /* [no-block] */
   /* {"compute":0..4,"quality":0..2,"pause_on_battery_percent":30,
-   *  "video_index":1..3 (in effect: an unset choice is Pictures, or Both once
+   *  "battery_override":false, "video_index":1..3 (in effect: an unset choice is Pictures, or Both once
    *  ai-audio is installed), "video_index_setting":0..3, "audio_ready":bool,
    *  "index_cap_bytes":N,"faces":false,"min_score":0.2,
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
    *  "runtime":"1.30.0"}  [no-block] */
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
-  /* key: "compute" | "quality" | "pause_on_battery_percent" | "index_cap_bytes"
-   * | "min_score" | "reload" | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
+  /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
+   * | "index_cap_bytes" | "min_score" | "reload" | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
    * Sound once the ai-audio piece is installed); value: a JSON number. Compute re-creates the
    * sessions (no re-index); quality starts a migration. "reload" (any value)
    * re-reads the installed pieces after one is installed or removed: People
    * (ai-faces) is picked up at once; a vendor piece (ai-cuda) carries its own
-   * runtime and takes effect the next time the app starts. [no-block] */
+   * runtime and takes effect the next time the app starts.
+   * "battery_override" (1 / 0) is "Index anyway": indexing ignores the
+   * pause_on_battery_percent pause (yield_reason BATTERY) for this spell on
+   * battery. It is never saved: the machine going back to AC ends it (the next
+   * unplug pauses again), as does the app restarting; settings_json reports it
+   * as "battery_override":bool. The saved threshold is unchanged. [no-block] */
   mv_status(MV_CALL* set_setting)(void* ctx, const char* key, const char* value_json);
   /* Pause / resume all indexing. [no-block] */
   mv_status(MV_CALL* pause)(void* ctx, uint32_t paused);

@@ -228,6 +228,7 @@ std::string engine::settings_json() const {
   w.key("compute").integer(s.compute);
   w.key("quality").integer(s.quality);
   w.key("pause_on_battery_percent").integer(s.battery_percent);
+  w.key("battery_override").boolean(battery_override_.load());
   w.key("index_cap_bytes").integer(static_cast<std::int64_t>(s.index_cap));
   w.key("faces").boolean(s.faces);
   // What videos are indexed for, in effect: an unset choice reads as Pictures,
@@ -266,6 +267,12 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   const auto v = json::parse(value_json, 2);
   if (!v || v->k != json::kind::number) return err(status::invalid_arg);
   const double x = v->is_integer ? static_cast<double>(v->i) : v->d;
+  if (key == "battery_override") {
+    // "Index anyway": for this spell on battery only, never written to
+    // settings.json. The workers pick it up on their next turn (wait_turn).
+    battery_override_ = x != 0;
+    return {};
+  }
   bool reload = false;
   {
     std::lock_guard lock(settings_m_);
@@ -712,6 +719,8 @@ void engine::control_loop() {
     refresh_counts();
     scanning_ = false;
     maybe_finish_migration();
+    // Plugging in ends an override even while no worker is asking (idle).
+    if (battery_override_ && !power_state().on_battery) battery_override_ = false;
     if (t - last_consolidate > 60) {
       bool idle = false;
       {
@@ -882,9 +891,18 @@ mv_ai_yield engine::yield_reason() const {
     std::lock_guard lock(settings_m_);
     threshold = settings_.battery_percent;
   }
-  const platform::power p = platform::power_state();
-  if (p.on_battery && p.percent < threshold) return MV_AI_YIELD_BATTERY;
+  const platform::power p = power_state();
+  if (!p.on_battery) {
+    // Back on AC: "Index anyway" was for that spell on battery only.
+    battery_override_ = false;
+    return MV_AI_YIELD_NONE;
+  }
+  if (p.percent < threshold && !battery_override_) return MV_AI_YIELD_BATTERY;
   return MV_AI_YIELD_NONE;
+}
+
+platform::power engine::power_state() const {
+  return deps_.power ? deps_.power() : platform::power_state();
 }
 
 bool engine::wait_turn() {

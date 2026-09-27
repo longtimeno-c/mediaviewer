@@ -35,6 +35,7 @@
 #include "addons/ai/faces.h"
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
+#include "addons/ai/platform.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
 #include "infer/audio_models.h"
@@ -139,6 +140,9 @@ struct engine_deps {
   // A vendor piece installed or removed since the runtime loaded: the
   // change needs the app to start again (the runtime cannot be swapped live).
   std::function<bool()> restart_needed;
+  // The power source (plan/17 "Yield policy"); null reads the OS
+  // (platform::power_state). The tests fake it.
+  std::function<platform::power()> power;
 };
 
 struct settings {
@@ -255,6 +259,7 @@ class engine {
   void process_sound(const work_item& item, const loaded_sound& sound);
   void process_speech(const work_item& item, const loaded_speech& speech);
   [[nodiscard]] std::uint32_t default_media() const;
+  [[nodiscard]] platform::power power_state() const;
   // audio search
   struct speech_row {
     std::int64_t asset = 0;
@@ -343,6 +348,10 @@ class engine {
   std::atomic<bool> paused_{false};
   std::atomic<bool> index_full_{false};
   std::atomic<int> yield_now_{MV_AI_YIELD_NONE};
+  // "Index anyway": the user's session override of the battery pause. Never
+  // saved; ended by the machine going back to AC (so the next unplug pauses
+  // again) or by a restart.
+  mutable std::atomic<bool> battery_override_{false};
   std::atomic<bool> clearing_{false};
   std::mutex control_m_;
   std::condition_variable control_cv_;

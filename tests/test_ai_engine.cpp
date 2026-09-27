@@ -18,8 +18,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -258,6 +260,8 @@ struct rig {
   std::map<std::string, std::string> moment_thumbs;
   std::mutex thumbs_m;
   std::atomic<bool> busy{false};
+  std::atomic<bool> on_battery{false};  // the fake power source
+  std::atomic<int> battery_percent{100};
   std::atomic<int> stills_decoded{0};
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<fake_embedder> fast = std::make_shared<fake_embedder>("fake-fast/fp16/pre1");
@@ -341,6 +345,12 @@ struct rig {
       return std::unique_ptr<mv::ai::face_analyzer>(new fake_faces());
     };
     d.runtime_version = [] { return std::string("fake"); };
+    d.power = [this] {
+      mv::ai::platform::power p;
+      p.on_battery = on_battery.load();
+      p.percent = battery_percent.load();
+      return p;
+    };
     d.open_sound = [this](std::uint32_t) -> mv::result<mv::ai::loaded_sound> {
       if (!audio_available) return mv::err(mv::status::io);
       mv::ai::loaded_sound s;
@@ -588,6 +598,66 @@ TEST_CASE("indexing waits while the viewer is busy and says so", "[ai][engine]")
   r.eng->pause(false);
   REQUIRE(r.idle());
   CHECK(r.stills_decoded.load() == 3);
+}
+
+TEST_CASE("indexing pauses on a low battery until the user says index anyway", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());  // models loaded on AC
+  REQUIRE(r.stills_decoded.load() == 1);
+
+  // Unplugged below the threshold (30 %): the indexer waits and says why.
+  r.on_battery = true;
+  r.battery_percent = 12;
+  r.file("blue.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(r.stills_decoded.load() == 1);
+  const mv_ai_status s = r.status();
+  CHECK(s.state == MV_AI_STATE_YIELDING);
+  CHECK(s.yield_reason == MV_AI_YIELD_BATTERY);
+
+  // "Index anyway": the session override, reported but never saved.
+  REQUIRE(r.eng->set_setting("battery_override", "1"));
+  CHECK(r.eng->settings_json().find("\"battery_override\":true") != std::string::npos);
+  REQUIRE(r.idle());
+  CHECK(r.stills_decoded.load() == 2);
+  REQUIRE(r.eng->set_setting("index_cap_bytes", "8000000000"));  // writes settings.json
+  {
+    std::ifstream in(r.dir / "data" / "settings.json", std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream saved;
+    saved << in.rdbuf();
+    CHECK(saved.str().find("battery_override") == std::string::npos);
+  }
+  CHECK(r.eng->settings_json().find("\"pause_on_battery_percent\":30") != std::string::npos);
+
+  // Plugged in and out again: the override has ended and the pause is back.
+  r.on_battery = false;
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(r.eng->settings_json().find("\"battery_override\":false") != std::string::npos);
+  r.on_battery = true;
+  r.file("green.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(r.stills_decoded.load() == 2);
+  CHECK(r.status().yield_reason == MV_AI_YIELD_BATTERY);
+
+  // A restart forgets an override too.
+  REQUIRE(r.eng->set_setting("battery_override", "1"));
+  REQUIRE(r.idle());
+  CHECK(r.stills_decoded.load() == 3);
+  r.start();
+  CHECK(r.eng->settings_json().find("\"battery_override\":false") != std::string::npos);
+
+  // Above the threshold on battery, nothing waits.
+  r.battery_percent = 80;
+  r.file("white.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  CHECK(r.stills_decoded.load() == 4);
 }
 
 TEST_CASE("a quality change migrates without ever mixing vector spaces", "[ai][engine]") {
