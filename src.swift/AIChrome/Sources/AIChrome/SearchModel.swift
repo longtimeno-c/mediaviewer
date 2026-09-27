@@ -319,6 +319,7 @@ final class SearchModel: ObservableObject {
     finished = true
     failed = true
     setResults([], search: 0, run: nil)
+    answerGallery(2, count: 0)
   }
 
   /// MV_ADDON_EVENT_AI_SEARCH_DONE: id = search, payload = count.
@@ -367,7 +368,8 @@ final class SearchModel: ObservableObject {
         // Return was pressed before this answer landed: open it now.
         if let gallery = self.openWhenReady {
           self.openWhenReady = nil
-          if !list.isEmpty { _ = self.openNow(gallery: gallery) }
+          let opened = !list.isEmpty && self.openNow(gallery: gallery)
+          self.answerGallery(opened ? 0 : (list.isEmpty ? 1 : 2), count: list.count)
         }
       }
     }
@@ -539,12 +541,42 @@ final class SearchModel: ObservableObject {
       "select": NSNumber(value: min(max(selected, 0), results.count - 1)),
       "gallery": NSNumber(value: gallery),
     ]
-    guard chrome?.hostOpenList(request) == true else { return false }
+    guard chrome?.hostOpenList(request, from: self) == true else { return false }
     let old = listed
     listed = shown
     if old != listed { releaseIfUnused(old) }
     markerPath = ""
     return true
+  }
+
+  // MARK: the gallery search bar (plan/17, 2026-09-27)
+
+  /// The bar's request this model answers: set only on the gallery's own
+  /// SearchModel (MVAIChrome -galleryQuery:), 0 on the panel's.
+  private var gallerySeq: UInt64 = 0
+
+  /// Whether a SEARCH_DONE for `id` is this model's: the chrome routes each
+  /// answer to its owner only (a model releases searches it does not own).
+  func owns(_ id: UInt64) -> Bool { id != 0 && (id == pending || id == reading || runs[id] != nil) }
+
+  /// Contents mode: the panel's own text search, scoped to `dir` (and its
+  /// subfolders when its root is recursive), opened as the gallery's result
+  /// list when it answers. The answer, whatever it is, goes back to the bar.
+  func galleryQuery(_ text: String, dir: String, tree: Bool, seq: UInt64) {
+    gallerySeq = seq
+    folder = dir
+    scope = tree ? .tree : .folder
+    kinds = .all
+    finds = []
+    reference = nil
+    query = text
+    openWhenReady = true
+    run(keepSelection: false)
+  }
+
+  private func answerGallery(_ state: Int32, count: Int) {
+    guard gallerySeq != 0 else { return }
+    chrome?.galleryAnswer(seq: gallerySeq, state: state, count: count)
   }
 
   // MARK: find similar

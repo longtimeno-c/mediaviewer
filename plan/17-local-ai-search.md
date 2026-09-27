@@ -628,6 +628,28 @@ Enter-lands-on-frame, the keyboard-only flow, HDR clip check, the minidump check
 manifest fuzzers, a real camera-dump eval set (the z rule was calibrated on 300 COCO photos),
 CLAP's own "nothing found" calibration, Core ML coverage and throughput, and every Mac build.
 
+### Gallery search bar (2026-09-27)
+
+Owner request: a search bar at the top of the gallery, and indexing options there. One slim field
+pinned above the `G` grid (`/`, command `gallery_search`, plan/16), the same on both hosts.
+**Names** is the base app's and needs no add-on: a case- and diacritic-insensitive substring
+match on the names the tiles show (folder tiles too), "N of M", and while it filters the
+gallery's keys move among the tiles shown; it is a view filter only, so the viewer still walks
+the whole folder. With the pack loaded a **Names · Contents** toggle appears: Contents sends the
+text to the pack's chrome, which runs the search panel's own `search_text` in the folder (and its
+subfolders when the folder's root is recursive) and opens the answer through the panel's
+open-as-gallery path as a "Search: …" list, with no host re-ranking; a folder that is not
+covered offers to be indexed instead. The **index control** at the bar's right end is the pack's
+(`index_folder`, `folder_coverage`, `roots_json`, `root_set_enabled`, `root_rescan`,
+`root_set_media`, `root_remove`), vended like the Settings view (Mac: `MVAIChrome
+-galleryAccessory` / `-galleryQuery:` / `-galleryVisible:`; Windows: `IGallerySearchChrome`) and
+polled at 2 Hz only while the grid is up. An older pack without them leaves the bar Names only.
+Mac: the names are folded once per listing off the main thread (~11 ms for 10,000); a keystroke
+is one `memmem` pass over the folded bytes, 0.08–0.23 ms mean and 0.86 ms worst for 10,000 names
+on the M5 (a standalone `swiftc -O` run of `NameFilter.swift`). Filtering keeps each tile's
+identity and thumbnail, so nothing reloads. Not checked by eye yet: the bar's look in light,
+dark and Increase Contrast, and the focus hand-offs.
+
 ## Open decisions (owner)
 
 1. ~~**D3D12 / DirectML.**~~ **Settled 2026-09-24:** vendor providers (OpenVINO, CUDA/TensorRT)
