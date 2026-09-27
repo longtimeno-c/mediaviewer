@@ -82,7 +82,8 @@ host of the same core — not a UI-only port. Mac PR 1 is the Metal present lab
 (AppKit + `CAMetalLayer` + `CAMetalDisplayLink`). Mac PR 2 adds JPEG/PNG/BMP decode,
 immutable Metal texture upload, fit / wheel-zoom-toward-cursor / drag-pan, and an MSL
 twin of the blit shader, plus (folded in from Windows PR 7) the rest of the D5 still
-formats, RAW+JPEG/Live Photo pairing detection, and Crashpad + a Mac minidump scrub.
+formats and RAW+JPEG/Live Photo pairing detection. Crashpad and the Mac minidump scrub,
+planned there, never landed with it; they are in the Mac half of PR 11 (below).
 Mac PR 3 hosts SwiftUI chrome in the same AppKit window (the canvas stays Metal, never
 ported): a command bar, a bottom filmstrip, and a full-grid gallery overlay, all driven
 by an FSEvents-backed folder model and a JPEG-512 SQLite thumbnail cache sharing
@@ -92,6 +93,12 @@ plan/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscre
 a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
 It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane with a summary card, a searchable tree of every EXIF/IPTC/XMP tag and, for clips, a per-stream inspector; `O` adds camera, exposure and date lines to the on-canvas info; `Shift+O` draws AF points; `Shift+I` is a one-pixel eyedropper; `⌘⇧E` shows a folder tree; View ▸ Sort By adds date taken. It does **not** yet handle rating/metadata *writes* (PR 12) or RAW-pairing UI. On Windows the same features are in: `I` (or View ▸ Metadata pane) opens the pane on the right, `Ctrl+Shift+E` (or View ▸ Folder tree) the folder tree on the left rooted at the open folder, `O` adds the camera/exposure/date lines, `Shift+O` draws AF points, `Shift+I` is the eyedropper, and `Ctrl+C` copies the eyedropper colour (or, with it off, the marked/current file(s) as a file drop). View ▸ Sort by and Settings offer name, date modified, size, type and EXIF date taken, ascending or descending; the choice is saved. Both panes float over the photo, so opening one never refits it.
 On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. Neither host half has been compiled yet — see [plan/12](../plan/12-decision-log.md) 2026-09-24.
+Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`⇧A` on Mac) opens an adjust pane with exposure, contrast, saturation, temperature and tint, a histogram and a clipped-highlights / crushed-shadows readout. Slider drags only change shader uniforms — nothing is re-decoded — and the colour is worked in linear light from an FP16 working image; for a RAW the sliders stay disabled ("Preparing…") until LibRaw's full linear develop is ready, never the embedded preview. Export (`Ctrl+S`) bakes the same maths at full resolution. The Mac half also brings **crash reporting**: Crashpad out of process, the Windows privacy scrub (now aware of `/Users/…`-style paths), and uncaught `NSException`s recorded with the id of the native call they happened in. PR 11's host halves are not verified on hardware yet — see [plan/12](../plan/12-decision-log.md) 2026-09-24 (PR 11).
+Then the **PR 12 metadata writes** (shared core and the **macOS half**; the Windows half is written but not yet compiled or run): keypad `0`–`5` (or `⌘⇧0`–`5`, `Ctrl+Shift+0`–`5` on Windows once built) rate the photo on screen, and `⌘I` puts the keyboard in the metadata pane's comment field. A plain JPEG is rewritten in place, checked against the original before it replaces anything; every other format (RAW, HEIC, PNG, video, …) gets an `IMG_1234.xmp` sidecar beside it and the original is never opened for writing. The pane has clickable stars, the comment and a "Revert metadata" button. **On a Mac, `⌘⇧3`/`4`/`5` are the system's screenshot shortcuts and never reach the app; use the keypad or turn those shortcuts off.** See [plan/12](../plan/12-decision-log.md) 2026-09-25.
+
+And **PR 13 / 14 clip editing** (Windows and macOS, same core), not yet built on either platform: on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is tested on Linux ([tools/portable](../tools/portable/README.md)); what is owed on each platform is in [plan/12](../plan/12-decision-log.md) 2026-09-25.
+
+**PR 15 OS integration** is written on a branch (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). Several windows grouped as tabs come in a later update ([plan/10](../plan/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -101,6 +108,13 @@ lines are only partly demonstrated — read
 The keys below come from the command table specified in
 [plan/16-commands.md](../plan/16-commands.md); press `?` in the app for the ones
 that apply to what you are doing.
+
+The Windows and macOS UI follows the system's light or dark appearance,
+including Settings, browsing, editing panels and Import. Appearance changes
+apply while the app is open. The empty welcome screen and dinosaur runner follow
+the system window colour too. The photo/video **Canvas background** now defaults
+to System; Grey, White, Checkerboard and Dark remain fixed choices. Build and
+interactive checks are documented in [System appearance verification](system-theme-verify.md).
 
 **Licence: GPL-3.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
 [plan/11-licensing.md](../plan/11-licensing.md).
@@ -144,7 +158,7 @@ CMake finds vcpkg from `VCPKG_ROOT`, or from `%USERPROFILE%\vcpkg`, or from an e
 `libjpeg-turbo`, `libspng`, `lcms`, `sqlite3` and `ffmpeg` (LGPL only —
 `avcodec`, `avformat`, `avfilter`, `swresample`, `swscale`, `dav1d`; no
 `--enable-gpl`, no x264/x265, enforced by `tools/licence-check.ps1`). The rest of
-the v1 set arrives with the PR that needs it, listed in [`vcpkg.json`](vcpkg.json).
+the v1 set arrives with the PR that needs it, listed in [`vcpkg.json`](../vcpkg.json).
 The first configure after PR 5 builds FFmpeg, which is not quick.
 
 Other configurations:
@@ -226,7 +240,8 @@ installed above includes it alongside libheif/LibRaw; no extra install is needed
 
 Open a folder with clips in it. `Space`/`K` play/pause, `,` `.` frame step, `Q`/`E` ±2 s,
 `J`/`L` ±10 s, `Shift+Q`/`Shift+E` speed 0.25–4×, `Shift+M` mute (`?` lists them; the transport
-strip appears above the filmstrip while a clip is on screen). `F3` names the decoder that is
+bar floats above the filmstrip while a clip is on screen and fades after 2.5 s of playback
+with no activity — see the transport paragraph below). `F3` names the decoder that is
 *actually* running (`SOFTWARE` is spelled out, never silent), the clock source, the A/V error
 and the counters. H.264 and HEVC (8- and 10-bit) decode in hardware; MPEG-2 and MPEG-4 fall
 back to software on Apple Silicon and say so.
@@ -419,9 +434,9 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 | Key | |
 |---|---|
-| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
+| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar and filmstrip; a clip's transport still floats and auto-hides, and the pointer hides with it over the video. `Esc` leaves |
 | `F3` | frame-time overlay — off at launch on Windows and macOS unless a soak is running |
-| Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves. Switching views keeps your run and score |
+| Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves with a short outro. Switching views keeps your run and score |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
@@ -461,7 +476,7 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
-| `Ctrl+,` | Settings: view defaults and remappable keys. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
+| `Ctrl+,` | Settings: **General** has grouped preferences with aligned switches and automatic saving; **Keyboard shortcuts** has the searchable remapping list. Both pages scroll independently of the header and Done button. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
 | `Ctrl+G` | go to an item by its number in the folder |
 | `/` | find an item by name. With the filmstrip or gallery focused, just type |
 | `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
@@ -474,7 +489,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers, counts, and a path bar (middle collapses to `…`) stay on screen, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
@@ -490,6 +505,30 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
+| `Shift+A` | adjust pane (PR 11): exposure, contrast, saturation, temperature, tint, histogram and clipping. It takes the keyboard: on Windows `Tab` walks the sliders and the arrows step them; on Mac `↑` `↓` pick a slider, `←` `→` step it (`⇧` ×10), `0` zeroes it, `R` resets. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
+
+**Clips (PR 13 / 14, Windows and macOS; not yet built on either).** Nothing here changes the
+clip: every result is a new file beside it, and a cancelled job leaves nothing behind.
+
+| Key | Does |
+|---|---|
+| `Ctrl+T` | trim mode on the clip on screen. Transport keys keep working; `Esc` leaves it (markers are kept for that clip) |
+| `[` / `]` | in / out marker at the playhead. The scrub bar shows the markers, the keyframe grid and the range the instant cut keeps |
+| `P` | preview the cut: loops exactly what `Enter` will write |
+| `Enter` / `Shift+Enter` | save the keyframe cut (instant, lossless, snapped to keyframes) / the frame-accurate re-encode on the hardware encoder (slower) |
+| `Ctrl+X` | save a copy without the in–out range |
+| `Ctrl+←` / `Ctrl+→` | previous / next keyframe (in trim mode) |
+| `Backspace` / `Delete` | clear the markers (in trim mode `Delete` never trashes the clip) |
+| `Ctrl+S` | clip tools: rotate losslessly, split, save the frame (PNG / JPEG), extract audio (copy / WAV / FLAC), convert MP4 ↔ MKV, GIF / WebP of in–out (or 5 s from the playhead) |
+| `Ctrl+B` | split at the nearest keyframe to the playhead |
+| `Ctrl+J` | Jobs pane: progress and time left; `↑` `↓` choose, `Delete` cancels, `R` retries, `Enter` shows the output in Explorer / Finder |
+
+On a Mac these are the `⌘` chords.
+
+Colour edits are worked in linear light (an FP16 working image, D6) and shown through the
+same shader on both platforms; `C` blinks what the edit clips. A RAW's sliders wait for
+LibRaw's full linear develop (seconds on a large file) rather than editing the embedded
+JPEG, so what you adjust is what exports.
 
 Keys go through one router and one table (`src/shell/commands.h`,
 [plan/16](../plan/16-commands.md)). Symbol keys (`?`, `+`, `\`) follow your
@@ -502,7 +541,11 @@ springs back to centre. Drop a file on the window.
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
-past the prefetched neighbours; 3 s dwell between arrows),
+past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too. The
+Windows lab adds `quick` steps — Right as soon as the last photo is on screen — and one
+`held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
+run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases
+the in-flight decode hand-off is for, and `perf-browse.svg` ignores them),
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
 the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
@@ -527,22 +570,44 @@ thumbnail too — a poster frame from about 10 % into the clip, in that same cac
 camera dump does not show blanks where the video is. With no
 folder open the canvas shows a welcome card (drop target, open shortcut, formats, key legend) reading *Drop photos, videos or a folder here*, not the
 present-lab sweep. **Space** on that empty view starts a small runner game (an intro animation, then
-Space to jump, `Esc` to leave); it stops presenting the moment you leave it. The frame-time
+Space to jump, `Esc` to leave with a short outro); it stops presenting once the welcome card is back. The frame-time
 soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The gallery and filmstrip accept the same drop, and you can drag a
 thumbnail or the fitted image out to Explorer.
 
-The playback transport is a **third island**: a bottom-centre strip that appears with a
-clip and goes away with it. Its height is reserved out of the canvas rectangle the same
-way the filmstrip's is, so it can never cover the video ([plan/16](../plan/16-commands.md):
-do not grow an island over the canvas). Speed is owned by the core, so the dropdown and
-the keyboard cannot disagree.
+The playback transport is a **third island**: a centred bar floating over the bottom of the
+video, above the filmstrip, sized to its controls, that appears with a clip and goes away with it. It works the
+same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
+
+- While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,
+  clicking, scrolling, a transport key (`Space`, `K`, `J`/`L`, `Q`/`E`, `,`/`.`, speed, mute,
+  `↑`/`↓` volume) or `Tab` brings it straight back.
+- It **stays up** while the clip is paused or has ended, while the pointer is over it, during
+  a scrub, while its More / speed menu is open, while it has keyboard focus, and whenever a
+  screen reader (Narrator, VoiceOver) is running. It is never shown over the gallery or
+  Settings.
+- In **fullscreen** the pointer hides with the bar while it is over the video. Windowed, the
+  system pointer is never hidden.
+- Hiding is **only visual**: the canvas does not refit, decode and audio carry on, and keys
+  keep working. A click where the hidden bar was lands on the video, not on a button you
+  cannot see. Idle playback adds one one-shot timer, not a repaint.
+
+The Mac bar fades; on Windows the island is an opaque child window, so it is moved
+off-screen instead. The bar covering the video bottom is a reversal of the old reserved
+strip ([plan/12](../plan/12-decision-log.md) 2026-09-26). Speed is owned by the core, so the
+dropdown and the keyboard cannot disagree.
 
 Opening a single image lists its folder too, so `Left` / `Right` and the gallery work on the
 files beside it. Whether the filmstrip comes with it is a preference: **Settings** has
 *Filmstrip when opening a folder* (on by default) and *Filmstrip when opening an image* (off),
 persisted to `%LocalAppData%\MediaViewer\settings.ini` (also wrap, sticky zoom, canvas
 background, and key remaps). `T` toggles the one for the mode you are in. Both take
-effect immediately — no restart. The Settings screen is where those defaults live.
+effect immediately — no restart. The Settings screen groups these defaults under General,
+with switches aligned on the right and descriptions on the left. Keyboard shortcuts has
+its own searchable tab, so neither page is squeezed into a narrow column. Both platforms
+keep the header and Done button visible while the content scrolls.
+
+For the settings and path-bar smoke checks on Windows and macOS, see
+[the UI verification checklist](settings-navigation-verify.md).
 
 ## Test
 
@@ -626,6 +691,47 @@ ctest --test-dir build -C Release -L cleanvm --output-on-failure
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
 ```
 
+### Performance suite: regenerating the README charts
+
+Every chart in the README's "Speed you can measure" is drawn from a report one of the
+app's own harnesses wrote; nothing is typed in. One command re-measures all of them and
+redraws the SVGs:
+
+```powershell
+python tools/perf/regenerate.py --list           # stages, and what each is missing here
+python tools/perf/regenerate.py                  # full run: docs/perf + docs/img (~15 min)
+python tools/perf/regenerate.py --out perf-run   # staged: reports + charts under perf-run/
+python tools/perf/regenerate.py --quick --out x  # seconds per soak: checks the suite only
+python tools/perf/regenerate.py --only first-pixel,browse
+python tools/perf/make-charts.py                 # redraw from the committed reports
+```
+
+| Stage | Harness | Report | Chart |
+|---|---|---|---|
+| `pacing` | `frametime --seconds 60` (animated + idle soak) | `frametime-animated.json`, `frametime-idle.json` | `perf-pacing.svg` |
+| `pan` | `mediaviewer_lab --soak 60 --pan-soak` on the 42 MP ARW | `pan-soak-42mp-arw.json` | `perf-pacing.svg` |
+| `first-pixel` | `mediaviewer_lab --soak 6 --static` per camera file, after one warm-up open | `first-pixel/<file>.json` | `perf-first-pixel.svg` |
+| `browse` | `mediaviewer_lab --browse-soak` on `tools/testmedia/raw` | `browse.json` | `perf-browse.svg` |
+| `video` | `mediaviewer_lab --soak 60` on the 1080p HEVC + AAC soak clip | `investigation/video-native-60s.json` (+ `.video.json`) | `perf-video.svg` |
+| `av-sync` | `mediaviewer_lab --av-soak 120 --csv` on the same clip | `investigation/av-after-120s.csv` | `perf-av-sync.svg` |
+| `compare` | `tools/perf/compare-screen.ps1` (MediaViewer vs Windows Photos / Media Player) | `compare/screen.json` | `compare-*.svg` |
+| `bench` | `mv_tests "[.perf-bench]"`: headless decode, colour, folder list and sort | `bench.json` | — |
+
+The published charts are Windows numbers. The macOS lab has `pacing`, `first-pixel`,
+`browse` and `video`; `pan`, `av-sync` and `compare` are Windows-only harnesses, so a Mac
+run draws the charts it has and names the rest as skipped. Inputs are the RAW/HEIC samples
+(`tools/testmedia/fetch-raw.ps1`, `fetch-heif.ps1`) and the video corpus
+(`tools/testmedia/generate.sh`); a stage whose inputs are missing is skipped, never faked.
+Soaks open windows and need a visible display and a quiet machine. On macOS a measuring
+run orders its window front without taking the keyboard, so typing elsewhere cannot reach
+it, and `--browse-soak` voids its report (`"error"`) if the window was covered. Each run
+also writes `machine.json` (OS, CPU, commit). `tools/perf/test_perf_tools.py` checks the
+suite itself (every chart reproduces byte-for-byte from the committed reports) and runs
+under `ctest -R perf_tools`.
+
+`mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
+its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows.
+
 ### Crash reports (PR 7)
 
 Native crashes are captured out-of-process by Crashpad into
@@ -656,6 +762,48 @@ Remove-Item Env:MV_CRASH_TEST
 # pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
 # prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
 # crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
+```
+
+`--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
+within 1 ms/min, with no position discontinuities and no host-clock gaps; 1 is a
+real failure, 3 means the clip ended early, 4 means the run was too short to
+count. Audio must be the master for a clip that has an audio track, or it fails.
+
+**The drift figure only means something with the audio master.** On a clip with no
+audio track the clock falls back to the host (`clock host fallback` in the F3
+overlay) and the slope is measuring the host clock against itself, so a large
+number there — tens of ms/min — is an artefact of the fallback, not a defect. Read
+the `audio_master` column in the CSV before reading the slope. That is the whole
+reason the corpus now carries an audio-bearing 31-minute clip.
+
+#### macOS (PR 11)
+
+Crashpad's `crashpad_handler` runs out of process (`MediaViewer.app/Contents/Helpers`, or
+beside `mediaviewer_lab`). Dumps go to `~/Library/Application Support/MediaViewer/Crashes`;
+nothing is uploaded, and forwarding to Apple's crash reporter is off. The next launch
+scrubs each dump with the Windows scrub, which also masks POSIX paths under `/Users`,
+`/Volumes`, `/private`, … and the short and full user name and computer name. An uncaught
+`NSException` from the chrome is written, scrubbed, to `Crashes/chrome/` with the
+correlation id of the native call in flight; the dump carries the same id
+(`mv_last_call_cid`). The verify, with `tools/mac/crash_canary.py` in place of the two
+PowerShell scripts:
+
+```sh
+# 1. a marked COPY of a real RAW (or no --source: the pixel-pattern BMP pair)
+python3 tools/mac/crash_canary.py make --source tools/testmedia/raw/pentax_k50.dng
+
+# 2. crash on it, then relaunch normally: the relaunch scrubs the dump
+MV_CRASH_TEST=decode build/MediaViewer.app/Contents/MacOS/MediaViewer \
+    /tmp/mv-crash-canary/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.dng
+open build/MediaViewer.app
+
+# 3. scan; exit 0 = PASS (it also fails a dump the app has not scrubbed yet)
+python3 tools/mac/crash_canary.py scan ~/Library/Application\ Support/MediaViewer/Crashes/*/*.dmp \
+    --forbid SECRET_FILENAME_canary_7Q3 --forbid PRIVATE_FOLDER_canary --forbid "$USER"
+
+# the chrome path: an NSException raised in AppKit event handling, or a Swift trap
+MV_CRASH_TEST=nsexception build/MediaViewer.app/Contents/MacOS/MediaViewer
+MV_CRASH_TEST=swift_trap  build/MediaViewer.app/Contents/MacOS/MediaViewer
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
@@ -798,6 +946,40 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Performance pass (2026-09-26)
+
+Open and navigation latency, measured on an Apple M5 (60 Hz) with the macOS lab and the
+headless bench (`mv_tests "[.perf-bench]"`), before and after, same build configuration:
+
+| | Before | After |
+|---|---|---|
+| Launch → first pixel of an opened RAW/HEIC (`--soak 6 --static`, 6 samples) | 227–287 ms | 20–50 ms |
+| Launch → full-resolution image, same runs | 261–861 ms | 43–618 ms |
+| Arrow to the next photo (`--browse-soak`, 12 RAWs, median) | 60–64 ms | 0.3–0.4 ms (full resolution, prefetched) |
+| Jump past the prefetched neighbours (median) | 54–61 ms | 52–61 ms |
+| 24 MP JPEG decode (codec) | 137 ms | 116 ms |
+| 24 MP Adobe RGB JPEG, decode + colour | 296 ms | 174 ms |
+| Sub-folder scan, 3,000 files + 40 folders | 5.9 ms | 0.7 ms |
+
+What changed. Shared core: JPEG decodes straight to RGBA through libjpeg-turbo's SIMD path
+with no final copy; ICC transforms are cached by profile, applied in place and in bands
+across up to four threads (`core/parallel.h`); date-taken sort looks each key up once.
+macOS: an opened file starts decoding beside the folder listing instead of after it and a
+0.2 s poll; the listing runs in the open job and notifies the UI directly; a relist no longer
+re-decodes the photo on screen; ±2 neighbours are prefetched into a budgeted GPU still cache
+once the current photo is full (the Windows LRU's twin); view-tied jobs run at
+`USER_INITIATED` instead of on efficiency cores; folder scans skip `stat` for plain files;
+a lost render-thread wake-up, the first spring step after idle, and video frame choice
+before the display-link wait are fixed. The Mac lab gained `--browse-soak` and first-pixel
+fields in its soak report, and measuring runs no longer take the keyboard.
+
+Verified: the Mac PR 1 gate on the result (3,600 frames, 0 dropped, p99 16.85 ms; idle 0
+presents, 0.28 % CPU) and the Mac test suites. **Not verified on Windows**: the shared-core
+changes are built for Windows by CI only; the Windows charts in the README are the earlier
+measurements until `tools/perf/regenerate.py` is re-run there. Still open on Windows: a
+neighbour decode in flight when the user lands on it is cancelled and restarted
+(`abi.cpp` `claim_decode`), and the folder open waits for the .NET chrome to attach.
 
 PR 1's verify line is:
 

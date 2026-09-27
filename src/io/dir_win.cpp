@@ -285,6 +285,7 @@ result<std::string> containing_dir(std::string_view utf8_path) {
 struct directory_watcher::impl {
   HANDLE dir = INVALID_HANDLE_VALUE;
   HANDLE stop = nullptr;
+  HANDLE armed = nullptr;  // set once the first read is in flight; closed after join
   std::thread thread;
   callback cb = nullptr;
   void* user = nullptr;
@@ -296,17 +297,24 @@ directory_watcher::directory_watcher() = default;
 directory_watcher::~directory_watcher() { stop(); }
 
 expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* user) {
-  std::lock_guard lock(mutex_);
-  stop_locked();
-  if (utf8_dir.empty() || !cb) return err(status::invalid_arg);
-  const std::wstring wide = wide_from_utf8(utf8_dir);
-  if (wide.empty()) return err(status::invalid_arg);
+  // The new watcher is opened and armed outside `mutex_`, which the UI
+  // thread's stop() takes: neither the directory open nor the wait for the
+  // first read below may hold it up. Only the swap is under the lock.
+  const std::wstring wide =
+      utf8_dir.empty() || !cb ? std::wstring{} : wide_from_utf8(utf8_dir);
+  if (wide.empty()) {
+    stop();
+    return err(status::invalid_arg);
+  }
 
   auto next = std::make_unique<impl>();
   next->cb = cb;
   next->user = user;
   next->stop = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!next->stop) return err(status::internal);
+  if (!next->stop) {
+    stop();
+    return err(status::internal);
+  }
 
   next->dir = ::CreateFileW(wide.c_str(), FILE_LIST_DIRECTORY,
                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -314,17 +322,35 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
   if (next->dir == INVALID_HANDLE_VALUE) {
     ::CloseHandle(next->stop);
+    stop();
     return err(status::io);
   }
 
   next->running.store(true, std::memory_order_release);
+  // The kernel records changes only once the first ReadDirectoryChangesW is in
+  // flight. Returning before the thread got that far left a window in which a
+  // file written just after the listing (the ABI arms the watcher, lists, then
+  // reports) was never seen - hit by the pairing test under load. start()
+  // runs on a pool thread, never the UI or render thread, so it waits here,
+  // and not under the lock.
+  next->armed = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!next->armed) {
+    ::CloseHandle(next->dir);
+    ::CloseHandle(next->stop);
+    stop();
+    return err(status::internal);
+  }
   impl* raw = next.get();
   try {
     next->thread = std::thread([raw] {
       OVERLAPPED ov{};
       ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-      if (!ov.hEvent) return;
+      if (!ov.hEvent) {
+        ::SetEvent(raw->armed);
+        return;
+      }
 
+      bool first = true;
       while (raw->running.load(std::memory_order_acquire)) {
         ::ResetEvent(ov.hEvent);
         DWORD dummy = 0;
@@ -333,6 +359,10 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
                 FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE,
             &dummy, &ov, nullptr);
+        if (first) {
+          first = false;
+          ::SetEvent(raw->armed);
+        }
         if (!ok) {
           if (::GetLastError() != ERROR_IO_PENDING) break;
         }
@@ -352,14 +382,22 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
         if (raw->cb) raw->cb(raw->user);
       }
 
+      if (first) ::SetEvent(raw->armed);  // stopped before the first read
       if (ov.hEvent) ::CloseHandle(ov.hEvent);
     });
   } catch (const std::bad_alloc&) {
+    ::CloseHandle(next->armed);
     ::CloseHandle(next->dir);
     ::CloseHandle(next->stop);
+    stop();
     return err(status::out_of_memory);
   }
+  // Bounded: a thread the scheduler starves for seconds must not wedge the
+  // folder open. The first read is issued before any wait in the loop.
+  (void)::WaitForSingleObject(next->armed, 2000);
 
+  std::lock_guard lock(mutex_);
+  stop_locked();
   impl_ = std::move(next);
   return {};
 }
@@ -377,6 +415,7 @@ void directory_watcher::stop_locked() noexcept {
   if (impl_->thread.joinable()) impl_->thread.join();
   if (impl_->dir != INVALID_HANDLE_VALUE) ::CloseHandle(impl_->dir);
   if (impl_->stop) ::CloseHandle(impl_->stop);
+  if (impl_->armed) ::CloseHandle(impl_->armed);
   impl_.reset();
 }
 

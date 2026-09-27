@@ -74,6 +74,14 @@ bool less_casefold(std::string_view a, std::string_view b) noexcept {
   return a.size() < b.size();
 }
 
+// readdir's d_type answers "is this a folder" for free on APFS, HFS+ and most
+// network shares. Only a symlink (which may point at a folder) or a file system
+// that does not fill it in (DT_UNKNOWN) needs the stat. A camera dump is
+// thousands of files and a handful of folders, and every one was stat'ed.
+bool may_be_dir(const dirent* ent) noexcept {
+  return ent->d_type == DT_DIR || ent->d_type == DT_LNK || ent->d_type == DT_UNKNOWN;
+}
+
 }  // namespace
 
 result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
@@ -92,6 +100,7 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
     if (!name.empty() && name.front() == '.') continue;
     if (iequals_ascii(name, "Thumbs.db") || iequals_ascii(name, "desktop.ini")) continue;
     if (!still_extension(name)) continue;
+    if (ent->d_type == DT_DIR) continue;
 
     const std::string full = join_utf8(utf8_dir, name);
     struct stat st{};
@@ -127,6 +136,7 @@ result<std::vector<subdir_entry>> scan_subdirs(std::string_view utf8_dir) {
   while (dirent* ent = ::readdir(d)) {
     const std::string_view name(ent->d_name);
     if (name == "." || name == ".." || name.front() == '.') continue;
+    if (!may_be_dir(ent)) continue;
 
     const std::string full = join_utf8(utf8_dir, name);
     // stat, not lstat: a symlink to a folder is how a NAS root usually links
@@ -165,6 +175,7 @@ result<std::vector<subdir>> list_subdirectories(std::string_view utf8_dir) {
     const std::string_view name(ent->d_name);
     if (name == "." || name == ".." || name.empty() || name.front() == '.') continue;
     if (is_package(name)) continue;
+    if (!may_be_dir(ent)) continue;
     const std::string full = join_utf8(utf8_dir, name);
     struct stat st{};
     if (::stat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;  // follows symlinks

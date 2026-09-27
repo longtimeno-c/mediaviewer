@@ -3,11 +3,11 @@
 # Same files in MediaViewer, Windows Photos and Media Player, timed from the screen.
 # A grab of the picture is about 17 ms, so a gap is only good to about one refresh.
 # PresentMon is not required. Writes docs/perf/compare/screen.json.
-param([int]$OpenReps = 2, [int]$PanSeconds = 12, [int]$PlaySeconds = 12)
+param([int]$OpenReps = 2, [int]$PanSeconds = 12, [int]$PlaySeconds = 12,
+      [string]$OutDir = "$PSScriptRoot\..\..\docs\perf\compare")
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\compare-lib.ps1"
 . "$PSScriptRoot\compare-apps.ps1"
-$OutDir = "$PSScriptRoot\..\..\docs\perf\compare"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $Media = "$Repo\tools\testmedia"
 $Stills = @("$Media\raw\sony_ilce7rm3.arw", "$Media\raw\nikon_d7500.nef", "$Media\heif\libheif-example.heic")

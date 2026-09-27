@@ -253,7 +253,7 @@ dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- verify-
 
 Optional `-SigningMetadata` signs the Velopack payload; local builds need a separate
 wizard-signing step ([update-signing.md](tools/package/update-signing.md)). See the
-[README Mac runbook](README.md#runbook-build-sign-release-update-macos) for local Mac builds.
+[Mac runbook in docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#runbook-build-sign-release-update-macos) for local Mac builds.
 
 ### macOS dependencies (local and Actions)
 

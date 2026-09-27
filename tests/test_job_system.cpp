@@ -131,6 +131,64 @@ TEST_CASE("a running job sees cancellation through its context", "[core][jobs][c
   REQUIRE(observed_cancel.load());
 }
 
+TEST_CASE("a running job handed the new generation is not cancelled by it",
+          "[core][jobs][cancellation]") {
+  // The ABI's case: a neighbour's prefetch decode is running when the user
+  // arrows onto it. The navigation bumps the generation; handing the job that
+  // generation keeps its work instead of cancelling and restarting it.
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+
+  const mv::generation submitted = jobs.current_generation();
+  std::atomic<mv::generation> handoff{submitted};
+  std::atomic<bool> started{false};
+  std::atomic<bool> go_on{false};
+  std::atomic<bool> cancelled_after_bump{true};
+  std::atomic<mv::generation> seen{0};
+  std::atomic<mv::status> result{mv::status::internal};
+
+  jobs.submit(
+      [&](const mv::job_context& pool_ctx) {
+        const mv::job_context ctx = pool_ctx.handed_off_via(&handoff);
+        REQUIRE(ctx.gen() == submitted);
+        REQUIRE_FALSE(ctx.cancelled());
+        started.store(true);
+        while (!go_on.load()) std::this_thread::sleep_for(1ms);
+        cancelled_after_bump.store(ctx.cancelled());
+        seen.store(ctx.gen());
+        return ctx.cancelled() ? mv::status::cancelled : mv::status::ok;
+      },
+      [&](mv::job_id, mv::generation, mv::status s) { result.store(s); });
+
+  REQUIRE(wait_for([&] { return started.load(); }));
+  const mv::generation landed = jobs.bump_generation();
+  handoff.store(landed);
+  go_on.store(true);
+  REQUIRE(wait_for([&] { return result.load() != mv::status::internal; }));
+  REQUIRE_FALSE(cancelled_after_bump.load());
+  REQUIRE(seen.load() == landed);
+  REQUIRE(result.load() == mv::status::ok);
+
+  // Without the hand-off the same bump cancels it, as before.
+  std::atomic<bool> plain_cancelled{false};
+  std::atomic<bool> plain_done{false};
+  std::atomic<bool> plain_started{false};
+  std::atomic<mv::generation> stale{jobs.current_generation()};
+  jobs.submit(
+      [&](const mv::job_context& pool_ctx) {
+        const mv::job_context ctx = pool_ctx.handed_off_via(&stale);
+        plain_started.store(true);
+        while (!ctx.cancelled()) std::this_thread::sleep_for(1ms);
+        plain_cancelled.store(true);
+        return mv::status::cancelled;
+      },
+      [&](mv::job_id, mv::generation, mv::status) { plain_done.store(true); });
+  REQUIRE(wait_for([&] { return plain_started.load(); }));
+  jobs.bump_generation();
+  REQUIRE(wait_for([&] { return plain_done.load(); }));
+  REQUIRE(plain_cancelled.load());
+}
+
 TEST_CASE("shutdown reports never-started jobs rather than dropping them",
           "[core][jobs][shutdown]") {
   // A completion that never arrives is a UI element stuck on a spinner
