@@ -2672,6 +2672,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->autohide.activity(::GetTickCount64());
       apply_transport_autohide(app);
       return;
+    case mv::shell::chrome_cmd_transport_width:
+      // The row grew or shrank (trim armed, a longer clock): refit the bar.
+      if (app->chrome.set_transport_content(static_cast<int>(arg + 0.5f))) layout_chrome(app);
+      return;
     case mv::shell::chrome_cmd_update_restart: {
       if (arg != 0.0f) {
         // Update.exe is armed and waiting for this pid: leave the ordinary way.

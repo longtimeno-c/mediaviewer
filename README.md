@@ -659,7 +659,7 @@ soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The g
 thumbnail or the fitted image out to Explorer.
 
 The playback transport is a **third island**: a centred bar floating over the bottom of the
-video, above the filmstrip, that appears with a clip and goes away with it. It works the
+video, above the filmstrip, sized to its controls, that appears with a clip and goes away with it. It works the
 same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
 
 - While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,
