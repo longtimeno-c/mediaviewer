@@ -24,6 +24,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -86,8 +87,14 @@ def main(argv=None) -> int:
             if target.exists():
                 shutil.rmtree(target)
             target.mkdir(parents=True)
-            with zipfile.ZipFile(str(base) + ".zip") as z:
-                z.extractall(target)
+            if a.platform == "macos" and shutil.which("ditto"):
+                # As the app installs it (AddonsView.swift): ditto folds the
+                # archive's AppleDouble "._" entries back into attributes;
+                # zipfile would leave them as extra files the store refuses.
+                subprocess.run(["ditto", "-x", "-k", str(base) + ".zip", str(target)], check=True)
+            else:
+                with zipfile.ZipFile(str(base) + ".zip") as z:
+                    z.extractall(target)
             shutil.copy2(str(base) + ".json", target / "manifest.json")
             shutil.copy2(str(base) + ".json.sig", target / "manifest.json.sig")
             print(f"sideloaded {piece} {a.version} -> {target} ({manifest['installed_size'] / 1e6:.0f} MB)")
