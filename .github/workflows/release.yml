@@ -94,7 +94,7 @@ jobs:
         uses: ./.github/actions/windows-vcpkg
 
       - name: Configure
-        run: cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION"
+        run: cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION" "-DMV_AI_VERSION=$env:VERSION"
 
       - name: Save dependencies before packaging can fail
         if: steps.vcpkg.outputs.cache-hit != 'true'
@@ -231,6 +231,60 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'add-on packing failed' }
 
+      # Local search (plan/17): the Core pack and its Sound and People pieces,
+      # each its own signed download on the same release, like Import. Only our
+      # own two DLLs are signed; ONNX Runtime's carry Microsoft's signature.
+      - name: Collect the Local search binaries to sign
+        id: aisign
+        if: inputs.mode == 'stable'
+        run: |
+          foreach ($f in 'mv_ai.dll', 'MediaViewer.Ai.Chrome.dll') {
+            if (-not (Test-Path "build/addons/ai/$f")) { throw "$f was not built" }
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'ai-sign'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item build/addons/ai/mv_ai.dll, build/addons/ai/MediaViewer.Ai.Chrome.dll $dir
+          "dir=$dir" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the Local search binaries
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ steps.aisign.outputs.dir }}
+          files-folder-filter: dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Pack the Local search pack and pieces
+        if: inputs.mode == 'stable'
+        timeout-minutes: 45
+        env:
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          SIGNED: ${{ steps.aisign.outputs.dir }}
+        run: |
+          Copy-Item "$env:SIGNED/*.dll" build/addons/ai -Force
+          $notices = Get-ChildItem build/_ort -Recurse -Filter ThirdPartyNotices.txt | Select-Object -First 1
+          if (-not $notices) { throw 'ONNX Runtime ThirdPartyNotices.txt not found' }
+          Copy-Item $notices.FullName build/addons/ai
+          # Pinned revisions, SHA-256 and licence checked (plan/17 licence gate).
+          foreach ($piece in 'ai', 'ai-audio', 'ai-faces') {
+            python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece"
+            if ($LASTEXITCODE) { throw "staging $piece models failed" }
+            python tools/package/addon-pack.py pack --addon $piece --platform win-x64 --src "build/addons/$piece" `
+              --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+            if ($LASTEXITCODE) { throw "packing $piece failed" }
+          }
+          python tools/package/addon-pack.py ceiling (Get-ChildItem dist/addon/mediaviewer-addon-ai*-win-x64.json).FullName
+          if ($LASTEXITCODE) { throw 'the AI family is over its 3 GB ceiling' }
+
       - name: Collect release assets
         run: |
           New-Item -ItemType Directory -Force upload | Out-Null
@@ -242,7 +296,9 @@ jobs:
           }
           # Add-ons stay on the stable feed (plan/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            Copy-Item dist/addon/mediaviewer-addon-import-win-x64.zip, dist/addon/mediaviewer-addon-import-win-x64.json, dist/addon/mediaviewer-addon-import-win-x64.json.sig upload
+            foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces') {
+              Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
+            }
           }
 
       - uses: actions/upload-artifact@v4
@@ -339,6 +395,7 @@ jobs:
       - name: Configure
         run: |
           args=(-DCMAKE_BUILD_TYPE=Release -DMV_MAC_BUILD_NUMBER="$VERSION" -DMV_IMPORT_VERSION="$VERSION"
+                -DMV_AI_VERSION="$VERSION"
                 -G Ninja
                 -DVCPKG_TARGET_TRIPLET="$TRIPLET"
                 -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
@@ -377,6 +434,12 @@ jobs:
           tar -C build -cf "upload/MediaViewer-${{ matrix.arch }}.tar" MediaViewer.app
           # The Import add-on, joined and signed in `macos` like the app.
           tar -C build/addons/import -cf "upload/ImportAddon-${{ matrix.arch }}.tar" libmv_import.dylib Import.bundle
+          # Local search is arm64 only (ORT ships no x86_64 macOS build).
+          if [[ -d build/addons/ai ]]; then
+            cp build/_ort/*/ThirdPartyNotices.txt build/addons/ai/
+            tar -C build/addons/ai -cf "upload/AiAddon-${{ matrix.arch }}.tar" \
+              libmv_ai.dylib libonnxruntime.dylib AI.bundle ThirdPartyNotices.txt
+          fi
 
       # No version suffix: publish only collects artifacts named *-<version>.
       - uses: actions/upload-artifact@v4
@@ -527,6 +590,27 @@ jobs:
              build/release/addon/mediaviewer-addon-import-macos.json \
              build/release/addon/mediaviewer-addon-import-macos.json.sig upload/
 
+      - name: Local search pack (sign, notarize, stage models, pack)
+        if: inputs.mode == 'stable'
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          mkdir -p build/addons/ai
+          tar -xf apps/AiAddon-arm64.tar -C build/addons/ai
+          # Code first: the notary service gets the binaries, not a gigabyte of
+          # weights. The Sound and People pieces carry no code.
+          python3 tools/mac/macpack.py addon --dir build/addons/ai \
+            --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+          for piece in ai ai-audio ai-faces; do
+            python3 tools/package/ai-models.py stage --piece "$piece" --out "build/addons/$piece"
+            python3 tools/package/addon-pack.py pack --addon "$piece" --platform macos --src "build/addons/$piece" \
+              --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
+            cp "build/release/addon/mediaviewer-addon-$piece-macos.zip" \
+               "build/release/addon/mediaviewer-addon-$piece-macos.json" \
+               "build/release/addon/mediaviewer-addon-$piece-macos.json.sig" upload/
+          done
+          python3 tools/package/addon-pack.py ceiling build/release/addon/mediaviewer-addon-ai*-macos.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ needs.prepare.outputs.version }}
@@ -561,6 +645,8 @@ jobs:
           MODE: ${{ inputs.mode }}
           # The jobs above pack the Import add-on; publish requires it (stable).
           MV_RELEASE_ADDONS: '1'
+          # ...and the Local search pack with its Sound and People pieces.
+          MV_RELEASE_AI: '1'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: python3 tools/package/github-release.py publish release-assets

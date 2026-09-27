@@ -178,6 +178,23 @@ one set per platform, signed with the **same** Ed25519 key as the update manifes
 > `git apply tools/package/release-addon.patch`, commit `.github/workflows/release.yml`, and delete
 > the patch. Until then releases carry no add-on and Settings says Import is not published yet.
 
+**Local search (the AI pack, plan/17)** ships the same way on every stable release, as three
+signed downloads per platform: `mediaviewer-addon-ai-*` (the Core pack: the native add-on, ONNX
+Runtime, the chrome and both CLIP towers), `mediaviewer-addon-ai-audio-*` (Sound: CLAP and
+Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
+
+- **Windows:** `mv_ai.dll` and `MediaViewer.Ai.Chrome.dll` are Authenticode-signed when Trusted
+  Signing is configured (ONNX Runtime's DLLs keep Microsoft's signature). `ai-models.py stage`
+  fetches each piece's models from their pinned revisions and checks every SHA-256 and licence,
+  then `addon-pack.py pack --require-pinned-key` packs each piece and `ceiling` checks the 3 GB
+  family limit.
+- **macOS (arm64 only):** the arm64 build hands `libmv_ai.dylib`, `libonnxruntime.dylib` and
+  `AI.bundle` to the disk-image job, which signs and notarizes that code *before* the models
+  are staged (the notary service never receives the weights), then stages, packs and checks
+  the ceiling as on Windows. Intel builds define no AI target.
+- `publish` refuses a stable release without all six (`MV_RELEASE_AI=1`). The NVIDIA piece
+  (`ai-cuda`) is not published until its licence review is done.
+
 With the patch applied, a **stable** run of the
 release workflow builds, signs and packs both, and `publish` refuses a stable release without them
 (the apps fetch the add-on from `releases/latest`, so a release that lacks it would leave Settings
