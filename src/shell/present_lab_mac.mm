@@ -956,6 +956,12 @@ void present_lab_mac::render_thread_main() noexcept {
         const bool input_activity = input_cursor_.consume_activity(snapshot);
         if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
         bool redraw = input_activity;
+        if (snapshot.background != seen_background_ ||
+            snapshot.home_background_rgb != seen_home_background_rgb_) {
+          seen_background_ = snapshot.background;
+          seen_home_background_rgb_ = snapshot.home_background_rgb;
+          redraw = true;
+        }
 
         if (snapshot.toggle_overlay_seq != seen_overlay_seq_) {
           if ((snapshot.toggle_overlay_seq - seen_overlay_seq_) & 1u)
@@ -1294,6 +1300,10 @@ void present_lab_mac::render_thread_main() noexcept {
 
         id<CAMetalDrawable> drawable = update.drawable;
         if (!drawable) continue;
+        const float theme_rgb[3] = {
+            home_linear_channel(snapshot.home_background_rgb, 16),
+            home_linear_channel(snapshot.home_background_rgb, 8),
+            home_linear_channel(snapshot.home_background_rgb, 0)};
 
         gfx::display_link_tick tick;
         tick.valid = true;
@@ -1307,15 +1317,15 @@ void present_lab_mac::render_thread_main() noexcept {
         // and runner use AppKit's window colour from the UI-thread snapshot.
         {
           const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
-          const double lvl = gfx::background_clear_mac(snapshot.background & 3);
-          if (!have_picture && !media_ && !(sweep_mode_ && animating_) && !snapshot.blackout) {
+          const double lvl = gfx::background_clear_mac(snapshot.background);
+          if (!snapshot.blackout &&
+              ((!have_picture && !media_ && !(sweep_mode_ && animating_)) ||
+               snapshot.background == 0)) {
             pass.colorAttachments[0].clearColor = MTLClearColorMake(
-                home_linear_channel(snapshot.home_background_rgb, 16),
-                home_linear_channel(snapshot.home_background_rgb, 8),
-                home_linear_channel(snapshot.home_background_rgb, 0), 1.0);
+                theme_rgb[0], theme_rgb[1], theme_rgb[2], 1.0);
           } else {
             pass.colorAttachments[0].clearColor =
-                (snapshot.background & 3) == 0 ? MTLClearColorMake(0.016, 0.018, 0.024, 1.0)
+                snapshot.background == 4 ? MTLClearColorMake(0.016, 0.018, 0.024, 1.0)
                                                : MTLClearColorMake(lvl, lvl, lvl, 1.0);
           }
         }
@@ -1458,7 +1468,8 @@ void present_lab_mac::render_thread_main() noexcept {
                                                                             : current_image_->height);
           for (int i = 0; i < 6; ++i) bp.uv_map[i] = pl.map.m[i];
           bp.clip_to_source = ev && ev->keep_frame;
-          bp.background = snapshot.background & 3;
+          bp.background = snapshot.background;
+          for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
           bp.time_seconds = static_cast<float>(elapsed);
           // PR 11: the colour kernel's uniforms, and the FP16 working texture
           // in place of the 8-bit one once it has landed for this still; until

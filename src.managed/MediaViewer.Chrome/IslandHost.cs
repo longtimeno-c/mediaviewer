@@ -197,7 +197,7 @@ public static partial class IslandHost
         public const int Wrap = 1 << 2;
         public const int StickyZoom = 1 << 3;
         public const int BackgroundShift = 4;
-        public const int BackgroundMask = 3 << 4;
+        public const int BackgroundMask = 7 << 4;
         // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
         public const int UpdateAutoCheck = 1 << 8;
         // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).
