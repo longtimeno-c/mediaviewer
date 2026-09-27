@@ -49,6 +49,55 @@ struct AddonChannel: Sendable {
   }
 
   struct AddonError: Error { let text: String }
+
+  /// What an install is doing, for Settings' progress bar.
+  enum Phase: Equatable, Sendable {
+    case downloading(done: Int64, total: Int64)
+    case checking     // size + SHA-256 of the archive
+    case installing   // unpack, then the host verifies every file
+
+    var fraction: Double? {
+      if case .downloading(let done, let total) = self, total > 0 { return min(1, Double(done) / Double(total)) }
+      return nil
+    }
+    var text: String {
+      switch self {
+      case .downloading(let done, let total):
+        return total > 0 ? "\(AddonChannel.mbText(done)) of \(AddonChannel.mbText(total))" : AddonChannel.mbText(done)
+      case .checking: return "Checking the download…"
+      case .installing: return "Installing…"
+      }
+    }
+  }
+
+  static func mbText(_ bytes: Int64) -> String {
+    bytes >= 1_000_000_000 ? String(format: "%.2f GB", Double(bytes) / 1e9)
+                           : "\(max(0, Int((Double(bytes) / 1e6).rounded()))) MB"
+  }
+
+  /// The download task's own progress, observed (URLSession's async download
+  /// reports nothing otherwise), throttled to ~1 % steps.
+  private final class ProgressWatch: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let total: Int64
+    let report: @Sendable (Phase) -> Void
+    private var observation: NSKeyValueObservation?
+    private var last: Int64 = -1
+    init(total: Int64, report: @escaping @Sendable (Phase) -> Void) {
+      self.total = total
+      self.report = report
+    }
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+      observation = task.progress.observe(\.completedUnitCount, options: [.new]) { [weak self] p, _ in
+        guard let self else { return }
+        let done = p.completedUnitCount
+        let step = max(self.total / 100, 1)
+        if done - self.last >= step || done >= self.total {
+          self.last = done
+          self.report(.downloading(done: done, total: self.total))
+        }
+      }
+    }
+  }
   /// The channel has no such add-on (a 404): say so rather than blaming the
   /// connection.
   struct NotPublished: Error {}
@@ -108,7 +157,7 @@ struct AddonChannel: Sendable {
   // Manifest (signature first), archive (size + SHA-256 before it is
   // opened), extraction into staging with ditto, then the host's full
   // verify-and-install. Worker only.
-  func downloadAndInstall() async throws {
+  func downloadAndInstall(progress: (@Sendable (Phase) -> Void)? = nil) async throws {
     guard let manifest = try await Self.getIfPresent(url + ".json"),
           let sig = try await Self.getIfPresent(url + ".json.sig")
     else { throw NotPublished() }
@@ -128,8 +177,11 @@ struct AddonChannel: Sendable {
       try? FileManager.default.removeItem(atPath: zip)
       try? FileManager.default.removeItem(atPath: staging)
     }
-    let (tmp, response) = try await Self.session.download(from: URL(string: Self.base + name)!)
+    progress?(.downloading(done: 0, total: Int64(size)))
+    let watch = progress.map { ProgressWatch(total: Int64(size), report: $0) }
+    let (tmp, response) = try await Self.session.download(from: URL(string: Self.base + name)!, delegate: watch)
     guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NotPublished() }
+    progress?(.checking)
     try FileManager.default.moveItem(at: tmp, to: URL(fileURLWithPath: zip))
     let attrs = try FileManager.default.attributesOfItem(atPath: zip)
     let got = AddonStore.readString { mv_addons_sha256(zip, $0, $1) }
@@ -138,6 +190,7 @@ struct AddonChannel: Sendable {
     }
     // Authenticated bytes only from here. ditto keeps the bundle's code
     // signature intact, which library validation checks at load.
+    progress?(.installing)
     let ditto = Process()
     ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
     ditto.arguments = ["-x", "-k", zip, staging]
@@ -163,6 +216,8 @@ final class AddonStore: ObservableObject {
   @Published private(set) var state = ""
   @Published private(set) var loaded = false
   @Published private(set) var busy = false
+  /// The install in progress, for the bar under the button.
+  @Published private(set) var phase: AddonChannel.Phase?
   @Published var message = ""
   @Published private(set) var status = ""
   @Published private(set) var hint = false
@@ -282,7 +337,9 @@ final class AddonStore: ObservableObject {
     Task.detached {
       let result: String
       do {
-        try await Self.channel.downloadAndInstall()
+        try await Self.channel.downloadAndInstall { p in
+          Task { @MainActor in self.phase = p }
+        }
         result = "Import installed."
       } catch is AddonChannel.NotPublished {
         result = ""
@@ -294,6 +351,7 @@ final class AddonStore: ObservableObject {
       }
       await MainActor.run {
         self.busy = false
+        self.phase = nil
         self.message = result
         if result == "Import installed." {
           if let v = update, running {
@@ -368,7 +426,9 @@ struct AddonsSection: View {
           Button("Remove…") { store.confirmingRemove = true }
         }
       }
-      if !store.message.isEmpty {
+      if let phase = store.phase {
+        AddonProgressView(phase: phase)
+      } else if !store.message.isEmpty {
         Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
       // The second add-on: install-only until Core is loaded, then the pack's
@@ -409,5 +469,31 @@ struct AddonBarItems: View {
         Text(store.status).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
     }
+  }
+}
+
+/// An add-on install's progress: a determinate bar and "412 MB of 1.08 GB"
+/// while downloading, then the checking / installing steps (indeterminate:
+/// hashing a gigabyte takes seconds and has no fraction to show).
+struct AddonProgressView: View {
+  let phase: AddonChannel.Phase
+  var width: CGFloat? = 320
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      if let f = phase.fraction {
+        ProgressView(value: f).progressViewStyle(.linear)
+      } else {
+        ProgressView().progressViewStyle(.linear)
+      }
+      HStack {
+        Text(phase.text)
+        Spacer()
+        if let f = phase.fraction { Text("\(Int((f * 100).rounded(.down))) %").monospacedDigit() }
+      }
+      .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+    }
+    .frame(maxWidth: width, alignment: .leading)
+    .accessibilityElement(children: .combine)
   }
 }

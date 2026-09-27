@@ -66,6 +66,8 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var loading = false
   @Published private(set) var loadError = ""
   @Published private(set) var busyPiece: String?
+  /// The busy piece's install progress (Settings' bar).
+  @Published private(set) var phase: AddonChannel.Phase?
   @Published var message = ""
   @Published var confirmingRemove: String?
   /// Moves whenever the chrome is (re)attached, so the embedded view is rebuilt.
@@ -246,7 +248,9 @@ final class LocalSearchStore: ObservableObject {
       let result: String
       let ok: Bool
       do {
-        try await channel.downloadAndInstall()
+        try await channel.downloadAndInstall { p in
+          Task { @MainActor in self.phase = p }
+        }
         result = "\(title) installed."
         ok = true
       } catch is AddonChannel.NotPublished {
@@ -262,6 +266,7 @@ final class LocalSearchStore: ObservableObject {
       await MainActor.run {
         var text = result
         self.busyPiece = nil
+        self.phase = nil
         if ok {
           // Core loads now (verified again, on a worker); a new piece is
           // picked up by the loaded pack at once ("reload").
@@ -435,7 +440,7 @@ struct LocalSearchSection: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       if store.busyPiece == piece.id {
-        ProgressView().controlSize(.small)
+        AddonProgressView(phase: store.phase ?? .downloading(done: 0, total: 0), width: 200)
       } else if piece.installed {
         if let v = piece.updateVersion {
           Button("Update to \(v)") { store.install(piece.id) }
