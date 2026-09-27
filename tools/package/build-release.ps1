@@ -319,9 +319,21 @@ if ($ManifestKey) {
 
 # ---- wizard ----------------------------------------------------------------
 if (-not $NoWizard) {
+    # The Licence page: MediaViewer's GPL-2.0-or-later notice, then the GPL
+    # text. LICENSE itself stays the verbatim GPL-2.0 (the About link, GitHub's
+    # licence detection); the notice is the one copy both installers read.
+    $licenceText = (Get-Content -Raw (Join-Path $repo "packaging\licence-notice.txt")) +
+                   (Get-Content -Raw (Join-Path $repo "LICENSE"))
+    $licenceText = $licenceText -replace "`r?`n", "`r`n"
+    if ($licenceText -notmatch "any later version" -or $licenceText -notmatch "GNU GENERAL PUBLIC LICENSE") {
+        Fail "installer licence page is missing the notice or the GPL text"
+    }
+    $licencePage = Join-Path $OutputDir "installer-licence.txt"
+    [IO.File]::WriteAllText($licencePage, $licenceText, [Text.Encoding]::ASCII)
     $isccArgs = @(
         "/DMvVersion=$Version",
         "/DMvRepoRoot=$repo",
+        "/DMvLicenceFile=$licencePage",
         "/DMvPayloadSetup=$($setup.FullName)",
         "/O$OutputDir",
         (Join-Path $repo "tools\package\mediaviewer.iss")

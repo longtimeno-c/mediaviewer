@@ -42,6 +42,9 @@ added by the PR that adds the dependency.
 | **[libde265](https://github.com/strukturag/libde265)** | 1.1.1 | **LGPL-3** | **Dynamic (DLL)** | HEVC **decode** for libheif. A hard dependency of the port, not a feature, so HEIC decode does not pull x265. |
 | [libavif](https://github.com/AOMediaCodec/libavif) | 1.4.2 | BSD-2 | Dynamic (vcpkg x64-windows) | AVIF still and animated (PR 7), on dav1d. |
 | **[LibRaw](https://www.libraw.org/)** | 0.22.2 | **LGPL-2.1** | **Dynamic (DLL)** | Camera RAW (PR 7): embedded preview first, then the full decode. No GPL demosaic pack. |
+| **[Exiv2](https://exiv2.org)** | 0.28.8 | **GPL-2.0** | **Dynamic (DLL / dylib)** | Metadata read (PR 9); PR 12 adds writes. The GPL-2.0 dependency that makes MediaViewer itself GPL-2.0-or-later (plan/11). vcpkg features `bmff`, `png`, `xmp`. |
+| [Brotli](https://github.com/google/brotli) | 1.2.0 | MIT | Dynamic (vcpkg x64-windows) | Transitive, via Exiv2's `bmff` feature. |
+| [Expat](https://libexpat.github.io/) | 2.8.3 | MIT | Dynamic (vcpkg x64-windows) | Transitive, via Exiv2's `xmp` feature. |
 | Microsoft OpenMP runtime | MSVC toolset redist | Microsoft redistributable terms | Dynamic, Windows | `vcomp140.dll` is copied from the Visual C++ redist alongside LibRaw; parallel RAW decoding does not require a separate runtime install. |
 | [libyuv](https://chromium.googlesource.com/libyuv/libyuv/) | 1916 | BSD-3 | Dynamic (vcpkg x64-windows) | Transitive, via libheif/libavif. |
 | [liblzma (xz)](https://tukaani.org/xz/) | 5.8.3 | 0BSD | Dynamic (vcpkg x64-windows) | Transitive, via libtiff. |
@@ -71,7 +74,6 @@ is settled before it arrives, rather than discovered afterwards.
 | Component | Licence | Required linkage | Arrives in |
 |---|---|---|---|
 | DirectXTex | MIT | Static | Deferred from PR 4 until a thumbnail must be GPU-resident (plan/12 2026-09-07) |
-| **Exiv2** | **GPL-2.0** | Dynamic (DLL / dylib) | PR 9 (metadata read); PR 12 adds writes. Pulls brotli (MIT) and expat (MIT) for its BMFF and XMP features |
 
 ### Rules the build enforces
 

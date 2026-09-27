@@ -36,6 +36,9 @@
 #ifndef MvRepoRoot
   #error MvRepoRoot is required: the repository root
 #endif
+#ifndef MvLicenceFile
+  #error MvLicenceFile is required: packaging/licence-notice.txt followed by LICENSE
+#endif
 
 #define MvAppName "MediaViewer"
 #define MvPublisher "MediaViewer contributors"
@@ -68,7 +71,11 @@ DisableWelcomePage=no
 AllowNoIcons=no
 ChangesAssociations=yes
 
-LicenseFile={#MvRepoRoot}\LICENSE
+; The Licence page: MediaViewer's own GPL-2.0-or-later notice (who, "or later",
+; where the third-party terms and the source are), then the GPL-2.0 text.
+; build-release.ps1 composes it from packaging/licence-notice.txt + LICENSE;
+; the bare GPL text alone never says what it licenses (issue #58).
+LicenseFile={#MvLicenceFile}
 SetupIconFile={#MvRepoRoot}\assets\icon\mediaviewer.ico
 UninstallDisplayIcon={app}\MediaViewer.exe
 UninstallDisplayName={#MvAppName}

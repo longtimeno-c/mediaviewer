@@ -429,13 +429,25 @@ def cmd_addon(args: argparse.Namespace) -> None:
     print(f"macpack: add-on signed and notarized: {addon}")
 
 
+def installer_licence_text() -> str:
+    """The licence agreement both installers show: MediaViewer's own
+    GPL-2.0-or-later notice, then the GPL-2.0 text. LICENSE alone is the bare
+    GPL and never says what it licenses (issue #58)."""
+    notice = (REPO_ROOT / "packaging" / "licence-notice.txt").read_text(encoding="ascii")
+    gpl = (REPO_ROOT / "LICENSE").read_text(encoding="ascii")
+    return (notice + gpl).replace("\r\n", "\n")
+
+
 def make_dmg(app: Path, out: Path, volume_name: str) -> None:
     settings = REPO_ROOT / "packaging" / "macos" / "dmg_settings.py"
-    run([sys.executable, "-m", "dmgbuild", "-s", str(settings),
-         "-D", f"app={app}",
-         "-D", f"license={REPO_ROOT / 'LICENSE'}",
-         "-D", f"background={REPO_ROOT / 'packaging' / 'macos' / 'dmg-background.png'}",
-         volume_name, str(out)])
+    with tempfile.TemporaryDirectory() as tmp:
+        licence = Path(tmp) / "licence.txt"
+        licence.write_text(installer_licence_text(), encoding="ascii")
+        run([sys.executable, "-m", "dmgbuild", "-s", str(settings),
+             "-D", f"app={app}",
+             "-D", f"license={licence}",
+             "-D", f"background={REPO_ROOT / 'packaging' / 'macos' / 'dmg-background.png'}",
+             volume_name, str(out)])
 
 
 def cmd_release(args: argparse.Namespace) -> None:
