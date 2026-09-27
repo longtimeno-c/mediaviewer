@@ -260,6 +260,7 @@ public static partial class IslandHost
         private readonly Rectangle _caret;
         private readonly Border _inner;
         private readonly string _placeholder;
+        private readonly bool _bare;
         private Microsoft.UI.Dispatching.DispatcherQueueTimer? _blink;
         private bool _selectAll;
         private bool _tookChar;
@@ -269,9 +270,12 @@ public static partial class IslandHost
         public event Action? Submitted;
         public event Action? MoveDown;
 
-        public FakeInput(string placeholder, double width = 0)
+        // `bare`: no box of its own, for a field whose container draws one
+        // (the gallery search bar).
+        public FakeInput(string placeholder, double width = 0, bool bare = false)
         {
             _placeholder = placeholder;
+            _bare = bare;
             ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
             if (width > 0) Width = width;
             else HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -416,6 +420,13 @@ public static partial class IslandHost
             Paint();
         }
 
+        /// <summary>Selects the text, so the next character replaces it.</summary>
+        public void SelectAll()
+        {
+            _selectAll = Text.Length > 0;
+            Paint();
+        }
+
         private void Paint()
         {
             bool empty = Text.Length == 0;
@@ -424,6 +435,14 @@ public static partial class IslandHost
             _caret.Visibility = FocusState == FocusState.Unfocused
                 ? Visibility.Collapsed : Visibility.Visible;
             _caret.Opacity = 1;
+            if (_bare)
+            {
+                _inner.Background = Brush(Colors.Transparent);
+                _inner.BorderThickness = new Thickness(0);
+                _inner.Padding = new Thickness(4, 5, 4, 5);
+                _inner.MinHeight = 0;
+                return;
+            }
             _inner.BorderBrush = Brush(FocusState == FocusState.Unfocused ? Hairline : Title);
             _inner.BorderThickness = new Thickness(FocusState == FocusState.Unfocused ? 1 : 2);
         }
