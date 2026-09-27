@@ -424,7 +424,10 @@ result<speech_window> whisper_model::transcribe(std::span<const float> pcm, std:
   }
   if (window_ms >= 29000 && out.consumed_ms >= window_ms - 1000) {
     out.consumed_ms = std::max<std::int64_t>(std::max<std::int64_t>(heard_to, window_ms - 5000), 1000);
-  } else if (audible_after && heard_to >= 1000 && heard_to < out.consumed_ms) {
+  }
+  // Also for a full window: base can stop after its first sentence of 30 s
+  // and would otherwise skip everything said between it and the last 5 s.
+  if (audible_after && heard_to >= 1000 && heard_to < out.consumed_ms) {
     out.consumed_ms = heard_to;
   }
   for (speech_segment& s : out.segments) {
