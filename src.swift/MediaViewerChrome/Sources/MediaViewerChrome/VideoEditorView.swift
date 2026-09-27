@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 30 (plan/21, issue #40; owner 2026-09-26): the Video Editor window's
 // timeline. The preview above it is the viewer's own canvas, moved into the
 // window (main_mac.mm); this is the SwiftUI under it: transport, the cut

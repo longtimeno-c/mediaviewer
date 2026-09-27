@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 29 — the Edit workspace (plan/20): one visible door ("Edit image" /
 // "Edit video", Enter) to the edits PRs 10-14 built, as a strip of tabs over
 // the right pane column. Shared by both hosts.
