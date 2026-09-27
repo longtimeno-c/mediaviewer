@@ -270,12 +270,14 @@ public static partial class IslandHost
         onShown: () =>
         {
             _galleryVisible = true;
+            RenderEditBarButton();
             UpdateGalleryCount();
             _dispatcher?.DispatcherQueue.TryEnqueue(RealiseGallery);
         },
         onHidden: () =>
         {
             _galleryVisible = false;
+            RenderEditBarButton();
             ReleaseRepeater(ref _galleryRepeater);
             ReleaseRepeater(ref _folderRepeater);
             ReleaseRepeater(ref _folderChipRepeater);
