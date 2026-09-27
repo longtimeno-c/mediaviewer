@@ -230,6 +230,22 @@ class present_lab {
   // A clip is open on the session — true before its first frame exists, which
   // is the window in which the canvas must not paint the empty-window welcome.
   bool video_open_ = false;
+  // The item selected at open_error_generation_ failed to open; the canvas
+  // shows the error card (error_screen.h) while nothing else is on screen.
+  // Held across the next navigation like a clip, so it never flashes the
+  // welcome on the way to the next file.
+  bool open_error_ = false;
+  std::uint32_t open_error_generation_ = 0;
+  status open_error_status_ = status::ok;
+  // < 0: no gap in progress. Set the first tick the on-screen clip's (or the
+  // error card's) generation goes stale (next/prev between two videos): the old texture
+  // keeps presenting past that point instead of being blanked immediately,
+  // since opening the next clip (demux + hwdecode device copy) is real
+  // latency, not an instant swap. A new frame or a new still overwrites
+  // current_video_ on arrival and clears the gap on its own; this deadline
+  // only forces the old frame down if nothing ever lands (a broken file,
+  // a non-video neighbour) so the canvas does not hold a stale clip forever.
+  double video_gap_deadline_ = -1.0;
   // 0 when nothing is open. These used to dereference current_image_ whenever
   // no video texture was live and relied on every caller checking first — the
   // same shape as the F3 crash, one guard away from being the same bug.

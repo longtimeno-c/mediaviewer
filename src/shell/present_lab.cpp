@@ -3,6 +3,7 @@
 #include "shell/present_lab.h"
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
+#include "shell/error_screen.h"
 #include "shell/welcome_screen.h"
 
 #include <imgui.h>
@@ -542,6 +543,7 @@ void present_lab::render_thread_main() noexcept {
 
     if (snapshot.discard_media_seq != seen_discard_seq_) {
       seen_discard_seq_ = snapshot.discard_media_seq;
+      open_error_ = false;
       current_image_.reset();
       previous_image_.reset();
       fade_from_.reset();
@@ -741,7 +743,50 @@ void present_lab::render_thread_main() noexcept {
     if (session_) {
       std::uint32_t generation = 0;
       (void)mv_session_current_generation(session_, &generation);
-      if (current_video_.texture && current_video_.generation != generation) { current_video_ = {}; redraw = true; }
+      // The item selected now failed to open (corrupt, unreadable, not a
+      // format we read): show the error card at once, not the previous item
+      // and not the empty-window welcome. Whatever is held from an older
+      // generation goes; a preview of THIS item (its refinement failed) is
+      // kept, since it is the right picture.
+      status why = status::ok;
+      if (mv::abi::open_failed(session_, generation, why) &&
+          !(open_error_ && open_error_generation_ == generation)) {
+        open_error_ = true;
+        open_error_generation_ = generation;
+        open_error_status_ = why;
+        if (current_video_.texture && current_video_.generation != generation) current_video_ = {};
+        if (current_image_ && current_image_->view_generation != generation) {
+          current_image_.reset(); previous_image_.reset(); anim_frame_.reset();
+          fade_from_.reset(); refine_base_.reset(); fade_.cancel(); refine_fade_abandoned();
+        }
+        redraw = true;
+      }
+      // Next/prev between two videos flashed the empty-window welcome for a
+      // couple of frames: this used to blank current_video_ the instant the
+      // generation bumped, well before the next clip's open + first frame
+      // (a real decode latency) landed — the video-to-video equivalent of
+      // the image LRU never having a "swap only when ready" hold-previous.
+      // The error card is held the same way, so stepping off a broken file
+      // does not flash the welcome either. A new frame (below) or a new still
+      // (publish_locked's `current_video_ = {}`) replaces what is held the
+      // instant real content lands, and a failure of the new item replaces it
+      // at once (above); the deadline only exists so a target that never
+      // lands and never fails does not leave a stale clip or card up forever.
+      const bool stale_video = current_video_.texture && current_video_.generation != generation;
+      const bool stale_error = open_error_ && open_error_generation_ != generation;
+      if (stale_video || stale_error) {
+        constexpr double kHoldGraceSeconds = 0.35;
+        if (video_gap_deadline_ < 0.0) {
+          video_gap_deadline_ = elapsed + kHoldGraceSeconds;
+        } else if (elapsed >= video_gap_deadline_) {
+          if (stale_video) current_video_ = {};
+          if (stale_error) open_error_ = false;
+          video_gap_deadline_ = -1.0;
+          redraw = true;
+        }
+      } else {
+        video_gap_deadline_ = -1.0;
+      }
       player::video_frame unused;
       (void)mv::abi::poll_video(session_, -1, unused, video_active_);
       // A clip becoming open is a reason to paint. The loader signals the
@@ -1056,7 +1101,11 @@ void present_lab::render_thread_main() noexcept {
     if (!wants_frame) {
       if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
       was_presenting_ = false;
-      // Idle has no polling timer, except occlusion probes and soak deadlines.
+      // Idle has no polling timer, except occlusion probes, soak deadlines,
+      // and a held clip or error card: without a bounded wait here, a target
+      // that never lands would park on wake_event_ forever with the old
+      // frame stuck on screen past video_gap_deadline_. (A failed open does
+      // not need this: the core signals the image-ready event.)
       DWORD timeout = occluded_ ? 200u : INFINITE;
       if (options_.soak_seconds > 0.0) {
         const double remaining = warmed_up_
@@ -1064,6 +1113,11 @@ void present_lab::render_thread_main() noexcept {
             : kWarmupSeconds - elapsed;
         const auto deadline_ms = static_cast<DWORD>(std::ceil(std::max(0.0, remaining) * 1000.0));
         timeout = std::min(timeout, deadline_ms);
+      }
+      if (video_gap_deadline_ >= 0.0) {
+        const auto gap_ms = static_cast<DWORD>(
+            std::ceil(std::max(0.0, video_gap_deadline_ - elapsed) * 1000.0));
+        timeout = std::min(timeout, gap_ms);
       }
       HANDLE waits[2] = {wake_event_, nullptr};
       DWORD n = 1;
@@ -1724,6 +1778,18 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   ImDrawList* bg = ImGui::GetBackgroundDrawList();
   const float chrome = static_cast<float>(snapshot.chrome_height_px);
   const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+
+  // A file is selected and it failed: say so. Never the welcome, which reads
+  // as "nothing is open" while the chrome shows an item selected.
+  if (open_error_ && !(sweep_mode_ && animating_)) {
+    if (game_.active()) {
+      game_.leave_now();
+      animating_ = false;
+    }
+    draw_open_error(bg, ImGui::GetFont(), w, h, chrome, scale, open_error_status_,
+                    "Left / Right  for another file", home_palette(snapshot.home_background_rgb));
+    return;
+  }
 
   if (sweep_mode_ && animating_) {
     // Present-lab judder instrument. Space turns it on; the default empty
