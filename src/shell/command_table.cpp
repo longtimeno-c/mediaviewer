@@ -141,10 +141,9 @@ constexpr binding kBindings[] = {
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
     row(C('E'), mod_ctrl | mod_shift, kNotCrop, edge, folder_tree),
     // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
-    // with the filmstrip or gallery focused, plain typing jumps by name. In
-    // the gallery `/` is gallery_search (appended below, 2026-09-27): the
-    // bar's Names filter covers folder tiles too, so this row left kGallery.
-    row(C('/'), mod_none, kBrowse | kVideo, edge, typeahead),
+    // with the filmstrip or gallery focused, plain typing jumps by name.
+    // In the gallery, `/` with the folder row active finds a folder tile.
+    row(C('/'), mod_none, kBrowse | kVideo | kGallery, edge, typeahead),
     // Append rows so existing Settings row indices keep their meaning.
     row(C('+'), mod_none, kGallery, repeat, gallery_larger),
     row(C('='), mod_none, kGallery, repeat, gallery_larger),
@@ -280,9 +279,6 @@ constexpr binding kBindings[] = {
     row(C('F'), mod_ctrl | mod_shift, kViewing, edge, search_similar),
     row(C('N'), mod_none, kVideo, edge, search_next_match),
     row(C('N'), mod_shift, kVideo, edge, search_prev_match),
-    // Gallery search bar (2026-09-27, plan/17). Appended; a base command. `/`
-    // focuses the field at the top of the gallery and selects its text.
-    row(C('/'), mod_none, kGallery, edge, gallery_search),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -446,7 +442,6 @@ constexpr command_info kCommands[] = {
     {search_similar, "Find similar"},
     {search_next_match, "Next matching moment"},
     {search_prev_match, "Previous matching moment"},
-    {gallery_search, "Search in gallery"},
 };
 
 const char* named_key(key k) noexcept {

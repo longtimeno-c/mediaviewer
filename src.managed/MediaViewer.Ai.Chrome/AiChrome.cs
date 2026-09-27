@@ -9,8 +9,7 @@ namespace MediaViewer.Ai.Chrome;
 /// The AI pack's chrome entry point (plan/17 "UI and commands"). Owns the
 /// search panel, the management panel Settings embeds, the people window, the
 /// command-bar pill's text, and the search the viewer's result list came from
-/// (its clip matches are the scrub bar's dots and what N / Shift+N walk),
-/// and the gallery search bar's contents search and index control.
+/// (its clip matches are the scrub bar's dots and what N / Shift+N walk).
 /// </summary>
 /// <remarks>
 /// Threads: every member runs on the chrome's UI thread. Calls the header
@@ -19,7 +18,7 @@ namespace MediaViewer.Ai.Chrome;
 /// AI_STATUS events at most 4 Hz, or polled at 4 Hz only while a panel is
 /// visible. Rule 6: no path, query or name reaches a log from here.
 /// </remarks>
-public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
+public sealed class AiChrome : IAddonChrome, ISearchChrome
 {
     private IAddonHost2? _host;
     private AiApi? _api;
@@ -45,12 +44,6 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
     private int _matchRequest;
 
     private readonly Dictionary<ulong, Action<MvStatus, long>> _searchWaiters = new();
-
-    // The gallery search bar: its index control, the folder it shows, and
-    // which contents query is the latest (an older answer opens nothing).
-    private GalleryControl? _galleryControl;
-    private string? _galleryFolder;
-    private int _galleryQuery;
 
     internal AiApi Api => _api ?? throw new InvalidOperationException("not attached");
     internal IAddonHost2 Host => _host ?? throw new InvalidOperationException("not attached");
@@ -109,7 +102,6 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
             case MvAddonEvent.AiRoots:
                 RefreshCoverage();
                 _panel?.RefreshRoots();
-                _galleryControl?.Refresh();
                 _window?.OnRootsChanged();
                 RequestStatus();
                 break;
@@ -133,9 +125,6 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
         _people = null;
         _panel?.Detach();
         _panel = null;
-        _galleryControl?.Detach();
-        _galleryControl = null;
-        ++_galleryQuery;
         if (_host is not null)
         {
             _host.ThemeChanged -= OnThemeChanged;
@@ -295,25 +284,13 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
 
     /// <summary>When <paramref name="search"/> answers, its results become the viewer's
     /// listing (the people window's "Show their photos").</summary>
-    internal void OpenSearchAsList(ulong search, string title) => OpenSearchAsList(search, title, null, null);
-
-    /// <summary>
-    /// As above; <paramref name="wanted"/> false (a newer gallery query) opens
-    /// nothing, and <paramref name="done"/> hears what happened (the gallery bar).
-    /// </summary>
-    private void OpenSearchAsList(ulong search, string title, Func<bool>? wanted,
-                                  Action<GallerySearchOutcome>? done)
+    internal void OpenSearchAsList(ulong search, string title)
     {
         AwaitSearch(search, (status, count) =>
         {
-            if (status != MvStatus.Ok || count <= 0 || _api is null || (wanted is not null && !wanted()))
+            if (status != MvStatus.Ok || count <= 0 || _api is null)
             {
                 ReleaseSearch(search);
-                if (wanted is null || wanted())
-                {
-                    done?.Invoke(status == MvStatus.Ok && _api is not null
-                        ? GallerySearchOutcome.NothingFound : GallerySearchOutcome.Failed);
-                }
                 return;
             }
             AiApi api = _api;
@@ -333,100 +310,12 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome, IGallerySearchChrome
                 catch (MediaViewerException) { }
                 _queue?.TryEnqueue(() =>
                 {
-                    if (wanted is not null && !wanted())
-                    {
-                        ReleaseSearch(search);
-                        return;
-                    }
-                    if (_host is null || paths.Count == 0)
-                    {
-                        done?.Invoke(GallerySearchOutcome.Failed);
-                        return;
-                    }
+                    if (_host is null || paths.Count == 0) return;
                     SetActiveSearch(search, paths.Where((_, i) => moments[i] >= 0));
                     _host.OpenList(title, paths, moments, 0, gallery: true);
-                    done?.Invoke(GallerySearchOutcome.Opened);
                 });
             });
         });
-    }
-
-    // ---- IGallerySearchChrome (the gallery search bar) ------------------------------------
-
-    public object? BuildGalleryIndexControl()
-    {
-        if (_api is null || _host is null) return null;
-        _galleryControl?.Detach();
-        _galleryControl = new GalleryControl(this);
-        _galleryControl.SetFolder(_galleryFolder);
-        return _galleryControl.Root;
-    }
-
-    public void SetGalleryFolder(string? folder)
-    {
-        _galleryFolder = folder;
-        _galleryControl?.SetFolder(folder);
-    }
-
-    public void GalleryQuery(string text, string folder, Action<GallerySearchOutcome> done)
-    {
-        int query = ++_galleryQuery;
-        string q = text.Trim();
-        if (_api is null || _host is null || q.Length == 0 || folder.Length == 0)
-        {
-            done(GallerySearchOutcome.Failed);
-            return;
-        }
-        uint coverage;
-        try { coverage = _api.FolderCoverage(folder); }  // [no-block]
-        catch (MediaViewerException)
-        {
-            done(GallerySearchOutcome.Failed);
-            return;
-        }
-        if (coverage == 0)
-        {
-            done(GallerySearchOutcome.NotIndexed);
-            return;
-        }
-        // The folder, and its subfolders when its root is recursive: whether
-        // it is lives in roots_json, which is [worker-thread].
-        AiApi api = _api;
-        _ = Task.Run(() =>
-        {
-            GalleryRoot? root = null;
-            try { root = GalleryRoot.Covering(api.RootsJson(), folder); }
-            catch (MediaViewerException) { }
-            _queue?.TryEnqueue(() =>
-            {
-                if (query != _galleryQuery || _api is null) return;
-                MvAiScope scope = root is { Recursive: true } ? MvAiScope.Tree : MvAiScope.Folder;
-                ulong search;
-                try
-                {
-                    // All kinds, no find bits: what the pack returns for the
-                    // words, ranked as the panel ranks them.
-                    search = _api.SearchText(q, folder, scope, MvAiKinds.All);
-                }
-                catch (MediaViewerException)
-                {
-                    done(GallerySearchOutcome.Failed);
-                    return;
-                }
-                // The results' title is the query; the host shows "Search: <query>".
-                OpenSearchAsList(search, q, () => query == _galleryQuery, done);
-            });
-        });
-    }
-
-    public void IndexGalleryFolder(string folder, bool recursive)
-    {
-        if (_api is null || folder.Length == 0) return;
-        try { _api.IndexFolder(folder, recursive); }
-        catch (MediaViewerException) { return; }
-        RefreshCoverage();
-        ReadStatus();
-        _galleryControl?.Refresh();
     }
 
     internal void OpenPeople()

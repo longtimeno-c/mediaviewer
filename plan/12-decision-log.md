@@ -2744,3 +2744,19 @@ platforms.
   download task on its own delegate session now reports bytes ~10 times a second (Windows:
   by time, not 1 % steps). Indeterminate phases animate; with Reduce Motion / animations off
   the bar is still.
+
+## 2026-09-28 — The gallery search bar is removed; a search icon in the path bar opens ⌘F
+
+Owner request: "Remove the recently added search bar in the gallery. Add a search icon on the
+right side of the folders (the folder path) and when pressed it opens the ⌘F menu." The
+2026-09-27 bar (plan/17 "Gallery search bar": Names filter, Contents via the pack, the pack's
+index control; command `gallery_search` on `/`) is gone on both hosts, with its host bridges
+(Mac `mv_chrome_set_gallery_filter`, `mv_addon2_gallery_*`, the AI chrome's `-galleryAccessory` /
+`-galleryQuery:` / `-galleryVisible:`; Windows `IGallerySearchChrome`, the `GallerySearch` chrome
+entry and its Esc / Left / Right hooks). `/` in the gallery is find-by-name on the folder row
+again, as before 2026-09-27. In its place a magnifier icon ends the command bar's folder path
+(and sits beside "Search: …" while a result list is shown); it runs the same command as
+`Ctrl+F` / `⌘F` and shows only while Local search is loaded. Kept from that work: each search
+answer goes only to the model that owns it (Mac), the result-list fixes, and "Index this folder"
+inside the ⌘F panel. The `gallery_search` id was the last appended command, so removing it
+renumbers nothing.

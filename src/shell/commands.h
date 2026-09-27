@@ -312,9 +312,6 @@ enum class command_id : std::uint16_t {
   search_similar,      // Ctrl+Shift+F: photos and moments like the one on screen
   search_next_match,   // N on a clip opened from results: the next matching moment
   search_prev_match,   // Shift+N: the previous one
-  // Gallery search bar (2026-09-27, plan/16 `/`, plan/17 "Gallery search bar").
-  // Appended. A base command: the field and its Names filter need no add-on.
-  gallery_search,      // `/` in the gallery: focus its search field, text selected
   count
 };
 

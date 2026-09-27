@@ -204,7 +204,6 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       case command_id::fullscreen:
       case command_id::help:
       case command_id::typeahead:
-      case command_id::gallery_search:
         break;
       default: return {};
     }

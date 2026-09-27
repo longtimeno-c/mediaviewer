@@ -413,7 +413,7 @@ TEST_CASE("Esc in a result list is Back to folder, after everything over it",
   // Back in the folder: nothing left to leave.
   REQUIRE_FALSE(r.on_key(down(key::escape), s).handled);
 
-  // A text field (the gallery search bar) and a popup still own Esc first.
+  // A text field (the metadata pane's) and a popup still own Esc first.
   s.list_open = true;
   s.focus = focus_kind::text;
   REQUIRE(r.on_key(down(key::escape), s).back == back_target::blur_text);
@@ -458,7 +458,7 @@ TEST_CASE("a focused text field gets the editing chords; the canvas keeps its co
   };
   for (const view_state base : {still(), clip()}) {
     view_state s = base;
-    s.gallery_open = true;  // the gallery search bar sits over the grid
+    s.gallery_open = true;  // a text field while the grid is up
     s.focus = focus_kind::text;
     for (const chord& c : chords) {
       // Not the app's command (Ctrl+A would be Mark all, Ctrl+C Copy, Ctrl+Z
@@ -1005,38 +1005,7 @@ TEST_CASE("Cmd+Left and Cmd+Right move to the sibling folder while a photo is op
   view_state gallery = still();
   gallery.gallery_open = true;
   REQUIRE(r.on_key(down(key::left, mod_ctrl), gallery).command != command_id::folder_prev);
-  REQUIRE(r.on_key(down(char_key('/')), gallery).command == command_id::gallery_search);
-}
-
-TEST_CASE("slash focuses the gallery search bar only while the gallery is shown",
-          "[shell][router][gallery]") {
-  key_router r;
-  // plan/16 `/`, plan/17 "Gallery search bar" (2026-09-27): a base command,
-  // listed and routed with no add-on loaded.
-  REQUIRE_FALSE(is_addon_command(command_id::gallery_search));
-  const command_info* info = find_command(command_id::gallery_search);
-  REQUIRE(info != nullptr);
-  REQUIRE(std::string(info->name) == "Search in gallery");
-  REQUIRE(describe_commands().find("\tSearch in gallery\t/\t") != std::string::npos);
-  for (const auto focus : {focus_kind::canvas, focus_kind::command_bar, focus_kind::gallery}) {
-    for (view_state s : {still(), clip()}) {
-      s.gallery_open = true;
-      s.focus = focus;
-      INFO("focus " << static_cast<int>(focus));
-      const route got = r.on_key(down(char_key('/')), s);
-      REQUIRE(got.command == command_id::gallery_search);
-      // Edge only: a held `/` does not refocus and reselect every repeat.
-      REQUIRE_FALSE(r.on_key(rep(char_key('/')), s).handled);
-    }
-  }
-  // Gallery closed: `/` is still the canvas's find-by-name, never the bar.
-  REQUIRE(r.on_key(down(char_key('/')), still()).command == command_id::typeahead);
-  REQUIRE(r.on_key(down(char_key('/')), clip()).command == command_id::typeahead);
-  // The search field has the keyboard: `/` is a character in it.
-  view_state typing = still();
-  typing.gallery_open = true;
-  typing.focus = focus_kind::text;
-  REQUIRE_FALSE(r.on_key(down(char_key('/')), typing).handled);
+  REQUIRE(r.on_key(down(char_key('/')), gallery).command == command_id::typeahead);
 }
 
 TEST_CASE("3 toggles the runner view on the down edge without stealing image zoom", "[keys][dino]") {
