@@ -2312,3 +2312,21 @@ one-shot deadline.
 were not compiled on this machine. Run the issue's acceptance on both: mouse, keyboard,
 touchpad, seek drag, Narrator / VoiceOver, pause, end, fullscreen ↔ windowed, both themes, and
 PresentMon / Instruments on idle playback for no extra repaint, plus both present-loop gates.
+
+## 2026-09-27 — The Windows transport hugs its controls
+
+**Amends** 2026-09-26 (issue #38) on Windows only. The island was a fixed ≤ 880 DIP box with
+its controls centred inside, so at most window sizes it was a long, mostly empty opaque bar
+(an island is an opaque child HWND; nothing behind the controls can be transparent). The owner
+asked for the container to go.
+
+**What.** The island reports its row's natural width in DIPs on
+`chrome_cmd_transport_width` (1018) whenever it changes (trim arming adds its label and save
+buttons). Native sizes the bar to that plus `kTransportPadDip` (14, the Mac pill's padding)
+each side, bounded only by the window's side gaps, so trim's wider row is no longer clipped.
+880 DIP is now only the width before the first report. The Mac pill already fitted its
+controls; no Mac change.
+
+**Verified** on Windows (build `ui/transport-pill`): the bar fits Play · scrubber · clock ·
+More, grows for trim without clipping, and still auto-hides while playing. `mv_tests` green.
+The present-loop soak was not re-run: other sessions were soaking on the same machine.

@@ -86,6 +86,10 @@ enum chrome_command : int {
   // host cannot see from the canvas -- a scrub drag, the More flyout, a
   // dropdown. Release restarts the idle clock.
   chrome_cmd_transport_hold = 1017,
+  // The transport row's natural width in DIPs (it grows while trim is armed).
+  // Native sizes the bar to it, so the island hugs its controls instead of
+  // being a long empty box around them.
+  chrome_cmd_transport_width = 1018,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -347,7 +351,10 @@ inline constexpr int kFilmstripDip = 112;
 // after an idle interval while the clip plays (shell/transport_autohide.h). It
 // no longer reserves canvas, so showing or hiding it never refits the video.
 inline constexpr int kTransportDip = 52;
-inline constexpr int kTransportMaxWidthDip = 880;  // Windows buttons are text, wider than the Mac's 720 pt
+// The bar hugs its controls (chrome_cmd_transport_width); this is only its width
+// before the island has reported one.
+inline constexpr int kTransportMaxWidthDip = 880;
+inline constexpr int kTransportPadDip = 14;     // each side, between the bar's edge and its controls
 inline constexpr int kTransportMarginDip = 10;  // above the filmstrip / bottom edge
 inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's sides
 
@@ -505,6 +512,10 @@ class chrome_host {
                       std::uint32_t dpi) noexcept;
   void park_transport(bool parked, int width, int client_height, int filmstrip_px,
                       std::uint32_t dpi) noexcept;
+  // The row's natural width in DIPs (chrome_cmd_transport_width); 0 until the
+  // island reports it, which falls back to kTransportMaxWidthDip. Returns
+  // whether it changed, so the caller relays out only then.
+  bool set_transport_content(int dip) noexcept;
   [[nodiscard]] bool transport_parked() const noexcept { return transport_parked_; }
   [[nodiscard]] bool transport_attached() const noexcept { return transport_attached_; }
   [[nodiscard]] bool transport_visible() const noexcept {
@@ -612,6 +623,7 @@ class chrome_host {
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool transport_parked_ = false;  // issue #38: auto-hidden, content kept
+  int transport_content_dip_ = 0;  // 0: not reported yet
   bool filmstrip_attached_ = false;
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
