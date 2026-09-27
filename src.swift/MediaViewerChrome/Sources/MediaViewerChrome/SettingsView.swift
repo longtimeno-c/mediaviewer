@@ -25,7 +25,7 @@ final class SettingsStore: ObservableObject {
   static let wrap: Int32 = 1 << 2
   static let stickyZoom: Int32 = 1 << 3
   static let backgroundShift: Int32 = 4
-  static let backgroundMask: Int32 = 3 << 4
+  static let backgroundMask: Int32 = 7 << 4
 
   @Published private(set) var visible = false
   @Published private(set) var flags: Int32 = 0
@@ -102,7 +102,7 @@ final class SettingsStore: ObservableObject {
   var background: Int {
     get { Int((flags & Self.backgroundMask) >> Self.backgroundShift) }
     set {
-      mv_chrome_set_view_flags((flags & ~Self.backgroundMask) | (Int32(newValue & 3) << Self.backgroundShift))
+      mv_chrome_set_view_flags((flags & ~Self.backgroundMask) | (Int32(newValue) << Self.backgroundShift))
       generation = .max
       poll()
     }
@@ -246,10 +246,11 @@ struct SettingsView: View {
         section("Appearance")
         SettingsRow(title: "Canvas background", detail: "The area behind your photos and videos.") {
           Picker("Canvas background", selection: Binding(get: { store.background }, set: { store.background = $0 })) {
-            Text("Dark").tag(0)
+            Text("System").tag(0)
             Text("Grey").tag(1)
             Text("White").tag(2)
             Text("Checkerboard").tag(3)
+            Text("Dark").tag(4)
           }
           .pickerStyle(.menu).frame(width: 180)
         }

@@ -9,9 +9,9 @@ media-player control, so decoding never stands between you and the screen.
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
 apply while the app is open. The empty welcome screen and dinosaur runner follow
-the system window colour too. **Canvas background** remains a separate preference
-for the photo/video surround. Build and interactive checks are documented in
-[System appearance verification](docs/system-theme-verify.md).
+the system window colour too. The photo/video **Canvas background** now defaults
+to System; Grey, White, Checkerboard and Dark remain fixed choices. Build and
+interactive checks are documented in [System appearance verification](docs/system-theme-verify.md).
 
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
@@ -341,7 +341,8 @@ installed above includes it alongside libheif/LibRaw; no extra install is needed
 
 Open a folder with clips in it. `Space`/`K` play/pause, `,` `.` frame step, `Q`/`E` ±2 s,
 `J`/`L` ±10 s, `Shift+Q`/`Shift+E` speed 0.25–4×, `Shift+M` mute (`?` lists them; the transport
-strip appears above the filmstrip while a clip is on screen). `F3` names the decoder that is
+bar floats above the filmstrip while a clip is on screen and fades after 2.5 s of playback
+with no activity — see the transport paragraph below). `F3` names the decoder that is
 *actually* running (`SOFTWARE` is spelled out, never silent), the clock source, the A/V error
 and the counters. H.264 and HEVC (8- and 10-bit) decode in hardware; MPEG-2 and MPEG-4 fall
 back to software on Apple Silicon and say so.
@@ -524,7 +525,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 | Key | |
 |---|---|
-| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar, filmstrip and transport. `Esc` leaves |
+| `F11` / `F` | fullscreen on the window's monitor; also available from View → Full screen. Hides the command bar and filmstrip; a clip's transport still floats and auto-hides, and the pointer hides with it over the video. `Esc` leaves |
 | `F3` | frame-time overlay — off at launch on Windows and macOS unless a soak is running |
 | Empty-window runner | `Space` starts/jumps/retries; `3` switches between the default 2D view and a shaded 3D view; `Esc` leaves with a short outro. Switching views keeps your run and score |
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
@@ -579,7 +580,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers, counts, and a path bar stay on screen. Labelled **Up** and **Root** buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas. It never quits |
@@ -658,11 +659,27 @@ Space to jump, `Esc` to leave with a short outro); it stops presenting once the 
 soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The gallery and filmstrip accept the same drop, and you can drag a
 thumbnail or the fitted image out to Explorer.
 
-The playback transport is a **third island**: a bottom-centre strip that appears with a
-clip and goes away with it. Its height is reserved out of the canvas rectangle the same
-way the filmstrip's is, so it can never cover the video ([plan/16](plan/16-commands.md):
-do not grow an island over the canvas). Speed is owned by the core, so the dropdown and
-the keyboard cannot disagree.
+The playback transport is a **third island**: a centred bar floating over the bottom of the
+video, above the filmstrip, that appears with a clip and goes away with it. It works the
+same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
+
+- While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,
+  clicking, scrolling, a transport key (`Space`, `K`, `J`/`L`, `Q`/`E`, `,`/`.`, speed, mute,
+  `↑`/`↓` volume) or `Tab` brings it straight back.
+- It **stays up** while the clip is paused or has ended, while the pointer is over it, during
+  a scrub, while its More / speed menu is open, while it has keyboard focus, and whenever a
+  screen reader (Narrator, VoiceOver) is running. It is never shown over the gallery or
+  Settings.
+- In **fullscreen** the pointer hides with the bar while it is over the video. Windowed, the
+  system pointer is never hidden.
+- Hiding is **only visual**: the canvas does not refit, decode and audio carry on, and keys
+  keep working. A click where the hidden bar was lands on the video, not on a button you
+  cannot see. Idle playback adds one one-shot timer, not a repaint.
+
+The Mac bar fades; on Windows the island is an opaque child window, so it is moved
+off-screen instead. The bar covering the video bottom is a reversal of the old reserved
+strip ([plan/12](plan/12-decision-log.md) 2026-09-26). Speed is owned by the core, so the
+dropdown and the keyboard cannot disagree.
 
 Opening a single image lists its folder too, so `Left` / `Right` and the gallery work on the
 files beside it. Whether the filmstrip comes with it is a preference: **Settings** has

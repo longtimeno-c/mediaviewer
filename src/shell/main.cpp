@@ -52,6 +52,7 @@
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
 #include "shell/trim_state.h"
+#include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
@@ -84,7 +85,7 @@ using mv::shell::lab_options;
 using mv::shell::present_lab;
 
 constexpr wchar_t kWindowClass[] = L"MediaViewer.PresentLab";
-constexpr wchar_t kWindowTitle[] = L"MediaViewer — present lab";
+constexpr wchar_t kWindowTitle[] = L"MediaViewer";
 
 // What the user asked for, which is not the same as what is on screen. A
 // folder open is "browse this folder"; an image open is "show me this file",
@@ -117,6 +118,8 @@ constexpr UINT kMsgMetaWriteDone = WM_APP + 0x75;
 constexpr ULONGLONG kNoticeMs = 3000;  // how long "★★★★☆" stays in the status line
 constexpr UINT_PTR kRevealTimerId = 0x6B01;
 constexpr UINT kRevealMs = 3000;
+// Issue #38: one-shot, only while a clip plays with its transport up.
+constexpr UINT_PTR kTransportTimerId = 0x6B02;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
 // would read the old fit. Zoom commands open this window so the first ↓ after
 // them pans instead of falling through.
@@ -241,6 +244,13 @@ struct app_state {
   // Set by the island's playback poll (chrome_cmd_video_active). The transport
   // strip follows it, so it appears with a clip and leaves with it.
   bool video_on = false;
+  // Issue #38: the transport's idle state (shell/transport_autohide.h, the same
+  // rule the Mac host runs). `video_playing` rides on chrome_cmd_video_active;
+  // `transport_hold` is chrome_cmd_transport_hold (a scrub, the More flyout).
+  mv::shell::transport_autohide autohide;
+  bool video_playing = false;
+  bool transport_hold = false;
+  bool transport_timer = false;
   // Where a skim burst is heading, as opposed to where the clip currently is.
   // A non-exact seek lands on the preceding keyframe, so re-reading the
   // position each repeat asks to move 2 s from a point the last press already
@@ -418,6 +428,8 @@ std::wstring wide_from_utf8(std::string_view utf8) {
 }
 
 void apply_view_state(app_state* app) noexcept;
+void apply_transport_autohide(app_state* app) noexcept;
+void transport_activity(app_state* app) noexcept;
 void push_browse_state(app_state* app);
 void set_gallery(app_state* app, bool visible);
 void push_tree_root(app_state* app) noexcept;
@@ -2027,8 +2039,9 @@ std::uint32_t subfolder_count(app_state* app) noexcept {
   return count;
 }
 
-int chrome_bar_px(app_state* app, std::uint32_t dpi) noexcept {
-  return mv::shell::chrome_bar_height_px(dpi, app && !app->current_dir.empty());
+int chrome_bar_px(app_state*, std::uint32_t dpi) noexcept {
+  // The folder trail lives inside the bar, so opening a folder does not grow it.
+  return mv::shell::chrome_bar_height_px(dpi);
 }
 
 std::string subfolder_path_at(app_state* app, std::uint32_t index) {
@@ -2465,9 +2478,19 @@ void chrome_on_command(void* ctx, int command, float arg) {
       apply_rate(app, rate_index_for(static_cast<double>(arg)));
       return;
     case mv::shell::chrome_cmd_video_active: {
+      // 0 no clip, 1 paused or ended, 2 playing (IslandHost.Video.cs).
       const bool on = arg != 0.0f;
-      if (app->video_on == on) return;
+      const bool playing = arg >= 2.0f;
+      if (app->video_on == on) {
+        // Pause, end, or a media key: the controls come back (issue #38).
+        if (app->video_playing != playing) {
+          app->video_playing = playing;
+          apply_transport_autohide(app);
+        }
+        return;
+      }
       app->video_on = on;
+      app->video_playing = playing;
       // A freshly opened media_source starts at 1.00x, so the ladder and the
       // dropdown have to start there too rather than inheriting the last clip.
       if (on) {
@@ -2601,8 +2624,16 @@ void chrome_on_command(void* ctx, int command, float arg) {
           kind <= static_cast<int>(mv::shell::focus_kind::pane)) {
         app->island_focus = static_cast<mv::shell::focus_kind>(kind);
       }
+      // Focus into the transport holds it up (issue #38).
+      if (kind == static_cast<int>(mv::shell::focus_kind::transport)) transport_activity(app);
       return;
     }
+    case mv::shell::chrome_cmd_transport_hold:
+      app->transport_hold = arg != 0.0f;
+      // Letting go of a scrub or closing a menu restarts the idle clock.
+      app->autohide.activity(::GetTickCount64());
+      apply_transport_autohide(app);
+      return;
     case mv::shell::chrome_cmd_update_restart: {
       if (arg != 0.0f) {
         // Update.exe is armed and waiting for this pid: leave the ordinary way.
@@ -2801,6 +2832,8 @@ void set_fullscreen(app_state* app, bool on) noexcept {
   }
   layout_chrome(app);
   apply_view_state(app);
+  // Issue #38: the change of frame is activity, so the controls are up for it.
+  transport_activity(app);
 }
 
 void publish_slideshow(app_state* app) noexcept {
@@ -3739,7 +3772,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
 
     // View state the render thread draws from (levels, not edges).
     case cycle_background:
-      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 4);
+      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 5);
       return set_level(app);
     case sticky_zoom:
       app->input.sticky_zoom = !app->input.sticky_zoom;
@@ -4035,6 +4068,9 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   if (handle_folder_find(app, event, is_down)) return true;
   const auto routed = app->router.on_key(event, view_state_of(app));
   if (!routed.handled) return false;
+  // Issue #38: a transport key also wakes the controls. The key still runs
+  // exactly its own command; waking is never a second action.
+  if (is_down && mv::shell::is_transport_command(routed.command)) transport_activity(app);
   if (routed.command == mv::shell::command_id::back) {
     walk_back(app, routed.back);
     return true;
@@ -4055,9 +4091,9 @@ void layout_panels(app_state* app) noexcept {
   const int width = rc.right - rc.left;
   const int height = rc.bottom - rc.top;
   const int bar = chrome_bar_px(app, dpi);
+  // The transport floats (issue #38); only the filmstrip is a strip.
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
-  if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
   const int top = bar;
   const int span = std::max(height - bar - bottom, 1);
   // Hidden under the gallery (it covers the client), fullscreen chrome-off and
@@ -4146,11 +4182,11 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
       (app->chrome_on_screen && !app->fullscreen)
           ? static_cast<std::uint32_t>(chrome_bar_px(app, dpi))
           : 0;
-  // Both bottom strips reserve canvas. The transport is only ever up while a
-  // clip is playing or paused, and reserving is what keeps it off the video.
+  // The filmstrip reserves canvas. The transport floats over the video and
+  // auto-hides (issue #38, plan/12 2026-09-26), so showing, parking or hiding
+  // it never refits the canvas.
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
-  if (app->chrome.transport_visible()) bottom += mv::shell::chrome_transport_height_px(dpi);
   app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
 }
 
@@ -4186,9 +4222,10 @@ void apply_view_state(app_state* app) noexcept {
   // Auto show/hide: a clip is open, and the grid is not covering everything.
   // Ordered after the filmstrip so the strip height it stacks on is current.
   // A Live Photo stop is a still (PR 7): its motion is a moment, not a clip to
-  // scrub, and a transport strip appearing under it would refit the canvas.
-  const bool want_transport = app->video_on && !app->gallery_visible && !chrome_hidden &&
-                              !settings && current_pair_kind(app) != MV_PAIR_LIVE_PHOTO;
+  // scrub. Fullscreen keeps it (issue #38): it floats and auto-hides there as
+  // it does windowed, instead of waiting for the ↓ / hot-edge reveal.
+  const bool want_transport = app->video_on && !app->gallery_visible && !settings &&
+                              current_pair_kind(app) != MV_PAIR_LIVE_PHOTO;
   const int strip = app->chrome.filmstrip_visible()
                         ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   if (want_transport != app->chrome.transport_visible()) {
@@ -4198,9 +4235,64 @@ void apply_view_state(app_state* app) noexcept {
   }
   layout_panels(app);
   update_client_metrics(app, app->window);
+  apply_transport_autohide(app);
   ++app->input.resize_seq;
   ++app->input.activity_seq;
   publish(app);
+}
+
+// Issue #38. The rule is shell/transport_autohide.h, shared with the Mac host;
+// this feeds it Win32 facts and applies the answer: park the bar (it keeps its
+// content, and a click where it was reaches the canvas, not a hidden button)
+// and, in fullscreen over the video, the pointer. Hiding is only visual: the
+// canvas rectangle does not move and every key still routes.
+void apply_transport_autohide(app_state* app) noexcept {
+  if (!app || !app->window) return;
+  const HWND hwnd = app->window;
+  const ULONGLONG now = ::GetTickCount64();
+  mv::shell::transport_view v;
+  v.clip = app->chrome.transport_visible();
+  v.playing = app->video_playing;
+  if (v.clip) {
+    const bool over = !app->chrome.transport_parked() && app->chrome.cursor_over_transport();
+    const bool focused =
+        app->chrome.classify_focus(::GetFocus(), hwnd) == mv::shell::focus_kind::transport;
+    BOOL reader = FALSE;
+    (void)::SystemParametersInfoW(SPI_GETSCREENREADER, 0, &reader, 0);
+    v.held = app->transport_hold || over || focused;
+    v.screen_reader = reader != FALSE;
+    v.fullscreen = app->fullscreen;
+    v.pointer_on_canvas = app->input.mouse_in_client;
+  }
+  const bool pointer_was_hidden = app->autohide.pointer_hidden();
+  (void)app->autohide.update(v, now);
+  if (v.clip) {
+    RECT rc{};
+    ::GetClientRect(hwnd, &rc);
+    const auto dpi = ::GetDpiForWindow(hwnd);
+    const int strip = app->chrome.filmstrip_visible()
+                          ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
+    app->chrome.park_transport(!app->autohide.shown(), rc.right - rc.left,
+                               rc.bottom - rc.top, strip, dpi);
+  }
+  // WM_SETCURSOR keeps it hidden; this applies it now rather than on the next move.
+  if (app->autohide.pointer_hidden() != pointer_was_hidden) {
+    ::SetCursor(app->autohide.pointer_hidden() ? nullptr : ::LoadCursorW(nullptr, IDC_ARROW));
+  }
+  const std::uint64_t due = app->autohide.due_in(v, now);
+  if (due > 0) ::SetTimer(hwnd, kTransportTimerId, static_cast<UINT>(due), nullptr);
+  else ::KillTimer(hwnd, kTransportTimerId);
+  app->transport_timer = due > 0;
+}
+
+// Pointer moved or clicked, a transport key or button, a fullscreen change.
+// A bool test and nothing else with no clip; with the bar up and its timer
+// running, a stream of mouse-moves costs a stored tick, not a timer each.
+void transport_activity(app_state* app) noexcept {
+  if (!app || !app->chrome.transport_visible()) return;
+  app->autohide.activity(::GetTickCount64());
+  if (app->autohide.shown() && (app->transport_timer || !app->video_playing)) return;
+  apply_transport_autohide(app);
 }
 
 // PR 8: title bar and taskbar icons at the window's own DPI, so a 150 % monitor
@@ -4298,14 +4390,16 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         const int edge = ::MulDiv(4, static_cast<int>(::GetDpiForWindow(hwnd)), 96);
         if (GET_Y_LPARAM(lparam) >= rc.bottom - edge) set_fullscreen_reveal(app, true);
       }
-      if (!app->input.mouse_in_client ||
-          app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
-          app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam))) {
-        ++app->input.activity_seq;
-      }
+      const bool moved = !app->input.mouse_in_client ||
+                         app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
+                         app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam));
+      if (moved) ++app->input.activity_seq;
       app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
       app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
       app->input.mouse_in_client = true;
+      // Issue #38: movement (and entry) wakes the transport. Only a real move:
+      // parking an island can send a synthetic one at the same spot.
+      if (moved) transport_activity(app);
       if (!app->tracking_mouse) {
         TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
         ::TrackMouseEvent(&tme);
@@ -4335,8 +4429,19 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
       publish(app);
+      transport_activity(app);  // onto the bar or out of the window
       return 0;
     }
+
+    case WM_SETCURSOR:
+      // Issue #38: fullscreen, playing, idle, over the video. Anything else is
+      // the class cursor, so the windowed pointer is never touched.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
+          app->autohide.pointer_hidden()) {
+        ::SetCursor(nullptr);
+        return TRUE;
+      }
+      break;
 
     case WM_LBUTTONDOWN: case WM_LBUTTONUP:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
@@ -4354,6 +4459,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::SetFocus(hwnd);
         app->island_focus = mv::shell::focus_kind::command_bar;
         ::SetCapture(hwnd);
+        transport_activity(app);
         if (msg == WM_LBUTTONDOWN && app->lab.view_fitted()) {
           app->file_drag_armed = true;
           app->file_drag_x = GET_X_LPARAM(lparam);
@@ -4373,6 +4479,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->input.wheel_total += GET_WHEEL_DELTA_WPARAM(wparam);
       ++app->input.activity_seq;
       publish(app);
+      transport_activity(app);
       return 0;
     }
 
@@ -4380,6 +4487,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if ((lparam & (1 << 30)) != 0) return 0;
       // Tab has nowhere visible to go while fullscreen hides the chrome.
       if (wparam == VK_TAB && app->chrome.attached() && !app->fullscreen) {
+        // Unpark the transport first so Tab can land in it (issue #38).
+        transport_activity(app);
         const bool reverse = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
         (void)app->chrome.navigate_focus(reverse);
       }
@@ -4489,6 +4598,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       }
       if (wparam == kMotionTimerId) {
         motion_tick(app);
+        return 0;
+      }
+      if (wparam == kTransportTimerId) {
+        ::KillTimer(hwnd, kTransportTimerId);
+        app->transport_timer = false;
+        apply_transport_autohide(app);
         return 0;
       }
       if (wparam == kRevealTimerId) {

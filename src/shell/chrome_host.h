@@ -82,6 +82,10 @@ enum chrome_command : int {
   // Appearance only: WinUI sends the system window colour as an exact
   // 24-bit integer carried by float (all integers up to 2^24 are exact).
   chrome_cmd_home_colour = 1016,
+  // Issue #38: arg != 0 while the transport is held open by something the
+  // host cannot see from the canvas -- a scrub drag, the More flyout, a
+  // dropdown. Release restarts the idle clock.
+  chrome_cmd_transport_hold = 1017,
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -337,19 +341,19 @@ using chrome_entry_fn = int (*)(void* arg, std::int32_t arg_size_in_bytes);
 
 // DIP height of the command-bar strip. Physical pixels = this * dpi / 96.
 inline constexpr int kChromeBarDip = 48;
-// Breadcrumb under the bar while a folder is open (Mac kPathRowPoints).
-inline constexpr int kPathRowDip = 28;
 inline constexpr int kFilmstripDip = 112;
-// The transport strip. It sits BELOW the canvas and above the filmstrip, and
-// the canvas rectangle shrinks by exactly this much while it is up — plan/16
-// ("do not grow an island over the canvas") and the user's own line: the
-// transport must never cover the video.
+// The transport bar. Issue #38 (plan/12 2026-09-26): it floats over the bottom
+// of the video, centred and above the filmstrip, like the Mac's, and leaves
+// after an idle interval while the clip plays (shell/transport_autohide.h). It
+// no longer reserves canvas, so showing or hiding it never refits the video.
 inline constexpr int kTransportDip = 52;
+inline constexpr int kTransportMaxWidthDip = 880;  // Windows buttons are text, wider than the Mac's 720 pt
+inline constexpr int kTransportMarginDip = 10;  // above the filmstrip / bottom edge
+inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's sides
 
-[[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi, bool path_row = false) noexcept {
+[[nodiscard]] inline int chrome_bar_height_px(std::uint32_t dpi) noexcept {
   if (dpi == 0) dpi = 96;
-  const int dip = kChromeBarDip + (path_row ? kPathRowDip : 0);
-  return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96);
+  return static_cast<int>((kChromeBarDip * static_cast<int>(dpi) + 48) / 96);
 }
 
 [[nodiscard]] inline int chrome_filmstrip_height_px(std::uint32_t dpi) noexcept {
@@ -396,6 +400,8 @@ class chrome_host {
   // True when the cursor is over a visible island's bridge window. Cheap
   // (GetCursorPos + GetWindowRect); asked by a timer, never per mouse-move.
   [[nodiscard]] bool cursor_over_island() const noexcept;
+  // The same, for the transport bar alone (issue #38: hovering it holds it up).
+  [[nodiscard]] bool cursor_over_transport() const noexcept;
 
   // `parent` is the top-level canvas HWND. The island is MoveAndResize'd into
   // the 48 DIP strip so flyouts are siblings of the swapchain, not clipped by
@@ -485,15 +491,21 @@ class chrome_host {
   // Optional: an older chrome ignores it.
   void set_trim(const chrome_trim_args& args) noexcept;
 
-  // The playback transport: a bottom strip, its content centred, shown only
-  // while a clip is open. `filmstrip_px` is how much bottom chrome is already
-  // spoken for, so the two strips stack instead of overlapping.
+  // The playback transport: a centred bar floating over the bottom of the
+  // canvas, shown only while a clip is open. `filmstrip_px` is how much bottom
+  // chrome is already spoken for, so the bar sits above the filmstrip.
+  // park_transport() is issue #38's auto-hide: the bar keeps its content and
+  // moves below the client area, so the canvas gets the pointer back and a
+  // click there cannot press a button nobody can see.
   [[nodiscard]] expected attach_transport(HWND parent, void* context, chrome_command_fn on_command,
                                           void* session, int width, int height,
                                           std::uint32_t dpi) noexcept;
   void resize_transport(int width, int client_height, int filmstrip_px, std::uint32_t dpi) noexcept;
   void show_transport(bool visible, int width, int client_height, int filmstrip_px,
                       std::uint32_t dpi) noexcept;
+  void park_transport(bool parked, int width, int client_height, int filmstrip_px,
+                      std::uint32_t dpi) noexcept;
+  [[nodiscard]] bool transport_parked() const noexcept { return transport_parked_; }
   [[nodiscard]] bool transport_attached() const noexcept { return transport_attached_; }
   [[nodiscard]] bool transport_visible() const noexcept {
     return transport_attached_ && transport_visible_;
@@ -606,11 +618,11 @@ class chrome_host {
   chrome_entry_fn updater_exit_ = nullptr;
   bool transport_attached_ = false;
   bool transport_visible_ = false;
+  bool transport_parked_ = false;  // issue #38: auto-hidden, content kept
   bool filmstrip_attached_ = false;
   bool filmstrip_visible_ = false;
   bool gallery_attached_ = false;
   bool gallery_visible_ = false;
-  bool path_row_ = false;  // command bar grew by kPathRowDip; gallery Y follows
   bool panels_attached_ = false;
   bool meta_visible_ = false;
   bool tree_visible_ = false;
