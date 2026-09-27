@@ -13,9 +13,12 @@
 // Nothing here runs on the canvas's render path.
 //
 // Keyboard-complete (plan/17 PR 22 verify: "the whole flow … works without the
-// mouse"): typing searches; Down enters the grid; arrows move; Return opens the
-// results in the viewer on the chosen tile; Cmd+Return opens them as the gallery
-// grid; Esc goes from the grid back to the field, then closes. Down and Esc go
+// mouse"): typing searches; Return or Down enters the grid (Return on words
+// still being searched, as while indexing, waits for their answer and enters
+// it then; nothing found stays in the field); arrows move; Return in the grid
+// opens the results in the viewer on the chosen tile; Cmd+Return opens them as
+// the gallery grid; typing in the grid goes back to the field; Esc goes from
+// the grid back to the field, then closes. Down and Esc go
 // through a local key monitor: the field editor would take moveDown: before a
 // SwiftUI key handler on the TextField sees it, and SwiftUI's exit command
 // needs a focused view (after a click on a button there is none).
@@ -238,11 +241,22 @@ struct SearchRootView: View {
     }
     .onChange(of: panel.focusSeq) { _, _ in focusField() }
     .onChange(of: panel.gridSeq) { _, _ in if !model.results.isEmpty { focus = .grid } }
+    // Return in the field before its answer: the answer landed with results.
+    // Only from the field (a click elsewhere since means the user moved on).
+    .onChange(of: model.focusResultsSeq) { _, _ in
+      guard focus == .field, !model.results.isEmpty else { return }
+      model.selected = 0
+      focus = .grid
+      scrollSeq += 1
+    }
     // A reference chip stands in for the text: the (hidden) field gives up
     // the keyboard to the grid, so keys never go into an invisible field.
     .onChange(of: model.reference) { _, r in if r != nil { focusField() } }
     .onChange(of: model.results.isEmpty) { _, empty in
       if !empty, model.reference != nil, focus == nil { focus = .grid }
+      // A re-run found nothing under the grid the user was in: the keyboard
+      // goes back to the words, not nowhere.
+      if empty, focus == .grid, model.reference == nil { focusFieldAtEnd() }
     }
     .onAppear { focusField() }
   }
@@ -257,6 +271,16 @@ struct SearchRootView: View {
     DispatchQueue.main.async {
       MainActor.assumeIsolated {
         _ = NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+      }
+    }
+  }
+
+  /// The field, caret after the words (not selected): typing carries on.
+  private func focusFieldAtEnd() {
+    focus = .field
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        _ = NSApp.sendAction(#selector(NSResponder.moveToEndOfDocument(_:)), to: nil, from: nil)
       }
     }
   }
@@ -298,7 +322,16 @@ struct SearchRootView: View {
         .opacity(model.reference == nil ? 1 : 0)
         .frame(maxWidth: model.reference == nil ? .infinity : 0)
         .onChange(of: model.query) { _, _ in model.queryChanged() }
-        .onSubmit { open(gallery: NSEvent.modifierFlags.contains(.command)) }
+        .onSubmit {
+          // Return goes to the results (Down does the same); Cmd+Return opens
+          // them all as the gallery grid.
+          if NSEvent.modifierFlags.contains(.command) {
+            open(gallery: true)
+          } else if model.submitToResults() {
+            focus = .grid
+            scrollSeq += 1
+          }
+        }
         .accessibilityLabel("Search photos and videos")
       // Its room is kept while hidden, so the field does not change width.
       ProgressView().controlSize(.small)
@@ -533,6 +566,7 @@ struct SearchRootView: View {
     .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow, .return]) { press in
       handleGridKey(press)
     }
+    .onKeyPress(phases: .down) { press in typeIntoField(press) }
     .accessibilityLabel("\(model.results.count) results")
   }
 
@@ -562,6 +596,19 @@ struct SearchRootView: View {
     return .handled
   }
 
+  /// A printable key in the grid goes back to the words: the field takes it
+  /// at the end and searches as typing always does.
+  private func typeIntoField(_ press: KeyPress) -> KeyPress.Result {
+    guard model.reference == nil, press.modifiers.isDisjoint(with: [.command, .control]),
+          !press.characters.isEmpty,
+          press.characters.unicodeScalars.allSatisfy({ s in
+            !CharacterSet.controlCharacters.contains(s) && !(0xF700...0xF8FF).contains(s.value)  // arrows, F-keys
+          }) else { return .ignored }
+    model.query += press.characters
+    focusFieldAtEnd()
+    return .handled
+  }
+
   private func open(gallery: Bool) {
     _ = model.openResults(gallery: gallery)
   }
@@ -576,8 +623,9 @@ struct SearchRootView: View {
       Spacer(minLength: 0)
       if !model.results.isEmpty {
         HStack(spacing: 10) {
-          KeyHint(key: "↩", label: "Open")
-          KeyHint(key: "⌘↩", label: "Gallery")
+          // What Return does where the keyboard is.
+          KeyHint(key: "↩", label: focus == .grid ? "Open" : "Go to results")
+          KeyHint(key: "⌘↩", label: "Open all")
         }
         .fixedSize()
       }
@@ -769,7 +817,7 @@ private struct ResultTile: View {
   let result: AIResult
   let order: Int
   let selected: Bool
-  let hinted: Bool         // the tile Return would open while the field has focus
+  let hinted: Bool         // the tile the grid lands on while the field has focus
   let ring: Namespace.ID
   @ObservedObject var slot: ImageSlot
   let size: CGFloat

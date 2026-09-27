@@ -289,10 +289,18 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
 - [ ] **Match markers:** on a clip from the results, accent dots sit above the scrub bar at every
       matching moment, the current one larger, fading in (~200 ms). Opening a clip that is not in
       the search shows none.
-- [ ] **Keyboard-only flow (no mouse at all):** ⌘F → type → ↓ into the grid → arrows →
-      Return (opens paused on the moment) → N / ⇧N step next / previous match (exact seek,
-      stays paused if paused; the larger dot moves) → ⌘F → Esc (grid → field) → Esc (closes).
-      Previous query is pre-selected on reopen. Also: scope and kind chips reachable with Tab.
+- [ ] **Keyboard-only flow (no mouse at all):** ⌘F → type → Return (or ↓) into the grid on
+      the first result → arrows → Return (opens paused on the moment) → N / ⇧N step next /
+      previous match (exact seek, stays paused if paused; the larger dot moves) → ⌘F → Esc
+      (grid → field) → Esc (closes). Previous query is pre-selected on reopen. Also: scope and
+      kind chips reachable with Tab; the footer reads "↩ Go to results" in the field and
+      "↩ Open" in the grid, "⌘↩ Open all" in both.
+- [ ] **Return before the answer:** type "test" and press Return at once (or while indexing,
+      with the spinner up): nothing opens; the spinner shows until "test" answers, then the
+      grid takes the keyboard on the first tile. A nonsense query + Return stays in the field
+      with "Nothing matches …". While indexing, arrow through the grid for ~10 s: the re-runs as
+      the index grows keep the selection on its tile and never pull focus back to the field.
+      A letter typed in the grid lands at the end of the field and searches.
 - [ ] **Folder offer:** open an un-indexed folder, ⌘F: "This folder is not indexed yet" with
       "Index this folder" / "Index this folder and subfolders"; choosing one starts indexing and
       results appear as the index grows (the panel re-runs every ~4 s while indexing without

@@ -196,6 +196,15 @@ final class SearchModel: ObservableObject {
   private var appActive = true         // the panel hides with the app (hidesOnDeactivate)
   /// Return pressed before the answer landed: open when it does (gallery or not).
   private var openWhenReady: Bool?
+  /// Return in the field before the answer for its words landed: the grid
+  /// takes the keyboard when it does (`focusResultsSeq` moves). Cleared by
+  /// new words or chips, so it only ever applies to the words submitted.
+  private var focusResultsWhenReady = false
+  /// Moves when a waited-for answer lands with results: the view enters the grid.
+  @Published private(set) var focusResultsSeq = 0
+  /// New words or chips were asked for and their answer is not on screen yet
+  /// (a re-run of the words on screen as the index grows is not new).
+  private var freshDue = false
   /// The title the results on screen were asked for (not the live field).
   private var shownTitle = ""
 
@@ -306,6 +315,7 @@ final class SearchModel: ObservableObject {
     if reference != nil { return }
     if startedIndexing != nil { startedIndexing = nil }
     openWhenReady = nil
+    focusResultsWhenReady = false
     debounce?.cancel()
     debounce = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 200_000_000)
@@ -333,6 +343,8 @@ final class SearchModel: ObservableObject {
   func run(keepSelection: Bool) {
     debounce?.cancel()
     debounce = nil
+    // New words or chips: a Return waiting on the old ones no longer applies.
+    if !keepSelection { focusResultsWhenReady = false }
     runSeq += 1
     let keep = keepSelection && results.indices.contains(selected) ? results[selected].id : ""
     let title = listTitle
@@ -363,6 +375,8 @@ final class SearchModel: ObservableObject {
       finished = false
       failed = false
       openWhenReady = nil
+      focusResultsWhenReady = false
+      freshDue = false
       setResults([], search: 0, run: nil)
       return
     }
@@ -380,6 +394,7 @@ final class SearchModel: ObservableObject {
     runs[id] = Run(seq: runSeq, rerun: keepSelection, keep: keep, title: title)
     lastRunTime = Date()
     lastRunFrames = framesIndexed
+    if !keepSelection || results.isEmpty { freshDue = true }
     searching = true
   }
 
@@ -387,6 +402,8 @@ final class SearchModel: ObservableObject {
   /// query they were not for.
   private func showFailure() {
     openWhenReady = nil
+    focusResultsWhenReady = false
+    freshDue = false
     if let done = personDone {
       personDone = nil
       done(.failed)
@@ -440,7 +457,13 @@ final class SearchModel: ObservableObject {
         self.searching = false
         self.finished = true
         self.failed = false
+        self.freshDue = false
         self.setResults(list, search: id, run: info)
+        // Return was pressed in the field on these words: the grid, now.
+        if self.focusResultsWhenReady {
+          self.focusResultsWhenReady = false
+          if !list.isEmpty && self.openWhenReady == nil { self.focusResultsSeq += 1 }
+        }
         // Return was pressed before this answer landed: open it now.
         if let gallery = self.openWhenReady {
           self.openWhenReady = nil
@@ -618,12 +641,34 @@ final class SearchModel: ObservableObject {
     return query.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  /// Whether the answer for the words in the field is still to come: typed
+  /// and not yet asked, or new words asked and not yet on screen. A re-run of
+  /// the same words as the index grows is not waited on (its tiles are there).
+  private var answerDue: Bool {
+    debounce != nil || ((pending != 0 || reading != 0) && (freshDue || results.isEmpty))
+  }
+
+  /// Return in the field: true when the results on screen answer its words
+  /// (the view enters the grid now). Else the search for them runs now if it
+  /// was still waiting on the debounce, and `focusResultsSeq` moves when it
+  /// lands with results; nothing found leaves the field and its empty state.
+  func submitToResults() -> Bool {
+    openWhenReady = nil
+    guard answerDue else {
+      focusResultsWhenReady = false
+      return !results.isEmpty
+    }
+    if debounce != nil { run(keepSelection: false) }
+    focusResultsWhenReady = pending != 0 || reading != 0
+    return false
+  }
+
   /// Enter: the results as a gallery listing, the chosen tile on the canvas
   /// (a clip paused on its moment). Cmd+Enter: the gallery grid. Typed and
   /// pressed Enter at once: the search runs now and opens when its answer
   /// lands, never the older results under the new words.
   func openResults(gallery: Bool) -> Bool {
-    if debounce != nil || pending != 0 || reading != 0 {
+    if answerDue {
       openWhenReady = gallery
       if debounce != nil { run(keepSelection: false) }
       return true
