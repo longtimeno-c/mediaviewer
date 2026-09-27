@@ -2005,7 +2005,12 @@ std::uint64_t engine::search_text(const std::string& query, const std::string& s
         }
         vector_store::scan_stats stats;
         auto hits = store_.scan(v, allow, 5000, true, result_margin, -1.0f, &stats);
-        const bool stands_out = query_z > 0 && stats.top10_z >= query_z;
+        // Against what noise scores in an index this size (scan_stats): at
+        // 1,000 COCO photos every nonsense query cleared a fixed z of 2.5
+        // (2.56-2.88) while real ones sat at 3.49 and up; one nonsense query's
+        // best margin was 0.050 at 300 (plan/17, 2026-09-27).
+        const bool stands_out = stats.stands_out(query_z);
+        const float margin_needed = stats.margin_needed(query_margin);
         if (stands_out && stats.sd > 0) {
           // A short query clears few rows by the margin; the rows that stand
           // out as far as a match does are results as well (plan/17).
@@ -2016,7 +2021,7 @@ std::uint64_t engine::search_text(const std::string& query, const std::string& s
           }
           std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
         }
-        group(st, hits, true, person_assets.empty() ? query_margin : -1.0f, MV_AI_MATCH_PICTURE, stands_out);
+        group(st, hits, true, person_assets.empty() ? margin_needed : -1.0f, MV_AI_MATCH_PICTURE, stands_out);
       }
     }
     merge_audio(st, q, allow, find);

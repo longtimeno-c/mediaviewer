@@ -16,6 +16,7 @@
 // millions of frames needs it.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <shared_mutex>
@@ -53,6 +54,24 @@ class vector_store {
     float top10_z = 0;
     float mean = 0;  // of the per-asset best scores
     float sd = 0;
+    // What top10_z is for a query that matches nothing (the ten best of
+    // `assets` draws of noise): it grows with the library, ~2.2 at 300 assets,
+    // 2.6 at 1,000, 3.3 at 10,000, so a fixed z threshold stops meaning
+    // "stands out" as the index grows (plan/17, 2026-09-27).
+    [[nodiscard]] float null_top10_z() const noexcept;
+    // The "nothing found" rule on these stats (plan/17). A query stands out at
+    // model.json's query_z (calibrated at ~300 assets) or 15 % over noise,
+    // whichever is higher. A margin-only pass needs 1.5 x the model's margin
+    // when its best assets score no better than noise.
+    static constexpr float kStandOutOverNoise = 1.15f;
+    static constexpr float kStrongMarginFactor = 1.5f;
+    [[nodiscard]] bool stands_out(float query_z) const noexcept {
+      return query_z > 0 && top10_z >= std::max(query_z, kStandOutOverNoise * null_top10_z());
+    }
+    [[nodiscard]] float margin_needed(float query_margin) const noexcept {
+      const bool believable = assets < kMinAssets || top10_z >= null_top10_z();
+      return believable ? query_margin : kStrongMarginFactor * query_margin;
+    }
   };
   // The `k` best rows whose asset passes `allow` (may be empty: all), with
   // score - generic >= min_margin when `use_margin`, and score >= min_score.

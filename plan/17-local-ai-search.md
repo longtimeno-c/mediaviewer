@@ -427,6 +427,21 @@ the margin alone decides. Same set: 15 / 17 (B/32) and 14 / 17 (L/14) real queri
 nonsense rejected on both; "dog" returns 15 rows, "a cat" 12. Pictures only: CLAP keeps the
 margin rule until it has its own calibration.
 
+**Amended again 2026-09-27 (Mac run): the z threshold scales with the index.** `top10_z`
+is the mean of the ten best assets in SDs, and for a query that matches nothing it grows with
+the number of assets like the top ten of N noise draws: 2.20 at 300, 2.64 at 1,000, 3.35 at
+10,000. The fixed 2.5 was calibrated at 300, so on 1,000 COCO photos **every** nonsense query
+passed (z 2.56-2.88; 23 / 25 and 25 / 25 of a held-out nonsense list, B/32 / L/14) and a real
+library would return results for gibberish. Now (`vector_store::scan_stats`): a query stands
+out at z >= max(query_z, 1.15 x the noise expectation for its asset count); the margin alone
+passes it at `query_margin` only when its best assets score at least like noise, else at 1.5 x
+(one nonsense query's best margin was 0.050 at 300 photos). Held out (captions of 150 photos
+in the index, 25 nonsense strings): at 1,000 photos B/32 finds 149 / 150 captions and 2 / 25
+nonsense (was 150 and 23), L/14 146 / 150 and 7 / 25 (was 150 and 25); at 300, 146 and 2 /
+144 and 5. The labelled queries keep P@5 >= 0.8 at both sizes (`mv_ai_tests "[eval]"`,
+`"[.calibration]"`). L/14's remaining nonsense passes are the next calibration item, on the
+owner's real set.
+
 **Recall target for PR 22 (recorded here as plan/17 asked):** on the labelled set, the top five
 for each natural-language query hold at least four relevant items (P@5 >= 0.8), "guy on a
 skateboard" included; the COCO-1k proxy R@10 >= 0.88 (Fast) / >= 0.90 (High). The owner's real

@@ -370,8 +370,10 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       model = mv::infer::clip_model::open(**rt, *spec, o);
     }
     REQUIRE(model);
-    // A bounded, fixed subset keeps the CPU run to minutes.
-    const std::size_t n = std::min<std::size_t>(labels->a.size(), 300);
+    // A bounded, fixed subset keeps the CPU run to minutes: 300 photos (where
+    // query_z was calibrated) and, given the labels, 1,000 (where a fixed z
+    // let every nonsense query through).
+    const std::size_t n = std::min<std::size_t>(labels->a.size(), 1000);
     std::vector<std::vector<float>> embs;
     std::vector<std::string> captions;
     for (std::size_t i = 0; i < n; ++i) {
@@ -399,68 +401,109 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       captions.push_back(all);
     }
     if (embs.size() < 50) SKIP("fewer than 50 labelled images decoded (a build without the host decoders)");
-    std::vector<std::vector<float>> generic;
-    for (const auto& g : spec->generic_prompts) generic.push_back(*(*model)->embed_text(g));
-    const auto margin_of = [&](const std::vector<float>& q, std::size_t i) {
-      float best_g = -1;
-      for (const auto& g : generic) best_g = std::max(best_g, cosine(embs[i], g));
-      return cosine(embs[i], q) - best_g;
-    };
-    // The engine's second test (vector_store::scan_stats): the ten best
-    // images' mean score, in standard deviations of all the images' scores.
-    const auto top10_z = [&](const std::vector<float>& q) {
-      std::vector<float> s(embs.size());
-      for (std::size_t i = 0; i < s.size(); ++i) s[i] = cosine(embs[i], q);
-      double mean = 0, var = 0;
-      for (float v : s) mean += v;
-      mean /= static_cast<double>(s.size());
-      for (float v : s) var += (v - mean) * (v - mean);
-      std::sort(s.begin(), s.end(), std::greater<float>());
-      double top = 0;
-      for (std::size_t i = 0; i < 10; ++i) top += s[i];
-      return static_cast<float>((top / 10 - mean) / std::sqrt(var / static_cast<double>(s.size())));
-    };
-    for (const query_case& qc : cases) {
-      const auto q = *(*model)->embed_text(qc.text);
-      std::vector<std::size_t> order(embs.size());
-      for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
-      std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return cosine(embs[a], q) > cosine(embs[b], q); });
-      int relevant = 0;
-      std::size_t pool = 0;
-      for (std::size_t i = 0; i < captions.size(); ++i) {
-        const bool any = std::any_of(qc.any.begin(), qc.any.end(), [&](const char* w) { return captions[i].find(w) != std::string::npos; });
-        const bool also = qc.also.empty() || std::any_of(qc.also.begin(), qc.also.end(), [&](const char* w) { return captions[i].find(w) != std::string::npos; });
-        pool += any && also ? 1 : 0;
+    const auto all_embs = std::move(embs);
+    const auto all_captions = std::move(captions);
+    for (const std::size_t count : {std::min<std::size_t>(300, all_embs.size()), all_embs.size()}) {
+      const std::vector<std::vector<float>> embs(all_embs.begin(), all_embs.begin() + static_cast<std::ptrdiff_t>(count));
+      const std::vector<std::string> captions(all_captions.begin(), all_captions.begin() + static_cast<std::ptrdiff_t>(count));
+      INFO(count << " photos");
+      // The engine's rule (vector_store::scan_stats) on these photos.
+      const auto accepted = [&](float best_margin, float z) {
+        mv::ai::vector_store::scan_stats st;
+        st.assets = count;
+        st.top10_z = z;
+        return st.stands_out(spec->query_z) || best_margin >= st.margin_needed(spec->query_margin);
+      };
+      std::vector<std::vector<float>> generic;
+      for (const auto& g : spec->generic_prompts) generic.push_back(*(*model)->embed_text(g));
+      const auto margin_of = [&](const std::vector<float>& q, std::size_t i) {
+        float best_g = -1;
+        for (const auto& g : generic) best_g = std::max(best_g, cosine(embs[i], g));
+        return cosine(embs[i], q) - best_g;
+      };
+      // The engine's second test (vector_store::scan_stats): the ten best
+      // images' mean score, in standard deviations of all the images' scores.
+      const auto top10_z = [&](const std::vector<float>& q) {
+        std::vector<float> s(embs.size());
+        for (std::size_t i = 0; i < s.size(); ++i) s[i] = cosine(embs[i], q);
+        double mean = 0, var = 0;
+        for (float v : s) mean += v;
+        mean /= static_cast<double>(s.size());
+        for (float v : s) var += (v - mean) * (v - mean);
+        std::sort(s.begin(), s.end(), std::greater<float>());
+        double top = 0;
+        for (std::size_t i = 0; i < 10; ++i) top += s[i];
+        return static_cast<float>((top / 10 - mean) / std::sqrt(var / static_cast<double>(s.size())));
+      };
+      for (const query_case& qc : cases) {
+        const auto q = *(*model)->embed_text(qc.text);
+        std::vector<std::size_t> order(embs.size());
+        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return cosine(embs[a], q) > cosine(embs[b], q); });
+        int relevant = 0;
+        std::size_t pool = 0;
+        for (std::size_t i = 0; i < captions.size(); ++i) {
+          const bool any = std::any_of(qc.any.begin(), qc.any.end(), [&](const char* w) { return captions[i].find(w) != std::string::npos; });
+          const bool also = qc.also.empty() || std::any_of(qc.also.begin(), qc.also.end(), [&](const char* w) { return captions[i].find(w) != std::string::npos; });
+          pool += any && also ? 1 : 0;
+        }
+        const std::size_t k = std::min<std::size_t>(5, pool);
+        for (std::size_t r = 0; r < k; ++r) {
+          const std::string& c = captions[order[r]];
+          const bool any = std::any_of(qc.any.begin(), qc.any.end(), [&](const char* w) { return c.find(w) != std::string::npos; });
+          const bool also = qc.also.empty() || std::any_of(qc.also.begin(), qc.also.end(), [&](const char* w) { return c.find(w) != std::string::npos; });
+          relevant += any && also ? 1 : 0;
+        }
+        INFO(spec->id << " \"" << qc.text << "\": " << relevant << " of top " << k << " relevant (pool " << pool << ")");
+        REQUIRE(k > 0);
+        CHECK(relevant >= static_cast<int>(k) - 1);  // plan/17 PR 20 target: P@5 >= 0.8
+        float best_margin = -1;  // the engine's rule: the best of the top ten
+        for (std::size_t r = 0; r < 10 && r < order.size(); ++r) best_margin = std::max(best_margin, margin_of(q, order[r]));
+        const float z = top10_z(q);
+        INFO("best margin " << best_margin << ", top-ten z " << z);
+        CHECK(accepted(best_margin, z));
       }
-      const std::size_t k = std::min<std::size_t>(5, pool);
-      for (std::size_t r = 0; r < k; ++r) {
-        const std::string& c = captions[order[r]];
-        const bool any = std::any_of(qc.any.begin(), qc.any.end(), [&](const char* w) { return c.find(w) != std::string::npos; });
-        const bool also = qc.also.empty() || std::any_of(qc.also.begin(), qc.also.end(), [&](const char* w) { return c.find(w) != std::string::npos; });
-        relevant += any && also ? 1 : 0;
+      for (const char* text : {"xyzzy plugh qwertyuiop", "asdf", "blorf zxqv"}) {
+        const auto nonsense = *(*model)->embed_text(text);
+        std::vector<std::size_t> by(embs.size());
+        for (std::size_t i = 0; i < by.size(); ++i) by[i] = i;
+        std::sort(by.begin(), by.end(), [&](std::size_t a, std::size_t b) { return cosine(embs[a], nonsense) > cosine(embs[b], nonsense); });
+        float nonsense_margin = -1;
+        for (std::size_t r = 0; r < 10 && r < by.size(); ++r) nonsense_margin = std::max(nonsense_margin, margin_of(nonsense, by[r]));
+        const float z = top10_z(nonsense);
+        INFO(spec->id << " \"" << text << "\" margin " << nonsense_margin << ", top-ten z " << z);
+        CHECK_FALSE(accepted(nonsense_margin, z));
       }
-      INFO(spec->id << " \"" << qc.text << "\": " << relevant << " of top " << k << " relevant (pool " << pool << ")");
-      REQUIRE(k > 0);
-      CHECK(relevant >= static_cast<int>(k) - 1);  // plan/17 PR 20 target: P@5 >= 0.8
-      float best_margin = -1;  // the engine's rule: the best of the top ten
-      for (std::size_t r = 0; r < 10 && r < order.size(); ++r) best_margin = std::max(best_margin, margin_of(q, order[r]));
-      const float z = top10_z(q);
-      INFO("best margin " << best_margin << ", top-ten z " << z);
-      CHECK((best_margin >= spec->query_margin || z >= spec->query_z));
-    }
-    for (const char* text : {"xyzzy plugh qwertyuiop", "asdf", "blorf zxqv"}) {
-      const auto nonsense = *(*model)->embed_text(text);
-      std::vector<std::size_t> by(embs.size());
-      for (std::size_t i = 0; i < by.size(); ++i) by[i] = i;
-      std::sort(by.begin(), by.end(), [&](std::size_t a, std::size_t b) { return cosine(embs[a], nonsense) > cosine(embs[b], nonsense); });
-      float nonsense_margin = -1;
-      for (std::size_t r = 0; r < 10 && r < by.size(); ++r) nonsense_margin = std::max(nonsense_margin, margin_of(nonsense, by[r]));
-      const float z = top10_z(nonsense);
-      INFO(spec->id << " \"" << text << "\" margin " << nonsense_margin << ", top-ten z " << z);
-      CHECK(nonsense_margin < spec->query_margin);
-      CHECK(z < spec->query_z);
     }
   }
+}
+
+TEST_CASE("what noise scores grows with the index", "[ai][infer][vectors]") {
+  mv::ai::vector_store::scan_stats st;
+  const auto at = [&](std::size_t n) {
+    st.assets = n;
+    return st.null_top10_z();
+  };
+  // The mean of the ten largest of n standard normals.
+  CHECK(std::fabs(at(300) - 2.200f) < 0.01f);
+  CHECK(std::fabs(at(1000) - 2.641f) < 0.01f);
+  CHECK(std::fabs(at(100000) - 3.940f) < 0.01f);
+  CHECK(at(5) == 0.0f);
+  // Near 300 assets the calibrated 2.5 decides; at 10,000 noise alone scores
+  // 3.35, so standing out takes 3.85.
+  st.assets = 10000;
+  st.top10_z = 3.5f;
+  CHECK_FALSE(st.stands_out(2.5f));
+  st.top10_z = 3.9f;
+  CHECK(st.stands_out(2.5f));
+  st.assets = 300;
+  st.top10_z = 2.6f;
+  CHECK(st.stands_out(2.5f));
+  // A margin-only pass needs 1.5 x the margin when the best score like noise.
+  st.top10_z = 2.0f;
+  CHECK(std::fabs(st.margin_needed(0.04f) - 0.06f) < 1e-6f);
+  st.top10_z = 2.3f;
+  CHECK(std::fabs(st.margin_needed(0.04f) - 0.04f) < 1e-6f);
 }
 
 TEST_CASE("a greyscale JPEG decodes to RGB for the index", "[ai][infer][decode]") {
@@ -562,4 +605,91 @@ TEST_CASE("bench: CLIP towers, CPU against Core ML", "[.bench][ai][coreml]") {
                   << q_ms << " ms/query, open " << open_ms << " ms");
     }
   }
+}
+
+// Held-out check of the "nothing found" rule (hidden: `mv_ai_tests
+// "[.calibration]"`): real captions of photos in the index should be
+// accepted, strings that describe nothing should not. Prints the rates.
+TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai][infer]") {
+  const std::string pack = env("MV_AI_PACK_DIR");
+  const std::string eval = env("MV_AI_EVAL_DIR");
+  if (pack.empty() || eval.empty()) SKIP("MV_AI_PACK_DIR and MV_AI_EVAL_DIR not set");
+#if defined(MV_AI_TEST_DECODE)
+  const auto labels = mv::json::parse(read_text(fs::path(eval) / "labels.json"), 8);
+  REQUIRE(labels);
+  auto rt = mv::infer::runtime::load(pack);
+  REQUIRE(rt);
+  const std::vector<const char*> nonsense{
+      "xyzzy plugh qwertyuiop", "asdf", "blorf zxqv", "qqqq", "lorem ipsum dolor", "zzzzzz",
+      "hjkl hjkl", "fnord", "kwyjibo", "wibble wobble", "12345", "!!!", "the the the",
+      "grbl", "snorfle", "aaaaa bbbbb", "mxyzptlk", "quux", "flibbertigibbet", "thx1138",
+      "ooga booga", "blah", "nothing", "asdfghjkl", "vbnm"};
+  for (const char* folder : {"clip-b32", "clip-l14"}) {
+    auto spec = mv::infer::read_clip_spec(utf8(fs::path(pack) / "models" / folder));
+    REQUIRE(spec);
+    mv::infer::session_options o;
+    o.threads = 4;
+    auto model = mv::infer::clip_model::open(**rt, *spec, o);
+    REQUIRE(model);
+    const std::size_t n = std::min<std::size_t>(labels->a.size(), 1000);
+    std::vector<std::vector<float>> embs;
+    std::vector<std::string> first;
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto& item = labels->a[i];
+      auto still = mv::addon::media::decode_still(utf8(fs::path(eval) / "img" / *item.str("file")), 448);
+      if (!still) continue;
+      const mv::infer::rgb_view view{still->rgb.data(), still->width, still->height};
+      std::vector<float> e;
+      REQUIRE((*model)->embed_images(std::span<const mv::infer::rgb_view>(&view, 1), e));
+      embs.push_back(e);
+      first.push_back(item.find("sentences")->a[0].s);
+    }
+    std::vector<std::vector<float>> generic;
+    for (const auto& g : spec->generic_prompts) generic.push_back(*(*model)->embed_text(g));
+    std::vector<float> gen(embs.size(), -1.0f);
+    for (std::size_t i = 0; i < embs.size(); ++i) {
+      for (const auto& g : generic) gen[i] = std::max(gen[i], cosine(embs[i], g));
+    }
+    const auto accepted = [&](const std::string& text, std::size_t count) {
+      const auto q = *(*model)->embed_text(text);
+      std::vector<float> s(count);
+      for (std::size_t i = 0; i < count; ++i) s[i] = cosine(embs[i], q);
+      std::vector<std::size_t> by(count);
+      for (std::size_t i = 0; i < count; ++i) by[i] = i;
+      std::partial_sort(by.begin(), by.begin() + 10, by.end(), [&](std::size_t a, std::size_t b) { return s[a] > s[b]; });
+      float best_margin = -1;
+      for (std::size_t r = 0; r < 10; ++r) best_margin = std::max(best_margin, s[by[r]] - gen[by[r]]);
+      double mean = 0, var = 0;
+      for (float v : s) mean += v;
+      mean /= static_cast<double>(count);
+      for (float v : s) var += (v - mean) * (v - mean);
+      double top = 0;
+      for (std::size_t r = 0; r < 10; ++r) top += s[by[r]];
+      mv::ai::vector_store::scan_stats st;
+      st.assets = count;
+      st.top10_z = static_cast<float>((top / 10 - mean) / std::sqrt(var / static_cast<double>(count)));
+      // MV_AI_CALIBRATION_OLD=1: the fixed rule before 2026-09-27, for comparison.
+      if (const char* o = std::getenv("MV_AI_CALIBRATION_OLD"); o && *o == '1') {
+        return st.top10_z >= spec->query_z || best_margin >= spec->query_margin;
+      }
+      return st.stands_out(spec->query_z) || best_margin >= st.margin_needed(spec->query_margin);
+    };
+    for (const std::size_t count : {std::min<std::size_t>(300, embs.size()), embs.size()}) {
+      // Held out: captions of photos 150..299 (in both subsets).
+      int real_ok = 0, real_n = 0, junk_ok = 0;
+      for (std::size_t i = 150; i < 300 && i < count; ++i, ++real_n) real_ok += accepted(first[i], count) ? 1 : 0;
+      std::string passed;
+      for (const char* t : nonsense) {
+        if (accepted(t, count)) {
+          ++junk_ok;
+          passed += std::string(" \"") + t + "\"";
+        }
+      }
+      WARN(spec->id << " at " << count << " photos: captions found " << real_ok << "/" << real_n
+                    << ", nonsense found " << junk_ok << "/" << nonsense.size() << ":" << passed);
+    }
+  }
+#else
+  SKIP("a build without the host decoders");
+#endif
 }
