@@ -263,7 +263,7 @@ public static partial class IslandHost
         }
     }
 
-    // False on a core older than ABI 0.13, which has no result lists.
+    // False on a core older than ABI 0.14, which has no result lists.
     private static bool IsResultList()
     {
         if (_folderSession is null) return false;

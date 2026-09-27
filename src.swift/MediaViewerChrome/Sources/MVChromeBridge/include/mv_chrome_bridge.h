@@ -210,7 +210,10 @@ bool mv_chrome_meta_loading(void);
 // values are flattened to spaces). Each returns the length needed and writes at
 // most `size` bytes, NUL-terminated, like mv_chrome_command_table.
 //   summary:    "label\tvalue"                      every row for the kind, value may be empty
-//   properties: "space\tgroup\tlabel\tvalue\traw_tag"  space = exif|iptc|xmp|container|computed
+//   properties: "space\tgroup\tlabel\tvalue\traw_tag\traw\taccess"
+//               space = exif|iptc|xmp|container|computed; raw = the value in the
+//               form an edit takes; access (PR 29, meta::access_of) = e editable
+//               (set, remove), s set only (into the XMP sidecar), r read-only
 //   streams:    "S\tindex\tkind\tcodec" starts a stream, "F\tlabel\tvalue" adds a field to
 //               it, "C\tstart_ms\ttitle" is a chapter; empty for a still
 int32_t mv_chrome_meta_summary(char* buf, int32_t size);
@@ -244,6 +247,16 @@ void mv_chrome_meta_revert(void);
 uint64_t mv_chrome_meta_focus_seq(void);
 // Hands the keyboard back to the canvas (Esc or Return in the comment field).
 void mv_chrome_meta_blur(void);
+
+// PR 29 (owner, 2026-09-26): every tag editable. Queued like the PR 12
+// writes, so a JPEG is rewritten in place (checked) and anything else gets its
+// XMP sidecar; Revert above puts every tag back. [main-thread]
+// Sets `key` (a raw_tag from the table) to `value` in its raw form; NULL
+// removes it. A key the file cannot take beeps and says why.
+void mv_chrome_meta_set_tag(const char* key, const char* value);
+// "YYYY-MM-DD HH:MM:SS" into every capture-time tag the file carries; NULL
+// removes them all.
+void mv_chrome_meta_set_date(const char* value);
 
 // One line for the command bar: what a key or a click just did ("★★★★☆  saved",
 // "Could not save the rating"). The generation moves when the text changes; the
@@ -357,7 +370,7 @@ bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 
 // ---- Milestone H: result listings and match markers (plan/17) -----------------
 //
-// The Mac twin of mv_folder_open_list (mediaviewer.h 0.13). A listing that is
+// The Mac twin of mv_folder_open_list (mediaviewer.h 0.14). A listing that is
 // not a directory: search results shown by the same gallery, filmstrip,
 // selection and keyboard model as a folder. Items keep the order given (best
 // match first; no sort), are not paired or watched; a clip with a moment >= 0
@@ -493,6 +506,90 @@ void mv_chrome_jobs_clear_finished(void);
 void mv_chrome_jobs_close(void);
 // Esc in the pane: focus back to the canvas (the pane stays open).
 void mv_chrome_jobs_blur(void);
+
+// ---- PR 29: the Edit workspace (plan/20) ---------------------------------------
+//
+// One visible door to the PR 10-14 edits: the strip (title, tabs, Undo / Reset
+// / Original / Save copy) and its Crop and Trim panes. The Colour, Info and
+// Jobs tabs are the adjust, metadata and Jobs panes above, hung under the
+// strip. The host owns the workspace (shell/edit_workspace.h, shared with
+// Windows) and the crop draft (shell/edit_session.h). [main-thread]
+
+// `generation` moves whenever anything below changes.
+typedef struct mv_edit_view {
+  int32_t open;           // the workspace is up
+  int32_t tab;            // shell::edit_tab: 0 crop, 1 colour, 2 info, 3 trim, 4 jobs
+  int32_t subject;        // 0 nothing to edit, 1 a still, 2 a clip
+  int32_t crop_active;    // a crop draft is on the canvas
+  int32_t aspect;         // shell::crop_aspect: 0 free, 1 original, 2 1:1, 3 4:3, 4 3:2, 5 16:9, 6 5:4
+  int32_t portrait;       // the locked preset is portrait
+  float straighten;       // degrees: the draft's angle, else the committed one
+  int32_t edit_count;     // ops on the item's stack
+  int32_t show_original;  // Y held, or the strip's Original toggle
+  int32_t crop_width;     // what Apply would keep, in pixels (0 = not known yet)
+  int32_t crop_height;
+} mv_edit_view;
+uint64_t mv_chrome_edit_generation(void);
+bool mv_chrome_edit_view(mv_edit_view* out);
+// The item's file name (display only); length needed, as the tables.
+int32_t mv_chrome_edit_name(char* buf, int32_t size);
+// A tab the subject offers; others are ignored.
+void mv_chrome_edit_select_tab(int32_t tab);
+// Done / the close button: applies a crop draft, then closes.
+void mv_chrome_edit_close(void);
+// The Crop pane: a preset (+ orientation), the straighten slider (degrees),
+// Cancel (drops the draft). Each starts cropping if it was not.
+void mv_chrome_edit_set_aspect(int32_t aspect, int32_t portrait);
+void mv_chrome_edit_set_straighten(float degrees);
+void mv_chrome_edit_cancel_crop(void);
+// The strip's Original toggle (the same state Y holds).
+void mv_chrome_edit_show_original(int32_t on);
+// Save copy…: applies a crop draft, then opens the export sheet (PR 10).
+void mv_chrome_edit_save_copy(void);
+
+// ---- PR 30: the Video Editor window (plan/21) ------------------------------------
+//
+// Its own window: the viewer's canvas as the preview, and this timeline. The
+// cut list is the host's (shell/video_timeline.h, shared with Windows); Swift
+// polls it by generation and posts edits back. Times are nanoseconds:
+// "timeline" is the edited program, "source" the clip. [main-thread]
+typedef struct mv_editor_view {
+  int32_t open;
+  int32_t ready;          // the clip is probed; the strip may still be empty
+  int64_t length_ns;      // the program
+  int64_t playhead_ns;    // on the program
+  int64_t source_ns;      // the clip
+  int32_t playing;
+  int32_t piece_count;
+  int32_t selected;       // -1 none
+  int32_t can_undo;
+  int32_t can_redo;
+  int32_t edited;         // anything cut: Export has something to write
+  int32_t strip_count;
+  int32_t peak_count;
+} mv_editor_view;
+uint64_t mv_chrome_editor_generation(void);
+bool mv_chrome_editor_view(mv_editor_view* out);
+int32_t mv_chrome_editor_name(char* buf, int32_t size);
+// Kept source ranges, (in, out) pairs, in program order; returns the count.
+int32_t mv_chrome_editor_pieces(int64_t* pairs, int32_t cap_pairs);
+// Thumbnail `index` (0 .. strip_count-1): RGBA8 into `rgba` (cap bytes);
+// returns width * height * 4, or 0 when `cap` is short (width and height are
+// still written). `source_ns` is the frame's own time.
+int32_t mv_chrome_editor_thumb(int32_t index, uint8_t* rgba, int32_t cap, int32_t* width, int32_t* height,
+                               int64_t* source_ns);
+// The audio envelope across the clip (0..1); returns the count.
+int32_t mv_chrome_editor_peaks(float* out, int32_t cap);
+void mv_chrome_editor_seek(int64_t timeline_ns);
+void mv_chrome_editor_toggle_play(void);
+void mv_chrome_editor_step(int32_t frames);
+// 1 split at the playhead, 2 delete the selected piece, 3 set in, 4 set out,
+// 5 undo, 6 redo. A change that changes nothing beeps.
+void mv_chrome_editor_edit(int32_t what);
+void mv_chrome_editor_select(int32_t index);
+// Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
+void mv_chrome_editor_export(int32_t exact);
+void mv_chrome_editor_close(void);
 
 #ifdef __cplusplus
 }

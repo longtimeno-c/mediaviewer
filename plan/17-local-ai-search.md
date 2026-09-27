@@ -481,7 +481,7 @@ offered Local search.
   (deviation: loaded, not mapped; ~77 MB at 100 k L/14 frames), per-clip grouping, find-similar,
   people in a separate faces.db with rename / merge / not-this-person / split, one-click
   deletion.
-- **Results in the gallery**: base ABI 0.13 `mv_folder_open_list` - the same gallery, filmstrip,
+- **Results in the gallery**: base ABI 0.14 `mv_folder_open_list` - the same gallery, filmstrip,
   keys and thumbnails over a result list; a clip opens paused on its moment.
 - **Commands** (plan/16): `Ctrl+F` search, `Ctrl+Shift+F` find similar, `N` / `Shift+N` next /
   previous matching moment; listed only while the pack is loaded.

@@ -304,7 +304,59 @@ public static partial class IslandHost
         public Border Root = null!;
         public TextBlock Title = null!;
         public TextBlock Status = null!;
-        public ProgressBar Bar = null!;
+        public JobBar Bar = null!;
+    }
+
+    // A job's progress as two plain borders. Not a ProgressBar: WinUI's has no
+    // default template in this island app (no XamlControlsResources), and
+    // laying one out fails inside XAML -- a stowed-exception fail-fast the
+    // first time a job row appeared (found by PR 30's export). The status line
+    // under it carries the same percentage as text for screen readers.
+    private sealed class JobBar
+    {
+        public readonly Grid Root;
+        private readonly Border _fill;
+        private double _value;
+        private bool _indeterminate;
+
+        public JobBar()
+        {
+            _fill = new Border
+            {
+                Background = Brush(TrimAccent),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                CornerRadius = new CornerRadius(2),
+            };
+            Root = new Grid { Height = 4, Background = Brush(Hairline), CornerRadius = new CornerRadius(2) };
+            Root.Children.Add(_fill);
+            Root.SizeChanged += (_, _) => Layout();
+        }
+
+        public double Value
+        {
+            set
+            {
+                _value = Math.Clamp(value, 0, 1);
+                Layout();
+            }
+        }
+
+        // Running with no fraction yet: a fixed third, not an animation.
+        public bool IsIndeterminate
+        {
+            set
+            {
+                _indeterminate = value;
+                Layout();
+            }
+        }
+
+        public Visibility Visibility
+        {
+            set => Root.Visibility = value;
+        }
+
+        private void Layout() => _fill.Width = Math.Max(0, (_indeterminate ? 0.33 : _value) * Root.ActualWidth);
     }
 
     public static int ShowJobsPane(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -489,14 +541,14 @@ public static partial class IslandHost
         var row = new JobRow { Id = id };
         row.Title = Text("", Title, UiFontSize - 2, maxLines: 2);
         row.Status = Text("", Body, UiFontSize - 3);
-        row.Bar = new ProgressBar { Minimum = 0, Maximum = 1, Height = 4 };
+        row.Bar = new JobBar();
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         buttons.Children.Add(TextButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); }));
         buttons.Children.Add(TextButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); }));
         buttons.Children.Add(TextButton("Show in Explorer", () => RevealJob(id)));
         var inner = new StackPanel { Spacing = 3 };
         inner.Children.Add(row.Title);
-        inner.Children.Add(row.Bar);
+        inner.Children.Add(row.Bar.Root);
         inner.Children.Add(row.Status);
         inner.Children.Add(buttons);
         row.Root = new Border

@@ -50,3 +50,4 @@ no-x265 rule is about what MediaViewer links.)
 | `avif/p3_icc.avif`, `avif/p3_nclx.avif` | Display P3 as ICC and as CICP 12/13 |
 | `avif/anim.avif` | `avis`, 4 frames 32x16, durations 40/100/200/0 ms, loop=3 |
 | `avif/fuzz_oom_avis.avif` | not generated: `fuzz_avif`'s out-of-memory input (CI run 36269934345), a tiny frame under a 10008x16400 track; must be refused |
+| `avif/fuzz_oom_avis_ref_frames.avif` | not generated: `fuzz_avif`'s nightly out-of-memory artifact (issue #45, CI run 36230124220), a 3-sample `avis` with a small tkhd/ispe (24x16400). Does not reproduce a large allocation in isolation (single decode or 300k-iteration replay); kept as a regression fixture for the tighter animated-path cap added for issue #45 (codec/avif.cpp, kMaxAnimatedPixels) |

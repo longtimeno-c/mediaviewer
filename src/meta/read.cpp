@@ -65,6 +65,10 @@ result<metadata> read(std::string_view utf8_path) {
     if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, oriented, out);
   }
   detail::overlay_sidecar(utf8_path, out);
+  if (family == codec::format_family::jpeg) {
+    auto target = write_target_for(utf8_path);
+    out.writes_in_file = target && *target == write_target::in_file;
+  }
   return out;
 }
 

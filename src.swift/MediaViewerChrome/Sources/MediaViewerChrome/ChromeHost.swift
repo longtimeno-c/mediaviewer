@@ -88,6 +88,20 @@ public final class MVChromeHost: NSObject {
     host(ClipToolsView())
   }
 
+  /// PR 29 (plan/20): the Edit workspace's strip and its Crop / Trim pane.
+  @objc public static func makeEditStripView() -> NSView {
+    host(EditStripView())
+  }
+
+  @objc public static func makeEditPaneView() -> NSView {
+    host(EditPaneView())
+  }
+
+  /// PR 30 (plan/21): the Video Editor window's timeline, under its preview.
+  @objc public static func makeVideoEditorView() -> NSView {
+    host(VideoEditorView())
+  }
+
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
   /// NSException raised from the chrome, inside AppKit's event handling.
   @objc public static func crashTestException() {

@@ -35,22 +35,31 @@ enum MVTheme {
   }
 }
 
-private struct FlatButtonStyle: ButtonStyle {
+/// The chrome's one button look: CozetteVector text, no border, a faint wash
+/// on hover. `selected` keeps the pressed wash (a chosen tab or preset);
+/// `compact` is the panes' tighter padding. Shared by the command bar and
+/// the Edit workspace (PR 29) so every chrome button matches.
+struct FlatButtonStyle: ButtonStyle {
+  var selected = false
+  var compact = false
+
   func makeBody(configuration: Configuration) -> some View {
-    FlatButtonBody(configuration: configuration)
+    FlatButtonBody(configuration: configuration, selected: selected, compact: compact)
   }
   private struct FlatButtonBody: View {
     let configuration: Configuration
+    let selected: Bool
+    let compact: Bool
     @State private var hover = false
     @Environment(\.isEnabled) private var enabled
     var body: some View {
       configuration.label
-        .font(MVTheme.font())
+        .font(MVTheme.font(compact ? 14 : 16))
         .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
-        .padding(.horizontal, 14).padding(.vertical, 7)
+        .padding(.horizontal, compact ? 8 : 14).padding(.vertical, compact ? 5 : 7)
         .background(
           RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(
-            configuration.isPressed ? 0.11 : (hover && enabled ? 0.06 : 0))))
+            configuration.isPressed || selected ? 0.11 : (hover && enabled ? 0.06 : 0))))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
     }
@@ -123,6 +132,7 @@ private struct BarFlyout<Content: View>: View {
 public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var notice = NoticeStore.shared
+  @ObservedObject private var edit = EditStore.shared
 
   public init() {}
 
@@ -136,8 +146,9 @@ public struct CommandBarView: View {
     // shortcut column is only a label, read from the live table so a remap shows.
     VStack(spacing: 0) {
       HStack(spacing: 0) {
-        // Same order and labels as the Windows bar: Open, View, Settings, About;
-        // the folder trail, then `?`, at the far right.
+        // Same order and labels as the Windows bar: Open, View, Edit image /
+        // Edit video (PR 29), Settings, About; the folder trail, then `?`, at
+        // the far right.
         HStack(spacing: 0) {
           BarFlyout(title: "Open") { close in
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(1) }
@@ -165,6 +176,16 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(19) }
             FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(16) }
           }
+          // PR 29 (plan/20): the visible way in to every edit, a bar button like
+          // Settings. Return does the same.
+          Button(edit.open ? "Done" : edit.title) { edit.toggle() }
+            .buttonStyle(FlatButtonStyle(selected: edit.open))
+            .disabled(!edit.canEdit)
+            .help(edit.open ? "Close the editor (Return or Esc)"
+                            : (edit.isClip ? "Edit video: trim, split, clip tools (Return)"
+                                           : "Edit image: crop, rotate, colour, info (Return)"))
+            .accessibilityLabel(edit.open ? "Done editing" : edit.title)
+            .accessibilityHint("Key Return")
           Button("Settings") { mv_chrome_menu(18) }.buttonStyle(FlatButtonStyle())
           BarFlyout(title: "About") { _ in
             VStack(alignment: .leading, spacing: 0) {

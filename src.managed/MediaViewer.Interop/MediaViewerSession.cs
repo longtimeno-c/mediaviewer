@@ -194,7 +194,7 @@ public sealed partial class MediaViewerSession : IDisposable
         ThrowIfFailed(NativeMethods.mv_folder_request_summary(_handle, index));
 
     /// <summary>
-    /// ABI 0.13: shows <paramref name="paths"/> as the listing, in that order
+    /// ABI 0.14: shows <paramref name="paths"/> as the listing, in that order
     /// (search results). A clip with a moment (>= 0) opens paused on it. The
     /// answer arrives as <see cref="MvCompletionKind.FolderReady"/>, as for a folder.
     /// </summary>

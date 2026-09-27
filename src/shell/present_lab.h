@@ -141,6 +141,13 @@ class present_lab {
   // [any-thread][no-block] Releases it: the item changed, or nothing needs it.
   void drop_working() noexcept;
 
+  // [any-thread][no-block] PR 30: the input_snapshot::canvas_window the
+  // swapchain is in now (0 = the viewer's window). The host waits for this to
+  // leave the Video Editor's window before it destroys that window.
+  [[nodiscard]] std::uint64_t canvas_window() const noexcept {
+    return canvas_window_now_.load(std::memory_order_acquire);
+  }
+
   // [any-thread][no-block] The animated item's state, as of the last frame.
   [[nodiscard]] animation_state animation() const noexcept {
     return static_cast<animation_state>(anim_state_.load(std::memory_order_relaxed));
@@ -205,6 +212,11 @@ class present_lab {
   float seen_eye_y_ = -1.0f;
 
   HWND window_ = nullptr;
+  // PR 30 (plan/21): the window the swapchain is in now (render thread only):
+  // window_, or the Video Editor's preview while it borrows the canvas.
+  HWND canvas_host_ = nullptr;
+  bool resize_pending_ = false;
+  std::atomic<std::uint64_t> canvas_window_now_{0};
   lab_options options_{};
   mv_session_t session_ = nullptr;
 
