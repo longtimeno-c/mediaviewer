@@ -2,11 +2,17 @@
 #include "addons/ai/pack.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <vector>
 
+#include "infer/audio_models.h"
 #include "infer/models.h"
 #include "infer/ort.h"
 
@@ -25,6 +31,7 @@ struct pack_state {
   std::string core_dir;
   std::string data_dir;
   std::once_flag once;
+  std::atomic<bool> ready{false};  // ensure() has run (loaded or not)
   std::unique_ptr<infer::runtime> rt;
   bool from_piece = false;  // ORT came from the ai-cuda piece
   std::map<std::uint32_t, infer::clip_spec> towers;  // by mv_ai_quality
@@ -45,6 +52,7 @@ struct pack_state {
         if (spec) towers[spec->quality] = std::move(*spec);
       }
     });
+    ready = true;
   }
 };
 
@@ -67,6 +75,53 @@ std::vector<std::uint8_t> test_card(std::uint32_t w, std::uint32_t h) {
     }
   }
   return px;
+}
+
+std::filesystem::path fs_path(const std::string& utf8) {
+  return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+}
+
+// The CPU half of the provider self-test (plan/17), kept so a later start
+// skips opening a CPU session and timing it: about 15 s of a 40 s ViT-L load
+// on a GPU. The provider itself still runs every start and is checked against
+// this reference embedding and time; a new runtime, provider, piece or model
+// is a different key and tests afresh. Holds no path or pixel of the user's.
+struct selftest_ref {
+  std::string key;
+  double cpu_ms = -1;
+  std::vector<float> emb;
+};
+
+std::optional<selftest_ref> read_selftest(const std::string& path, const std::string& key) {
+  std::ifstream in(fs_path(path), std::ios::binary);
+  std::string tag, k;
+  if (!in || !std::getline(in, tag) || tag != "mv-ai-selftest 1" || !std::getline(in, k) || k != key) {
+    return std::nullopt;
+  }
+  selftest_ref r;
+  r.key = k;
+  std::size_t n = 0;
+  if (!(in >> r.cpu_ms >> n) || r.cpu_ms <= 0 || n == 0 || n > 4096) return std::nullopt;
+  r.emb.resize(n);
+  for (float& f : r.emb) {
+    if (!(in >> f)) return std::nullopt;
+  }
+  return r;
+}
+
+void write_selftest(const std::string& path, const selftest_ref& r) {
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out.precision(9);
+    out << "mv-ai-selftest 1\n" << r.key << '\n' << r.cpu_ms << ' ' << r.emb.size() << '\n';
+    for (float f : r.emb) out << f << ' ';
+    out << '\n';
+    if (!out) return;
+  }
+  std::error_code ec;
+  std::filesystem::rename(fs_path(tmp), fs_path(path), ec);
 }
 
 // Median milliseconds of three runs of a four-image batch.
@@ -93,11 +148,36 @@ clip_meta meta_of(const infer::clip_spec& s) {
   m.input_edge = s.norm.size;
   m.dedupe = s.dedupe;
   m.query_margin = s.query_margin;
+  m.query_z = s.query_z;
+  m.result_z = s.result_z;
   m.result_margin = s.result_margin;
   m.similar_min = s.similar_min;
   m.generic_prompts = s.generic_prompts;
   return m;
 }
+
+class ort_sound final : public sound_model {
+ public:
+  explicit ort_sound(std::unique_ptr<infer::clap_model> m) : m_(std::move(m)) {}
+  expected embed_audio(std::span<const std::span<const float>> windows, std::vector<float>& out) override {
+    return m_->embed_audio(windows, out);
+  }
+  result<std::vector<float>> embed_text(std::string_view utf8) override { return m_->embed_text(utf8); }
+
+ private:
+  std::unique_ptr<infer::clap_model> m_;
+};
+
+class ort_speech final : public speech_model {
+ public:
+  explicit ort_speech(std::unique_ptr<infer::whisper_model> m) : m_(std::move(m)) {}
+  result<infer::speech_window> transcribe(std::span<const float> pcm, std::int64_t start_ms) override {
+    return m_->transcribe(pcm, start_ms);
+  }
+
+ private:
+  std::unique_ptr<infer::whisper_model> m_;
+};
 
 class ort_faces final : public face_analyzer {
  public:
@@ -138,19 +218,20 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   p->core_dir = self_dir;
   p->data_dir = data_dir;
   engine_deps d;
+  d.prepare = [p] { p->ensure(); };
   d.qualities = [p] {
-    p->ensure();
+    if (!p->ready) return std::vector<std::uint32_t>{};
     std::vector<std::uint32_t> q;
     for (const auto& [k, v] : p->towers) q.push_back(k);
     return q;
   };
   d.model_name = [p](std::uint32_t q) {
-    p->ensure();
+    if (!p->ready) return std::string();
     auto it = p->towers.find(q);
     return it == p->towers.end() ? std::string() : it->second.name;
   };
   d.backend_available = [p](infer::backend b) {
-    p->ensure();
+    if (!p->ready) return false;
     return p->rt && p->rt->has_provider(b);
   };
   d.open_clip = [p](std::uint32_t quality, std::uint32_t compute) -> result<loaded_clip> {
@@ -182,14 +263,28 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
       if (fast) {
         // The self-test (plan/17): the provider must agree with CPU, and under
         // Auto it must also beat CPU, else CPU runs it and the status says why.
-        auto slow = infer::clip_model::open(*p->rt, spec, cpu, nullptr);
+        // The CPU side comes from the kept reference when there is one.
+        const std::string cache = join(p->data_dir, "selftest.txt");
+        const std::string key = p->rt->version() + "|" + std::to_string(static_cast<int>(want)) + "|" +
+                                spec.spec_key() + "|" + (p->from_piece ? "piece" : "core");
+        std::optional<selftest_ref> ref = read_selftest(cache, key);
         std::vector<float> a, b;
         const double t_fast = time_batch(**fast, a);
         double t_slow = -1;
-        if (slow) t_slow = time_batch(**slow, b);
+        if (ref) {
+          b = std::move(ref->emb);
+          t_slow = ref->cpu_ms;
+        } else if (t_fast >= 0) {
+          if (auto slow = infer::clip_model::open(*p->rt, spec, cpu, nullptr)) {
+            t_slow = time_batch(**slow, b);
+            if (t_slow > 0 && b.size() >= spec.dim) {
+              write_selftest(cache, selftest_ref{key, t_slow, std::vector<float>(b.begin(), b.begin() + spec.dim)});
+            }
+          }
+        }
         if (t_fast < 0) {
           fault = infer::provider_fault::failed;
-        } else if (slow && !a.empty() && a.size() == b.size() &&
+        } else if (a.size() >= spec.dim && b.size() >= spec.dim &&
                    infer::dot(std::span<const float>(a.data(), spec.dim),
                               std::span<const float>(b.data(), spec.dim)) < 0.99f) {
           fault = infer::provider_fault::mismatch;
@@ -209,6 +304,62 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     out.on = infer::backend::cpu;
     return out;
   };
+  // Audio (2026-09-27): the ai-audio piece's CLAP and Whisper, on the same
+  // runtime and compute choice as the picture towers (an accelerated provider
+  // when it opens, CPU underneath).
+  const auto audio_options = [p](std::uint32_t compute, infer::session_options& o) {
+    o.threads = 2;
+    o.cache_dir_utf8 = join(p->data_dir, "coreml-cache");
+    if (compute != MV_AI_COMPUTE_CPU_ONLY && p->rt) o.on = accelerated(*p->rt);
+  };
+  d.open_sound = [p, audio_options](std::uint32_t compute) -> result<loaded_sound> {
+    p->ensure();
+    if (!p->rt) return err(status::unsupported_format);
+    MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
+    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(join(dir, "models"), "clap-general")));
+    infer::session_options o;
+    audio_options(compute, o);
+    auto m = infer::clap_model::open(*p->rt, spec, o, nullptr);
+    if (!m && o.on != infer::backend::cpu) {
+      o.on = infer::backend::cpu;
+      m = infer::clap_model::open(*p->rt, spec, o, nullptr);
+    }
+    if (!m) return err(m.error());
+    loaded_sound s;
+    s.model = std::make_shared<ort_sound>(std::move(*m));
+    s.name = spec.name;
+    s.spec_key = spec.spec_key();
+    s.dim = spec.dim;
+    s.window_ms = spec.window_ms;
+    s.hop_ms = spec.hop_ms;
+    s.dedupe = spec.dedupe;
+    s.query_margin = spec.query_margin;
+    s.result_margin = spec.result_margin;
+    s.generic_prompts = spec.generic_prompts;
+    return s;
+  };
+  d.open_speech = [p, audio_options](std::uint32_t quality, std::uint32_t compute) -> result<loaded_speech> {
+    p->ensure();
+    if (!p->rt) return err(status::unsupported_format);
+    MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
+    const char* folder = quality >= MV_AI_QUALITY_HIGH ? "whisper-small" : "whisper-base";
+    auto spec = infer::read_whisper_spec(join(join(dir, "models"), folder));
+    if (!spec) spec = infer::read_whisper_spec(join(join(dir, "models"), "whisper-base"));
+    if (!spec) return err(spec.error());
+    infer::session_options o;
+    audio_options(compute, o);
+    auto m = infer::whisper_model::open(*p->rt, *spec, o, nullptr);
+    if (!m && o.on != infer::backend::cpu) {
+      o.on = infer::backend::cpu;
+      m = infer::whisper_model::open(*p->rt, *spec, o, nullptr);
+    }
+    if (!m) return err(m.error());
+    loaded_speech s;
+    s.model = std::make_shared<ort_speech>(std::move(*m));
+    s.name = spec->name;
+    s.spec_key = spec->spec_key();
+    return s;
+  };
   d.open_faces = [p]() -> result<std::unique_ptr<face_analyzer>> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
@@ -220,7 +371,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     return std::unique_ptr<face_analyzer>(new ort_faces(std::move(models)));
   };
   d.restart_needed = [p] {
-    p->ensure();
+    if (!p->ready) return false;
     // Cheap on purpose (Settings asks often): is the piece's folder there?
     // <addons>/ai/<version> is the Core pack; the piece sits at <addons>/ai-cuda
     // (Windows only: the Mac has no vendor piece).
@@ -230,7 +381,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     return p->rt && piece != p->from_piece;
   };
   d.runtime_version = [p] {
-    p->ensure();
+    if (!p->ready) return std::string();
     return p->rt ? p->rt->version() : std::string();
   };
   return d;

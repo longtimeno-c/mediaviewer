@@ -9,7 +9,13 @@
 //        a changed (mtime, size) drops the asset's frames and re-queues it
 //   progress(asset_id, spec, state, resume_ms, tries, indexed_at)     key: (asset, spec)
 //   frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
+//   speech(id, asset_id, spec, start_ms, end_ms, text)                  -- schema 2 (audio)
 //   meta(key, value)
+//
+// Schema 2 (2026-09-27, audio): roots.media says what a folder's videos are
+// indexed for (MV_AI_MEDIA_PICTURES / _SOUND; 0 follows the default), sound
+// embeddings are frames rows under the CLAP spec, and transcripts live in
+// `speech`. A schema-1 index is upgraded in place.
 //
 // plan/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
@@ -43,6 +49,21 @@ struct root_row {
   bool recursive = false;
   bool enabled = true;
   std::int64_t last_scan_at = 0;
+  std::uint32_t media = 0;  // MV_AI_MEDIA_* for its videos; 0 = the default
+};
+
+// Which assets a work track covers: photos (the picture track only), and
+// videos whose root's media (or the default, for 0) includes `media_bit`.
+struct track_filter {
+  bool photos = true;
+  std::uint32_t media_bit = 1;
+  std::uint32_t default_media = 1;
+};
+
+struct speech_in {
+  std::int64_t start_ms = 0;
+  std::int64_t end_ms = 0;
+  std::string text;
 };
 
 struct asset_row {
@@ -110,6 +131,7 @@ class index_db {
   [[nodiscard]] result<std::int64_t> add_root(const std::string& path, bool recursive);
   [[nodiscard]] expected set_root_enabled(std::int64_t id, bool enabled);
   [[nodiscard]] expected set_root_recursive(std::int64_t id, bool recursive);
+  [[nodiscard]] expected set_root_media(std::int64_t id, std::uint32_t media);
   // Deletes the root, its assets, their progress and frames.
   [[nodiscard]] expected remove_root(std::int64_t id);
   // Moves every asset of `from` to `to` and deletes `from` (a new tree root
@@ -144,7 +166,7 @@ class index_db {
   // failed ones with tries < max_tries): partial clips first, then photos,
   // then clips. The indexer puts the folder on screen first.
   [[nodiscard]] std::vector<work_item> pending(const std::string& spec, std::size_t limit,
-                                               std::int32_t max_tries);
+                                               std::int32_t max_tries, const track_filter& filter = {});
   [[nodiscard]] expected set_duration(std::int64_t asset, std::int64_t duration_ms);
   // Stores frames and moves progress in one transaction (a kill between two
   // commits resumes at `resume_ms`; nothing committed is redone).
@@ -152,11 +174,19 @@ class index_db {
                                        std::span<const frame_in> frames, work_state state,
                                        std::int64_t resume_ms, std::uint32_t dim);
   [[nodiscard]] expected fail(std::int64_t asset, const std::string& spec);
+  // A clip's transcript segments, with progress, in one transaction.
+  [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
+                                       std::span<const speech_in> segments, work_state state,
+                                       std::int64_t resume_ms);
+  [[nodiscard]] expected each_speech(
+      const std::string& spec,
+      const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,
+                               const std::string& text)>& visit);
   // Resets `spec`'s progress for every asset (a spec change, a clear).
   [[nodiscard]] expected drop_spec(const std::string& spec);
 
   // ---- reads --------------------------------------------------------------------
-  [[nodiscard]] counts count(const std::string& spec);
+  [[nodiscard]] counts count(const std::string& spec, const track_filter& filter = {});
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);

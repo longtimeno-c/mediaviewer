@@ -190,6 +190,7 @@ void engine::load_settings() {
   settings_.battery_percent = static_cast<int>(std::clamp<std::int64_t>(doc->integer("pause_on_battery_percent").value_or(30), 0, 100));
   settings_.index_cap = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("index_cap_bytes").value_or(8'000'000'000)));
   settings_.faces = doc->boolean("faces").value_or(false);
+  settings_.video_index = static_cast<std::uint32_t>(std::clamp<std::int64_t>(doc->integer("video_index").value_or(0), 0, 3));
 }
 
 void engine::save_settings() const {
@@ -202,6 +203,7 @@ void engine::save_settings() const {
     w.key("pause_on_battery_percent").integer(settings_.battery_percent);
     w.key("index_cap_bytes").integer(static_cast<std::int64_t>(settings_.index_cap));
     w.key("faces").boolean(settings_.faces);
+    w.key("video_index").integer(settings_.video_index);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -227,9 +229,16 @@ std::string engine::settings_json() const {
   w.key("pause_on_battery_percent").integer(s.battery_percent);
   w.key("index_cap_bytes").integer(static_cast<std::int64_t>(s.index_cap));
   w.key("faces").boolean(s.faces);
+  // What videos are indexed for, in effect: an unset choice reads as Pictures,
+  // or Both once the ai-audio piece is installed (default_media).
+  w.key("video_index").integer(default_media());
+  w.key("video_index_setting").integer(s.video_index);
   {
     std::lock_guard lock(models_m_);
     w.key("faces_ready").boolean(static_cast<bool>(faces_model_));
+    w.key("audio_ready").boolean(static_cast<bool>(sound_.model) || static_cast<bool>(speech_.model));
+    w.key("sound_model").string(sound_.name);
+    w.key("speech_model").string(speech_.name);
   }
   w.key("available").begin_object();
   w.key("cuda").boolean(deps_.backend_available && deps_.backend_available(infer::backend::cuda));
@@ -276,6 +285,9 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       // Calibrated per model (model.json); accepted and ignored.
     } else if (key == "reload") {
       reload = true;  // a piece came or went
+    } else if (key == "video_index") {
+      if (x < 0 || x > 3) return err(status::invalid_arg);
+      settings_.video_index = static_cast<std::uint32_t>(x);
     } else {
       return err(status::invalid_arg);
     }
@@ -284,6 +296,12 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   if (reload) {
     reload_models_ = true;
     control_cv_.notify_all();
+  }
+  if (key == "video_index") {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+    work_cv_.notify_all();
   }
   post(MV_ADDON_EVENT_AI_STATUS);
   return {};
@@ -313,7 +331,17 @@ void engine::refresh_counts() {
     build_spec = build_.meta.spec_key;
     active_spec = answer_.meta.spec_key;
   }
-  const counts c = build_spec.empty() ? counts{} : db_->count(build_spec);
+  const std::uint32_t media = default_media();
+  const counts c = build_spec.empty() ? counts{} : db_->count(build_spec, track_filter{true, MV_AI_MEDIA_PICTURES, media});
+  std::string sound_spec, speech_spec;
+  {
+    std::lock_guard lock(models_m_);
+    sound_spec = sound_.spec_key;
+    speech_spec = speech_.spec_key;
+  }
+  const track_filter audio{false, MV_AI_MEDIA_SOUND, media};
+  const counts cs = sound_spec.empty() ? counts{} : db_->count(sound_spec, audio);
+  const counts cp = speech_spec.empty() ? counts{} : db_->count(speech_spec, audio);
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
   for (const root_row& r : roots) {
@@ -350,6 +378,10 @@ void engine::refresh_counts() {
   status_.assets_total = c.assets;
   status_.assets_done = c.done;
   status_.assets_failed = c.failed;
+  status_.sound_total = cs.assets;
+  status_.sound_done = cs.done + cs.failed;
+  status_.speech_total = cp.assets;
+  status_.speech_done = cp.done + cp.failed;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -366,6 +398,7 @@ void engine::refresh_counts() {
   if (s.faces) flags |= MV_AI_STATUS_FACES_ON;
   if (face_total > 0 || faces_ready) flags |= MV_AI_STATUS_FACES_READY;
   if (models_failed_) flags |= MV_AI_STATUS_NO_MODELS;
+  if (!sound_spec.empty() || !speech_spec.empty()) flags |= MV_AI_STATUS_AUDIO_READY;
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -393,7 +426,8 @@ void engine::refresh_counts() {
       status_.eta_high_seconds = -1;
     }
   }
-  const bool pending = c.assets > c.done + c.failed;
+  const bool pending = c.assets > c.done + c.failed || cs.assets > cs.done + cs.failed ||
+                       cp.assets > cp.done + cp.failed;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -407,7 +441,9 @@ void engine::refresh_counts() {
     state = MV_AI_STATE_YIELDING;
   }
   status_.state = state;
-  status_.yield_reason = state == MV_AI_STATE_YIELDING ? static_cast<std::uint32_t>(yield_now_.load()) : 0;
+  status_.yield_reason = state == MV_AI_STATE_YIELDING || state == MV_AI_STATE_LOADING
+                             ? static_cast<std::uint32_t>(yield_now_.load())
+                             : 0;
 }
 
 // ---- models ---------------------------------------------------------------------------------
@@ -429,8 +465,34 @@ std::uint32_t engine::effective_quality(infer::backend on) const {
   return q;
 }
 
+bool engine::wait_viewer_quiet() {
+  // A GPU context, CUDA or Core ML compilation and a gigabyte of weights
+  // cost the present loop frames (the PR 1 soak dropped two while a pack
+  // loaded): load between the viewer's busy spells, as indexing works.
+  bool waited = false;
+  while (!stopping_ && host_.should_yield()) {
+    if (!waited) {
+      // Say why it is still loading (LOADING with yield_reason VIEWER).
+      yield_now_ = MV_AI_YIELD_VIEWER;
+      refresh_counts();
+      post(MV_ADDON_EVENT_AI_STATUS);
+      waited = true;
+    }
+    std::unique_lock lock(control_m_);
+    control_cv_.wait_for(lock, std::chrono::milliseconds(250), [this] { return stopping_.load(); });
+  }
+  yield_now_ = MV_AI_YIELD_NONE;
+  if (waited && !stopping_) {
+    refresh_counts();
+    post(MV_ADDON_EVENT_AI_STATUS);
+  }
+  return !stopping_;
+}
+
 void engine::load_models() {
   models_ready_ = false;
+  if (!wait_viewer_quiet()) return;
+  if (deps_.prepare) deps_.prepare();
   if (!deps_.open_clip) {
     models_failed_ = true;
     return;
@@ -513,6 +575,7 @@ void engine::load_models() {
       }
     }
   }
+  const std::uint32_t speech_quality = build.meta.quality;
   {
     std::lock_guard lock(models_m_);
     build_ = std::move(build);
@@ -520,17 +583,67 @@ void engine::load_models() {
     faces_model_ = std::move(faces_model);
     faces_ = std::move(faces);
     faces_scanned_ = std::move(scanned);
+    sound_ = {};
+    speech_ = {};
   }
   load_vectors(active, answer_.meta.dim);
+  sounds_.reset(0);
+  {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+  }
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
     queue_exhausted_ = false;
   }
+  // Pictures index and answer from here; the audio models (another ~15 s on
+  // a GPU) load behind them rather than holding the whole pack in LOADING.
   models_failed_ = false;
   models_ready_ = true;
   work_cv_.notify_all();
   post(MV_ADDON_EVENT_AI_COMPUTE, 0, static_cast<std::int64_t>(build_.on));
+
+  // Audio (2026-09-27): only with the ai-audio piece. Speech follows the
+  // picture tower's quality: Whisper small where CLIP High runs, else base.
+  loaded_sound sound;
+  loaded_speech speech;
+  if ((deps_.open_sound || deps_.open_speech) && !wait_viewer_quiet()) return;
+  if (deps_.open_sound && !stopping_) {
+    if (auto so = deps_.open_sound(s.compute)) {
+      sound = std::move(*so);
+      sound.generic.clear();
+      for (const std::string& g : sound.generic_prompts) {
+        if (auto v = sound.model->embed_text(g)) sound.generic.push_back(std::move(*v));
+      }
+    }
+  }
+  if (deps_.open_speech && !stopping_) {
+    if (auto sp = deps_.open_speech(speech_quality, s.compute)) speech = std::move(*sp);
+  }
+  if (!sound.model && !speech.model) return;
+  // The stored vectors and transcripts first, then the models: a job that
+  // lands between the two must not be wiped by the reload.
+  sounds_.reset(sound.model ? sound.dim : 0);
+  if (sound.model) {
+    (void)db_->each_frame(sound.spec_key, [&](const frame_out& f) {
+      sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    });
+  }
+  if (speech.model) load_speech(speech.spec_key);
+  {
+    std::lock_guard lock(models_m_);
+    sound_ = std::move(sound);
+    speech_ = std::move(speech);
+  }
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  refresh_counts();
+  work_cv_.notify_all();
+  post(MV_ADDON_EVENT_AI_STATUS);
 }
 
 void engine::load_vectors(const std::string& spec, std::uint32_t dim) {
@@ -713,6 +826,7 @@ void engine::scan_root(const root_row& root) {
     for (std::int64_t id : *gone) {
       assets_.erase(id);
       store_.remove_asset(id);
+      sounds_.remove_asset(id);
     }
   }
   if (gone) {
@@ -724,8 +838,17 @@ void engine::scan_root(const root_row& root) {
       }
     }
   }
+  if (gone || !changed.empty()) {
+    std::set<std::int64_t> drop(changed.begin(), changed.end());
+    if (gone) drop.insert(gone->begin(), gone->end());
+    std::lock_guard lock(speech_m_);
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
+                       speech_rows_.end());
+  }
   for (std::int64_t id : changed) {
     store_.remove_asset(id);
+    sounds_.remove_asset(id);
     std::lock_guard lock(models_m_);
     if (faces_) {
       (void)faces_->forget_asset(id);
@@ -775,24 +898,47 @@ bool engine::wait_turn() {
   return false;
 }
 
-bool engine::claim(std::vector<work_item>& out, bool& faces_only) {
+std::uint32_t engine::default_media() const {
+  std::uint32_t v;
+  {
+    std::lock_guard lock(settings_m_);
+    v = settings_.video_index;
+  }
+  if (v != MV_AI_MEDIA_DEFAULT) return v;
+  // Unset: pictures, and sound too once the ai-audio piece is installed
+  // (installing it is the choice to index what clips sound like).
+  std::lock_guard lock(models_m_);
+  return sound_.model ? MV_AI_MEDIA_BOTH : MV_AI_MEDIA_PICTURES;
+}
+
+bool engine::claim(std::vector<work_item>& out, track& t) {
   out.clear();
-  faces_only = false;
-  std::string spec;
+  t = track::picture;
+  std::string spec, sound_spec, speech_spec;
   bool faces_on = false;
+  const std::uint32_t media = default_media();
   {
     std::lock_guard lock(models_m_);
     spec = build_.meta.spec_key;
     faces_on = faces_ != nullptr;
+    if (sound_.model) sound_spec = sound_.spec_key;
+    if (speech_.model) speech_spec = speech_.spec_key;
   }
   if (spec.empty()) return false;
   std::lock_guard lock(work_m_);
   if (queue_.empty() && !queue_exhausted_) {
-    for (work_item& w : db_->pending(spec, 256, kMaxTries)) {
-      if (!in_flight_.count(w.asset.id)) queue_.push_back(std::move(w));
-    }
+    // Pictures first (fast, and what most searches need), then what clips
+    // sound like, then what is said in them, then the People pass.
+    const auto take = [&](const std::string& track_spec, track which, const track_filter& f) {
+      if (!queue_.empty() || track_spec.empty()) return;
+      for (work_item& w : db_->pending(track_spec, 256, kMaxTries, f)) {
+        if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
+      }
+    };
+    take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media});
+    take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media});
+    take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media});
     if (queue_.empty() && faces_on) {
-      // Everything has its CLIP vectors: the People pass over what is left.
       std::lock_guard ml(models_m_);
       std::lock_guard al(assets_m_);
       for (const auto& [id, m] : assets_) {
@@ -802,8 +948,7 @@ bool engine::claim(std::vector<work_item>& out, bool& faces_only) {
         w.asset.path = m.path;
         w.asset.kind = m.kind;
         w.asset.root_id = m.root;
-        w.state = work_state::done;  // CLIP-wise
-        queue_.push_back(std::move(w));
+        queue_.push_back(job{std::move(w), track::faces});
         if (queue_.size() >= 64) break;
       }
     }
@@ -814,21 +959,26 @@ bool engine::claim(std::vector<work_item>& out, bool& faces_only) {
     // The folder on screen first (plan/17: searchable as results commit).
     if (!prefer_dir_key_.empty()) {
       std::lock_guard al(assets_m_);
-      std::stable_partition(queue_.begin(), queue_.end(), [&](const work_item& w) {
-        auto it = assets_.find(w.asset.id);
+      std::stable_partition(queue_.begin(), queue_.end(), [&](const job& j) {
+        auto it = assets_.find(j.w.asset.id);
         return it != assets_.end() &&
                (it->second.dir_key == prefer_dir_key_ || under(it->second.dir_key, prefer_dir_key_));
       });
     }
   }
   if (queue_.empty()) return false;
-  faces_only = queue_.front().state == work_state::done;
-  const bool photo = queue_.front().asset.kind == asset_kind::photo;
-  while (!queue_.empty() && out.size() < (photo ? kPhotoBatch : 1)) {
-    const work_item& w = queue_.front();
-    if ((w.asset.kind == asset_kind::photo) != photo || (w.state == work_state::done) != faces_only) break;
-    in_flight_.insert(w.asset.id);
-    out.push_back(w);
+  t = queue_.front().t;
+  const bool photo = queue_.front().w.asset.kind == asset_kind::photo;
+  const std::size_t batch = photo && (t == track::picture || t == track::faces) ? kPhotoBatch : 1;
+  while (!queue_.empty() && out.size() < batch) {
+    const job& j = queue_.front();
+    if ((j.w.asset.kind == asset_kind::photo) != photo || j.t != t) break;
+    if (in_flight_.count(j.w.asset.id)) {  // another track of this asset is running
+      queue_.pop_front();
+      continue;
+    }
+    in_flight_.insert(j.w.asset.id);
+    out.push_back(j.w);
     queue_.pop_front();
   }
   if (out.empty()) return false;
@@ -841,18 +991,27 @@ void engine::worker_loop(unsigned) {
   while (!stopping_) {
     if (!wait_turn()) break;
     std::vector<work_item> items;
-    bool faces_only = false;
-    if (!claim(items, faces_only)) {
+    track t = track::picture;
+    if (!claim(items, t)) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(500));
       continue;
     }
     loaded_clip clip;
+    loaded_sound sound;
+    loaded_speech speech;
     {
       std::lock_guard lock(models_m_);
       clip = build_;
+      sound = sound_;
+      speech = speech_;
     }
-    if (clip.model) {
+    const bool faces_only = t == track::faces;
+    if (t == track::sound) {
+      if (sound.model) process_sound(items.front(), sound);
+    } else if (t == track::speech) {
+      if (speech.model) process_speech(items.front(), speech);
+    } else if (clip.model) {
       if (items.front().asset.kind == asset_kind::video) {
         process_video(items.front(), clip, faces_only);
       } else {
@@ -863,10 +1022,179 @@ void engine::worker_loop(unsigned) {
       std::lock_guard lock(work_m_);
       for (const work_item& w : items) in_flight_.erase(w.asset.id);
       if (busy_workers_ > 0) --busy_workers_;
+      // Another track of this asset (its speech after its sound) was passed
+      // over while this ran: look again.
+      queue_exhausted_ = false;
     }
     work_cv_.notify_all();
   }
   yield_now_ = MV_AI_YIELD_NONE;
+}
+
+// ---- audio (2026-09-27) ----------------------------------------------------------
+
+void engine::process_sound(const work_item& item, const loaded_sound& sound) {
+  const mv_host_api* api = host_.api();
+  if (!api->audio_open) return;
+  void* handle = nullptr;
+  std::int64_t duration = 0;
+  if (api->audio_open(api->host, item.asset.path.c_str(), 48000, item.resume_ms, &duration, &handle) != MV_OK) {
+    // No soundtrack (or unreadable): nothing to index for sound. Done, not failed.
+    (void)db_->commit_frames(item.asset.id, sound.spec_key, {}, work_state::done, 0, sound.dim);
+    return;
+  }
+  struct closer {
+    const mv_host_api* api;
+    void* h;
+    ~closer() { api->audio_close(api->host, h); }
+  } const close_it{api, handle};
+  if (duration > 0) (void)db_->set_duration(item.asset.id, duration);
+  const std::size_t window = static_cast<std::size_t>(sound.window_ms) * 48;  // samples
+  const std::size_t hop = static_cast<std::size_t>(sound.hop_ms) * 48;
+  std::vector<float> buf;             // samples not yet a full window behind them
+  std::int64_t buf_start = -1;        // time of buf[0]
+  std::vector<float> chunk(48000 * 2);
+  std::vector<float> last_kept;
+  bool eof = false;
+  std::int64_t done_ms = item.resume_ms;
+  std::string active_sound = sound.spec_key;
+  while (true) {
+    // Fill four windows' worth (one batch), then embed.
+    std::vector<std::pair<std::int64_t, std::vector<float>>> windows;
+    while (windows.size() < 4) {
+      while (buf.size() < window && !eof) {
+        if (!wait_turn()) return;  // resumes at done_ms
+        uint32_t got = 0;
+        int64_t t0 = 0;
+        if (api->audio_read(api->host, handle, chunk.data(), static_cast<uint32_t>(chunk.size()), &got, &t0) != MV_OK) {
+          eof = true;
+          break;
+        }
+        if (got == 0) {
+          eof = true;
+          break;
+        }
+        if (buf_start < 0) buf_start = t0;
+        buf.insert(buf.end(), chunk.begin(), chunk.begin() + got);
+      }
+      if (buf.empty() || (eof && buf.size() < window / 10 && !windows.empty())) break;
+      const std::size_t n = std::min(window, buf.size());
+      windows.push_back({buf_start, std::vector<float>(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(n))});
+      if (eof && buf.size() <= window) {
+        buf.clear();
+        break;
+      }
+      const std::size_t drop = std::min(hop, buf.size());
+      buf.erase(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(drop));
+      buf_start += static_cast<std::int64_t>(drop / 48);
+    }
+    if (windows.empty()) break;
+    std::vector<std::span<const float>> spans;
+    for (const auto& w : windows) spans.emplace_back(w.second);
+    std::vector<float> embs;
+    if (!sound.model->embed_audio(spans, embs)) {
+      (void)db_->fail(item.asset.id, sound.spec_key);
+      return;
+    }
+    std::vector<frame_in> keep;
+    for (std::size_t i = 0; i < windows.size(); ++i) {
+      const std::span<const float> e(embs.data() + i * sound.dim, sound.dim);
+      if (!last_kept.empty() && infer::dot(e, last_kept) >= sound.dedupe) continue;
+      last_kept.assign(e.begin(), e.end());
+      frame_in f;
+      f.pts_ms = windows[i].first;
+      f.flags = 0;
+      f.emb = e;
+      f.generic = max_dot(e, sound.generic);
+      keep.push_back(f);
+    }
+    const bool finished = eof && buf.empty();
+    done_ms = windows.back().first + static_cast<std::int64_t>(sound.hop_ms);
+    if (!db_->commit_frames(item.asset.id, sound.spec_key, keep, finished ? work_state::done : work_state::partial,
+                            done_ms, sound.dim)) {
+      return;
+    }
+    for (const frame_in& f : keep) {
+      std::vector<std::int8_t> q;
+      float scale = 1;
+      quantise(f.emb, q, scale);
+      sounds_.add(item.asset.id, f.pts_ms, f.generic, scale, q);
+    }
+    {
+      std::lock_guard lock(status_m_);
+      units_done_ += static_cast<double>(windows.size()) * sound.hop_ms / 1000.0;
+    }
+    if (finished) return;
+  }
+  (void)db_->commit_frames(item.asset.id, sound.spec_key, {}, work_state::done, done_ms, sound.dim);
+}
+
+void engine::process_speech(const work_item& item, const loaded_speech& speech) {
+  const mv_host_api* api = host_.api();
+  if (!api->audio_open) return;
+  void* handle = nullptr;
+  std::int64_t duration = 0;
+  if (api->audio_open(api->host, item.asset.path.c_str(), 16000, item.resume_ms, &duration, &handle) != MV_OK) {
+    (void)db_->commit_speech(item.asset.id, speech.spec_key, {}, work_state::done, 0);
+    return;
+  }
+  struct closer {
+    const mv_host_api* api;
+    void* h;
+    ~closer() { api->audio_close(api->host, h); }
+  } const close_it{api, handle};
+  constexpr std::size_t kWindow = 16000 * 30;
+  std::vector<float> buf;
+  std::int64_t buf_start = -1;
+  std::vector<float> chunk(16000 * 5);
+  bool eof = false;
+  while (true) {
+    while (buf.size() < kWindow && !eof) {
+      if (!wait_turn()) return;
+      uint32_t got = 0;
+      int64_t t0 = 0;
+      if (api->audio_read(api->host, handle, chunk.data(), static_cast<uint32_t>(chunk.size()), &got, &t0) != MV_OK ||
+          got == 0) {
+        eof = true;
+        break;
+      }
+      if (buf_start < 0) buf_start = t0;
+      buf.insert(buf.end(), chunk.begin(), chunk.begin() + got);
+    }
+    if (buf.empty()) break;
+    if (!wait_turn()) return;
+    const std::size_t n = std::min(kWindow, buf.size());
+    auto w = speech.model->transcribe(std::span<const float>(buf.data(), n), buf_start);
+    if (!w) {
+      (void)db_->fail(item.asset.id, speech.spec_key);
+      return;
+    }
+    const std::size_t consumed = std::min(n, static_cast<std::size_t>(std::max<std::int64_t>(w->consumed_ms, 1000)) * 16);
+    const bool finished = eof && consumed >= buf.size();
+    std::vector<speech_in> rows;
+    for (const infer::speech_segment& seg : w->segments) {
+      rows.push_back(speech_in{seg.start_ms, seg.end_ms, seg.text});
+    }
+    const std::int64_t next_ms = buf_start + static_cast<std::int64_t>(consumed / 16);
+    if (!db_->commit_speech(item.asset.id, speech.spec_key, rows, finished ? work_state::done : work_state::partial,
+                            next_ms)) {
+      return;
+    }
+    {
+      std::lock_guard lock(speech_m_);
+      for (const speech_in& r : rows) {
+        speech_rows_.push_back(speech_row{item.asset.id, r.start_ms, r.text, infer::speech_words(r.text)});
+      }
+    }
+    {
+      std::lock_guard lock(status_m_);
+      units_done_ += static_cast<double>(consumed) / 16000.0;
+    }
+    buf.erase(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(consumed));
+    buf_start = next_ms;
+    if (finished) return;
+  }
+  (void)db_->commit_speech(item.asset.id, speech.spec_key, {}, work_state::done, buf_start < 0 ? 0 : buf_start);
 }
 
 void engine::faces_of(std::int64_t asset, const std::string& path, std::int64_t pts_ms, const rgb_frame& img) {
@@ -1121,6 +1449,7 @@ std::string engine::roots_json() {
     w.key("path").string(r.path);
     w.key("recursive").boolean(r.recursive);
     w.key("enabled").boolean(r.enabled);
+    w.key("media").integer(r.media);
     w.key("assets").integer(static_cast<std::int64_t>(db_->assets_in_root(r.id)));
     w.key("done").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->done_in_root(r.id, spec)));
     w.key("frames").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->frames_in_root(r.id, spec)));
@@ -1179,6 +1508,20 @@ expected engine::root_set_enabled(std::int64_t id, bool enabled) {
   return {};
 }
 
+expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
+  if (media > MV_AI_MEDIA_BOTH) return err(status::invalid_arg);
+  MV_TRY_VOID(db_->set_root_media(id, media));
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  work_cv_.notify_all();
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(id));
+  return {};
+}
+
 expected engine::root_rescan(std::int64_t id) {
   {
     std::lock_guard lock(control_m_);
@@ -1207,7 +1550,17 @@ expected engine::root_remove(std::int64_t id) {
     queue_exhausted_ = false;
   }
   MV_TRY_VOID(db_->remove_root(id));
-  for (std::int64_t a : gone) store_.remove_asset(a);
+  for (std::int64_t a : gone) {
+    store_.remove_asset(a);
+    sounds_.remove_asset(a);
+  }
+  {
+    const std::set<std::int64_t> drop(gone.begin(), gone.end());
+    std::lock_guard lock(speech_m_);
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
+                       speech_rows_.end());
+  }
   {
     std::lock_guard lock(models_m_);
     if (faces_) {
@@ -1277,6 +1630,11 @@ expected engine::clear_index() {
     assets_.clear();
   }
   store_.reset(store_.dim());
+  sounds_.reset(sounds_.dim());
+  {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+  }
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -1352,7 +1710,7 @@ bool engine::wait_search(std::uint64_t id, int ms) {
 std::function<bool(std::int64_t)> engine::scope_filter(const std::string& scope_dir, std::uint32_t scope,
                                                        std::uint32_t kinds) const {
   const std::string key = scope_dir.empty() ? std::string() : path_key(scope_dir);
-  if (kinds == 0) kinds = MV_AI_KIND_ALL;
+  if ((kinds & MV_AI_KIND_ALL) == 0) kinds |= MV_AI_KIND_ALL;
   // A snapshot of the qualifying assets, so the scan never takes assets_m_.
   auto allowed = std::make_shared<std::set<std::int64_t>>();
   {
@@ -1370,43 +1728,151 @@ std::function<bool(std::int64_t)> engine::scope_filter(const std::string& scope_
   return [allowed](std::int64_t a) { return allowed->count(a) != 0; };
 }
 
+void engine::add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, float score, float rank,
+                     std::uint32_t match, std::string snippet) const {
+  st.moments[asset].push_back({pts_ms, score});
+  if (auto it = st.row_of.find(asset); it != st.row_of.end()) {
+    result_row& r = st.rows[it->second];
+    ++r.more;
+    r.match |= match;
+    if (rank > r.rank) {  // a better moment of the same clip leads
+      r.pts_ms = pts_ms;
+      r.score = score;
+      r.rank = rank;
+      if (!snippet.empty()) r.snippet = std::move(snippet);
+    } else if (r.snippet.empty() && !snippet.empty()) {
+      r.snippet = std::move(snippet);
+    }
+    return;
+  }
+  if (st.rows.size() >= 1000) return;
+  result_row r;
+  r.asset = asset;
+  r.pts_ms = pts_ms;
+  r.score = score;
+  r.rank = rank;
+  r.match = match;
+  r.snippet = std::move(snippet);
+  {
+    std::lock_guard lock(assets_m_);
+    auto found = assets_.find(asset);
+    if (found == assets_.end()) return;
+    r.path = found->second.path;
+    r.kind = found->second.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
+  }
+  st.row_of[asset] = st.rows.size();
+  st.rows.push_back(std::move(r));
+}
+
 void engine::group(search_state& st, const std::vector<vector_store::hit>& hits, bool text,
-                   float query_margin) const {
+                   float query_margin, std::uint32_t match, bool stands_out) const {
   if (hits.empty()) return;
   if (text) {
     // "Nothing found" (PR 20 calibration): a query that no top-ten row beats
-    // the generic prompts by `query_margin` describes nothing in the index.
+    // the generic prompts by `query_margin` describes nothing in the index,
+    // unless its best assets stand out from the rest (`stands_out`): a
+    // one-word subject ("dog") sits close to "a photo." and misses the margin
+    // while ranking correctly (2026-09-27, plan/17).
     float best = -1;
     for (std::size_t i = 0; i < hits.size() && i < 10; ++i) {
       best = std::max(best, hits[i].score - hits[i].generic);
     }
-    if (best < query_margin) return;
+    if (best < query_margin && !stands_out) return;
   }
-  std::map<std::int64_t, std::size_t> row_of;
   for (const vector_store::hit& h : hits) {
-    auto it = row_of.find(h.asset);
-    st.moments[h.asset].push_back({h.pts_ms, h.score});
-    if (it != row_of.end()) {
-      ++st.rows[it->second].more;
-      continue;
-    }
-    result_row r;
-    r.asset = h.asset;
-    r.pts_ms = h.pts_ms;
-    r.score = h.score;
-    {
-      std::lock_guard lock(assets_m_);
-      auto a = assets_.find(h.asset);
-      if (a == assets_.end()) continue;
-      r.path = a->second.path;
-      r.kind = a->second.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
-    }
-    row_of[h.asset] = st.rows.size();
-    st.rows.push_back(std::move(r));
-    if (st.rows.size() >= 1000) break;
+    // Across models the cosines are not comparable; the margin over each
+    // model's own generic prompts is (in units of the 0.1 a strong match gets).
+    const float rank = text ? (h.score - h.generic) / 0.1f : h.score;
+    add_row(st, h.asset, h.pts_ms, h.score, rank, match, {});
   }
-  for (auto& [asset, list] : st.moments) {
-    std::sort(list.begin(), list.end());
+}
+
+void engine::finish(search_state& st) {
+  std::stable_sort(st.rows.begin(), st.rows.end(),
+                   [](const result_row& a, const result_row& b) { return a.rank > b.rank; });
+  st.row_of.clear();
+  for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
+}
+
+void engine::load_speech(const std::string& spec) {
+  std::vector<speech_row> rows;
+  (void)db_->each_speech(spec, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text) {
+    rows.push_back(speech_row{asset, start, text, infer::speech_words(text)});
+  });
+  std::lock_guard lock(speech_m_);
+  speech_rows_ = std::move(rows);
+}
+
+namespace {
+
+// Words a spoken-phrase search ignores ("the", "someone saying ...").
+bool stop_word(const std::string& w) {
+  static const char* const kStop[] = {"a", "an", "the", "of", "on", "in", "at", "to", "is", "are", "and",
+                                      "or", "with", "someone", "somebody", "says", "said", "saying", "say",
+                                      "who", "where", "when", "that", "this", "it", "was", "be", "for",
+                                      "clip", "video", "videos", "moment", "photos", "photo", "about"};
+  for (const char* s : kStop) {
+    if (w == s) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+void engine::merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                         std::uint32_t find) {
+  loaded_sound sound;
+  {
+    std::lock_guard lock(models_m_);
+    sound = sound_;
+  }
+  // What it sounds like: CLAP, with its own generic prompts and margins.
+  if ((find & MV_AI_FIND_SOUNDS) && sound.model) {
+    if (auto v = sound.model->embed_text(query)) {
+      const auto hits = sounds_.scan(*v, allow, 2000, true, sound.result_margin, -1.0f);
+      group(st, hits, true, sound.query_margin, MV_AI_MATCH_SOUND);
+    }
+  }
+  // What is said: the transcript's words. A result must hold most of the
+  // query's words (a few-word phrase: all of them); a word of four letters or
+  // more also matches its longer forms ("land" -> "landing").
+  if (!(find & MV_AI_FIND_SPEECH)) return;
+  std::vector<std::string> want;
+  for (std::string& w : infer::speech_words(query)) {
+    if (!stop_word(w) && std::find(want.begin(), want.end(), w) == want.end()) want.push_back(std::move(w));
+  }
+  if (want.empty()) return;
+  std::string phrase;
+  for (const std::string& w : infer::speech_words(query)) phrase += (phrase.empty() ? "" : " ") + w;
+  const double need = want.size() <= 2 ? 1.0 : 0.6;
+  std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string>> found;
+  {
+    std::lock_guard lock(speech_m_);
+    for (const speech_row& r : speech_rows_) {
+      if (!allow(r.asset)) continue;
+      std::size_t hit = 0;
+      for (const std::string& q : want) {
+        for (const std::string& w : r.words) {
+          if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
+            ++hit;
+            break;
+          }
+        }
+      }
+      const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
+      if (coverage < need) continue;
+      std::string joined;
+      for (const std::string& w : r.words) joined += (joined.empty() ? "" : " ") + w;
+      const bool exact = joined.find(phrase) != std::string::npos;
+      const float rank = static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
+      found.emplace_back(rank, r.asset, r.start_ms, r.text);
+    }
+  }
+  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
+  if (found.size() > 2000) found.resize(2000);
+  for (auto& [rank, asset, start, text] : found) {
+    std::string snippet = text.size() > 160 ? text.substr(0, 157) + "..." : text;
+    add_row(st, asset, start, rank / 2.0f, rank, MV_AI_MATCH_SPEECH, std::move(snippet));
   }
 }
 
@@ -1489,25 +1955,47 @@ std::uint64_t engine::search_text(const std::string& query, const std::string& s
           }
           std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
           group(st, hits, false, 0);
+          finish(st);
           return;
         }
       }
     }
-    const std::vector<float> v = query_vector(q);
-    if (v.empty()) return;
+    std::uint32_t find = k & (MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH);
+    if (find == 0) find = MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH;
     auto allow = scope_filter(scope_dir, scope, k);
     if (!person_assets.empty()) {
       auto base = allow;
       allow = [base, person_assets](std::int64_t a) { return person_assets.count(a) && base(a); };
     }
-    float result_margin, query_margin;
-    {
-      std::lock_guard lock(models_m_);
-      result_margin = answer_.meta.result_margin;
-      query_margin = answer_.meta.query_margin;
+    if (find & MV_AI_FIND_PICTURES) {
+      const std::vector<float> v = query_vector(q);
+      if (!v.empty()) {
+        float result_margin, query_margin, query_z, result_z;
+        {
+          std::lock_guard lock(models_m_);
+          result_margin = answer_.meta.result_margin;
+          query_margin = answer_.meta.query_margin;
+          query_z = answer_.meta.query_z;
+          result_z = answer_.meta.result_z;
+        }
+        vector_store::scan_stats stats;
+        auto hits = store_.scan(v, allow, 5000, true, result_margin, -1.0f, &stats);
+        const bool stands_out = query_z > 0 && stats.top10_z >= query_z;
+        if (stands_out && stats.sd > 0) {
+          // A short query clears few rows by the margin; the rows that stand
+          // out as far as a match does are results as well (plan/17).
+          std::set<std::pair<std::int64_t, std::int64_t>> have;
+          for (const auto& h : hits) have.insert({h.asset, h.pts_ms});
+          for (const auto& h : store_.scan(v, allow, 5000, false, 0, stats.mean + result_z * stats.sd)) {
+            if (have.insert({h.asset, h.pts_ms}).second) hits.push_back(h);
+          }
+          std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+        }
+        group(st, hits, true, person_assets.empty() ? query_margin : -1.0f, MV_AI_MATCH_PICTURE, stands_out);
+      }
     }
-    const auto hits = store_.scan(v, allow, 5000, true, result_margin, -1.0f);
-    group(st, hits, true, person_assets.empty() ? query_margin : -1.0f);
+    merge_audio(st, q, allow, find);
+    finish(st);
   });
 }
 
@@ -1558,6 +2046,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
                               }),
                hits.end());
     group(st, hits, false, 0);
+    finish(st);
   });
 }
 
@@ -1576,6 +2065,7 @@ std::uint64_t engine::search_person(std::int64_t person, const std::string& scop
     }
     std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
     group(st, hits, false, 0);
+    finish(st);
   });
 }
 
@@ -1606,6 +2096,7 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
     for (const face_row& f : faces) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
     std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
     group(st, hits, false, 0);
+    finish(st);
   });
 }
 
@@ -1627,7 +2118,15 @@ result<mv_ai_result> engine::result_at(std::uint64_t id, std::uint32_t index) co
   out.score = r.score;
   out.kind = r.kind;
   out.more_in_clip = r.more;
+  out.match = r.match;
   return out;
+}
+
+result<std::string> engine::result_snippet(std::uint64_t id, std::uint32_t index) const {
+  std::lock_guard lock(search_m_);
+  auto it = searches_.find(id);
+  if (it == searches_.end() || index >= it->second->rows.size()) return err(status::invalid_arg);
+  return it->second->rows[index].snippet;
 }
 
 result<std::string> engine::result_path(std::uint64_t id, std::uint32_t index) const {

@@ -4,7 +4,11 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "core/json.h"
 #include "io/file_port.h"
@@ -336,16 +340,55 @@ std::string sha256_file(const std::string& path) {
   return s;
 }
 
+namespace {
+
+// Hashed once per process (Milestone H): the AI pack is gigabytes, and a
+// start lists the add-ons, loads one, and asks for its pieces, each of which
+// verified every byte again (~6 GB hashed per launch with the whole pack).
+// The first check of a version folder hashes every file, as before; a later
+// one in the same process still stats every file and walks for extras, and
+// hashes again only if any size or modification time moved. Keyed by the
+// folder and the signed hashes, so a new version or manifest verifies afresh.
+struct verified_snapshot {
+  std::vector<std::pair<std::uint64_t, std::int64_t>> files;  // size, mtime_ns
+};
+std::mutex g_verified_m;
+std::map<std::string, verified_snapshot> g_verified;
+
+}  // namespace
+
 rejection verify_files(const std::string& dir, const manifest& m) {
   std::set<std::string> listed;
+  std::string key = dir;
+  verified_snapshot now;
+  now.files.reserve(m.files.size());
   for (const manifest_file& f : m.files) {
     const std::string full = io::join_path(dir, io::native_relative(f.path));
     auto st = io::stat_path(full);
     if (!st || st->is_directory) return rejection::file_missing;
     if (st->size != f.size) return rejection::file_mismatch;
-    if (sha256_file(full) != f.sha256) return rejection::file_mismatch;
-    listed.insert(f.path);
+    now.files.emplace_back(st->size, st->mtime_ns);
+    key += '\n';
+    key += f.path;
+    key += ':';
+    key += f.sha256;
   }
+  bool hashed = false;
+  {
+    std::lock_guard lock(g_verified_m);
+    const auto it = g_verified.find(key);
+    hashed = it != g_verified.end() && it->second.files == now.files;
+  }
+  if (!hashed) {
+    for (const manifest_file& f : m.files) {
+      if (sha256_file(io::join_path(dir, io::native_relative(f.path))) != f.sha256) {
+        std::lock_guard lock(g_verified_m);
+        g_verified.erase(key);
+        return rejection::file_mismatch;
+      }
+    }
+  }
+  for (const manifest_file& f : m.files) listed.insert(f.path);
   // Nothing else may sit beside them: a dropped-in DLL would otherwise ride
   // along with a valid signature. The walk skips nothing (a hidden DLL loads
   // as well as a visible one) and follows no link: a link, a junction, or a
@@ -372,6 +415,10 @@ rejection verify_files(const std::string& dir, const manifest& m) {
     return false;
   });
   if (extra == rejection::none && !walked) return rejection::file_missing;
+  if (extra == rejection::none && !hashed) {
+    std::lock_guard lock(g_verified_m);
+    g_verified[key] = std::move(now);
+  }
   return extra;
 }
 

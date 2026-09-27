@@ -346,7 +346,7 @@ public static partial class IslandHost
         // Opening Settings asks the channel for what is not installed, like
         // Import: the person is looking at what can be installed. The GETs
         // carry nothing about them.
-        foreach (AddonSlot piece in new[] { AiSlot, FacesSlot })
+        foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot })
         {
             if (!piece.State.Installed && piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
         }
@@ -449,6 +449,8 @@ public static partial class IslandHost
         var pieces = new StackPanel { Spacing = 4 };
         pieces.Children.Add(PieceRow(AiSlot, "Core", "Search by description. Required."));
         pieces.Children.Add(PieceRow(FacesSlot, "People", "Find people in your photos. Optional; off until you turn it on."));
+        pieces.Children.Add(PieceRow(AudioSlot, "Audio",
+            "Sounds and speech in videos — find “dog barking” or what someone said. Optional."));
         if (_nvidiaPresent == true || CudaSlot.State.Installed)
         {
             pieces.Children.Add(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics."));
@@ -562,7 +564,7 @@ public static partial class IslandHost
         return row;
     }
 
-    private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || CudaSlot.Busy;
+    private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || AudioSlot.Busy || CudaSlot.Busy;
 
     // Used / 3 GB, animated when a piece comes or goes.
     private static FrameworkElement BuildBudgetBar()
@@ -624,7 +626,7 @@ public static partial class IslandHost
             Background = Brush(ChromeColour.Surface),
             CornerRadius = new CornerRadius(8),
         };
-        box.Children.Add(WrappedLabel("Remove local search? People and NVIDIA acceleration go with it."));
+        box.Children.Add(WrappedLabel("Remove local search? People, Audio and NVIDIA acceleration go with it."));
         box.Children.Add(WrappedLabel("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         Button keep = SettingsButton("Remove, keep the index", () => RemoveCore(keepData: true));
@@ -652,7 +654,7 @@ public static partial class IslandHost
         _ = Task.Run(() =>
         {
             string done = "Local search removed.";
-            foreach (AddonSlot slot in new[] { CudaSlot, FacesSlot, AiSlot })
+            foreach (AddonSlot slot in new[] { CudaSlot, AudioSlot, FacesSlot, AiSlot })
             {
                 try
                 {

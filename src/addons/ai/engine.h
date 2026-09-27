@@ -36,6 +36,7 @@
 #include "addons/ai/index_db.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
+#include "infer/audio_models.h"
 #include "infer/models.h"
 
 namespace mv::ai {
@@ -49,6 +50,8 @@ struct clip_meta {
   std::uint32_t input_edge = 224;
   float dedupe = 0.97f;
   float query_margin = 0.04f;
+  float query_z = 0;  // 0: the margin alone decides "nothing found"
+  float result_z = 2.0f;
   float result_margin = 0.015f;
   float similar_min = 0.62f;
   std::vector<std::string> generic_prompts;
@@ -72,7 +75,51 @@ class face_analyzer {
   [[nodiscard]] virtual std::uint32_t dim() const noexcept = 0;
 };
 
+// Audio (plan/17 "Audio", 2026-09-27): what a clip sounds like, in the same
+// vector space as a description of a sound (CLAP)...
+class sound_model {
+ public:
+  virtual ~sound_model() = default;
+  // One L2-normalised vector per window of 48 kHz mono PCM.
+  [[nodiscard]] virtual expected embed_audio(std::span<const std::span<const float>> windows,
+                                             std::vector<float>& out) = 0;
+  [[nodiscard]] virtual result<std::vector<float>> embed_text(std::string_view utf8) = 0;
+};
+
+struct loaded_sound {
+  std::shared_ptr<sound_model> model;
+  std::string name;       // "LAION CLAP (general)"
+  std::string spec_key;
+  std::uint32_t dim = 512;
+  std::uint32_t window_ms = 10000;
+  std::uint32_t hop_ms = 5000;
+  float dedupe = 0.97f;
+  float query_margin = 0.04f;
+  float result_margin = 0.015f;
+  std::vector<std::string> generic_prompts;
+  std::vector<std::vector<float>> generic;
+};
+
+// ...and what is said in it (Whisper): up to 30 s of 16 kHz PCM in, segments out.
+class speech_model {
+ public:
+  virtual ~speech_model() = default;
+  [[nodiscard]] virtual result<infer::speech_window> transcribe(std::span<const float> pcm,
+                                                                std::int64_t start_ms) = 0;
+};
+
+struct loaded_speech {
+  std::shared_ptr<speech_model> model;
+  std::string name;
+  std::string spec_key;
+};
+
 struct engine_deps {
+  // Loads the runtime and reads the pack (seconds: ONNX Runtime and, with the
+  // vendor piece, the CUDA libraries). The control thread calls it, after the
+  // viewer is quiet. The informational calls below never load anything: they
+  // answer empty until it has run, since Settings asks from the UI thread.
+  std::function<void()> prepare;
   // The towers the pack carries (mv_ai_quality 1 and / or 2).
   std::function<std::vector<std::uint32_t>()> qualities;
   // Which accelerated backends exist in the loaded runtime.
@@ -82,6 +129,9 @@ struct engine_deps {
   std::function<result<loaded_clip>(std::uint32_t quality, std::uint32_t compute)> open_clip;
   // Null when the ai-faces piece is not installed.
   std::function<result<std::unique_ptr<face_analyzer>>()> open_faces;
+  // Audio: an error when the ai-audio piece is not installed.
+  std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
+  std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
   // "CLIP ViT-B/32" for a quality, without opening it (Settings).
   std::function<std::string(std::uint32_t quality)> model_name;
   std::function<std::string()> runtime_version;
@@ -96,6 +146,7 @@ struct settings {
   int battery_percent = 30;                  // pause on battery below this
   std::uint64_t index_cap = 8'000'000'000;   // bytes; 0 = no cap
   bool faces = false;                        // the separate People opt-in
+  std::uint32_t video_index = MV_AI_MEDIA_DEFAULT;  // 0: Pictures, plus Sound once ai-audio is in
 };
 
 class engine {
@@ -123,6 +174,7 @@ class engine {
   [[nodiscard]] std::uint32_t folder_coverage(const std::string& dir) const;
   void note_folder_opened(const std::string& dir);
   [[nodiscard]] expected clear_index();
+  [[nodiscard]] expected root_set_media(std::int64_t id, std::uint32_t media);
 
   // ---- search ------------------------------------------------------------------
   [[nodiscard]] std::uint64_t search_text(const std::string& query, const std::string& scope_dir,
@@ -140,6 +192,7 @@ class engine {
   [[nodiscard]] result<std::vector<std::pair<std::int64_t, float>>> clip_matches(
       std::uint64_t id, const std::string& path) const;
   void search_release(std::uint64_t id);
+  [[nodiscard]] result<std::string> result_snippet(std::uint64_t id, std::uint32_t index) const;
 
   // ---- people ------------------------------------------------------------------
   [[nodiscard]] expected faces_enable(bool enable);
@@ -171,12 +224,16 @@ class engine {
     float score = 0;
     std::uint32_t kind = MV_AI_KIND_PHOTOS;
     std::uint32_t more = 0;
+    std::uint32_t match = 0;  // MV_AI_MATCH_*
+    float rank = 0;           // across models: margin over the generic prompts, or speech coverage
     std::string path;
+    std::string snippet;      // speech: the words that matched
   };
   struct search_state {
     bool done = false;
     std::vector<result_row> rows;
     std::unordered_map<std::int64_t, std::vector<std::pair<std::int64_t, float>>> moments;
+    std::unordered_map<std::int64_t, std::size_t> row_of;  // asset -> rows index while merging
   };
   struct search_job {
     std::uint64_t id = 0;
@@ -188,7 +245,25 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  bool claim(std::vector<work_item>& out, bool& faces_only);
+  enum class track : std::uint8_t { picture, faces, sound, speech };
+  struct job {
+    work_item w;
+    track t = track::picture;
+  };
+  bool claim(std::vector<work_item>& out, track& t);
+  void process_sound(const work_item& item, const loaded_sound& sound);
+  void process_speech(const work_item& item, const loaded_speech& speech);
+  [[nodiscard]] std::uint32_t default_media() const;
+  // audio search
+  struct speech_row {
+    std::int64_t asset = 0;
+    std::int64_t start_ms = 0;
+    std::string text;
+    std::vector<std::string> words;
+  };
+  void load_speech(const std::string& spec);
+  void merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                   std::uint32_t find) ;
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
   void process_video(const work_item& item, const loaded_clip& clip, bool faces_only);
   void faces_of(std::int64_t asset, const std::string& path, std::int64_t pts_ms, const rgb_frame& img);
@@ -200,6 +275,9 @@ class engine {
   void refresh_counts();
   // models
   void load_models();
+  // Blocks until the viewer is quiet (or stopping): opening sessions contends
+  // with the present loop for the GPU. False when stopping.
+  bool wait_viewer_quiet();
   void load_vectors(const std::string& spec, std::uint32_t dim);
   std::uint32_t effective_quality(infer::backend on) const;
   void maybe_finish_migration();
@@ -207,8 +285,14 @@ class engine {
   std::uint64_t submit(std::function<void(search_state&)> run);
   std::function<bool(std::int64_t)> scope_filter(const std::string& scope_dir, std::uint32_t scope,
                                                  std::uint32_t kinds) const;
+  // Merges one model's hits into the result rows (one row per asset, its best
+  // moment first). `text`: rank by margin over the generic prompts and apply
+  // the "nothing found" rule; else rank by score.
   void group(search_state& st, const std::vector<vector_store::hit>& hits, bool text,
-             float query_margin) const;
+             float query_margin, std::uint32_t match = MV_AI_MATCH_PICTURE, bool stands_out = false) const;
+  void add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, float score, float rank,
+               std::uint32_t match, std::string snippet) const;
+  static void finish(search_state& st);
   std::vector<float> query_vector(const std::string& text);
   // settings
   void save_settings() const;
@@ -230,6 +314,11 @@ class engine {
   std::shared_ptr<face_analyzer> faces_model_;
   std::unique_ptr<faces_db> faces_;
   std::set<std::int64_t> faces_scanned_;  // under models_m_
+  loaded_sound sound_;    // empty model: no ai-audio piece
+  loaded_speech speech_;
+  vector_store sounds_;   // the CLAP matrix (window starts as pts)
+  mutable std::mutex speech_m_;
+  std::vector<speech_row> speech_rows_;
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};
@@ -242,7 +331,7 @@ class engine {
   // no path takes an earlier one while holding a later one.
   mutable std::mutex work_m_;
   std::condition_variable work_cv_;
-  std::deque<work_item> queue_;
+  std::deque<job> queue_;
   std::set<std::int64_t> in_flight_;
   std::string prefer_dir_key_;
   bool queue_exhausted_ = false;

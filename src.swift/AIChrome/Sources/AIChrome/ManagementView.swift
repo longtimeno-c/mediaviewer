@@ -20,6 +20,7 @@ struct RootRow: Identifiable, Equatable {
   let assets: Int64
   let done: Int64
   let bytes: Int64
+  let media: UInt32       // MV_AI_MEDIA_*: what its videos are indexed for (0 = the setting)
 }
 
 struct Person: Identifiable, Equatable {
@@ -51,6 +52,10 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var capBytes: Int64 = 0
   @Published private(set) var facesOn = false
   @Published private(set) var coreMLAvailable = true
+  /// Settings "Index videos for" (MV_AI_MEDIA_*: 1 Pictures, 2 Sound, 3 Both).
+  @Published private(set) var videoIndex: Int = 1
+  /// The Sound piece (ai-audio) is installed and loaded.
+  @Published private(set) var audioReady = false
   @Published private(set) var models: [(quality: Int, name: String)] = []
   @Published private(set) var roots: [RootRow] = []
   @Published private(set) var people: [Person] = []
@@ -104,8 +109,11 @@ final class ManagementModel: ObservableObject {
     if s.index_bytes != indexBytes { indexBytes = s.index_bytes }
     if s.flags != flags {
       let facesAppeared = (s.flags & MV_AI_STATUS_FACES_READY) != 0 && !facesReady
+      let audioChanged = (s.flags ^ flags) & MV_AI_STATUS_AUDIO_READY != 0
       flags = s.flags
       if facesAppeared { reloadPeople() }
+      // The Sound piece came or went: "Index videos for" enables or disables.
+      if audioChanged { reloadSettings() }
     }
     let line = StatusLine(s)
     if line != status { status = line }
@@ -127,6 +135,9 @@ final class ManagementModel: ObservableObject {
     capBytes = int64(obj["index_cap_bytes"])
     facesOn = obj["faces"] as? Bool ?? false
     coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
+    let index = Int(int64(obj["video_index"]))
+    videoIndex = index == 0 ? Int(MV_AI_MEDIA_PICTURES) : index
+    audioReady = obj["audio_ready"] as? Bool ?? false
     models = (obj["models"] as? [[String: Any]] ?? []).map {
       (quality: Int(int64($0["quality"])), name: $0["name"] as? String ?? "")
     }
@@ -149,7 +160,8 @@ final class ManagementModel: ObservableObject {
       let rows: [RootRow] = (parseJSON(json) as? [[String: Any]] ?? []).map {
         RootRow(id: UInt64(clamping: int64($0["id"])), path: $0["path"] as? String ?? "",
                 recursive: $0["recursive"] as? Bool ?? false, enabled: $0["enabled"] as? Bool ?? true,
-                assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]))
+                assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]),
+                media: UInt32(clamping: int64($0["media"])))
       }
       await MainActor.run { if rows != self.roots { self.roots = rows } }
     }
@@ -158,6 +170,14 @@ final class ManagementModel: ObservableObject {
   func setRootEnabled(_ id: UInt64, _ on: Bool) {
     _ = table.a.root_set_enabled?(table.ctx, id, on ? 1 : 0)
     reloadRoots()
+  }
+
+  /// Per folder: Default / Pictures / Sound / Both (root_set_media).
+  func setRootMedia(_ id: UInt64, _ media: UInt32) {
+    guard table.has(\mv_ai_api.root_set_media) else { return }
+    _ = table.a.root_set_media?(table.ctx, id, media)
+    reloadRoots()
+    pollStatus()
   }
 
   func rescan(_ id: UInt64) {
@@ -275,6 +295,12 @@ struct ManagementView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       StatusPill(line: model.status) { model.setPaused($0) }
+      if !model.status.sound.isEmpty {
+        // "Sound: 12 of 40 clips · Speech: 8 of 40", also once it is done.
+        Label(model.status.sound, systemImage: "speaker.wave.2")
+          .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+          .contentTransition(.numericText())
+      }
       if !model.message.isEmpty {
         Text(model.message).font(AITheme.font(12)).foregroundStyle(AITheme.body)
       }
@@ -295,6 +321,20 @@ struct ManagementView: View {
             Text("High").tag(Int(MV_AI_QUALITY_HIGH.rawValue))
           }
           .pickerStyle(.menu).frame(width: 160)
+        }
+      }
+      section("Videos") {
+        row("Index videos for",
+            detail: model.audioReady
+              ? "Pictures finds what a clip shows. Sound also finds what it sounds like (“dog barking”) and what is said. Each folder can differ, from its menu below."
+              : "Pictures finds what a clip shows. To find videos by sound and speech, install Sound above.") {
+          Picker("Index videos for", selection: Binding(get: { model.videoIndex },
+                                                        set: { model.set("video_index", Int64($0)) })) {
+            Text("Pictures").tag(Int(MV_AI_MEDIA_PICTURES))
+            Text("Sound").tag(Int(MV_AI_MEDIA_SOUND)).disabled(!model.audioReady)
+            Text("Both").tag(Int(MV_AI_MEDIA_BOTH)).disabled(!model.audioReady)
+          }
+          .pickerStyle(.segmented).frame(width: 240)
         }
       }
       section("Indexed folders") {
@@ -376,6 +416,27 @@ struct ManagementView: View {
     }
   }
 
+  struct MediaChoice: Identifiable {
+    let value: UInt32
+    let label: String
+    var id: UInt32 { value }
+  }
+  static let mediaChoices = [
+    MediaChoice(value: MV_AI_MEDIA_DEFAULT, label: "Default"),
+    MediaChoice(value: MV_AI_MEDIA_PICTURES, label: "Pictures"),
+    MediaChoice(value: MV_AI_MEDIA_SOUND, label: "Sound"),
+    MediaChoice(value: MV_AI_MEDIA_BOTH, label: "Both"),
+  ]
+
+  static func mediaLabel(_ media: UInt32) -> String {
+    switch media {
+    case MV_AI_MEDIA_PICTURES: return "Videos: Pictures"
+    case MV_AI_MEDIA_SOUND: return "Videos: Sound"
+    case MV_AI_MEDIA_BOTH: return "Videos: Both"
+    default: return "Videos: Default"
+    }
+  }
+
   private var qualityDetail: String {
     let fast = model.modelName(Int(MV_AI_QUALITY_FAST.rawValue))
     let high = model.modelName(Int(MV_AI_QUALITY_HIGH.rawValue))
@@ -404,6 +465,21 @@ struct ManagementView: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
+      Menu {
+        ForEach(Self.mediaChoices) { choice in
+          Button {
+            model.setRootMedia(root.id, choice.value)
+          } label: {
+            if root.media == choice.value { Label(choice.label, systemImage: "checkmark") } else { Text(choice.label) }
+          }
+          .disabled(choice.value & MV_AI_MEDIA_SOUND != 0 && !model.audioReady)
+        }
+      } label: {
+        Text(Self.mediaLabel(root.media))
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .help("What this folder's videos are indexed for")
       Button("Rescan") { model.rescan(root.id) }
       if model.confirming == .removeRoot(root.id) {
         Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }

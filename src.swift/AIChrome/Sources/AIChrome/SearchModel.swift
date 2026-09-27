@@ -20,6 +20,10 @@ struct AIResult: Identifiable, Equatable, Sendable {
   let ptsMs: Int64          // -1 for a photo
   let kind: UInt32
   let more: UInt32          // other matching moments in the same clip
+  let match: UInt32         // MV_AI_MATCH_*: picture, sound, speech (0 from an older pack)
+  var snippet = ""          // the words said, for a speech match ("…happy birthday Anna…")
+  var matchedSound: Bool { match & MV_AI_MATCH_SOUND != 0 }
+  var matchedSpeech: Bool { match & MV_AI_MATCH_SPEECH != 0 }
   /// Stable across a re-run of the same search while the index grows, so a
   /// tile that is already on screen keeps its picture and does not fade in again.
   var id: String { "\(path)|\(ptsMs)" }
@@ -60,6 +64,33 @@ final class SearchModel: ObservableObject {
   @Published var query = ""
   @Published var scope: SearchScope = .folder
   @Published var kinds: SearchKinds = .all
+  /// What to find (2026-09-27): Pictures · Sounds · Speech. Empty = all three.
+  @Published var finds: Set<Find> = []
+
+  enum Find: UInt32, CaseIterable, Identifiable {
+    case pictures = 0x10, sounds = 0x20, speech = 0x40
+    var id: UInt32 { rawValue }
+    var label: String {
+      switch self {
+      case .pictures: return "Pictures"
+      case .sounds: return "Sounds"
+      case .speech: return "Speech"
+      }
+    }
+    var symbol: String {
+      switch self {
+      case .pictures: return "photo"
+      case .sounds: return "speaker.wave.2"
+      case .speech: return "text.bubble"
+      }
+    }
+  }
+
+  /// The kinds word with the FIND bits OR'ed in (none set = all).
+  private var kindBits: UInt32 { finds.reduce(kinds.rawValue) { $0 | $1.rawValue } }
+
+  /// Sounds and speech exist only with the ai-audio piece loaded.
+  var audioReady: Bool { status.audioReady }
   /// Find-similar / a person: shown as a removable chip in place of the text.
   @Published var reference: Reference?
 
@@ -190,7 +221,7 @@ final class SearchModel: ObservableObject {
       }
     } else if !text.isEmpty {
       st = withOptionalCString(scopeDir) { dir in
-        table.a.search_text?(table.ctx, text, dir, effectiveScope, kinds.rawValue, &id) ?? MV_ERR_INVALID_ARG
+        table.a.search_text?(table.ctx, text, dir, effectiveScope, kindBits, &id) ?? MV_ERR_INVALID_ARG
       }
     } else {
       // An empty field: nothing to show, nothing pending.
@@ -238,8 +269,12 @@ final class SearchModel: ObservableObject {
         guard t.a.result_at?(t.ctx, id, UInt32(i), &r) == MV_OK else { continue }
         let path = t.path { t.a.result_path?(t.ctx, id, UInt32(i), $0, $1) ?? MV_ERR_INVALID_ARG } ?? ""
         guard !path.isEmpty else { continue }
-        let result = AIResult(index: i, search: id, path: path, ptsMs: r.pts_ms, kind: r.kind,
-                              more: r.more_in_clip)
+        var result = AIResult(index: i, search: id, path: path, ptsMs: r.pts_ms, kind: r.kind,
+                              more: r.more_in_clip, match: r.match)
+        // The words that matched (a speech result), read here on the worker.
+        if result.matchedSpeech, t.hasAudio {
+          result.snippet = t.path { t.a.result_snippet?(t.ctx, id, UInt32(i), $0, $1) ?? MV_ERR_INVALID_ARG } ?? ""
+        }
         guard seen.insert(result.id).inserted else { continue }
         out.append(result)
       }

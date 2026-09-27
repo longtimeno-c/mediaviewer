@@ -83,6 +83,37 @@ class frame_sampler {
   std::unique_ptr<impl> p_;
 };
 
+// A clip's soundtrack as mono float PCM at `sample_rate` (Milestone H audio
+// index: CLAP wants 48 kHz, Whisper 16 kHz). Its own decoder on the calling
+// worker, never the player's. Channels are averaged; the first audio stream
+// the demuxer calls best is the one read.
+struct audio_facts {
+  std::int64_t duration_ms = 0;
+  bool has_audio = false;
+};
+
+class audio_reader {
+ public:
+  ~audio_reader();
+  audio_reader(const audio_reader&) = delete;
+  audio_reader& operator=(const audio_reader&) = delete;
+
+  // status::unsupported_format when the file has no audio stream.
+  [[nodiscard]] static result<std::unique_ptr<audio_reader>> open(
+      std::string_view utf8_path, std::uint32_t sample_rate, std::int64_t start_ms,
+      const std::atomic<bool>* cancel = nullptr);
+  [[nodiscard]] const audio_facts& facts() const noexcept;
+  // Up to `max_samples` more samples; `start_ms` is the first one's time on
+  // the player's timeline. An empty result is the end of the stream.
+  [[nodiscard]] result<std::vector<float>> read(std::size_t max_samples, std::int64_t& start_ms);
+
+  struct impl;
+
+ private:
+  explicit audio_reader(std::unique_ptr<impl> p);
+  std::unique_ptr<impl> p_;
+};
+
 // The frame on screen at `at_ms` (the last whose pts is not after it),
 // decoded forward from the keyframe before it, fitted to max_long_edge.
 [[nodiscard]] result<sample_rgb> frame_rgb_at(std::string_view utf8_path, std::int64_t at_ms,

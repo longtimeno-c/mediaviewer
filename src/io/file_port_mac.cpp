@@ -82,6 +82,11 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   out.is_directory = S_ISDIR(st.st_mode);
   out.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
   out.mtime_unix = mtime_of(st);
+#if defined(__APPLE__)
+  out.mtime_ns = static_cast<std::int64_t>(st.st_mtimespec.tv_sec) * 1000000000LL + st.st_mtimespec.tv_nsec;
+#else
+  out.mtime_ns = static_cast<std::int64_t>(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
   return out;
 }
 

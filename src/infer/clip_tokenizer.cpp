@@ -295,6 +295,186 @@ std::vector<std::string> clip_tokenizer::bpe(const std::string& word) const {
   return sym;
 }
 
+// ---- GPT-2 byte-level BPE ----------------------------------------------------------
+
+namespace {
+
+void fill_byte_map(std::string (&to_unicode)[256], std::unordered_map<char32_t, std::uint8_t>* back) {
+  int n = 0;
+  for (int b = 0; b < 256; ++b) {
+    const bool keep = (b >= '!' && b <= '~') || (b >= 0xA1 && b <= 0xAC) || (b >= 0xAE && b <= 0xFF);
+    const char32_t cp = keep ? static_cast<char32_t>(b) : static_cast<char32_t>(256 + n++);
+    std::string s;
+    put_cp(s, cp);
+    to_unicode[b] = std::move(s);
+    if (back) (*back)[cp] = static_cast<std::uint8_t>(b);
+  }
+}
+
+result<std::unordered_map<std::string, std::uint32_t>> read_merges(std::string_view merges_txt) {
+  std::unordered_map<std::string, std::uint32_t> ranks;
+  std::uint32_t rank = 0;
+  std::size_t pos = 0;
+  while (pos < merges_txt.size()) {
+    std::size_t eol = merges_txt.find('\n', pos);
+    if (eol == std::string_view::npos) eol = merges_txt.size();
+    std::string_view line = merges_txt.substr(pos, eol - pos);
+    pos = eol + 1;
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (line.empty() || line.rfind("#version", 0) == 0) continue;
+    const std::size_t sp = line.find(' ');
+    if (sp == std::string_view::npos || sp == 0 || sp + 1 >= line.size()) return err(status::corrupt);
+    ranks.emplace(std::string(line), rank++);
+  }
+  if (ranks.empty()) return err(status::corrupt);
+  return ranks;
+}
+
+// Merges every best-ranked pair until none applies (no end-of-word mark).
+std::vector<std::string> bpe_merge(const std::string& word,
+                                   const std::unordered_map<std::string, std::uint32_t>& ranks) {
+  std::vector<std::string> sym;
+  for (std::size_t i = 0; i < word.size();) {
+    const std::size_t start = i;
+    (void)next_cp(word, i);
+    sym.emplace_back(word.substr(start, i - start));
+  }
+  while (sym.size() > 1) {
+    std::uint32_t best = std::numeric_limits<std::uint32_t>::max();
+    std::size_t at = 0;
+    for (std::size_t k = 0; k + 1 < sym.size(); ++k) {
+      auto it = ranks.find(sym[k] + ' ' + sym[k + 1]);
+      if (it != ranks.end() && it->second < best) {
+        best = it->second;
+        at = k;
+      }
+    }
+    if (best == std::numeric_limits<std::uint32_t>::max()) break;
+    const std::string a = sym[at], b = sym[at + 1];
+    std::vector<std::string> next;
+    for (std::size_t k = 0; k < sym.size();) {
+      if (k + 1 < sym.size() && sym[k] == a && sym[k + 1] == b) {
+        next.push_back(a + b);
+        k += 2;
+      } else {
+        next.push_back(sym[k++]);
+      }
+    }
+    sym.swap(next);
+  }
+  return sym;
+}
+
+}  // namespace
+
+result<gpt2_tokenizer> gpt2_tokenizer::load(std::string_view vocab_json, std::string_view merges_txt) {
+  gpt2_tokenizer t;
+  fill_byte_map(t.byte_to_unicode_, &t.unicode_to_byte_);
+  const auto doc = json::parse(vocab_json, 4);
+  if (!doc || doc->k != json::kind::object || doc->o.empty()) return err(status::corrupt);
+  for (const auto& [token, id] : doc->o) {
+    if (id.k != json::kind::number || !id.is_integer || id.i < 0 || id.i > 1'000'000) return err(status::corrupt);
+    t.vocab_.emplace(token, id.i);
+    if (static_cast<std::size_t>(id.i) >= t.by_id_.size()) t.by_id_.resize(static_cast<std::size_t>(id.i) + 1);
+    t.by_id_[static_cast<std::size_t>(id.i)] = token;
+  }
+  MV_TRY(auto ranks, read_merges(merges_txt));
+  t.ranks_ = std::move(ranks);
+  return t;
+}
+
+std::vector<std::string> gpt2_tokenizer::pieces(std::string_view s) {
+  std::vector<std::string> out;
+  std::size_t i = 0;
+  while (i < s.size()) {
+    if (const std::size_t n = contraction_at(s, i); n) {
+      out.emplace_back(s.substr(i, n));
+      i += n;
+      continue;
+    }
+    std::size_t j = i;
+    const char32_t c = next_cp(s, j);
+    if (class_of(c) == cls::space) {
+      // A whitespace run: its last ' ' prefixes the word after it (" ?\p{L}+");
+      // the rest, or a run at the end, is its own piece.
+      std::size_t end = j;
+      std::size_t last_start = i;
+      while (end < s.size()) {
+        std::size_t k = end;
+        if (class_of(next_cp(s, k)) != cls::space) break;
+        last_start = end;
+        end = k;
+      }
+      const bool followed = end < s.size();
+      if (followed && s[last_start] == ' ') {
+        if (last_start > i) out.emplace_back(s.substr(i, last_start - i));
+        i = last_start;  // the space joins the next piece
+        std::size_t k = i + 1;
+        const cls kind = class_of(next_cp(s, k));
+        std::size_t e = k;
+        while (e < s.size()) {
+          if (kind == cls::other && contraction_at(s, e)) break;
+          std::size_t p = e;
+          if (class_of(next_cp(s, p)) != kind || kind == cls::space) break;
+          e = p;  // \p{N}+ here: GPT-2 keeps digit runs whole (CLIP splits them)
+        }
+        out.emplace_back(s.substr(i, e - i));
+        i = e;
+      } else {
+        out.emplace_back(s.substr(i, end - i));
+        i = end;
+      }
+      continue;
+    }
+    const cls kind = class_of(c);
+    std::size_t e = j;
+    while (e < s.size()) {
+      if (kind == cls::other && contraction_at(s, e)) break;
+      std::size_t p = e;
+      if (class_of(next_cp(s, p)) != kind) break;
+      e = p;
+    }
+    out.emplace_back(s.substr(i, e - i));
+    i = e;
+  }
+  return out;
+}
+
+std::vector<std::string> gpt2_tokenizer::bpe(const std::string& word) const { return bpe_merge(word, ranks_); }
+
+std::vector<std::int64_t> gpt2_tokenizer::encode(std::string_view utf8, std::int64_t bos, std::int64_t eos,
+                                                 std::size_t max_len) const {
+  std::vector<std::int64_t> ids{bos};
+  const std::size_t room = max_len > 2 ? max_len - 2 : 0;
+  std::vector<std::int64_t> body;
+  for (const std::string& piece : pieces(utf8)) {
+    std::string mapped;
+    for (unsigned char b : piece) mapped += byte_to_unicode_[b];
+    for (const std::string& tok : bpe(mapped)) {
+      if (auto it = vocab_.find(tok); it != vocab_.end()) body.push_back(it->second);
+    }
+    if (body.size() >= room) break;
+  }
+  if (body.size() > room) body.resize(room);
+  ids.insert(ids.end(), body.begin(), body.end());
+  ids.push_back(eos);
+  return ids;
+}
+
+std::string gpt2_tokenizer::decode(std::span<const std::int64_t> ids, std::int64_t first_special) const {
+  std::string bytes;
+  for (std::int64_t id : ids) {
+    if (id < 0 || id >= first_special || static_cast<std::size_t>(id) >= by_id_.size()) continue;
+    const std::string& tok = by_id_[static_cast<std::size_t>(id)];
+    for (std::size_t i = 0; i < tok.size();) {
+      const char32_t cp = next_cp(tok, i);
+      auto it = unicode_to_byte_.find(cp);
+      if (it != unicode_to_byte_.end()) bytes.push_back(static_cast<char>(it->second));
+    }
+  }
+  return bytes;
+}
+
 std::vector<std::int64_t> clip_tokenizer::encode(std::string_view utf8) const {
   std::vector<std::int64_t> ids{sot_};
   const std::size_t room = context_ - 2;

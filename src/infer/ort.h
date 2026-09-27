@@ -105,6 +105,27 @@ class session {
   [[nodiscard]] result<std::vector<tensor_f32>> run(std::span<const tensor_f32> inputs) const;
   [[nodiscard]] result<std::vector<tensor_f32>> run_ids(const tensor_i64& ids) const;
 
+  // Inputs by name, of mixed element types (Whisper's decoder: int64 ids,
+  // float states and caches, a bool flag). Float data converts to the
+  // model's own input type (fp16 exports). Outputs come back as float32, in
+  // the model's output order; output_names() names them.
+  enum class element : std::uint8_t { f32, i64, flag };
+  struct named_input {
+    std::string name;
+    std::vector<std::int64_t> shape;
+    element type = element::f32;          // explicit: an empty cache has no data pointer
+    const float* f32 = nullptr;           // the one `type` names
+    const std::int64_t* i64 = nullptr;
+    const bool* flag = nullptr;
+    std::size_t count = 0;
+  };
+  [[nodiscard]] result<std::vector<tensor_f32>> run_named(std::span<const named_input> inputs) const;
+  [[nodiscard]] const std::vector<std::string>& input_names() const noexcept;
+  [[nodiscard]] const std::vector<std::string>& output_names() const noexcept;
+  // ORT's message for this thread's last run_named failure (tensor shapes and
+  // types; never a file name). For tests and a debugger, never logged.
+  [[nodiscard]] static const std::string& last_error() noexcept;
+
   struct impl;
 
  private:

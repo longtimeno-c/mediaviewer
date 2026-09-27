@@ -35,7 +35,9 @@ struct clip_spec {
   std::string merges_file;
   std::uint32_t context = 77;
   float dedupe = 0.97f;           // plan/17 step 3
-  float query_margin = 0.04f;     // "nothing found" below this (PR 20 calibration)
+  float query_margin = 0.04f;     // "nothing found" below this (PR 20 calibration)...
+  float query_z = 2.5f;           // ...unless the top ten stand out by this z (2026-09-27)
+  float result_z = 2.0f;          // then a row this many SDs above the mean shows too
   float result_margin = 0.015f;   // a result must beat the generic prompts by this
   float similar_min = 0.62f;      // find-similar: image-to-image cosine floor
   std::vector<std::string> generic_prompts;

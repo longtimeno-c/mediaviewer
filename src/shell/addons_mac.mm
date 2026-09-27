@@ -133,7 +133,9 @@ constexpr bool ai_supported() {
 #endif
 }
 
-bool is_ai_family(const std::string& id) { return id == "ai" || id == "ai-faces"; }
+bool is_ai_family(const std::string& id) {
+  return id == "ai" || id == "ai-faces" || id == "ai-audio";
+}
 
 std::string hint_marker() {
   auto dir = mv::io::addons_dir();
@@ -281,6 +283,7 @@ mv::addon::host_services ai_services() {
   svc.open_sampler = &mv::addon::media::open_sampler;
   svc.video_frame = &mv::addon::media::video_frame;
   svc.moment_thumbnail = &mv::addon::media::moment_thumbnail;
+  svc.open_audio = &mv::addon::media::open_audio;
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -774,10 +777,12 @@ extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
   if (s == "ai") {
     unload_ai();
     bool ok = store.remove("ai", keep_data).has_value();
-    if (auto faces = store.find("ai-faces"); faces) ok = store.remove("ai-faces", false).has_value() && ok;
+    for (const char* piece : {"ai-faces", "ai-audio"}) {
+      if (auto found = store.find(piece); found) ok = store.remove(piece, false).has_value() && ok;
+    }
     return ok;
   }
-  if (s == "ai-faces") {
+  if (s == "ai-faces" || s == "ai-audio") {
     const bool ok = store.remove(s, keep_data).has_value();
     if (state().ai.chrome) (void)mv_addon2_reload("ai");
     return ok;
@@ -830,5 +835,10 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
   out->frames_indexed = st.frames_indexed;
   out->eta_low_seconds = st.eta_low_seconds;
   out->eta_high_seconds = st.eta_high_seconds;
+  // Zero from a pack older than the audio fields (it fills only its struct_size).
+  out->sound_total = st.sound_total;
+  out->sound_done = st.sound_done;
+  out->speech_total = st.speech_total;
+  out->speech_done = st.speech_done;
   return true;
 }

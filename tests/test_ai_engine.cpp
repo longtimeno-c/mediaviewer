@@ -171,6 +171,85 @@ class fake_sampler final : public mv::addon::video_sampler {
   mv::addon::video_facts facts_;
 };
 
+// Audio stand-ins (2026-09-27). A clip named "*_talk_bark*" has a soundtrack
+// whose samples say what is in it: 0.1 while someone talks (0-10 s), 0.3
+// while a dog barks (10-20 s), silence after (to 30 s).
+class fake_audio final : public mv::addon::audio_stream {
+ public:
+  fake_audio(std::uint32_t rate, std::int64_t start_ms) : rate_(rate), t_ms_(start_ms) {}
+  std::int64_t duration_ms() const noexcept override { return 30000; }
+  mv::result<std::vector<float>> read(std::size_t max_samples, std::int64_t& start_ms) override {
+    start_ms = t_ms_;
+    std::vector<float> out;
+    const std::int64_t end_ms = 30000;
+    while (out.size() < max_samples && t_ms_ < end_ms) {
+      const std::int64_t ms = t_ms_ + static_cast<std::int64_t>((pos_ % rate_) * 1000 / rate_);
+      if (ms >= end_ms) break;
+      out.push_back(ms < 10000 ? 0.1f : (ms < 20000 ? 0.3f : 0.0f));
+      if (++pos_ % rate_ == 0) t_ms_ += 1000;
+    }
+    return out;
+  }
+
+ private:
+  std::uint32_t rate_;
+  std::int64_t t_ms_;
+  std::uint64_t pos_ = 0;
+};
+
+// A clip named "*talk_bark*" has the soundtrack above; any other has none.
+mv::result<std::unique_ptr<mv::addon::audio_stream>> open_fake_audio(const std::string& path, std::uint32_t rate,
+                                                                    std::int64_t start_ms) {
+  if (utf8(fs::path(path).filename()).find("talk_bark") == std::string::npos) {
+    return mv::err(mv::status::unsupported_format);
+  }
+  std::unique_ptr<mv::addon::audio_stream> s = std::make_unique<fake_audio>(rate, start_ms);
+  return s;
+}
+
+class fake_sound final : public mv::ai::sound_model {
+ public:
+  mv::expected embed_audio(std::span<const std::span<const float>> windows, std::vector<float>& out) override {
+    out.clear();
+    for (const auto& w : windows) {
+      double sum = 0;
+      for (float v : w) sum += v;
+      const double mean = w.empty() ? 0 : sum / static_cast<double>(w.size());
+      // Mostly bark -> the "dog" direction (blue channel here); else noise.
+      const auto v = mean > 0.2 ? colour_vec(0, 0, 1) : colour_vec(0.3f, 0.3f, 0.3f);
+      out.insert(out.end(), v.begin(), v.end());
+      ++windows_embedded;
+    }
+    return {};
+  }
+  mv::result<std::vector<float>> embed_text(std::string_view text) override {
+    if (text.find("dog") != std::string_view::npos || text.find("bark") != std::string_view::npos) {
+      return colour_vec(0, 0, 1);
+    }
+    return colour_vec(0.3f, 0.3f, 0.3f);
+  }
+  std::atomic<int> windows_embedded{0};
+};
+
+class fake_speech final : public mv::ai::speech_model {
+ public:
+  mv::result<mv::infer::speech_window> transcribe(std::span<const float> pcm, std::int64_t start_ms) override {
+    mv::infer::speech_window w;
+    w.consumed_ms = static_cast<std::int64_t>(pcm.size()) * 1000 / 16000;
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+      if (std::fabs(pcm[i] - 0.1f) < 1e-4f) {
+        w.segments.push_back({start_ms + static_cast<std::int64_t>(i / 16), start_ms + 10000,
+                              "Happy birthday Anna, make a wish!"});
+        w.speech = true;
+        break;
+      }
+    }
+    ++windows;
+    return w;
+  }
+  std::atomic<int> windows{0};
+};
+
 struct rig {
   scratch_dir dir{"ai"};
   std::mutex events_m;
@@ -183,6 +262,9 @@ struct rig {
   std::shared_ptr<fake_embedder> fast = std::make_shared<fake_embedder>("fake-fast/fp16/pre1");
   std::shared_ptr<fake_embedder> high = std::make_shared<fake_embedder>("fake-high/fp16/pre1", 0.01f);
   bool faces_available = true;
+  bool audio_available = false;
+  std::shared_ptr<fake_sound> sound = std::make_shared<fake_sound>();
+  std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
   std::unique_ptr<engine> eng;
 
   rig() {
@@ -226,6 +308,7 @@ struct rig {
       return it->second;
     };
     svc.piece_dir = [](const std::string&) -> mv::result<std::string> { return mv::err(mv::status::io); };
+    svc.open_audio = &open_fake_audio;
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
   }
@@ -257,6 +340,26 @@ struct rig {
       return std::unique_ptr<mv::ai::face_analyzer>(new fake_faces());
     };
     d.runtime_version = [] { return std::string("fake"); };
+    d.open_sound = [this](std::uint32_t) -> mv::result<mv::ai::loaded_sound> {
+      if (!audio_available) return mv::err(mv::status::io);
+      mv::ai::loaded_sound s;
+      s.model = sound;
+      s.name = "Fake CLAP";
+      s.spec_key = "fake-clap/fp16/pre1";
+      s.dim = kDim;
+      s.window_ms = 10000;
+      s.hop_ms = 5000;
+      s.generic_prompts = {"a sound."};
+      return s;
+    };
+    d.open_speech = [this](std::uint32_t, std::uint32_t) -> mv::result<mv::ai::loaded_speech> {
+      if (!audio_available) return mv::err(mv::status::io);
+      mv::ai::loaded_speech s;
+      s.model = speech;
+      s.name = "Fake Whisper";
+      s.spec_key = "fake-whisper/fp16/pre1";
+      return s;
+    };
     return d;
   }
 
@@ -454,22 +557,36 @@ TEST_CASE("indexing waits while the viewer is busy and says so", "[ai][engine]")
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
   CHECK(r.stills_decoded.load() == 0);
+  // Not even the models open while the viewer is busy (they cost frames).
   const mv_ai_status s = r.status();
-  CHECK(s.state == MV_AI_STATE_YIELDING);
+  CHECK(s.state == MV_AI_STATE_LOADING);
   CHECK(s.yield_reason == MV_AI_YIELD_VIEWER);
   r.busy = false;
   REQUIRE(r.idle());
   CHECK(r.stills_decoded.load() == 1);
 
+  // Loaded, then busy again: the indexer yields and says so.
+  r.busy = true;
+  r.file("blue.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(r.stills_decoded.load() == 1);
+  const mv_ai_status y = r.status();
+  CHECK(y.state == MV_AI_STATE_YIELDING);
+  CHECK(y.yield_reason == MV_AI_YIELD_VIEWER);
+  r.busy = false;
+  REQUIRE(r.idle());
+  CHECK(r.stills_decoded.load() == 2);
+
   r.eng->pause(true);
   r.file("green.jpg");
   REQUIRE(r.eng->root_rescan(1));
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-  CHECK(r.stills_decoded.load() == 1);
+  CHECK(r.stills_decoded.load() == 2);
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
   r.eng->pause(false);
   REQUIRE(r.idle());
-  CHECK(r.stills_decoded.load() == 2);
+  CHECK(r.stills_decoded.load() == 3);
 }
 
 TEST_CASE("a quality change migrates without ever mixing vector spaces", "[ai][engine]") {
@@ -608,4 +725,86 @@ TEST_CASE("a file the host cannot decode fails without stopping the rest", "[ai]
   CHECK(s.assets_done == 1);
   CHECK(s.assets_failed == 1);
   CHECK(r.search("red").size() == 1);
+}
+
+TEST_CASE("audio: a clip's sounds and speech are indexed and found at their moments", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.file("quiet_rgb.mp4");  // no soundtrack: sound and speech finish, nothing fails
+  r.file("red_photo.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle(30000));
+  const mv_ai_status s = r.status();
+  CHECK((s.flags & MV_AI_STATUS_AUDIO_READY) != 0);
+  CHECK(s.sound_total == 2);   // videos only: photos have no soundtrack
+  CHECK(s.sound_done == 2);
+  CHECK(s.speech_total == 2);
+  CHECK(s.speech_done == 2);
+  CHECK(s.assets_failed == 0);
+
+  // What it sounds like: the bark window (10-20 s), not the talk before it.
+  const std::uint64_t bark = r.eng->search_text("a dog barking", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(bark, 5000));
+  auto rows = r.rows(bark);
+  REQUIRE_FALSE(rows.empty());
+  CHECK(rows.front().first == "party_talk_bark.mp4");
+  CHECK(rows.front().second >= 5000);
+  CHECK(rows.front().second <= 15000);
+  CHECK((r.eng->result_at(bark, 0)->match & MV_AI_MATCH_SOUND) != 0);
+
+  // What is said: the words, with a snippet, at the moment they start.
+  const std::uint64_t said = r.eng->search_text("birthday anna", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(said, 5000));
+  rows = r.rows(said);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows.front().first == "party_talk_bark.mp4");
+  CHECK(rows.front().second == 0);
+  CHECK(r.eng->result_at(said, 0)->match == MV_AI_MATCH_SPEECH);
+  CHECK(r.eng->result_snippet(said, 0)->find("birthday") != std::string::npos);
+
+  // "Find in" narrows: pictures only never answers from the soundtrack.
+  const std::uint64_t pics =
+      r.eng->search_text("birthday anna", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL | MV_AI_FIND_PICTURES);
+  REQUIRE(r.eng->wait_search(pics, 5000));
+  CHECK(r.rows(pics).empty());
+
+  // Photos still answer as pictures alongside.
+  CHECK(r.search("red").front().first == "red_photo.jpg");
+}
+
+TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {
+  rig r;
+  r.audio_available = true;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->set_setting("video_index", "1"));  // Pictures
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(r.idle(30000));
+  CHECK(r.sound->windows_embedded.load() == 0);
+  CHECK(r.speech->windows.load() == 0);
+  CHECK(r.status().sound_total == 0);
+
+  // Switching this folder to Both queues its sound and speech.
+  REQUIRE(r.eng->root_set_media(*root, MV_AI_MEDIA_BOTH));
+  REQUIRE(r.idle(30000));
+  CHECK(r.sound->windows_embedded.load() > 0);
+  CHECK(r.speech->windows.load() > 0);
+  CHECK(r.status().sound_done == 1);
+  const auto roots = mv::json::parse(r.eng->roots_json());
+  REQUIRE(roots);
+  CHECK(*roots->a[0].integer("media") == MV_AI_MEDIA_BOTH);
+}
+
+TEST_CASE("audio: without the ai-audio piece nothing changes", "[ai][engine][audio]") {
+  rig r;
+  r.file("party_talk_bark.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle(30000));
+  CHECK((r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0);
+  CHECK(r.status().sound_total == 0);
+  CHECK(r.search("birthday anna").empty());
 }

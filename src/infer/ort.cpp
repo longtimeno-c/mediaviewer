@@ -386,6 +386,75 @@ result<std::vector<tensor_f32>> session::run(std::span<const tensor_f32> inputs)
   return collect(api, outs);
 }
 
+const std::vector<std::string>& session::input_names() const noexcept { return p_->in_names; }
+const std::vector<std::string>& session::output_names() const noexcept { return p_->out_names; }
+
+namespace {
+thread_local std::string t_last_error;
+}  // namespace
+
+const std::string& session::last_error() noexcept { return t_last_error; }
+
+using named_input_element = session::element;
+
+result<std::vector<tensor_f32>> session::run_named(std::span<const named_input> inputs) const {
+  const OrtApi* api = p_->api;
+  t_last_error.clear();
+  values ins(api);
+  std::vector<const char*> in_names;
+  std::vector<std::vector<std::uint16_t>> halves;
+  halves.reserve(inputs.size());
+  for (const named_input& in : inputs) {
+    auto it = std::find(p_->in_names.begin(), p_->in_names.end(), in.name);
+    if (it == p_->in_names.end()) {
+      t_last_error = "no input " + in.name;
+      return err(status::invalid_arg);
+    }
+    const auto type = p_->in_types[static_cast<std::size_t>(it - p_->in_names.begin())];
+    OrtValue* v = nullptr;
+    OrtStatus* st = nullptr;
+    // A zero-length dimension (an empty cache) still needs a valid pointer.
+    static float empty_f = 0;
+    static std::int64_t empty_i = 0;
+    static bool empty_b = false;
+    if (in.type == named_input_element::f32) {
+      if (type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+        halves.emplace_back(in.count);
+        for (std::size_t k = 0; k < in.count; ++k) halves.back()[k] = to_half(in.f32[k]);
+        st = api->CreateTensorWithDataAsOrtValue(p_->mem, in.count ? halves.back().data() : static_cast<void*>(&empty_f),
+                                                 in.count * 2, in.shape.data(), in.shape.size(),
+                                                 ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16, &v);
+      } else {
+        st = api->CreateTensorWithDataAsOrtValue(p_->mem, in.count ? const_cast<float*>(in.f32) : &empty_f,
+                                                 in.count * sizeof(float), in.shape.data(), in.shape.size(),
+                                                 ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &v);
+      }
+    } else if (in.type == named_input_element::i64) {
+      st = api->CreateTensorWithDataAsOrtValue(p_->mem, in.count ? const_cast<std::int64_t*>(in.i64) : &empty_i,
+                                               in.count * 8, in.shape.data(), in.shape.size(),
+                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &v);
+    } else if (in.type == named_input_element::flag) {
+      st = api->CreateTensorWithDataAsOrtValue(p_->mem, in.count ? const_cast<bool*>(in.flag) : &empty_b,
+                                               in.count * sizeof(bool), in.shape.data(), in.shape.size(),
+                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL, &v);
+    } else {
+      return err(status::invalid_arg);
+    }
+    if (!ok(api, st, &t_last_error)) return err(status::invalid_arg);
+    ins.v.push_back(v);
+    in_names.push_back(it->c_str());
+  }
+  std::vector<const char*> out_names;
+  for (const auto& n : p_->out_names) out_names.push_back(n.c_str());
+  values outs(api);
+  outs.v.assign(out_names.size(), nullptr);
+  if (!ok(api, api->Run(p_->s, nullptr, in_names.data(), ins.v.data(), ins.v.size(), out_names.data(),
+                        out_names.size(), outs.v.data()), &t_last_error)) {
+    return err(status::internal);
+  }
+  return collect(api, outs);
+}
+
 result<std::vector<tensor_f32>> session::run_ids(const tensor_i64& ids) const {
   const OrtApi* api = p_->api;
   if (p_->in_names.empty()) return err(status::invalid_arg);

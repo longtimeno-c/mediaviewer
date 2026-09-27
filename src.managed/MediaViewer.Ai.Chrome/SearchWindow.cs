@@ -27,6 +27,11 @@ internal sealed class ResultTile
     public long PtsMs { get; init; } = -1;
     public uint More { get; init; }
     public bool Video { get; init; }
+    public MvAiMatch Match { get; init; }
+    /// <summary>For a speech match, the words that matched; fetched off the UI thread.</summary>
+    public string? Snippet { get; set; }
+    public bool SnippetRequested { get; set; }
+    public TextBlock? Caption { get; set; }
     public string Name => System.IO.Path.GetFileName(Path);
     public (string, long) Key => (Path, PtsMs);
     public ImageSource? Thumb { get; set; }
@@ -73,6 +78,8 @@ internal sealed class SearchWindow : Window, IDisposable
     private TextBlock _similarText = null!;
     private readonly ToggleButton[] _scopeChips = new ToggleButton[3];
     private readonly ToggleButton[] _kindChips = new ToggleButton[3];
+    private readonly ToggleButton[] _findChips = new ToggleButton[3];
+    private StackPanel _findRow = null!;
     private TextBlock _count = null!;
     private ScrollViewer _scroll = null!;
     private ItemsRepeater _repeater = null!;
@@ -93,6 +100,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private AiChrome.SimilarTo? _similar;
     private MvAiScope _scope = MvAiScope.Folder;
     private MvAiKinds _kinds = MvAiKinds.All;
+    private MvAiKinds _find;  // MV_AI_FIND_* bits; none = all
     private bool _visible;
     private bool _disposing;
     private bool _settingText;
@@ -258,8 +266,35 @@ internal sealed class SearchWindow : Window, IDisposable
         chips.Children.Add(kinds);
         Grid.SetColumn(_count, 2);
         chips.Children.Add(_count);
-        Grid.SetRow(chips, 1);
-        body.Children.Add(chips);
+
+        // Audio (2026-09-27): what to look for — multi-select; none or all is all.
+        // Shown once the Audio piece is loaded; before that everything is pictures.
+        _findRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Visibility = Visibility.Collapsed };
+        var findLabel = _look.Text("Find in", 13, AddonColour.Body, wrap: false);
+        findLabel.VerticalAlignment = VerticalAlignment.Center;
+        findLabel.Margin = new Thickness(2, 0, 4, 0);
+        _findRow.Children.Add(findLabel);
+        (string Name, string Glyph, MvAiKinds Bit)[] finds =
+        {
+            ("Pictures", GlyphPicture, MvAiKinds.FindPictures),
+            ("Sounds", GlyphSound, MvAiKinds.FindSounds),
+            ("Speech", GlyphSpeech, MvAiKinds.FindSpeech),
+        };
+        for (int i = 0; i < 3; ++i)
+        {
+            MvAiKinds bit = finds[i].Bit;
+            _findChips[i] = Chip(finds[i].Name, () => ToggleFind(bit), finds[i].Glyph);
+            _findRow.Children.Add(_findChips[i]);
+        }
+        WireArrows(_scopeChips);
+        WireArrows(_kindChips);
+        WireArrows(_findChips);
+
+        var chipRows = new StackPanel { Spacing = 8 };
+        chipRows.Children.Add(chips);
+        chipRows.Children.Add(_findRow);
+        Grid.SetRow(chipRows, 1);
+        body.Children.Add(chipRows);
 
         // The grid, with one selection ring that glides between tiles.
         _repeater = new ItemsRepeater
@@ -390,20 +425,80 @@ internal sealed class SearchWindow : Window, IDisposable
         return _root;
     }
 
-    private ToggleButton Chip(string label, Action click)
+    private ToggleButton Chip(string label, Action click, string? glyph = null)
     {
+        object content = label;
+        if (glyph is not null)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            row.Children.Add(new FontIcon { Glyph = glyph, FontFamily = IconFont, FontSize = 12 });
+            row.Children.Add(new TextBlock { Text = label, FontFamily = _look.Font, FontSize = 13 });
+            content = row;
+        }
         var chip = new ToggleButton
         {
-            Content = label,
+            Content = content,
             FontFamily = _look.Font,
             FontSize = 13,
             Padding = new Thickness(12, 4, 12, 5),
             CornerRadius = new CornerRadius(14),
             MinHeight = 0,
         };
+        AutomationProperties.SetName(chip, label);
         chip.Click += (_, _) => click();
         return chip;
     }
+
+    // Left / Right walk a chip group, like a toolbar; Tab moves between groups.
+    private static void WireArrows(ToggleButton[] group)
+    {
+        for (int i = 0; i < group.Length; ++i)
+        {
+            int at = i;
+            group[i].KeyDown += (_, e) =>
+            {
+                int step = e.Key == VirtualKey.Right ? 1 : e.Key == VirtualKey.Left ? -1 : 0;
+                if (step == 0) return;
+                for (int n = at + step; n >= 0 && n < group.Length; n += step)
+                {
+                    if (!group[n].IsEnabled) continue;
+                    group[n].Focus(FocusState.Keyboard);
+                    break;
+                }
+                e.Handled = true;
+            };
+        }
+    }
+
+    // ---- what to find (audio, 2026-09-27) ---------------------------------------------------
+
+    // Segoe Fluent Icons (Segoe MDL2 Assets on Windows 10): Photo, Volume, Message.
+    private const string GlyphPicture = "";
+    private const string GlyphSound = "";
+    private const string GlyphSpeech = "";
+    private static FontFamily? _iconFont;
+    private static FontFamily IconFont => _iconFont ??= new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
+
+    private void ToggleFind(MvAiKinds bit)
+    {
+        _find ^= bit;
+        // All three on is the same search as none: show it as none.
+        if (_find == (MvAiKinds.FindPictures | MvAiKinds.FindSounds | MvAiKinds.FindSpeech)) _find = 0;
+        ShowFind();
+        RunQuery(quiet: false);
+    }
+
+    private void ShowFind()
+    {
+        _findChips[0].IsChecked = (_find & MvAiKinds.FindPictures) != 0;
+        _findChips[1].IsChecked = (_find & MvAiKinds.FindSounds) != 0;
+        _findChips[2].IsChecked = (_find & MvAiKinds.FindSpeech) != 0;
+    }
+
+    private bool AudioReady => _chrome.StatusValid && (_chrome.Status.Flags & MvAiStatus.FlagAudioReady) != 0;
+
+    // Without the Audio piece every search is a picture search: no row, no bits.
+    private MvAiKinds SearchKinds => AudioReady ? _kinds | _find : _kinds;
 
     // ---- showing ---------------------------------------------------------------------------
 
@@ -563,8 +658,8 @@ internal sealed class SearchWindow : Window, IDisposable
         try
         {
             id = _similar is AiChrome.SimilarTo s
-                ? _api.SearchSimilar(s.Path, s.PtsMs, ScopeDir, _scope, _kinds)
-                : _api.SearchText(q, ScopeDir, _scope, _kinds);
+                ? _api.SearchSimilar(s.Path, s.PtsMs, ScopeDir, _scope, SearchKinds)
+                : _api.SearchText(q, ScopeDir, _scope, SearchKinds);
         }
         catch (MediaViewerException)
         {
@@ -609,6 +704,7 @@ internal sealed class SearchWindow : Window, IDisposable
                         PtsMs = r.Kind == MvAiKinds.Videos ? r.PtsMs : -1,
                         More = r.MoreInClip,
                         Video = r.Kind == MvAiKinds.Videos,
+                        Match = r.Match,
                     });
                 }
             }
@@ -656,6 +752,7 @@ internal sealed class SearchWindow : Window, IDisposable
             {
                 t.Revealed = true;
                 t.Thumb = was.Thumb;
+                if ((t.Match & MvAiMatch.Speech) != 0 && was.Snippet is not null) t.Snippet = was.Snippet;
             }
             else if (_thumbs.TryGet(t.Key, out ImageSource? cached))
             {
@@ -682,7 +779,8 @@ internal sealed class SearchWindow : Window, IDisposable
             return;
         }
         ShowEmpty("Describe what you are looking for.",
-                  "“guy on a skateboard”, “birthday cake”, “sunset over water”. Photos and moments in videos both count.");
+                  "“guy on a skateboard”, “birthday cake”, “sunset over water”. Photos and moments in videos both count." +
+                  (AudioReady ? " Or try a sound — “dog barking” — or words someone said." : ""));
     }
 
     private void ShowNothing()
@@ -702,6 +800,7 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         ShowEmpty($"Nothing matches “{q}”.",
                   "Try describing what's in the picture: “dog on a beach”." +
+                  (AudioReady ? " Or try a sound — “dog barking” — or words someone said." : "") +
                   (indexing ? " Results appear as the index grows." : ""));
     }
 
@@ -794,6 +893,7 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         MvAiStatus s = _chrome.Status;
         _footerText.Text = Look.StatusLine(s);
+        _findRow.Visibility = (s.Flags & MvAiStatus.FlagAudioReady) != 0 ? Visibility.Visible : Visibility.Collapsed;
         // The ring spins only while indexing.
         bool busy = Look.Busy(s);
         _footerRing.IsActive = busy && _visible;
@@ -1019,6 +1119,7 @@ internal sealed class SearchWindow : Window, IDisposable
             layers.Children.Add(Badge(Look.Moment(tile.PtsMs), HorizontalAlignment.Left));
             if (tile.More > 0) layers.Children.Add(Badge($"+{tile.More} in this clip", HorizontalAlignment.Right));
         }
+        if (MatchBadge(tile.Match) is Border why) layers.Children.Add(why);
         var frame = new Border
         {
             Child = layers,
@@ -1044,16 +1145,122 @@ internal sealed class SearchWindow : Window, IDisposable
         var caption = _look.Text(tile.Name, 12, AddonColour.Body, wrap: false);
         caption.Margin = new Thickness(2, 4, 2, 0);
         caption.MaxWidth = TileW;
+        tile.Caption = caption;
         var root = new StackPanel { Width = TileW, Height = TileH };
         root.Children.Add(frame);
         root.Children.Add(caption);
         ToolTipService.SetToolTip(root, tile.Video ? $"{tile.Name} at {Look.Moment(tile.PtsMs)}" : tile.Name);
+        if (tile.Snippet is string known) ShowSnippet(tile, known);
+        else RequestSnippet(tile);
         root.Tapped += (_, _) =>
         {
             _sel = tile.Index;
             OpenResults(gallery: Down(VirtualKey.Control));
         };
         return root;
+    }
+
+    // Why a tile matched: picture, sound, speech (Segoe Fluent Icons glyphs),
+    // top-right over the thumbnail. Nothing when the pack does not say.
+    private Border? MatchBadge(MvAiMatch match)
+    {
+        if (match == MvAiMatch.None) return null;
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        var names = new List<string>(3);
+        void Add(MvAiMatch bit, string glyph, string name)
+        {
+            if ((match & bit) == 0) return;
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontFamily = IconFont,
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            });
+            names.Add(name);
+        }
+        Add(MvAiMatch.Picture, GlyphPicture, "picture");
+        Add(MvAiMatch.Sound, GlyphSound, "sound");
+        Add(MvAiMatch.Speech, GlyphSpeech, "speech");
+        var badge = new Border
+        {
+            Child = row,
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(170, 0, 0, 0)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(5, 3, 5, 3),
+            Margin = new Thickness(6),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        string text = "Matched by " + string.Join(" and ", names);
+        ToolTipService.SetToolTip(badge, text);
+        AutomationProperties.SetName(badge, text);
+        return badge;
+    }
+
+    // Speech: the words that matched, one line under the tile instead of the
+    // file name (which stays in the tooltip). [worker-thread] in the pack.
+    private void RequestSnippet(ResultTile tile)
+    {
+        if (tile.SnippetRequested || (tile.Match & MvAiMatch.Speech) == 0) return;
+        tile.SnippetRequested = true;
+        ulong search = _search;
+        AiApi api = _api;
+        _ = Task.Run(async () =>
+        {
+            await _thumbGate.WaitAsync().ConfigureAwait(false);
+            string snippet = "";
+            try { snippet = api.ResultSnippet(search, (uint)tile.Index); }
+            catch (MediaViewerException) { }
+            finally { _thumbGate.Release(); }
+            if (snippet.Length == 0) return;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (search != _search) return;
+                tile.Snippet = snippet;
+                ShowSnippet(tile, snippet);
+            });
+        });
+    }
+
+    private void ShowSnippet(ResultTile tile, string snippet)
+    {
+        if (tile.Caption is not TextBlock caption || snippet.Length == 0) return;
+        caption.Inlines.Clear();
+        caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "“" });
+        // The query's words, emphasised where they appear (whole-word, any case).
+        var words = new HashSet<string>(
+            _query.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(w => w.Trim('"', '“', '”', ',', '.', '?', '!').ToLowerInvariant())
+                .Where(w => w.Length > 1),
+            StringComparer.Ordinal);
+        foreach (string piece in SplitWords(snippet))
+        {
+            string key = piece.Trim('"', '“', '”', ',', '.', '?', '!', ';', ':').ToLowerInvariant();
+            var run = new Microsoft.UI.Xaml.Documents.Run { Text = piece };
+            if (key.Length > 1 && words.Contains(key))
+            {
+                run.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+                run.Foreground = _look[AddonColour.Title];
+            }
+            caption.Inlines.Add(run);
+        }
+        caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "”" });
+        caption.FontStyle = Windows.UI.Text.FontStyle.Italic;
+        ToolTipService.SetToolTip(caption, $"{tile.Name} at {Look.Moment(tile.PtsMs)}: “{snippet}”");
+    }
+
+    // Words with their trailing spaces kept, so the runs read as the original line.
+    private static IEnumerable<string> SplitWords(string text)
+    {
+        int start = 0;
+        for (int i = 0; i < text.Length; ++i)
+        {
+            if (text[i] != ' ') continue;
+            yield return text[start..(i + 1)];
+            start = i + 1;
+        }
+        if (start < text.Length) yield return text[start..];
     }
 
     private Border Badge(string text, HorizontalAlignment side) => new()

@@ -234,11 +234,24 @@ are looking for ("guy on a skateboard") and get the photos and the exact moments
 computed on this computer. Nothing is uploaded, and the base app never contains it. It uses
 OpenAI CLIP (two sizes, picked by your hardware) through ONNX Runtime, with optional NVIDIA
 acceleration on Windows and Core ML on Apple silicon, plus an opt-in, deletable People index.
-`Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, `N` / `Shift+N` walk the matching
-moments in a clip. Status, measured numbers and what is still owed:
-[plan/17](plan/17-local-ai-search.md#implementation-notes-2026-09-26-milestone-h-branch-milestone-h-local-ai-search).
-Build the pack locally with `tools/package/ai-models.py` and `tools/package/addon-pack.py
---addon ai` (see docs/DEVELOPMENT.md and `src.swift/AIChrome/MAC-VALIDATION.md`).
+An optional **Sound** piece also indexes what videos sound like ("dog barking", LAION CLAP) and
+what is said in them (Whisper transcripts); Settings → Local search → *Index videos for* picks
+Pictures, Sound or Both, per folder too. `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar,
+`N` / `Shift+N` walk the matching moments in a clip. Status, measured numbers and what is still
+owed: [plan/17](plan/17-local-ai-search.md#implementation-notes-2026-09-26-milestone-h-branch-milestone-h-local-ai-search).
+
+To try it from a source build (developer builds only, never the release key):
+
+1. Stage the models with `tools/package/ai-models.py` (pinned revisions and SHA-256s).
+2. Configure a build with `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`.
+3. Pack, sign and install the pieces into a scratch folder with `tools/package/ai-sideload.py
+   --build <build> --models <staged> --key <key file> --addons <folder>
+   --pieces ai,ai-audio,ai-faces`.
+4. Run the app or `ai-bench` (the pack without the chrome: `ai-bench --addons <folder> --index
+   <media folder> --query "a dog"`), with `MV_DEV_ADDONS_DIR=<folder>` and
+   `MV_DEV_THUMBS_DIR=<another folder>` so your real install is untouched.
+
+The Mac steps are in `src.swift/AIChrome/MAC-VALIDATION.md`.
 
 ## Coming next
 

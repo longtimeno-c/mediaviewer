@@ -115,10 +115,13 @@ TEST_CASE("a manifest is trusted only with a good signature from the pinned key"
   REQUIRE(mv::addon::check_manifest(bytes_of(m), sig, zeros, MV_ADDON_HOST_API).why ==
           rejection::key_not_configured);
 
-  // The pinned production key is the updater's.
+  // The pinned production key is the updater's (a developer build pins its
+  // own instead, and says so at configure time).
+#if !defined(MV_TEST_DEV_ADDON_KEY)
   const auto pinned = mv::addon::pinned_public_key();
   REQUIRE(pinned[0] == 0x04);
   REQUIRE(pinned[31] == 0x8c);
+#endif
 }
 
 TEST_CASE("manifest policy: platform, host API range, unsafe paths", "[addon][manifest]") {
@@ -172,7 +175,10 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     auto listed = st.list();
     REQUIRE(listed.size() == 1);
     REQUIRE(listed[0].version == "1.2.3");
-    // Sideloaded tamper after install: the next load refuses it.
+    // A second check in the same process answers from the verified snapshot.
+    REQUIRE(st.list()[0].state == mv::addon::install_state::ok);
+    // Sideloaded tamper after install, same size and within the same second:
+    // the next load refuses it (the snapshot is to the filesystem's precision).
     write_bytes(fs::path(listed[0].dir) / "mv_import.bin", pattern(4096, 8));
     REQUIRE(st.list()[0].state == mv::addon::install_state::invalid);
     REQUIRE(st.remove("import", false));

@@ -67,9 +67,33 @@ public enum MvAiKinds : uint
     Photos = 1,
     Videos = 2,
     All = 3,
+
+    // MV_AI_FIND_* (audio, 2026-09-27), OR'ed in: what to look for. None = all.
+    FindPictures = 0x10,
+    FindSounds = 0x20,
+    FindSpeech = 0x40,
 }
 
-/// <summary>Mirrors <c>mv_ai_status</c> field for field (1216 bytes).</summary>
+/// <summary>Mirrors <c>MV_AI_MEDIA_*</c>: what a folder's videos are indexed for.</summary>
+public enum MvAiMedia : uint
+{
+    Default = 0,   // per folder: follow the setting
+    Pictures = 1,
+    Sound = 2,     // sounds and speech; needs the ai-audio piece
+    Both = 3,
+}
+
+/// <summary>Mirrors <c>MV_AI_MATCH_*</c>: why a result matched.</summary>
+[Flags]
+public enum MvAiMatch : uint
+{
+    None = 0,
+    Picture = 1,
+    Sound = 2,
+    Speech = 4,
+}
+
+/// <summary>Mirrors <c>mv_ai_status</c> field for field (1248 bytes).</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
 {
@@ -77,6 +101,7 @@ public unsafe struct MvAiStatus
     public const uint FlagFacesOn = 2;      // the people opt-in is on
     public const uint FlagFacesReady = 4;   // ai-faces is installed and loaded
     public const uint FlagNoModels = 8;     // the pack is installed without its model files
+    public const uint FlagAudioReady = 16;  // ai-audio is installed and loaded
 
     public uint StructSize;
     public MvAiState State;
@@ -102,6 +127,11 @@ public unsafe struct MvAiStatus
     public uint Flags;
     public fixed byte ActiveRoot[1024];
     public fixed byte Model[64];
+    // Audio (2026-09-27), appended: clips to index for sound / speech, and done.
+    public ulong SoundTotal;
+    public ulong SoundDone;
+    public ulong SpeechTotal;
+    public ulong SpeechDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText
@@ -125,7 +155,8 @@ public struct MvAiResult
     public float Score;
     public MvAiKinds Kind;
     public uint MoreInClip;
-    public uint Reserved;
+    /// <summary>Why it matched at <see cref="PtsMs"/> (was reserved before audio).</summary>
+    public MvAiMatch Match;
 }
 
 /// <summary>
@@ -176,6 +207,10 @@ public unsafe struct MvAiApi
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, uint, ulong*, MvStatus> SearchPerson;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, long, ulong*, MvStatus> SearchThisPerson;
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, uint, MvStatus> FaceThumb;
+
+    // audio (2026-09-27)
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetMedia;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, MvStatus> ResultSnippet;
 }
 
 /// <summary>
@@ -195,7 +230,7 @@ public sealed unsafe class AiApi
         if (table == IntPtr.Zero) throw new ArgumentNullException(nameof(table));
         // The POD layouts, pinned against mediaviewer_ai.h: a drift here reads
         // as garbage progress rather than as an error.
-        if (sizeof(MvAiStatus) != 1216 || sizeof(MvAiResult) != 32)
+        if (sizeof(MvAiStatus) != 1248 || sizeof(MvAiResult) != 32)
             throw new InvalidOperationException("mv_ai_status / mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
         if (_api->StructSize < (uint)sizeof(MvAiApi))
@@ -379,6 +414,14 @@ public sealed unsafe class AiApi
         fixed (byte* d = dir) Check(_api->SearchPerson(Ctx, person, Opt(dir, d), (uint)scope, &id));
         return id;
     }
+
+    // ---- audio (2026-09-27) ----
+    /// <summary>What a folder's videos are indexed for; Default follows "video_index".</summary>
+    public void RootSetMedia(ulong root, MvAiMedia media) => Check(_api->RootSetMedia(Ctx, root, (uint)media));
+
+    /// <summary>Worker: the words that matched, for a speech result; "" otherwise.</summary>
+    public string ResultSnippet(ulong search, uint index) =>
+        ReadPath((b, c) => _api->ResultSnippet(Ctx, search, index, (byte*)b, c));
 
     /// <summary>Worker: the JPEG a face was found in (made on a miss); crop it in the view with the face's box.</summary>
     public string FaceThumb(ulong face) =>

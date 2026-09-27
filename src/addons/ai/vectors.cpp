@@ -96,8 +96,9 @@ void vector_store::compact_locked() {
 std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
                                                   const std::function<bool(std::int64_t)>& allow,
                                                   std::size_t k, bool use_margin, float min_margin,
-                                                  float min_score) const {
+                                                  float min_score, scan_stats* stats) const {
   std::vector<hit> out;
+  if (stats) *stats = scan_stats{};
   std::shared_lock lock(m_);
   if (query.size() != dim_ || dim_ == 0 || asset_.empty() || k == 0) return out;
   std::vector<std::int8_t> q;
@@ -108,6 +109,9 @@ std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
   bool last_ok = false;
   std::vector<hit> all;
   all.reserve(std::min<std::size_t>(asset_.size(), 1u << 16));
+  // Each asset's best score (a run of its rows; rows are mostly contiguous).
+  std::vector<float> bests;
+  std::int64_t run_asset = -1;
   for (std::size_t r = 0; r < asset_.size(); ++r) {
     if (!alive_[r]) continue;
     if (asset_[r] != last_asset) {
@@ -117,6 +121,14 @@ std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
     if (!last_ok) continue;
     const float score =
         static_cast<float>(dot_i8(q.data(), data_.data() + r * dim_, dim_)) * qs * scale_[r];
+    if (stats) {
+      if (asset_[r] != run_asset) {
+        run_asset = asset_[r];
+        bests.push_back(score);
+      } else {
+        bests.back() = std::max(bests.back(), score);
+      }
+    }
     if (score < min_score) continue;
     if (use_margin && score - generic_[r] < min_margin) continue;
     all.push_back(hit{asset_[r], pts_[r], score, generic_[r]});
@@ -127,6 +139,23 @@ std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
     all.resize(k);
   }
   std::sort(all.begin(), all.end(), [](const hit& a, const hit& b) { return a.score > b.score; });
+  if (stats) {
+    stats->assets = bests.size();
+    if (bests.size() >= scan_stats::kMinAssets) {
+      double mean = 0;
+      for (float b : bests) mean += b;
+      mean /= static_cast<double>(bests.size());
+      double var = 0;
+      for (float b : bests) var += (b - mean) * (b - mean);
+      const double sd = std::sqrt(var / static_cast<double>(bests.size()));
+      std::partial_sort(bests.begin(), bests.begin() + 10, bests.end(), std::greater<float>());
+      double top = 0;
+      for (std::size_t i = 0; i < 10; ++i) top += bests[i];
+      stats->mean = static_cast<float>(mean);
+      stats->sd = static_cast<float>(sd);
+      if (sd > 0) stats->top10_z = static_cast<float>((top / 10 - mean) / sd);
+    }
+  }
   return all;
 }
 

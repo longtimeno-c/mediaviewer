@@ -160,7 +160,8 @@ internal sealed class Look
         switch (s.State)
         {
             case MvAiState.Loading:
-                return "Getting ready…";
+                // It opens the models only between the viewer's busy spells.
+                return s.YieldReason == MvAiYield.None ? "Getting ready…" : "Getting ready when the viewer is idle";
             case MvAiState.Error:
                 return "Local search could not load its model.";
             case MvAiState.Paused:
@@ -221,11 +222,15 @@ internal sealed class Look
     };
 
     /// <summary>Whether the command-bar pill shows: work in hand, not idle.</summary>
+    // Not while loading: the pill is about indexing, and appearing over a
+    // viewer that is busy (the load waits for it) would cost it a frame.
     public static bool PillVisible(in MvAiStatus s) =>
-        s.State is MvAiState.Indexing or MvAiState.Loading or MvAiState.Yielding ||
+        s.State is MvAiState.Indexing or MvAiState.Yielding ||
         (s.State == MvAiState.Paused && s.AssetsDone < s.AssetsTotal);
 
-    public static bool Busy(in MvAiStatus s) => s.State is MvAiState.Indexing or MvAiState.Loading;
+    // Work is running: the ring spins. A load waiting for the viewer is still.
+    public static bool Busy(in MvAiStatus s) =>
+        s.State == MvAiState.Indexing || (s.State == MvAiState.Loading && s.YieldReason == MvAiYield.None);
 
     public static string Moment(long ms)
     {

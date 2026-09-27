@@ -827,7 +827,7 @@ reading of the plan and stand unless reopened.
 | 2 | **HDR (PQ/HLG) HEIC/AVIF stills are tone-mapped to SDR in the decoder** with the `gfx/video_blit.cpp` curves and handed on as display-referred sRGB. | `image/colour.cpp` refuses `scene_referred`; HDR output is v1.1. | **open** — confirm tone-mapping in `codec/` rather than a scene-referred colour stage |
 | 3 | CICP SDR camera transfers (BT.709/601/2020) display with the sRGB curve; gamma 2.2/2.8/linear get a synthesised ICC. Display P3 nclx gets a synthesised ICC v4 profile. | Browser behaviour; P3-as-sRGB is the D6 bug. | stands |
 | 4 | **No display-path orientation exists yet.** TIFF returns stored order; HEIC gets libheif's irot/imir; AVIF applies irot/imir/clap itself; RAW preview *and* full decode are rotated in pixels by LibRaw's flip. A later EXIF-orientation pass must skip RAW or it rotates twice. | plan/04 wants orientation on the display path; building it is not a PR 7 line item. | **open** — schedule the orientation pass (JPEG EXIF is also unhandled) |
-| 5 | TIFF: 16/32-bit round to 8; float clamps 0–1 (untagged → linear then sRGB encode); CMYK converts naïvely (1−C)(1−K); **grey and CMYK ICC profiles are dropped** because `to_display` builds an RGBA transform. | RGBA8 raster; a grey profile would make a valid file `corrupt`. Grey JPEG/PNG with a grey profile likely share the gap. | **open** — colour stage should learn grey profiles |
+| 5 | TIFF: 16/32-bit round to 8; float clamps 0–1 (untagged → linear then sRGB encode); CMYK converts naïvely (1−C)(1−K); **grey and CMYK ICC profiles are dropped** because `to_display` builds an RGBA transform. | RGBA8 raster; a grey profile would make a valid file `corrupt`. Grey JPEG/PNG with a grey profile likely share the gap. | **open (TIFF only)** — 2026-09-27 (Milestone H): the colour stage now takes a grey profile over grey pixels (R = G = B) and still fails one over colour pixels, so grey JPEG/PNG with a grey ICC display (they were `corrupt`, found by the AI indexer on COCO). TIFF still drops grey ICC in `codec/tiff.cpp`; passing it through is a separate change |
 | 6 | RAW full decode: PPG demosaic, camera WB, sRGB 8-bit, highlight clip, **auto-bright on**. Measured 0.8–1.7 s on 16–42 MP samples — **misses plan/09's < 500 ms** (vcpkg LibRaw has no OpenMP; GPU demosaic is out of v1, D4). First pixel is the embedded preview (11–69 ms, JPEG-comparable). Full decode is still 7–41 luma levels brighter than the preview; cancel granularity is one LibRaw stage (≤ ~550 ms). | AHD was 2.5–4.7 s; auto-bright off left a ~36-level gap vs the embedded JPEG. | **open** — accept the target miss for v1 or pursue an OpenMP LibRaw build |
 | 7 | **JPG+MOV pairs as a Live Photo** (iPhone "Most Compatible"), as well as HEIC+MOV. Pairing is by basename only; the ContentIdentifier check in plan/04 is not done (needs metadata, PR 9). RAW+HEIC counts as RAW+JPEG. Groups of three or more stay separate. | Exact, cheap, never hides a file. | **open** — confirm JPG+MOV |
 | 8 | **File operations on a paired stop act on both halves** (copy/move-to, Recycle Bin, drag-out); the prompt names both files. Collision renaming is per file, so a pair can land as `x (2).JPG` beside `x.NEF`. | Deleting only the JPEG would make the RAW reappear as its own stop. | **open** |
@@ -2340,3 +2340,33 @@ keep the run out of the user's install. CMake warns, and refuses it under GitHub
 
 **Results are a listing.** `mv_folder_open_list` (ABI 0.11) puts results in the existing gallery
 rather than a second grid, as plan/17 asks.
+
+## 2026-09-27 — Milestone H: audio search, and what the first real runs changed
+
+**Audio is in (owner).** plan/17 had speech transcript search out of scope, "a later, separate
+pack". The owner asked for audio as a separate index option: a video's soundtrack, searched for
+what it sounds like (LAION CLAP) and what is said (Whisper), per folder Pictures / Sound / Both.
+Video soundtracks only (standalone audio is not a D5 format). It is its own piece, `ai-audio`
+(~1 GB), inside the 3 GB family ceiling, so nobody downloads it unasked. CLAP
+`larger_clap_general` over `htsat-unfused` on ESC-50 zero-shot (87.2 % vs 84.4 %); Whisper small
+on a GPU, base on CPU (real-time factors in plan/17 *Audio*).
+
+**"Nothing found" learned short queries.** The 2026-09-26 margin was calibrated on caption-like
+queries; one-word subjects ranked correctly but were discarded ("dog": 1 of 15 photos shown).
+A query also passes when its ten best assets stand out (top-ten z >= 2.5 over per-asset best
+scores), and its rows >= 2.0 SD above the mean show with the margin rows. 300 COCO photos:
+real queries kept 6/17 -> 15/17 (B/32) and 7/17 -> 14/17 (L/14), nonsense still all rejected.
+Not a reversal of the margin: an added test. The owner's eval set is still owed.
+
+**Model loading waits for a quiet viewer.** Measured: loading the pack during the PR 1 soak
+dropped two frames. The provider self-test's CPU half is kept between runs (~15 s of a 40 s
+load), and Settings no longer loads the runtime from the UI thread (rule 1).
+
+**Add-on files are hashed once per process.** List, load and each piece lookup hashed every file
+again: ~6 GB per launch with the whole pack. The first check still hashes (plan/18
+verify-before-load); later checks in the process stat every file (size and a new full-precision
+`io::file_stat::mtime_ns`) and re-walk for extra files. Not caught: a same-user rewrite that keeps
+the size and the exact modification time within one run, which the same user could already do
+between verify and load.
+
+**Grey ICC profiles** (PR 7 row 5) now display for JPEG / PNG; TIFF still drops them.

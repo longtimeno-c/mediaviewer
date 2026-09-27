@@ -326,6 +326,7 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
       svc.open_sampler = &mv::addon::media::open_sampler;
       svc.video_frame = &mv::addon::media::video_frame;
       svc.moment_thumbnail = &mv::addon::media::moment_thumbnail;
+      svc.open_audio = &mv::addon::media::open_audio;
       auto loaded = mv::addon::loaded_addon::load(*s, id, std::move(svc));
       if (!loaded) return loaded.error();
       (void)mv_session_retain(session);

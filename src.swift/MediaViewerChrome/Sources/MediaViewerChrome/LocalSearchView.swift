@@ -23,7 +23,7 @@ final class LocalSearchStore: ObservableObject {
 
   /// One installable piece of the AI family (plan/17 per-piece Install/Remove).
   struct Piece: Identifiable, Equatable {
-    let id: String          // "ai" (Core), "ai-faces" (People)
+    let id: String          // "ai" (Core), "ai-faces" (People), "ai-audio" (Sound)
     let title: String
     let detail: String
     let required: Bool
@@ -49,6 +49,10 @@ final class LocalSearchStore: ObservableObject {
           detail: "The search engine and the picture and text models. Required.", required: true),
     Piece(id: "ai-faces", title: "People",
           detail: "Face models for “photos of Sam”. Optional; off until you turn it on.", required: false),
+    // 2026-09-27: sounds (“dog barking”) and speech (“happy birthday”) in videos.
+    Piece(id: "ai-audio", title: "Sound",
+          detail: "Find videos by what you hear: sounds like “dog barking” and words that are said. Optional.",
+          required: false),
   ]
   @Published private(set) var used: UInt64 = 0
   @Published private(set) var ceiling: UInt64 = 3_000_000_000
@@ -130,6 +134,13 @@ final class LocalSearchStore: ObservableObject {
       default: return "Indexing paused"
       }
     }
+    // Pictures first; then the Sound piece's clips (sounds, then speech).
+    if s.assets_done >= s.assets_total, s.sound_done < s.sound_total {
+      return "Indexing sound \(count(s.sound_done)) of \(count(s.sound_total)) clips"
+    }
+    if s.assets_done >= s.assets_total, s.speech_done < s.speech_total {
+      return "Indexing speech \(count(s.speech_done)) of \(count(s.speech_total)) clips"
+    }
     return "Indexing \(count(s.assets_done)) of \(count(s.assets_total))"
   }
 
@@ -144,7 +155,7 @@ final class LocalSearchStore: ObservableObject {
     guard supported else { return }
     Task.detached {
       var read: [String: [String: Any]] = [:]
-      for id in ["ai", "ai-faces"] {
+      for id in ["ai", "ai-faces", "ai-audio"] {
         let json = AddonStore.readString { mv_addon2_state_json(id, $0, $1) }
         read[id] = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
       }
@@ -442,7 +453,9 @@ struct LocalSearchSection: View {
           Button("Cancel") { store.confirmingRemove = nil }.keyboardShortcut(.cancelAction)
         }
       } else {
-        Text("Remove People? Face search stops until it is installed again.")
+        Text(id == "ai-audio"
+             ? "Remove Sound? Searching videos by sound and speech stops until it is installed again."
+             : "Remove People? Face search stops until it is installed again.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
           .fixedSize(horizontal: false, vertical: true)
         HStack {

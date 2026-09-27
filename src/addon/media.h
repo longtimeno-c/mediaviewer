@@ -56,6 +56,16 @@ class video_sampler {
   [[nodiscard]] virtual result<sampled_frame> next() = 0;
 };
 
+// A clip's soundtrack, mono float PCM (the audio index).
+class audio_stream {
+ public:
+  virtual ~audio_stream() = default;
+  [[nodiscard]] virtual std::int64_t duration_ms() const noexcept = 0;
+  // Up to `max_samples`; empty at the end. `start_ms`: the first sample's time.
+  [[nodiscard]] virtual result<std::vector<float>> read(std::size_t max_samples,
+                                                        std::int64_t& start_ms) = 0;
+};
+
 // The implementation (media.cpp, mv_addon_media). Portable: FFmpeg, the
 // viewer's still decoders and its JPEG-512 cache; no GPU, no OS UI.
 namespace media {
@@ -68,6 +78,9 @@ namespace media {
 // looks one up (status::io on a miss). Returns the JPEG's path.
 [[nodiscard]] result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
                                                    const rgb_image* image);
+[[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
+                                                               std::uint32_t sample_rate,
+                                                               std::int64_t start_ms);
 }  // namespace media
 
 }  // namespace mv::addon

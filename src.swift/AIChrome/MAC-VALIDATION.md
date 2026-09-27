@@ -102,14 +102,17 @@ cmake --build build-darwin --target mediaviewer_app mv_ai mv_ai_chrome mv_ai_tes
 python3 tools/package/ai-models.py check
 python3 tools/package/ai-models.py stage --piece ai       --out build-darwin/addons/ai
 python3 tools/package/ai-models.py stage --piece ai-faces --out build-darwin/addons/ai-faces
+python3 tools/package/ai-models.py stage --piece ai-audio --out build-darwin/addons/ai-audio   # ~1.03 GB (CLAP + Whisper)
 
 # 3. Sign (ad-hoc is fine for a local run; use your Developer ID to test library validation).
 python3 tools/mac/macpack.py addon --dir build-darwin/addons/ai --identity "$MV_SIGN_IDENTITY" --skip-notarize
 python3 tools/mac/macpack.py addon --dir build-darwin/addons/ai-faces --piece --identity "$MV_SIGN_IDENTITY" --skip-notarize
+python3 tools/mac/macpack.py addon --dir build-darwin/addons/ai-audio --piece --identity "$MV_SIGN_IDENTITY" --skip-notarize
 
 # 4. Pack + sign the manifests with the dev key.
 python3 tools/package/addon-pack.py pack --addon ai       --platform macos --src build-darwin/addons/ai       --version 1.0.0 --key /tmp/dev.key --out dist/addon
 python3 tools/package/addon-pack.py pack --addon ai-faces --platform macos --src build-darwin/addons/ai-faces --version 1.0.0 --key /tmp/dev.key --out dist/addon
+python3 tools/package/addon-pack.py pack --addon ai-audio --platform macos --src build-darwin/addons/ai-audio --version 1.0.0 --key /tmp/dev.key --out dist/addon
 python3 tools/package/addon-pack.py ceiling dist/addon/mediaviewer-addon-ai*-macos.json   # must print <= 3.0 GB
 ```
 
@@ -345,6 +348,102 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
 
 ---
 
+## 12b. Audio: sounds and speech (2026-09-27)
+
+The **Sound** piece (`ai-audio`, name `AI Audio`, arm64, ~1.03 GB, part_of `ai`, channel
+`mediaviewer-addon-ai-audio-macos`) adds CLAP (what a clip sounds like) and Whisper (what is
+said). Videos are indexed for **Pictures / Sound / Both** (Settings, and per folder).
+
+### Build and tests
+
+```sh
+cmake --build build-darwin --target mv_ai_tests
+# A speech clip with known words at 5 / 15 / 28 s (the Mac twin of
+# tools/ai-reference/make_speech_clip.ps1). Any ffmpeg on PATH (a test asset,
+# never shipped); h264_videotoolbox keeps it free of GPL encoders.
+say -o /tmp/s1.aiff "Happy birthday Anna, happy birthday to you."
+say -o /tmp/s2.aiff "Ladies and gentlemen, we are now landing in Lisbon."
+say -o /tmp/s3.aiff "Come here Max, good boy. Fetch the ball."
+ffmpeg -y -f lavfi -i color=c=black:s=640x360:r=30:d=40 \
+  -i /tmp/s1.aiff -i /tmp/s2.aiff -i /tmp/s3.aiff \
+  -filter_complex "[1]adelay=5000:all=1[a];[2]adelay=15000:all=1[b];[3]adelay=28000:all=1[c];[a][b][c]amix=inputs=3:normalize=0,apad[out]" \
+  -map 0:v -map "[out]" -t 40 -c:v h264_videotoolbox -b:v 1M -c:a aac /tmp/speech.mp4
+MV_AI_PACK_DIR=build-darwin/addons/ai MV_AI_AUDIO_DIR=build-darwin/addons/ai-audio \
+MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
+  ./build-darwin/bin/mv_ai_tests "[audio]"
+```
+
+- [ ] `mv_ai_tests "[audio]"`: FFT, feature extractors, CLAP tokenizer/towers within tolerance,
+      and Whisper finds "birthday" (4.0–6.5 s), "lisbon" (14–16.5 s) and the 28 s line, for
+      whisper-base and whisper-small. None may SKIP on the Mac run (a skip means an env var or
+      the host decoders were missing).
+
+### Core ML throughput (record like §4)
+
+| Model | Provider | throughput | notes (ops on CPU) |
+|---|---|---|---|
+| CLAP audio tower (10 s windows) | Core ML / CPU | windows/s | |
+| CLAP text tower | Core ML / CPU | ms / query | |
+| Whisper base (30 s windows) | Core ML / CPU | × real time | |
+| Whisper small (30 s windows) | Core ML / CPU | × real time | |
+
+### Verify
+
+- [ ] **Settings:** a *Sound* row with its size beside Core and People; the budget bar adds its
+      ~1.03 GB; a family over 3 GB is refused before download. Install while Core runs is picked
+      up at once (`set_setting("reload")`); Remove asks, then sound search stops.
+- [ ] **"Index videos for: Pictures · Sound · Both"** (segmented): Sound and Both are disabled
+      with the hint "install Sound above" until the piece is ready; enabled after. Each indexed
+      folder's menu offers Default / Pictures / Sound / Both (→ `root_set_media`; Sound/Both
+      disabled without the piece) and shows its choice ("Videos: Sound").
+- [ ] **Status:** the management view and the panel footer show
+      "Sound: 12 of 40 clips · Speech: 8 of 40" while it runs; the command-bar pill says
+      "Indexing sound 12 of 40 clips" once pictures are done.
+- [ ] **Sound search:** a clip with a dog barking at a known time; with Sound indexed, ⌘F
+      "dog barking" (Sounds chip on, or no chip) finds that clip; the tile carries the
+      `speaker.wave.2` badge; Enter opens it paused at the moment, within 2 s of the bark.
+- [ ] **Speech search:** index `/tmp/speech.mp4`; ⌘F "landing in Lisbon" (Speech chip) returns
+      it with the `text.bubble` badge and the quoted snippet under the tile; Enter lands
+      **within 2 s of 15 s**; N / ⇧N walk the other speech matches.
+- [ ] Chips: Pictures · Sounds · Speech combine (none on = all three); Sounds / Speech are
+      disabled with a tooltip while the piece is absent. Keyboard: Tab reaches them.
+- [ ] **Both present-loop gates WHILE INDEXING SOUND:** Mac PR 1 (`frametime --seconds 60`,
+      0 dropped, p99 ±10 %, and watch cadence) while a folder of clips indexes for Sound, and
+      again while playing a different clip (the footer shows "Paused while a video plays").
+      The Windows PR 1 gate is the Windows agent's.
+- [ ] Privacy: the minidump scan (§6) also forbids a transcript phrase ("landing in Lisbon");
+      `log stream` shows no transcript text.
+
+## 12c. After the first real Windows runs (2026-09-27)
+
+Found by running the real pack on Windows; each changed shared code the Mac also runs.
+
+- [ ] **`io::file_stat::mtime_ns`** is new and filled in `src/io/file_port_mac.cpp` from
+      `st_mtimespec` (not compiled on Windows). `mv_import_tests "[store]"`: the same-size,
+      same-second tamper after a cached verify must still be refused.
+- [ ] **Add-on files are hashed once per process** (`verify_files`): time a cold launch with the
+      whole pack before and after a relaunch; Settings → Add-ons, the load, and each piece no
+      longer re-hash (~6 GB per launch before).
+- [ ] **Model loading waits for a quiet viewer.** Launch with the pack while a clip plays (or
+      run the Mac PR 1 soak from launch): the management view says "Loading the search model
+      when the viewer is idle" with a still ring, the pill does not appear, and the soak shows
+      0 dropped frames through the pack's load. Stop playback: it loads, pictures first, then
+      Sound. Record the Mac PR 1 gate with the pack installed, from a cold launch, three times.
+- [ ] **Self-test kept:** first launch on Core ML writes `selftest.txt` in the AI data folder;
+      record the load time (status LOADING → IDLE / INDEXING) on the first and second launch.
+      The second must skip the CPU session (expect roughly the CPU tower's open + 3 batches less).
+- [ ] **Settings before load:** open Settings → Local search right at launch: it must not beach
+      ball (no ONNX Runtime load on the main thread); models and compute fill in when loading
+      finishes (`MV_ADDON_EVENT_AI_COMPUTE` → `reloadSettings`).
+- [ ] **"Nothing found" for one-word queries:** `mv_ai_tests "[eval]"` now includes "a dog",
+      "a cat" and "dog" and checks nonsense against both tests (margin 0.04, or top-ten z 2.5).
+      By hand: "dog", "cat", "car" on a real folder return results; "xyzzy plugh" returns none.
+- [ ] **Grey JPEGs with a grey ICC profile** (scans, some archives) now open instead of failing
+      as corrupt: `mv_tests "[colour]"`, then open one in the viewer and index a folder with one
+      (Settings shows 0 failed).
+
+---
+
 ## 13. APIs used that were NOT compile-checked (confirm on the Mac)
 
 Objective-C++ (host):
@@ -400,3 +499,8 @@ Swift (AI chrome, `AIChrome`):
 - `MemoryLayout<mv_ai_api>.offset(of: \mv_ai_api.face_thumb)` checked against `struct_size`, so
   a pack whose table predates `face_thumb` shows monograms instead of reading past its table.
 - `NSCache` as the LRU; `NumberFormatter`, `ByteCountFormatter`.
+- Audio (2026-09-27): `MemoryLayout<mv_ai_api>.offset(of:)` with a `PartialKeyPath` (`has(_:)`)
+  guarding `root_set_media` / `result_snippet`; `mv_ai_result.match` and the appended
+  `mv_ai_status` sound/speech fields read through the C import; `result_snippet` called on the
+  worker inside the result loop; a segmented `Picker` with disabled tags; `Menu` items with a
+  `Label` checkmark; the chip `Set<Find>` OR'ed into `kinds`.

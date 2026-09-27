@@ -12,6 +12,11 @@
 #include "edit/clip_internal.h"
 #include "edit/clip_pixels.h"
 
+extern "C" {
+#include <libavutil/channel_layout.h>
+#include <libswresample/swresample.h>
+}
+
 namespace mv::edit::clip {
 namespace {
 
@@ -268,6 +273,140 @@ result<sampled> frame_sampler::next() {
   }
   sampled out = std::move(p_->ready.front());
   p_->ready.pop_front();
+  return out;
+}
+
+// ---- the soundtrack -------------------------------------------------------------
+
+struct audio_reader::impl {
+  std::atomic<bool> never{false};
+  const std::atomic<bool>* cancel = nullptr;
+  source src;
+  AVStream* st = nullptr;
+  codec_ptr dec;
+  SwrContext* swr = nullptr;
+  std::uint32_t rate = 16000;
+  std::int64_t start_ms = 0;
+  std::int64_t base_ms = -1;       // the time of the first sample kept
+  std::uint64_t emitted = 0;       // samples handed out
+  std::vector<float> pending;      // decoded, not yet handed out
+  bool eof = false;
+  audio_facts facts;
+  packet_ptr pkt;
+  frame_ptr frame;
+  ~impl() {
+    if (swr) swr_free(&swr);
+  }
+
+  [[nodiscard]] bool convert(const AVFrame* f) {
+    const int max_out = swr_get_out_samples(swr, f ? f->nb_samples : 0);
+    if (max_out <= 0) return true;
+    std::vector<float> out(static_cast<std::size_t>(max_out));
+    std::uint8_t* planes[1] = {reinterpret_cast<std::uint8_t*>(out.data())};
+    const int got = swr_convert(swr, planes, max_out,
+                                f ? const_cast<const std::uint8_t**>(f->extended_data) : nullptr,
+                                f ? f->nb_samples : 0);
+    if (got < 0) return false;
+    out.resize(static_cast<std::size_t>(got));
+    std::int64_t t_ms = -1;
+    if (f && base_ms < 0) {
+      const std::int64_t ts = frame_ts(f);
+      t_ms = ts == AV_NOPTS_VALUE ? 0 : to_timeline(src, st, ts) / 1'000'000;
+    }
+    // Drop what precedes the resume point (seeking lands on a packet before it).
+    std::size_t skip = 0;
+    if (base_ms < 0) {
+      if (t_ms < 0) t_ms = 0;
+      if (t_ms < start_ms) {
+        skip = std::min<std::size_t>(out.size(),
+                                     static_cast<std::size_t>((start_ms - t_ms) * rate / 1000));
+        t_ms += static_cast<std::int64_t>(skip) * 1000 / rate;
+      }
+      if (skip == out.size()) return true;
+      base_ms = t_ms;
+    }
+    pending.insert(pending.end(), out.begin() + static_cast<std::ptrdiff_t>(skip), out.end());
+    return true;
+  }
+
+  [[nodiscard]] expected step() {
+    if (cancelled(cancel)) return err(status::cancelled);
+    const int rc = av_read_frame(src.format.get(), pkt.get());
+    if (rc < 0) {
+      if (rc == AVERROR_EXIT) return err(status::cancelled);
+      (void)avcodec_send_packet(dec.get(), nullptr);
+      while (avcodec_receive_frame(dec.get(), frame.get()) == 0) {
+        if (!convert(frame.get())) return err(status::corrupt);
+        av_frame_unref(frame.get());
+      }
+      if (!convert(nullptr)) return err(status::corrupt);  // the resampler's tail
+      eof = true;
+      return {};
+    }
+    if (pkt->stream_index == src.audio) {
+      (void)avcodec_send_packet(dec.get(), pkt.get());
+      while (avcodec_receive_frame(dec.get(), frame.get()) == 0) {
+        const bool ok = convert(frame.get());
+        av_frame_unref(frame.get());
+        if (!ok) {
+          av_packet_unref(pkt.get());
+          return err(status::corrupt);
+        }
+      }
+    }
+    av_packet_unref(pkt.get());
+    return {};
+  }
+};
+
+audio_reader::audio_reader(std::unique_ptr<impl> p) : p_(std::move(p)) {}
+audio_reader::~audio_reader() = default;
+const audio_facts& audio_reader::facts() const noexcept { return p_->facts; }
+
+result<std::unique_ptr<audio_reader>> audio_reader::open(std::string_view utf8_path,
+                                                         std::uint32_t sample_rate,
+                                                         std::int64_t start_ms,
+                                                         const std::atomic<bool>* cancel) {
+  auto p = std::make_unique<impl>();
+  p->cancel = cancel ? cancel : &p->never;
+  p->rate = sample_rate ? sample_rate : 16000;
+  p->start_ms = std::max<std::int64_t>(0, start_ms);
+  MV_TRY(source s, open_source(utf8_path, p->cancel));
+  if (s.audio < 0) return err(status::unsupported_format);
+  p->src = std::move(s);
+  p->st = p->src.format->streams[p->src.audio];
+  for (unsigned i = 0; i < p->src.format->nb_streams; ++i) {
+    if (static_cast<int>(i) != p->src.audio) p->src.format->streams[i]->discard = AVDISCARD_ALL;
+  }
+  MV_TRY(codec_ptr dec, open_decoder(p->st, 1));
+  p->dec = std::move(dec);
+  AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
+  if (swr_alloc_set_opts2(&p->swr, &mono, AV_SAMPLE_FMT_FLT, static_cast<int>(p->rate), &p->dec->ch_layout,
+                          p->dec->sample_fmt, p->dec->sample_rate, 0, nullptr) < 0 ||
+      !p->swr || swr_init(p->swr) < 0) {
+    return err(status::unsupported_format);
+  }
+  p->pkt.reset(av_packet_alloc());
+  p->frame.reset(av_frame_alloc());
+  if (!p->pkt || !p->frame) return err(status::out_of_memory);
+  p->facts.has_audio = true;
+  p->facts.duration_ms = p->src.duration_ns / 1'000'000;
+  if (p->start_ms > 0) {
+    // Seek the audio stream itself (the source's helper seeks video first).
+    const std::int64_t ts = from_timeline(p->src, p->st, p->start_ms * 1'000'000);
+    (void)av_seek_frame(p->src.format.get(), p->src.audio, ts, AVSEEK_FLAG_BACKWARD);
+  }
+  return std::unique_ptr<audio_reader>(new audio_reader(std::move(p)));
+}
+
+result<std::vector<float>> audio_reader::read(std::size_t max_samples, std::int64_t& start_ms) {
+  while (p_->pending.size() < max_samples && !p_->eof) MV_TRY_VOID(p_->step());
+  const std::size_t n = std::min(max_samples, p_->pending.size());
+  start_ms = (p_->base_ms < 0 ? p_->start_ms : p_->base_ms) +
+             static_cast<std::int64_t>(p_->emitted * 1000 / p_->rate);
+  std::vector<float> out(p_->pending.begin(), p_->pending.begin() + static_cast<std::ptrdiff_t>(n));
+  p_->pending.erase(p_->pending.begin(), p_->pending.begin() + static_cast<std::ptrdiff_t>(n));
+  p_->emitted += n;
   return out;
 }
 

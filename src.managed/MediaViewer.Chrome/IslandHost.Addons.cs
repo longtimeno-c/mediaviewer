@@ -63,7 +63,9 @@ public static partial class IslandHost
     private static readonly AddonSlot AiSlot = new("ai", "Local search", AiApi.InterfaceId, null);
     private static readonly AddonSlot FacesSlot = new("ai-faces", "People", null, "ai");
     private static readonly AddonSlot CudaSlot = new("ai-cuda", "NVIDIA acceleration", null, "ai");
-    private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, CudaSlot };
+    // 2026-09-27: sounds (CLAP) and speech (Whisper) in videos.
+    private static readonly AddonSlot AudioSlot = new("ai-audio", "Audio", null, "ai");
+    private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, AudioSlot, CudaSlot };
 
     private static bool _addonsStarted;
     private static StackPanel? _addonRow;

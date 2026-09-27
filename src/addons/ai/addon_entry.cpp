@@ -266,6 +266,19 @@ mv_status MV_CALL t_face_thumb(void* ctx, uint64_t face, char* out, uint32_t cap
   });
 }
 
+mv_status MV_CALL t_root_media(void* ctx, uint64_t root, uint32_t media) {
+  return guard([&] {
+    auto r = eng(ctx).root_set_media(static_cast<std::int64_t>(root), media);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_result_snippet(void* ctx, uint64_t id, uint32_t index, char* out, uint32_t cap) {
+  return guard([&] {
+    auto r = eng(ctx).result_snippet(id, index);
+    return r ? write_out(*r, out, cap, nullptr) : to_mv(r.error());
+  });
+}
+
 void MV_CALL shutdown(void* addon) {
   try {
     std::unique_ptr<addon_state> state(static_cast<addon_state*>(addon));
@@ -333,6 +346,8 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.search_person = &t_search_person;
     a.search_this_person = &t_search_this_person;
     a.face_thumb = &t_face_thumb;
+    a.root_set_media = &t_root_media;
+    a.result_snippet = &t_result_snippet;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

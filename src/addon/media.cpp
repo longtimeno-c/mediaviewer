@@ -140,6 +140,23 @@ result<rgb_image> video_frame(const std::string& path, std::int64_t pts_ms,
   return out;
 }
 
+result<std::unique_ptr<audio_stream>> open_audio(const std::string& path, std::uint32_t sample_rate,
+                                                 std::int64_t start_ms) {
+  class adapter final : public audio_stream {
+   public:
+    explicit adapter(std::unique_ptr<edit::clip::audio_reader> r) : r_(std::move(r)) {}
+    std::int64_t duration_ms() const noexcept override { return r_->facts().duration_ms; }
+    result<std::vector<float>> read(std::size_t max_samples, std::int64_t& start_ms) override {
+      return r_->read(max_samples, start_ms);
+    }
+
+   private:
+    std::unique_ptr<edit::clip::audio_reader> r_;
+  };
+  MV_TRY(auto r, edit::clip::audio_reader::open(path, sample_rate, start_ms));
+  return std::unique_ptr<audio_stream>(new adapter(std::move(r)));
+}
+
 result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
                                      const rgb_image* image) {
   auto& store = thumbs();

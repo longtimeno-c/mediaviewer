@@ -16,10 +16,12 @@
 #include "catch_compat.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -138,6 +140,86 @@ TEST_CASE("half floats and int8 vectors round-trip within their precision", "[ai
   CHECK(std::fabs(hits[0].score - 1.0f) < 0.02f);
   store.remove_asset(7);
   CHECK(store.scan(v, {}, 10, false, 0, -1).empty());
+}
+
+TEST_CASE("a query scans 100 k ViT-L frames in under 100 ms", "[ai][infer][vectors][perf]") {
+  // plan/17 PR 22: "< 100 ms over 100 k frames". 2,000 clips of 50 frames,
+  // pseudo-random unit vectors; the scan as search_text runs it (margin
+  // filter, top 5000, the per-asset stats).
+  constexpr std::uint32_t dim = 768;
+  mv::ai::vector_store store(dim);
+  std::uint32_t seed = 12345;
+  const auto next = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return static_cast<float>(static_cast<std::int32_t>(seed >> 8) - (1 << 23)) / static_cast<float>(1 << 23);
+  };
+  std::vector<float> v(dim);
+  std::vector<std::int8_t> q;
+  for (std::int64_t asset = 1; asset <= 2000; ++asset) {
+    for (std::int64_t f = 0; f < 50; ++f) {
+      for (float& x : v) x = next();
+      mv::infer::l2_normalise(v);
+      float scale = 0;
+      mv::ai::quantise(v, q, scale);
+      store.add(asset, f * 2000, 0.1f, scale, q);
+    }
+  }
+  REQUIRE(store.rows() == 100000);
+  for (float& x : v) x = next();
+  mv::infer::l2_normalise(v);
+  mv::ai::vector_store::scan_stats st;
+  double best_ms = 1e9;
+  for (int run = 0; run < 3; ++run) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto hits = store.scan(v, {}, 5000, true, 0.015f, -1.0f, &st);
+    best_ms = std::min(best_ms, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    CHECK(st.assets == 2000);
+    (void)hits;
+  }
+  WARN("100 k x 768 int8 scan: " << best_ms << " ms");
+#if defined(NDEBUG)
+  CHECK(best_ms < 100.0);  // optimised builds only: a Debug scan proves nothing
+#endif
+}
+
+TEST_CASE("scan stats: the top ten stand out per asset, not per frame", "[ai][infer][vectors]") {
+  const std::vector<float> query{1.0f, 0.0f};
+  const auto add = [](mv::ai::vector_store& s, std::int64_t asset, std::int64_t pts, float x, float y) {
+    std::vector<float> v{x, y};
+    mv::infer::l2_normalise(v);
+    std::vector<std::int8_t> q;
+    float scale = 0;
+    mv::ai::quantise(v, q, scale);
+    s.add(asset, pts, 0.0f, scale, q);
+  };
+  mv::ai::vector_store::scan_stats st;
+  {
+    // Ten matching assets among two hundred stand out (z = sqrt(190 / 10));
+    // a quarter of the index matching could not (z <= sqrt(3)): the margin
+    // test is what passes a query that describes much of the library.
+    mv::ai::vector_store s(2);
+    for (std::int64_t a = 1; a <= 200; ++a) add(s, a, -1, a <= 10 ? 0.9f : 0.1f, a <= 10 ? 0.1f : 0.9f);
+    (void)s.scan(query, {}, 100, false, 0, -1, &st);
+    CHECK(st.assets == 200);
+    CHECK(st.top10_z > 4.0f);
+  }
+  {
+    // One long clip of matching frames among flat stills counts once.
+    mv::ai::vector_store s(2);
+    for (std::int64_t f = 0; f < 500; ++f) add(s, 100, f * 1000, 0.9f, 0.1f);
+    for (std::int64_t a = 1; a <= 39; ++a) add(s, a, -1, 0.1f, 0.9f);
+    (void)s.scan(query, {}, 100, false, 0, -1, &st);
+    CHECK(st.assets == 40);
+    CHECK(st.top10_z < 1.0f);
+  }
+  {
+    // Too few assets to say anything.
+    mv::ai::vector_store s(2);
+    for (std::int64_t a = 1; a <= 12; ++a) add(s, a, -1, a <= 3 ? 0.9f : 0.1f, 0.5f);
+    (void)s.scan(query, {}, 100, false, 0, -1, &st);
+    CHECK(st.assets == 12);
+    CHECK(st.top10_z == 0.0f);
+  }
 }
 
 TEST_CASE("YuNet's outputs decode to boxes and landmarks, then NMS", "[ai][infer][faces]") {
@@ -271,6 +353,9 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       {"a plate of pizza", {"pizza"}, {}},
       {"giraffes", {"giraffe"}, {}},
       {"a train at the station", {"train"}, {}},
+      {"a dog", {"dog"}, {}},
+      {"a cat", {"cat"}, {}},
+      {"dog", {"dog"}, {}},
   };
   for (const char* folder : {"clip-b32", "clip-l14"}) {
     auto spec = mv::infer::read_clip_spec(utf8(fs::path(pack) / "models" / folder));
@@ -320,6 +405,20 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       for (const auto& g : generic) best_g = std::max(best_g, cosine(embs[i], g));
       return cosine(embs[i], q) - best_g;
     };
+    // The engine's second test (vector_store::scan_stats): the ten best
+    // images' mean score, in standard deviations of all the images' scores.
+    const auto top10_z = [&](const std::vector<float>& q) {
+      std::vector<float> s(embs.size());
+      for (std::size_t i = 0; i < s.size(); ++i) s[i] = cosine(embs[i], q);
+      double mean = 0, var = 0;
+      for (float v : s) mean += v;
+      mean /= static_cast<double>(s.size());
+      for (float v : s) var += (v - mean) * (v - mean);
+      std::sort(s.begin(), s.end(), std::greater<float>());
+      double top = 0;
+      for (std::size_t i = 0; i < 10; ++i) top += s[i];
+      return static_cast<float>((top / 10 - mean) / std::sqrt(var / static_cast<double>(s.size())));
+    };
     for (const query_case& qc : cases) {
       const auto q = *(*model)->embed_text(qc.text);
       std::vector<std::size_t> order(embs.size());
@@ -344,15 +443,34 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       CHECK(relevant >= static_cast<int>(k) - 1);  // plan/17 PR 20 target: P@5 >= 0.8
       float best_margin = -1;  // the engine's rule: the best of the top ten
       for (std::size_t r = 0; r < 10 && r < order.size(); ++r) best_margin = std::max(best_margin, margin_of(q, order[r]));
-      CHECK(best_margin >= spec->query_margin);
+      const float z = top10_z(q);
+      INFO("best margin " << best_margin << ", top-ten z " << z);
+      CHECK((best_margin >= spec->query_margin || z >= spec->query_z));
     }
-    const auto nonsense = *(*model)->embed_text("xyzzy plugh qwertyuiop");
-    std::vector<std::size_t> by(embs.size());
-    for (std::size_t i = 0; i < by.size(); ++i) by[i] = i;
-    std::sort(by.begin(), by.end(), [&](std::size_t a, std::size_t b) { return cosine(embs[a], nonsense) > cosine(embs[b], nonsense); });
-    float nonsense_margin = -1;
-    for (std::size_t r = 0; r < 10 && r < by.size(); ++r) nonsense_margin = std::max(nonsense_margin, margin_of(nonsense, by[r]));
-    INFO(spec->id << " nonsense margin " << nonsense_margin);
-    CHECK(nonsense_margin < spec->query_margin);
+    for (const char* text : {"xyzzy plugh qwertyuiop", "asdf", "blorf zxqv"}) {
+      const auto nonsense = *(*model)->embed_text(text);
+      std::vector<std::size_t> by(embs.size());
+      for (std::size_t i = 0; i < by.size(); ++i) by[i] = i;
+      std::sort(by.begin(), by.end(), [&](std::size_t a, std::size_t b) { return cosine(embs[a], nonsense) > cosine(embs[b], nonsense); });
+      float nonsense_margin = -1;
+      for (std::size_t r = 0; r < 10 && r < by.size(); ++r) nonsense_margin = std::max(nonsense_margin, margin_of(nonsense, by[r]));
+      const float z = top10_z(nonsense);
+      INFO(spec->id << " \"" << text << "\" margin " << nonsense_margin << ", top-ten z " << z);
+      CHECK(nonsense_margin < spec->query_margin);
+      CHECK(z < spec->query_z);
+    }
   }
+}
+
+TEST_CASE("a greyscale JPEG decodes to RGB for the index", "[ai][infer][decode]") {
+#if defined(MV_AI_TEST_DECODE)
+  const std::string file = env("MV_AI_GREY_JPEG");
+  if (file.empty()) SKIP("MV_AI_GREY_JPEG not set");
+  auto img = mv::addon::media::decode_still(file, 448);
+  if (!img) FAIL("decode_still: " << mv::status_name(img.error()));
+  CHECK(img->width > 0);
+  CHECK(img->rgb.size() == static_cast<std::size_t>(img->width) * img->height * 3);
+#else
+  SKIP("a build without the host decoders");
+#endif
 }

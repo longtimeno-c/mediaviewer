@@ -84,6 +84,34 @@ result<std::unique_ptr<display_transform>> display_transform::create(
     return err(status::corrupt);
   }
 
+  if (cmsGetColorSpace(in) == cmsSigGrayData) {
+    // An RGBA transform cannot take a grey profile; tabulate grey → sRGB once.
+    cmsHPROFILE out = cmsCreate_sRGBProfileTHR(lcms);
+    cmsHTRANSFORM grey = out ? cmsCreateTransformTHR(lcms, in, TYPE_GRAY_8, out, TYPE_RGB_8,
+                                                     INTENT_RELATIVE_COLORIMETRIC, 0)
+                             : nullptr;
+    if (out) cmsCloseProfile(out);
+    cmsCloseProfile(in);
+    if (!grey) {
+      cmsDeleteContext(lcms);
+      return err(status::corrupt);
+    }
+    std::array<std::uint8_t, 256> ramp{};
+    for (std::size_t i = 0; i < ramp.size(); ++i) ramp[i] = static_cast<std::uint8_t>(i);
+    std::array<std::uint8_t, 256 * 3> lut{};
+    cmsDoTransform(grey, ramp.data(), lut.data(), 256);
+    cmsDeleteTransform(grey);
+    cmsDeleteContext(lcms);
+    try {
+      auto made = std::unique_ptr<display_transform>(new display_transform());
+      made->grey_ = true;
+      made->grey_lut_ = lut;
+      return made;
+    } catch (...) {
+      return err(status::out_of_memory);
+    }
+  }
+
   cmsHTRANSFORM xform = nullptr;
   const bool passthrough = is_srgb_profile(lcms, in);
   if (!passthrough) {
@@ -127,7 +155,7 @@ display_transform::~display_transform() {
 }
 
 result<display_image> display_transform::apply(codec::raster&& src, const job_context* ctx) const {
-  if ((!transform_ && !passthrough_) || src.width == 0 || src.height == 0 ||
+  if ((!transform_ && !passthrough_ && !grey_) || src.width == 0 || src.height == 0 ||
       src.rgba.size() != static_cast<std::size_t>(src.width) * src.height * 4) {
     return err(status::corrupt);
   }
@@ -141,6 +169,21 @@ result<display_image> display_transform::apply(codec::raster&& src, const job_co
   dst.rgba = std::move(src.rgba);
   if (passthrough_) {
     if (ctx && ctx->cancelled()) return err(status::cancelled);
+    return dst;
+  }
+  if (grey_) {
+    // R = G = B from the decoder's grey expansion; alpha stays. Colour pixels
+    // under a grey profile are a broken file: fail, never guess a colour space.
+    const std::size_t pixels = static_cast<std::size_t>(dst.width) * dst.height;
+    for (std::size_t i = 0; i < pixels; ++i) {
+      if ((i & 0xFFFF) == 0 && ctx && ctx->cancelled()) return err(status::cancelled);
+      std::uint8_t* px = dst.rgba.data() + i * 4;
+      if (px[0] != px[1] || px[0] != px[2]) return err(status::corrupt);
+      const std::uint8_t* rgb = grey_lut_.data() + static_cast<std::size_t>(px[0]) * 3;
+      px[0] = rgb[0];
+      px[1] = rgb[1];
+      px[2] = rgb[2];
+    }
     return dst;
   }
 

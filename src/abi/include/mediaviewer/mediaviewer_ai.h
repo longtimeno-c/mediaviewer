@@ -65,7 +65,8 @@ typedef enum mv_ai_state {
   MV_AI_STATE_INDEXING = 1,
   MV_AI_STATE_PAUSED = 2,      /* the user paused it */
   MV_AI_STATE_YIELDING = 3,    /* waiting for the viewer; see yield_reason */
-  MV_AI_STATE_LOADING = 4,     /* loading the model / running the compute self-test */
+  MV_AI_STATE_LOADING = 4,     /* loading the model / running the compute self-test;
+                                  yield_reason VIEWER while it waits for a quiet viewer */
   MV_AI_STATE_ERROR = 5        /* the model would not load; see provider_fault */
 } mv_ai_state;
 
@@ -87,10 +88,30 @@ typedef enum mv_ai_scope {
 #define MV_AI_KIND_VIDEOS 2u
 #define MV_AI_KIND_ALL 3u
 
+/* What a search looks for, OR'ed into `kinds` (2026-09-27, audio). None of
+ * these set means all three. */
+#define MV_AI_FIND_PICTURES 0x10u     /* what a photo or frame shows (CLIP) */
+#define MV_AI_FIND_SOUNDS 0x20u       /* what a clip sounds like (CLAP): "dog barking" */
+#define MV_AI_FIND_SPEECH 0x40u       /* what is said in a clip (Whisper transcripts) */
+
+/* What a folder's VIDEOS are indexed for (Settings "Index videos for", and per
+ * folder). Photos are always pictures. Sound needs the ai-audio piece and
+ * covers both sounds and speech. */
+#define MV_AI_MEDIA_DEFAULT 0u        /* per folder: follow the setting */
+#define MV_AI_MEDIA_PICTURES 1u
+#define MV_AI_MEDIA_SOUND 2u
+#define MV_AI_MEDIA_BOTH 3u
+
+/* Why a result matched (mv_ai_result.match), a bit set. */
+#define MV_AI_MATCH_PICTURE 1u
+#define MV_AI_MATCH_SOUND 2u
+#define MV_AI_MATCH_SPEECH 4u
+
 #define MV_AI_STATUS_INDEX_FULL 1u     /* over the index size cap: indexing stopped */
 #define MV_AI_STATUS_FACES_ON 2u       /* the People opt-in is on */
 #define MV_AI_STATUS_FACES_READY 4u    /* ...and the ai-faces piece is loaded */
 #define MV_AI_STATUS_NO_MODELS 8u      /* the Core pack's models failed to load */
+#define MV_AI_STATUS_AUDIO_READY 16u   /* the ai-audio piece is loaded (sounds + speech) */
 
 /* Polled by the status line (~4 Hz while visible). [no-block] */
 typedef struct mv_ai_status {
@@ -118,6 +139,11 @@ typedef struct mv_ai_status {
   uint32_t flags;              /* MV_AI_STATUS_* */
   char active_root_utf8[1024]; /* display only */
   char model_utf8[64];         /* "CLIP ViT-L/14 fp16" */
+  /* Audio (2026-09-27): clips to index for sound / speech, and done. */
+  uint64_t sound_total;
+  uint64_t sound_done;
+  uint64_t speech_total;
+  uint64_t speech_done;
 } mv_ai_status;
 
 /* One result: a photo, or the best moment of a clip with the others grouped
@@ -128,7 +154,7 @@ typedef struct mv_ai_result {
   float score;                 /* cosine similarity, higher is closer */
   uint32_t kind;               /* MV_AI_KIND_PHOTOS or MV_AI_KIND_VIDEOS */
   uint32_t more_in_clip;       /* other matching moments in the same clip */
-  uint32_t reserved;
+  uint32_t match;              /* MV_AI_MATCH_*: what matched at pts_ms (picture, sound, speech) */
 } mv_ai_result;
 
 typedef struct mv_ai_api {
@@ -139,13 +165,16 @@ typedef struct mv_ai_api {
   /* ---- state and settings (PR 20, 23) ------------------------------------ */
   mv_status(MV_CALL* status)(void* ctx, mv_ai_status* out);                      /* [no-block] */
   /* {"compute":0..4,"quality":0..2,"pause_on_battery_percent":30,
+   *  "video_index":1..3 (in effect: an unset choice is Pictures, or Both once
+   *  ai-audio is installed), "video_index_setting":0..3, "audio_ready":bool,
    *  "index_cap_bytes":N,"faces":false,"min_score":0.2,
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
    *  "runtime":"1.30.0"}  [no-block] */
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "index_cap_bytes"
-   * | "min_score" | "reload"; value: a JSON number. Compute re-creates the
+   * | "min_score" | "reload" | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
+   * Sound once the ai-audio piece is installed); value: a JSON number. Compute re-creates the
    * sessions (no re-index); quality starts a migration. "reload" (any value)
    * re-reads the installed pieces after one is installed or removed: People
    * (ai-faces) is picked up at once; a vendor piece (ai-cuda) carries its own
@@ -233,6 +262,16 @@ typedef struct mv_ai_api {
    * written (PR 24 "never ... crops"). people_json's "cover_face" names the
    * cover's face id. [worker-thread] */
   mv_status(MV_CALL* face_thumb)(void* ctx, uint64_t face_id, char* out_utf8, uint32_t cap);
+
+  /* ---- audio (2026-09-27) ------------------------------------------------- */
+  /* What a remembered folder's videos are indexed for (MV_AI_MEDIA_*; 0
+   * follows Settings "video_index"). Adding Sound queues its clips; removing
+   * it keeps what was indexed until the folder is removed. [no-block] */
+  mv_status(MV_CALL* root_set_media)(void* ctx, uint64_t root_id, uint32_t media);
+  /* The words that matched, for a speech result ("...we are now landing in
+   * Lisbon..."), empty otherwise. */
+  mv_status(MV_CALL* result_snippet)(void* ctx, uint64_t search_id, uint32_t index, char* out_utf8,
+                                     uint32_t cap);
 } mv_ai_api;
 
 #ifdef __cplusplus

@@ -42,12 +42,23 @@ class vector_store {
     float score = 0;     // cosine
     float generic = 0;   // the row's best generic-prompt cosine
   };
+  // How far a query's best assets stand out from the rest of the allowed
+  // index: the mean of the ten best per-asset scores, in standard deviations
+  // of every asset's best score. Per asset, so a long clip's many similar
+  // frames count once. Too few assets to say: `assets` < kMinAssets, z = 0.
+  struct scan_stats {
+    static constexpr std::size_t kMinAssets = 30;
+    std::size_t assets = 0;
+    float top10_z = 0;
+    float mean = 0;  // of the per-asset best scores
+    float sd = 0;
+  };
   // The `k` best rows whose asset passes `allow` (may be empty: all), with
   // score - generic >= min_margin when `use_margin`, and score >= min_score.
   [[nodiscard]] std::vector<hit> scan(std::span<const float> query,
                                       const std::function<bool(std::int64_t)>& allow,
                                       std::size_t k, bool use_margin, float min_margin,
-                                      float min_score) const;
+                                      float min_score, scan_stats* stats = nullptr) const;
   // Every live row of one asset, in time order (a clip's matches).
   [[nodiscard]] std::vector<hit> rows_of(std::int64_t asset, std::span<const float> query) const;
   // The stored vector of a row nearest `pts_ms` in `asset`, dequantised.

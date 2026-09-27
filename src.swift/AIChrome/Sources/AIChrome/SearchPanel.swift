@@ -244,6 +244,18 @@ struct SearchRootView: View {
           model.chipsChanged()
         }
       }
+      // 2026-09-27: what to find in them. None on = all three. Sounds and
+      // Speech need the Sound piece (Settings -> Local search).
+      Rectangle().fill(AITheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 6)
+      ForEach(SearchModel.Find.allCases) { f in
+        let needsAudio = f != .pictures && !model.audioReady
+        Chip(label: f.label, symbol: f.symbol, on: model.finds.contains(f), disabled: needsAudio) {
+          if !model.finds.insert(f).inserted { model.finds.remove(f) }
+          model.chipsChanged()
+        }
+        .help(needsAudio ? "Install Sound in Settings → Local search to find videos by what you hear."
+                         : "Find by \(f.label.lowercased()). With none chosen, all are searched.")
+      }
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 16).padding(.bottom, 10)
@@ -400,6 +412,7 @@ struct SearchRootView: View {
 
 private struct Chip: View {
   let label: String
+  var symbol: String? = nil
   let on: Bool
   let disabled: Bool
   let action: () -> Void
@@ -407,7 +420,10 @@ private struct Chip: View {
 
   var body: some View {
     Button(action: action) {
-      Text(label)
+      HStack(spacing: 4) {
+        if let symbol { Image(systemName: symbol).font(.system(size: 10, weight: .semibold)) }
+        Text(label)
+      }
         .font(AITheme.font(12))
         .foregroundStyle(on ? Color.white : AITheme.title)
         .padding(.horizontal, 10).padding(.vertical, 4)
@@ -423,8 +439,9 @@ private struct Chip: View {
   }
 }
 
-/// One result: the moment's thumbnail, a m:ss badge for a clip, and
-/// "+N in this clip" when the clip has other matches.
+/// One result: the moment's thumbnail, a m:ss badge for a clip, "+N in this
+/// clip" when the clip has other matches, what matched (picture, sound, speech)
+/// and, for speech, the words that were said.
 private struct ResultTile: View {
   let result: AIResult
   let order: Int
@@ -438,9 +455,17 @@ private struct ResultTile: View {
   @State private var appeared = false
   @State private var hover = false
 
-  var body: some View {
+  private var badges: [String] {
+    var out: [String] = []
+    if result.match & MV_AI_MATCH_PICTURE != 0 && result.match != MV_AI_MATCH_PICTURE { out.append("photo") }
+    if result.matchedSound { out.append("speaker.wave.2") }
+    if result.matchedSpeech { out.append("text.bubble") }
+    return out
+  }
+
+  private var picture: some View {
     let h = size * 0.75
-    ZStack {
+    return ZStack {
       RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.07))
       if let image = slot.image {
         Image(decorative: image, scale: 1)
@@ -455,6 +480,19 @@ private struct ResultTile: View {
     }
     .frame(width: size, height: h)
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(alignment: .topLeading) {
+      // Only when something other than the picture matched: a sound or words.
+      if !badges.isEmpty {
+        HStack(spacing: 3) {
+          ForEach(badges, id: \.self) { Image(systemName: $0) }
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .background(Capsule().fill(.black.opacity(0.6)))
+        .padding(5)
+      }
+    }
     .overlay(alignment: .bottomLeading) {
       if result.isClip {
         Label(momentText(result.ptsMs), systemImage: "play.fill")
@@ -488,6 +526,23 @@ private struct ResultTile: View {
           .padding(-3)
       }
     }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      picture
+      if !result.snippet.isEmpty {
+        // The words that matched, quoted, under the frame they were said over.
+        Text("“\(result.snippet)”")
+          .font(AITheme.font(11))
+          .foregroundStyle(AITheme.body)
+          .lineLimit(2)
+          .truncationMode(.middle)
+          .frame(width: size, alignment: .leading)
+          .transition(.opacity)
+      }
+    }
+    .frame(width: size, alignment: .topLeading)
     .scaleEffect(hover && !reduceMotion ? 1.03 : 1)
     .shadow(color: .black.opacity(hover ? 0.25 : 0), radius: hover ? 10 : 0, y: hover ? 4 : 0)
     .animation(.easeOut(duration: 0.15), value: hover)
@@ -502,7 +557,14 @@ private struct ResultTile: View {
     }
     .help(result.name)
     .accessibilityElement()
-    .accessibilityLabel(result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name)
+    .accessibilityLabel(accessibilityText)
     .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+
+  private var accessibilityText: String {
+    var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name
+    if result.matchedSound { text += ", matched by sound" }
+    if result.matchedSpeech { text += ", matched by speech" + (result.snippet.isEmpty ? "" : ": \(result.snippet)") }
+    return text
   }
 }

@@ -41,6 +41,10 @@ struct host_services {
   std::function<result<std::string>(const std::string& path, std::int64_t pts_ms,
                                     const rgb_image* image)>
       moment_thumbnail;
+  std::function<result<std::unique_ptr<audio_stream>>(const std::string& path,
+                                                      std::uint32_t sample_rate,
+                                                      std::int64_t start_ms)>
+      open_audio;
   // The verified folder of an installed piece of the add-on's family.
   // loaded_addon::load fills it from the store when left empty.
   std::function<result<std::string>(const std::string& piece_id)> piece_dir;

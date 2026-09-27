@@ -4,6 +4,7 @@ using MediaViewer.Interop;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Windows.Storage.Pickers;
 
 namespace MediaViewer.Ai.Chrome;
@@ -42,6 +43,11 @@ internal sealed class ManagePanel
     private TextBlock? _indexSize;
     private bool _confirmFacesOff;
     private bool _cudaAvailable;
+    private readonly ToggleButton[] _videoIndex = new ToggleButton[3];
+    private readonly TextBlock _videoIndexHint;
+    private readonly TextBlock _audioLine;
+    private MvAiMedia _videoIndexValue = MvAiMedia.Pictures;
+    private bool _audioReady;
     private readonly List<MvAiCompute> _computeValues = new();
 
     private static readonly int[] BatteryValues = { 0, 20, 30, 50, 100 };
@@ -70,6 +76,9 @@ internal sealed class ManagePanel
         var statusText = new StackPanel { Spacing = 2 };
         statusText.Children.Add(_status);
         statusText.Children.Add(_compute);
+        _audioLine = _look.Text("", 12);
+        _audioLine.Visibility = Visibility.Collapsed;
+        statusText.Children.Add(_audioLine);
         var statusRow = new Grid { ColumnSpacing = 16 };
         statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -109,6 +118,48 @@ internal sealed class ManagePanel
         qualityDetail.Children.Add(_look.Text(
             "Changing it re-indexes in the background; the current index answers until the new one is ready.", 12));
         Root.Children.Add(Row("Search quality", qualityDetail, _qualityBox));
+
+        // Audio (2026-09-27): what videos are indexed for. Sound covers both
+        // sounds ("dog barking") and speech, and needs the Audio piece.
+        var segments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        string[] names = { "Pictures", "Sound", "Both" };
+        for (int i = 0; i < 3; ++i)
+        {
+            MvAiMedia media = (MvAiMedia)(i + 1);
+            var b = new ToggleButton
+            {
+                Content = names[i],
+                FontFamily = _look.Font,
+                FontSize = _look.FontSize - 2,
+                Padding = new Thickness(14, 5, 14, 6),
+                CornerRadius = i == 0 ? new CornerRadius(6, 0, 0, 6) : i == 2 ? new CornerRadius(0, 6, 6, 0) : new CornerRadius(0),
+            };
+            AutomationProperties.SetName(b, "Index videos for " + names[i]);
+            b.Click += (_, _) => SetVideoIndex(media);
+            int at = i;
+            b.KeyDown += (_, e) =>
+            {
+                // Arrows walk the segments, like a radio group; Tab leaves it.
+                int step = e.Key == Windows.System.VirtualKey.Right ? 1 : e.Key == Windows.System.VirtualKey.Left ? -1 : 0;
+                if (step == 0) return;
+                for (int n = at + step; n >= 0 && n < 3; n += step)
+                {
+                    if (!_videoIndex[n].IsEnabled) continue;
+                    _videoIndex[n].Focus(FocusState.Keyboard);
+                    SetVideoIndex((MvAiMedia)(n + 1));
+                    break;
+                }
+                e.Handled = true;
+            };
+            _videoIndex[i] = b;
+            segments.Children.Add(b);
+        }
+        _videoIndexHint = _look.Text("", 12);
+        var videoDetail = new StackPanel { Spacing = 2 };
+        videoDetail.Children.Add(_look.Text(
+            "Pictures finds what a clip shows; Sound finds what it sounds like and what is said. Photos are always pictures.", 12));
+        videoDetail.Children.Add(_videoIndexHint);
+        Root.Children.Add(Row("Index videos for", videoDetail, segments));
 
         // Indexed folders.
         Root.Children.Add(Heading("Indexed folders"));
@@ -228,6 +279,10 @@ internal sealed class ManagePanel
             if (bi < 0) bi = Array.FindIndex(BatteryValues, v => v >= battery);
             _batteryBox.SelectedIndex = bi < 0 ? 0 : bi;
             if (!_confirmFacesOff) _faces.IsOn = faces;
+            uint videoIndex = r.TryGetProperty("video_index", out JsonElement vi) ? vi.GetUInt32() : 0;
+            _videoIndexValue = videoIndex is >= 1 and <= 3 ? (MvAiMedia)videoIndex : MvAiMedia.Pictures;
+            _audioReady = r.TryGetProperty("audio_ready", out JsonElement ar) && ar.ValueKind == JsonValueKind.True;
+            ShowVideoIndex();
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
         finally
@@ -251,7 +306,45 @@ internal sealed class ManagePanel
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
         _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;
         _pause.Content = s.State == MvAiState.Paused ? "Resume indexing" : "Pause indexing";
+        // "Sound: 12 of 40 clips · Speech: 8 of 40", while there is sound work.
+        bool audio = (s.Flags & MvAiStatus.FlagAudioReady) != 0;
+        _audioLine.Visibility = audio && (s.SoundTotal > 0 || s.SpeechTotal > 0) ? Visibility.Visible : Visibility.Collapsed;
+        _audioLine.Text = $"Sound: {s.SoundDone:N0} of {s.SoundTotal:N0} clips · Speech: {s.SpeechDone:N0} of {s.SpeechTotal:N0}";
+        if (audio != _audioReady)
+        {
+            _audioReady = audio;
+            ShowVideoIndex();
+        }
         RefreshIndexRow(s);
+    }
+
+    // ---- index videos for --------------------------------------------------------------
+
+    private bool AudioAvailable => _audioReady || _chrome.Host.IsPieceInstalled("ai-audio");
+
+    private void ShowVideoIndex()
+    {
+        bool audio = AudioAvailable;
+        for (int i = 0; i < 3; ++i)
+        {
+            var media = (MvAiMedia)(i + 1);
+            _videoIndex[i].IsEnabled = media == MvAiMedia.Pictures || audio;
+            _videoIndex[i].IsChecked = media == _videoIndexValue;
+        }
+        _videoIndexHint.Text = audio ? "" : "Install Audio above to index sounds and speech.";
+        _videoIndexHint.Visibility = audio ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void SetVideoIndex(MvAiMedia media)
+    {
+        if (media != MvAiMedia.Pictures && !AudioAvailable)
+        {
+            ShowVideoIndex();
+            return;
+        }
+        _videoIndexValue = media;
+        ShowVideoIndex();
+        Set("video_index", ((uint)media).ToString());
     }
 
     private void TogglePause()
@@ -317,7 +410,8 @@ internal sealed class ManagePanel
 
     // ---- roots ----------------------------------------------------------------------
 
-    private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes);
+    private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
+                                  MvAiMedia Media);
 
     internal void RefreshRoots()
     {
@@ -337,7 +431,9 @@ internal sealed class ManagePanel
                         !r.TryGetProperty("enabled", out JsonElement en) || en.GetBoolean(),
                         r.TryGetProperty("assets", out JsonElement a) ? a.GetInt64() : 0,
                         r.TryGetProperty("done", out JsonElement d) ? d.GetInt64() : 0,
-                        r.TryGetProperty("bytes", out JsonElement b) ? b.GetInt64() : 0));
+                        r.TryGetProperty("bytes", out JsonElement b) ? b.GetInt64() : 0,
+                        r.TryGetProperty("media", out JsonElement m) && m.GetUInt32() <= 3
+                            ? (MvAiMedia)m.GetUInt32() : MvAiMedia.Default));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -378,6 +474,7 @@ internal sealed class ManagePanel
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
             ulong id = r.Id;
             bool enabled = r.Enabled;
+            buttons.Children.Add(MediaMenu(id, r.Media));
             buttons.Children.Add(_look.Button(enabled ? "Pause" : "Resume", () => RootCall(() => _api.RootSetEnabled(id, !enabled))));
             buttons.Children.Add(_look.Button("Rescan", () => RootCall(() => _api.RootRescan(id))));
             buttons.Children.Add(_look.Button("Remove", () => RootCall(() => _api.RootRemove(id))));
@@ -389,6 +486,39 @@ internal sealed class ManagePanel
             grid.Children.Add(buttons);
             _roots.Children.Add(_look.Card(grid, 12));
         }
+    }
+
+    private static readonly string[] MediaNames = { "Default", "Pictures", "Sound", "Both" };
+
+    // "Videos: Default ▾" — this folder's own choice, or the setting's.
+    private DropDownButton MediaMenu(ulong root, MvAiMedia current)
+    {
+        var menu = new MenuFlyout();
+        for (int i = 0; i < 4; ++i)
+        {
+            var media = (MvAiMedia)i;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = i == 0 ? $"Default ({MediaNames[(int)_videoIndexValue]})" : MediaNames[i],
+                IsChecked = media == current,
+                // Sound needs the Audio piece; Default may resolve to it via the setting.
+                IsEnabled = media is MvAiMedia.Default or MvAiMedia.Pictures || AudioAvailable,
+            };
+            item.Click += (_, _) => RootCall(() => _api.RootSetMedia(root, media));
+            menu.Items.Add(item);
+        }
+        var button = new DropDownButton
+        {
+            Content = "Videos: " + MediaNames[(int)current],
+            FontFamily = _look.Font,
+            FontSize = _look.FontSize - 2,
+            Padding = new Thickness(12, 5, 8, 6),
+            CornerRadius = new CornerRadius(6),
+            Flyout = menu,
+        };
+        AutomationProperties.SetName(button, "Index this folder's videos for");
+        ToolTipService.SetToolTip(button, "What this folder's videos are indexed for: pictures, sound and speech, or both");
+        return button;
     }
 
     private void RootCall(Action call)

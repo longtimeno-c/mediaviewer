@@ -25,7 +25,7 @@ Mac are both at PR 9.** The order from here is:
 | 14 | Extract & remux | both | **Written with 13**, same state |
 | 15 | OS integration (Explorer; the remaining Finder twins) | both | Planned |
 | 16–19 | **Import add-on**, Milestone G ([18](18-import.md)) | both | **On a branch** (from PR 10's branch, ahead of 11–15): shared engine tested on Linux (CI job ready as a patch); both host halves written, first host builds and every hardware verify owed. Does not merge before 15 |
-| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | **On a branch** (2026-09-26): Windows built and tested (models, engine, chrome); Mac written, first Xcode build and every hardware verify owed. Does not merge before 19 |
+| 20–24 | Local AI search add-on, Milestone H ([17](17-local-ai-search.md)); was 21–25 | both | **On a branch** (2026-09-26, audio added 2026-09-27): Windows built and tested (models, engine, chrome, audio, the pack end to end); Mac written, first Xcode build and every hardware verify owed. Does not merge before 19 |
 | 26 | Folder tiles, breadcrumb, up | both | Specified |
 | 27–28 | **Voice query add-on**, Milestone I ([19](19-voice.md)) | both | Proposed |
 
@@ -667,6 +667,10 @@ re-run **while indexing**.
   scrub bar, keyboard-complete.
 - **PR 23 — Find-similar, index management, hardening.**
 - **PR 24 — Faces.** Local, opt-in, deletable people index; stricter biometric handling.
+- **Audio (added 2026-09-27, owner).** A separate index option for video soundtracks: what a
+  clip sounds like (CLAP) and what is said in it (Whisper), Pictures / Sound / Both per folder,
+  as its own `ai-audio` piece inside the 3 GB ceiling. Built with the Milestone H branch;
+  [17](17-local-ai-search.md) *Audio*, [12](12-decision-log.md).
 
 Renumbered 2026-09-24 from 21–25 (it follows Import). AI culling, cloud
 inference, and inference in the base installer stay out.

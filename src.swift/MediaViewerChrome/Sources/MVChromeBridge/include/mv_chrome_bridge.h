@@ -304,7 +304,7 @@ bool mv_addons_hint_pending(void);
 void mv_addons_hint_done(bool never_again);
 
 // Milestone H (plan/17): the same management by add-on id, for the AI pack
-// ("ai" = Core, "ai-faces" = People) beside Import. Also addons_mac.mm. The
+// ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
 // mv_addons_* functions above stay Import's, unchanged. mv_addons_check_manifest
 // now also reports "id", "part_of" and "installed_size"; mv_addons_install and
 // mv_addons_make_staging / mv_addons_sha256 serve every add-on.
@@ -338,13 +338,19 @@ typedef struct mv_chrome_ai_status {
   int32_t yield_reason;    // mv_ai_yield: 1 viewer 2 battery 3 frames
   int32_t backend;         // mv_ai_backend: 0 CPU 3 Core ML
   int32_t provider_fault;
-  uint32_t flags;          // MV_AI_STATUS_*: 1 index full, 2 faces on, 4 faces ready, 8 no models
+  uint32_t flags;          // MV_AI_STATUS_*: 1 index full, 2 faces on, 4 faces ready, 8 no models,
+                           // 16 audio ready
   uint32_t reserved;
   uint64_t assets_total;
   uint64_t assets_done;
   uint64_t frames_indexed;
   double eta_low_seconds;  // -1 unknown
   double eta_high_seconds;
+  // 2026-09-27, audio (the ai-audio piece): clips indexed for sounds / speech.
+  uint64_t sound_total;
+  uint64_t sound_done;
+  uint64_t speech_total;
+  uint64_t speech_done;
 } mv_chrome_ai_status;
 bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 

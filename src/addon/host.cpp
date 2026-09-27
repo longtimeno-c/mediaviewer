@@ -464,6 +464,48 @@ mv_status MV_CALL t_piece_dir(void* host, const char* piece, char* out, uint32_t
   });
 }
 
+struct audio_box {
+  std::unique_ptr<audio_stream> s;
+};
+
+mv_status MV_CALL t_audio_open(void* host, const char* path, uint32_t rate, int64_t start_ms,
+                               int64_t* duration_ms, void** out) {
+  return guarded([&] {
+    if (!path || !out || rate < 8000 || rate > 96000) return MV_ERR_INVALID_ARG;
+    *out = nullptr;
+    const auto& fn = self(host).services().open_audio;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto s = fn(path, rate, start_ms);
+    if (!s) return to_mv(s.error());
+    if (duration_ms) *duration_ms = (*s)->duration_ms();
+    auto box = std::make_unique<audio_box>();
+    box->s = std::move(*s);
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_audio_read(void*, void* audio, float* out, uint32_t max_samples, uint32_t* count,
+                               int64_t* start_ms) {
+  return guarded([&] {
+    if (!audio || !out || !count || max_samples == 0) return MV_ERR_INVALID_ARG;
+    std::int64_t t = 0;
+    auto r = static_cast<audio_box*>(audio)->s->read(max_samples, t);
+    if (!r) return to_mv(r.error());
+    std::memcpy(out, r->data(), r->size() * sizeof(float));
+    *count = static_cast<uint32_t>(r->size());
+    if (start_ms) *start_ms = t;
+    return MV_OK;
+  });
+}
+
+void MV_CALL t_audio_close(void*, void* audio) {
+  try {
+    delete static_cast<audio_box*>(audio);
+  } catch (...) {
+  }
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -502,6 +544,9 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.video_frame_rgb = &t_video_frame;
   api_.moment_thumbnail = &t_moment_thumb;
   api_.piece_dir = &t_piece_dir;
+  api_.audio_open = &t_audio_open;
+  api_.audio_read = &t_audio_read;
+  api_.audio_close = &t_audio_close;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

@@ -298,6 +298,18 @@ typedef struct mv_host_api {
    * verification (its files are never handed out). */
   mv_status(MV_CALL* piece_dir)(void* host, const char* piece_id, char* out_utf8,
                                 uint32_t capacity);
+
+  /* A clip's soundtrack for the audio index (sounds and speech, plan/17
+   * "Audio", 2026-09-27): mono float PCM at `sample_rate`, from `start_ms`,
+   * its own decoder (never the player's). MV_ERR_UNSUPPORTED_FORMAT: the file
+   * has no audio. `out_duration_ms` may be NULL. */
+  mv_status(MV_CALL* audio_open)(void* host, const char* path_utf8, uint32_t sample_rate,
+                                 int64_t start_ms, int64_t* out_duration_ms, void** out_audio);
+  /* Up to `max_samples` more samples into `out`; `*out_count` 0 is the end.
+   * `*out_start_ms` is the first sample's time on the player's timeline. */
+  mv_status(MV_CALL* audio_read)(void* host, void* audio, float* out, uint32_t max_samples,
+                                 uint32_t* out_count, int64_t* out_start_ms);
+  void(MV_CALL* audio_close)(void* host, void* audio);
 } mv_host_api;
 
 typedef struct mv_addon_api {

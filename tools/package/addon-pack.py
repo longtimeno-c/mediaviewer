@@ -97,6 +97,19 @@ ADDONS = {
                    "Runs entirely on this computer; nothing is sent anywhere.\n"),
         "ship_notices": ["ThirdPartyNotices.txt"],
     },
+    "ai-audio": {
+        "name": "AI Audio",
+        "part_of": "ai",
+        "host_api": {"min": 2, "max": 2},
+        "files": {
+            "win-x64": {"include": ["models"]},
+            "macos": {"arch": "arm64", "include": ["models"]},
+        },
+        "licences": [],
+        "notice": ("Audio search for MediaViewer's Local search: what clips sound like and what is said\n"
+                   "in them. Models: LAION CLAP (Apache-2.0), OpenAI Whisper base and small\n"
+                   "(Apache-2.0; ONNX exports by Xenova / onnx-community). Runs on this computer only.\n"),
+    },
     "ai-faces": {
         "name": "AI Faces",
         "part_of": "ai",

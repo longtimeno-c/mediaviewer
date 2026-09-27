@@ -107,6 +107,8 @@ result<clip_spec> read_clip_spec(const std::string& folder) {
   s.context = static_cast<std::uint32_t>(doc->integer("context").value_or(77));
   s.dedupe = number_or(*doc, "dedupe", s.dedupe);
   s.query_margin = number_or(*doc, "query_margin", s.query_margin);
+  s.query_z = number_or(*doc, "query_z", s.query_z);
+  s.result_z = number_or(*doc, "result_z", s.result_z);
   s.result_margin = number_or(*doc, "result_margin", s.result_margin);
   s.similar_min = number_or(*doc, "similar_min", s.similar_min);
   if (const json::value* g = doc->find("generic_prompts"); g && g->k == json::kind::array) {

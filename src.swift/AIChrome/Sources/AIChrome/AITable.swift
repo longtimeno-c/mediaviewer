@@ -48,11 +48,17 @@ final class AITable: @unchecked Sendable {
 
   /// face_thumb was appended to mv.ai.1 late in Milestone H: a pack whose
   /// table is shorter does not have it (struct_size says so).
-  var hasFaceThumb: Bool {
-    guard let offset = MemoryLayout<mv_ai_api>.offset(of: \mv_ai_api.face_thumb) else { return false }
+  var hasFaceThumb: Bool { has(\mv_ai_api.face_thumb) && api.pointee.face_thumb != nil }
+
+  /// Whether the pack's table reaches `field` (an entry appended after the
+  /// pack was built is past its struct_size and must not be read).
+  func has(_ field: PartialKeyPath<mv_ai_api>) -> Bool {
+    guard let offset = MemoryLayout<mv_ai_api>.offset(of: field) else { return false }
     return Int(api.pointee.struct_size) >= offset + MemoryLayout<UnsafeRawPointer>.size
-      && api.pointee.face_thumb != nil
   }
+
+  /// 2026-09-27 audio entries: root_set_media, result_snippet.
+  var hasAudio: Bool { has(\mv_ai_api.result_snippet) && api.pointee.result_snippet != nil }
 
   func setSetting(_ key: String, _ valueJSON: String) {
     _ = a.set_setting?(ctx, key, valueJSON)
@@ -138,6 +144,8 @@ struct StatusLine: Equatable {
   var indexing = false     // something is in progress (indexing or waiting)
   var paused = false       // the user paused it
   var idle = true
+  var sound = ""           // "Sound: 12 of 40 clips · Speech: 8 of 40"; "" without the piece
+  var audioReady = false   // the ai-audio piece is loaded
 
   init() {}
 
@@ -164,8 +172,10 @@ struct StatusLine: Equatable {
       paused = true
       idle = false
     case MV_AI_STATE_LOADING.rawValue:
-      text = "Loading the search model…"
-      spinning = true
+      // It opens the models only between the viewer's busy spells.
+      let waiting = s.yield_reason != 0
+      text = waiting ? "Loading the search model when the viewer is idle" : "Loading the search model…"
+      spinning = !waiting
       idle = false
     case MV_AI_STATE_ERROR.rawValue:
       text = "Search is unavailable: the model would not load"
@@ -175,8 +185,9 @@ struct StatusLine: Equatable {
         : "Up to date · \(countText(s.frames_indexed)) moments"
     }
     progress = s.assets_total == 0 ? 0 : min(1, Double(s.assets_done) / Double(s.assets_total))
+    audioReady = s.flags & MV_AI_STATUS_AUDIO_READY != 0
     badge = s.backend == MV_AI_BACKEND_COREML.rawValue ? "Neural Engine" : "CPU"
-    var notes: [String] = []
+    var notes: [String] = []  // appended below; the sound line goes first while it runs
     if s.provider_fault != 0 {
       switch s.provider_fault {
       case 1: notes.append("Core ML is not in this build — using CPU")
@@ -195,6 +206,14 @@ struct StatusLine: Equatable {
     }
     if s.flags & MV_AI_STATUS_NO_MODELS != 0 {
       notes.append("The search models could not be loaded. Reinstall Core in Settings")
+    }
+    // The Sound piece's progress: "Sound: 12 of 40 clips · Speech: 8 of 40".
+    if s.sound_total > 0 || s.speech_total > 0 {
+      var parts: [String] = []
+      if s.sound_total > 0 { parts.append("Sound: \(countText(s.sound_done)) of \(countText(s.sound_total)) clips") }
+      if s.speech_total > 0 { parts.append("Speech: \(countText(s.speech_done)) of \(countText(s.speech_total))") }
+      sound = parts.joined(separator: " · ")
+      if s.sound_done < s.sound_total || s.speech_done < s.speech_total { notes.insert(sound, at: 0) }
     }
     detail = notes.joined(separator: " · ")
   }
