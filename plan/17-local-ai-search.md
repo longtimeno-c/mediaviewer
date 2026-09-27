@@ -535,8 +535,8 @@ offered Local search.
 - **Commands** (plan/16): `Ctrl+F` search, `Ctrl+Shift+F` find similar, `N` / `Shift+N` next /
   previous matching moment; listed only while the pack is loaded.
 - **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
-  status pill, scrub-bar match dots, Settings -> Local search with per-piece install, budget
-  bar, compute / quality / precision, roots, People.
+  status pill, scrub-bar match dots, Settings -> Local search with per-piece install (clicks
+  queue, Core first; "Install all"), compute / precision (the model stays on Auto), roots, People.
 
 ### Audio (added 2026-09-27, owner)
 

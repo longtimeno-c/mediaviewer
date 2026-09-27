@@ -71,9 +71,20 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var loaded = false
   @Published private(set) var loading = false
   @Published private(set) var loadError = ""
+  /// The piece downloading or installing now. Installs run one at a time (no
+  /// fight over bandwidth, and each piece's 3 GB check sees the one before it
+  /// landed); more clicks queue behind it in `queued`.
   @Published private(set) var busyPiece: String?
   /// The busy piece's install progress (Settings' bar).
   @Published private(set) var phase: AddonChannel.Phase?
+  /// Clicked Install, waiting their turn: Core first, then the others in the
+  /// order clicked (owner request, 2026-09-28: Install on all three at once).
+  @Published private(set) var queued: [String] = []
+  /// What each install of the current batch said, shown together.
+  private var batchNotes: [String] = []
+  /// Between one install and the next: the installed sizes are being read
+  /// again, so the next piece's 3 GB check counts the one that just landed.
+  @Published private(set) var advancing = false
   @Published var message = ""
   @Published var confirmingRemove: String?
   /// Pieces whose removal is queued on the host's add-on queue (it unloads,
@@ -187,7 +198,8 @@ final class LocalSearchStore: ObservableObject {
     return "\(max(1, Int((b / 1_000_000).rounded()))) MB"
   }
 
-  func refresh() {
+  /// `then` runs on the main actor once the read has landed.
+  func refresh(then: (@MainActor @Sendable () -> Void)? = nil) {
     guard supported else { return }
     Task.detached {
       var read: [String: [String: Any]] = [:]
@@ -213,6 +225,7 @@ final class LocalSearchStore: ObservableObject {
           if ceiling > 0 { self.ceiling = ceiling }
         }
         self.stateKnown = true
+        then?()
       }
     }
   }
@@ -286,24 +299,89 @@ final class LocalSearchStore: ObservableObject {
       + "\(Self.sizeText(Int(ceiling))) in all. Remove another piece first."
   }
 
+  /// Downloading, installing, or waiting its turn.
+  func isPending(_ id: String) -> Bool { busyPiece == id || queued.contains(id) }
+  /// Core is installed or on its way in this batch: a piece may queue behind it.
+  var coreComing: Bool { coreInstalled || isPending("ai") }
+  /// Anything installing or queued.
+  var anyPending: Bool { busyPiece != nil || !queued.isEmpty || advancing }
+
+  /// What "Install all" fetches: every piece not installed that the channel offers.
+  var installAllIDs: [String] {
+    pieces.filter { !$0.installed && $0.offeredBytes != nil && !removing.contains($0.id) && !isPending($0.id) }
+      .map(\.id)
+  }
+
+  func installAll() {
+    for id in installAllIDs { install(id) }
+  }
+
+  /// Queues the piece and returns at once; the queue runs one install at a
+  /// time, Core first. A piece clicked before Core is installed waits for
+  /// Core, and is dropped with a note if Core does not install.
   func install(_ id: String) {
-    guard stateKnown, busyPiece == nil, !removing.contains(id),
+    guard stateKnown, !removing.contains(id), !isPending(id),
           let piece = pieces.first(where: { $0.id == id }) else { return }
-    if !piece.required && !coreInstalled {
+    if !piece.required && !coreComing {
       message = "Install Core first."
       return
     }
+    // Checked again before its download starts, against what is installed then.
     if let refusal = refusal(for: piece) {
       message = refusal
       return
     }
+    if !anyPending { batchNotes = [] }
+    if piece.required { queued.insert(id, at: 0) } else { queued.append(id) }
+    startNext()
+  }
+
+  /// Takes a piece out of the queue before it starts. Without Core on its
+  /// way, the pieces waiting for it go too.
+  func cancelQueued(_ id: String) {
+    queued.removeAll { $0 == id }
+    if !coreComing, queued.contains(where: { $0 != "ai" }) {
+      queued.removeAll()
+      note("Queued pieces were cancelled: they need Core.")
+    }
+  }
+
+  private func note(_ text: String) {
+    batchNotes.append(text)
+    message = batchNotes.joined(separator: " ")
+  }
+
+  /// Starts the next queued piece if nothing is installing.
+  private func startNext() {
+    guard busyPiece == nil, !advancing else { return }
+    while !queued.isEmpty {
+      let id = queued.removeFirst()
+      guard let piece = pieces.first(where: { $0.id == id }), !removing.contains(id) else { continue }
+      if !piece.required && !coreInstalled {
+        note("\(piece.title) was not installed: it needs Core.")
+        continue
+      }
+      // The 3 GB rule, now that the pieces before it in the batch have landed.
+      if let refusal = refusal(for: piece) {
+        note(refusal)
+        continue
+      }
+      begin(piece)
+      return
+    }
+  }
+
+  private func begin(_ piece: Piece) {
+    let id = piece.id
     busyPiece = id
+    phase = nil
     // An update installs beside the running copy (the store keeps it until the
     // next start). A new Core takes over then: its chrome cannot be replaced in
     // the running app. A new piece is picked up at once by "reload".
     let update = piece.updateVersion
     let coreRunning = loaded
-    message = update.map { "Downloading \(piece.title) \($0)…" } ?? "Downloading \(piece.title)…"
+    message = (batchNotes + [update.map { "Downloading \(piece.title) \($0)…" } ?? "Downloading \(piece.title)…"])
+      .joined(separator: " ")
     let channel = piece.channel
     let title = piece.title
     Task.detached {
@@ -311,7 +389,9 @@ final class LocalSearchStore: ObservableObject {
       let ok: Bool
       do {
         try await channel.downloadAndInstall { p in
-          Task { @MainActor in self.phase = p }
+          // Only while this piece is still the busy one: a late update must
+          // not land on the next piece's row.
+          Task { @MainActor in if self.busyPiece == id { self.phase = p } }
         }
         result = "\(title) installed."
         ok = true
@@ -336,13 +416,30 @@ final class LocalSearchStore: ObservableObject {
             text = "Local search \(v) is installed. It takes over the next time MediaViewer starts."
           } else if id == "ai" {
             if !mv_addon2_load("ai") { text = "Local search is installed but could not be started." }
-          } else if self.loaded {
+          } else if self.loaded || self.loading {
+            // Also a Core installed earlier in this batch and still starting:
+            // its load reads the pieces as they are then.
             _ = mv_addon2_reload("ai")
           }
           if let v = update, text == result { text = "\(title) updated to \(v)." }
+        } else if id == "ai" && !self.coreInstalled {
+          // Pieces clicked with Core cannot install without it.
+          let dropped = self.queued.filter { $0 != "ai" }
+            .compactMap { q in self.pieces.first(where: { $0.id == q })?.title }
+          self.queued.removeAll()
+          if !dropped.isEmpty {
+            text += " \(dropped.joined(separator: " and ")) \(dropped.count == 1 ? "was" : "were") not installed: "
+              + "\(dropped.count == 1 ? "it needs" : "they need") Core."
+          }
         }
-        self.message = text
-        self.refresh()
+        self.note(text)
+        // The next piece starts once the installed sizes are read again, so
+        // its 3 GB check counts the piece that just landed.
+        self.advancing = true
+        self.refresh {
+          self.advancing = false
+          self.startNext()
+        }
       }
     }
   }
@@ -413,6 +510,8 @@ struct LocalSearchSection: View {
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.stateKnown)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.removing)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.pieces)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.queued)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.busyPiece)
   }
 
   @ViewBuilder
@@ -430,7 +529,6 @@ struct LocalSearchSection: View {
     }
     .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
-    budgetBar
     if let id = store.confirmingRemove {
       removeConfirm(id)
         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -452,7 +550,7 @@ struct LocalSearchSection: View {
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
     }
-    // The pack's own management view: compute, quality, folders, index,
+    // The pack's own management view: compute, precision, folders, index,
     // People. Owned by AI.bundle; rebuilt when the chrome is re-attached.
     if store.loaded {
       AddonSettingsEmbed(addonID: "ai")
@@ -477,7 +575,20 @@ struct LocalSearchSection: View {
         } label: {
           Text("Install local search — downloads ~\(LocalSearchStore.sizeText(bytes.archive)), uses ~\(LocalSearchStore.sizeText(bytes.installed))")
         }
-        .disabled(store.busyPiece != nil)
+        .disabled(store.isPending("ai"))
+        // Core, People and Sound in one click, one after another (owner
+        // request, 2026-09-28). Offered while none is installed.
+        if !store.anyPending, store.pieces.allSatisfy({ !$0.installed }), store.installAllIDs.count > 1,
+           !store.pieces.contains(where: { store.removing.contains($0.id) }) {
+          let all = store.pieces.filter { store.installAllIDs.contains($0.id) }
+          let archive = all.compactMap { $0.offeredBytes?.archive }.reduce(0, +)
+          let installed = all.compactMap { $0.offeredBytes?.installed }.reduce(0, +)
+          Button {
+            store.installAll()
+          } label: {
+            Text("Install all (\(all.map(\.title).joined(separator: ", "))) — downloads ~\(LocalSearchStore.sizeText(archive)), uses ~\(LocalSearchStore.sizeText(installed))")
+          }
+        }
         Text("Nothing is downloaded until you click Install. The download is a plain request that carries nothing about you or your files.")
           .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
@@ -530,6 +641,13 @@ struct LocalSearchSection: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       if store.busyPiece == piece.id {
         AddonProgressView(phase: store.phase ?? .downloading(done: 0, total: 0), width: 200)
+      } else if store.queued.contains(piece.id) {
+        HStack(spacing: 8) {
+          Text(!piece.required && !store.coreInstalled ? "Queued, after Core" : "Queued")
+            .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          Button("Cancel") { store.cancelQueued(piece.id) }
+        }
+        .transition(.opacity)
       } else if store.removing.contains(piece.id) {
         HStack(spacing: 6) {
           ProgressView().controlSize(.small)
@@ -537,44 +655,25 @@ struct LocalSearchSection: View {
         }
         .transition(.opacity)
       } else if piece.installed {
+        // Clicks queue behind an install in progress (owner request,
+        // 2026-09-28); only Remove waits for the queue to finish.
         if let v = piece.updateVersion {
           Button("Update to \(v)") { store.install(piece.id) }
-            .disabled(store.busyPiece != nil || store.refusal(for: piece) != nil)
+            .disabled(store.refusal(for: piece) != nil)
             .help(store.refusal(for: piece) ?? "")
         }
         if piece.state != "ok" {
-          Button("Reinstall") { store.install(piece.id) }.disabled(store.busyPiece != nil)
+          Button("Reinstall") { store.install(piece.id) }
         }
         Button("Remove…") { store.confirmingRemove = piece.id }
-          .disabled(store.busyPiece != nil)
+          .disabled(store.anyPending)
       } else if piece.offeredBytes != nil {
         Button("Install") { store.install(piece.id) }
-          .disabled(store.busyPiece != nil || (!piece.required && !store.coreInstalled)
-                    || store.refusal(for: piece) != nil)
-          .help(store.refusal(for: piece) ?? (piece.required || store.coreInstalled ? "" : "Install Core first."))
+          .disabled((!piece.required && !store.coreComing) || store.refusal(for: piece) != nil)
+          .help(store.refusal(for: piece) ?? (piece.required || store.coreComing ? "" : "Install Core first."))
       }
     }
     .padding(12)
-  }
-
-  /// used / 3 GB, animated as pieces come and go.
-  private var budgetBar: some View {
-    let fraction = store.ceiling == 0 ? 0 : min(1, Double(store.used) / Double(store.ceiling))
-    return VStack(alignment: .leading, spacing: 4) {
-      GeometryReader { geo in
-        ZStack(alignment: .leading) {
-          Capsule().fill(Color.primary.opacity(0.08))
-          Capsule().fill(Color.accentColor)
-            .frame(width: max(fraction > 0 ? 6 : 0, geo.size.width * fraction))
-        }
-      }
-      .frame(height: 6)
-      .animation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.85), value: store.used)
-      Text("\(LocalSearchStore.sizeText(Int(store.used))) of \(LocalSearchStore.sizeText(Int(store.ceiling))) used by Local search. The search index is yours and does not count.")
-        .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .accessibilityElement(children: .combine)
   }
 
   @ViewBuilder

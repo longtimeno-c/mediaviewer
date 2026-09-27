@@ -74,6 +74,9 @@ public static partial class IslandHost
         public AddonOffer Offer { get; set; } = new(OfferKind.Unknown, 0);
         public bool ProbeRunning { get; set; }
         public bool Busy { get; set; }
+        // Being removed (the AI family's rows say "Removing…"); Busy alone is
+        // also a load in flight.
+        public bool Removing { get; set; }
         // The install in progress (null: none) and its bar, kept and updated in
         // place: a rebuilt row would drop keyboard focus at every 1 %.
         public AddonPhase? Phase { get; set; }
@@ -98,11 +101,14 @@ public static partial class IslandHost
 
     private readonly record struct AddonPhase(AddonPhaseKind Kind, long Done = 0, long Total = 0)
     {
-        public double? Fraction => Kind == AddonPhaseKind.Downloading && Total > 0
+        // Null until the first bytes arrive, or while the size is unknown:
+        // the bar is indeterminate (animated) rather than a frozen 0 %.
+        public double? Fraction => Kind == AddonPhaseKind.Downloading && Total > 0 && Done > 0
             ? Math.Min(1.0, (double)Done / Total) : null;
 
         public string Text => Kind switch
         {
+            AddonPhaseKind.Downloading when Done <= 0 => "Connecting…",
             AddonPhaseKind.Downloading => Total > 0 ? $"{MbText(Done)} of {MbText(Total)}" : MbText(Done),
             AddonPhaseKind.Checking => "Checking the download…",
             _ => "Installing…",
@@ -146,8 +152,15 @@ public static partial class IslandHost
         public void Show(AddonPhase p)
         {
             double? f = p.Fraction;
-            _bar.IsIndeterminate = f is null;
+            // Whatever the phase the bar shows activity: indeterminate (the
+            // animated dots) while no fraction is known, during checking and
+            // installing too (owner report, 2026-09-28). With animations off
+            // in Windows it is a still, dimmed full bar instead.
+            bool still = f is null && !HostAnimationsEnabled();
+            _bar.IsIndeterminate = f is null && !still;
+            _bar.Opacity = still ? 0.45 : 1;
             if (f is double v) _bar.Value = v;
+            else if (still) _bar.Value = 1;
             _text.Text = p.Text;
             _percent.Text = f is double pct ? $"{Math.Floor(pct * 100):0} %" : "";
             AutomationProperties.SetName(Root, f is double a ? $"{p.Text}, {Math.Floor(a * 100):0} percent" : p.Text);
@@ -915,18 +928,21 @@ public static partial class IslandHost
                 await using FileStream file = new(zipPath, FileMode.CreateNew, FileAccess.Write);
                 byte[] buffer = new byte[1 << 16];
                 long total = 0;
-                long reported = 0;
+                long lastReport = 0;
+                var clock = System.Diagnostics.Stopwatch.StartNew();
                 int n;
                 while ((n = await body.ReadAsync(buffer).ConfigureAwait(false)) > 0)
                 {
                     total += n;
                     if (total > archiveSize) throw new InvalidDataException("archive larger than signed");
                     await file.WriteAsync(buffer.AsMemory(0, n)).ConfigureAwait(false);
-                    // ~1 % steps: each report is a hop to the UI thread.
-                    if (progress is not null && archiveSize > 0 &&
-                        (total - reported >= Math.Max(archiveSize / 100, 1) || total == archiveSize))
+                    // ~10 reports a second, each a hop to the UI thread. By
+                    // time, not 1 % steps: 1 % of a gigabyte is 10 MB, which
+                    // on a slow line held the bar at 0 % for many seconds.
+                    long now = clock.ElapsedMilliseconds;
+                    if (progress is not null && (now - lastReport >= 100 || total == archiveSize))
                     {
-                        reported = total;
+                        lastReport = now;
                         progress.Report(new AddonPhase(AddonPhaseKind.Downloading, total, archiveSize));
                     }
                 }

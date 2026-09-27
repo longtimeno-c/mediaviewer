@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Settings → Local search, once Core is loaded (the chrome brief, "Management
 // panel"; plan/17 PRs 20, 21, 23, 24): status, Compute (Auto / Core ML / CPU
-// only), Search quality, Precision, the indexed folders, the index size and Clear, the
+// only), Precision (the one quality scale; the model stays on Auto), the indexed folders, the index size and Clear, the
 // battery rule, and People. The base app embeds this view (MVAIChrome
 // -settingsView) under its install / remove rows.
 //
@@ -483,18 +483,20 @@ struct ManagementView: View {
           }
           .pickerStyle(.menu).frame(width: 160)
         }
-        row("Search quality", detail: qualityDetail) {
-          Picker("Search quality", selection: Binding(get: { model.quality }, set: { model.set("quality", Int64($0)) })) {
-            Text("Auto").tag(Int(MV_AI_QUALITY_AUTO.rawValue))
-            Text("Fast").tag(Int(MV_AI_QUALITY_FAST.rawValue))
-            Text("High").tag(Int(MV_AI_QUALITY_HIGH.rawValue))
+        // No "Search quality" picker (owner, 2026-09-28: one scale, not
+        // two): the engine's Auto picks the larger model where Core ML runs
+        // it quickly, the smaller one on CPU only. A Fast or High chosen
+        // before stays as it was, said here with a way back to Auto; nothing
+        // rewrites it behind the person's back.
+        if model.quality != Int(MV_AI_QUALITY_AUTO.rawValue) {
+          row("Search model", detail: legacyQualityDetail) {
+            Button("Use Auto") { model.set("quality", Int64(MV_AI_QUALITY_AUTO.rawValue)) }
           }
-          .pickerStyle(.menu).frame(width: 160)
         }
       }
       section("Search") {
         row("Precision",
-            detail: "Stricter shows only close matches and says “nothing found” rather than showing near misses (a plane for “helicopter”). Broader shows more, including looser matches.") {
+            detail: "How closely a result must match what you type. Stricter shows only close matches and says “nothing found” rather than a near miss (a plane for “helicopter”); Broader shows more, including looser matches.") {
           PrecisionControl(level: model.precision) { model.setPrecision($0) }
             .frame(width: 240)
         }
@@ -615,13 +617,13 @@ struct ManagementView: View {
     }
   }
 
-  private var qualityDetail: String {
-    let fast = model.modelName(Int(MV_AI_QUALITY_FAST.rawValue))
-    let high = model.modelName(Int(MV_AI_QUALITY_HIGH.rawValue))
-    return "Which model reads your photos: speed against accuracy. " +
-      "Fast — smaller model, quick on any computer" + (fast.isEmpty ? "" : " (\(fast))") + ". " +
-      "High — best matches, needs a GPU or Apple silicon to be quick" + (high.isEmpty ? "" : " (\(high))") + ". " +
-      "Changing it re-indexes in the background; the old index answers until the new one is ready."
+  /// A Fast or High set before the choice left Settings.
+  private var legacyQualityDetail: String {
+    let high = model.quality == Int(MV_AI_QUALITY_HIGH.rawValue)
+    let name = model.modelName(model.quality)
+    return "Set to \(high ? "High" : "Fast")" + (name.isEmpty ? "" : " (\(name))") + " earlier. "
+      + "Auto chooses the model for this Mac and re-indexes in the background if it changes; "
+      + "the old index answers until the new one is ready."
   }
 
   private func rootRow(_ root: RootRow) -> some View {

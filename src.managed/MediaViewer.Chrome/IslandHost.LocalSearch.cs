@@ -38,10 +38,14 @@ public static partial class IslandHost
     private static UIElement? _aiSettingsPanel;
     private static bool? _nvidiaPresent;
     private static ulong _aiUsed, _aiCeiling;
-    private static bool _aiUsageRead;
     private static bool _confirmCoreRemove;
-    private static ScaleTransform? _budgetFill;
-    private static double _budgetShown;
+    // Installs run one at a time (no fight over bandwidth, and each piece's
+    // 3 GB check counts the one before it); more Install clicks queue here,
+    // Core first (owner request, 2026-09-28: Install on all three at once).
+    private static readonly List<AddonSlot> _aiQueue = new();
+    private static AddonSlot? _aiInstalling;
+    // What each install of the current batch said, shown together.
+    private static readonly List<string> _aiBatchNotes = new();
 
     // ---- listing state the AI chrome reads (IslandHost.Filmstrip.cs sets it) ----
 
@@ -392,7 +396,6 @@ public static partial class IslandHost
             {
                 _aiUsed = used;
                 _aiCeiling = ceiling;
-                _aiUsageRead = true;
                 RefreshLocalSearch();
             });
         });
@@ -448,9 +451,28 @@ public static partial class IslandHost
                         ? $"Install local search — downloads ~{Gb(offer.ArchiveSize)}, uses ~{Gb(offer.InstalledSize)}"
                         : $"Install local search — downloads ~{Gb(offer.ArchiveSize)}";
                     Button install = SettingsButton(label, () => StartPieceInstall(AiSlot));
-                    install.IsEnabled = !AiSlot.Busy;
+                    install.IsEnabled = !AiQueuedOrInstalling(AiSlot);
                     install.HorizontalAlignment = HorizontalAlignment.Left;
                     card.Children.Add(install);
+                    // Core, People and Audio in one click, one after another.
+                    // Offered while none is installed; NVIDIA acceleration is
+                    // never installed unasked (plan/17).
+                    AddonSlot[] all = InstallAllSlots();
+                    if (!AnyAiPending() && all.Length > 1 && !FacesSlot.State.Installed && !AudioSlot.State.Installed)
+                    {
+                        long archive = all.Sum(s => s.Offer.ArchiveSize);
+                        long uses = all.Sum(s => s.Offer.InstalledSize);
+                        string names = string.Join(", ", all.Select(s => s == AiSlot ? "Core" : s.Name));
+                        Button installAll = SettingsButton(
+                            uses > 0 ? $"Install all ({names}) — downloads ~{Gb(archive)}, uses ~{Gb(uses)}"
+                                     : $"Install all ({names}) — downloads ~{Gb(archive)}",
+                            () =>
+                            {
+                                foreach (AddonSlot each in InstallAllSlots()) StartPieceInstall(each);
+                            });
+                        installAll.HorizontalAlignment = HorizontalAlignment.Left;
+                        card.Children.Add(installAll);
+                    }
                     card.Children.Add(Small("Nothing downloads until you click Install. The download carries no identifier."));
                     break;
                 case OfferKind.NotPublished:
@@ -481,7 +503,6 @@ public static partial class IslandHost
             pieces.Children.Add(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics."));
         }
         _localSearchPanel.Children.Add(pieces);
-        _localSearchPanel.Children.Add(BuildBudgetBar());
 
         if (_confirmCoreRemove) _localSearchPanel.Children.Add(BuildCoreRemoveConfirm());
 
@@ -544,13 +565,23 @@ public static partial class IslandHost
         row.Children.Add(sizeText);
 
         FrameworkElement action;
-        if (slot.Busy && slot.Phase is not null)
+        if (_aiInstalling == slot)
         {
             // Installing: "412 MB of 1.08 GB" and the percentage, then the
             // checking and installing steps (the Mac's AddonProgressView).
             action = ProgressFor(slot, 200);
         }
-        else if (slot.Busy && slot.State.Installed)
+        else if (_aiQueue.Contains(slot))
+        {
+            // Waiting its turn; it can be taken out before it starts.
+            var queued = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            queued.Children.Add(Small(slot.Parent is not null && !AiSlot.State.Installed ? "Queued, after Core" : "Queued"));
+            Button cancel = SettingsButton("Cancel", () => CancelQueuedPiece(slot));
+            AutomationProperties.SetName(cancel, $"Cancel installing {title}");
+            queued.Children.Add(cancel);
+            action = queued;
+        }
+        else if (slot.Removing)
         {
             // Removing: said at once, not a greyed Remove (owner report,
             // 2026-09-27); Install comes back when it has gone.
@@ -574,13 +605,14 @@ public static partial class IslandHost
                     RemovePiece(slot, keepData: true);
                 }
             });
-            remove.IsEnabled = !slot.Busy;
+            // Only Remove waits for the queue and any load or removal to finish.
+            remove.IsEnabled = !AnyAiPending();
             AutomationProperties.SetName(remove, "Remove " + title);
             action = remove;
             if (UpdateVersion(slot) is string newer)
             {
                 Button update = SettingsButton($"Update to {newer}", () => StartPieceInstall(slot));
-                update.IsEnabled = !slot.Busy && !AnyAiBusy();
+                update.IsEnabled = !slot.Removing;
                 AutomationProperties.SetName(update, $"Update {title} to {newer}");
                 var both = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 both.Children.Add(update);
@@ -588,14 +620,15 @@ public static partial class IslandHost
                 action = both;
             }
         }
-        else if (slot.Parent is not null && !AiSlot.State.Installed)
+        else if (slot.Parent is not null && !CoreComing())
         {
             action = Small("Install Core first");
         }
         else if (slot.Offer.Kind == OfferKind.Available)
         {
+            // Accepted at once, queued behind any install in progress.
             Button install = SettingsButton("Install", () => StartPieceInstall(slot));
-            install.IsEnabled = !slot.Busy && !AnyAiBusy();
+            install.IsEnabled = !slot.Busy;
             AutomationProperties.SetName(install, "Install " + title);
             action = install;
         }
@@ -617,55 +650,66 @@ public static partial class IslandHost
 
     private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || AudioSlot.Busy || CudaSlot.Busy;
 
-    // Used / 3 GB, animated when a piece comes or goes.
-    private static FrameworkElement BuildBudgetBar()
+    // Busy (installing, loading, removing) or waiting in the install queue.
+    private static bool AnyAiPending() => AnyAiBusy() || _aiQueue.Count > 0;
+
+    private static bool AnyAiRemoving() => AiSlot.Removing || FacesSlot.Removing || AudioSlot.Removing || CudaSlot.Removing;
+
+    private static bool AiQueuedOrInstalling(AddonSlot slot) => _aiInstalling == slot || _aiQueue.Contains(slot);
+
+    // Core is installed or on its way in this batch: a piece may queue behind it.
+    private static bool CoreComing() => AiSlot.State.Installed || AiQueuedOrInstalling(AiSlot);
+
+    // What "Install all" fetches: Core, People and Audio where not installed
+    // and offered (never NVIDIA acceleration unasked).
+    private static AddonSlot[] InstallAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot }
+        .Where(s => !s.State.Installed && !s.Removing && !AiQueuedOrInstalling(s) && s.Offer.Kind == OfferKind.Available)
+        .ToArray();
+
+    private static void AddAiNote(string text)
     {
-        var panel = new StackPanel { Spacing = 4, Margin = new Thickness(0, 4, 0, 0) };
-        if (!_aiUsageRead || _aiCeiling == 0) return panel;
-        double fraction = Math.Clamp((double)_aiUsed / _aiCeiling, 0, 1);
-        _budgetFill = new ScaleTransform { ScaleX = _budgetShown };
-        var fill = new Border
+        if (text.Length == 0) return;
+        _aiBatchNotes.Add(text);
+        SetLocalSearchStatus(string.Join(" ", _aiBatchNotes));
+    }
+
+    // Takes a piece out of the queue before it starts. Without Core on its
+    // way, the pieces waiting for it go too.
+    private static void CancelQueuedPiece(AddonSlot slot)
+    {
+        _aiQueue.Remove(slot);
+        if (!CoreComing() && _aiQueue.Any(q => q.Parent is not null))
         {
-            Background = Brush(ChromeColour.TrimAccent),
-            CornerRadius = new CornerRadius(3),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            RenderTransform = _budgetFill,
-        };
-        var track = new Grid
-        {
-            Height = 6,
-            CornerRadius = new CornerRadius(3),
-            Background = Brush(Hairline),
-            Children = { fill },
-        };
-        panel.Children.Add(track);
-        panel.Children.Add(Small($"{Gb((long)_aiUsed)} of {Gb((long)_aiCeiling)} used by local search " +
-                                 "(the search index is your data and does not count)."));
-        AutomationProperties.SetName(track, $"Local search uses {Gb((long)_aiUsed)} of {Gb((long)_aiCeiling)}");
-        if (Math.Abs(fraction - _budgetShown) > 0.0005)
-        {
-            if (!HostAnimationsEnabled())
-            {
-                _budgetFill.ScaleX = fraction;
-            }
-            else
-            {
-                var grow = new DoubleAnimation
-                {
-                    From = _budgetShown,
-                    To = fraction,
-                    Duration = new Duration(TimeSpan.FromMilliseconds(420)),
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-                };
-                Storyboard.SetTarget(grow, _budgetFill);
-                Storyboard.SetTargetProperty(grow, "ScaleX");
-                var board = new Storyboard();
-                board.Children.Add(grow);
-                board.Begin();
-            }
-            _budgetShown = fraction;
+            _aiQueue.RemoveAll(q => q.Parent is not null);
+            AddAiNote("The queued pieces were cancelled: they need Core.");
         }
-        return panel;
+        RefreshLocalSearch();
+    }
+
+    // Starts the next queued piece once nothing installs or is being removed.
+    // A Core load in flight does not hold it up.
+    private static void StartNextPiece()
+    {
+        while (_aiInstalling is null && !AnyAiRemoving() && _aiQueue.Count > 0)
+        {
+            AddonSlot next = _aiQueue[0];
+            _aiQueue.RemoveAt(0);
+            if (next.Parent is not null && !AiSlot.State.Installed)
+            {
+                AddAiNote($"{next.Name} was not installed: it needs Core.");
+                continue;
+            }
+            // The 3 GB rule, now that the pieces before it in the batch have
+            // landed (checked again against the signed size before download).
+            if (BudgetRefusal(next, next.Offer.InstalledSize) is string refused)
+            {
+                AddAiNote(refused);
+                continue;
+            }
+            BeginPieceInstall(next);
+            return;
+        }
+        RefreshLocalSearch();
     }
 
     private static FrameworkElement BuildCoreRemoveConfirm()
@@ -696,9 +740,14 @@ public static partial class IslandHost
 
     private static void RemoveCore(bool keepData)
     {
-        if (AnyAiBusy()) return;
+        if (AnyAiPending()) return;
         _confirmCoreRemove = false;
         AiSlot.Busy = true;
+        // Removing Core removes its pieces: their rows say so too.
+        foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, CudaSlot })
+        {
+            if (gone == AiSlot || gone.State.Installed) gone.Removing = true;
+        }
         UnloadAddonChrome(AiSlot);
         SetLocalSearchStatus("Removing local search…");
         RefreshLocalSearch();
@@ -723,8 +772,9 @@ public static partial class IslandHost
 
     private static void RemovePiece(AddonSlot slot, bool keepData)
     {
-        if (AnyAiBusy()) return;
+        if (AnyAiPending()) return;
         slot.Busy = true;
+        slot.Removing = true;
         SetLocalSearchStatus($"Removing {slot.Name}…");
         RefreshLocalSearch();
         _ = Task.Run(() =>
@@ -743,8 +793,9 @@ public static partial class IslandHost
         });
     }
 
-    // Worker in, UI out: re-read what is installed and the family's room.
-    private static void FinishAiChange(AddonSlot slot, string message, bool load)
+    // Worker in, UI out: re-read what is installed and the family's room,
+    // then start the next queued install (its 3 GB check sees this one).
+    private static void FinishAiChange(AddonSlot slot, string message, bool load, bool install = false)
     {
         Dictionary<string, AddonState> states = ReadAddonStates();
         (ulong used, ulong ceiling) = (0, 0);
@@ -754,11 +805,32 @@ public static partial class IslandHost
         {
             slot.Busy = false;
             slot.Phase = null;
+            if (_aiInstalling == slot) _aiInstalling = null;
+            if (!install)
+            {
+                foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, CudaSlot }) gone.Removing = false;
+            }
             ApplyAddonStates(states);
             _aiUsed = used;
             _aiCeiling = ceiling;
-            _aiUsageRead = true;
-            SetLocalSearchStatus(message);
+            if (!install)
+            {
+                SetLocalSearchStatus(message);
+            }
+            else if (slot == AiSlot && !AiSlot.State.Installed && _aiQueue.Any(q => q.Parent is not null))
+            {
+                // Pieces clicked with Core cannot install without it.
+                string dropped = string.Join(" and ", _aiQueue.Where(q => q.Parent is not null).Select(q => q.Name));
+                _aiQueue.RemoveAll(q => q.Parent is not null);
+                AddAiNote(message);
+                AddAiNote(dropped.Contains(" and ")
+                    ? $"{dropped} were not installed: they need Core."
+                    : $"{dropped} was not installed: it needs Core.");
+            }
+            else
+            {
+                AddAiNote(message);
+            }
             // A piece just removed offers Install again: its size must be known.
             foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot })
             {
@@ -773,6 +845,7 @@ public static partial class IslandHost
                 try { search.OnPiecesChanged(); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
             }
+            StartNextPiece();
         });
     }
 
@@ -790,21 +863,40 @@ public static partial class IslandHost
                "for local search is free. Remove another piece first; nothing was downloaded.";
     }
 
+    // An Install / Update / Reinstall click: queued and accepted at once. The
+    // queue runs one install at a time, Core first; a piece clicked before
+    // Core is installed waits for Core and is dropped with a note if Core
+    // does not install.
     private static void StartPieceInstall(AddonSlot slot)
     {
-        if (AnyAiBusy() || !_addonStatesRead) return;
+        if (!_addonStatesRead || slot.Removing || AiQueuedOrInstalling(slot)) return;
+        if (slot.Parent is not null && !CoreComing())
+        {
+            SetLocalSearchStatus("Install Core first.");
+            return;
+        }
         if (BudgetRefusal(slot, slot.Offer.InstalledSize) is string refused)
         {
             SetLocalSearchStatus(refused);
             return;
         }
+        if (!AnyAiPending()) _aiBatchNotes.Clear();
+        if (slot == AiSlot) _aiQueue.Insert(0, slot);
+        else _aiQueue.Add(slot);
+        StartNextPiece();
+    }
+
+    private static void BeginPieceInstall(AddonSlot slot)
+    {
+        _aiInstalling = slot;
         slot.Busy = true;
         string what = slot == AiSlot ? "local search" : slot.Name;
         // An update installs beside the running copy (the store keeps it until
         // the next start). A new Core takes over then; a new piece at once.
         string? update = UpdateVersion(slot);
         bool coreRunning = slot == AiSlot && AiSlot.Chrome is not null;
-        SetLocalSearchStatus(update is null ? $"Downloading {what}…" : $"Downloading {what} {update}…");
+        SetLocalSearchStatus(string.Join(" ", _aiBatchNotes.Append(
+            update is null ? $"Downloading {what}…" : $"Downloading {what} {update}…")));
         slot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
         IProgress<AddonPhase> progress = PhaseReporter(slot);
         RefreshLocalSearch();
@@ -848,7 +940,13 @@ public static partial class IslandHost
                         ? "The download did not verify, so nothing was installed."
                         : $"{char.ToUpperInvariant(what[0])}{what[1..]} could not be downloaded. Check the connection and try again.";
             }
-            FinishAiChange(slot, message, load: slot == AiSlot);
+            catch (Exception ex)
+            {
+                // Anything else still finishes this install, so the queue moves on.
+                System.Diagnostics.Debug.WriteLine(ex);
+                message = $"{char.ToUpperInvariant(what[0])}{what[1..]} could not be installed.";
+            }
+            FinishAiChange(slot, message, load: slot == AiSlot, install: true);
         });
     }
 

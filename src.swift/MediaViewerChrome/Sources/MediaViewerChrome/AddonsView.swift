@@ -56,12 +56,16 @@ struct AddonChannel: Sendable {
     case checking     // size + SHA-256 of the archive
     case installing   // unpack, then the host verifies every file
 
+    /// nil until the first bytes arrive, or while the size is unknown: the
+    /// bar pulses instead of sitting at 0 %.
     var fraction: Double? {
-      if case .downloading(let done, let total) = self, total > 0 { return min(1, Double(done) / Double(total)) }
+      if case .downloading(let done, let total) = self, total > 0, done > 0 { return min(1, Double(done) / Double(total)) }
       return nil
     }
     var text: String {
       switch self {
+      case .downloading(let done, _) where done <= 0:
+        return "Connecting…"
       case .downloading(let done, let total):
         return total > 0 ? "\(AddonChannel.mbText(done)) of \(AddonChannel.mbText(total))" : AddonChannel.mbText(done)
       case .checking: return "Checking the download…"
@@ -75,41 +79,20 @@ struct AddonChannel: Sendable {
                            : "\(max(0, Int((Double(bytes) / 1e6).rounded()))) MB"
   }
 
-  /// The download task's own progress, observed (URLSession's async download
-  /// reports nothing otherwise), throttled to ~1 % steps.
-  private final class ProgressWatch: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    let total: Int64
-    let report: @Sendable (Phase) -> Void
-    private var observation: NSKeyValueObservation?
-    private var last: Int64 = -1
-    init(total: Int64, report: @escaping @Sendable (Phase) -> Void) {
-      self.total = total
-      self.report = report
-    }
-    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
-      observation = task.progress.observe(\.completedUnitCount, options: [.new]) { [weak self] p, _ in
-        guard let self else { return }
-        let done = p.completedUnitCount
-        let step = max(self.total / 100, 1)
-        if done - self.last >= step || done >= self.total {
-          self.last = done
-          self.report(.downloading(done: done, total: self.total))
-        }
-      }
-    }
-  }
   /// The channel has no such add-on (a 404): say so rather than blaming the
   /// connection.
   struct NotPublished: Error {}
 
-  static let session: URLSession = {
+  /// No cookies, no cache, one fixed User-Agent: a plain request (rule 6).
+  static var configuration: URLSessionConfiguration {
     let c = URLSessionConfiguration.ephemeral
     c.httpCookieAcceptPolicy = .never
     c.httpShouldSetCookies = false
     c.urlCache = nil
     c.httpAdditionalHeaders = ["User-Agent": "MediaViewer"]
-    return URLSession(configuration: c)
-  }()
+    return c
+  }
+  static let session = URLSession(configuration: configuration)
 
   /// nil for a 404; throws for anything else that is not a 200.
   static func getIfPresent(_ url: String) async throws -> Data? {
@@ -178,11 +161,18 @@ struct AddonChannel: Sendable {
       try? FileManager.default.removeItem(atPath: staging)
     }
     progress?(.downloading(done: 0, total: Int64(size)))
-    let watch = progress.map { ProgressWatch(total: Int64(size), report: $0) }
-    let (tmp, response) = try await Self.session.download(from: URL(string: Self.base + name)!, delegate: watch)
-    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NotPublished() }
+    // Byte progress from the download task's own delegate (AddonDownload.swift),
+    // ~10 updates a second. The signed manifest's size stands in when the
+    // server sends no length.
+    let expected = Int64(size)
+    var report: (@Sendable (Int64, Int64) -> Void)?
+    if let progress {
+      report = { @Sendable done, total in progress(.downloading(done: done, total: total > 0 ? total : expected)) }
+    }
+    let code = try await AddonDownload.run(URL(string: Self.base + name)!, to: URL(fileURLWithPath: zip),
+                                           configuration: Self.configuration, progress: report)
+    guard code == 200 else { throw NotPublished() }
     progress?(.checking)
-    try FileManager.default.moveItem(at: tmp, to: URL(fileURLWithPath: zip))
     let attrs = try FileManager.default.attributesOfItem(atPath: zip)
     let got = AddonStore.readString { mv_addons_sha256(zip, $0, $1) }
     guard (attrs[.size] as? Int) == size, got == sha else {
@@ -483,18 +473,17 @@ struct AddonBarItems: View {
 
 /// An add-on install's progress: a determinate bar and "412 MB of 1.08 GB"
 /// while downloading, then the checking / installing steps (indeterminate:
-/// hashing a gigabyte takes seconds and has no fraction to show).
+/// hashing a gigabyte takes seconds and has no fraction to show). Whatever
+/// the phase the bar shows activity: an indeterminate phase sweeps a pulse
+/// across it (a still, dimmer bar with Reduce Motion), so a row never sits
+/// on a frozen 0 % (owner report, 2026-09-28).
 struct AddonProgressView: View {
   let phase: AddonChannel.Phase
   var width: CGFloat? = 320
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      if let f = phase.fraction {
-        ProgressView(value: f).progressViewStyle(.linear)
-      } else {
-        ProgressView().progressViewStyle(.linear)
-      }
+      ActivityBar(fraction: phase.fraction)
       HStack {
         Text(phase.text)
         Spacer()
@@ -504,5 +493,46 @@ struct AddonProgressView: View {
     }
     .frame(maxWidth: width, alignment: .leading)
     .accessibilityElement(children: .combine)
+  }
+}
+
+/// A thin capsule bar. With a fraction it fills to it; without one it is
+/// indeterminate: a soft accent pulse sweeps across (TimelineView, so it only
+/// ticks while on screen), or with Reduce Motion a still, half-strength fill.
+struct ActivityBar: View {
+  let fraction: Double?
+  var height: CGFloat = 6
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  var body: some View {
+    GeometryReader { geo in
+      ZStack(alignment: .leading) {
+        Capsule().fill(Color.primary.opacity(0.10))
+        if let f = fraction {
+          Capsule().fill(Color.accentColor)
+            .frame(width: max(height, geo.size.width * f))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: f)
+        } else if reduceMotion {
+          Capsule().fill(Color.accentColor.opacity(0.45))
+        } else {
+          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let period = 1.4
+            let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+            let pulse = geo.size.width * 0.35
+            // An eased sweep from off the left edge to off the right edge.
+            let eased = 0.5 - 0.5 * cos(t * .pi)
+            LinearGradient(colors: [Color.accentColor.opacity(0), Color.accentColor, Color.accentColor.opacity(0)],
+                           startPoint: .leading, endPoint: .trailing)
+              .frame(width: pulse)
+              .offset(x: -pulse + (geo.size.width + pulse) * eased)
+          }
+        }
+      }
+      .clipShape(Capsule())
+    }
+    .frame(height: height)
+    .accessibilityElement()
+    .accessibilityLabel("Progress")
+    .accessibilityValue(fraction.map { "\(Int(($0 * 100).rounded(.down))) percent" } ?? "In progress")
   }
 }
