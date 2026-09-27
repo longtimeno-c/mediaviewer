@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ort.h's platform half on macOS (and the Linux test build): dlopen by
 // absolute path. On the Mac the pack's libonnxruntime.dylib is signed with
 // the app's Team ID and loads under library validation (plan/17).

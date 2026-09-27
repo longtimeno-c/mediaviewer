@@ -27,7 +27,7 @@ by completely different mechanisms. Pick a **primary** rather than building both
 | Reaches non-Store users | No | Awkward | Yes |
 
 **Call: the signed installer with your own updater is the primary channel.** Two reasons — the
-app **is** GPL-2.0-or-later, which is a poor fit for Store terms, and a media app needs to
+app **is** GPL-3.0-or-later, which is a poor fit for Store terms, and a media app needs to
 ship codec fixes the day they land, not after a review queue. Store MSIX is not a secondary
 channel ([11-licensing.md](11-licensing.md)).
 
@@ -67,7 +67,7 @@ Pages, in order. Do not add more.
 
 1. **Welcome.** App icon, name, one line: a viewer for a camera dump — photos and video in
    one folder.
-2. **Licence.** GPL-2.0-or-later, scroll + accept. Required, not a skippable link.
+2. **Licence.** GPL-3.0-or-later, scroll + accept. Required, not a skippable link.
 3. **Location.** The LocalAppData default, editable. No "install for all users" checkbox.
 4. **Options.** Start Menu shortcut **on**. Desktop shortcut **off**. That is the whole
    page.
@@ -78,6 +78,9 @@ Pages, in order. Do not add more.
    The default-app setup checkbox is **on** (user request, 2026-09-24). It opens Windows
    Default Apps for the user to confirm associations for supported photos and videos;
    unticking it skips that step. Silent installs do not open Settings.
+   **Delete the installer** (`MediaViewer-x.y.z-Setup.exe`) is also **on** (user request,
+   2026-09-25): once the wizard has closed, the downloaded setup file is deleted. Unticking
+   it keeps the file; silent installs never delete it.
 
 **Not in the wizard** — these are in-app, once, later:
 
@@ -134,7 +137,7 @@ What the disk image holds. Do not add more.
 1. **Window.** App icon, an Applications alias, a background with the name and the same
    one line as the Windows welcome page: a viewer for a camera dump — photos and video in
    one folder.
-2. **Licence.** GPL-2.0-or-later as the image's licence agreement, shown on mount with
+2. **Licence.** GPL-3.0-or-later as the image's licence agreement, shown on mount with
    Agree / Disagree — the equivalent of the wizard's required licence page. If our build
    tooling cannot make macOS 14 show it reliably, fall back to a `Licence` file in the
    window plus About. Never an in-app accept modal before the first photo.
@@ -148,6 +151,14 @@ First launch shows the default-viewer setup sheet with **Use MediaViewer for all
 photos and videos** checked (user request, 2026-09-24). Continue applies the selected
 choice through macOS; unticking it or Not Now leaves existing defaults alone. The choice
 is not shown again on updates, and the app menu keeps the command available later.
+
+When our installer disk is still mounted after a drag install, or the `.dmg` a
+move-to-Applications relaunch came from is still there, the same sheet adds **Eject the
+installer disk and move MediaViewer-x.y.z.dmg to the Trash**, also checked (user request,
+2026-09-25; the twin of the Windows Finish page's delete box). Continue ejects, then moves the
+`.dmg` to the Trash (never a permanent delete); a disk in use is left mounted with a one-line
+note. The lookup (`hdiutil info`) runs off the main thread, and nothing is offered while the
+app itself is running from, or translocated off, the disk image.
 
 **Not in the install** — in-app and once, separately:
 

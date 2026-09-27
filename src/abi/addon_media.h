@@ -1,0 +1,35 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Host table v2's pixels and sound (addon/media.h's types) from the viewer's
+// own decoders: the still first-pixel path, the clip sampler, the JPEG-512
+// cache and an audio reader. The host's side of the add-on line, so it lives
+// above image/ and edit/ (plan/02); abi/addon_abi.cpp (Windows) and
+// shell/addons_mac.mm (Mac) install it into host_services. Portable: FFmpeg,
+// no GPU, no OS UI. Worker threads only: every call reads and decodes.
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "addon/media.h"
+#include "core/result.h"
+
+namespace mv::addon {
+
+namespace media {
+[[nodiscard]] result<rgb_image> decode_still(const std::string& path, std::uint32_t max_long_edge);
+[[nodiscard]] result<std::unique_ptr<video_sampler>> open_sampler(const std::string& path,
+                                                                  const sampler_options& options);
+[[nodiscard]] result<rgb_image> video_frame(const std::string& path, std::int64_t pts_ms,
+                                            std::uint32_t max_long_edge);
+// The JPEG-512 cache entry for a moment: stores `image` when given, else
+// looks one up (status::io on a miss). Returns the JPEG's path.
+[[nodiscard]] result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
+                                                   const rgb_image* image);
+[[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
+                                                               std::uint32_t sample_rate,
+                                                               std::int64_t start_ms);
+}  // namespace media
+
+}  // namespace mv::addon

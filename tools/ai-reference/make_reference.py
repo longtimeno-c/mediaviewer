@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Reference outputs for the PR 20 verify (plan/17): "a fixed set of test
 images embeds to vectors within tolerance of the reference (PyTorch/ORT-Python)
 outputs".

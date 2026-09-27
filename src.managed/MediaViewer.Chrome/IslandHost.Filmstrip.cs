@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -262,7 +263,7 @@ public static partial class IslandHost
         }
     }
 
-    // False on a core older than ABI 0.11, which has no result lists.
+    // False on a core older than ABI 0.13, which has no result lists.
     private static bool IsResultList()
     {
         if (_folderSession is null) return false;

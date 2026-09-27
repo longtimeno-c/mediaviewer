@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Folder stepping (plan/16 "Wrap at end of folder: on by default, toggle in
 // settings"). Pure, shared by arrow keys / Space / A-D and the slideshow.
 #pragma once

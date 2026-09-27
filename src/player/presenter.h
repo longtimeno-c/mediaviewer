@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The seam between 5a (owns the texture ring) and 5b (owns the clock).
 //
 // choose() is pure, non-blocking and D3D-free: given where the master clock is

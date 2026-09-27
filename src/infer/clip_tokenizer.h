@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The CLIP text tokenizer (byte-level BPE, OpenAI's simple_tokenizer and the
 // Hugging Face tokenizer.json of the same checkpoints): the pack's vocab.json
 // and merges.txt in, token ids out. plan/17 "Model choice"; the query encode

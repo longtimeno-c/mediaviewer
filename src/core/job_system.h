@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The MPMC job queue and its worker pool.
 //
 // plan/02-architecture.md: one MPMC job queue, N = cores-2 workers, and
@@ -38,14 +39,29 @@ class job_context {
       : id_(id), gen_(gen), current_(current), worker_(worker) {}
 
   [[nodiscard]] job_id id() const noexcept { return id_; }
-  [[nodiscard]] generation gen() const noexcept { return gen_; }
+  [[nodiscard]] generation gen() const noexcept {
+    return handoff_ ? handoff_->load(std::memory_order_acquire) : gen_;
+  }
   [[nodiscard]] std::uint32_t worker_index() const noexcept { return worker_; }
 
   // True once the view intent this job was submitted for has moved on.
   // Background jobs (generation 0) are not view-tied.
   [[nodiscard]] bool cancelled() const noexcept {
-    if (gen_ == background_generation) return false;
-    return current_->load(std::memory_order_relaxed) != gen_;
+    const generation mine = gen();
+    if (mine == background_generation) return false;
+    return current_->load(std::memory_order_relaxed) != mine;
+  }
+
+  // A copy whose generation is read from `handoff` (which starts at gen()).
+  // Storing a newer generation there hands a running job to that view intent
+  // instead of abandoning it: the ABI does this when the user lands on a
+  // neighbour whose prefetch decode is already under way, which the
+  // navigation would otherwise cancel and start again from nothing.
+  // `handoff` must outlive the job.
+  [[nodiscard]] job_context handed_off_via(const std::atomic<generation>* handoff) const noexcept {
+    job_context copy = *this;
+    copy.handoff_ = handoff;
+    return copy;
   }
 
  private:
@@ -53,6 +69,7 @@ class job_context {
   generation gen_;
   const std::atomic<generation>* current_;
   std::uint32_t worker_;
+  const std::atomic<generation>* handoff_ = nullptr;
 };
 
 // A job body. Runs on a pool thread; must never touch the D3D11 immediate

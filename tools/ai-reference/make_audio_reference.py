@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Reference outputs for the audio index (plan/17 "Audio"): log-mel features
 as transformers' ClapFeatureExtractor / WhisperFeatureExtractor compute them
 (their torch-free numpy path, transformers.audio_utils), CLAP embeddings from

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -44,6 +45,7 @@ public static partial class IslandHost
     private static bool _videoActive;
     private static bool _videoPlaying;
     private static bool _transportHeld;
+    private static int _transportWidth;
 
     private const int TransportDip = 52;
 
@@ -164,6 +166,7 @@ public static partial class IslandHost
             _audioTracks = null;
             DropTrimUi();
             _videoActive = false;
+            _transportWidth = 0;
             _matchMs = Array.Empty<long>();
             _videoPlaying = false;
             _transportHeld = false;
@@ -253,8 +256,8 @@ public static partial class IslandHost
         {
             Orientation = Orientation.Horizontal,
             Spacing = 6,
-            // Bottom middle. The strip is full width so the hairline reads as a
-            // strip; the controls inside it are centred.
+            // Centred. Native sizes the bar to this row's width, so the
+            // hairline hugs the controls rather than boxing empty space.
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -265,6 +268,12 @@ public static partial class IslandHost
         row.Children.Add(_videoTime);
         row.Children.Add(BuildTrimBar());
         row.Children.Add(more);
+
+        // The bar is as wide as its controls. The row may be clipped while the
+        // island is narrower than it (trim just armed), so the natural width is
+        // summed from the children, which a horizontal StackPanel measures
+        // unconstrained.
+        row.LayoutUpdated += (_, _) => ReportTransportWidth(row);
 
         // A floating bar over the video (issue #38): hairline all round, the
         // controls centred. The island window is rectangular, so no rounding.
@@ -278,6 +287,25 @@ public static partial class IslandHost
             Child = row,
         };
         return root;
+    }
+
+    private static void ReportTransportWidth(StackPanel row)
+    {
+        double width = 0;
+        int shown = 0;
+        foreach (UIElement child in row.Children)
+        {
+            if (child.Visibility != Visibility.Visible) continue;
+            width += child.DesiredSize.Width;
+            ++shown;
+        }
+        if (shown > 1) width += row.Spacing * (shown - 1);
+        int dip = (int)Math.Ceiling(width);
+        if (dip <= 0 || dip == _transportWidth) return;
+        _transportWidth = dip;
+        // Not from inside layout: native answers by moving this island.
+        if (_dispatcher?.DispatcherQueue.TryEnqueue(() => Send(Command.TransportWidth, dip)) != true)
+            Send(Command.TransportWidth, dip);
     }
 
     private static void FinishSeek()

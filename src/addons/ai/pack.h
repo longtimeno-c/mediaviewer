@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The installed AI pack on disk (plan/17 "The AI pack"), as the engine's
 // dependencies: ONNX Runtime from the Core pack's folder (or a vendor piece's
 // own ORT build, which also runs CPU), the CLIP towers under models/, and the

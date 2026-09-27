@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stage the AI pack's model files (plan/17 "The AI pack").
 
     ai-models.py stage --piece ai --out build/addons/ai [--cache DIR]
@@ -31,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODELS = Path(__file__).with_name("ai-models.json")
 
 ALLOWED_LICENCES = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "CC0-1.0",
-                    "GPL-2.0-or-later"}
+                    "GPL-3.0-or-later"}
 CEILING = 3_000_000_000  # plan/17: Core + one vendor piece + Faces, installed
 
 
@@ -84,7 +85,7 @@ def stage(args) -> int:
         if "model" in f:
             text = json.dumps(f["model"], indent=1) + "\n"
             (dest / "model.json").write_text(text, encoding="utf-8")
-            licences[f"{folder}/model.json"] = "GPL-2.0-or-later"
+            licences[f"{folder}/model.json"] = "GPL-3.0-or-later"
     # Merge with licences from an earlier stage into the same folder.
     lic_path = out / "licences.json"
     if lic_path.exists():

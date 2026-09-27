@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The pack's models behind plan/17's IEmbedder: the CLIP image and text
 // towers (search) and the face detector + face embedder (PR 24). A model is
 // a folder in the pack with a model.json that names its files and fixes its

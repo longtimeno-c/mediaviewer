@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ort.h's platform half on Windows: LoadLibraryExW with the library's own
 // folder first in the search, so onnxruntime_providers_shared.dll (and a
 // vendor piece's provider DLL beside it) resolve from the pack, not PATH.

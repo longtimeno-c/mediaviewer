@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later
+/* Copyright (C) 2026 longtimeno-c
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * MediaViewer core — the flat C ABI between the C# shell and the C++ core.
  *
@@ -49,7 +50,8 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 11 /* 0.11: Milestone H result listings (mv_folder_open_list) */
+#define MV_ABI_VERSION_MINOR 13 /* 0.13: Milestone H result listings (mv_folder_open_list);
+                                   0.12: issue #42 mv_status eject error categories */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -66,7 +68,14 @@ typedef enum mv_status {
   MV_ERR_CORRUPT = 5,
   MV_ERR_CANCELLED = 6,
   MV_ERR_DEVICE_LOST = 7,
-  MV_ERR_INTERNAL = 8
+  MV_ERR_INTERNAL = 8,
+  /* Added for issue #42 (Import eject error categories); mv::status in
+   * core/status.h mirrors these values exactly. */
+  MV_ERR_BUSY = 9,             /* an active job or another process holds it open */
+  MV_ERR_NOT_REMOVABLE = 10,   /* eject offered/attempted on a fixed or network volume */
+  MV_ERR_PERMISSION_DENIED = 11,
+  MV_ERR_NOT_FOUND = 12,       /* the volume or device is already gone */
+  MV_ERR_TIMEOUT = 13
 } mv_status;
 
 /* Stable, allocation-free name for a status. Points at a string literal that
@@ -381,7 +390,7 @@ MV_API mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8
  * decode or touch the file. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path);
 
-/* 0.11 (Milestone H, PR 22; plan/17 "UI and commands"). A listing that is
+/* 0.13 (Milestone H, PR 22; plan/17 "UI and commands"). A listing that is
  * not a directory: search results, shown by the same gallery, filmstrip,
  * selection, keyboard model and thumbnail cache as a folder. Items keep the
  * order given (best match first; the sort order does not apply), are never
@@ -469,6 +478,14 @@ MV_API mv_status MV_CALL mv_video_close(mv_session_t session);
 /* [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_video_play(mv_session_t session);
 MV_API mv_status MV_CALL mv_video_pause(mv_session_t session);
+
+/* [any-thread][no-block] Issue #44 (ABI 0.11). `hold` 1 while an overlay covers
+ * the canvas (the gallery): a playing clip pauses and a clip opened under the
+ * hold stays paused on its first frame. `hold` 0 lifts it: the clip that was
+ * playing on entry resumes if it is still the one on screen and `resume` is 1;
+ * anything selected meanwhile waits for mv_video_play. `resume` is ignored
+ * while holding. Play / pause under the hold are the user's and are kept. */
+MV_API mv_status MV_CALL mv_video_set_hold(mv_session_t session, int32_t hold, int32_t resume);
 
 /* [any-thread][no-block] `exact` 0 while dragging the scrubber (nearest
  * keyframe, no decode — instant); 1 on release or a typed position (decode

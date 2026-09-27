@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The audio index's models (plan/17 "Audio", owner 2026-09-27): what a clip
 // SOUNDS like (LAION CLAP: an audio tower and a text tower in one space, so a
 // description finds "dog barking" the way CLIP finds a picture) and what is

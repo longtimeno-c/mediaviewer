@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // macOS half of the volume port (io/volume.h): statfs + DiskArbitration.
 //
 // plan/18 names NSWorkspace mount notifications for arrival. DiskArbitration's
@@ -167,16 +168,19 @@ expected eject_volume(std::string_view root_utf8) {
 #if defined(__APPLE__)
   if (root_utf8.empty()) return err(status::invalid_arg);
   DASessionRef session = DASessionCreate(kCFAllocatorDefault);
-  if (!session) return err(status::io);
+  if (!session) return err(status::internal);
   const cf_owned s(session);
   CFURLRef url = url_for(std::string(root_utf8));
   if (!url) return err(status::invalid_arg);
   const cf_owned u(url);
   DADiskRef disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url);
-  if (!disk) return err(status::io);
+  // The volume is not (or no longer) mounted where we think it is.
+  if (!disk) return err(status::not_found);
   const cf_owned d(disk);
   DADiskRef whole = DADiskCopyWholeDisk(disk);
-  if (!whole) return err(status::io);
+  // No whole-disk object: not a removable medium (a plain folder should
+  // never reach here; engine::eject turns those away first).
+  if (!whole) return err(status::not_removable);
   const cf_owned w(whole);
   dispatch_queue_t queue = dispatch_queue_create("mv.io.eject", DISPATCH_QUEUE_SERIAL);
   DASessionSetDispatchQueue(session, queue);
@@ -191,20 +195,27 @@ expected eject_volume(std::string_view root_utf8) {
     dispatch_semaphore_signal(state->done);
   };
   // Unmount every volume on the card, then eject the medium. A busy volume
-  // dissents: the card stays mounted and the caller reports it.
+  // dissents: the card stays mounted and the caller reports it. Disk
+  // Arbitration not answering inside the wait is its own category (timeout),
+  // distinct from a dissent (busy).
   DADiskUnmount(whole, kDADiskUnmountOptionWhole, on_done, &st);
-  dispatch_semaphore_wait(st.done, dispatch_time(DISPATCH_TIME_NOW, 30LL * NSEC_PER_SEC));
-  bool ok = st.ok;
-  if (ok) {
+  long waited = dispatch_semaphore_wait(st.done, dispatch_time(DISPATCH_TIME_NOW, 30LL * NSEC_PER_SEC));
+  status result = status::ok;
+  if (waited != 0) {
+    result = status::timeout;
+  } else if (!st.ok) {
+    result = status::busy;
+  } else {
     st.ok = false;
     DADiskEject(whole, kDADiskEjectOptionDefault, on_done, &st);
-    dispatch_semaphore_wait(st.done, dispatch_time(DISPATCH_TIME_NOW, 30LL * NSEC_PER_SEC));
-    ok = st.ok;
+    waited = dispatch_semaphore_wait(st.done, dispatch_time(DISPATCH_TIME_NOW, 30LL * NSEC_PER_SEC));
+    if (waited != 0) result = status::timeout;
+    else if (!st.ok) result = status::busy;
   }
   DASessionSetDispatchQueue(session, nullptr);
   dispatch_release(st.done);
   dispatch_release(queue);
-  return ok ? expected{} : err(status::io);
+  return result == status::ok ? expected{} : err(result);
 #else
   (void)root_utf8;
   return err(status::unsupported_format);

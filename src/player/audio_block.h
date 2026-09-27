@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The unit of audio handed from the decode thread to the audio thread.
 //
 // core/spsc_ring.h static_asserts trivially_copyable and stores T by value, so

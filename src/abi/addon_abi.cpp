@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Add-on management over the C ABI (mediaviewer_addon.h, plan/18 "Add-ons"),
 // for the Windows chrome. The Mac host drives src/addon directly.
 //
@@ -18,7 +19,7 @@
 #include "abi/guard.h"
 #include "addon/host.h"
 #include "addon/manifest.h"
-#include "addon/media.h"
+#include "abi/addon_media.h"
 #include "addon/store.h"
 #include "core/json.h"
 #include "image/thumb.h"

@@ -1,11 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Pixels for add-ons (host table v2, Milestone H / plan/17 "Frame sampling").
 //
 // The types are portable and header-only so src/addon (the host table) knows
-// them without linking a decoder. The implementation that fills them lives in
-// mv_addon_media (media.cpp), over the viewer's own still pipeline and the
-// clip core's FFmpeg pieces; each host installs it into its host_services.
-// Worker threads only: every call reads and decodes.
+// them without linking a decoder. The functions that fill them are the host's:
+// abi/addon_media.h (mv_addon_media), over the viewer's own still pipeline and
+// the clip core's FFmpeg pieces; each host installs them into its
+// host_services. addon/ may not include image/ or edit/ (plan/02).
 #pragma once
 
 #include <cstdint>
@@ -65,22 +66,5 @@ class audio_stream {
   [[nodiscard]] virtual result<std::vector<float>> read(std::size_t max_samples,
                                                         std::int64_t& start_ms) = 0;
 };
-
-// The implementation (media.cpp, mv_addon_media). Portable: FFmpeg, the
-// viewer's still decoders and its JPEG-512 cache; no GPU, no OS UI.
-namespace media {
-[[nodiscard]] result<rgb_image> decode_still(const std::string& path, std::uint32_t max_long_edge);
-[[nodiscard]] result<std::unique_ptr<video_sampler>> open_sampler(const std::string& path,
-                                                                  const sampler_options& options);
-[[nodiscard]] result<rgb_image> video_frame(const std::string& path, std::int64_t pts_ms,
-                                            std::uint32_t max_long_edge);
-// The JPEG-512 cache entry for a moment: stores `image` when given, else
-// looks one up (status::io on a miss). Returns the JPEG's path.
-[[nodiscard]] result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
-                                                   const rgb_image* image);
-[[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
-                                                               std::uint32_t sample_rate,
-                                                               std::int64_t start_ms);
-}  // namespace media
 
 }  // namespace mv::addon

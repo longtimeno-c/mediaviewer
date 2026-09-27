@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Display-referred colour: ICC → linear Rec.709 → sRGB encode. No tone map
 // (D6, plan/03-rendering.md). Untagged JPEG/PNG/BMP is assumed sRGB.
 #pragma once
@@ -34,8 +35,9 @@ struct display_image {
 // An ICC → linear Rec.709 → sRGB transform built once and applied to many
 // rasters with the same profile: every frame of a tagged animation (review
 // note 34 — building a LittleCMS transform costs milliseconds). It owns its own
-// cmsContext, so one instance must stay on one thread at a time. to_display
-// builds a fresh one per call.
+// cmsContext and is built without LCMS's one-pixel cache, so one instance may
+// be applied from several threads at once. to_display takes one from a small
+// process-wide cache keyed by the profile bytes (cached_transform).
 // Whether `icc` is sRGB in effect: an RGB matrix/shaper profile whose colorants
 // and tone curves match sRGB within an 8-bit step. Such a file displays as-is
 // on the v1 8-bit sRGB swapchain, so it skips LCMS (review note 43). A corrupt
@@ -69,5 +71,11 @@ class display_transform {
   bool grey_ = false;
   std::array<std::uint8_t, 256 * 3> grey_lut_{};
 };
+
+// The display_transform for `icc`, from a small most-recently-used cache
+// shared by every worker (a dump repeats the same few profiles). Errors as
+// display_transform::create.
+[[nodiscard]] result<std::shared_ptr<const display_transform>> cached_transform(
+    std::span<const std::uint8_t> icc);
 
 }  // namespace mv::image

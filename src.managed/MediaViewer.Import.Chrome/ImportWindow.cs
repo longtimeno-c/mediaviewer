@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -66,6 +67,9 @@ public sealed class SourceVm
     public string Detail { get; init; } = "";
     public string VolumeId { get; init; } = "";
     public string Kind { get; init; } = "";
+    /// <summary>Whether this source can ever be ejected (issue #41/#42): a
+    /// card or a USB/network drive, never an ordinary folder or a fixed disk.</summary>
+    public bool Removable { get; init; }
 }
 
 /// <summary>
@@ -97,10 +101,12 @@ internal sealed class ImportWindow : Window
     private readonly StackPanel _summaryPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
     private readonly InfoBar _banner = new() { IsOpen = false, IsClosable = true };
     private readonly SemaphoreSlim _thumbGate = new(2);
+    private readonly HyperlinkButton _whyLink = new() { Content = "Why?", FontSize = 12, Visibility = Visibility.Collapsed, Padding = new Thickness(0) };
 
     private IReadOnlyList<string> _marks = Array.Empty<string>();
     private string _root = "";
     private string _volumeId = "";
+    private bool _removable;
     private ulong _scan;
     private ulong _plan;
     private ulong _job;
@@ -109,6 +115,7 @@ internal sealed class ImportWindow : Window
     private string _destinationForOpen = "";
     private bool _copying;
     private bool _building;
+    private long _confirmUnits, _confirmFiles, _confirmBytes;
 
     internal ImportWindow(ImportChrome chrome)
     {
@@ -160,7 +167,7 @@ internal sealed class ImportWindow : Window
             "<TextBlock Text=\"{Binding Detail}\" FontSize=\"12\" Opacity=\"0.7\"/></StackPanel>");
         _sources.SelectionChanged += (_, _) =>
         {
-            if (!_building && _sources.SelectedItem is SourceVm s) Load(s.Root, s.VolumeId);
+            if (!_building && _sources.SelectedItem is SourceVm s) Load(s.Root, s.VolumeId, s.Removable);
         };
         left.Children.Add(_sources);
         var addFolder = new Button { Content = "＋ Folder…" };
@@ -173,6 +180,9 @@ internal sealed class ImportWindow : Window
         ToolTipService.SetToolTip(verify, "Re-hash imported files against the library index to find silent corruption.");
         verify.Click += async (_, _) => await VerifyFolder();
         left.Children.Add(verify);
+        var help = new Button { Content = "? About Import" };
+        help.Click += (_, _) => _ = ShowExplainer();
+        left.Children.Add(help);
         Grid.SetRow(left, 1);
         root.Children.Add(left);
 
@@ -216,7 +226,10 @@ internal sealed class ImportWindow : Window
         bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var info = new StackPanel { Spacing = 6 };
-        info.Children.Add(_bottomText);
+        var bottomRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        bottomRow.Children.Add(_bottomText);
+        bottomRow.Children.Add(_whyLink);
+        info.Children.Add(bottomRow);
         info.Children.Add(_progressPanel);
         info.Children.Add(_summaryPanel);
         bottom.Children.Add(info);
@@ -240,7 +253,106 @@ internal sealed class ImportWindow : Window
         _ = RefreshSources(sourceRoot);
         _ = CheckUnfinished();
         _importButton.Focus(FocusState.Programmatic);
+        ShowFirstUseExplainerIfNeeded();
     }
+
+    // ---- first-use explainer and contextual help (issue #41) --------------------------
+
+    private static readonly (string Key, string Title, string Body)[] ExplainerSections =
+    {
+        ("overview", "What Import does",
+            "Import copies photos and video from a card or folder into your library. It never " +
+            "edits, deletes or overwrites anything at the source — files there are only read " +
+            "(an original is never modified, on the card or off it)."),
+        ("sources", "Cards vs. folders",
+            "A card, USB drive or network share appears on the left with its free space and how " +
+            "many files on it are new. A folder you add with “+ Folder…” is scanned and copied the " +
+            "same way, but — because it is not removable media — Import never offers to eject it."),
+        ("filters", "New / All / Marked / date range, and duplicates",
+            "“New since last import” skips anything this source has given you before, tracked per " +
+            "card even after it is unplugged and replugged. “All” considers everything, “Marked” " +
+            "only what you starred in the viewer, and a date range limits by the date each file was " +
+            "taken. Before copying, every file's content is checked against what is already at the " +
+            "destination (or the whole library, with the wider duplicate scope); an exact match is " +
+            "skipped, never overwritten or duplicated."),
+        ("destination", "Destination and name preview",
+            "“Where files go” and the grid show exactly which folder — and, if renaming is turned " +
+            "on, which file name — each file will get before you click Import. Nothing is copied " +
+            "until you start the import."),
+        ("verify", "Verified copies",
+            "Every copy is hashed and checked against the source as it is written; full verify " +
+            "also reads the copy back from the drive. A copy that does not match is reported as " +
+            "failed rather than left silently short."),
+        ("pause", "Pause and resume",
+            "Space pauses or resumes a running import. If it is interrupted, files already " +
+            "verified are kept and are not copied again when you resume."),
+        ("eject", "Why Eject is (or isn't) offered",
+            "Eject only appears for a card, USB drive or network share — never for an ordinary " +
+            "folder or your main disk, which cannot be ejected at all. It is also refused while a " +
+            "copy or scan is still reading from that source; if eject fails, the message says why " +
+            "(still busy, already gone, not removable, or Windows refused it)."),
+    };
+
+    private UIElement HelpLine(string label, string section)
+    {
+        var link = new HyperlinkButton { Content = Text(label, 11), Padding = new Thickness(0, 2, 0, 2) };
+        link.Click += (_, _) => _ = ShowExplainer(section);
+        return link;
+    }
+
+    private void ShowFirstUseExplainerIfNeeded()
+    {
+        bool seen = false;
+        try
+        {
+            var values = Windows.Storage.ApplicationData.Current.LocalSettings.Values;
+            seen = values.TryGetValue("import_explainer_seen", out object? v) && v is bool b && b;
+        }
+        catch { /* no local settings (e.g. under test) — show once per session only */ }
+        if (!seen) _ = ShowExplainer(firstUse: true);
+    }
+
+    private async Task ShowExplainer(string? scrollTo = null, bool firstUse = false)
+    {
+        var body = new StackPanel { Spacing = 18, Padding = new Thickness(4) };
+        var marks = new Dictionary<string, FrameworkElement>();
+        foreach ((string key, string title, string text) in ExplainerSections)
+        {
+            var section = new StackPanel { Spacing = 4 };
+            section.Children.Add(Text(title, 15));
+            section.Children.Add(Text(text, 13));
+            marks[key] = section;
+            body.Children.Add(section);
+        }
+        if (firstUse)
+        {
+            try { Windows.Storage.ApplicationData.Current.LocalSettings.Values["import_explainer_seen"] = true; }
+            catch { }
+        }
+        var dialog = new ContentDialog
+        {
+            Title = "About Import",
+            Content = new ScrollViewer { Content = body, MaxHeight = 480, MaxWidth = 440 },
+            CloseButtonText = firstUse ? "Got it" : "Close",
+            XamlRoot = Content.XamlRoot,
+        };
+        if (scrollTo is not null && marks.TryGetValue(scrollTo, out FrameworkElement? target))
+        {
+            dialog.Opened += (_, _) => target.StartBringIntoView();
+        }
+        await dialog.ShowAsync();
+    }
+
+    private void AddWhyLink(string section)
+    {
+        _whyLink.Visibility = Visibility.Visible;
+        _whyLink.Click -= WhyLinkClicked;  // avoid stacking handlers across calls
+        _currentWhySection = section;
+        _whyLink.Click += WhyLinkClicked;
+    }
+
+    private string _currentWhySection = "eject";
+    private void WhyLinkClicked(object sender, RoutedEventArgs e) => _ = ShowExplainer(_currentWhySection);
 
     internal void OnSourcesChanged() => _ = RefreshSources(null);
 
@@ -286,16 +398,17 @@ internal sealed class ImportWindow : Window
                     Detail = detail,
                     VolumeId = s.GetProperty("volume_id").GetString() ?? "",
                     Kind = kind,
+                    Removable = s.TryGetProperty("removable", out JsonElement rem) && rem.GetBoolean(),
                 });
             }
             if (current is not null && _sourceItems.All(s => s.Root != current))
             {
-                _sourceItems.Insert(0, new SourceVm { Root = current, Label = current, Detail = "", Kind = "folder" });
+                _sourceItems.Insert(0, new SourceVm { Root = current, Label = current, Detail = "", Kind = "folder", Removable = false });
             }
             SourceVm? pick = _sourceItems.FirstOrDefault(s => s.Root == current) ?? _sourceItems.FirstOrDefault();
             _sources.SelectedItem = pick;
             BuildPresetPanel();
-            if (pick is not null && pick.Root != _root) Load(pick.Root, pick.VolumeId);
+            if (pick is not null && pick.Root != _root) Load(pick.Root, pick.VolumeId, pick.Removable);
         }
         finally
         {
@@ -352,10 +465,11 @@ internal sealed class ImportWindow : Window
 
     // ---- scan and plan ----------------------------------------------------------------
 
-    private void Load(string root, string volumeId)
+    private void Load(string root, string volumeId, bool removable)
     {
         _root = root;
         _volumeId = volumeId;
+        _removable = removable;
         _sourceTitle.Text = root + " · reading…";
         _days.Clear();
         _plan = 0;
@@ -399,7 +513,13 @@ internal sealed class ImportWindow : Window
         using JsonDocument doc = JsonDocument.Parse(json);
         JsonElement r = doc.RootElement;
         JsonElement t = r.GetProperty("totals");
-        string label = r.GetProperty("source").GetProperty("label").GetString() ?? _root;
+        JsonElement sourceInfo = r.GetProperty("source");
+        string label = sourceInfo.GetProperty("label").GetString() ?? _root;
+        if (sourceInfo.TryGetProperty("removable", out JsonElement srcRemovable) && srcRemovable.GetBoolean() != _removable)
+        {
+            _removable = srcRemovable.GetBoolean();
+            BuildPresetPanel();
+        }
         _sourceTitle.Text = $"{(label.Length > 0 ? label : _root)} · {t.GetProperty("new").GetInt64()} new of {t.GetProperty("units").GetInt64()} · {Format.Bytes(t.GetProperty("bytes").GetInt64())}";
         _destinationForOpen = r.GetProperty("destination").GetString() ?? "";
 
@@ -469,6 +589,9 @@ internal sealed class ImportWindow : Window
         long selUnits = t.GetProperty("selected_units").GetInt64();
         long selFiles = t.GetProperty("selected_files").GetInt64();
         long selBytes = t.GetProperty("selected_bytes").GetInt64();
+        _confirmUnits = selUnits;
+        _confirmFiles = selFiles;
+        _confirmBytes = selBytes;
         long dups = t.GetProperty("duplicates").GetInt64();
         long eta = t.GetProperty("eta_seconds").GetInt64();
         double rate = t.GetProperty("bytes_per_second").GetDouble();
@@ -553,6 +676,7 @@ internal sealed class ImportWindow : Window
 
         _presetPanel.Children.Add(FolderRow("To", "destination", allowOff: false));
         _presetPanel.Children.Add(FolderRow("Backup", "backup", allowOff: true));
+        _presetPanel.Children.Add(HelpLine("What the destination preview means", "destination"));
 
         _presetPanel.Children.Add(Combo("Selection", "selection",
             new[] { ("new", "New since last import"), ("all", "All"), ("marked", "Marked in viewer"), ("date_range", "Date range") }));
@@ -561,6 +685,7 @@ internal sealed class ImportWindow : Window
             _presetPanel.Children.Add(TextField("From (YYYY-MM-DD)", "range_from"));
             _presetPanel.Children.Add(TextField("To (YYYY-MM-DD)", "range_to"));
         }
+        _presetPanel.Children.Add(HelpLine("How these filters and duplicate matching work", "filters"));
         _presetPanel.Children.Add(TypeFilter());
         _presetPanel.Children.Add(Combo("Layout", "layout",
             new[] { ("YYYY/YYYY-MM-DD", "YYYY/YYYY-MM-DD"), ("YYYY/MM/DD", "YYYY/MM/DD"), ("YYYY-MM-DD", "YYYY-MM-DD"),
@@ -574,7 +699,13 @@ internal sealed class ImportWindow : Window
         _presetPanel.Children.Add(Combo("Duplicate scope", "scope",
             new[] { ("destination", "This destination"), ("library", "The whole library index") }));
         _presetPanel.Children.Add(Toggle("Full verify (read back from the drive)", "full_verify", true));
-        _presetPanel.Children.Add(Toggle("Eject the card when done", "eject_after", true));
+        // Eject only ever means something for a card or a USB/network drive
+        // (issue #41/#42): an ordinary folder has nothing to eject.
+        if (_removable)
+        {
+            _presetPanel.Children.Add(Toggle("Eject the card when done", "eject_after", true));
+            _presetPanel.Children.Add(HelpLine("Why Eject is offered here, and when it isn't", "eject"));
+        }
         _presetPanel.Children.Add(Toggle("Notify when done", "notify", true));
         _presetPanel.Children.Add(Toggle("Fast (does not wait for the viewer)", "fast", false));
         _presetPanel.Children.Add(Text("Never offered: deleting from or formatting the card, overwriting a file, or any upload.", 11));
@@ -690,9 +821,29 @@ internal sealed class ImportWindow : Window
 
     // ---- copying, progress, summary ------------------------------------------------------
 
-    private void StartImport()
+    private void StartImport() => _ = StartImportAsync();
+
+    /// <summary>A clear count-and-destination confirmation before anything is
+    /// copied (issue #41), so the last thing a person sees before Import
+    /// actually starts is exactly what will happen and where it will go.</summary>
+    private async Task StartImportAsync()
     {
         if (_copying || _plan == 0) return;
+        var dialog = new ContentDialog
+        {
+            Title = "Import these files?",
+            Content = Text(
+                $"{_confirmUnits} item" + (_confirmUnits == 1 ? "" : "s") +
+                $" ({_confirmFiles} file" + (_confirmFiles == 1 ? "" : "s") + $", {Format.Bytes(_confirmBytes)})\n" +
+                $"From: {_root}\n" +
+                $"To: {(_destinationForOpen.Length > 0 ? _destinationForOpen : "(not set)")}\n\n" +
+                "Originals are never modified or deleted; every copy is verified.", 13),
+            PrimaryButtonText = "Import",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         try
         {
             _job = _api.Start(_plan);
@@ -778,6 +929,7 @@ internal sealed class ImportWindow : Window
             JsonElement copied = s.GetProperty("copied");
             var skipped = s.GetProperty("skipped").EnumerateArray().ToArray();
             var failed = s.GetProperty("failed").EnumerateArray().ToArray();
+            bool sourceRemovable = s.TryGetProperty("source_removable", out JsonElement sr) && sr.GetBoolean();
             _summaryPanel.Children.Add(Text(
                 $"{copied.GetProperty("files").GetInt64()} copied · {skipped.Length} skipped · {failed.Length} failed" +
                 (s.GetProperty("ejected").GetBoolean() ? " · card ejected" : ""), 15));
@@ -801,23 +953,41 @@ internal sealed class ImportWindow : Window
                 };
                 buttons.Children.Add(retry);
             }
-            var eject = new Button { Content = "Eject (Ctrl+J)" };
-            eject.Click += (_, _) => Eject();
+            // Eject is only ever offered where it could work (issue #41/#42):
+            // never for an ordinary folder or a fixed disk.
+            Button? eject = null;
+            if (sourceRemovable)
+            {
+                eject = new Button { Content = "Eject (Ctrl+J)" };
+                eject.Click += (_, _) => Eject();
+                buttons.Children.Add(eject);
+            }
             var open = new Button { Content = "Open in viewer" };
             open.Click += (_, _) => { if (_destinationForOpen.Length > 0) _chrome.Host.OpenInViewer(_destinationForOpen); };
             var report = new Button { Content = "Show report" };
             string reportPath = s.GetProperty("report").GetString() ?? "";
             report.IsEnabled = reportPath.Length > 0;
             report.Click += (_, _) => _ = Launcher.LaunchUriAsync(new Uri(reportPath));
-            buttons.Children.Add(eject);
             buttons.Children.Add(open);
             buttons.Children.Add(report);
             _summaryPanel.Children.Add(buttons);
-            eject.Focus(FocusState.Programmatic);
+            (eject ?? open).Focus(FocusState.Programmatic);
         }
         _summaryPanel.Visibility = Visibility.Visible;
-        if (_scan != 0 && state != MvImportJobState.Cancelled) Load(_root, _volumeId);  // re-plan: what is new now
+        if (_scan != 0 && state != MvImportJobState.Cancelled) Load(_root, _volumeId, _removable);  // re-plan: what is new now
     }
+
+    /// <summary>A short, specific reason for each eject failure category
+    /// (issue #42), instead of one "in use" bucket for everything.</summary>
+    private static string EjectFailureMessage(MvStatus status) => status switch
+    {
+        MvStatus.Busy => "The card is still in use (a copy or scan is reading from it) and was not ejected.",
+        MvStatus.NotRemovable => "This is not a removable card or drive, so there is nothing to eject.",
+        MvStatus.PermissionDenied => "Windows would not let this app eject the card. Try Explorer's own Eject.",
+        MvStatus.NotFound => "The card is already gone — it looks like it was already removed.",
+        MvStatus.Timeout => "Ejecting the card took too long and was given up on. It may still be safe to remove.",
+        _ => "The card could not be ejected.",
+    };
 
     private void Eject()
     {
@@ -825,9 +995,15 @@ internal sealed class ImportWindow : Window
         _ = Task.Run(() =>
         {
             string msg;
+            bool showWhy = false;
             try { _api.Eject(root); msg = "Ejected. The card can be removed."; }
-            catch (MediaViewerException) { msg = "The card is in use and was not ejected."; }
-            DispatcherQueue.TryEnqueue(() => _bottomText.Text = msg);
+            catch (MediaViewerException ex) { msg = EjectFailureMessage(ex.Status); showWhy = true; }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _bottomText.Text = msg;
+                if (showWhy) AddWhyLink("eject");
+                else _whyLink.Visibility = Visibility.Collapsed;
+            });
         });
     }
 

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // People (plan/17 PR 24; the chrome brief's management panel): circular covers
 // cut from the cover picture with cover_box in memory (never written to disk),
 // editable names, "Show photos", "Merge into…", and a person's faces with

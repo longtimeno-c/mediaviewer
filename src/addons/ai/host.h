@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // A C++ face on the host function table (mediaviewer_addon.h, v2) for the AI
 // pack. Every file the add-on reads, it reads through here: it links no part
 // of the core (plan/18 "does not link the core statically").

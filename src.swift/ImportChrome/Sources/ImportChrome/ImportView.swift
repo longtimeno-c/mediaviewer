@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Import window (plan/18 "The Import window"), SwiftUI, the Mac twin of
 // ImportWindow.cs: sources, the day-grouped grid, the preset with "Where
 // files go", one primary button; progress while copying, summary after.
@@ -58,6 +59,69 @@ struct ImportView: View {
       .frame(width: 720, height: 480)
       .onAppear { model.loadHistory() }
     }
+    .sheet(isPresented: Binding(
+      get: { model.explainerSection != nil },
+      set: { if !$0 { model.explainerSection = nil } })) {
+      explainerSheet
+    }
+    .sheet(isPresented: $model.confirmingImport) { importConfirmationSheet }
+  }
+
+  // MARK: first-use explainer (issue #41)
+
+  private var explainerSheet: some View {
+    ScrollViewReader { proxy in
+      VStack(alignment: .leading, spacing: 0) {
+        Text("About Import").font(.title2).padding([.top, .horizontal])
+        ScrollView {
+          VStack(alignment: .leading, spacing: 18) {
+            ForEach(ExplainerSection.allCases) { section in
+              VStack(alignment: .leading, spacing: 4) {
+                Text(section.title).font(.headline)
+                Text(section.body).font(.callout).foregroundStyle(bodyColor)
+              }
+              .id(section.id)
+            }
+          }
+          .padding()
+        }
+        Button("Close") { model.explainerSection = nil }
+          .keyboardShortcut(.cancelAction)
+          .padding([.bottom, .horizontal])
+      }
+      .frame(width: 460, height: 520)
+      .onAppear {
+        if let target = model.explainerSection { proxy.scrollTo(target, anchor: .top) }
+      }
+    }
+  }
+
+  // MARK: pre-copy confirmation (issue #41)
+
+  private var confirmationCounts: String {
+    let items: String = model.importCount == 1 ? "item" : "items"
+    let files: String = model.confirmFiles == 1 ? "file" : "files"
+    let bytes: String = ByteCountFormatter.string(fromByteCount: model.confirmBytes, countStyle: .file)
+    return "\(model.importCount) \(items) (\(model.confirmFiles) \(files), \(bytes))"
+  }
+
+  private var importConfirmationSheet: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Import these files?").font(.title3)
+      Text(confirmationCounts)
+      Text("From: \(model.selectedSource)").font(.caption).foregroundStyle(bodyColor)
+      Text("To: \(model.destinationPreview.isEmpty ? "(not set)" : model.destinationPreview)")
+        .font(.caption).foregroundStyle(bodyColor)
+      Text("Originals are never modified or deleted; every copy is verified.")
+        .font(.caption).foregroundStyle(bodyColor)
+      HStack {
+        Spacer()
+        Button("Cancel") { model.confirmingImport = false }.keyboardShortcut(.cancelAction)
+        Button("Import") { model.startConfirmed() }.keyboardShortcut(.defaultAction)
+      }
+    }
+    .padding()
+    .frame(width: 380)
   }
 
   private func handle(_ press: KeyPress) -> KeyPress.Result {
@@ -113,6 +177,7 @@ struct ImportView: View {
       Button("Imports…") { showHistory = true }
       Button("Verify a folder…") { model.verifyFolder() }
         .help("Re-hash imported files against the library index to find silent corruption.")
+      Button("? About Import") { model.showExplainer() }
     }
     .padding(12)
   }
@@ -179,12 +244,14 @@ struct ImportView: View {
         }
         folderRow("To", key: "destination", allowOff: false)
         folderRow("Backup", key: "backup", allowOff: true)
+        helpLink("What the destination preview means", .destination)
         picker("Selection", "selection", [("new", "New since last import"), ("all", "All"),
                                           ("marked", "Marked in viewer"), ("date_range", "Date range")])
         if model.string("selection") == "date_range" {
           textField("From (YYYY-MM-DD)", "range_from")
           textField("To (YYYY-MM-DD)", "range_to")
         }
+        helpLink("How these filters and duplicate matching work", .filters)
         typeFilter
         picker("Layout", "layout", [("YYYY/YYYY-MM-DD", "YYYY/YYYY-MM-DD"), ("YYYY/MM/DD", "YYYY/MM/DD"),
                                     ("YYYY-MM-DD", "YYYY-MM-DD"), ("card", "Keep card structure"), ("flat", "Flat")])
@@ -195,7 +262,12 @@ struct ImportView: View {
         toggle("Skip duplicates (by content)", "skip_duplicates", true)
         picker("Duplicate scope", "scope", [("destination", "This destination"), ("library", "The whole library index")])
         toggle("Full verify (read back from the drive)", "full_verify", true)
-        toggle("Eject the card when done", "eject_after", true)
+        // Eject only ever means something for a card, USB or network drive
+        // (issue #41/#42): an ordinary folder has nothing to eject.
+        if model.removable {
+          toggle("Eject the card when done", "eject_after", true)
+          helpLink("Why Eject is offered here, and when it isn't", .eject)
+        }
         toggle("Notify when done", "notify", true)
         toggle("Fast (does not wait for the viewer)", "fast", false)
         Text("Never offered: deleting from or formatting the card, overwriting a file, or any upload.")
@@ -238,6 +310,14 @@ struct ImportView: View {
     Toggle(label, isOn: Binding(get: { model.bool(key, fallback) }, set: { model.set(key, $0) }))
   }
 
+  /// A small, contextual "?" a person can invoke any time, not just first-run
+  /// (issue #41), jumping straight to the relevant explainer section.
+  private func helpLink(_ label: String, _ section: ExplainerSection) -> some View {
+    Button(label) { model.showExplainer(section) }
+      .buttonStyle(.link)
+      .font(.caption)
+  }
+
   private func textField(_ label: String, _ key: String) -> some View {
     TextField(label, text: Binding(get: { model.string(key) }, set: { model.preset[key] = $0 }))
       .onSubmit { model.replan() }
@@ -264,7 +344,12 @@ struct ImportView: View {
   private var bottomBar: some View {
     HStack(alignment: .top) {
       VStack(alignment: .leading, spacing: 6) {
-        Text(model.bottom).foregroundStyle(titleColor)
+        HStack {
+          Text(model.bottom).foregroundStyle(titleColor)
+          if let section = model.ejectFailureSection, let s = ExplainerSection(rawValue: section) {
+            Button("Why?") { model.showExplainer(s) }.buttonStyle(.link).font(.caption)
+          }
+        }
         if model.copying {
           ForEach(Array(model.progress.enumerated()), id: \.offset) { ProgressView(value: $0.element).frame(width: 520) }
           Text(model.progressLine).font(.caption).foregroundStyle(bodyColor)
@@ -277,7 +362,7 @@ struct ImportView: View {
           List(model.summary, id: \.self) { Text($0).font(.caption) }.frame(height: 120)
           HStack {
             if model.canRetry { Button("Retry failed") { model.retryFailed() } }
-            Button("Eject (⌘J)") { model.eject() }
+            if model.summaryOffersEject { Button("Eject (⌘J)") { model.eject() } }
             Button("Open in viewer") { model.openDestination() }
             Button("Show report") { model.showReport() }.disabled(model.reportPath.isEmpty)
           }

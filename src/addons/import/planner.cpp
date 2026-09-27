@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/import/planner.h"
 
 #include <algorithm>
@@ -460,6 +461,9 @@ std::string plan_to_json(const scan_result& scan, const plan_result& plan, doubl
   w.key("label").string(scan.label);
   w.key("volume_id").string(scan.volume_id);
   w.key("network").boolean(scan.network);
+  // Whether the chrome should offer Eject at all for this source (issue
+  // #41/#42: an ordinary folder or a fixed disk is never ejectable).
+  w.key("removable").boolean(scan.removable);
   w.end_object();
   w.key("destination").string(plan.destination);
   w.key("backup").string(plan.backup);

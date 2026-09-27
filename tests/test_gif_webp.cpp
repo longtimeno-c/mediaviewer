@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // GIF and WebP decode, still and animated. Fixtures are encoded in the test
 // with giflib's and libwebp's own encoders, so no binary corpus lives in git.
 #include <catch2/catch_test_macros.hpp>

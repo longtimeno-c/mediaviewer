@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // plan/13 Part 2 scrub, on a synthetic minidump shaped like Crashpad's.
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Installed add-ons on disk (plan/18 "Location", "Updates").
 //
 //   <addons>/<dir>/<version>/   manifest.json, manifest.json.sig, the files

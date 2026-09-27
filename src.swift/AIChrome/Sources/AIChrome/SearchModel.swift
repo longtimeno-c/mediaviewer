@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The search panel's model over mv.ai.1 (plan/17 "Search", "UI and commands"):
 // the query, scope and kind chips, the debounced search, result tiles and their
 // thumbnails, the empty states, find-similar, the status footer, opening the

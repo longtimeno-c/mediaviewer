@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // RAW via LibRaw (LGPL, dynamic, libraw::raw_r). Embedded JPEG is first
 // pixel; full dcraw output replaces it. Never writes the original.
 //

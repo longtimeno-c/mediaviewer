@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PR 8 verify: "confirm telemetry stays off unless explicitly enabled", and
 // rule 6: nothing about a user's files leaves the machine.

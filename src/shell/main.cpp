@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // MediaViewer present lab — the Win32 entry point.
 //
 // This is the top-level window described in plan/02-architecture.md's shell/
@@ -23,9 +24,11 @@
 
 #include <cmath>
 #include <atomic>
+#include <initializer_list>
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <set>
@@ -69,10 +72,13 @@
 #include "shell/meta_store.h"
 #include "shell/meta_writer.h"
 #include "shell/open_request.h"
+#include "shell/os_integration.h"
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
 #include "shell/settings.h"
+#include "shell/shellext_install.h"
+#include "shell/single_instance_win.h"
 #include "shell/telemetry.h"
 #include "shell/update_guard.h"
 #include "shell/av_soak.h"
@@ -108,6 +114,17 @@ constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Le
 constexpr UINT_PTR kHistogramTimerId = 0x7701;
 constexpr UINT kHistogramDebounceMs = 120;
 constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
+// PR 15 (plan/10 "OS integration").
+constexpr UINT kMsgFlattenDone = WM_APP + 0x76;     // Ctrl+Alt+C's bake finished (any thread posts)
+constexpr UINT kMsgJumpListPruned = WM_APP + 0x77;  // folders the user removed from the jump list
+constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed over its paths
+constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
+constexpr UINT kThumbPlay = 0x5102;
+constexpr UINT kThumbNext = 0x5103;
+// One identity for the process, its shortcuts (mediaviewer.iss [Icons]) and
+// its jump list, so the pinned button, the running window and the recent
+// folders are one taskbar entry. Never change it: pins are keyed on it.
+constexpr wchar_t kAppUserModelId[] = L"MediaViewer.Viewer";
 // PR 12: rating keys coalesce for a moment before the write; the write runs on
 // the pool and posts its outcome back as one message.
 constexpr UINT_PTR kMetaWriteTimerId = 0x7801;
@@ -228,8 +245,15 @@ struct app_state {
   bool tracking_mouse = false;
   bool chrome_enabled = true;
   bool chrome_on_screen = false;  // reserved bar height; cleared if attach fails
+  // Launch: the core half of the argv open (mv_folder_open), already issued
+  // before the chrome attached. open_folder skips that one call for it.
+  std::string early_open_dir;
+  std::string early_open_select;
   open_mode mode = open_mode::none;
   bool gallery_visible = false;
+  // Issue #44: what the core was last told (mv_video_set_hold). The grid covers
+  // the canvas, so nothing plays under it; see sync_video_hold.
+  bool video_held = false;
   // WM_CLOSE has started the orderly teardown; a second close is a no-op.
   bool closing = false;
   // File-job problems waiting to be reported. One dialog at a time: a job that
@@ -295,6 +319,20 @@ struct app_state {
   mv::shell::mark_set marks;
   mv::shell::file_jobs files;
   std::vector<std::string> destinations;  // F7 / F8, most recent first
+  // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
+  std::vector<std::string> recent_folders;
+  // Soaks and scripted runs open fixtures, not the user's folders: they never
+  // reach settings.ini [recent] or the jump list.
+  bool record_recent = true;
+  // PR 15: the taskbar thumbnail toolbar (prev / play-pause / next). Created
+  // when Explorer says the button exists; `thumb_state` is what it shows:
+  // -1 not yet, 0 a still (play disabled), 1 a paused clip, 2 a playing one.
+  UINT taskbar_created_msg = 0;
+  ITaskbarList3* taskbar = nullptr;
+  HICON thumb_icons[4]{};  // prev, play, pause, next
+  int thumb_state = -1;
+  // PR 15: the single instance. A second start hands its paths over here.
+  mv::shell::instance_listener instance;
   std::uint64_t folder_token = 0;         // bumped per folder open
   // plan/16 slideshow, a mode: order and interval in `show`, advancing through
   // the same folder_select as browse.
@@ -325,23 +363,45 @@ struct pending_restore {
   bool fullscreen = false;
   bool gallery = false;
 } g_restore;
+// PR 15: `--new-instance` runs a second, independent window (plan/09
+// "overridable"); without it a second start hands its paths to the first.
+bool g_new_instance = false;
 
 // --browse-soak. Neighbours of the open photo are decoded ahead (±1, ±2, no
 // wrap). Cold jumps are the photos past that window, taken before the walk
 // visits them. Warm steps are Right after a dwell, so the next photo has had
-// time to be decoded. The clock is the render thread's, not this tick.
+// time to be decoded. Quick steps are Right as soon as the last step is on
+// screen, from the first photo again: each lands on a neighbour whose
+// prefetch is usually still running, the case the decode hand-off is for.
+// Held steps are a held Right key: one step per tick without waiting for
+// anything, then the last photo is timed to full resolution, and the job
+// counts over the run say how much decode work the walk threw away.
+// The clock is the render thread's, not this tick.
+enum class browse_kind { warm, cold, quick, held };
+const char* browse_kind_name(browse_kind k) noexcept {
+  switch (k) {
+    case browse_kind::cold: return "cold";
+    case browse_kind::quick: return "quick";
+    case browse_kind::held: return "held";
+    case browse_kind::warm: break;
+  }
+  return "warm";
+}
 struct browse_row {
   char name[200]{};
   int index = 0;
-  int cold = 0;
+  browse_kind kind = browse_kind::warm;
   int cached = 0;
   int timed_out = 0;
   double ready_ms = -1.0;
   double present_ms = -1.0;
   double refresh_ms = 0.0;
+  double full_ms = -1.0;
 };
 enum class browse_phase {
-  wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm, finish
+  wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm,
+  quick_home, wait_quick_home, quick, wait_quick, held_home, wait_held_home, held, wait_held,
+  finish
 };
 struct browse_run {
   bool enabled = false;
@@ -356,12 +416,18 @@ struct browse_run {
   int cold_n = 0;
   int cold_i = 0;
   int warm_left = 0;
+  int quick_left = 0;
+  int held_left = 0;
+  int held_steps = 0;
+  mv_job_stats held_before{};
+  mv_job_stats held_after{};
+  bool held_done = false;
   std::uint64_t seq = 0;
   bool record = false;
   int pending_index = 0;
-  int pending_cold = 0;
+  browse_kind pending_kind = browse_kind::warm;
   char pending_name[200]{};
-  browse_row rows[24]{};
+  browse_row rows[32]{};
   int nrows = 0;
 } g_browse;
 
@@ -432,11 +498,13 @@ void apply_transport_autohide(app_state* app) noexcept;
 void transport_activity(app_state* app) noexcept;
 void push_browse_state(app_state* app);
 void set_gallery(app_state* app, bool visible);
+void sync_video_hold(app_state* app, bool resume = true) noexcept;
 void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
 void update_title(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
+void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
@@ -472,12 +540,18 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   seed_siblings_for(app, dir);
   app->folder_find = false;
   app->folder_query.clear();
-  // A directory ends a result list (mediaviewer.h 0.11).
+  // A directory ends a result list (mediaviewer.h 0.13).
   app->list_title.clear();
   app->list_return_select.clear();
-  uint64_t job_id = 0;
-  (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
-                       &job_id);
+  const bool opened_early =
+      !navigation && dir == app->early_open_dir && select == app->early_open_select;
+  app->early_open_dir.clear();
+  app->early_open_select.clear();
+  if (!opened_early) {
+    uint64_t job_id = 0;
+    (void)mv_folder_open(app->session, dir.c_str(), select.empty() ? nullptr : select.c_str(),
+                         &job_id);
+  }
   ++app->folder_token;
   app->current_dir = dir;
   app->folder_cursor = -1;
@@ -501,6 +575,8 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
     if (!navigation) {
       app->mode = open_mode::folder;
       app->gallery_visible = false;
+      sync_video_hold(app, false);
+      note_recent_folder(app, utf8);
     } else {
       app->mode = open_mode::folder;
     }
@@ -510,6 +586,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
   if (navigation) return;
   app->mode = open_mode::image;
   app->gallery_visible = false;
+  sync_video_hold(app, false);
   const auto slash = wide_path.find_last_of(L"\\/");
   if (slash == std::wstring_view::npos) {
     mv_session_bump_generation(app->session, nullptr);
@@ -519,14 +596,18 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
     publish(app);
     return;
   }
-  open_folder(app, wide_path.substr(0, slash), wide_path);
+  // A file at a drive root keeps the root's separator: "D:" alone is the
+  // drive's current directory, not its root.
+  std::wstring parent(wide_path.substr(0, slash));
+  if (parent.size() == 2 && parent[1] == L':') parent.push_back(L'\\');
+  note_recent_folder(app, utf8_from_wide(parent));
+  open_folder(app, parent, wide_path);
 }
 
 // argv and drag-and-drop (plan/16): the first entry that exists wins — a folder
 // opens, a file opens its folder with that file selected (open_request.h).
 // The attribute probe is the same one-stat-per-path open_path already makes.
-void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
-  if (!app) return;
+mv::shell::open_request resolve_paths(const std::vector<std::wstring>& raw) {
   std::vector<mv::shell::path_probe> probes;
   probes.reserve(raw.size());
   for (const auto& r : raw) {
@@ -538,7 +619,45 @@ void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
     probe.is_directory = probe.exists && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
     probes.push_back(std::move(probe));
   }
-  const auto request = mv::shell::resolve_open(probes);
+  return mv::shell::resolve_open(probes);
+}
+
+// Launch only, before attach_chrome: the WinUI islands take ~0.4 s to load,
+// and nothing in the core open needs them. This issues the same
+// mv_folder_open that open_paths -> open_folder would (the folder, or the
+// file's folder with the file selected), so the scan and the file's decode
+// run while the chrome loads. The host half - mode, trail, chrome state -
+// still happens in open_paths once the chrome is up, and skips this call.
+void open_paths_early(app_state* app, const std::vector<std::wstring>& raw) {
+  if (!app || !app->session) return;
+  const auto request = resolve_paths(raw);
+  std::wstring_view dir;
+  std::wstring_view select;
+  if (request.kind == mv::shell::open_kind::folder) {
+    dir = request.path;
+  } else if (request.kind == mv::shell::open_kind::file) {
+    const auto slash = request.path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;  // open_path's bare-name route; not a folder open
+    dir = std::wstring_view(request.path).substr(0, slash);
+    select = request.path;
+  } else {
+    return;
+  }
+  const std::string utf8_dir = utf8_from_wide(dir);
+  if (utf8_dir.empty()) return;
+  const std::string utf8_select = utf8_from_wide(select);
+  uint64_t job_id = 0;
+  if (mv_folder_open(app->session, utf8_dir.c_str(),
+                     utf8_select.empty() ? nullptr : utf8_select.c_str(), &job_id) != MV_OK) {
+    return;
+  }
+  app->early_open_dir = utf8_dir;
+  app->early_open_select = utf8_select;
+}
+
+void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
+  if (!app) return;
+  const auto request = resolve_paths(raw);
   switch (request.kind) {
     case mv::shell::open_kind::folder:
     case mv::shell::open_kind::file:
@@ -610,6 +729,7 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   // then only flips the persisted flag behind an unchanged screen.
   app->mode = open_mode::folder;
   app->gallery_visible = false;
+  sync_video_hold(app, false);
   open_folder(app, folder, {});
   focus_canvas(app);
 }
@@ -1194,64 +1314,104 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
 // the cursor; otherwise the marked files, else the current item (the selected
 // cell while the gallery is up) as CF_HDROP, pasteable in Explorer, Mail, chat.
 // A pair copies both halves, as F7 does. Never asks the user anything.
-bool set_clipboard(app_state* app, UINT format, HGLOBAL mem) {
-  if (!::OpenClipboard(app->window)) {
-    ::GlobalFree(mem);
-    return false;
+struct clip_format {
+  UINT format = 0;
+  HGLOBAL mem = nullptr;
+};
+
+// Every format goes on in one open, so a paste target sees them together
+// (Ctrl+Alt+C offers a file and the PNG). The clipboard owns each block only
+// once SetClipboardData took it; the rest are freed here.
+bool set_clipboard(app_state* app, std::initializer_list<clip_format> formats) {
+  // A block that could not be built leaves the clipboard as it was.
+  const bool complete = std::all_of(formats.begin(), formats.end(),
+                                    [](const clip_format& f) { return f.mem != nullptr; });
+  const bool opened = complete && app && app->window && ::OpenClipboard(app->window);
+  if (opened) ::EmptyClipboard();
+  bool ok = opened;
+  for (const clip_format& f : formats) {
+    if (!f.mem) continue;
+    if (!opened || ::SetClipboardData(f.format, f.mem) == nullptr) {
+      ::GlobalFree(f.mem);
+      ok = false;
+    }
   }
-  ::EmptyClipboard();
-  const bool ok = ::SetClipboardData(format, mem) != nullptr;
-  if (!ok) ::GlobalFree(mem);  // the clipboard owns it only on success
-  ::CloseClipboard();
+  if (opened) ::CloseClipboard();
   return ok;
 }
 
-bool copy_to_clipboard(app_state* app) {
-  if (!app || !app->window) return false;
-  if (app->input.eyedropper) {
-    const std::string text = app->lab.eyedropper_text();
-    if (!text.empty()) {
-      const int n = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-      if (n <= 1) return false;
-      HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) * sizeof(wchar_t));
-      if (!mem) return false;
-      auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
-      if (!dst) {
-        ::GlobalFree(mem);
-        return false;
-      }
-      ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, dst, n);
-      ::GlobalUnlock(mem);
-      return set_clipboard(app, CF_UNICODETEXT, mem);
-    }
+bool set_clipboard(app_state* app, UINT format, HGLOBAL mem) {
+  return set_clipboard(app, {clip_format{format, mem}});
+}
+
+// CF_UNICODETEXT of a UTF-8 string. Null for an empty one.
+HGLOBAL text_to_global(const std::string& utf8) {
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (n <= 1) return nullptr;
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) * sizeof(wchar_t));
+  if (!mem) return nullptr;
+  auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
+  if (!dst) {
+    ::GlobalFree(mem);
+    return nullptr;
   }
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
-  if (targets.empty()) return false;
-  // DROPFILES, then each path as UTF-16 with a NUL, then one more NUL.
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, dst, n);
+  ::GlobalUnlock(mem);
+  return mem;
+}
+
+// CF_HDROP: DROPFILES, then each path as UTF-16 with a NUL, then one more NUL.
+HGLOBAL hdrop_to_global(const std::vector<std::string>& paths) {
   std::wstring list;
-  for (const std::string& utf8 : targets) {
+  for (const std::string& utf8 : paths) {
     const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
     if (n <= 1) continue;
     std::wstring wide(static_cast<std::size_t>(n), L'\0');
     ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
     list.append(wide.c_str(), static_cast<std::size_t>(n));  // includes its NUL
   }
-  if (list.empty()) return false;
+  if (list.empty()) return nullptr;
   list.push_back(L'\0');
   const SIZE_T bytes = sizeof(DROPFILES) + list.size() * sizeof(wchar_t);
   HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
-  if (!mem) return false;
+  if (!mem) return nullptr;
   auto* drop = static_cast<DROPFILES*>(::GlobalLock(mem));
   if (!drop) {
     ::GlobalFree(mem);
-    return false;
+    return nullptr;
   }
   drop->pFiles = sizeof(DROPFILES);
   drop->fWide = TRUE;
   std::memcpy(reinterpret_cast<char*>(drop) + sizeof(DROPFILES), list.data(),
               list.size() * sizeof(wchar_t));
   ::GlobalUnlock(mem);
-  return set_clipboard(app, CF_HDROP, mem);
+  return mem;
+}
+
+// Raw bytes for a registered format ("PNG": Office, browsers, Paint, chat apps).
+HGLOBAL bytes_to_global(const std::vector<std::uint8_t>& bytes) {
+  if (bytes.empty()) return nullptr;
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+  if (!mem) return nullptr;
+  void* dst = ::GlobalLock(mem);
+  if (!dst) {
+    ::GlobalFree(mem);
+    return nullptr;
+  }
+  std::memcpy(dst, bytes.data(), bytes.size());
+  ::GlobalUnlock(mem);
+  return mem;
+}
+
+bool copy_to_clipboard(app_state* app) {
+  if (!app || !app->window) return false;
+  if (app->input.eyedropper) {
+    const std::string text = app->lab.eyedropper_text();
+    if (!text.empty()) return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
+  }
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  if (targets.empty()) return false;
+  return set_clipboard(app, CF_HDROP, hdrop_to_global(targets));
 }
 
 // ---- PR 10: edit stack, lossless rotate, crop, export ------------------------
@@ -2328,7 +2488,19 @@ void set_gallery(app_state* app, bool visible) {
   if (visible && !gallery_available(app)) return;
   if (app->gallery_visible == visible) return;
   app->gallery_visible = visible;
+  sync_video_hold(app);
   apply_view_state(app);
+}
+
+// Issue #44. The grid covers the canvas, so a clip does not play or sound under
+// it: the core pauses one that is playing, leaves one selected under the grid on
+// its first frame, and on the way out resumes only the clip that was playing
+// when the grid opened (player/playback_hold.h, the rule the Mac host runs).
+// `resume` false is for leaving the grid for something new, not back to the clip.
+void sync_video_hold(app_state* app, bool resume) noexcept {
+  if (!app || !app->session || app->video_held == app->gallery_visible) return;
+  app->video_held = app->gallery_visible;
+  (void)mv_video_set_hold(app->session, app->video_held ? 1 : 0, resume ? 1 : 0);
 }
 
 void toggle_filmstrip_setting(app_state* app) {
@@ -2397,10 +2569,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
       std::uint32_t cur = 0;
       (void)mv_folder_selected(app->session, &cur);
       const auto index = static_cast<std::uint32_t>(arg);
-      folder_select(app, index);
-      // Closing the grid would otherwise reveal the previous still until the
-      // new decode lands. Drop it when the click is a jump.
+      // A click on the tile already selected is "back to it": reselecting would
+      // reopen a clip, and the one held under the grid would not resume (#44).
       if (index != cur) {
+        folder_select(app, index);
+        // Closing the grid would otherwise reveal the previous still until the
+        // new decode lands. Drop it when the click is a jump.
         ++app->input.discard_media_seq;
         publish(app);
       }
@@ -2442,6 +2616,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       if (dir.empty()) return;
       app->mode = open_mode::folder;
       app->gallery_visible = false;
+      sync_video_hold(app, false);
       {
         const int n = ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0);
         if (n <= 1) return;
@@ -2634,6 +2809,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->autohide.activity(::GetTickCount64());
       apply_transport_autohide(app);
       return;
+    case mv::shell::chrome_cmd_transport_width:
+      // The row grew or shrank (trim armed, a longer clock): refit the bar.
+      if (app->chrome.set_transport_content(static_cast<int>(arg + 0.5f))) layout_chrome(app);
+      return;
     case mv::shell::chrome_cmd_update_restart: {
       if (arg != 0.0f) {
         // Update.exe is armed and waiting for this pid: leave the ordinary way.
@@ -2814,6 +2993,7 @@ void set_fullscreen(app_state* app, bool on) noexcept {
     // Set first: the WM_SIZE this causes lays the chrome out as hidden.
     app->fullscreen = true;
     app->gallery_visible = false;
+    sync_video_hold(app);
     // A hidden island must not keep keyboard focus.
     ::SetFocus(hwnd);
     ::SetWindowLongPtrW(hwnd, GWL_STYLE, app->windowed_style & ~WS_OVERLAPPEDWINDOW);
@@ -2955,7 +3135,8 @@ void browse_json_string(FILE* f, const char* s) noexcept {
   std::fputc('"', f);
 }
 
-bool browse_select(app_state* app, std::uint32_t index, bool record, bool cold) noexcept {
+bool browse_select(app_state* app, std::uint32_t index, bool record,
+                   browse_kind kind) noexcept {
   char name[200]{};
   std::uint32_t bytes = 0;
   if (mv_folder_item_name(app->session, index, name, sizeof name, &bytes) != MV_OK)
@@ -2966,7 +3147,7 @@ bool browse_select(app_state* app, std::uint32_t index, bool record, bool cold) 
   g_browse.seq = seq;
   g_browse.record = record;
   g_browse.pending_index = static_cast<int>(index);
-  g_browse.pending_cold = cold ? 1 : 0;
+  g_browse.pending_kind = kind;
   std::snprintf(g_browse.pending_name, sizeof g_browse.pending_name, "%s", name);
   g_browse.phase_tick = ::GetTickCount64();
   folder_select(app, index);
@@ -2982,7 +3163,7 @@ void browse_take(app_state* app, bool timed_out) noexcept {
   auto& row = g_browse.rows[g_browse.nrows++];
   std::snprintf(row.name, sizeof row.name, "%s", g_browse.pending_name);
   row.index = g_browse.pending_index;
-  row.cold = g_browse.pending_cold;
+  row.kind = g_browse.pending_kind;
   row.timed_out = timed_out ? 1 : 0;
   if (!timed_out) {
     const auto sample = app->lab.navigation_sample(g_browse.seq);
@@ -2990,11 +3171,13 @@ void browse_take(app_state* app, bool timed_out) noexcept {
     row.ready_ms = sample.ready_ms;
     row.present_ms = sample.present_ms;
     row.refresh_ms = sample.refresh_ms;
+    row.full_ms = sample.full_ms;
   }
   char line[400];
   std::snprintf(line, sizeof line,
-                "done %s cold %d cached %d present %.2f ready %.2f timeout %d",
-                row.name, row.cold, row.cached, row.present_ms, row.ready_ms, row.timed_out);
+                "done %s %s cached %d present %.2f ready %.2f full %.2f timeout %d",
+                row.name, browse_kind_name(row.kind), row.cached, row.present_ms, row.ready_ms,
+                row.full_ms, row.timed_out);
   browse_trace(line);
 }
 
@@ -3022,6 +3205,20 @@ void browse_finish(app_state* app, const char* error) noexcept {
                  static_cast<double>(kBrowseDwellMs) / 1000.0, g_browse.count);
     if (error) browse_json_string(f, error);
     else std::fputs("null", f);
+    if (g_browse.held_done) {
+      // Decode jobs over the held run: what the walk submitted, finished and
+      // threw away (a hand-off keeps a landed-on prefetch out of `cancelled`).
+      std::fprintf(f,
+                   ",\n  \"held\": {\"steps\": %d, \"submitted\": %llu, \"completed\": %llu, "
+                   "\"cancelled\": %llu}",
+                   g_browse.held_steps,
+                   static_cast<unsigned long long>(g_browse.held_after.submitted -
+                                                   g_browse.held_before.submitted),
+                   static_cast<unsigned long long>(g_browse.held_after.completed -
+                                                   g_browse.held_before.completed),
+                   static_cast<unsigned long long>(g_browse.held_after.cancelled -
+                                                   g_browse.held_before.cancelled));
+    }
     std::fputs(",\n  \"steps\": [\n", f);
     for (int i = 0; i < g_browse.nrows; ++i) {
       const auto& row = g_browse.rows[i];
@@ -3029,9 +3226,10 @@ void browse_finish(app_state* app, const char* error) noexcept {
       browse_json_string(f, row.name);
       std::fprintf(f,
                    ", \"index\": %d, \"kind\": \"%s\", \"cached\": %d, \"timed_out\": %d, "
-                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f}%s\n",
-                   row.index, row.cold ? "cold" : "warm", row.cached, row.timed_out,
-                   row.ready_ms, row.present_ms, row.refresh_ms,
+                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f, "
+                   "\"full_ms\": %.3f}%s\n",
+                   row.index, browse_kind_name(row.kind), row.cached, row.timed_out,
+                   row.ready_ms, row.present_ms, row.refresh_ms, row.full_ms,
                    i + 1 < g_browse.nrows ? "," : "");
     }
     std::fputs("  ]\n}\n", f);
@@ -3061,6 +3259,8 @@ void browse_tick(app_state* app) noexcept {
         for (std::uint32_t i = 3; i < g_browse.count && g_browse.cold_n < 6; ++i)
           g_browse.cold_targets[g_browse.cold_n++] = static_cast<int>(i);
         g_browse.warm_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
+        g_browse.quick_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
+        g_browse.held_left = static_cast<int>(std::min<std::uint32_t>(g_browse.count - 1, 12));
         g_browse.step = browse_phase::dwell;
         g_browse.after_dwell = g_browse.cold_n > 0 ? browse_phase::cold : browse_phase::warm;
         g_browse.phase_tick = ::GetTickCount64();
@@ -3081,7 +3281,7 @@ void browse_tick(app_state* app) noexcept {
         return;
       }
       if (!browse_select(app, static_cast<std::uint32_t>(g_browse.cold_targets[g_browse.cold_i++]),
-                         true, true)) {
+                         true, browse_kind::cold)) {
         browse_finish(app, "could not mark a jump");
         return;
       }
@@ -3100,7 +3300,7 @@ void browse_tick(app_state* app) noexcept {
         g_browse.phase_tick = ::GetTickCount64();
         return;
       }
-      if (!browse_select(app, 0, false, false)) {
+      if (!browse_select(app, 0, false, browse_kind::warm)) {
         browse_finish(app, "could not return to the first photo");
         return;
       }
@@ -3115,17 +3315,15 @@ void browse_tick(app_state* app) noexcept {
       g_browse.phase_tick = ::GetTickCount64();
       return;
     case browse_phase::warm: {
-      if (g_browse.warm_left <= 0) {
-        browse_finish(app, nullptr);
-        return;
-      }
       std::uint32_t selected = 0;
-      if (mv_folder_selected(app->session, &selected) != MV_OK || selected + 1 >= g_browse.count) {
-        browse_finish(app, nullptr);
+      if (g_browse.warm_left <= 0 || mv_folder_selected(app->session, &selected) != MV_OK ||
+          selected + 1 >= g_browse.count) {
+        g_browse.step = browse_phase::quick_home;
+        browse_tick(app);
         return;
       }
       --g_browse.warm_left;
-      if (!browse_select(app, selected + 1, true, false)) {
+      if (!browse_select(app, selected + 1, true, browse_kind::warm)) {
         browse_finish(app, "could not mark a step");
         return;
       }
@@ -3135,13 +3333,100 @@ void browse_tick(app_state* app) noexcept {
     case browse_phase::wait_warm:
       if (!browse_step_finished(app)) return;
       if (g_browse.warm_left <= 0) {
-        browse_finish(app, nullptr);
+        g_browse.step = browse_phase::quick_home;
+        browse_tick(app);
         return;
       }
       g_browse.step = browse_phase::dwell;
       g_browse.after_dwell = browse_phase::warm;
       g_browse.phase_tick = ::GetTickCount64();
       return;
+    case browse_phase::quick_home:
+      if (!browse_select(app, 0, false, browse_kind::warm)) {
+        browse_finish(app, "could not return to the first photo");
+        return;
+      }
+      g_browse.step = browse_phase::wait_quick_home;
+      return;
+    case browse_phase::wait_quick_home:
+      if (!app->lab.navigation_done(g_browse.seq) &&
+          ::GetTickCount64() - g_browse.phase_tick <= kBrowseStepTimeoutMs) return;
+      // One dwell here, so the first quick step leaves from a settled window.
+      g_browse.step = browse_phase::dwell;
+      g_browse.after_dwell = browse_phase::quick;
+      g_browse.phase_tick = ::GetTickCount64();
+      return;
+    case browse_phase::quick: {
+      std::uint32_t selected = 0;
+      if (g_browse.quick_left <= 0 || mv_folder_selected(app->session, &selected) != MV_OK ||
+          selected + 1 >= g_browse.count) {
+        g_browse.step = browse_phase::held_home;
+        browse_tick(app);
+        return;
+      }
+      --g_browse.quick_left;
+      if (!browse_select(app, selected + 1, true, browse_kind::quick)) {
+        browse_finish(app, "could not mark a quick step");
+        return;
+      }
+      g_browse.step = browse_phase::wait_quick;
+      return;
+    }
+    case browse_phase::wait_quick:
+      if (!browse_step_finished(app)) return;
+      g_browse.step = browse_phase::quick;  // no dwell: the next Right goes now
+      browse_tick(app);
+      return;
+    case browse_phase::held_home:
+      if (!browse_select(app, 0, false, browse_kind::warm)) {
+        browse_finish(app, "could not return to the first photo");
+        return;
+      }
+      g_browse.step = browse_phase::wait_held_home;
+      return;
+    case browse_phase::wait_held_home:
+      if (!app->lab.navigation_done(g_browse.seq) &&
+          ::GetTickCount64() - g_browse.phase_tick <= kBrowseStepTimeoutMs) return;
+      g_browse.step = browse_phase::dwell;
+      g_browse.after_dwell = browse_phase::held;
+      g_browse.phase_tick = ::GetTickCount64();
+      return;
+    case browse_phase::held: {
+      std::uint32_t selected = 0;
+      if (mv_folder_selected(app->session, &selected) != MV_OK) {
+        browse_finish(app, "could not read the selection");
+        return;
+      }
+      if (g_browse.held_steps == 0) (void)mv_session_job_stats(app->session, &g_browse.held_before);
+      const bool last = g_browse.held_left <= 1 || selected + 2 >= g_browse.count;
+      ++g_browse.held_steps;
+      --g_browse.held_left;
+      if (!last) {
+        folder_select(app, selected + 1);  // one key repeat; nothing waits on it
+        return;
+      }
+      if (!browse_select(app, selected + 1, true, browse_kind::held)) {
+        browse_finish(app, "could not mark the last held step");
+        return;
+      }
+      g_browse.step = browse_phase::wait_held;
+      return;
+    }
+    case browse_phase::wait_held: {
+      const bool timed_out = ::GetTickCount64() - g_browse.phase_tick > kBrowseStepTimeoutMs;
+      if (!app->lab.navigation_full(g_browse.seq) && !timed_out) return;
+      // Then let the pool settle, so work the walk abandoned is counted.
+      mv_job_stats now{};
+      if (mv_session_job_stats(app->session, &now) == MV_OK && !timed_out &&
+          (now.queue_depth != 0 || now.completed + now.cancelled < now.submitted)) {
+        return;
+      }
+      browse_take(app, !app->lab.navigation_full(g_browse.seq));
+      g_browse.held_after = now;
+      g_browse.held_done = true;
+      browse_finish(app, nullptr);
+      return;
+    }
     case browse_phase::finish:
       return;
   }
@@ -3175,7 +3460,9 @@ void set_settings_open(app_state* app, bool on) noexcept {
     mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
     const std::size_t n = app->router.cancel_holds(released);
     for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+    // Settings covers the canvas too; leaving the grid for it keeps the clip paused.
     app->gallery_visible = false;
+    sync_video_hold(app, false);
     app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
     app->popup_open = false;
     // Give XAML its final viewport before measuring and focusing Settings.
@@ -3520,6 +3807,366 @@ void motion_tick(app_state* app) noexcept {
   }
 }
 
+// ---- PR 15: OS integration (plan/10 "OS integration", plan/16 View) ---------
+
+// Ctrl+Shift+C: the marked (else current) path(s) as text, one per line. A
+// pair gives both halves, as Ctrl+C does.
+bool copy_paths_to_clipboard(app_state* app) {
+  if (!app) return false;
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const std::string text = mv::shell::paths_as_text(targets, "\r\n");
+  if (text.empty()) return false;
+  return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
+}
+
+struct flatten_job_result {
+  bool ok = false;
+  bool for_drag = false;  // Ctrl+Alt+drag: start a file drag of it, not a clipboard copy
+  std::string path;
+  std::vector<std::uint8_t> png;
+};
+
+// Ctrl+Alt+C: the still as the canvas shows it, edits baked, as a PNG. The
+// bake is a full-resolution export, so it runs on the pool (rule 1) and lands
+// in kMsgFlattenDone. Stills only; a clip's frame is PR 14's frame export.
+bool start_flatten(app_state* app, bool for_drag = false) {
+  if (!app || !app->window || app->edit_path.empty() || video_mode(app) ||
+      app->lab.animation() != mv::shell::animation_state::none) {
+    return false;
+  }
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, g = app->edits.export_geometry(),
+                       c = app->edits.colour(), hwnd, for_drag](const mv::job_context&) -> mv::status {
+                        mv::result<mv::shell::flattened_copy> out = mv::shell::run_flatten(path, g, c);
+                        auto* r = new (std::nothrow) flatten_job_result{};
+                        if (r) r->for_drag = for_drag;
+                        if (r && out) {
+                          r->ok = true;
+                          r->path = std::move(out->path);
+                          r->png = std::move(out->png);
+                        }
+                        if (r && !::PostMessageW(hwnd, kMsgFlattenDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return out ? mv::status::ok : out.error();
+                      });
+  return true;
+}
+
+// The file (Explorer, Mail, chat) and the PNG itself (Office, Paint, a
+// browser) in one clipboard open.
+void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
+  if (!r) return;
+  // Ctrl+Alt+drag (plan/09 "drag an edited copy directly into another app"):
+  // the bake ran on the pool while the button was held; the drag starts
+  // now, of the baked file, if it still is. Let go early and nothing happens.
+  // The file is dragged as CF_HDROP rather than a CFSTR_FILECONTENTS stream,
+  // which a drop target reads through this thread at drop time: waiting for
+  // a full-resolution bake there would block the UI thread (rule 1).
+  if (r->for_drag) {
+    const int button = ::GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+    if (!r->ok) {
+      ::MessageBeep(MB_ICONWARNING);
+    } else if (app && app->window && (::GetAsyncKeyState(button) & 0x8000) != 0) {
+      begin_file_drag(app->window, r->path);
+    }
+    return;
+  }
+  static const UINT cf_png = ::RegisterClipboardFormatW(L"PNG");
+  if (!r->ok || cf_png == 0 ||
+      !set_clipboard(app, {clip_format{CF_HDROP, hdrop_to_global({r->path})},
+                           clip_format{cf_png, bytes_to_global(r->png)}})) {
+    ::MessageBeep(MB_ICONWARNING);
+  }
+}
+
+// Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
+// share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
+bool share_targets(app_state* app) {
+  if (!app || !app->window) return false;
+  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  if (targets.empty()) return false;
+  mv::json::writer w;
+  w.begin_array();
+  for (const std::string& t : targets) w.string(t);
+  w.end_array();
+  return app->chrome.share_files(app->window, w.str());
+}
+
+// The command line a jump list entry runs: the folder, quoted. A trailing
+// backslash ("D:\") is doubled, or CommandLineToArgvW reads `\"` as a quote.
+std::wstring jump_list_arguments(const std::string& utf8_dir) {
+  std::wstring dir = wide_from_utf8(utf8_dir);
+  if (!dir.empty() && dir.back() == L'\\') dir.push_back(L'\\');
+  return L"\"" + dir + L"\"";
+}
+
+// The jump list's "Recent folders" (the Dock menu's twin). Worker thread:
+// CommitList writes the list into the user's profile. Returns the folders the
+// user removed from the list since the last commit: Windows refuses a
+// category that adds one back, so the caller drops them from the recents.
+//
+// Every request takes a number on the UI thread; the pool may run two out of
+// order, so one that a newer request has overtaken commits nothing (the newer
+// one carries the newer list).
+std::atomic<std::uint64_t> g_jump_list_seq{0};
+
+std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, const std::wstring& exe,
+                                         std::uint64_t seq) {
+  static std::mutex one_at_a_time;
+  const std::lock_guard lock(one_at_a_time);
+  if (seq != g_jump_list_seq.load(std::memory_order_acquire)) return {};
+  std::vector<std::string> pruned;
+  const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  ICustomDestinationList* list = nullptr;
+  IObjectArray* removed = nullptr;
+  IObjectCollection* items = nullptr;
+  IObjectArray* array = nullptr;
+  UINT min_slots = 0;
+  if (SUCCEEDED(::CoCreateInstance(CLSID_DestinationList, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&list))) &&
+      SUCCEEDED(list->SetAppID(kAppUserModelId)) &&
+      SUCCEEDED(list->BeginList(&min_slots, IID_PPV_ARGS(&removed))) &&
+      SUCCEEDED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&items)))) {
+    std::vector<std::wstring> removed_args;
+    UINT removed_count = 0;
+    if (removed && SUCCEEDED(removed->GetCount(&removed_count))) {
+      for (UINT i = 0; i < removed_count; ++i) {
+        IShellLinkW* link = nullptr;
+        if (FAILED(removed->GetAt(i, IID_PPV_ARGS(&link))) || !link) continue;
+        wchar_t args[2 * MAX_PATH]{};
+        if (SUCCEEDED(link->GetArguments(args, static_cast<int>(std::size(args))))) {
+          removed_args.emplace_back(args);
+        }
+        link->Release();
+      }
+    }
+    SHSTOCKICONINFO folder_icon{};
+    folder_icon.cbSize = sizeof(folder_icon);
+    const bool have_icon = SUCCEEDED(::SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICONLOCATION, &folder_icon));
+    const std::vector<std::string> labels = mv::shell::recent_folder_labels(folders);
+    UINT added = 0;
+    for (std::size_t i = 0; !exe.empty() && i < folders.size(); ++i) {
+      const std::wstring args = jump_list_arguments(folders[i]);
+      if (std::find(removed_args.begin(), removed_args.end(), args) != removed_args.end()) {
+        pruned.push_back(folders[i]);
+        continue;
+      }
+      IShellLinkW* link = nullptr;
+      if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
+        continue;
+      }
+      (void)link->SetPath(exe.c_str());
+      (void)link->SetArguments(args.c_str());
+      (void)link->SetDescription(wide_from_utf8(folders[i]).c_str());  // the tooltip
+      if (have_icon) (void)link->SetIconLocation(folder_icon.szPath, folder_icon.iIcon);
+      // The entry's label is its PKEY_Title (FMTID_SummaryInformation, pid 2),
+      // spelled out here so neither propkey.h's data symbols nor
+      // propvarutil.h's shlwapi-backed helpers join the link.
+      static constexpr PROPERTYKEY kTitle = {
+          {0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
+      const std::wstring label = wide_from_utf8(labels[i]);
+      IPropertyStore* props = nullptr;
+      PROPVARIANT title{};
+      bool titled = false;
+      const std::size_t bytes = (label.size() + 1) * sizeof(wchar_t);
+      if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props)))) {
+        title.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc(bytes));
+        if (title.pwszVal) {
+          title.vt = VT_LPWSTR;
+          std::memcpy(title.pwszVal, label.c_str(), bytes);
+          titled = SUCCEEDED(props->SetValue(kTitle, title)) && SUCCEEDED(props->Commit());
+          (void)::PropVariantClear(&title);
+        }
+      }
+      if (props) props->Release();
+      if (titled && SUCCEEDED(items->AddObject(link))) ++added;
+      link->Release();
+    }
+    if (added > 0 && SUCCEEDED(items->QueryInterface(IID_PPV_ARGS(&array)))) {
+      (void)list->AppendCategory(L"Recent folders", array);
+    }
+    if (FAILED(list->CommitList())) MV_LOG_WARN("jump list: CommitList failed");
+  }
+  if (array) array->Release();
+  if (items) items->Release();
+  if (removed) removed->Release();
+  if (list) list->Release();
+  if (SUCCEEDED(com)) ::CoUninitialize();
+  return pruned;
+}
+
+// The exe a jump list entry starts: the install's root stub, which survives
+// updates (mediaviewer.iss [Icons] points there for the same reason); a dev
+// build has no stub and uses itself.
+std::wstring jump_list_exe() {
+  if (g_install.installed()) return g_install.root + L"\\MediaViewer.exe";
+  wchar_t exe[2 * MAX_PATH]{};
+  const DWORD n = ::GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+  return n > 0 && n < std::size(exe) ? std::wstring(exe, n) : std::wstring();
+}
+
+void publish_jump_list(app_state* app) {
+  if (!app || !app->window) return;
+  const HWND hwnd = app->window;
+  const std::uint64_t seq = g_jump_list_seq.fetch_add(1, std::memory_order_acq_rel) + 1;
+  app->jobs.submit_at(mv::background_generation,
+                      [folders = app->recent_folders, exe = jump_list_exe(), hwnd, seq](const mv::job_context&) -> mv::status {
+                        std::vector<std::string> pruned = build_jump_list(folders, exe, seq);
+                        if (pruned.empty()) return mv::status::ok;
+                        auto* r = new (std::nothrow) std::vector<std::string>(std::move(pruned));
+                        if (r && !::PostMessageW(hwnd, kMsgJumpListPruned, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+// A folder opened from Explorer, the jump list, Open, a drop or argv counts;
+// walking siblings or the tree does not (open_path's `navigation`).
+void note_recent_folder(app_state* app, const std::string& utf8_dir) {
+  if (!app || !app->record_recent || utf8_dir.empty()) return;
+  std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_folders, utf8_dir);
+  if (next == app->recent_folders) return;
+  app->recent_folders = std::move(next);
+  mv::shell::save_recent_folders(app->recent_folders);
+  publish_jump_list(app);
+}
+
+void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string>> pruned) {
+  if (!app || !pruned) return;
+  const std::size_t before = app->recent_folders.size();
+  std::erase_if(app->recent_folders, [&](const std::string& f) {
+    return std::find(pruned->begin(), pruned->end(), f) != pruned->end();
+  });
+  if (app->recent_folders.size() != before) mv::shell::save_recent_folders(app->recent_folders);
+}
+
+// The taskbar thumbnail toolbar's glyphs, drawn at the small-icon size: white
+// on transparent, as the taskbar expects. 0 previous, 1 play, 2 pause, 3 next.
+HICON make_thumb_icon(int glyph, int size) noexcept {
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+  bi.bmiHeader.biWidth = size;
+  bi.bmiHeader.biHeight = -size;  // top-down
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HBITMAP colour = ::CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  ::ReleaseDC(nullptr, screen);
+  if (!colour || !bits) return nullptr;
+  HDC dc = ::CreateCompatibleDC(nullptr);
+  HGDIOBJ old_bitmap = ::SelectObject(dc, colour);
+  HGDIOBJ old_brush = ::SelectObject(dc, ::GetStockObject(WHITE_BRUSH));
+  HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+  const int m = size / 4;  // margin
+  const int bar = std::max(2, size / 8);
+  const int mid = size / 2;
+  switch (glyph) {
+    case 0: {  // |<
+      (void)::Rectangle(dc, m, m, m + bar + 1, size - m + 1);
+      const POINT tri[] = {{size - m, m}, {size - m, size - m}, {m + bar, mid}};
+      (void)::Polygon(dc, tri, 3);
+      break;
+    }
+    case 1: {  // >
+      const POINT tri[] = {{m, m}, {m, size - m}, {size - m, mid}};
+      (void)::Polygon(dc, tri, 3);
+      break;
+    }
+    case 2: {  // ||
+      const int w = std::max(2, (size - 2 * m) / 3);
+      (void)::Rectangle(dc, m, m, m + w + 1, size - m + 1);
+      (void)::Rectangle(dc, size - m - w, m, size - m + 1, size - m + 1);
+      break;
+    }
+    default: {  // >|
+      const POINT tri[] = {{m, m}, {m, size - m}, {size - m - bar, mid}};
+      (void)::Polygon(dc, tri, 3);
+      (void)::Rectangle(dc, size - m - bar, m, size - m + 1, size - m + 1);
+      break;
+    }
+  }
+  ::GdiFlush();
+  ::SelectObject(dc, old_pen);
+  ::SelectObject(dc, old_brush);
+  ::SelectObject(dc, old_bitmap);
+  ::DeleteDC(dc);
+  // GDI leaves alpha at 0: every drawn (white) pixel becomes opaque.
+  auto* px = static_cast<std::uint32_t*>(bits);
+  for (int i = 0; i < size * size; ++i) {
+    if (px[i] & 0x00FFFFFFu) px[i] = 0xFFFFFFFFu;
+  }
+  HBITMAP mask = ::CreateBitmap(size, size, 1, 1, nullptr);
+  ICONINFO info{};
+  info.fIcon = TRUE;
+  info.hbmMask = mask;
+  info.hbmColor = colour;
+  HICON icon = mask ? ::CreateIconIndirect(&info) : nullptr;
+  if (mask) ::DeleteObject(mask);
+  ::DeleteObject(colour);
+  return icon;
+}
+
+// What the toolbar shows, from the clip state the title tick already reads.
+void update_thumb_bar(app_state* app) {
+  if (!app || !app->taskbar || !app->window) return;
+  std::uint32_t state = MV_PLAY_STOPPED;
+  if (app->session) (void)mv_video_state(app->session, &state);
+  const int want = state == MV_PLAY_STOPPED ? 0 : (state == MV_PLAY_PLAYING ? 2 : 1);
+  if (want == app->thumb_state) return;
+  THUMBBUTTON play{};
+  play.dwMask = THB_ICON | THB_TOOLTIP | THB_FLAGS;
+  play.iId = kThumbPlay;
+  play.hIcon = app->thumb_icons[want == 2 ? 2 : 1];
+  (void)::wcscpy_s(play.szTip, want == 2 ? L"Pause" : L"Play");
+  play.dwFlags = want == 0 ? THBF_DISABLED : THBF_ENABLED;
+  if (SUCCEEDED(app->taskbar->ThumbBarUpdateButtons(app->window, 1, &play))) app->thumb_state = want;
+}
+
+// "TaskbarButtonCreated": Explorer made (or remade, after it restarted) the
+// button, so the toolbar is added now.
+void on_taskbar_button_created(app_state* app) {
+  if (!app || !app->window) return;
+  if (!app->taskbar) {
+    if (FAILED(::CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&app->taskbar))) ||
+        FAILED(app->taskbar->HrInit())) {
+      if (app->taskbar) app->taskbar->Release();
+      app->taskbar = nullptr;
+      return;
+    }
+  }
+  const UINT dpi = ::GetDpiForWindow(app->window);
+  const int size = ::GetSystemMetricsForDpi(SM_CXSMICON, dpi ? dpi : 96);
+  for (int i = 0; i < 4; ++i) {
+    if (!app->thumb_icons[i]) app->thumb_icons[i] = make_thumb_icon(i, size);
+  }
+  THUMBBUTTON buttons[3]{};
+  const UINT ids[] = {kThumbPrev, kThumbPlay, kThumbNext};
+  const HICON icons[] = {app->thumb_icons[0], app->thumb_icons[1], app->thumb_icons[3]};
+  const wchar_t* tips[] = {L"Previous", L"Play", L"Next"};
+  for (int i = 0; i < 3; ++i) {
+    buttons[i].dwMask = THB_ICON | THB_TOOLTIP | THB_FLAGS;
+    buttons[i].iId = ids[i];
+    buttons[i].hIcon = icons[i];
+    (void)::wcscpy_s(buttons[i].szTip, tips[i]);
+    buttons[i].dwFlags = i == 1 ? THBF_DISABLED : THBF_ENABLED;
+  }
+  app->thumb_state = -1;
+  if (SUCCEEDED(app->taskbar->ThumbBarAddButtons(app->window, 3, buttons))) update_thumb_bar(app);
+}
+
+void release_taskbar(app_state* app) noexcept {
+  if (!app) return;
+  if (app->taskbar) app->taskbar->Release();
+  app->taskbar = nullptr;
+  for (HICON& icon : app->thumb_icons) {
+    if (icon) ::DestroyIcon(icon);
+    icon = nullptr;
+  }
+}
+
 // Command effects. A switch over a dense enum is the jump table plan/16 asks
 // for. Returning false means "not applicable here" and sends the key on to the
 // island — Q/E on a still, or a command whose slice has not landed yet.
@@ -3816,6 +4463,13 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     case copy_clipboard:
       return copy_to_clipboard(app);
+    // PR 15 (plan/16 View): the keyboard twins of drag-out.
+    case copy_path:
+      return copy_paths_to_clipboard(app);
+    case copy_flattened:
+      return start_flatten(app);
+    case share:
+      return share_targets(app);
     // PR 10 geometry, crop mode and export (plan/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -4203,6 +4857,7 @@ void apply_view_state(app_state* app) noexcept {
 
   const bool have_media = folder_count(app) > 1;
   if (app->mode == open_mode::none) app->gallery_visible = false;
+  sync_video_hold(app);
 
   // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
@@ -4329,6 +4984,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
   app_state* app = state_from(hwnd);
   if (!app) return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  if (app->taskbar_created_msg != 0 && msg == app->taskbar_created_msg) {
+    on_taskbar_button_created(app);
+    return 0;
+  }
 
   switch (msg) {
     case WM_SIZE: {
@@ -4416,7 +5075,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           app->input.mouse_down[0] = false;
           ::ReleaseCapture();
           publish(app);
-          begin_file_drag(hwnd, current_item_path(app));
+          // PR 15: Ctrl+Alt+drag drags the edited copy (Ctrl+Alt+C's twin);
+          // a plain drag stays the original.
+          const bool edited = (::GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                              (::GetKeyState(VK_MENU) & 0x8000) != 0;
+          if (!edited || !start_flatten(app, true)) begin_file_drag(hwnd, current_item_path(app));
           return 0;
         }
       }
@@ -4532,6 +5195,40 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_edit_job_done(app, std::unique_ptr<edit_job_result>(reinterpret_cast<edit_job_result*>(lparam)));
       return 0;
 
+    case kMsgFlattenDone:
+      on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
+      return 0;
+
+    case kMsgOpenForwarded: {
+      // A second start's paths (plan/09): opened here, as a drop would be, and
+      // the window comes forward. An empty hand-off only brings it forward.
+      std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
+      if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
+      if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
+      ::SetForegroundWindow(hwnd);
+      return 0;
+    }
+
+    case kMsgJumpListPruned:
+      on_jump_list_pruned(app, std::unique_ptr<std::vector<std::string>>(
+                                   reinterpret_cast<std::vector<std::string>*>(lparam)));
+      return 0;
+
+    // PR 15: the taskbar thumbnail toolbar.
+    case WM_COMMAND:
+      if (HIWORD(wparam) == THBN_CLICKED) {
+        using enum mv::shell::command_id;
+        switch (LOWORD(wparam)) {
+          case kThumbPrev: (void)run_command(app, prev); break;
+          case kThumbPlay: (void)run_command(app, play_pause); break;
+          case kThumbNext: (void)run_command(app, next); break;
+          default: break;
+        }
+        update_thumb_bar(app);
+        return 0;
+      }
+      break;
+
     case kMsgAdjustJobDone:
       on_adjust_job_done(app, std::unique_ptr<adjust_job_result>(reinterpret_cast<adjust_job_result*>(lparam)));
       return 0;
@@ -4573,6 +5270,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           push_browse_state(app);
         }
         update_title(app);
+        update_thumb_bar(app);
         // An update restart's zoom goes back once the still is on screen; a
         // preset before the decode lands would be replaced by the fit.
         if (g_restore.zoom_percent > 0 && app->lab.showing_still()) {
@@ -4652,6 +5350,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_DESTROY:
+      app->instance.stop();
+      release_taskbar(app);
       app->chrome.detach();
       ::PostQuitMessage(0);
       return 0;
@@ -4730,6 +5430,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
         const unsigned long pct = std::wcstoul(value.c_str(), nullptr, 10);
         g_restore.zoom_percent = pct <= 6400 ? static_cast<unsigned>(pct) : 0;
       }
+    } else if (arg == L"--new-instance") {
+      g_new_instance = true;
     } else if (arg == L"--restore-fullscreen") {
       g_restore.fullscreen = true;
     } else if (arg == L"--restore-gallery") {
@@ -4786,6 +5488,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   // WinUI islands require an STA. GetOpenFileName wants one too.
   (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  // PR 15: before the first window, so its taskbar button, the Start / pinned
+  // shortcuts (mediaviewer.iss) and the jump list are one entry.
+  (void)::SetCurrentProcessExplicitAppUserModelID(kAppUserModelId);
 
   lab_options options;
   std::wstring parse_error;
@@ -4794,6 +5499,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   if (!parse_options(options, requested_paths, chrome_enabled, parse_error)) {
     ::MessageBoxW(nullptr, parse_error.c_str(), kWindowTitle, MB_ICONERROR | MB_OK);
     return 2;
+  }
+
+  // PR 15: one MediaViewer per user. A plain start (Explorer, the jump list,
+  // a shortcut) hands its paths to the one already running and exits. Soaks,
+  // --no-chrome, an update's restart (the old process may still be closing)
+  // and --new-instance always run on their own.
+  const bool harness_run = options.soak_seconds != 0.0 || options.av_soak_seconds != 0 || g_browse.enabled ||
+                           options.scripted_pan;
+  const bool single_instance = chrome_enabled && !g_new_instance && !harness_run && g_restore.zoom_percent == 0 &&
+                               !g_restore.fullscreen && !g_restore.gallery;
+  // Claimed here, not once the window exists: starts that arrive while this
+  // one is still loading queue on the pipe instead of becoming "first" too.
+  mv::shell::instance_claim instance_claim;
+  if (single_instance) {
+    if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+    if (!instance_claim.claim()) {
+      // Another start claimed the name between our look and our claim.
+      if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+      MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
+    }
   }
 
   if (options.av_soak_seconds) {
@@ -4824,6 +5549,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.background = app.settings.background;
   app.destinations = mv::shell::load_destinations();
+  app.recent_folders = mv::shell::load_recent_folders();
+  app.record_recent = !harness_run;
+  // The toolbar is added when Explorer reports the button, not before.
+  app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   for (const auto& o : mv::shell::load_key_overrides()) {
     (void)mv::shell::rebind_live(o.row, static_cast<mv::shell::key>(o.k), o.mods);
   }
@@ -4904,9 +5633,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     mv_session_release(app.session);
     return 2;
   }
+  if (instance_claim.claimed() && !app.instance.start(hwnd, kMsgOpenForwarded, instance_claim)) {
+    MV_LOG_WARN("single instance: the listener did not start; this one runs alone");
+  }
+  // PR 15: the Explorer thumbnail handler for this version, copied and
+  // registered off the UI thread (shell/shellext_install.h). Installed builds only.
+  if (g_install.installed()) {
+    app.jobs.submit_at(mv::background_generation,
+                       [root = g_install.root, version = g_install.version](const mv::job_context&) {
+                         mv::shell::install_thumbnail_handler(root, version);
+                         return mv::status::ok;
+                       });
+  }
 
   ::ShowWindow(hwnd, show_command);
   ::UpdateWindow(hwnd);
+  if (app.chrome_enabled && !requested_paths.empty()) open_paths_early(&app, requested_paths);
   if (app.chrome_enabled && !attach_chrome(&app)) {
     MV_LOG_WARN("chrome: island did not attach; command bar is unavailable");
     app.chrome_on_screen = false;

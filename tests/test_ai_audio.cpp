@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The audio index's front end (plan/17 "Audio", 2026-09-27): log-mel features
 // against transformers' numpy reference, and, with the ai-audio piece staged,
 // the CLAP tokenizer and towers against ORT-Python and Whisper on a clip whose
@@ -26,7 +27,7 @@
 #include "infer/audio_models.h"
 #include "infer/models.h"
 #if defined(MV_AI_TEST_DECODE)
-#include "addon/media.h"
+#include "abi/addon_media.h"
 #endif
 
 namespace fs = std::filesystem;

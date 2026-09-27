@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Mac host's add-ons (plan/18 "Add-ons"; the Windows twin is
 // abi/addon_abi.cpp + IslandHost.Addons.cs). Owns the add-on store, the
 // loaded add-ons and their chromes:
@@ -42,7 +43,7 @@
 
 #include "addon/host.h"
 #include "addon/manifest.h"
-#include "addon/media.h"
+#include "abi/addon_media.h"
 #include "addon/store.h"
 #include "core/json.h"
 #include "image/thumb.h"
@@ -259,7 +260,7 @@ bool load_import() {
 // ---- the AI pack (Milestone H) ------------------------------------------------
 
 // The host table v2 services the AI pack needs: the viewer's own decoders and
-// its JPEG-512 cache (src/addon/media.h), the same set abi/addon_abi.cpp's
+// its JPEG-512 cache (src/abi/addon_media.h), the same set abi/addon_abi.cpp's
 // mv_addon_load installs on Windows.
 mv::addon::host_services ai_services() {
   mv::addon::host_services svc;

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Scan-time pairing and companion filtering (plan/04, PR 7).
 //
 // RAW+JPEG: same basename, one filmstrip stop, JPEG/HEIC is the primary.

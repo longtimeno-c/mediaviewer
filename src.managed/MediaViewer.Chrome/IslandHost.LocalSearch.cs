@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using MediaViewer.Interop;
@@ -86,7 +87,7 @@ public static partial class IslandHost
         }
         catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
         {
-            // An older core without 0.11 result listings.
+            // An older core without 0.13 result listings.
             _pendingListGallery = null;
             System.Diagnostics.Debug.WriteLine(ex.Message);
             return;

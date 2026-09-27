@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The AI pack's engine (plan/17, PRs 21-24): remembered roots and their delta
 // scans, the background indexer and its yield policy, the search matrix, find
 // similar, model-upgrade migration, and people. The models arrive through
@@ -360,9 +361,7 @@ class engine {
     std::uint64_t frames = 0;
   };
   std::deque<tick> ticks_;
-  double active_seconds_ = 0;
   counts counts_{};
-  counts build_counts_{};  // the migration target, when it differs
   std::string active_root_;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> root_counts_;  // assets, done
   std::vector<root_row> roots_cache_;

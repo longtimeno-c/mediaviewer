@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and the D3 OS-codec
 // probe. Fixtures are tiny generated files in tests/data/{heif,avif}/ (see
 // tests/data/README.md); real iPhone samples are fetched, not committed, and
@@ -508,4 +509,22 @@ TEST_CASE("fetched real-world HEIC (libheif example, MIT) decodes", "[codec][hei
   REQUIRE(r);
   CHECK(r.value().width > 0);
   CHECK(mv::image::to_display(std::move(r.value())));
+}
+
+TEST_CASE("AVIF: a tiny frame declaring a huge canvas is refused before it is scaled up",
+          "[codec][avif][fuzz]") {
+  // fuzz_avif out-of-memory, CI run 36269934345: a 1.3 KB avis whose track
+  // declares 10008x16400 (164 MP) over a tiny coded frame. libavif scales the
+  // frame up to the declared size, bounded only by imageSizeLimit, and that
+  // took 2.8 GB. AVIF's limit is 128 MP (codec/avif.cpp); the same calls as
+  // tools/fuzz/fuzz_avif.cpp now fail at once.
+  const auto bytes = fixture("avif/fuzz_oom_avis.avif");
+  CHECK_FALSE(decode_avif(bytes));
+  auto shared = std::make_shared<const std::vector<std::uint8_t>>(bytes);
+  auto anim = open_avif_animation(shared);
+  if (anim) {
+    canvas_frame frame;
+    auto more = anim.value()->next(frame, nullptr);
+    CHECK_FALSE((more && more.value()));
+  }
 }

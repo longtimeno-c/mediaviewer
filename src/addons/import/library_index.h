@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // import.db (plan/18 "The engine"): the library index, the per-card memory,
 // {seq} counters, presets, card bindings, added folder sources, and the job
 // journal that makes an import resumable.

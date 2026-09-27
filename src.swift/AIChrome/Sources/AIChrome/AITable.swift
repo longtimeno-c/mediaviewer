@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // A thin, checked view of the mv.ai.1 table (mediaviewer_ai.h), the theme the
 // base chrome uses, and small helpers shared by the search panel and the
 // management view. Nothing here logs a path, a query or a name (rule 6).

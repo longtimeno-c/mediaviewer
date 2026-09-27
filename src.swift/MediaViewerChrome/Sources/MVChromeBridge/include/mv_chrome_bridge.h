@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // C bridge from Swift chrome to the present lab's input_snapshot
 // (src/shell/input_state.h). Implemented in src/shell/main_mac.mm, not here:
 // this header only declares the boundary, same shape rule as plan/14-abi.md
@@ -356,7 +357,7 @@ bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 
 // ---- Milestone H: result listings and match markers (plan/17) -----------------
 //
-// The Mac twin of mv_folder_open_list (mediaviewer.h 0.11). A listing that is
+// The Mac twin of mv_folder_open_list (mediaviewer.h 0.13). A listing that is
 // not a directory: search results shown by the same gallery, filmstrip,
 // selection and keyboard model as a folder. Items keep the order given (best
 // match first; no sort), are not paired or watched; a clip with a moment >= 0

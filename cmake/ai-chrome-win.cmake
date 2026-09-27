@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Milestone H (plan/17 "The AI pack"): the AI pack's Windows chrome. Included
 # from the root CMakeLists.txt after cmake/ai.cmake (which defines mv_ai).

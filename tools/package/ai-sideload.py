@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pack, sign and sideload the AI pack for a local validation run (plan/17
 "Offline / sideload"; Milestone H).
 

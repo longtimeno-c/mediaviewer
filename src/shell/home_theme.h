@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The native empty view is drawn by ImGui on both hosts, outside WinUI/SwiftUI.
 // Its colours and clear value therefore travel in the UI-thread snapshot.
 #pragma once

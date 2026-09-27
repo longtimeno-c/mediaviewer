@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 10: the host edit state both hosts drive — `[` `]` from the viewer as a
 // debounced lossless write, crop mode's draft, undo / reset, export naming.
 #include <catch2/catch_test_macros.hpp>
@@ -12,6 +13,7 @@
 
 #include "edit/encode.h"
 #include "edit/lossless_jpeg.h"
+#include "io/paths.h"
 #include "io/replace.h"
 #include "shell/edit_session.h"
 #include "shell/edit_view.h"
@@ -274,6 +276,60 @@ TEST_CASE("the I/O jobs rotate in place and export beside the original", "[shell
   REQUIRE(lo);
   CHECK(lo->width == 24);
   CHECK(lo->height == 32);
+}
+
+TEST_CASE("a flattened copy is a PNG in the app's own folder, a few at a time", "[shell][edit][io]") {
+  temp_dir src;
+  temp_dir clip;
+  mv::io::set_clipboard_dir_override((clip.path / "Clipboard").string());
+  const fs::path p = src.path / "IMG_0004.jpg";
+  const auto bytes = jpeg_bytes(64, 48);
+  {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 0.5f, 0.5f};
+  auto a = mv::shell::run_flatten(p.string(), g);
+  REQUIRE(a);
+  CHECK(fs::path(a->path).filename() == "IMG_0004-edit.png");
+  CHECK(fs::path(a->path).parent_path().parent_path() == clip.path / "Clipboard");
+  // PNG signature, then IHDR: width and height big-endian at 16 and 20.
+  REQUIRE(a->png.size() > 24);
+  CHECK(a->png[1] == 'P');
+  auto be32 = [&](std::size_t at) {
+    return (std::uint32_t{a->png[at]} << 24) | (std::uint32_t{a->png[at + 1]} << 16) |
+           (std::uint32_t{a->png[at + 2]} << 8) | std::uint32_t{a->png[at + 3]};
+  };
+  CHECK(be32(16) == 32);
+  CHECK(be32(20) == 24);
+  // Pixels only: no EXIF chunk rides into whatever it is pasted into.
+  const std::string text(a->png.begin(), a->png.end());
+  CHECK(text.find("eXIf") == std::string::npos);
+  CHECK(fs::file_size(a->path) == a->png.size());
+  // The browsed folder is untouched: still only the original.
+  CHECK(std::distance(fs::directory_iterator(src.path), fs::directory_iterator{}) == 1);
+
+  // A second bake, even of the same file, never deletes the first: it may be
+  // on the clipboard or mid-drop still.
+  auto again = mv::shell::run_flatten(p.string(), g);
+  REQUIRE(again);
+  CHECK(again->path != a->path);
+  CHECK(fs::exists(a->path));
+
+  // Later copies push the oldest out; the folder never grows past the cap.
+  const fs::path q = src.path / "IMG_0005.jpg";
+  fs::copy_file(p, q);
+  mv::result<mv::shell::flattened_copy> b = mv::err(mv::status::internal);
+  for (std::size_t i = 0; i < mv::shell::kKeptFlattenedCopies + 2; ++i) {
+    b = mv::shell::run_flatten(q.string(), {});
+    REQUIRE(b);
+  }
+  CHECK(fs::exists(b->path));
+  CHECK_FALSE(fs::exists(a->path));
+  CHECK(static_cast<std::size_t>(std::distance(fs::directory_iterator(clip.path / "Clipboard"),
+                                               fs::directory_iterator{})) == mv::shell::kKeptFlattenedCopies);
+  mv::io::set_clipboard_dir_override("");
 }
 
 TEST_CASE("the export dialog's choice round-trips through one small integer", "[shell][edit]") {

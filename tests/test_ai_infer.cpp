@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // src/infer and the pack's models: plan/17 PR 20's verify lines that need
 // weights, plus the pure parts that do not.
 //
@@ -29,7 +30,7 @@
 
 #include "addons/ai/index_db.h"
 #if defined(MV_AI_TEST_DECODE)
-#include "addon/media.h"
+#include "abi/addon_media.h"
 #endif
 #include "addons/ai/vectors.h"
 #include "core/json.h"

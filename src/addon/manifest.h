@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Add-on manifests: signed, verified, then loaded (plan/18 "Add-ons").
 //
 // manifest.json is signed with the update-manifest key (tools/package/

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Settings → Local search and the command bar's indexing pill (plan/17 "The AI
 // pack", Milestone H PRs 20–24), the Mac twin of the Windows Local search page.
 //

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The search panel (the chrome brief, "Search panel"): a floating, translucent
 // panel centred over the viewer window, never modal — the viewer stays usable
 // behind it. A borderless NSPanel that becomes key, a child of the viewer

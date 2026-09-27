@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Schema-2 frame-time JSON used by both present labs and by frametime.
 //
 // The Windows lab writes this from DXGI statistics; the Metal lab writes the
@@ -23,6 +24,11 @@ struct pace_json {
   bool measurement_complete = false;
   bool meets_gate = false;
   double warmup_seconds = k_warmup_seconds;
+  // Seconds from the render thread's start to the opened still's first pixel
+  // and to its full-resolution image; -1 when none landed (the same fields
+  // and clock as the Windows lab's report, read by tools/perf).
+  double still_first_pixel_s = -1.0;
+  double still_full_s = -1.0;
 };
 
 inline std::string format_pace_json(const pace_json& r) {
@@ -54,6 +60,8 @@ inline std::string format_pace_json(const pace_json& r) {
                "  \"idle_cpu_percent\": %.6f,\n"
                "  \"idle_presents\": %llu,\n"
                "  \"idle_input_events\": %llu,\n"
+               "  \"still_first_pixel_s\": %.3f,\n"
+               "  \"still_full_s\": %.3f,\n"
                "  \"meets_pr1_gate\": %s\n"
                "}\n",
                r.warmup_seconds,
@@ -73,6 +81,7 @@ inline std::string format_pace_json(const pace_json& r) {
                r.idle.elapsed_seconds, r.idle.cpu_percent,
                static_cast<unsigned long long>(r.idle.presents),
                static_cast<unsigned long long>(r.idle.input_events),
+               r.still_first_pixel_s, r.still_full_s,
                r.meets_gate ? "true" : "false");
   if (n < 0 || static_cast<std::size_t>(n) >= sizeof(buf)) return {};
   return std::string(buf, static_cast<std::size_t>(n));

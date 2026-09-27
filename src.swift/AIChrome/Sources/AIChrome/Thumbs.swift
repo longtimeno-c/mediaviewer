@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Result tiles and people covers, decoded off the main thread (rule 1) with
 // ImageIO into a small in-memory LRU. Face crops are cut from the picture the
 // pack names (face_thumb: the viewer's JPEG-512 of the image or moment the face

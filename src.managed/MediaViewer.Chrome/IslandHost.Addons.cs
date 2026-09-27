@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
@@ -142,10 +143,21 @@ public static partial class IslandHost
     // ---- loading -------------------------------------------------------------
 
     /// <summary>Resolves the add-on's own dependencies from its folder; shares
-    /// MediaViewer.Interop (IAddonHost) and WinUI with the default context.</summary>
+    /// MediaViewer.Interop (IAddonHost) and WinUI with the chrome's context.</summary>
+    /// <remarks>
+    /// The shell loads this chrome through hostfxr's
+    /// load_assembly_and_get_function_pointer, which puts it and its
+    /// dependencies (Interop, WinUI, WinRT) in an isolated component context,
+    /// not Default. Returning null would fall back to Default, which holds only
+    /// the framework: MediaViewer.Interop is not found there (issue #58), and
+    /// a second copy would not share IAddonChrome's type identity anyway.
+    /// </remarks>
     private sealed class AddonLoadContext(string id, string mainAssembly)
         : AssemblyLoadContext("addon-" + id, isCollectible: true)
     {
+        private static readonly AssemblyLoadContext HostContext =
+            GetLoadContext(typeof(IAddonHost).Assembly) ?? Default;
+
         private readonly AssemblyDependencyResolver _resolver = new(mainAssembly);
 
         protected override Assembly? Load(AssemblyName name)
@@ -154,7 +166,7 @@ public static partial class IslandHost
             if (name.Name is "MediaViewer.Interop" || (name.Name?.StartsWith("Microsoft.", StringComparison.Ordinal) ?? false)
                 || (name.Name?.StartsWith("WinRT", StringComparison.Ordinal) ?? false))
             {
-                return null;
+                return HostContext.LoadFromAssemblyName(name);
             }
             string? path = _resolver.ResolveAssemblyToPath(name);
             return path is null ? null : LoadFromAssemblyPath(path);

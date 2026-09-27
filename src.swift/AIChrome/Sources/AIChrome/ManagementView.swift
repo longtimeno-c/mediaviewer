@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Settings → Local search, once Core is loaded (the chrome brief, "Management
 // panel"; plan/17 PRs 20, 21, 23, 24): status, Compute (Auto / Core ML / CPU
 // only), Search quality, the indexed folders, the index size and Clear, the

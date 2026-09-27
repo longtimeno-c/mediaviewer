@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Frames sampled from a clip for the local search index (plan/17 "Frame
 // sampling", Milestone H PR 21). A decoder instance of its own on the
 // calling worker, never the player's: software decode, like every clip job

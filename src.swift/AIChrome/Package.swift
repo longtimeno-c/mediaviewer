@@ -1,5 +1,6 @@
 // swift-tools-version: 5.9
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Milestone H (plan/17): the AI pack's Mac chrome. Built as a dynamic library
 // that cmake/darwin.cmake wraps into AI.bundle (principal class MVAIChrome),

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/engine.h"
 
 #include <algorithm>
@@ -1055,6 +1056,13 @@ void engine::process_sound(const work_item& item, const loaded_sound& sound) {
   std::int64_t buf_start = -1;        // time of buf[0]
   std::vector<float> chunk(48000 * 2);
   std::vector<float> last_kept;
+  if (item.resume_ms > 0) {
+    // Resumed: dedupe against the last committed window (as pictures do).
+    std::vector<float> prev;
+    if (sounds_.vector_of(item.asset.id, item.resume_ms, prev) && prev.size() == sound.dim) {
+      last_kept = std::move(prev);
+    }
+  }
   bool eof = false;
   std::int64_t done_ms = item.resume_ms;
   std::string active_sound = sound.spec_key;
@@ -1310,6 +1318,20 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
   const mv_addon_video_info info = (*sampler)->info();
   if (info.duration_ms > 0) (void)db_->set_duration(item.asset.id, info.duration_ms);
   std::vector<float> last_kept;
+  if (item.resume_ms > 0 && !faces_only) {
+    // A resumed clip dedupes against what it already committed, not against
+    // nothing: otherwise its first new frame repeats the last stored moment.
+    // Only when the loaded vectors are this model's (not mid-migration).
+    bool same_space = false;
+    {
+      std::lock_guard lock(models_m_);
+      same_space = answer_.meta.spec_key == clip.meta.spec_key;
+    }
+    std::vector<float> prev;
+    if (same_space && store_.vector_of(item.asset.id, item.resume_ms, prev) && prev.size() == clip.meta.dim) {
+      last_kept = std::move(prev);
+    }
+  }
   std::vector<rgb_frame> batch;
   std::int64_t done_ms = item.resume_ms;
   bool ok = true;

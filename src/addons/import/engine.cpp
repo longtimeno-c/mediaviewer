@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/import/engine.h"
 
 #include <algorithm>
@@ -1088,6 +1089,9 @@ std::string engine::make_summary(job& j, std::uint32_t state) {
   w.key("job").integer(static_cast<std::int64_t>(j.id));
   w.key("state").string(state_word(state));
   w.key("source").string(j.source_root);
+  // So the summary view offers Eject only where it could ever work
+  // (issue #41/#42: never for an ordinary folder or a fixed disk).
+  w.key("source_removable").boolean(j.source_removable);
   w.key("label").string(j.label);
   w.key("destinations").begin_array();
   for (const std::string& d : j.dest_roots) w.string(d);
@@ -1410,7 +1414,25 @@ void engine::resume_on_control(std::uint64_t id) {
   launch(j);
 }
 
-expected engine::eject(const std::string& root) { return host_.eject(root); }
+expected engine::eject(const std::string& root) {
+  // Never was removable: the eject affordance should not have been offered
+  // for this source (an ordinary folder or a fixed/network volume). Give the
+  // caller a category the chrome can turn into "there is no card to eject
+  // here" rather than letting an OS-level eject call fail generically.
+  if (auto v = host_.volume_of(root); v && !v->removable) return err(status::not_removable);
+
+  // An active copy job reading from this card holds the OS lock the eject
+  // needs; report that as `busy` up front instead of waiting out the
+  // platform's own lock-retry loop only to get a bare I/O failure back.
+  const std::string norm = normalize_root(root);
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto& [id, j] : jobs_) {
+      if (!j->finished && normalize_root(j->source_root) == norm) return err(status::busy);
+    }
+  }
+  return host_.eject(root);
+}
 
 // ---------------------------------------------------------------------------
 // Presets

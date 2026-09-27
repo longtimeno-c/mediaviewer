@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // mv_ai's one export, mv_addon_get, and the mv.ai.1 table behind it
 // (mediaviewer_ai.h). Every thunk is the ABI boundary: no exception crosses
 // it (plan/14), a short output buffer reports the size it needs, and nothing

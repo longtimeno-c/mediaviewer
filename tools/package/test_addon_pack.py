@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for addon-pack.py (plan/18 "Signed, verified, then loaded").
 
 With MV_ADDON_VERIFY pointing at tools/addon-verify's binary (the portable
@@ -163,7 +164,7 @@ class AiPackTest(unittest.TestCase):
         (core / "models/clip-b32/model.json").write_text("{}")
         (core / "models/clip-tokenizer/vocab.json").write_text("{}")
         (core / "licences.json").write_text(json.dumps({
-            "models/clip-b32/image.onnx": "MIT", "models/clip-b32/model.json": "GPL-2.0-or-later",
+            "models/clip-b32/image.onnx": "MIT", "models/clip-b32/model.json": "GPL-3.0-or-later",
             "models/clip-tokenizer/vocab.json": "MIT"}))
         self.core = core
         faces = self.tmp / "ai-faces"
@@ -189,7 +190,7 @@ class AiPackTest(unittest.TestCase):
         lic = {f["path"]: f["licence"] for f in m["files"]}
         self.assertEqual(lic["onnxruntime.dll"], "MIT")
         self.assertEqual(lic["models/clip-b32/image.onnx"], "MIT")
-        self.assertEqual(lic["mv_ai.dll"], "GPL-2.0-or-later")
+        self.assertEqual(lic["mv_ai.dll"], "GPL-3.0-or-later")
         self.assertNotIn("sqlite3.dll", lic)
         self.assertNotIn("licences.json", lic)
 

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // AI.bundle's principal class (plan/17 "UI and commands"; the chrome brief):
 // the host (src/shell/addons_mac.mm) instantiates it with NSBundle and talks to
 // it by message send only. It owns the search panel, the Settings management

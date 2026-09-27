@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (plan/18 "Add-ons: how Import is installed").
 
     addon-pack.py pack [--addon import|ai|ai-faces|ai-cuda] --platform win-x64|macos \
@@ -45,13 +46,13 @@ import subprocess
 import sys
 import zipfile
 
-ALLOWED_LICENCES = {"GPL-2.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
+ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
                     "Zlib", "ISC", "CC0-1.0"}
 CEILINGS = {"ai": 3_000_000_000}  # plan/17; src/addon/manifest.cpp family_ceiling agrees
 
 # What ships, per add-on and platform. Anything else in the build folder stays
 # out. `licences`: (prefix, SPDX) for files the staged licences.json does not
-# name; the add-on's own code is GPL-2.0-or-later.
+# name; the add-on's own code is GPL-3.0-or-later.
 ADDONS = {
     "import": {
         "name": "Import",
@@ -70,7 +71,7 @@ ADDONS = {
             },
         },
         "licences": [],
-        "notice": ("Import add-on for MediaViewer. GPL-2.0-or-later. Uses SQLite (public domain).\n"
+        "notice": ("Import add-on for MediaViewer. GPL-3.0-or-later. Uses SQLite (public domain).\n"
                    "Content hashes use BLAKE3 (CC0-1.0) and signatures libsodium (ISC), both in the app.\n"),
     },
     "ai": {
@@ -91,7 +92,7 @@ ADDONS = {
             },
         },
         "licences": [("onnxruntime", "MIT"), ("libonnxruntime", "MIT")],
-        "notice": ("Local search (the AI pack) for MediaViewer. GPL-2.0-or-later.\n"
+        "notice": ("Local search (the AI pack) for MediaViewer. GPL-3.0-or-later.\n"
                    "ONNX Runtime (MIT, Microsoft). OpenAI CLIP ViT-B/32 and ViT-L/14 weights (MIT),\n"
                    "ONNX exports by Xenova (MIT). Uses SQLite (public domain) in the app.\n"
                    "Runs entirely on this computer; nothing is sent anywhere.\n"),
@@ -137,10 +138,11 @@ ADDONS = {
     },
 }
 
-LICENCE = "GPL-2.0-or-later"
+LICENCE = "GPL-3.0-or-later"
 # Import's, kept for callers of the Milestone G interface.
 ADDON_ID = "import"
 FILES = ADDONS["import"]["files"]
+NOTICE = ADDONS["import"]["notice"]
 
 
 def sha256_file(path: Path) -> str:

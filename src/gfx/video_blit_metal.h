@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Video blit, Metal twin of gfx/video_blit.cpp's HLSL (plan/15 "Shaders":
 // hand-written HLSL/MSL twins, same algorithm). NV12/P010 -> RGB with the
 // stream's real matrix, range and transfer, plus HLG/PQ -> SDR tone-mapping,

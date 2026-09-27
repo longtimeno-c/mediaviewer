@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 
 namespace MediaViewer.Interop;
@@ -179,7 +180,7 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_request_summary(MvSessionHandle session, uint index);
 
-    // ABI 0.11 (Milestone H): result listings. [any-thread][no-block]
+    // ABI 0.13 (Milestone H): result listings. [any-thread][no-block]
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static unsafe partial MvStatus mv_folder_open_list(MvSessionHandle session, byte* titleUtf8,
@@ -208,6 +209,9 @@ internal static partial class NativeMethods
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_video_pause(MvSessionHandle session);
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_video_set_hold(MvSessionHandle session, int hold, int resume);
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_video_seek(MvSessionHandle session, long position, int exact);

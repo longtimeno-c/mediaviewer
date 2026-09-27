@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The search matrix (plan/17 "Search"): every stored frame of the model that
 // answers queries, int8 with a per-row scale, contiguous, scanned brute force.
 // No ANN index until a measured p95 says brute force is too slow (plan/17);

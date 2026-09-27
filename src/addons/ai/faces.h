@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // People (plan/17 PR 24): face vectors, their clusters, and the corrections a
 // user makes, in their OWN file (faces.db, beside index.db) so one click
 // deletes every face vector while the frame index stays intact.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ONNX Runtime through its C API, loaded at run time (ort.h).
 #include "infer/ort.h"
 

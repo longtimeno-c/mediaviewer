@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The AI pack's engine end to end over the real host table (io walk, pairing)
 // with deterministic stand-ins for the parts that need hardware or weights:
 // pixels come from a file's NAME (a "red" photo, a clip that is red, then

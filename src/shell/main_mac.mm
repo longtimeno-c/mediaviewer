@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // AppKit host for the Metal present lab. PR 16/17 built the canvas; PR 18
 // adds the SwiftUI command bar hosted alongside it (plan/10, plan/15 —
 // "the canvas is not ported to SwiftUI"). MvMetalView keeps covering the
@@ -7,6 +8,7 @@
 // spans the client area, chrome is composited over it" shape the Windows
 // DComp islands use — not a resize of the Metal view.
 #import <AppKit/AppKit.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -39,6 +41,7 @@
 #include "image/linear.h"
 #include "io/collision_name.h"
 #include "io/file.h"
+#include "io/replace.h"
 #include "io/dir.h"
 #include "io/file_port.h"
 #include "io/verified_copy.h"
@@ -57,6 +60,7 @@
 #include "meta/meta.h"
 #include "shell/key_router.h"
 #include "shell/meta_store.h"
+#include "shell/os_integration.h"
 #include "shell/meta_writer.h"
 #include "io/sort_order.h"
 #include "shell/settings.h"
@@ -143,6 +147,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
+    // PR 15
+    case copy_path: case copy_flattened: case share:
       return true;
     // Milestone G: only while the Import add-on is loaded (plan/18).
     case open_import: case import_now:
@@ -162,6 +168,65 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 // private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
 // functions below call through this pointer rather than duplicating state.
 MvLabApp* g_chrome_app = nullptr;
+
+constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+
+// --browse-soak (the Windows lab's harness, main.cpp browse_run): open a
+// folder, dwell on the first photo, jump to photos past its prefetched
+// neighbours (cold), then arrow forward with a dwell before each (warm).
+// Every step is timed from just before the selection to the present that
+// shows the new item. Writes the same JSON as Windows (tools/perf reads it).
+struct mac_browse_row {
+  std::string name;
+  int index = 0;
+  int cold = 0;
+  int cached = 0;
+  int timed_out = 0;
+  double ready_ms = -1.0;
+  double present_ms = -1.0;
+  double refresh_ms = 0.0;
+};
+enum class mac_browse_phase { wait_media, dwell, cold, wait_away, go_home, wait_home, warm, wait_warm, finish };
+struct mac_browse_run {
+  bool enabled = false;
+  std::string json_path;
+  mac_browse_phase step = mac_browse_phase::wait_media;
+  mac_browse_phase after_dwell = mac_browse_phase::cold;
+  double t0 = 0.0;
+  double phase_t = 0.0;
+  std::size_t count = 0;
+  int cold_targets[6]{};
+  int cold_n = 0;
+  int cold_i = 0;
+  int warm_left = 0;
+  std::uint64_t seq = 0;
+  bool record = false;
+  int pending_index = 0;
+  int pending_cold = 0;
+  std::string pending_name;
+  std::vector<mac_browse_row> rows;
+  // Seconds the window spent covered or minimised. The display link stops for
+  // a hidden window, so its steps time out: the run is void, and says so.
+  double hidden_s = 0.0;
+  double last_tick = 0.0;
+} g_mac_browse;
+constexpr double kMacBrowseDwell = 3.0;
+constexpr double kMacBrowseStepTimeout = 20.0;
+constexpr double kMacBrowseOpenTimeout = 60.0;
+
+double browse_now() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void browse_json_string(FILE* f, const std::string& s) {
+  std::fputc('"', f);
+  for (const unsigned char c : s) {
+    if (c == '"' || c == '\\') std::fprintf(f, "\\%c", c);
+    else if (c < 0x20) std::fprintf(f, "\\u%04x", c);
+    else std::fputc(c, f);
+  }
+  std::fputc('"', f);
+}
 // Registered once by Swift via mv_chrome_set_thumb_ready_callback. A plain
 // C function pointer, not a std::function: this crosses the same boundary
 // mv_chrome_bridge.h's other declarations do, POD only.
@@ -303,6 +368,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // is the symmetric case -- dragging the displayed item to Finder/another
 // app). nil when nothing is open.
 - (NSString*)currentItemPathForDrag;
+- (NSFilePromiseProvider*)flattenedPromiseForDrag;  // PR 15: ⌘⌥-drag, nil on a clip
 
 // Filmstrip/gallery follow-up (plan/12 2026-09-17): -selectIndex: is already
 // defined below (folder_model relist / navigateNext etc all call it as a
@@ -313,6 +379,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // of that same bridge — declared here because they read `_items`/`_folder`,
 // private ivars only MvLabApp's own methods can reach.
 - (void)selectIndex:(std::size_t)new_index;
+// folder_model's change notify hops here on the main queue (and the 0.2 s
+// timer still calls it for everything else it polls).
+- (void)refreshFolderIfChanged;
 - (NSInteger)itemCount;
 - (NSInteger)currentIndex;
 - (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
@@ -535,7 +604,11 @@ extern "C" bool mv_chrome_gallery_visible(void) {
 }
 extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
   if (!g_chrome_app || index < 0) return;
-  [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  // The tile already selected is "back to it": reselecting would reopen the
+  // clip, and the one held under the grid would not resume (issue #44).
+  if (index != [g_chrome_app currentIndex]) {
+    [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
+  }
   [g_chrome_app setGalleryVisible:NO];
 }
 extern "C" uint64_t mv_chrome_listing_generation(void) {
@@ -1111,6 +1184,57 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   return mv::shell::resolve_layout_symbol(plainChar, c, produced, command, mods_out);
 }
 
+// PR 15: ⌘⌥-drag hands out the edited copy (⌘⌥C's twin, plan/10 PR 15) as a
+// file promise. The bake happens only if a drop asks for it, on this queue,
+// never the main thread (rule 1), and writes straight to where the drop
+// wants the file.
+@interface MvFlattenPromise : NSObject <NSFilePromiseProviderDelegate>
+- (instancetype)initWithPath:(const std::string&)path
+                    geometry:(const mv::edit::geometry&)g
+                      colour:(const mv::edit::colour&)c;
+@end
+
+@implementation MvFlattenPromise {
+  std::string _path;
+  mv::edit::geometry _geometry;
+  mv::edit::colour _colour;
+  NSOperationQueue* _queue;
+}
+- (instancetype)initWithPath:(const std::string&)path
+                    geometry:(const mv::edit::geometry&)g
+                      colour:(const mv::edit::colour&)c {
+  if ((self = [super init])) {
+    _path = path;
+    _geometry = g;
+    _colour = c;
+    _queue = [[NSOperationQueue alloc] init];
+    _queue.qualityOfService = NSQualityOfServiceUserInitiated;
+  }
+  return self;
+}
+- (NSString*)filePromiseProvider:(NSFilePromiseProvider*)provider fileNameForType:(NSString*)fileType {
+  (void)provider;
+  (void)fileType;
+  return [NSString stringWithUTF8String:mv::shell::flattened_file_name(_path).c_str()] ?: @"edited.png";
+}
+- (NSOperationQueue*)operationQueueForFilePromiseProvider:(NSFilePromiseProvider*)provider {
+  (void)provider;
+  return _queue;
+}
+- (void)filePromiseProvider:(NSFilePromiseProvider*)provider
+          writePromiseToURL:(NSURL*)url
+          completionHandler:(void (^)(NSError* _Nullable))done {
+  (void)provider;
+  auto png = mv::shell::render_flattened_png(_path, _geometry, _colour);
+  const char* dest = url.fileSystemRepresentation;
+  if (!png || !dest || !mv::io::write_new(dest, png.value())) {
+    done([NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteUnknownError userInfo:nil]);
+    return;
+  }
+  done(nil);
+}
+@end
+
 @interface MvMetalView : NSView <NSDraggingSource>
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
 @property(nonatomic, assign) mv::shell::input_snapshot* snap;
@@ -1238,6 +1362,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // modifier rather than any mouseDown+move, because mouseDragged: already
   // means "pan" for every existing gesture -- overloading the same bare
   // click-drag would make an accidental small drag-out fire on every pan.
+  const bool edited = (event.modifierFlags & NSEventModifierFlagOption) != 0;
+  if ((event.modifierFlags & NSEventModifierFlagCommand) && edited && self.app) {
+    if (NSFilePromiseProvider* promise = [self.app flattenedPromiseForDrag]) {
+      NSDraggingItem* dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter:promise];
+      const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+      dragItem.draggingFrame = NSMakeRect(p.x - 16, p.y - 16, 32, 32);
+      [self beginDraggingSessionWithItems:@[ dragItem ] event:event source:self];
+      return;
+    }
+  }
   if ((event.modifierFlags & NSEventModifierFlagCommand) && self.app) {
     NSString* path = [self.app currentItemPathForDrag];
     if (path) {
@@ -1395,6 +1529,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // this starts at 0 regardless.
   std::atomic<std::uint64_t> _openGeneration;
   NSTimer* _folderPollTimer;
+  // What -selectIndex: last handed to the lab, and the lab's item id for it.
+  // A relist that lands on the same file (same size and mtime) keeps that
+  // load instead of decoding it again; opening a file starts its load before
+  // the folder listing arrives, with the stamp unknown (_shownMtime ==
+  // kShownStampUnknown) until the listing confirms it.
+  std::string _shownPath;
+  std::int64_t _shownMtime;
+  std::uint64_t _shownSize;
+  std::uint64_t _shownItem;
+  NSTimer* _browseTimer;
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
   std::uint64_t _listingGeneration;
@@ -1460,6 +1604,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // _options.open_path, the same slot argv uses.
   BOOL _launched;
   BOOL _askedDefaultViewer;
+  // The setup sheet waits for the installer lookup (plan/13): a mounted
+  // MediaViewer disk or a left-over .dmg adds the eject-and-Trash checkbox.
+  BOOL _installerChecked;
+  mv::shell::installer_leftover _installer;
 
   // PR 9 (plan/06, plan/16). `_meta` owns every metadata read; the pane, the info
   // overlay and the AF quads all read `_metaRecord`, so toggling any of them is a
@@ -1510,6 +1658,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   NSTimer* _histogramDebounce;
   mv::io::sort_order _sort;
   std::string _currentDir;
+  // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
+  std::vector<std::string> _recentFolders;
+  // PR 15: Now Playing. The timer runs only while a clip is on the canvas.
+  NSTimer* _nowPlayingTimer;
+  BOOL _remoteCommandsWired;
+  mv::shell::present_lab_mac::video_status _nowPlayingShown;
   // Milestone H (plan/17): a result listing is open. `_currentDir` is "" then,
   // `_moments` is parallel to `_items` (the moment a clip opens paused on, -1
   // none) and `_listNames` holds display names made unique within the list
@@ -1886,9 +2040,26 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if (_options.open_path.empty()) _options.open_path = resume.fileSystemRepresentation;
   }
   _askedDefaultViewer = [defaults boolForKey:@"MVAskedDefaultViewer"];
+  _installerChecked = _askedDefaultViewer;
+  if (!_askedDefaultViewer) {
+    mv::shell::find_installer_leftover(^(mv::shell::installer_leftover found) {
+      self->_installer = found;
+      self->_installerChecked = YES;
+    });
+  }
 #else
   _askedDefaultViewer = YES;  // the lab never asks
+  _installerChecked = YES;
 #endif
+  // A finished listing reaches the UI now, not on the poll timer's next tick
+  // (up to 0.2 s later, on every open). The pool thread only posts.
+  _folder.set_changed_notify(
+      [](void*) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [g_chrome_app refreshFolderIfChanged];
+        });
+      },
+      nullptr);
   _launched = YES;
   if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
     NSBeep();
@@ -1913,8 +2084,183 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                name:NSMenuDidEndTrackingNotification
                                              object:nil];
 
-  [self.window makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+  if (g_mac_browse.enabled) {
+    _browseTimer = [NSTimer scheduledTimerWithTimeInterval:0.01
+                                                    target:self
+                                                  selector:@selector(browseTick)
+                                                  userInfo:nil
+                                                   repeats:YES];
+  }
+
+  if (_options.soak_seconds > 0.0 || _options.harness) {
+    // A measuring run shows its window but does not take the keyboard: keys
+    // typed into another app must not land here (Delete would send the
+    // photo on screen to the Trash). It floats above other apps' windows so
+    // using the machine meanwhile does not cover it (a covered window stops
+    // presenting and voids the soak).
+    self.window.level = NSFloatingWindowLevel;
+    [self.window orderFrontRegardless];
+  } else {
+    [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+  }
+}
+
+// --- --browse-soak (see mac_browse_run) ------------------------------------
+
+- (BOOL)browseSelect:(std::size_t)index record:(BOOL)record cold:(BOOL)cold {
+  if (index >= _items.size()) return NO;
+  const std::uint64_t seq = _lab.mark_navigation();
+  if (seq == 0) return NO;
+  g_mac_browse.seq = seq;
+  g_mac_browse.record = record;
+  g_mac_browse.pending_index = static_cast<int>(index);
+  g_mac_browse.pending_cold = cold ? 1 : 0;
+  g_mac_browse.pending_name = _items[index].name_utf8;
+  g_mac_browse.phase_t = browse_now();
+  [self selectIndex:index];
+  return YES;
+}
+
+- (void)browseTake:(BOOL)timedOut {
+  if (!g_mac_browse.record) return;
+  mac_browse_row row;
+  row.name = g_mac_browse.pending_name;
+  row.index = g_mac_browse.pending_index;
+  row.cold = g_mac_browse.pending_cold;
+  row.timed_out = timedOut ? 1 : 0;
+  if (!timedOut) {
+    const auto sample = _lab.navigation_sample(g_mac_browse.seq);
+    row.cached = sample.cached;
+    row.ready_ms = sample.ready_ms;
+    row.present_ms = sample.present_ms;
+    row.refresh_ms = sample.refresh_ms;
+  }
+  g_mac_browse.rows.push_back(std::move(row));
+}
+
+- (BOOL)browseStepFinished {
+  if (_lab.navigation_done(g_mac_browse.seq)) {
+    [self browseTake:NO];
+    return YES;
+  }
+  if (browse_now() - g_mac_browse.phase_t > kMacBrowseStepTimeout) {
+    [self browseTake:YES];
+    return YES;
+  }
+  return NO;
+}
+
+- (void)browseFinish:(const char*)error {
+  if (g_mac_browse.step == mac_browse_phase::finish) return;
+  g_mac_browse.step = mac_browse_phase::finish;
+  char hidden[128];
+  if (!error && g_mac_browse.hidden_s > 0.5) {
+    std::snprintf(hidden, sizeof hidden, "window hidden for %.1f s; rerun with it on screen",
+                  g_mac_browse.hidden_s);
+    error = hidden;
+  }
+  [_browseTimer invalidate];
+  _browseTimer = nil;
+  if (FILE* f = std::fopen(g_mac_browse.json_path.c_str(), "wb")) {
+    std::fprintf(f, "{\n  \"schema\": 1,\n  \"dwell_s\": %.1f,\n  \"count\": %zu,\n  \"error\": ",
+                 kMacBrowseDwell, g_mac_browse.count);
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fputs(",\n  \"steps\": [\n", f);
+    for (std::size_t i = 0; i < g_mac_browse.rows.size(); ++i) {
+      const auto& row = g_mac_browse.rows[i];
+      std::fputs("    {\"name\": ", f);
+      browse_json_string(f, row.name);
+      std::fprintf(f,
+                   ", \"index\": %d, \"kind\": \"%s\", \"cached\": %d, \"timed_out\": %d, "
+                   "\"ready_ms\": %.3f, \"present_ms\": %.3f, \"refresh_ms\": %.3f}%s\n",
+                   row.index, row.cold ? "cold" : "warm", row.cached, row.timed_out, row.ready_ms,
+                   row.present_ms, row.refresh_ms, i + 1 < g_mac_browse.rows.size() ? "," : "");
+    }
+    std::fputs("  ]\n}\n", f);
+    std::fclose(f);
+  }
+  [NSApp terminate:nil];
+}
+
+- (void)browseTick {
+  auto& b = g_mac_browse;
+  if (b.t0 == 0.0) b.t0 = b.phase_t = b.last_tick = browse_now();
+  {
+    const double now = browse_now();
+    if (b.step != mac_browse_phase::finish && !(self.window.occlusionState & NSWindowOcclusionStateVisible)) {
+      b.hidden_s += now - b.last_tick;
+    }
+    b.last_tick = now;
+  }
+  switch (b.step) {
+    case mac_browse_phase::wait_media:
+      if (_lab.showing_still() && !_items.empty()) {
+        b.count = _items.size();
+        if (b.count < 2) return [self browseFinish:"fewer than 2 items"];
+        b.cold_n = 0;
+        for (std::size_t i = 3; i < b.count && b.cold_n < 6; ++i) b.cold_targets[b.cold_n++] = static_cast<int>(i);
+        b.warm_left = static_cast<int>(std::min<std::size_t>(b.count - 1, 12));
+        b.step = mac_browse_phase::dwell;
+        b.after_dwell = b.cold_n > 0 ? mac_browse_phase::cold : mac_browse_phase::warm;
+        b.phase_t = browse_now();
+      } else if (browse_now() - b.t0 > kMacBrowseOpenTimeout) {
+        [self browseFinish:"no photo appeared"];
+      }
+      return;
+    case mac_browse_phase::dwell:
+      if (browse_now() - b.phase_t < kMacBrowseDwell) return;
+      b.step = b.after_dwell;
+      return [self browseTick];
+    case mac_browse_phase::cold:
+      if (b.cold_i >= b.cold_n) {
+        b.step = mac_browse_phase::warm;
+        return [self browseTick];
+      }
+      if (![self browseSelect:static_cast<std::size_t>(b.cold_targets[b.cold_i++]) record:YES cold:YES]) {
+        return [self browseFinish:"could not mark a jump"];
+      }
+      b.step = mac_browse_phase::wait_away;
+      return;
+    case mac_browse_phase::wait_away:
+      if (![self browseStepFinished]) return;
+      b.step = mac_browse_phase::go_home;
+      return [self browseTick];
+    case mac_browse_phase::go_home:
+      if (_index.current() == 0) {
+        b.step = mac_browse_phase::dwell;
+        b.after_dwell = mac_browse_phase::cold;
+        b.phase_t = browse_now();
+        return;
+      }
+      if (![self browseSelect:0 record:NO cold:NO]) return [self browseFinish:"could not return to the first photo"];
+      b.step = mac_browse_phase::wait_home;
+      return;
+    case mac_browse_phase::wait_home:
+      if (!_lab.navigation_done(b.seq) && browse_now() - b.phase_t <= kMacBrowseStepTimeout) return;
+      b.step = mac_browse_phase::dwell;
+      b.after_dwell = mac_browse_phase::cold;
+      b.phase_t = browse_now();
+      return;
+    case mac_browse_phase::warm:
+      if (b.warm_left <= 0 || _index.current() + 1 >= b.count) return [self browseFinish:nullptr];
+      --b.warm_left;
+      if (![self browseSelect:_index.current() + 1 record:YES cold:NO]) {
+        return [self browseFinish:"could not mark a step"];
+      }
+      b.step = mac_browse_phase::wait_warm;
+      return;
+    case mac_browse_phase::wait_warm:
+      if (![self browseStepFinished]) return;
+      if (b.warm_left <= 0) return [self browseFinish:nullptr];
+      b.step = mac_browse_phase::dwell;
+      b.after_dwell = mac_browse_phase::warm;
+      b.phase_t = browse_now();
+      return;
+    case mac_browse_phase::finish:
+      return;
+  }
 }
 
 - (BOOL)hasFolder {
@@ -2018,10 +2364,21 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // *different* folder in flight can never be mistaken for this one's.
   _wantSelectedPath = select_path;
   _currentDir = dir;
+  // Walking siblings and the tree is browsing, not a new place to go back to.
+  if (!navigation) [self noteRecentFolder:dir];
   _items.clear();
   _index.reset(0);
   _metaRecord.reset();
   ++_metaGeneration;
+  // Opening a file: start its decode now, beside the folder listing, rather
+  // than after it (rule 3's first pixel should not wait on a directory scan).
+  // -selectIndex: adopts this load when the listing selects the same path.
+  if (!select_path.empty()) {
+    _shownItem = _lab.open_item(select_path);
+    _shownPath = select_path;
+    _shownMtime = kShownStampUnknown;
+    _shownSize = 0;
+  }
 
   // folder_model::open() itself is real I/O -- opening, and maybe creating,
   // the thumbnail cache's SQLite file -- so it never runs on the UI thread
@@ -2062,7 +2419,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (void)refreshFolderIfChanged {
-  if (!_askedDefaultViewer && _options.soak_seconds <= 0.0) {
+  if (!_askedDefaultViewer && _installerChecked && _options.soak_seconds <= 0.0) {
     [self askDefaultViewerOnce];
   }
   // The transport strip belongs to a clip: shown while one is on screen (the
@@ -2169,11 +2526,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   _index.reset(_items.size(), new_index);
   [self applyFilmstripLayout];
   [self trimItemChanged];
+  [self nowPlayingItemChanged];
 
   if (!_scrubMs.empty()) ++_scrubGeneration;  // markers belong to one clip
   if (_items.empty()) {
     MvAddonsItemChanged(std::string());
     _wantSelectedPath.clear();
+    _shownPath.clear();
+    _shownItem = 0;
     _edits.clear_item();
     _itemId = 0;
     [self publishEdit];
@@ -2186,8 +2546,33 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     // Milestone H: a clip from a result list opens paused on its moment.
     const std::size_t at = _index.current();
     const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
-    [self editItemOpened:entry item:_lab.open_item(entry.path_utf8, moment)];
+    // Already on screen or loading: a relist (a file added elsewhere in the
+    // folder, a thumbnail written) or the listing that follows an open keeps
+    // that load. Every FSEvents change used to re-read and re-decode it. A
+    // result's moment always opens afresh (another moment of the same clip).
+    const bool same = moment < 0 && _shownItem != 0 && entry.path_utf8 == _shownPath &&
+                      (_shownMtime == kShownStampUnknown ||
+                       (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
+    if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+    _shownPath = entry.path_utf8;
+    _shownMtime = entry.mtime_unix;
+    _shownSize = entry.size;
+    [self editItemOpened:entry item:_shownItem];
     MvAddonsItemChanged(entry.path_utf8);
+    // Decode the neighbours behind it, so the next arrow shows a full image
+    // at once (Windows' ±2 prefetch). The lab skips clips, animations and
+    // what it already holds; the next navigation abandons the rest.
+    if (!same) {
+      std::vector<std::string> near;
+      const std::size_t cur = _index.current();
+      for (const int off : {1, -1, 2, -2}) {
+        const auto i = static_cast<std::ptrdiff_t>(cur) + off;
+        if (i >= 0 && static_cast<std::size_t>(i) < _items.size()) {
+          near.push_back(_items[static_cast<std::size_t>(i)].path_utf8);
+        }
+      }
+      _lab.prefetch(near);
+    }
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
     const std::size_t n = std::min(entry.name_utf8.size(), sizeof(_snap.item_name) - 1);
@@ -2244,6 +2629,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (_items.empty() || _index.current() >= _items.size()) return nil;
   const std::string& path = _items[_index.current()].path_utf8;
   return [NSString stringWithUTF8String:path.c_str()];
+}
+
+- (NSFilePromiseProvider*)flattenedPromiseForDrag {
+  if (_items.empty() || _index.current() >= _items.size() || [self currentItemIsVideo] ||
+      _lab.anim_active()) {
+    return nil;
+  }
+  MvFlattenPromise* writer = [[MvFlattenPromise alloc] initWithPath:_items[_index.current()].path_utf8
+                                                           geometry:_edits.export_geometry()
+                                                             colour:_edits.colour()];
+  NSFilePromiseProvider* promise =
+      [[NSFilePromiseProvider alloc] initWithFileType:UTTypePNG.identifier delegate:writer];
+  promise.userInfo = writer;  // the delegate is weak; this keeps it for the drag
+  return promise;
 }
 
 - (std::vector<mv::io::dir_entry>)markedOrCurrentEntries {
@@ -2569,6 +2968,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)setGalleryVisible:(BOOL)visible {
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  // Issue #44: nothing plays under the grid. The lab pauses a playing clip,
+  // keeps one selected meanwhile on its first frame, and resumes only the clip
+  // that was playing when the grid opened (player/playback_hold.h).
+  if (_snap.video_hold != static_cast<bool>(visible)) {
+    _snap.video_hold = visible;
+    _snap.video_hold_resume = true;
+    [self pokeSnapshot];
+  }
 }
 - (void)toggleFilmstrip {
   // Nothing open: nothing to toggle, and no preference silently flipped for
@@ -2944,6 +3351,7 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 - (void)setHelpVisible:(BOOL)visible {
   _helpVisible = visible;
+  if (visible) [MVChromeHost reloadHelp];
   self.helpHost.hidden = !visible;
 }
 - (void)toggleHelp {
@@ -2962,6 +3370,8 @@ enum MvMenuCmd : NSInteger {
   // PR 9
   kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
   kMenuSortDateTaken, kMenuSortDescending,
+  // PR 15
+  kMenuShare, kMenuCopyPath, kMenuCopyEdited,
 };
 
 - (void)menuAction:(NSMenuItem*)item {
@@ -2994,6 +3404,11 @@ enum MvMenuCmd : NSInteger {
     case kMenuReveal: [self runCommand:mv::shell::command_id::reveal_in_explorer back:mv::shell::back_target::none]; break;
     case kMenuMetadata: [self runCommand:mv::shell::command_id::metadata_pane back:mv::shell::back_target::none]; break;
     case kMenuFolderTree: [self runCommand:mv::shell::command_id::folder_tree back:mv::shell::back_target::none]; break;
+    case kMenuShare: [self runCommand:mv::shell::command_id::share back:mv::shell::back_target::none]; break;
+    case kMenuCopyPath: [self runCommand:mv::shell::command_id::copy_path back:mv::shell::back_target::none]; break;
+    case kMenuCopyEdited:
+      if (![self runCommand:mv::shell::command_id::copy_flattened back:mv::shell::back_target::none]) NSBeep();
+      break;
     case kMenuSortName: case kMenuSortModified: case kMenuSortSize: case kMenuSortType:
     case kMenuSortDateTaken: {
       mv::io::sort_order o = _sort;
@@ -3124,6 +3539,11 @@ enum MvMenuCmd : NSInteger {
                mods:NSEventModifierFlagCommand
              toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
+  // PR 15. No key equivalents here: the keys are rows in the remappable table.
+  [self addMenuItem:@"Share…" cmd:kMenuShare key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Copy Path" cmd:kMenuCopyPath key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Copy Edited Image" cmd:kMenuCopyEdited key:@"" mods:0 toMenu:file];
+  [file addItem:[NSMenuItem separatorItem]];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
 
   // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
@@ -3198,6 +3618,8 @@ enum MvMenuCmd : NSInteger {
 // First-launch setup: the default-viewer checkbox starts on, but is applied
 // only after Continue. Existing choices are preserved across updates; the app
 // menu keeps the command available later. The canvas keeps presenting.
+// After a drag install a second checkbox, also on, ejects the MediaViewer
+// disk if it is still mounted and moves the .dmg to the Trash (plan/13).
 - (void)askDefaultViewerOnce {
   if (!self.window || self.window.attachedSheet) return;
   _askedDefaultViewer = YES;
@@ -3213,14 +3635,56 @@ enum MvMenuCmd : NSInteger {
   makeDefault.state = NSControlStateValueOn;
   [makeDefault sizeToFit];
   alert.accessoryView = makeDefault;
+
+  const mv::shell::installer_leftover leftover = _installer;
+  NSButton* tidy = nil;
+  if (leftover.any()) {
+    NSString* dmg = leftover.image.empty() ? nil : @(leftover.image.c_str()).lastPathComponent;
+    NSString* title =
+        leftover.mount.empty()
+            ? [NSString stringWithFormat:@"Move the installer (%@) to the Trash", dmg]
+        : dmg == nil ? @"Eject the MediaViewer installer disk"
+                     : [NSString stringWithFormat:@"Eject the installer disk and move %@ to the Trash", dmg];
+    tidy = [NSButton checkboxWithTitle:title target:nil action:nullptr];
+    tidy.state = NSControlStateValueOn;
+    [tidy sizeToFit];
+    NSStackView* stack = [NSStackView stackViewWithViews:@[ makeDefault, tidy ]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 8;
+    stack.frame = NSMakeRect(0, 0, std::max(makeDefault.frame.size.width, tidy.frame.size.width),
+                             makeDefault.frame.size.height + tidy.frame.size.height + 8);
+    alert.accessoryView = stack;
+  }
   [alert addButtonWithTitle:@"Continue"];
   [alert addButtonWithTitle:@"Not Now"];
   [alert beginSheetModalForWindow:self.window
                 completionHandler:^(NSModalResponse response) {
-                  if (response == NSAlertFirstButtonReturn && makeDefault.state == NSControlStateValueOn) {
+                  const bool go = response == NSAlertFirstButtonReturn;
+                  if (go && makeDefault.state == NSControlStateValueOn) {
                     [self makeDefaultViewer];
                   }
+                  if (go && tidy != nil && tidy.state == NSControlStateValueOn) {
+                    mv::shell::clean_up_installer(leftover, ^(bool ok) {
+                      if (!ok) [self installerCleanUpFailed];
+                    });
+                  } else {
+                    mv::shell::forget_installer_leftover();
+                  }
                 }];
+}
+
+// Finder or a Terminal can hold the disk; say so once, and leave it be.
+- (void)installerCleanUpFailed {
+  if (!self.window || self.window.attachedSheet) return;
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"The installer could not be tidied up";
+  alert.informativeText =
+      @"The MediaViewer disk is still in use, or the installer could not be moved to the "
+      @"Trash. Eject the disk in Finder and drag the .dmg to the Trash yourself; "
+      @"MediaViewer is installed either way.";
+  [alert addButtonWithTitle:@"OK"];
+  [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
 // The type list is read back from our own Info.plist, so the prompt, Finder's
@@ -3699,6 +4163,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [board clearContents];
       return [board writeObjects:urls] ? YES : NO;
     }
+    // PR 15 (plan/16 View): the keyboard twins of drag-out.
+    case copy_path: {
+      std::vector<std::string> paths;
+      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
+      const std::string text = mv::shell::paths_as_text(paths, "\n");
+      if (text.empty()) return NO;
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      [board clearContents];
+      return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+    }
+    case copy_flattened: return [self copyFlattened];
+    case share: return [self shareMarkedOrCurrent];
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
@@ -3841,6 +4317,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   if (!_items.empty() && _index.current() < _items.size() &&
       _items[_index.current()].path_utf8 == path) {
+    _shownItem = 0;  // the bytes changed: reload even if the second-resolution stamp did not
     [self selectIndex:_index.current()];
   }
 }
@@ -4889,9 +5366,224 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self resortKeepingSelection];
 }
 
+// ---- PR 15: OS integration (plan/10 "OS integration", plan/16 View) ------------
+
+// The Dock menu's recent folders, the twin of the Windows jump list. A folder
+// opened from Finder, the Dock, Open, a drop or argv counts; walking siblings
+// or the tree does not (-openPath:navigation: passes those as navigation).
+- (void)noteRecentFolder:(const std::string&)dir {
+  if (_options.soak_seconds > 0.0) return;  // a soak's fixture is not a folder the user opened
+  std::vector<std::string> next = mv::shell::push_recent_folder(_recentFolders, dir);
+  if (next == _recentFolders) return;
+  _recentFolders = std::move(next);
+  [self persistRecentFolders];
+}
+
+- (void)persistRecentFolders {
+  NSMutableArray<NSString*>* list = [NSMutableArray array];
+  for (const auto& p : _recentFolders) {
+    if (NSString* s = [NSString stringWithUTF8String:p.c_str()]) [list addObject:s];
+  }
+  [NSUserDefaults.standardUserDefaults setObject:list forKey:kDefaultsRecentFolders];
+}
+
+- (NSMenu*)applicationDockMenu:(NSApplication*)sender {
+  (void)sender;
+  if (_recentFolders.empty()) return nil;
+  NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+  [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
+  const std::vector<std::string> labels = mv::shell::recent_folder_labels(_recentFolders);
+  for (std::size_t i = 0; i < _recentFolders.size(); ++i) {
+    NSString* path = [NSString stringWithUTF8String:_recentFolders[i].c_str()];
+    NSString* title = [NSString stringWithUTF8String:labels[i].c_str()];
+    if (!path || !title) continue;
+    NSMenuItem* item = [menu addItemWithTitle:title action:@selector(openRecentFolder:) keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = path;
+  }
+  return menu;
+}
+
+- (void)openRecentFolder:(NSMenuItem*)item {
+  NSString* path = item.representedObject;
+  if (![path isKindOfClass:[NSString class]]) return;
+  [NSApp activate];
+  [self.window makeKeyAndOrderFront:nil];
+  if ([self openEntryPath:path.fileSystemRepresentation]) return;
+  // The card was ejected or the folder deleted: it is no longer a place to go.
+  NSBeep();
+  const std::string gone = path.UTF8String;
+  std::erase(_recentFolders, gone);
+  [self persistRecentFolders];
+}
+
+// ⌘⌥C: the still as the canvas shows it, edits baked, as a PNG. The bake is
+// a full-resolution export, so it runs on the pool; the pasteboard is written
+// on the main thread when it lands. Both a file (Finder, Mail, Messages) and
+// the PNG itself (Preview's New from Clipboard, Keynote) are offered.
+- (BOOL)copyFlattened {
+  if (_items.empty() || _index.current() >= _items.size() || [self currentItemIsVideo] ||
+      _lab.anim_active()) {
+    return NO;
+  }
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::edit::geometry g = _edits.export_geometry();
+  const mv::edit::colour c = _edits.colour();
+  _jobs.submit_at(mv::background_generation, [path, g, c](const mv::job_context&) -> mv::status {
+    mv::result<mv::shell::flattened_copy> out = mv::shell::run_flatten(path, g, c);
+    if (!out) {
+      dispatch_async(dispatch_get_main_queue(), ^{ NSBeep(); });
+      return out.error();
+    }
+    NSURL* file = [NSURL fileURLWithPath:[NSString stringWithUTF8String:out->path.c_str()]];
+    NSData* png = [NSData dataWithBytes:out->png.data() length:out->png.size()];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSPasteboardItem* item = [[NSPasteboardItem alloc] init];
+      [item setString:file.absoluteString forType:NSPasteboardTypeFileURL];
+      [item setData:png forType:NSPasteboardTypePNG];
+      NSPasteboard* board = NSPasteboard.generalPasteboard;
+      [board clearContents];
+      if (![board writeObjects:@[ item ]]) NSBeep();
+    });
+    return mv::status::ok;
+  });
+  return YES;
+}
+
+// ⌘⇧S: the system share picker with the marked files, else the current one,
+// anchored at the top centre of the canvas.
+- (BOOL)shareMarkedOrCurrent {
+  NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+  for (const auto& entry : [self markedOrCurrentEntries]) {
+    if (NSString* p = [NSString stringWithUTF8String:entry.path_utf8.c_str()]) {
+      [urls addObject:[NSURL fileURLWithPath:p]];
+    }
+  }
+  if (urls.count == 0 || !self.view) return NO;
+  NSSharingServicePicker* picker = [[NSSharingServicePicker alloc] initWithItems:urls];
+  const NSRect b = self.view.bounds;
+  const NSRect at = NSMakeRect(NSMidX(b) - 1.0, self.view.isFlipped ? NSMinY(b) : NSMaxY(b) - 1.0, 2.0, 1.0);
+  [picker showRelativeToRect:at
+                      ofView:self.view
+               preferredEdge:self.view.isFlipped ? NSRectEdgeMaxY : NSRectEdgeMinY];
+  return YES;
+}
+
+// Now Playing (the taskbar transport buttons' and SMTC's twin): Control
+// Centre, the menu-bar widget, the keyboard's media keys and AirPods drive the
+// clip. The info is republished only when the system could not extrapolate it
+// (play / pause, rate, a new clip, a seek); a 0.5 s poll of the render
+// thread's status runs only while a clip is the current item.
+- (void)nowPlayingItemChanged {
+  if (![self currentItemIsVideo] && !_nowPlayingTimer) return;
+  [self wireRemoteCommands];
+  _nowPlayingShown = {};
+  if (!_nowPlayingTimer) {
+    _nowPlayingTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                        target:self
+                                                      selector:@selector(nowPlayingTick:)
+                                                      userInfo:nil
+                                                       repeats:YES];
+    _nowPlayingTimer.tolerance = 0.2;
+  }
+  [self nowPlayingTick:nil];
+}
+
+- (void)nowPlayingTick:(NSTimer*)timer {
+  (void)timer;
+  MPNowPlayingInfoCenter* center = MPNowPlayingInfoCenter.defaultCenter;
+  const BOOL video = [self currentItemIsVideo];
+  const auto st = _lab.video_status_snapshot();
+  if (!video) {
+    center.nowPlayingInfo = nil;
+    center.playbackState = MPNowPlayingPlaybackStateStopped;
+    [_nowPlayingTimer invalidate];
+    _nowPlayingTimer = nil;
+    _nowPlayingShown = {};
+    return;
+  }
+  if (!st.active) return;  // the clip is still opening
+  const auto& was = _nowPlayingShown;
+  // Where the last published state says the playhead is now: 0.5 s on at its rate.
+  const std::int64_t expected = was.position_ms + (was.playing ? 500 * was.rate_x100 / 100 : 0);
+  const bool changed = !was.active || was.playing != st.playing || was.rate_x100 != st.rate_x100 ||
+                       was.duration_ms != st.duration_ms || std::llabs(st.position_ms - expected) > 750;
+  _nowPlayingShown = st;
+  if (!changed) return;
+  NSString* title = @"";
+  if (_index.current() < _items.size()) {
+    title = [NSString stringWithUTF8String:_items[_index.current()].name_utf8.c_str()] ?: @"";
+  }
+  center.nowPlayingInfo = @{
+    MPMediaItemPropertyTitle : title,
+    MPNowPlayingInfoPropertyMediaType : @(MPNowPlayingInfoMediaTypeVideo),
+    MPMediaItemPropertyPlaybackDuration : @(static_cast<double>(st.duration_ms) / 1000.0),
+    MPNowPlayingInfoPropertyElapsedPlaybackTime : @(static_cast<double>(st.position_ms) / 1000.0),
+    MPNowPlayingInfoPropertyPlaybackRate : @(st.playing ? st.rate_x100 / 100.0 : 0.0),
+    MPNowPlayingInfoPropertyDefaultPlaybackRate : @1.0,
+  };
+  center.playbackState = st.playing ? MPNowPlayingPlaybackStatePlaying : MPNowPlayingPlaybackStatePaused;
+}
+
+- (void)wireRemoteCommands {
+  if (_remoteCommandsWired) return;
+  _remoteCommandsWired = YES;
+  MPRemoteCommandCenter* rc = MPRemoteCommandCenter.sharedCommandCenter;
+  MvLabApp* __weak weak = self;
+  [rc.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* e) {
+    (void)e;
+    return [weak remoteSetPlaying:-1];
+  }];
+  [rc.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* e) {
+    (void)e;
+    return [weak remoteSetPlaying:1];
+  }];
+  [rc.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* e) {
+    (void)e;
+    return [weak remoteSetPlaying:0];
+  }];
+  // Next / previous walk the folder, as SMTC's do on Windows.
+  [rc.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* e) {
+    (void)e;
+    return [weak runCommand:mv::shell::command_id::next back:mv::shell::back_target::none]
+               ? MPRemoteCommandHandlerStatusSuccess
+               : MPRemoteCommandHandlerStatusCommandFailed;
+  }];
+  [rc.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* e) {
+    (void)e;
+    return [weak runCommand:mv::shell::command_id::prev back:mv::shell::back_target::none]
+               ? MPRemoteCommandHandlerStatusSuccess
+               : MPRemoteCommandHandlerStatusCommandFailed;
+  }];
+  [rc.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* e) {
+    MvLabApp* app = weak;
+    if (!app || ![e isKindOfClass:[MPChangePlaybackPositionCommandEvent class]]) {
+      return MPRemoteCommandHandlerStatusCommandFailed;
+    }
+    return [app remoteSeekTo:static_cast<MPChangePlaybackPositionCommandEvent*>(e).positionTime];
+  }];
+}
+
+- (MPRemoteCommandHandlerStatus)remoteSetPlaying:(int)want {
+  const auto st = _lab.video_status_snapshot();
+  if (![self currentItemIsVideo] || !st.active) return MPRemoteCommandHandlerStatusNoActionableNowPlayingItem;
+  if (want < 0 || (want == 1) != st.playing) mv_chrome_video_toggle();
+  _nowPlayingShown = {};  // republish on the next tick, with the new state
+  return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remoteSeekTo:(NSTimeInterval)seconds {
+  const auto st = _lab.video_status_snapshot();
+  if (![self currentItemIsVideo] || !st.active) return MPRemoteCommandHandlerStatusNoActionableNowPlayingItem;
+  mv_chrome_video_seek(std::llround(std::clamp(seconds, 0.0, st.duration_ms / 1000.0) * 1000.0), true);
+  _nowPlayingShown = {};
+  return MPRemoteCommandHandlerStatusSuccess;
+}
+
 // ---- Settings -----------------------------------------------------------------
 static NSString* const kDefaultsViewFlags = @"mv.viewFlags";
 static NSString* const kDefaultsKeys = @"mv.keys";
+static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 
 - (BOOL)settingsVisible { return _settingsVisible; }
 - (void)setSettingsVisible:(BOOL)visible {
@@ -4948,6 +5640,13 @@ static NSString* const kDefaultsKeys = @"mv.keys";
   }
   _router.rebuild(mv::shell::live_bindings());
   _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
+  _recentFolders.clear();
+  for (id entry in [d arrayForKey:kDefaultsRecentFolders]) {
+    if ([entry isKindOfClass:[NSString class]] && [entry length] > 0 &&
+        _recentFolders.size() < mv::shell::kMaxRecentFolders) {
+      _recentFolders.emplace_back([entry UTF8String]);
+    }
+  }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
@@ -5248,6 +5947,7 @@ void usage() {
                "mediaviewer_lab — Metal present lab (PR 16), still decode + pan/zoom (PR 17),\n"
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
+               "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
                "                folder with that file selected (plan/16-commands.md). Wheel to\n"
                "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
@@ -5275,6 +5975,8 @@ int main(int argc, char** argv) {
       options.overlay_visible = false;
     } else if (std::strcmp(arg, "--open") == 0) {
       options.open_path = next();
+    } else if (std::strcmp(arg, "--browse-soak") == 0) {
+      g_mac_browse.enabled = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
@@ -5294,6 +5996,16 @@ int main(int argc, char** argv) {
       usage();
       return 2;
     }
+  }
+  if (g_mac_browse.enabled) {
+    if (options.soak_seconds > 0.0 || options.json_report_path.empty() || options.open_path.empty()) {
+      std::fprintf(stderr, "mediaviewer_lab: --browse-soak needs --json PATH and a folder, not --soak\n");
+      return 2;
+    }
+    // The browse report is the host's; the lab's own soak report is not written.
+    g_mac_browse.json_path = std::move(options.json_report_path);
+    options.json_report_path.clear();
+    options.harness = true;
   }
   // The F3 overlay is an instrument: off until asked, so a launch shows the
   // welcome rather than a stats panel. A soak keeps it (Windows does the same).

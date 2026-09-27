@@ -135,7 +135,7 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `Ctrl+E` | Show the current file in Explorer, selected |
 | `Ctrl+,` | Settings (view defaults and remappable keys). Colour scheme, chrome/canvas/overlay palette, and a user-supplied font are **v1.1** ([10-roadmap.md](10-roadmap.md)) |
 | `Ctrl+W` / `Alt+F4` | Close window |
-| `Ctrl+Tab` | Next tab (PR 15) |
+| `Ctrl+Tab` | Next window / tab (the multi-window PR after PR 15; [12](12-decision-log.md) 2026-09-25 (later)) |
 
 ### View
 
@@ -155,7 +155,7 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `I` | Metadata pane (PR 9). Windows 2026-09-24: focuses the pane; Left / Right change tab, Down reaches the tag search (type to filter), `Esc` returns to the canvas and a second `Esc` closes it |
 | `Shift+A` | Adjust pane (PR 11; `⇧A` on Mac). Not `E`: that is the clip transport (`Q` `E`, 5c), as this row used to warn. Shows the pane and focuses its first slider; again (or the pane's close button) hides it. Stills only |
 | `T` | Filmstrip show/hide. Writes the preference for the mode you are in — folder open or single image (`Settings` menu, PR 4) |
-| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are big tiles when the folder holds only folders, and one row above the photos when it holds both. Up from the first photo row moves onto that row, Left / Right move among them, `Enter` opens the tile, Down returns to the photos. `/` on that row finds a tile by the start of its name |
+| `G` | Gallery: full-client thumbnail grid of the folder. `W` / `S` and Up / Down move by row, `A` / `D` and Left / Right move by item. `Enter` opens the selection in the normal viewer, leaving fullscreen/slideshow and restoring the filmstrip if enabled. A click opens it in the viewer. `Esc` closes the gallery. Navigation applies while the gallery is visible, even before keyboard focus moves into it. **Child folders (PR 26)** are big tiles when the folder holds only folders, and one row above the photos when it holds both. Up from the first photo row moves onto that row, Left / Right move among them, `Enter` opens the tile, Down returns to the photos. `/` on that row finds a tile by the start of its name. **A clip does not play under the gallery (issue #44):** opening it pauses a playing clip, a clip selected in it waits paused on its first frame for Play, and closing it resumes only the clip that was playing when it opened |
 | `Ctrl+Up` (`⌘↑` on Mac) | Up one folder (PR 26). Opens the enclosing folder and selects the folder you just left. The path lives in the command bar, just left of `?`, so it stays on screen (including while a photo is open) without a row of its own; a long middle opens a menu of hidden ancestors. Up (↑) and Root (house) icon buttons remain outside the scrolling trail on both hosts; Root opens the first breadcrumb (the highest folder reached). Not bound to Backspace, which is Previous |
 | `Ctrl+Left` / `Ctrl+Right` (`⌘←` `⌘→` on Mac) | Previous / next folder beside the one open (PR 26), while a photo is open. The gallery keeps plain Left / Right for its tiles |
 | `Ctrl+Shift+E` | Folder tree show/focus (PR 9). Windows 2026-09-24: focuses the tree; Up / Down walk it, Right / Left open and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a second `Esc` closes it |
@@ -451,7 +451,7 @@ Later slices **add rows to the table**. They do not grow a second router.
 | 12 | Rating keys, `F2` rename writes, user comment in the pane |
 | 13 | Trim mode takes `[` `]`. Written for Windows and macOS 2026-09-25 ([12](12-decision-log.md)): `Ctrl+T` arms trim on a clip; in trim `P` previews the cut as an A–B loop, `Enter` saves the keyframe cut, `Shift+Enter` the re-encode, `Ctrl+X` removes in–out, `Ctrl+←` `Ctrl+→` walk keyframes, `Backspace` / `Delete` clear the markers (never trash the clip). `Ctrl+J` is the Jobs pane (`Delete` cancels the focused job, `R` retries, `Enter` reveals) |
 | 14 | `Ctrl+S` on a clip opens the clip tools (rotate, split, frame, audio, remux, GIF / WebP; Export stays `Ctrl+S` on a still); `Ctrl+B` splits at the playhead |
-| 15 | Clipboard formats, Share, tabs, jump list, `Ctrl+Tab`, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs) |
+| 15 | Clipboard formats (`Ctrl+Shift+C` path, `Ctrl+Alt+C` edited copy), Share (`Ctrl+Shift+S`), jump list, `Ctrl+E` reveal in Explorer (deferred from PR 6 with the other shell verbs). Tabs and `Ctrl+Tab` moved to the multi-window PR |
 | 16–19 | Import add-on commands, present only while it is installed ([18-import.md](18-import.md#commands)). Base app, PR 16: `F8` across volumes deletes the source only after verify |
 | 27–28 | Voice query add-on commands, present only while it is installed ([19-voice.md](19-voice.md#commands)). Hold-to-talk is `Ctrl+Shift+Space` / `⌘⇧Space`; `Space` stays next / play |
 

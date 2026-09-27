@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ai-bench: the AI pack without the chrome (Milestone H, plan/17 PR 21-22
 // timings). Loads the installed add-on exactly as the app does (the store
 // verifies it, the loader maps it, the host table carries the viewer's own
@@ -23,7 +24,7 @@
 
 #include "addon/host.h"
 #include "addon/manifest.h"
-#include "addon/media.h"
+#include "abi/addon_media.h"
 #include "addon/store.h"
 
 namespace {

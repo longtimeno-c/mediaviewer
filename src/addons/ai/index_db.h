@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // index.db (plan/17 "Index store"): remembered roots, the assets under them,
 // per-model progress (resumable per asset), and the sampled frames with their
 // embeddings. A separate SQLite file in the add-on's data folder, so clearing

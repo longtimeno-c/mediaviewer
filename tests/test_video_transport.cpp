@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "corpus.h"
 #include "player/media_source.h"
@@ -60,5 +61,49 @@ TEST_CASE("video ABI opens asynchronously and retires on navigation", "[abi][vid
   REQUIRE(mv_video_close(session) == MV_OK);
   (void)mv::abi::poll_video(session, 16'666'667, frame, active); REQUIRE_FALSE(active);
   uint32_t state = 99; REQUIRE(mv_video_state(session, &state) == MV_OK); REQUIRE(state == MV_PLAY_STOPPED);
+  mv::abi::detach_device(session);
+}
+TEST_CASE("a hold pauses the clip and keeps a new one on its poster", "[abi][video][integration]") {
+  // Issue #44: the gallery covers the canvas (player/playback_hold.h).
+  MV_REQUIRE_CLIP(path, "av_transport.mp4");
+  mv::gfx::device device; REQUIRE(device.create(nullptr));
+  mv_session_t session = nullptr; REQUIRE(mv_session_create(nullptr, &session) == MV_OK);
+  struct release_session { mv_session_t value; ~release_session() { (void)mv_session_release(value); } } cleanup{session};
+  REQUIRE(mv::abi::attach_device(session, device.d3d()) == mv::status::ok);
+  mv::player::video_frame frame; bool active = false;
+  const auto settle = [&](uint32_t want) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    uint32_t state = 99;
+    while (std::chrono::steady_clock::now() < deadline) {
+      (void)mv::abi::poll_video(session, 16'666'667, frame, active);
+      if (mv_video_state(session, &state) == MV_OK && state == want) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+  };
+  uint64_t job = 0;
+  // Selected under the grid: adopted paused, and still paused once it closes.
+  REQUIRE(mv_video_set_hold(session, 1, 1) == MV_OK);
+  REQUIRE(mv_video_open(session, path.c_str(), &job) == MV_OK);
+  REQUIRE(settle(MV_PLAY_PAUSED));
+  REQUIRE(mv_video_set_muted(session, 1) == MV_OK);
+  REQUIRE(mv_video_set_hold(session, 0, 1) == MV_OK);
+  REQUIRE(settle(MV_PLAY_PAUSED));
+  REQUIRE(mv_video_play(session) == MV_OK);
+  REQUIRE(settle(MV_PLAY_PLAYING));
+  // Playing on entry: paused under the grid, resumed on the way out.
+  REQUIRE(mv_video_set_hold(session, 1, 1) == MV_OK);
+  REQUIRE(settle(MV_PLAY_PAUSED));
+  (void)mv::abi::poll_video(session, 16'666'667, frame, active); REQUIRE_FALSE(active);
+  REQUIRE(mv_video_set_hold(session, 0, 1) == MV_OK);
+  REQUIRE(settle(MV_PLAY_PLAYING));
+  // Left for something new: stays paused.
+  REQUIRE(mv_video_set_hold(session, 1, 1) == MV_OK);
+  REQUIRE(settle(MV_PLAY_PAUSED));
+  REQUIRE(mv_video_set_hold(session, 0, 0) == MV_OK);
+  for (int i = 0; i < 10; ++i) (void)mv::abi::poll_video(session, 16'666'667, frame, active);
+  uint32_t state = 99; REQUIRE(mv_video_state(session, &state) == MV_OK); REQUIRE(state == MV_PLAY_PAUSED);
+  REQUIRE(mv_video_close(session) == MV_OK);
+  (void)mv::abi::poll_video(session, 16'666'667, frame, active);
   mv::abi::detach_device(session);
 }

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The index sampler (clip_sample.h). One pass over the file: every video
 // packet goes to a keyframe-only decoder; a GOP longer than max_gap also
 // replays its kept packets into a full decoder that fills the grid.

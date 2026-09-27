@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Decoded frames -> 8-bit sRGB RGBA, shared by the clip jobs (clip_encode.cpp)
 // and the index sampler (clip_sample.cpp, Milestone H). FFmpeg types appear
 // here and in the clip .cpp files only; clip.h names none.

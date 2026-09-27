@@ -58,7 +58,7 @@ shared vector space; search is a dot product. This is the only class of model th
   larger, licence-clean SigLIP-so400m / ViT-L/14-class tower and selects the best recall that fits
   the 3 GB installation ceiling and has acceptable measured indexing throughput. A larger model
   is allowed to win; the eval, not download minimisation, decides.
-- **Weights licence is a gate, not a footnote.** The app is GPL-2.0-or-later; weights are data,
+- **Weights licence is a gate, not a footnote.** The app is GPL-3.0-or-later; weights are data,
   but redistribution terms still bind. CI check: the pack manifest names the licence for every
   model file, and non-commercial / research-only weights fail the build. Some LAION-trained and
   Meta checkpoints are not permissive — check each.
@@ -97,7 +97,7 @@ src/infer   IEmbedder { load(pack), embed_image(span<u8 rgb>, w, h), embed_text(
   is introduced. Candidates, each its **own optional sub-pack** so a user only downloads the one
   their hardware uses: **OpenVINO** (Intel iGPU/NPU, Apache-2.0), **CUDA/TensorRT** (NVIDIA;
   redistribution is under NVIDIA's EULA, not an OSI licence — legal check against the app's
-  GPL-2.0-or-later status before shipping it, and if it fails the gate it is user-supplied
+  GPL-3.0-or-later status before shipping it, and if it fails the gate it is user-supplied
   instead). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
   until a provider exists. That is a known gap, not a hidden one. Adding DirectML later as one
   more provider would need the CLAUDE.md D3D12 rule reworded and is not planned.
@@ -439,7 +439,7 @@ the pack (tested).
 
 **Sizes:** Core ~1.18 GB installed (both towers, tokenizer, ORT CPU, mv_ai, chrome), People
 piece 39 MB, NVIDIA piece ~205 MB (ORT's CUDA 13 build only: the CUDA runtime and cuDNN are
-**user-supplied**, NVIDIA's EULA review against GPL-2.0-or-later not done). Worst supported
+**user-supplied**, NVIDIA's EULA review against GPL-3.0-or-later not done). Worst supported
 combination ~1.4-1.85 GB of 3 GB. OpenVINO has a code path but no piece yet (no Intel dev box).
 **macOS: arm64 only** - Microsoft ships no x86_64 macOS build of ORT 1.30; Intel Macs are not
 offered Local search.
@@ -466,7 +466,7 @@ offered Local search.
   (deviation: loaded, not mapped; ~77 MB at 100 k L/14 frames), per-clip grouping, find-similar,
   people in a separate faces.db with rename / merge / not-this-person / split, one-click
   deletion.
-- **Results in the gallery**: base ABI 0.11 `mv_folder_open_list` - the same gallery, filmstrip,
+- **Results in the gallery**: base ABI 0.13 `mv_folder_open_list` - the same gallery, filmstrip,
   keys and thumbnails over a result list; a clip opens paused on its moment.
 - **Commands** (plan/16): `Ctrl+F` search, `Ctrl+Shift+F` find similar, `N` / `Shift+N` next /
   previous matching moment; listed only while the pack is loaded.

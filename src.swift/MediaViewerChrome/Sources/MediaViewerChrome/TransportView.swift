@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 19: the clip transport strip (plan/05, plan/16 "Video": bottom-centre,
 // play/pause, scrubber, time, speed, mute). Chrome only: the clock, the seek
 // model and the canvas are native; this posts commands over the bridge.

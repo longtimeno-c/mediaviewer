@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The few OS facts the AI pack needs that the host table does not carry:
 // where its own library lives (the Core pack's folder: ORT and the models sit
 // beside it), whether the machine is on battery (plan/17 "Yield policy"), and

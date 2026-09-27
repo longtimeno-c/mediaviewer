@@ -1,5 +1,6 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Wraps an add-on chrome's SwiftPM dynamic library into a loadable bundle
 # (plan/18 "Mac chrome": loaded with NSBundle, reached through its principal

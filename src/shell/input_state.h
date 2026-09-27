@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The snapshot the UI thread publishes and the render thread consumes.
 //
 // plan/02-architecture.md: "The UI thread publishes a state snapshot; the
@@ -165,6 +166,11 @@ struct input_snapshot {
 
   bool window_visible = true;
   bool window_active = true;
+  // Issue #44: the gallery covers the canvas, so no clip plays under it
+  // (player/playback_hold.h). `video_hold_resume` is read as the hold lifts:
+  // false when the grid closed for something new rather than back to the clip.
+  bool video_hold = false;
+  bool video_hold_resume = true;
   // Gallery jump: drop the still on the canvas so the previous item does not
   // flash under the closing grid. Sequential A/D still keep the last frame.
   std::uint32_t discard_media_seq = 0;

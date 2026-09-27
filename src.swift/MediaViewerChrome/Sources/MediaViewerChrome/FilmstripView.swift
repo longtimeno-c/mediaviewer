@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 18's filmstrip (plan/10-roadmap.md, folded-in Windows PR 4, plan/12
 // 2026-09-17): a bottom strip over the same folder_model/JPEG-512 cache the
 // gallery uses. `T` toggles it (main_mac.mm's keyDown:, which also toggles

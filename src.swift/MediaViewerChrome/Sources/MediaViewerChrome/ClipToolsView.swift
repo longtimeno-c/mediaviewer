@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // PR 14 clip tools sheet (⌘S on a clip; plan/10: "SwiftUI job panel entries").
 // The twin of the Windows flyout (IslandHost.Clip.cs BuildClipTools): the same
 // entries in the same order, the same packed answer (shell/trim_state.h

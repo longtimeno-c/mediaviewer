@@ -1,8 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// Host table v2 pixels (media.h) over the viewer's own decoders: the still
-// first-pixel path (image/pipeline.h), the clip sampler (edit/clip_sample.h)
-// and the JPEG-512 cache (image/thumb.h). Portable; both hosts install it.
-#include "addon/media.h"
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Host table v2 pixels and sound (addon_media.h) over the viewer's own
+// decoders: the still first-pixel path (image/pipeline.h), the clip sampler
+// (edit/clip_sample.h) and the JPEG-512 cache (image/thumb.h). Portable; both
+// hosts install it.
+#include "abi/addon_media.h"
 
 #include <algorithm>
 #include <cstdio>

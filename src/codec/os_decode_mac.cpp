@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Darwin twin of os_decode_win.cpp. The OS-codec hook (D3, policy in
 // os_decode.h) offers HEIC stills to the platform codec first. On macOS that
 // would be ImageIO, which is hardware-backed for HEVC; it is not wired yet, so

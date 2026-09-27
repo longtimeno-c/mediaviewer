@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The Mac host's add-on entry points for main_mac.mm (addons_mac.mm).
 // Main thread only.
 #pragma once

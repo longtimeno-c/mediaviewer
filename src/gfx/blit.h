@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Image blit: linear sample of an 8-bit sRGB texture into the 8-bit sRGB
 // swapchain. Filter follows plan/03: anisotropic/trilinear when zoomed out,
 // Catmull-Rom between 100 % and 400 %, nearest above 400 %.

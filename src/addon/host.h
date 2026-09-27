@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The host side of an add-on: the function table (mediaviewer_addon.h) built
 // over the core's own io, pairing and volume ports, and the loader that maps
 // a verified add-on's library and calls its one export.
@@ -29,7 +30,7 @@ struct host_services {
   std::function<result<std::string>(const std::string& path)> thumbnail;
   std::function<void(const mv_addon_event& event)> post;
   std::function<bool()> should_yield;
-  // v2 (Milestone H): pixels. Each host installs media::* (media.h); tests
+  // v2 (Milestone H): pixels. Each host installs media::* (abi/addon_media.h); tests
   // inject fakes. Empty means MV_ERR_UNSUPPORTED_FORMAT at the thunk.
   std::function<result<rgb_image>(const std::string& path, std::uint32_t max_edge)> still_rgb;
   std::function<result<std::unique_ptr<video_sampler>>(const std::string& path,
