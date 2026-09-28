@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -39,6 +41,16 @@ struct pack_state {
   std::unique_ptr<infer::runtime> rt;
   bool from_piece = false;  // ORT came from the ai-cuda piece
   std::map<std::uint32_t, infer::clip_spec> towers;  // by mv_ai_quality
+
+  // Core ML compiles (upgrading_clip). One tower compiles once at a time: a
+  // first compile of L/14 writes gigabytes for minutes on a MacBook Air, and
+  // a second beside it (a reload while the first ran) doubled that and the
+  // memory. An open of a tower on a compute choice that is still alive is
+  // handed the same instance rather than compiling it again.
+  std::mutex compile_m;
+  std::condition_variable compile_cv;
+  std::set<std::string> compiling;                                  // spec keys
+  std::map<std::string, std::weak_ptr<infer::embedder>> upgrading;  // spec key | compute
 
   void ensure() {
     std::call_once(once, [this] {
@@ -230,8 +242,28 @@ class upgrading_clip final : public infer::embedder {
       infer::session_options cpu = fast;
       cpu.on = infer::backend::cpu;
       cpu.cache_dir_utf8.clear();
+      struct finished {
+        std::atomic<bool>* flag;
+        ~finished() { *flag = true; }
+      } const done{&done_};
+      const std::string key = spec.spec_key();
+      {
+        // Never two compiles of one tower at once: wait for the other (its
+        // cache entry then makes this one the quicker cached open).
+        std::unique_lock lock(p->compile_m);
+        while (p->compiling.count(key) != 0 && !stop_) {
+          p->compile_cv.wait_for(lock, std::chrono::milliseconds(100));
+        }
+        if (stop_) return;
+        p->compiling.insert(key);
+      }
       infer::provider_fault why = infer::provider_fault::none;
       auto opened = infer::clip_model::open(*p->rt, spec, fast, &why);
+      {
+        std::lock_guard lock(p->compile_m);
+        p->compiling.erase(key);
+      }
+      p->compile_cv.notify_all();
       if (stop_) return;
       if (opened) why = self_test(*p, spec, **opened, fast.on, compute, cpu);
       std::lock_guard lock(m_);
@@ -245,9 +277,11 @@ class upgrading_clip final : public infer::embedder {
   ~upgrading_clip() override {
     stop_ = true;
     // An open in progress cannot be cancelled; the pack's code must stay
-    // mapped until it returns (unload runs off the main thread).
+    // mapped until it returns (unload runs off the main thread). The engine
+    // lets the last reference go only once settling() is false (retire).
     if (worker_.joinable()) worker_.join();
   }
+  bool settling() const noexcept override { return !done_.load(); }
   std::uint32_t dim() const noexcept override { return dim_; }
   const std::string& spec_key() const noexcept override { return key_; }
   infer::backend on() const noexcept override { return model()->on(); }
@@ -271,6 +305,7 @@ class upgrading_clip final : public infer::embedder {
   std::uint32_t dim_;
   std::string key_;
   std::atomic<bool> stop_{false};
+  std::atomic<bool> done_{false};
   std::thread worker_;
 };
 
@@ -378,11 +413,30 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
       acc.cache_dir_utf8 = coreml_cache(*p);
       if (want == infer::backend::coreml) {
         // Answer on CPU now; Core ML follows when compiled (upgrading_clip).
-        // Auto's quality choice goes by the provider it is headed for.
+        // Auto's quality choice goes by the provider it is headed for. The
+        // same tower on the same choice, still alive: that one, not a
+        // second CPU session and a second compile.
+        const std::string key = spec.spec_key() + "|" + std::to_string(compute);
+        {
+          std::lock_guard lock(p->compile_m);
+          auto found = p->upgrading.find(key);
+          if (found != p->upgrading.end()) {
+            if (auto alive = found->second.lock()) {
+              out.model = std::move(alive);
+              out.on = want;
+              return out;
+            }
+          }
+        }
         auto now = infer::clip_model::open(*p->rt, spec, cpu, nullptr);
         if (!now) return err(now.error());
         out.model = std::make_shared<upgrading_clip>(p, spec, std::move(*now), acc, compute);
         out.on = want;
+        std::lock_guard lock(p->compile_m);
+        for (auto e = p->upgrading.begin(); e != p->upgrading.end();) {
+          e = e->second.expired() ? p->upgrading.erase(e) : std::next(e);
+        }
+        p->upgrading[key] = out.model;
         return out;
       }
       infer::provider_fault fault = infer::provider_fault::none;
