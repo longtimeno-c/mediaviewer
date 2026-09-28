@@ -813,6 +813,7 @@ python tools/perf/make-charts.py                 # redraw from the committed rep
 | `av-sync` | `mediaviewer_lab --av-soak 120 --csv` on the same clip | `investigation/av-after-120s.csv` | `perf-av-sync.svg` |
 | `compare` | `tools/perf/compare-screen.ps1` (MediaViewer vs Windows Photos / Media Player) | `compare/screen.json` | `compare-*.svg` |
 | `bench` | `mv_tests "[.perf-bench]"`: headless decode, colour, folder list and sort | `bench.json` | — |
+| `search` | `mv_ai_tests "[.calibration]"` at 1,000–25,000 photos, both picture towers; needs `MV_AI_PACK_DIR` and `MV_AI_EVAL_DIR` (the labelled COCO folder, "Local search" above) and takes `MV_AI_CALIBRATION_CACHE` and `MV_AI_EVAL_NAME`. Accuracy, not timing: it runs on either platform and leaves `machine.json` alone | `search.json` | `search-accuracy.svg` |
 
 The published charts are Windows numbers. The macOS lab has `pacing`, `first-pixel`,
 `browse` and `video`; `pan`, `av-sync` and `compare` are Windows-only harnesses, so a Mac
