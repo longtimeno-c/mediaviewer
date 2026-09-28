@@ -757,11 +757,14 @@ final class SearchModel: ObservableObject {
 
   private var prepareTask: Task<Void, Never>?
 
-  /// Photos results become files first (PhotosLibrary "Opening"): a clone of
-  /// the original, or a labelled preview. Usually a few milliseconds each;
-  /// the panel says so while it runs, and Esc stops it.
+  /// Photos results are opened where Photos keeps them, read-only, or as a
+  /// preview when only iCloud has the original (PhotosLibrary "Opening").
+  /// Usually a few milliseconds each; the panel says so while it runs, and
+  /// Esc stops it.
   private func preparePhotosThenOpen(gallery: Bool) {
     prepareTask?.cancel()
+    fetchTask?.cancel()
+    DispatchQueue.global(qos: .utility).async { PhotosLibrary.clearDownloads() }
     let list = results
     let keys = list.filter { $0.isPhotos }.map { $0.path }
     let search = shown
@@ -774,13 +777,13 @@ final class SearchModel: ObservableObject {
       }
     }
     prepareTask = Task { [weak self] in
-      let files = await PhotosLibrary.files(for: keys, progress: report)
+      let files = await PhotosLibrary.viewerFiles(for: keys, progress: report)
       guard let self, !Task.isCancelled else { return }
       self.preparing = nil
       self.prepareTask = nil
       // A newer search replaced these results meanwhile: nothing to open.
       guard self.shown == search else { return }
-      var fileOf: [String: String] = [:]
+      var fileOf: [String: PhotosLibrary.ViewerFile] = [:]
       for (k, f) in zip(keys, files) { if let f { fileOf[k] = f } }
       // An asset deleted from Photos since it was indexed drops out.
       let kept = list.filter { !$0.isPhotos || fileOf[$0.path] != nil }
@@ -788,18 +791,57 @@ final class SearchModel: ObservableObject {
         self.showFailure()
         return
       }
-      for (k, f) in fileOf { PhotosOpened.shared.remember(file: f, key: k) }
-      _ = self.openList(kept.map { fileOf[$0.path] ?? $0.path }, kept, gallery: gallery)
+      PhotosOpened.shared.forget()
+      for (k, f) in fileOf { PhotosOpened.shared.remember(file: f.path, key: k, preview: f.preview) }
+      _ = self.openList(kept.map { fileOf[$0.path]?.path ?? $0.path }, kept, gallery: gallery,
+                        readOnly: fileOf.values.map { $0.path })
+    }
+  }
+
+  // The Photos list the viewer shows, for swapping a preview for its original.
+  private var listedPaths: [String] = []
+  private var listedMoments: [NSNumber] = []
+  private var listedReadOnly: [String] = []
+  private var listedTitle = ""
+  private var fetchTask: Task<Void, Never>?
+
+  /// The viewer landed on a preview: after a short pause (arrowing past
+  /// fetches nothing), its original comes from iCloud and replaces it in
+  /// place, as a full-resolution refinement of the first picture.
+  private func fetchOriginalIfPreview(_ path: String) {
+    fetchTask?.cancel()
+    fetchTask = nil
+    guard PhotosOpened.shared.isPreview(path), let i = listedPaths.firstIndex(of: path) else { return }
+    let key = PhotosOpened.shared.key(for: path)
+    fetchTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 400_000_000)
+      guard !Task.isCancelled else { return }
+      let original = await PhotosLibrary.downloadOriginal(for: key)
+      guard let self, !Task.isCancelled, let original,
+            i < self.listedPaths.count, self.listedPaths[i] == path else { return }
+      self.listedPaths[i] = original
+      self.listedReadOnly.append(original)
+      PhotosOpened.shared.remember(file: original, key: key)
+      let request: NSDictionary = [
+        "title": self.listedTitle,
+        "paths": self.listedPaths,
+        "moments": self.listedMoments,
+        "select": NSNumber(value: i),
+        "gallery": NSNumber(value: false),
+        "readOnly": self.listedReadOnly,
+      ]
+      _ = self.chrome?.hostOpenList(request, from: self)
     }
   }
 
   func cancelPreparing() {
+    fetchTask?.cancel()
     prepareTask?.cancel()
     prepareTask = nil
     preparing = nil
   }
 
-  private func openList(_ paths: [String], _ list: [AIResult], gallery: Bool) -> Bool {
+  private func openList(_ paths: [String], _ list: [AIResult], gallery: Bool, readOnly: [String] = []) -> Bool {
     let chosen = results.indices.contains(selected) ? results[selected].id : ""
     let select = list.firstIndex(where: { $0.id == chosen }) ?? 0
     let request: NSDictionary = [
@@ -808,7 +850,14 @@ final class SearchModel: ObservableObject {
       "moments": list.map { NSNumber(value: $0.ptsMs) },
       "select": NSNumber(value: min(max(select, 0), list.count - 1)),
       "gallery": NSNumber(value: gallery),
+      // Photos files: the host refuses every write to them (shell/write_guard.h).
+      "readOnly": readOnly,
     ]
+    fetchTask?.cancel()
+    listedPaths = paths
+    listedMoments = list.map { NSNumber(value: $0.ptsMs) }
+    listedReadOnly = readOnly
+    listedTitle = request["title"] as? String ?? ""
     guard chrome?.hostOpenList(request, from: self) == true else { return false }
     let old = listed
     listed = shown
@@ -860,6 +909,7 @@ final class SearchModel: ObservableObject {
   /// The canvas item changed: if it is a clip in the listed (or shown) search,
   /// its matches become the scrub markers; the current one is where it opened.
   func itemChanged(_ path: String, isVideo: Bool) {
+    fetchOriginalIfPreview(path)
     let search = listed != 0 ? listed : shown
     markerSeq += 1
     guard isVideo, search != 0, !path.isEmpty else {

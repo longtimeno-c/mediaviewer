@@ -8,18 +8,17 @@
 // asks of PhotoKit. Every request here has network access off: nothing is
 // downloaded from iCloud, and nothing in the library is ever changed (rule 5).
 //
-// Opening. A Photos asset has no path the viewer may have: the viewer rates,
-// renames and moves files, and must never do that inside the Photos library.
-// So each result opens as a file of its own in the cache folder:
-//   - the original, when it is on this Mac: an APFS clone (clonefile), which
-//     copies no bytes and which the library never sees change;
-//   - otherwise (Optimize Mac Storage keeps most originals in iCloud: 174 of
-//     200 on the owner's library, 2026-09-28) the best picture Photos keeps on
-//     this Mac, saved as "<name> (preview).jpg" so the viewer says what it is.
-// The folder is emptied when the chrome attaches and when it quits.
+// Opening (owner, 2026-09-28: "without writing"). The viewer reads each
+// result where Photos keeps it, read-only: the host refuses every write,
+// rename, move and Trash for a file inside a Photos library bundle, and for the
+// files registered with the list (shell/write_guard.h). An original only
+// iCloud has (Optimize Mac Storage: most of them) opens as Photos' best local
+// picture, "<name> (preview).jpg" in the cache folder; the original is fetched
+// from iCloud only when that item is actually viewed (the owner: "when viewing
+// but cleared after"), into the same folder, which is emptied when the next
+// list opens and when the chrome attaches. The index never downloads.
 import AppKit
 import AVFoundation
-import Darwin
 import ImageIO
 import Photos
 import UniformTypeIdentifiers
@@ -88,28 +87,42 @@ enum PhotosLibrary {
       .appendingPathComponent("Photos Library", isDirectory: true)
   }
 
-  /// Off the main thread: it deletes files.
+  /// Off the main thread: it deletes files (previews, on-view downloads).
   static func clearOpened() {
     let dir = openFolder
     DispatchQueue.global(qos: .utility).async { try? FileManager.default.removeItem(at: dir) }
   }
 
-  /// A file for each key, in the keys' order; nil where the asset is gone.
-  /// Four at a time. `progress` hears the count done. [worker-thread]
-  static func files(for keys: [String], progress: @escaping @Sendable (Int) -> Void) async -> [String?] {
-    var out = [String?](repeating: nil, count: keys.count)
-    await withTaskGroup(of: (Int, String?).self) { group in
+  /// The on-view iCloud downloads only: when the next list opens and at quit
+  /// (the owner: "cleared after"). Unlinking is quick even for a clip, and a
+  /// file the viewer still has open stays readable until it lets go.
+  static func clearDownloads() {
+    try? FileManager.default.removeItem(at: openFolder.appendingPathComponent("icloud", isDirectory: true))
+  }
+
+  /// What the viewer opens for an asset: where Photos keeps it (read-only),
+  /// or a preview in the cache when only iCloud has the original.
+  struct ViewerFile: Sendable {
+    let path: String
+    let preview: Bool
+  }
+
+  /// One per key, in the keys' order; nil where the asset is gone. Four at a
+  /// time. `progress` hears the count done. [worker-thread]
+  static func viewerFiles(for keys: [String], progress: @escaping @Sendable (Int) -> Void) async -> [ViewerFile?] {
+    var out = [ViewerFile?](repeating: nil, count: keys.count)
+    await withTaskGroup(of: (Int, ViewerFile?).self) { group in
       var next = 0
       var done = 0
       func add() {
         guard next < keys.count else { return }
         let i = next
         next += 1
-        group.addTask { (i, await file(for: keys[i])) }
+        group.addTask { (i, await viewerFile(for: keys[i])) }
       }
       for _ in 0..<4 { add() }
-      for await (i, path) in group {
-        out[i] = path
+      for await (i, file) in group {
+        out[i] = file
         done += 1
         progress(done)
         add()
@@ -118,42 +131,69 @@ enum PhotosLibrary {
     return out
   }
 
-  /// The asset's file for the viewer, made once per version: the folder is
-  /// named by the identifier and the modification time, so an edit in Photos
-  /// makes a new one.
-  static func file(for key: String) async -> String? {
+  static func viewerFile(for key: String) async -> ViewerFile? {
     guard let a = asset(key) else { return nil }
-    let stamp = Int64((a.modificationDate ?? a.creationDate ?? Date.distantPast).timeIntervalSince1970)
-    let folderName = identifier(key).replacingOccurrences(of: "/", with: "_") + "-\(stamp)"
-    let dir = openFolder.appendingPathComponent(folderName, isDirectory: true)
-    let fm = FileManager.default
-    if let existing = try? fm.contentsOfDirectory(atPath: dir.path).first(where: { !$0.hasPrefix(".") }) {
-      return dir.appendingPathComponent(existing).path
-    }
-    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-    let resources = PHAssetResource.assetResources(for: a)
-    let primary = resources.first { [.photo, .video, .fullSizePhoto, .fullSizeVideo].contains($0.type) } ?? resources.first
-    let base = ((primary?.originalFilename ?? "Photo") as NSString).deletingPathExtension
-
+    // The current rendition (the original, or Photos' render of an edit), in place.
     let local: URL? = a.mediaType == .video ? await videoURL(a) : await imageURL(a)
-    if let src = local {
-      let dst = dir.appendingPathComponent(base).appendingPathExtension(src.pathExtension)
-      if clonefile(src.path, dst.path, 0) == 0 || (try? fm.copyItem(at: src, to: dst)) != nil {
-        return dst.path
-      }
-    }
+    if let local, local.isFileURL { return ViewerFile(path: local.path, preview: false) }
     // Only in iCloud: the best picture this Mac has, said to be a preview.
-    guard let cg = bestLocalImage(a) else { return nil }
-    let dst = dir.appendingPathComponent("\(base) (preview)").appendingPathExtension("jpg")
-    guard let out = CGImageDestinationCreateWithURL(dst as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+    let dir = folder(for: a, key: key, kind: "preview")
+    let fm = FileManager.default
+    let dst = dir.appendingPathComponent("\(baseName(a)) (preview)").appendingPathExtension("jpg")
+    if fm.fileExists(atPath: dst.path) { return ViewerFile(path: dst.path, preview: true) }
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    guard let cg = bestLocalImage(a),
+          let out = CGImageDestinationCreateWithURL(dst as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
       return nil
     }
     CGImageDestinationAddImage(out, cg, [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary)
-    return CGImageDestinationFinalize(out) ? dst.path : nil
+    return CGImageDestinationFinalize(out) ? ViewerFile(path: dst.path, preview: true) : nil
   }
 
-  /// The current rendition's file (the original, or Photos' render of an
-  /// edit) when it is on this Mac.
+  /// The original from iCloud, for the item being viewed: the one network
+  /// request this chrome makes, on the user's own viewing, into the cache
+  /// folder (cleared after). nil when it cannot be had (offline, cancelled).
+  static func downloadOriginal(for key: String) async -> String? {
+    guard let a = asset(key) else { return nil }
+    let resources = PHAssetResource.assetResources(for: a)
+    let order: [PHAssetResourceType] = a.mediaType == .video
+      ? [.fullSizeVideo, .video] : [.fullSizePhoto, .photo]
+    guard let res = order.lazy.compactMap({ t in resources.first { $0.type == t } }).first else { return nil }
+    let dir = folder(for: a, key: key, kind: "icloud")
+    let dst = dir.appendingPathComponent(res.originalFilename)
+    let fm = FileManager.default
+    if fm.fileExists(atPath: dst.path) { return dst.path }
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    let part = dir.appendingPathComponent(".download")
+    try? fm.removeItem(at: part)
+    let o = PHAssetResourceRequestOptions()
+    o.isNetworkAccessAllowed = true
+    let ok = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+      PHAssetResourceManager.default().writeData(for: res, toFile: part, options: o) { error in
+        c.resume(returning: error == nil)
+      }
+    }
+    guard ok, !Task.isCancelled, (try? fm.moveItem(at: part, to: dst)) != nil else {
+      try? fm.removeItem(at: part)
+      return nil
+    }
+    return dst.path
+  }
+
+  /// One folder per asset version (an edit in Photos makes a new one).
+  private static func folder(for a: PHAsset, key: String, kind: String) -> URL {
+    let stamp = Int64((a.modificationDate ?? a.creationDate ?? Date.distantPast).timeIntervalSince1970)
+    let name = identifier(key).replacingOccurrences(of: "/", with: "_") + "-\(stamp)"
+    return openFolder.appendingPathComponent(kind, isDirectory: true).appendingPathComponent(name, isDirectory: true)
+  }
+
+  private static func baseName(_ a: PHAsset) -> String {
+    let resources = PHAssetResource.assetResources(for: a)
+    let primary = resources.first { [.photo, .video, .fullSizePhoto, .fullSizeVideo].contains($0.type) } ?? resources.first
+    return ((primary?.originalFilename ?? "Photo") as NSString).deletingPathExtension
+  }
+
+  /// The current rendition's file when it is on this Mac.
   private static func imageURL(_ a: PHAsset) async -> URL? {
     await withCheckedContinuation { (c: CheckedContinuation<URL?, Never>) in
       let o = PHContentEditingInputRequestOptions()
@@ -197,8 +237,18 @@ final class PhotosOpened {
   static let shared = PhotosOpened()
   private var keyOf: [String: String] = [:]
 
-  func remember(file: String, key: String) { keyOf[file] = key }
+  private var previews: Set<String> = []
+
+  func remember(file: String, key: String, preview: Bool = false) {
+    keyOf[file] = key
+    if preview { previews.insert(file) }
+  }
+  /// A cache preview of an iCloud-only original (its original is fetched on view).
+  func isPreview(_ path: String) -> Bool { previews.contains(path) }
   /// The pack's path for what the viewer shows: a library key, or the path itself.
   func key(for path: String) -> String { keyOf[path] ?? path }
-  func forget() { keyOf.removeAll() }
+  func forget() {
+    keyOf.removeAll()
+    previews.removeAll()
+  }
 }
