@@ -191,9 +191,11 @@ TEST_CASE("a query scans 100 k ViT-L frames in under 100 ms", "[ai][infer][vecto
   WARN("100 k x 768 int8 scan: " << best_ms << " ms");
 #if defined(NDEBUG)
   CHECK(best_ms < 100.0);  // optimised builds only: a Debug scan proves nothing
-#endif
   // The label bars (issue #85): filling them for every row is the one-off
-  // cost at load, and the filter is one compare a row in the scan.
+  // cost at load, and the filter is one compare a row in the scan. Optimised
+  // builds only: the fill is 100 k x 78 x 768 int8 dots, 218 s under ASan in
+  // Debug (it timed out CI's 15-minute test step), and the bar's semantics
+  // are the next test's. The timings are what this one is for.
   std::vector<float> vocab;
   for (std::size_t l = 0; l < mv::ai::labels().size(); ++l) {
     for (float& x : v) x = next();
@@ -211,7 +213,6 @@ TEST_CASE("a query scans 100 k ViT-L frames in under 100 ms", "[ai][infer][vecto
     (void)hits;
   }
   WARN("label bars for 100 k rows: " << fill_ms << " ms; the scan with them: " << labelled_ms << " ms");
-#if defined(NDEBUG)
   CHECK(labelled_ms < 100.0);
 #endif
 }
