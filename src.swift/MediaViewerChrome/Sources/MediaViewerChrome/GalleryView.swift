@@ -51,25 +51,30 @@ struct GalleryView: View {
             ) {
               if foldersOnly {
                 ForEach(store.folders.indices, id: \.self) { index in
-                  FolderTile(
-                    index: index, path: store.folders[index], size: cell,
-                    isCursor: index == store.folderCursor,
-                    card: store.card(for: store.folders[index])
-                  )
-                  .id("folder-\(index)")
-                  .onTapGesture { store.openFolder(at: index) }
+                  // A stale row of a list that just shrank: see FolderStrip.
+                  if store.folders.indices.contains(index) {
+                    FolderTile(
+                      index: index, path: store.folders[index], size: cell,
+                      isCursor: index == store.folderCursor,
+                      card: store.card(for: store.folders[index])
+                    )
+                    .id("folder-\(index)")
+                    .onTapGesture { store.openFolder(at: index) }
+                  }
                 }
               }
               if !store.names.isEmpty {
                 ForEach(store.names.indices, id: \.self) { index in
-                  GalleryCell(
-                    index: index, name: store.names[index], size: cell,
-                    isCurrent: index == store.currentIndex && store.folderCursor < 0,
-                    isMarked: store.markedNames.contains(store.names[index]),
-                    slot: store.slot(for: store.names[index])
-                  )
-                  .id(index)
-                  .onTapGesture { store.selectAndCloseGallery(index) }
+                  if store.names.indices.contains(index) {
+                    GalleryCell(
+                      index: index, name: store.names[index], size: cell,
+                      isCurrent: index == store.currentIndex && store.folderCursor < 0,
+                      isMarked: store.markedNames.contains(store.names[index]),
+                      slot: store.slot(for: store.names[index])
+                    )
+                    .id(index)
+                    .onTapGesture { store.selectAndCloseGallery(index) }
+                  }
                 }
               }
             }
@@ -119,13 +124,18 @@ private struct FolderStrip: View {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
           ForEach(store.folders.indices, id: \.self) { index in
-            FolderChip(
-              index: index, path: store.folders[index],
-              isCursor: index == store.folderCursor,
-              card: store.card(for: store.folders[index])
-            )
-            .id("chip-\(index)")
-            .onTapGesture { store.openFolder(at: index) }
+            // SwiftUI can re-run a row of the old list after the list shrank
+            // (a search or a person swapping the folder out): skip it, never
+            // index past the end.
+            if store.folders.indices.contains(index) {
+              FolderChip(
+                index: index, path: store.folders[index],
+                isCursor: index == store.folderCursor,
+                card: store.card(for: store.folders[index])
+              )
+              .id("chip-\(index)")
+              .onTapGesture { store.openFolder(at: index) }
+            }
           }
         }
       }
