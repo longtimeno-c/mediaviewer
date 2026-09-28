@@ -167,13 +167,27 @@ final class ImportModel: ObservableObject {
       let removable = s["removable"] as? Bool ?? false
       list.append(ImportSource(root: root, label: label, detail: detail, volumeID: s["volume_id"] as? String ?? "", removable: removable))
     }
-    let current = select ?? (selectedSource.isEmpty ? nil : selectedSource)
+    var current = select ?? (selectedSource.isEmpty ? nil : selectedSource)
+    // A one-off folder (opened from the viewer) stays listed while it exists; a
+    // card or image that has since gone is dropped, not left as an entry that
+    // can be neither imported from nor removed.
+    if let c = current, !list.contains(where: { $0.root == c }), !FileManager.default.fileExists(atPath: c) {
+      current = nil
+    }
     if let current, !list.contains(where: { $0.root == current }) {
       list.insert(ImportSource(root: current, label: current, detail: "", volumeID: "", removable: false), at: 0)
     }
     sources = list
     if let pick = list.first(where: { $0.root == current }) ?? list.first, pick.root != selectedSource || scan == 0 {
       load(pick)
+    } else if list.isEmpty && !selectedSource.isEmpty {
+      selectedSource = ""
+      title = ""
+      days = []
+      thumbs = [:]
+      requested = []
+      plan = 0
+      scan = 0
     }
   }
 

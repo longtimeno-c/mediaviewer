@@ -78,6 +78,18 @@ CFURLRef url_for(const std::string& path) {
                                                  static_cast<CFIndex>(path.size()), true);
 }
 
+// A disk image attached by hdiutil / DiskImages: the device model (and on
+// older systems the protocol) says so.
+bool is_disk_image(CFDictionaryRef desc) {
+  for (CFStringRef key : {kDADiskDescriptionDeviceModelKey, kDADiskDescriptionDeviceProtocolKey}) {
+    const void* v = CFDictionaryGetValue(desc, key);
+    if (!v || CFGetTypeID(v) != CFStringGetTypeID()) continue;
+    const std::string text = cf_string(static_cast<CFStringRef>(v));
+    if (text.find("Disk Image") != std::string::npos) return true;
+  }
+  return false;
+}
+
 // The DiskArbitration facts for a mounted path: UUID, label, removability,
 // the whole disk's BSD name. Leaves `out` as statfs filled it where DA is silent.
 void describe_with_da(const std::string& root, volume_info& out) {
@@ -108,7 +120,10 @@ void describe_with_da(const std::string& root, volume_info& out) {
   const bool removable = cf_bool(desc, kDADiskDescriptionMediaRemovableKey, false);
   const bool ejectable = cf_bool(desc, kDADiskDescriptionMediaEjectableKey, false);
   const bool internal = cf_bool(desc, kDADiskDescriptionDeviceInternalKey, true);
-  out.removable = removable || ejectable || !internal;
+  // A mounted .dmg reports itself ejectable and external, but it is not a
+  // card: an installer or an app's self-update image is not something to
+  // import from, and Import must not pop up for it.
+  out.removable = (removable || ejectable || !internal) && !is_disk_image(desc);
   if (DADiskRef whole = DADiskCopyWholeDisk(disk)) {
     if (const char* bsd = DADiskGetBSDName(whole)) out.device_key = std::string("bsd:") + bsd;
     CFRelease(whole);
@@ -116,6 +131,18 @@ void describe_with_da(const std::string& root, volume_info& out) {
 }
 
 #endif  // __APPLE__
+
+// A mount the user sees in Finder: under /Volumes (or the boot volume) and
+// not hidden. Updaters attach their images with -nobrowse under a temp dir
+// (Raycast: /private/var/folders/.../T/<uuid>); those are neither listed nor
+// reported as arrivals.
+#if defined(__APPLE__)
+bool user_visible_mount(const struct statfs& fs) {
+  if (fs.f_flags & MNT_DONTBROWSE) return false;  // system, VM, recovery, -nobrowse images
+  const std::string_view on(fs.f_mntonname);
+  return on == "/" || on.rfind("/Volumes/", 0) == 0;
+}
+#endif
 
 }  // namespace
 
@@ -152,10 +179,8 @@ result<std::vector<volume_info>> list_volumes() {
   if (n <= 0 || !mounts) return err(status::io);
   for (int i = 0; i < n; ++i) {
     const struct statfs& fs = mounts[i];
-    if (fs.f_flags & MNT_DONTBROWSE) continue;  // system, VM and recovery volumes
-    const std::string_view on(fs.f_mntonname);
-    if (on != "/" && on.rfind("/Volumes/", 0) != 0) continue;
-    if (auto v = volume_of(on)) out.push_back(std::move(*v));
+    if (!user_visible_mount(fs)) continue;
+    if (auto v = volume_of(fs.f_mntonname)) out.push_back(std::move(*v));
   }
   std::stable_sort(out.begin(), out.end(), [](const volume_info& a, const volume_info& b) {
     return a.removable && !b.removable;
@@ -252,6 +277,9 @@ struct volume_watcher::impl {
     const std::string bsd = bsd_of(disk);
     const std::string path = path_of(disk);
     if (!path.empty()) {
+      // Only what list_volumes() would list is an arrival.
+      struct statfs fs{};
+      if (::statfs(path.c_str(), &fs) != 0 || !user_visible_mount(fs)) return;
       self->mounted[bsd] = path;
       self->cb(self->user, volume_event::arrived, path.c_str());
     } else if (auto it = self->mounted.find(bsd); it != self->mounted.end()) {
