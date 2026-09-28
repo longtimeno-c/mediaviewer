@@ -157,12 +157,15 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // PR 29
     case edit_workspace: case crop_aspect_cycle: case crop_aspect_swap: case show_original:
     case show_original_release:
+    // ⌘F is always there: Local search's panel while the pack is loaded, file
+    // search otherwise (plan/16 "File search", 2026-09-28).
+    case search_open:
       return true;
     // Milestone G: only while the Import add-on is loaded (plan/18).
     case open_import: case import_now:
       return mv::shell::addon_commands_available(mv::shell::addon_family::import);
     // Milestone H: only while the AI pack is loaded (plan/17 "UI and commands").
-    case search_open: case search_similar: case search_next_match: case search_prev_match:
+    case search_similar: case search_next_match: case search_prev_match:
       return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
       return false;
@@ -484,6 +487,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
 - (BOOL)currentItemIsVideo;
+- (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
@@ -543,6 +547,17 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaSetDate:(const char*)value;                        // NULL removes
 - (uint64_t)metaFocusSeq;
 - (void)metaBlur;
+// File search (plan/16 "File search", 2026-09-28): shown over the gallery on
+// request; the field hands the keyboard back to the grid, and publishes what
+// its name filter shows.
+- (BOOL)openFileSearch;
+- (void)galleryBlur;
+- (void)setGalleryFilter:(uint64_t)generation
+                  active:(BOOL)active
+                   items:(const int32_t*)items
+                   count:(int32_t)itemCount
+                 folders:(const int32_t*)folders
+                   count:(int32_t)folderCount;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
 // PR 29 (plan/20): the Edit workspace, read and driven by the bridge.
@@ -697,6 +712,9 @@ extern "C" int32_t mv_chrome_marked_count(void) {
 }
 extern "C" bool mv_chrome_is_marked(int32_t index) {
   return g_chrome_app && [g_chrome_app isIndexMarked:index] == YES;
+}
+extern "C" bool mv_chrome_item_is_video(int32_t index) {
+  return g_chrome_app && [g_chrome_app itemIsVideoAtIndex:index] == YES;
 }
 // --- Video transport (PR 19). Commands are the same latched counters the keys
 // bump; the render thread consumes them. Status is what the render thread
@@ -991,6 +1009,24 @@ extern "C" uint64_t mv_chrome_meta_focus_seq(void) {
 }
 extern "C" void mv_chrome_meta_blur(void) {
   if (g_chrome_app) [g_chrome_app metaBlur];
+}
+extern "C" void mv_chrome_file_search(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) (void)[g_chrome_app openFileSearch];
+}
+extern "C" void mv_chrome_gallery_blur(void) {
+  if (g_chrome_app) [g_chrome_app galleryBlur];
+}
+extern "C" void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool active,
+                                             const int32_t* items, int32_t item_count,
+                                             const int32_t* folders, int32_t folder_count) {
+  if (!g_chrome_app) return;
+  [g_chrome_app setGalleryFilter:listing_generation
+                          active:active ? YES : NO
+                           items:items
+                           count:item_count
+                         folders:folders
+                           count:folder_count];
 }
 extern "C" void mv_chrome_meta_set_tag(const char* key, const char* value) {
   (void)mv::shell::crash::note_native_call();
@@ -1830,6 +1866,15 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::vector<std::string> _siblings;
   NSInteger _siblingIndex;
   std::uint64_t _siblingGeneration;
+  // File search (plan/16, 2026-09-28): the name filter the grid shows,
+  // in grid order, for the listing generation it was made from. While it is
+  // on and the gallery is up, the gallery's keys move among these only; the
+  // viewer itself always walks the whole folder (the folder model is not
+  // filtered).
+  BOOL _galleryFilterOn;
+  std::uint64_t _galleryFilterGeneration;
+  std::vector<std::size_t> _galleryFilterItems;
+  std::vector<NSInteger> _galleryFilterFolders;
   // `/` while the folder row is active: a short prefix matched against tile names.
   BOOL _folderFind;
   std::string _folderQuery;
@@ -2238,10 +2283,14 @@ static void MvAdoptNewDefaultViewerTypes() {
     preferredWidth,
   ]];
 
-  // Gallery: a full-container overlay (plan/16: "covers the canvas like an
-  // overlay"), hidden by default -- `G` shows it, a click or Esc hides it
-  // again. The canvas keeps rendering underneath; hiding this view is enough,
-  // no chrome_*_px accounting needed the way the filmstrip strip needs.
+  // Gallery: an overlay over the canvas below the command bar (plan/16:
+  // "covers the canvas like an overlay"), hidden by default -- `G` shows it, a
+  // click or Esc hides it again. The canvas keeps rendering underneath; hiding
+  // this view is enough, no chrome_*_px accounting needed the way the
+  // filmstrip strip needs. It starts under the bar, as the Windows gallery
+  // island does (chrome_host::show_gallery, y = bar): covering the bar hid the
+  // folder path, its search icon and a result list's "Back to folder" while
+  // the grid was up (owner report, 2026-09-28).
   self.galleryHost = [MVChromeHost makeGalleryView];
   self.galleryHost.hidden = YES;
   self.galleryHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2251,7 +2300,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   [NSLayoutConstraint activateConstraints:@[
     [self.galleryHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
     [self.galleryHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-    [self.galleryHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [self.galleryHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.galleryHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
@@ -3383,8 +3432,19 @@ static void MvAdoptNewDefaultViewerTypes() {
   return _galleryVisible;
 }
 - (void)setGalleryVisible:(BOOL)visible {
+  const BOOL changed = _galleryVisible != visible;
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  if (changed && visible) [self followGalleryFilter];
+  // File search belongs to the grid: it closes with it, filter and all.
+  if (changed && !visible) [MVChromeHost closeFileSearch];
+  // Closed with the search field focused: the keyboard goes back to the canvas.
+  if (!visible && self.window.firstResponder != self.view) {
+    NSResponder* first = self.window.firstResponder;
+    if ([first isKindOfClass:[NSView class]] && [(NSView*)first isDescendantOf:self.galleryHost]) {
+      [self.window makeFirstResponder:self.view];
+    }
+  }
   // Issue #44: nothing plays under the grid. The lab pauses a playing clip,
   // keeps one selected meanwhile on its first frame, and resumes only the clip
   // that was playing when the grid opened (player/playback_hold.h).
@@ -3426,6 +3486,15 @@ static void MvAdoptNewDefaultViewerTypes() {
 - (void)toggleGallery {
   [self setGalleryVisible:!_galleryVisible];
 }
+// File search (plan/16 "File search"): the grid comes up if it is not, and the
+// field above it takes the keyboard. NO with nothing listed to search.
+- (BOOL)openFileSearch {
+  if (_items.empty() && _subdirs.empty()) return NO;
+  if (!_galleryVisible) [self setGalleryVisible:YES];
+  [self.window makeFirstResponder:self.galleryHost];
+  [MVChromeHost openFileSearch];
+  return YES;
+}
 - (uint64_t)listingGeneration {
   return _listingGeneration;
 }
@@ -3433,6 +3502,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_items.empty()) return NO;
   const std::size_t i = _index.current();
   return i < _items.size() && mv::shell::is_video_name(_items[i].name_utf8);
+}
+- (BOOL)itemIsVideoAtIndex:(NSInteger)index {
+  return index >= 0 && static_cast<std::size_t>(index) < _items.size() &&
+         mv::shell::is_video_name(_items[static_cast<std::size_t>(index)].name_utf8);
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
@@ -3453,58 +3526,109 @@ static void MvAdoptNewDefaultViewerTypes() {
 - (BOOL)folderStrip {
   return !_subdirs.empty() && !_items.empty();
 }
+// File search (2026-09-28): whether its name filter decides what the
+// gallery's keys move over. Only while the grid is up and only for the listing
+// it was made from (a relist waits for Swift's next push, ≤ 150 ms).
+- (BOOL)galleryFiltered {
+  return _galleryVisible && _galleryFilterOn && _galleryFilterGeneration == _listingGeneration;
+}
+// Grid positions. Unfiltered, a position is the index itself; filtered, it is
+// the place among the tiles the filter shows.
+- (NSInteger)galleryItemCount {
+  return static_cast<NSInteger>([self galleryFiltered] ? _galleryFilterItems.size() : _items.size());
+}
+- (NSInteger)galleryFolderCount {
+  return static_cast<NSInteger>([self galleryFiltered] ? _galleryFilterFolders.size() : _subdirs.size());
+}
+- (std::size_t)galleryItemAt:(NSInteger)position {
+  return [self galleryFiltered] ? _galleryFilterItems[static_cast<std::size_t>(position)]
+                                : static_cast<std::size_t>(position);
+}
+- (NSInteger)galleryFolderAt:(NSInteger)position {
+  return [self galleryFiltered] ? _galleryFilterFolders[static_cast<std::size_t>(position)] : position;
+}
+// -1 when the selection is not among the tiles shown.
+- (NSInteger)galleryItemPosition {
+  const NSInteger cur = [self currentIndex];
+  if (![self galleryFiltered] || cur < 0) return cur;
+  const auto& v = _galleryFilterItems;
+  const auto it = std::find(v.begin(), v.end(), static_cast<std::size_t>(cur));
+  return it == v.end() ? -1 : static_cast<NSInteger>(it - v.begin());
+}
+- (NSInteger)galleryFolderPosition {
+  if (_folderCursor < 0 || ![self galleryFiltered]) return _folderCursor;
+  const auto& f = _galleryFilterFolders;
+  const auto it = std::find(f.begin(), f.end(), _folderCursor);
+  return it == f.end() ? -1 : static_cast<NSInteger>(it - f.begin());
+}
+
 - (void)galleryMoveRows:(NSInteger)rows {
   const NSInteger cols = std::max<NSInteger>(1, g_gallery_columns);
-  const NSInteger folders = static_cast<NSInteger>(_subdirs.size());
+  const NSInteger folders = [self galleryFolderCount];
+  const NSInteger count = [self galleryItemCount];
+  NSInteger fpos = [self galleryFolderPosition];
+  if (_folderCursor >= 0 && fpos < 0) {
+    // On a folder tile the filter hides (it only just changed): start over.
+    _folderCursor = -1;
+    if (folders > 0 && count == 0) fpos = 0;
+  }
   // Mixed folder: the tiles are one horizontal row above the photos, not a
   // block in the same grid. Down leaves that row for the first photo row.
   if ([self folderStrip]) {
-    if (_folderCursor >= 0) {
-      if (rows < 0) return;
-      const NSInteger col = std::min(_folderCursor, cols - 1);
+    if (fpos >= 0) {
+      if (rows < 0 || count == 0) return;
+      const NSInteger col = std::min(fpos, cols - 1);
       _folderCursor = -1;
-      [self selectIndex:static_cast<std::size_t>(
-                            std::min<NSInteger>(col, static_cast<NSInteger>(_items.size()) - 1))];
+      [self selectIndex:[self galleryItemAt:std::min(col, count - 1)]];
       return;
     }
-    const NSInteger cur = [self currentIndex];
+    const NSInteger cur = std::max<NSInteger>(0, [self galleryItemPosition]);
     if (rows < 0 && cur < cols) {
-      _folderCursor = std::min(cur, folders - 1);
+      if (folders > 0) _folderCursor = [self galleryFolderAt:std::min(cur, folders - 1)];
       return;
     }
   }
   // No images to move over (a folder of folders): the tiles are all there is.
-  if (_items.empty()) {
+  if (count == 0) {
     if (folders == 0) return;
-    if (_folderCursor < 0) _folderCursor = 0;
+    if (fpos < 0) fpos = 0;
   }
-  if (_folderCursor >= 0) {
-    NSInteger target = _folderCursor + rows * cols;
-    if (target < 0) return;  // already on the first row of tiles
+  if (fpos >= 0) {
+    NSInteger target = fpos + rows * cols;
+    if (target < 0) {
+      _folderCursor = [self galleryFolderAt:fpos];
+      return;  // already on the first row of tiles
+    }
     if (target >= folders) {
-      if (_folderCursor / cols < (folders - 1) / cols) {
+      if (fpos / cols < (folders - 1) / cols) {
         target = folders - 1;  // short last row: land on its final tile
       } else {
         // Down from the last row of tiles: onto the images, same column.
-        if (_items.empty()) return;
-        const NSInteger col = _folderCursor % cols;
+        if (count == 0) {
+          _folderCursor = [self galleryFolderAt:fpos];
+          return;
+        }
+        const NSInteger col = fpos % cols;
         _folderCursor = -1;
-        [self selectIndex:static_cast<std::size_t>(
-                              std::min<NSInteger>(col, static_cast<NSInteger>(_items.size()) - 1))];
+        [self selectIndex:[self galleryItemAt:std::min(col, count - 1)]];
         return;
       }
     }
-    _folderCursor = target;
+    _folderCursor = [self galleryFolderAt:target];
     return;
   }
-  const NSInteger count = static_cast<NSInteger>(_items.size());
-  const NSInteger cur = [self currentIndex];
+  const NSInteger cur = [self galleryItemPosition];
+  if (cur < 0) {
+    // The selection is filtered out: the first tile shown.
+    if (count > 0) [self selectIndex:[self galleryItemAt:0]];
+    return;
+  }
   NSInteger target = cur + rows * cols;
   if (target < 0) {
     // Up from the first row of images: onto the folder tiles, same column.
     if (folders > 0 && rows < 0) {
       const NSInteger col = cur % cols;
-      _folderCursor = std::min<NSInteger>(folders - 1, ((folders - 1) / cols) * cols + col);
+      _folderCursor = [self galleryFolderAt:std::min<NSInteger>(folders - 1, ((folders - 1) / cols) * cols + col)];
     }
     return;
   }
@@ -3514,20 +3638,79 @@ static void MvAdoptNewDefaultViewerTypes() {
     if (cur / cols >= (count - 1) / cols) return;
     target = count - 1;
   }
-  [self selectIndex:static_cast<std::size_t>(target)];
+  [self selectIndex:[self galleryItemAt:target]];
 }
 
 // Left / Right (and A / D) while the gallery's cursor is on a folder tile.
 // Returns NO when the keys should keep walking images.
 - (BOOL)folderCursorStep:(NSInteger)delta {
-  const NSInteger folders = static_cast<NSInteger>(_subdirs.size());
+  const NSInteger folders = [self galleryFolderCount];
   if (!_galleryVisible || folders == 0) return NO;
-  if (_folderCursor < 0) {
-    if (!_items.empty()) return NO;
-    _folderCursor = 0;
+  NSInteger pos = [self galleryFolderPosition];
+  if (pos < 0) {
+    if ([self galleryItemCount] > 0) return NO;
+    pos = 0;
   }
-  _folderCursor = std::clamp<NSInteger>(_folderCursor + delta, 0, folders - 1);
+  pos = std::clamp<NSInteger>(pos + delta, 0, folders - 1);
+  _folderCursor = [self galleryFolderAt:pos];
   return YES;
+}
+
+// Left / Right among the images while the name filter is on: the tiles it
+// shows, in order, stopping at either end. NO when unfiltered (the folder's
+// own walk applies).
+- (BOOL)galleryFilteredStep:(NSInteger)delta {
+  if (![self galleryFiltered]) return NO;
+  const NSInteger count = [self galleryItemCount];
+  if (count == 0) return YES;
+  const NSInteger pos = [self galleryItemPosition];
+  const NSInteger target = pos < 0 ? 0 : std::clamp<NSInteger>(pos + delta, 0, count - 1);
+  if (target != pos) [self selectIndex:[self galleryItemAt:target]];
+  return YES;
+}
+
+- (void)setGalleryFilter:(uint64_t)generation
+                  active:(BOOL)active
+                   items:(const int32_t*)items
+                   count:(int32_t)itemCount
+                 folders:(const int32_t*)folders
+                   count:(int32_t)folderCount {
+  _galleryFilterOn = active;
+  _galleryFilterGeneration = generation;
+  _galleryFilterItems.clear();
+  _galleryFilterFolders.clear();
+  if (!active) return;
+  const auto n_items = static_cast<std::size_t>(_items.size());
+  const auto n_folders = static_cast<NSInteger>(_subdirs.size());
+  if (items) {
+    _galleryFilterItems.reserve(static_cast<std::size_t>(std::max(0, itemCount)));
+    for (int32_t i = 0; i < itemCount; ++i) {
+      if (items[i] >= 0 && static_cast<std::size_t>(items[i]) < n_items) {
+        _galleryFilterItems.push_back(static_cast<std::size_t>(items[i]));
+      }
+    }
+  }
+  if (folders) {
+    for (int32_t i = 0; i < folderCount; ++i) {
+      if (folders[i] >= 0 && folders[i] < n_folders) _galleryFilterFolders.push_back(folders[i]);
+    }
+  }
+  [self followGalleryFilter];
+}
+
+// The selection follows the filter: a folder tile or an image that is no
+// longer shown gives way to the first one that is (plan/17). Also when the
+// grid comes back after the viewer walked onto a tile the filter hides.
+- (void)followGalleryFilter {
+  if (![self galleryFiltered]) return;
+  if (_folderCursor >= 0 && [self galleryFolderPosition] < 0) {
+    _folderCursor = !_galleryFilterFolders.empty() && _galleryFilterItems.empty()
+                        ? _galleryFilterFolders.front()
+                        : -1;
+  }
+  if (_folderCursor < 0 && !_galleryFilterItems.empty() && [self galleryItemPosition] < 0) {
+    [self selectIndex:_galleryFilterItems.front()];
+  }
 }
 
 - (NSInteger)folderCursor {
@@ -4501,11 +4684,13 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       ++_snap.game_view_seq; [self pokeSnapshot]; return YES;
     case prev:
       if ([self folderCursorStep:-1]) return YES;
+      if ([self galleryFilteredStep:-1]) return YES;
       if (_items.empty()) return NO;
       [self navigatePrev];
       return YES;
     case next:
       if ([self folderCursorStep:1]) return YES;
+      if ([self galleryFilteredStep:1]) return YES;
       // Space with no folder open starts the empty-window runner (a soak
       // keeps the lab's sweep).
       if (_items.empty()) {
@@ -4561,6 +4746,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
         [self openSubfolderAtIndex:_folderCursor];
         return YES;
       }
+      // The name filter shows no image: there is nothing selected to open.
+      if ([self galleryFiltered] && _galleryFilterItems.empty()) return YES;
       [self setGalleryVisible:NO];
       return YES;
     case folder_up: return [self navigateUp];
@@ -4600,12 +4787,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return !paths.empty();
     }
     // Milestone H (plan/17 "UI and commands"): the AI chrome runs these; the
-    // key falls through, as if unbound, while the pack is not loaded.
+    // key falls through, as if unbound, while the pack is not loaded. ⌘F
+    // then opens its panel once a starting pack attaches, or file search
+    // when nothing is on its way (plan/16 "File search", 2026-09-28).
     case search_open:
     case search_similar:
     case search_next_match:
     case search_prev_match: {
-      if (!mv::shell::addon_command_available(command)) return NO;
+      if (!mv::shell::addon_command_available(command)) {
+        if (command != search_open) return NO;
+        if ([MVChromeHost openLocalSearchWhenStarting]) return YES;
+        return [self openFileSearch];
+      }
       const char* name = command == search_open         ? "search_open"
                          : command == search_similar    ? "search_similar"
                          : command == search_next_match ? "search_next_match"
@@ -6295,6 +6488,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (uint64_t)metaFocusSeq { return _metaFocusSeq; }
 - (void)metaBlur { [self.window makeFirstResponder:self.view]; }
+- (void)galleryBlur { [self.window makeFirstResponder:self.view]; }
 
 - (void)scheduleMetaWrite:(NSTimeInterval)delay {
   [_metaWriteDebounce invalidate];
@@ -7035,7 +7229,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 // this app has none on purpose: on the canvas those keys are the viewer's own
 // commands (⌘A marks all, ⌘C copies the image, ⌘Z undoes an edit), routed by
 // keyDown:. So when a text editor is first responder in the key window (every
-// SwiftUI TextField: the ⌘F panel, Settings, People,
+// SwiftUI TextField: file search, the ⌘F panel, Settings, People,
 // Import, the metadata pane), the chord is handed to it here and goes no
 // further; anywhere else the event is left alone and routes exactly as before.
 // ⌃A stays the field's own "start of line"; Esc is never taken here.

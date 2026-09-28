@@ -169,6 +169,21 @@ struct chrome_popup_args {
 
 static_assert(sizeof(chrome_popup_args) == 8, "keep in sync with ChromePopupArgs");
 
+// File search (plan/16 "File search", 2026-09-28): find by name over the
+// gallery, base app, no index. The island answers whether it took the key;
+// if not, native does what it did without it. Mirrored by
+// IslandHost.FileSearch.cs (entry GallerySearch).
+enum class gallery_search_action : std::int32_t {
+  open = 0,    // Ctrl+F without the Local search command: see gallery_search_answer
+  escape = 1,  // Esc while a text control has focus: clear the field, then close it
+  step = 2,    // Left / Right (arg -1 / +1): walk the name filter's matches
+};
+enum class gallery_search_answer : std::int32_t {
+  took = 0,           // done: the field has the keyboard, or Local search's panel opens
+  declined = 1,       // not taken (also: no chrome entry, nothing listed)
+  needs_gallery = 2,  // open: show the gallery; the field opens once it is shown
+};
+
 struct chrome_table_args {
   std::uint64_t utf8;  // describe_commands() text, valid for the call only
   std::int32_t length;
@@ -758,6 +773,10 @@ class chrome_host {
     show_popup(chrome_popup::export_image, last_choice);
   }
   void navigate_gallery(std::int32_t direction, std::int32_t index) noexcept;
+  // File search. Optional entry: a chrome without it declines everything,
+  // and every caller falls back to its old behaviour.
+  [[nodiscard]] gallery_search_answer gallery_search(gallery_search_action action,
+                                                     std::int32_t arg = 0) noexcept;
   void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
   void apply_browse(std::int32_t folder_cursor, bool can_go_up, const std::string& crumbs,
                     bool finding = false, const std::string& query = {}) noexcept;
@@ -842,6 +861,7 @@ class chrome_host {
   chrome_entry_fn detach_editor_ = nullptr;
   bool editor_attached_ = false;
   chrome_entry_fn navigate_gallery_ = nullptr;
+  chrome_entry_fn gallery_search_ = nullptr;  // optional: file search
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn apply_browse_ = nullptr;
   chrome_entry_fn update_restart_ = nullptr;

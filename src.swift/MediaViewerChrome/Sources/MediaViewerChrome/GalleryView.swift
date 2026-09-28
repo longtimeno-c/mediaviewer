@@ -8,11 +8,18 @@
 // (also main_mac.mm's keyDown:); this view lays out the grid and reports how
 // many cells sit in a row (mv_chrome_set_gallery_columns) so the host can do
 // that arithmetic.
+//
+// File search (plan/16 "File search", 2026-09-28) sits above the tiles while
+// it is open (FileSearch.swift). Its name filter only chooses which tiles are
+// drawn: each tile keeps its identity (its index in the listing) and its
+// thumbnail slot, so filtering reloads nothing and a tile that stays shown is
+// not rebuilt.
 import MVChromeBridge
 import SwiftUI
 
 struct GalleryView: View {
   @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var search = FileSearchStore.shared
   private let spacing: CGFloat = 8
   private let inset: CGFloat = 12
 
@@ -30,7 +37,20 @@ struct GalleryView: View {
       let columns = max(1, Int((geo.size.width - 2 * inset + spacing) / (cell + spacing)))
       let mixed = !store.folders.isEmpty && !store.names.isEmpty
       let foldersOnly = !store.folders.isEmpty && store.names.isEmpty
+      // The layout (strip or big tiles) follows the folder, not the filter,
+      // so typing never flips it; the filter picks the tiles inside it.
+      // Clamped to the listing on screen: the filter's indices are one render
+      // behind when the listing is swapped (a result list opening in place of
+      // the folder has no folders), and a stale index traps in folders[index].
+      let shownItems = (search.items ?? Array(store.names.indices)).filter { $0 < store.names.count }
+      let shownFolders = (search.folders ?? Array(store.folders.indices)).filter { $0 < store.folders.count }
+      let filteredEmpty = search.items != nil && shownItems.isEmpty && shownFolders.isEmpty
       VStack(spacing: 0) {
+        if search.isOpen {
+          FileSearchBar()
+            .padding(.horizontal, inset)
+            .padding(.top, 10)
+        }
         if (mixed || foldersOnly), let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
             .font(.callout.weight(.medium))
@@ -38,8 +58,8 @@ struct GalleryView: View {
             .padding(.horizontal, inset)
             .padding(.top, 8)
         }
-        if mixed {
-          FolderStrip(cell: 44)
+        if mixed && !shownFolders.isEmpty {
+          FolderStrip(cell: 44, shown: shownFolders)
             .padding(.horizontal, inset)
             .padding(.vertical, 8)
         }
@@ -50,7 +70,7 @@ struct GalleryView: View {
               spacing: spacing
             ) {
               if foldersOnly {
-                ForEach(store.folders.indices, id: \.self) { index in
+                ForEach(shownFolders, id: \.self) { index in
                   // A stale row of a list that just shrank: see FolderStrip.
                   if store.folders.indices.contains(index) {
                     FolderTile(
@@ -64,12 +84,13 @@ struct GalleryView: View {
                 }
               }
               if !store.names.isEmpty {
-                ForEach(store.names.indices, id: \.self) { index in
+                ForEach(shownItems, id: \.self) { index in
                   if store.names.indices.contains(index) {
                     GalleryCell(
                       index: index, name: store.names[index], size: cell,
                       isCurrent: index == store.currentIndex && store.folderCursor < 0,
                       isMarked: store.markedNames.contains(store.names[index]),
+                      isClip: store.isClip(at: index),
                       slot: store.slot(for: store.names[index])
                     )
                     .id(index)
@@ -83,7 +104,9 @@ struct GalleryView: View {
             .padding(inset)
             .frame(maxWidth: .infinity)
 
-            if store.folders.isEmpty && store.names.isEmpty {
+            if filteredEmpty {
+              FileSearchNotice()
+            } else if store.folders.isEmpty && store.names.isEmpty {
               Text("No supported photos or videos in this folder")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
@@ -120,12 +143,14 @@ struct GalleryView: View {
 private struct FolderStrip: View {
   @ObservedObject private var store = FolderStore.shared
   let cell: CGFloat
+  /// The folder indices file search shows (all of them when off).
+  let shown: [Int]
 
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
-          ForEach(store.folders.indices, id: \.self) { index in
+          ForEach(shown, id: \.self) { index in
             // SwiftUI can re-run a row of the old list after the list shrank
             // (a search or a person swapping the folder out): skip it, never
             // index past the end.
@@ -262,6 +287,7 @@ private struct GalleryCell: View {
   let size: CGFloat
   let isCurrent: Bool
   let isMarked: Bool
+  let isClip: Bool
   @ObservedObject var slot: ThumbSlot
 
   var body: some View {
@@ -284,6 +310,7 @@ private struct GalleryCell: View {
           RoundedRectangle(cornerRadius: 6)
             .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
         )
+        .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
       Text(name)
         .font(.caption)
@@ -297,3 +324,4 @@ private struct GalleryCell: View {
     .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }
+

@@ -301,6 +301,8 @@ public static partial class IslandHost
         if (slot.Interface is null || slot.Chrome is not null || _folderSession is null || slot.Busy) return;
         MediaViewerSession session = _folderSession;
         slot.Busy = true;
+        // The path bar's search icon shows while the pack starts.
+        if (slot == AiSlot) OnSearchLoadChanged();
         _ = Task.Run(() =>
         {
             try
@@ -317,6 +319,7 @@ public static partial class IslandHost
                 DispatcherQueueControllerTryEnqueue(() =>
                 {
                     slot.Busy = false;
+                    if (slot == AiSlot) OnSearchLoadChanged();
                     SetSlotStatus(slot, why);
                 });
             }
@@ -351,6 +354,8 @@ public static partial class IslandHost
         finally
         {
             slot.Busy = false;
+            // Attached (already shown) or failed: the search icon follows.
+            if (slot == AiSlot) OnSearchLoadChanged();
             RefreshAddonRow();
             RefreshLocalSearch();
         }

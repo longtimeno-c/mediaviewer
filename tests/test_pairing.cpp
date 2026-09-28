@@ -112,6 +112,21 @@ TEST_CASE("non-ASCII stems: identical bytes pair, case-only differences stay two
   REQUIRE(folded.size() == 2);
 }
 
+TEST_CASE("clips by extension: the gallery's play badge", "[io][pairing]") {
+  using mv::io::is_video_name;
+  REQUIRE(is_video_name("IMG_0001.MOV"));
+  REQUIRE(is_video_name("clip.mp4"));
+  REQUIRE(is_video_name("a.b.WebM"));
+  REQUIRE(is_video_name("C0001.m4v"));
+  REQUIRE(is_video_name("00001.ts"));
+  REQUIRE_FALSE(is_video_name("IMG_0001.HEIC"));
+  REQUIRE_FALSE(is_video_name("DSC_0001.NEF"));
+  REQUIRE_FALSE(is_video_name("mov"));
+  REQUIRE_FALSE(is_video_name("clip.mp4.jpg"));
+  REQUIRE_FALSE(is_video_name("clip."));
+  REQUIRE_FALSE(is_video_name("clip.mpeg4"));
+}
+
 TEST_CASE("pairing a 4000-file dump is scan-fast and exact", "[io][pairing][perf]") {
   std::vector<dir_entry> entries;
   constexpr int stems = 2000;

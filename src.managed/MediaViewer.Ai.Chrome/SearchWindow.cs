@@ -1221,7 +1221,7 @@ internal sealed class SearchWindow : Window, IDisposable
             _empty.Children.Add(examples);
             _empty.Children.Add(Centre(_look.Text(
                 "A name finds that person; “quotes” find words said in videos; - leaves something out; " +
-                "video or photo picks a kind; in:, before: and after: use the file's date.", 12)));
+                "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name.", 12)));
         }
         _empty.Visibility = Visibility.Visible;
         FadeIn(_empty);

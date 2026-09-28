@@ -132,6 +132,11 @@ uint64_t mv_chrome_marks_generation(void);
 int32_t mv_chrome_marked_count(void);
 bool mv_chrome_is_marked(int32_t index);
 
+// Is the item at `index` a clip (a video, by extension: the same test the host
+// uses to route it to the player)? Drives the gallery's play badge. False for
+// an out-of-range index. [main-thread]
+bool mv_chrome_item_is_video(int32_t index);
+
 // The gallery reports how many cells it currently lays out per row, so the
 // host can move the selection by row for Up/Down/W/S (plan/16 `G` row).
 // Values < 1 are clamped to 1. [main-thread]
@@ -179,6 +184,21 @@ int32_t mv_chrome_folder_cursor(void);
 // The in-progress folder-name query (`/`, folder row active). False when idle;
 // an empty string means the query is open and nothing has been typed yet.
 bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
+// File search (plan/16 "File search", 2026-09-28): find by name over the
+// gallery, base app, no index. Shows the gallery if it is hidden and gives the
+// field above the grid the keyboard. The path bar's search icon runs it when
+// Local search is not installed; ⌘F falls back to it the same way. [main-thread]
+void mv_chrome_file_search(void);
+// The field gives the keyboard back to the grid (Esc, Down, Return).
+void mv_chrome_gallery_blur(void);
+// What file search's name filter shows, in grid order: item indices and
+// child-folder indices of the listing `listing_generation` (mv_chrome_listing_generation).
+// While `active` and the gallery is up, its keys move among these only and a
+// selection the filter hides moves to the first tile shown; the viewer still
+// walks the whole folder. A stale generation is ignored until the next push.
+void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool active,
+                                  const int32_t* items, int32_t item_count,
+                                  const int32_t* folders, int32_t folder_count);
 
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.

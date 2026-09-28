@@ -4603,6 +4603,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
   using mv::shell::back_target;
   switch (target) {
     case back_target::blur_text:
+      // File search's field: the first Esc clears it, the second closes it
+      // and hands the keyboard to the grid. The island says whether it had it.
+      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::escape) ==
+                                      mv::shell::gallery_search_answer::took) {
+        return;
+      }
       // PR 12: Esc in the comment field drops the edit. The pane forgets the
       // draft before focus leaves, so leaving it does not commit.
       push_meta_edit(app, true);
@@ -5407,7 +5413,19 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case search_similar:
     case search_next_match:
     case search_prev_match: {
-      if (!mv::shell::addon_command_available(command)) return false;
+      if (!mv::shell::addon_command_available(command)) {
+        // Ctrl+F without the pack (plan/16 "File search", 2026-09-28): the
+        // island opens Local search's panel once a starting pack attaches,
+        // or file search, which may need the gallery shown first.
+        if (command != search_open) return false;
+        using mv::shell::gallery_search_answer;
+        const gallery_search_answer answer = app->chrome.gallery_search(mv::shell::gallery_search_action::open);
+        if (answer == gallery_search_answer::needs_gallery) {
+          set_gallery(app, true);
+          return app->gallery_visible;
+        }
+        return answer == gallery_search_answer::took;
+      }
       const std::int32_t kind = command == search_open        ? 0
                                 : command == search_similar   ? 1
                                 : command == search_next_match ? 2
@@ -5431,10 +5449,19 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     case prev:
       if (folder_cursor_step(app, -1)) return true;
+      // File search: with a name filter on, Left walks its matches.
+      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::step, -1) ==
+                                      mv::shell::gallery_search_answer::took) {
+        return true;
+      }
       folder_step(app, -1);
       return true;
     case next:
       if (folder_cursor_step(app, 1)) return true;
+      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::step, 1) ==
+                                      mv::shell::gallery_search_answer::took) {
+        return true;
+      }
       // Nothing open: Space starts the empty-window runner (dino_game.h).
       if (folder_count(app) == 0 && app->mode == open_mode::none && !video_mode(app)) {
         app->game_on = true;

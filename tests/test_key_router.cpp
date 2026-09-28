@@ -773,9 +773,9 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     pos = end + 1;
     ++lines;
   }
-  // Import's two rows (plan/18) and the AI pack's four (plan/17) are absent
-  // while their add-ons are.
-  REQUIRE(lines + 6 >= default_bindings().size());
+  // Import's two rows (plan/18) and three of the AI pack's four (plan/17) are
+  // absent while their add-ons are; Ctrl+F is file search then.
+  REQUIRE(lines + 5 >= default_bindings().size());
 }
 
 TEST_CASE("Import's commands exist only while the add-on is installed", "[shell][router]") {
@@ -790,6 +790,17 @@ TEST_CASE("Import's commands exist only while the add-on is installed", "[shell]
   mv::shell::set_addon_commands_available(false);
   REQUIRE(mv::shell::is_addon_command(command_id::open_import));
   REQUIRE_FALSE(mv::shell::is_addon_command(command_id::copy_to));
+}
+
+TEST_CASE("Ctrl+F is listed without the AI pack: file search", "[shell][router]") {
+  using mv::shell::addon_family;
+  mv::shell::set_addon_commands_available(addon_family::ai, false);
+  const std::string absent = mv::shell::describe_commands();
+  REQUIRE(absent.find("\tSearch…\tCtrl+F\t") != std::string::npos);
+  REQUIRE(absent.find("\tFind similar\t") == std::string::npos);
+  mv::shell::set_addon_commands_available(addon_family::ai, true);
+  REQUIRE(mv::shell::describe_commands().find("\tFind similar\t") != std::string::npos);
+  mv::shell::set_addon_commands_available(addon_family::ai, false);
 }
 
 TEST_CASE("Esc closes an open popup before anything else", "[shell][router]") {

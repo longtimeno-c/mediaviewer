@@ -127,8 +127,10 @@ class face_models {
                                                                  const face_spec& spec,
                                                                  const session_options& options);
   [[nodiscard]] result<std::vector<face_box>> detect(const rgb_view& img) const;
-  // 128 floats, L2-normalised.
-  [[nodiscard]] result<std::vector<float>> embed(const rgb_view& img, const face_box& face) const;
+  // 128 floats, L2-normalised: the mean of the aligned face and its mirror
+  // (flip averaging). `aligned`, if given, receives the 3 x 112 x 112 crop.
+  [[nodiscard]] result<std::vector<float>> embed(const rgb_view& img, const face_box& face,
+                                                 std::vector<float>* aligned = nullptr) const;
   [[nodiscard]] const face_spec& spec() const noexcept { return spec_; }
 
  private:

@@ -291,6 +291,9 @@ expected chrome_host::load() noexcept {
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
+  // Optional the same way: file search (Ctrl+F without Local search, its Esc
+  // and filter steps).
+  gallery_search_ = get_entry(L"GallerySearch");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -936,6 +939,20 @@ void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) n
   // Two int32 fields, mirrored by ChromeGalleryNavigationArgs in the island.
   std::int32_t args[] = {direction, index};
   (void)navigate_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+gallery_search_answer chrome_host::gallery_search(gallery_search_action action,
+                                                  std::int32_t arg) noexcept {
+  if (!attached_ || !gallery_attached_ || !gallery_search_) return gallery_search_answer::declined;
+  // Two int32 fields: action and its argument. Back: a gallery_search_answer
+  // (an HRESULT from a failed call counts as declined).
+  std::int32_t args[] = {static_cast<std::int32_t>(action), arg};
+  const std::int32_t hr = gallery_search_(args, static_cast<std::int32_t>(sizeof(args)));
+  switch (hr) {
+    case 0: return gallery_search_answer::took;
+    case 2: return gallery_search_answer::needs_gallery;
+    default: return gallery_search_answer::declined;
+  }
 }
 
 void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noexcept {
