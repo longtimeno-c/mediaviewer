@@ -9,10 +9,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 
 #include "addons/ai/platform.h"
+#include "addons/ai/query.h"
 #include "core/json.h"
 
 namespace mv::ai {
@@ -157,6 +159,7 @@ expected engine::start() {
       m.path = std::move(a.path);
       m.kind = a.kind;
       m.root = a.root_id;
+      m.mtime = a.mtime;
       assets_.emplace(a.id, std::move(m));
     }
   }
@@ -758,6 +761,59 @@ std::uint64_t engine::settled_answer_gen() const {
   return answer_gen_.load();
 }
 
+// People refinement (plan/17): re-checks faces against their person's core,
+// in passes. Control thread, only while indexing is idle. The snapshot and
+// the commit hold the People lock (a full snapshot reads every face vector:
+// ~50 MB at 100 k faces); the compute between them holds nothing, so a worker
+// or a People call never waits on it, and a user correction made meanwhile
+// wins (the commit skips any face that changed).
+void engine::refine_people_pass() {
+  refine_snapshot snap;
+  refine_params params;
+  std::string spec;
+  std::uint32_t dim = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_ || !faces_->refine_due()) return;
+    params.join = faces_model_->same_person();
+    params.core = faces_model_->same_person();
+    spec = faces_model_->spec_key();
+    dim = faces_model_->dim();
+    snap = faces_->refine_begin(false);
+  }
+  refine_input in;
+  in.dim = dim;
+  in.emb = snap.emb;
+  in.faces = snap.faces;
+  in.fixed = snap.fixed;
+  in.named = snap.named;
+  in.regroup = true;
+  in.cancel = &stopping_;
+  const refine_output out = refine_people(in, params);
+  if (stopping_) return;
+  refine_stats st;
+  std::size_t rescanned = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return;  // People was turned off or reopened
+    st = faces_->refine_commit(snap, out);
+    // Borderline stills from before flip averaging: the People pass looks
+    // at them again, and the new vectors replace the old box by box.
+    for (std::int64_t asset : st.recheck_assets) {
+      if (faces_->rescan(asset, spec)) {
+        faces_scanned_.erase(asset);
+        ++rescanned;
+      }
+    }
+  }
+  if (rescanned > 0) {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+    work_cv_.notify_all();
+  }
+  if (st.changed()) post(MV_ADDON_EVENT_AI_PEOPLE);
+}
+
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {
   faces_parts out;
   if (!s.faces) return out;
@@ -992,8 +1048,14 @@ void engine::control_loop() {
         std::lock_guard wl(work_m_);
         idle = queue_exhausted_ && busy_workers_ == 0;
       }
-      std::lock_guard lock(models_m_);
-      if (faces_ && idle && faces_->consolidate(0.55f) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+      {
+        // Mean pairwise cosine now (faces_db::consolidate): 0.42 is just past
+        // same_person's 0.40, where 0.55 to a normalised centroid let two
+        // clusters whose faces averaged ~0.28 merge.
+        std::lock_guard lock(models_m_);
+        if (faces_ && idle && faces_->consolidate(0.42f) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+      }
+      if (idle && !host_.should_yield()) refine_people_pass();
       last_consolidate = t;
     }
     std::uint32_t state;
@@ -1038,6 +1100,7 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     m.dir_key = dir_of(m.key);
     m.kind = batch[i].kind;
     m.root = root.id;
+    m.mtime = batch[i].mtime;
   }
   batch.clear();
   return true;
@@ -2249,8 +2312,9 @@ bool engine::wait_search(std::uint64_t id, int ms) {
   return search_cv_.wait_for(lock, std::chrono::milliseconds(ms), [&] { return searches_.count(id) != 0; });
 }
 
-std::function<bool(std::int64_t)> engine::scope_filter(const std::string& scope_dir, std::uint32_t scope,
-                                                       std::uint32_t kinds) const {
+std::shared_ptr<std::set<std::int64_t>> engine::scope_assets(const std::string& scope_dir, std::uint32_t scope,
+                                                             std::uint32_t kinds, std::int64_t from_unix,
+                                                             std::int64_t to_unix) const {
   const std::string key = scope_dir.empty() ? std::string() : path_key(scope_dir);
   if ((kinds & MV_AI_KIND_ALL) == 0) kinds |= MV_AI_KIND_ALL;
   // A snapshot of the qualifying assets, so the scan never takes assets_m_.
@@ -2260,6 +2324,7 @@ std::function<bool(std::int64_t)> engine::scope_filter(const std::string& scope_
     for (const auto& [id, m] : assets_) {
       const std::uint32_t k = m.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
       if (!(k & kinds)) continue;
+      if (m.mtime < from_unix || m.mtime >= to_unix) continue;
       if (scope != MV_AI_SCOPE_ALL && !key.empty()) {
         if (scope == MV_AI_SCOPE_FOLDER && m.dir_key != key) continue;
         if (scope == MV_AI_SCOPE_TREE && m.dir_key != key && !under(m.dir_key, key)) continue;
@@ -2267,6 +2332,12 @@ std::function<bool(std::int64_t)> engine::scope_filter(const std::string& scope_
       allowed->insert(id);
     }
   }
+  return allowed;
+}
+
+std::function<bool(std::int64_t)> engine::scope_filter(const std::string& scope_dir, std::uint32_t scope,
+                                                       std::uint32_t kinds) const {
+  auto allowed = scope_assets(scope_dir, scope, kinds);
   return [allowed](std::int64_t a) { return allowed->count(a) != 0; };
 }
 
@@ -2428,14 +2499,19 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
 
 std::vector<float> engine::query_vector(const loaded_clip& answer, const std::string& text) {
   if (!answer.model) return {};
-  const std::string key = answer.meta.spec_key + "\x1f" + text;
+  // The last noun in both numbers, averaged (query::number_forms): "mountain"
+  // and "mountains" are one query, so one of them cannot fall through the
+  // "nothing found" rule while the other answers (2026-09-28, plan/17).
+  const std::vector<std::string> forms = query::number_forms(text);
+  std::string key = answer.meta.spec_key;
+  for (const std::string& f : forms) key += "\x1f" + f;
   {
     std::lock_guard lock(text_cache_m_);
     for (const auto& [k, v] : text_cache_) {
       if (k == key) return v;
     }
   }
-  auto v = answer.model->embed_text(text);
+  auto v = forms.size() == 1 ? answer.model->embed_text(forms.front()) : answer.model->embed_text_mean(forms);
   if (!v) return {};
   std::lock_guard lock(text_cache_m_);
   text_cache_.emplace_front(key, *v);
@@ -2443,113 +2519,233 @@ std::vector<float> engine::query_vector(const loaded_clip& answer, const std::st
   return *v;
 }
 
-std::uint64_t engine::search_text(const std::string& query, const std::string& scope_dir,
+std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
+                                                   const std::function<bool(std::int64_t)>& allow, bool gate,
+                                                   std::uint32_t precision) {
+  // The query is embedded by the tower whose vectors are in the matrix, and
+  // both are read as one pair: a migration finishing (or a reload) meanwhile
+  // runs the query again on the new pair.
+  for (int attempt = 0; attempt < 3 && !stopping_; ++attempt) {
+    const std::uint64_t gen = settled_answer_gen();
+    loaded_clip answer;
+    {
+      std::lock_guard lock(models_m_);
+      answer.model = answer_.model;
+      answer.meta = answer_.meta;
+    }
+    const std::vector<float> v = query_vector(answer, text);
+    std::vector<vector_store::hit> hits;
+    if (!v.empty()) {
+      text_thresholds t;
+      t.result_margin = answer.meta.result_margin;
+      t.query_margin = answer.meta.query_margin;
+      t.query_z = answer.meta.query_z;
+      t.result_z = answer.meta.result_z;
+      // The rule, its noise scaling and the Precision setting: find_text
+      // (vectors.h), the same function the calibration runs (plan/17).
+      hits = find_text(store_, v, allow, t, precision_scale::at(precision), gate);
+    }
+    if (answer_gen_.load() != gen) continue;
+    return hits;
+  }
+  return {};
+}
+
+std::uint64_t engine::search_text(const std::string& query_text, const std::string& scope_dir,
                                   std::uint32_t scope, std::uint32_t kinds) {
-  return submit([this, query, scope_dir, scope, kinds](search_state& st) {
+  return submit([this, query_text, scope_dir, scope, kinds](search_state& st) {
     if (!models_ready_) return;
     std::uint32_t precision;
     {
       std::lock_guard lock(settings_m_);
       precision = settings_.precision;
     }
-    std::string q = query;
-    std::uint32_t k = kinds;
-    // People (PR 24): "photos of Anna", "videos of Anna", or a name inside a
-    // description ("Anna on a skateboard") narrows to that person's assets.
-    std::set<std::int64_t> person_assets;
-    bool person_only = false;
+    // The query language (query.h, plan/17 "Query syntax"): people, what the
+    // picture shows, words said, kinds and file dates, each narrowing the
+    // others. Names come from faces.db (PR 24) when people are on.
+    const query::parsed parsed = query::parse(query_text);
+    query::plan plan;
+    std::map<std::int64_t, std::vector<face_row>> faces_by_person;
     {
       std::lock_guard lock(models_m_);
+      std::vector<query::person_name> names;
       if (faces_) {
-        std::string lower = lower_ascii(q);
-        for (const char* prefix : {"pull up all the photos that include ", "show me photos of ", "show me ",
-                                   "photos of ", "pictures of ", "images of ", "videos of ", "clips of ",
-                                   "all photos of "}) {
-          if (lower.rfind(prefix, 0) == 0) {
-            if (std::strncmp(prefix, "videos", 6) == 0 || std::strncmp(prefix, "clips", 5) == 0) {
-              k = MV_AI_KIND_VIDEOS;
+        for (auto& [id, name] : faces_->names()) names.push_back({id, std::move(name)});
+      }
+      plan = query::resolve(parsed, names);
+      if (faces_) {
+        const auto want = [&](std::int64_t p) {
+          if (!faces_by_person.count(p)) faces_by_person[p] = faces_->faces_of(p);
+        };
+        for (const auto& group : plan.people) {
+          for (std::int64_t p : group) want(p);
+        }
+        for (std::int64_t p : plan.not_people) want(p);
+        for (std::int64_t p : plan.people_first) want(p);
+      }
+    }
+    if (plan.impossible) return;
+    // Kinds: the chips' and the query's, both.
+    std::uint32_t k = kinds;
+    if (plan.kinds != 0) {
+      const std::uint32_t chip = (kinds & MV_AI_KIND_ALL) == 0 ? MV_AI_KIND_ALL : (kinds & MV_AI_KIND_ALL);
+      const std::uint32_t both = chip & plan.kinds;
+      if (both == 0) return;
+      k = (kinds & ~MV_AI_KIND_ALL) | both;
+    }
+    auto allowed = scope_assets(scope_dir, scope, k, plan.from_unix, plan.to_unix);
+    // file: / -file: (plan/17 "Query syntax"): the name, one pass over the
+    // assets the scope, kind and dates left.
+    if (plan.has_files()) {
+      std::lock_guard lock(assets_m_);
+      for (auto it = allowed->begin(); it != allowed->end();) {
+        const auto m = assets_.find(*it);
+        const bool keep = m != assets_.end() && query::name_matches(m->second.path, plan.files, plan.not_files);
+        it = keep ? std::next(it) : allowed->erase(it);
+      }
+    }
+    const auto keep_only = [&](const std::set<std::int64_t>& keep) {
+      for (auto it = allowed->begin(); it != allowed->end();) {
+        it = keep.count(*it) ? std::next(it) : allowed->erase(it);
+      }
+    };
+    // Every person named (a group: any of its people).
+    for (const auto& group : plan.people) {
+      std::set<std::int64_t> any;
+      for (std::int64_t p : group) {
+        for (const face_row& f : faces_by_person[p]) any.insert(f.asset);
+      }
+      keep_only(any);
+    }
+    for (std::int64_t p : plan.not_people) {
+      for (const face_row& f : faces_by_person[p]) allowed->erase(f.asset);
+    }
+    // Words said: every quoted phrase, in the transcript (as consecutive words).
+    struct said {
+      std::int64_t asset;
+      std::int64_t start_ms;
+      std::string text;
+    };
+    std::vector<said> said_rows;
+    if (!plan.phrases.empty() || !plan.not_phrases.empty()) {
+      std::vector<std::vector<std::string>> want, not_want;
+      for (const std::string& p : plan.phrases) want.push_back(query::words_of(p));
+      for (const std::string& p : plan.not_phrases) not_want.push_back(query::words_of(p));
+      std::vector<std::set<std::int64_t>> have(want.size());
+      std::set<std::int64_t> drop;
+      {
+        std::lock_guard lock(speech_m_);
+        for (const speech_row& r : speech_rows_) {
+          if (!allowed->count(r.asset)) continue;
+          bool any = false;
+          for (std::size_t i = 0; i < want.size(); ++i) {
+            const bool open = plan.last_phrase_open && i + 1 == want.size();
+            if (query::contains_phrase(r.words, want[i], open)) {
+              have[i].insert(r.asset);
+              any = true;
             }
-            q = q.substr(std::strlen(prefix));
-            lower = lower.substr(std::strlen(prefix));
-            break;
           }
-        }
-        std::vector<std::int64_t> people = faces_->people_named(q);
-        if (!people.empty()) {
-          person_only = true;
-        } else {
-          // A known name as a word inside the query.
-          for (const person_row& p : faces_->people(1)) {
-            if (p.name.empty()) continue;
-            const std::string n = lower_ascii(p.name);
-            const std::size_t at = lower.find(n);
-            const auto boundary = [&](std::size_t i) { return i >= lower.size() || !std::isalnum(static_cast<unsigned char>(lower[i])); };
-            if (at != std::string::npos && (at == 0 || boundary(at - 1)) && boundary(at + n.size())) {
-              people.push_back(p.id);
-            }
+          for (const auto& w : not_want) {
+            if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
           }
+          if (any) said_rows.push_back({r.asset, r.start_ms, r.text});
         }
-        for (std::int64_t p : people) {
-          for (const face_row& f : faces_->faces_of(p)) person_assets.insert(f.asset);
+      }
+      for (const auto& h : have) keep_only(h);
+      for (std::int64_t a : drop) allowed->erase(a);
+    }
+    // -beach: what a picture search for it finds is left out.
+    for (const std::string& t : plan.not_text) {
+      const auto current = [allowed](std::int64_t a) { return allowed->count(a) != 0; };
+      for (const vector_store::hit& h : picture_hits(t, current, true, precision)) allowed->erase(h.asset);
+    }
+    if (allowed->empty()) return;
+    const auto allow = [allowed](std::int64_t a) { return allowed->count(a) != 0; };
+    const auto face_hits = [&](const std::vector<std::int64_t>& people) {
+      std::vector<vector_store::hit> hits;
+      for (std::int64_t p : people) {
+        for (const face_row& f : faces_by_person[p]) {
+          if (allowed->count(f.asset)) hits.push_back(vector_store::hit{f.asset, f.pts_ms, f.score, 0});
         }
-        if (person_only) {
-          std::map<std::int64_t, std::vector<std::pair<std::int64_t, float>>> by_asset;
-          for (std::int64_t p : people) {
-            for (const face_row& f : faces_->faces_of(p)) by_asset[f.asset].push_back({f.pts_ms, f.score});
-          }
-          const auto allow = scope_filter(scope_dir, scope, k);
-          std::vector<vector_store::hit> hits;
-          for (auto& [asset, list] : by_asset) {
-            if (!allow(asset)) continue;
-            for (auto& [ms, score] : list) hits.push_back(vector_store::hit{asset, ms, score, 0});
-          }
-          std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
-          group(st, hits, false, 0);
-          finish(st);
-          return;
-        }
+      }
+      std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+      return hits;
+    };
+    // A lone word that starts a name: those people first ("Trist" while it is
+    // typed), then whatever the word describes.
+    if (!plan.people_first.empty()) {
+      for (const vector_store::hit& h : face_hits(plan.people_first)) {
+        add_row(st, h.asset, h.pts_ms, h.score, 100.0f + h.score, MV_AI_MATCH_PICTURE, {});
       }
     }
     std::uint32_t find = k & (MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH);
     if (find == 0) find = MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH;
-    auto allow = scope_filter(scope_dir, scope, k);
-    if (!person_assets.empty()) {
-      auto base = allow;
-      allow = [base, person_assets](std::int64_t a) { return person_assets.count(a) && base(a); };
-    }
-    if (find & MV_AI_FIND_PICTURES) {
-      // The query is embedded by the tower whose vectors are in the matrix,
-      // and both are read as one pair: a migration finishing (or a reload)
-      // meanwhile runs the query again on the new pair.
-      for (int attempt = 0; attempt < 3 && !stopping_; ++attempt) {
-        const std::uint64_t gen = settled_answer_gen();
-        loaded_clip answer;
-        {
-          std::lock_guard lock(models_m_);
-          answer.model = answer_.model;
-          answer.meta = answer_.meta;
+    if (!plan.text.empty()) {
+      // A description, among the assets the rest allowed. Narrowed by a
+      // person or a phrase, it ranks without "nothing found" (as a name in the
+      // words always did).
+      if (find & MV_AI_FIND_PICTURES) {
+        group(st, picture_hits(plan.text, allow, !plan.narrows(), precision), true, -1.0f, MV_AI_MATCH_PICTURE, true);
+      }
+      merge_audio(st, plan.text, allow, find, precision);
+    } else if (!plan.people.empty()) {
+      std::vector<std::int64_t> everyone;
+      for (const auto& g : plan.people) everyone.insert(everyone.end(), g.begin(), g.end());
+      group(st, face_hits(everyone), false, 0);
+    } else if (!plan.phrases.empty()) {
+      for (said& r : said_rows) {
+        if (!allowed->count(r.asset)) continue;
+        std::string snippet = r.text.size() > 160 ? r.text.substr(0, 157) + "..." : std::move(r.text);
+        add_row(st, r.asset, r.start_ms, 0.7f, 1.4f, MV_AI_MATCH_SPEECH, std::move(snippet));
+      }
+      said_rows.clear();
+    } else if (plan.people_first.empty() &&
+               (plan.kinds != 0 || plan.has_dates() || plan.has_files() || !plan.not_people.empty() ||
+                !plan.not_text.empty() || !plan.not_phrases.empty())) {
+      // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
+      // newest first.
+      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (mtime, asset)
+      {
+        std::lock_guard lock(assets_m_);
+        for (std::int64_t a : *allowed) {
+          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.mtime, a});
         }
-        const std::vector<float> v = query_vector(answer, q);
-        std::vector<vector_store::hit> hits;
-        if (!v.empty()) {
-          text_thresholds t;
-          t.result_margin = answer.meta.result_margin;
-          t.query_margin = answer.meta.query_margin;
-          t.query_z = answer.meta.query_z;
-          t.result_z = answer.meta.result_z;
-          // The rule, its noise scaling and the Precision setting: find_text
-          // (vectors.h), the same function the calibration runs (plan/17).
-          hits = find_text(store_, v, allow, t, precision_scale::at(precision), person_assets.empty());
-        }
-        if (answer_gen_.load() != gen) continue;
-        // Already through the "nothing found" test: group only ranks.
-        group(st, hits, true, -1.0f, MV_AI_MATCH_PICTURE, true);
-        break;
+      }
+      std::sort(by_date.begin(), by_date.end(), std::greater<>());
+      if (by_date.size() > 1000) by_date.resize(1000);
+      for (std::size_t i = 0; i < by_date.size(); ++i) {
+        add_row(st, by_date[i].second, -1, 0, static_cast<float>(by_date.size() - i), 0, {});
       }
     }
-    merge_audio(st, q, allow, find, precision);
+    // The phrase under a result that matched on something else too.
+    for (said& r : said_rows) {
+      if (!st.row_of.count(r.asset)) continue;
+      std::string snippet = r.text.size() > 160 ? r.text.substr(0, 157) + "..." : std::move(r.text);
+      add_row(st, r.asset, r.start_ms, 0.0f, -1.0f, MV_AI_MATCH_SPEECH, std::move(snippet));
+    }
     finish(st);
   });
+}
+
+std::string engine::suggest_json(const std::string& text) {
+  std::vector<query::person_name> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (auto& [id, name] : faces_->names()) names.push_back({id, std::move(name)});
+    }
+  }
+  json::writer w;
+  w.begin_array();
+  for (const query::suggestion& s : query::suggest(text, names)) {
+    w.begin_object();
+    w.key("id").integer(s.id);
+    w.key("name").string(s.name);
+    w.key("completion").string(s.completion);
+    w.end_object();
+  }
+  w.end_array();
+  return w.take();
 }
 
 std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_ms, const std::string& scope_dir,

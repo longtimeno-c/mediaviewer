@@ -326,6 +326,53 @@ final class SearchModel: ObservableObject {
     run(keepSelection: true)
   }
 
+  // MARK: people while typing (plan/17 "Query syntax")
+
+  /// A named person the word being typed could be ("Trist" → Tristan). Tab
+  /// takes the first; `completion` is the whole field with the word replaced.
+  struct PersonSuggestion: Identifiable, Equatable {
+    let id: Int64
+    let name: String
+    let completion: String
+  }
+  @Published private(set) var suggestions: [PersonSuggestion] = []
+  private var suggestTask: Task<Void, Never>?
+
+  /// The pack names people for the last word ([worker-thread]: a faces.db
+  /// read), off the main actor; an answer for words since changed is dropped.
+  private func refreshSuggestions() {
+    suggestTask?.cancel()
+    let text = query  // untrimmed: a trailing space means the word is finished
+    guard reference == nil, table.has(\mv_ai_api.suggest_json),
+          let last = text.last, !last.isWhitespace else {
+      if !suggestions.isEmpty { suggestions = [] }
+      return
+    }
+    let t = table
+    suggestTask = Task { [weak self] in
+      let list = await Task.detached(priority: .userInitiated) { () -> [PersonSuggestion] in
+        let json = t.json { t.a.suggest_json?(t.ctx, text, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+        var found: [PersonSuggestion] = []
+        for case let o as [String: Any] in (parseJSON(json) as? [Any]) ?? [] {
+          guard let name = o["name"] as? String, let completion = o["completion"] as? String else { continue }
+          found.append(PersonSuggestion(id: int64(o["id"]), name: name, completion: completion))
+        }
+        return found
+      }.value
+      guard let self, !Task.isCancelled, self.query == text else { return }
+      if self.suggestions != list { self.suggestions = list }
+    }
+  }
+
+  /// Tab or a click on a name: the field takes its completion (and searches).
+  @discardableResult
+  func acceptSuggestion(_ s: PersonSuggestion? = nil) -> Bool {
+    guard let pick = s ?? suggestions.first else { return false }
+    suggestions = []
+    query = pick.completion
+    return true
+  }
+
   // MARK: searching
 
   /// Typing: ~200 ms debounce, then search.
@@ -334,6 +381,7 @@ final class SearchModel: ObservableObject {
     if startedIndexing != nil { startedIndexing = nil }
     openWhenReady = nil
     focusResultsWhenReady = false
+    refreshSuggestions()
     debounce?.cancel()
     debounce = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 200_000_000)

@@ -72,6 +72,8 @@ final class FolderStore: ObservableObject {
   @Published private(set) var currentIndex: Int = -1
   /// Item names by index; replaced wholesale when the host relists.
   @Published private(set) var names: [String] = []
+  /// Parallel to `names`: which items are clips, for the gallery's play badge.
+  @Published private(set) var clips: [Bool] = []
   /// Names of marked items (plan/16 marks), rebuilt only when the host's marks
   /// generation or listing changes.
   @Published private(set) var markedNames: Set<String> = []
@@ -109,7 +111,9 @@ final class FolderStore: ObservableObject {
   // Decode order, oldest first, for eviction.
   private var decoded: [String] = []
   private let maxDecoded = 300
-  private var listingGeneration: UInt64 = .max
+  /// The host's listing generation the names above were read at (file search
+  /// tags its filter with it).
+  private(set) var listingGeneration: UInt64 = .max
   private var marksGeneration: UInt64 = .max
   private var pollTimer: Timer?
 
@@ -142,6 +146,8 @@ final class FolderStore: ObservableObject {
       reloadListTitle()
       reloadNames(count: count)
       reloadFolders()
+      // File search closes on another folder and re-filters new names.
+      FileSearchStore.shared.listingChanged(self)
     }
     let cursor = Int(mv_chrome_folder_cursor())
     if cursor != folderCursor { folderCursor = cursor }
@@ -210,6 +216,7 @@ final class FolderStore: ObservableObject {
       }
       fresh.append(ok ? String(cString: buf) : "")
     }
+    clips = (0..<count).map { mv_chrome_item_is_video(Int32($0)) }
     names = fresh
     if count == 0 {
       slots.removeAll()
@@ -327,6 +334,10 @@ final class FolderStore: ObservableObject {
     if fresh != markedNames { markedNames = fresh }
   }
 
+  func isClip(at index: Int) -> Bool {
+    clips.indices.contains(index) && clips[index]
+  }
+
   func name(at index: Int) -> String {
     names.indices.contains(index) ? names[index] : ""
   }
@@ -339,6 +350,25 @@ final class FolderStore: ObservableObject {
   }
 
   func select(_ index: Int) { mv_chrome_select_index(Int32(index)) }
+
+  /// The files a drag from the cell at `index` carries: every marked item in
+  /// listing order when that cell is marked (the marks are the multi-selection,
+  /// as for ⌘C and F7/F8), else that item alone. Full paths of the originals,
+  /// with the thumbnail already decoded for each (nil when not in memory). No
+  /// file I/O: paths come from the host's listing, images from the slots.
+  func dragFiles(from index: Int) -> [(path: String, image: CGImage?)] {
+    guard names.indices.contains(index) else { return [] }
+    var indices = [index]
+    if markedCount > 1, mv_chrome_is_marked(Int32(index)) {
+      indices = names.indices.filter { mv_chrome_is_marked(Int32($0)) }
+    }
+    return indices.compactMap { i in
+      let path = Self.bridgeString { mv_chrome_item_path(Int32(i), $0, $1) }
+      guard !path.isEmpty else { return nil }
+      return (path, slots[names[i]]?.image)
+    }
+  }
+
 
   func selectAndCloseGallery(_ index: Int) { mv_chrome_select_index_and_close_gallery(Int32(index)) }
 

@@ -62,6 +62,29 @@ public static partial class IslandHost
 
     private static ISearchChrome? SearchChrome => AiSlot.Chrome as ISearchChrome;
 
+    // The path bar's search icon was clicked while the pack was still starting:
+    // the panel opens when it attaches.
+    private static bool _searchOpenPending;
+
+    // Installed, verified and being loaded, not yet attached.
+    private static bool AiStarting() =>
+        AiSlot.Chrome is null && AiSlot.Busy && !AiSlot.Removing && _aiInstalling != AiSlot && AiSlot.Usable;
+
+    // The path bar's search icon: the panel now, or once the pack attaches;
+    // without Local search, file search (IslandHost.FileSearch.cs), the
+    // gallery coming up first when it is hidden.
+    private static void OpenSearchFromPath()
+    {
+        if (OpenFileSearch() == FileSearchNeedsGallery && !_galleryVisible) Send(Command.ToggleGallery);
+    }
+
+    // A load of the AI pack started or failed: the icon follows.
+    private static void OnSearchLoadChanged()
+    {
+        if (SearchChrome is null && !AiStarting()) _searchOpenPending = false;
+        UpdatePathSearchButton();
+    }
+
     // ---- IAddonHost2 services ------------------------------------------------------
 
     private static AddonCurrentItem HostCurrentItem()
@@ -180,6 +203,12 @@ public static partial class IslandHost
         }
         // The folder trail's search icon (IslandHost.Gallery.cs).
         UpdatePathSearchButton();
+        if (_searchOpenPending)
+        {
+            _searchOpenPending = false;
+            try { SearchChrome?.RunCommand(SearchCommand.Open); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        }
     }
 
     private static void OnSearchChromeDetached()
@@ -188,6 +217,7 @@ public static partial class IslandHost
         HostSetIndexingPill(null, false);
         HostSetScrubMarkers(Array.Empty<long>(), -1);
         _pendingListGallery = null;
+        _searchOpenPending = false;
         UpdatePathSearchButton();
     }
 

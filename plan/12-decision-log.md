@@ -2761,6 +2761,68 @@ answer goes only to the model that owns it (Mac), the result-list fixes, and "In
 inside the ⌘F panel. The `gallery_search` id was the last appended command, so removing it
 renumbers nothing.
 
+**Amended the same day (owner report on 0.1.15, Mac: "there is no gallery search icon on the far
+right of the folders at the top").** The icon was built and shown (the pack was loaded; the
+window's accessibility tree had the 26 pt button at the end of the path), but the Mac gallery
+was a full-container overlay pinned to the top of the window, over the command bar: with the
+grid up, the path, its icon and a result list's "Back to folder" were all hidden. The old bar
+lived inside the gallery, so removing it left nothing there. The Mac gallery now starts below
+the command bar, as the Windows gallery island always has (`chrome_host::show_gallery`,
+y = bar); the Mac Edit button already assumed the bar was visible over the grid. Also: the
+icon shows while the pack is starting at launch as well as once loaded (a click then opens the
+panel when it attaches), on both hosts, because it replaces the bar and should be there
+whenever Local search is installed; and the Mac folder name hugs its text (a bare `maxWidth`
+frame took 200 pt and left the icon adrift beside a short name).
+
+## 2026-09-28 — File search: the path icon and Ctrl+F without Local search
+
+Owner, reviewing the path-bar search icon: "the search button is built into the native app and
+isn't visible when AI search isn't installed — can we still have basic file search? … ensure
+file search is still an option as that doesn't require indexing." Removing the gallery search
+bar (above) also removed its Names filter, the only search that needed no add-on.
+
+**Decision.** The path icon is always shown on both hosts. With Local search loaded (or
+starting at launch) it and `Ctrl+F` / `⌘F` open its panel, as before. Without it they open
+**file search** (plan/16 "File search"): the old bar's Names mode, shown only on request, over
+the grid (the gallery comes up if hidden). Its Contents mode, the pack's index control and the
+`gallery_search` / `/` binding stay removed; `/` in the gallery is still the folder row's find.
+`search_open` stays an AI-family command for routing, but `describe_commands` always lists it
+(renamed "Search…") and the hosts fall back to file search when the pack's command is absent.
+Scope: the folder already listed, no subfolder walk, no index (a recursive name search would
+be I/O on a worker and is not in this change).
+
+**Amended the same day (owner: "add it as a keyword like file:[filename] as the search for when
+local search is installed").** The pack's query language gains `file:` / `-file:` (plan/17
+"Query syntax"): the file's name contains the text, folded like the rest, as a filter with the
+scope, kind and dates, so it combines (`file:IMG_12 beach`) or stands alone (newest first). It
+matches indexed files only; the base file search covers a folder with no index.
+
+**Not decided here** (issue #79): letting add-ons contribute to the chrome generally (theme,
+settings, styles, search providers) so Local search could extend the base search box instead of
+owning the button.
+
+## 2026-09-28 — Local search: broad subjects pass "nothing found"; one query language
+
+Owner: "mountain" found nothing while "mountains" found hundreds, "Trist" found nothing until
+"Tristan" was typed, and he wanted people, words said and a description in one query.
+
+- **Reversed in part: the 2026-09-27 margin penalty.** "Nothing found" asked 1.5 x the margin
+  of any query whose best assets scored no better than noise. A subject in half the library
+  scores like noise because it is the mean: on the owner's 503-asset index "mountain" (z 1.75
+  against noise's 2.40) missed 0.060 with 0.059, "mountains" passed with 0.070. A query whose
+  rows clear the calibrated margin on max(5, 1 %) of the assets is now believable at that
+  margin (`scan_stats::over_margin`). Nonsense there reached 3 of 503; the gap is thin and
+  measured on one library, so the COCO `[.calibration]` re-run is owed (plan/17).
+- **Number pairing.** A picture query's last noun is embedded as the mean of its singular and
+  plural (one batched text-tower run), so the two spellings are one query.
+- **Query language in the pack** (`src/addons/ai/query.*`, plan/17 "Query syntax"): names
+  (whole, first name, `@prefix`, and a lone word that starts a name shows them first), quoted
+  words said, `or`, `-` exclusions, kinds, and file dates. People side by side now mean all of
+  them in one photo ("Tristan and Aaryan" was either); `or` is either. `mv.ai.1` gains
+  `suggest_json` (appended) for names while typing; Tab completes on both platforms. Quoted
+  words search speech transcripts only: the index has no OCR.
+- The search field's placeholder no longer suggests "dog on a beach" (owner).
+
 ## 2026-09-28 — The Mac's Photos library as a Local search source (issue #72): built, with its owner calls left open
 
 Issue #72 asked whether Local search can index the Photos library (iCloud Photos on a Mac)

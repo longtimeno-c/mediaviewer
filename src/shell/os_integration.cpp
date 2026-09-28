@@ -31,6 +31,18 @@ bool same_folder(std::string_view a, std::string_view b) noexcept {
          std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return fold(x) == fold(y); });
 }
 
+// `parent` is `home` or inside it. Case-insensitive (ASCII) and either
+// separator, as same_folder is: Windows paths ("C:\Users\Ana" against
+// "c:\users\ana\Pictures") and the Mac's case-insensitive volumes alike.
+bool under_home(std::string_view parent, std::string_view home) noexcept {
+  if (home.size() <= 1 || parent.size() < home.size()) return false;
+  if (!std::equal(home.begin(), home.end(), parent.begin(),
+                  [](char x, char y) { return fold(x) == fold(y); })) {
+    return false;
+  }
+  return parent.size() == home.size() || is_separator(parent[home.size()]);
+}
+
 }  // namespace
 
 std::vector<std::string> push_recent_folder(std::vector<std::string> list, std::string_view utf8_dir,
@@ -106,8 +118,7 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
     copy_utf8(dir.substr(sep + 1), out.label[i], sizeof(out.label[i]));
     std::string_view parent = dir.substr(0, sep == 0 ? 1 : sep);
     if (parent.size() == 2 && parent[1] == ':') parent = dir.substr(0, 3);  // "D:\"
-    if (home.size() > 1 && parent.size() >= home.size() && parent.substr(0, home.size()) == home &&
-        (parent.size() == home.size() || is_separator(parent[home.size()]))) {
+    if (under_home(parent, home)) {
       out.where[i][0] = '~';
       copy_utf8(parent.substr(home.size()), out.where[i] + 1, sizeof(out.where[i]) - 1);
     } else {

@@ -59,6 +59,11 @@ class embedder {
   [[nodiscard]] virtual expected embed_images(std::span<const rgb_view> images,
                                               std::vector<float>& out) = 0;
   [[nodiscard]] virtual result<std::vector<float>> embed_text(std::string_view utf8) = 0;
+  // The normalised mean of several texts' embeddings: a query's singular and
+  // plural (addons/ai/query.h number_forms), so "mountain" and "mountains"
+  // ask the same thing. This default embeds them one by one; the CLIP tower
+  // runs them as one batch.
+  [[nodiscard]] virtual result<std::vector<float>> embed_text_mean(std::span<const std::string> texts);
   // Why a provider asked for was not used (Settings' reason line), once known.
   [[nodiscard]] virtual provider_fault fault() const noexcept { return provider_fault::none; }
   // Still finishing an open in the background (Core ML compiling it): the
@@ -82,6 +87,7 @@ class clip_model final : public embedder {
   [[nodiscard]] backend on() const noexcept override { return image_->on(); }
   [[nodiscard]] expected embed_images(std::span<const rgb_view> images, std::vector<float>& out) override;
   [[nodiscard]] result<std::vector<float>> embed_text(std::string_view utf8) override;
+  [[nodiscard]] result<std::vector<float>> embed_text_mean(std::span<const std::string> texts) override;
   [[nodiscard]] const clip_spec& spec() const noexcept { return spec_; }
 
  private:
@@ -121,8 +127,10 @@ class face_models {
                                                                  const face_spec& spec,
                                                                  const session_options& options);
   [[nodiscard]] result<std::vector<face_box>> detect(const rgb_view& img) const;
-  // 128 floats, L2-normalised.
-  [[nodiscard]] result<std::vector<float>> embed(const rgb_view& img, const face_box& face) const;
+  // 128 floats, L2-normalised: the mean of the aligned face and its mirror
+  // (flip averaging). `aligned`, if given, receives the 3 x 112 x 112 crop.
+  [[nodiscard]] result<std::vector<float>> embed(const rgb_view& img, const face_box& face,
+                                                 std::vector<float>* aligned = nullptr) const;
   [[nodiscard]] const face_spec& spec() const noexcept { return spec_; }
 
  private:

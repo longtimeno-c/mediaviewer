@@ -293,6 +293,9 @@ class upgrading_clip final : public infer::embedder {
     return model()->embed_images(images, out);
   }
   result<std::vector<float>> embed_text(std::string_view utf8) override { return model()->embed_text(utf8); }
+  result<std::vector<float>> embed_text_mean(std::span<const std::string> texts) override {
+    return model()->embed_text_mean(texts);
+  }
 
  private:
   std::shared_ptr<infer::embedder> model() const {
@@ -341,10 +344,15 @@ class ort_faces final : public face_analyzer {
     std::vector<face_in> out;
     // The clearest dozen: a crowd shot does not need every face clustered.
     if (boxes.size() > 12) boxes.resize(12);
+    std::vector<float> crop;
     for (const infer::face_box& b : boxes) {
-      auto e = m_->embed(view, b);
+      auto e = m_->embed(view, b, &crop);
       if (!e) continue;
       face_in f;
+      // How far the refinement may trust this face (plan/17 "People refinement").
+      f.quality = face_quality(b.score, std::min(b.w, b.h), crop_sharpness(crop, 112),
+                               landmark_frontalness(std::span<const float, 10>(b.landmarks)));
+      f.tta = true;
       f.x = std::clamp(b.x / static_cast<float>(img.width), 0.0f, 1.0f);
       f.y = std::clamp(b.y / static_cast<float>(img.height), 0.0f, 1.0f);
       f.w = std::clamp(b.w / static_cast<float>(img.width), 0.0f, 1.0f - f.x);

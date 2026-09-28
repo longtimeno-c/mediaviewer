@@ -24,10 +24,12 @@ struct FilmstripView: View {
               FilmstripCell(
                 index: index, name: store.names[index], isCurrent: index == store.currentIndex,
                 isMarked: store.markedNames.contains(store.names[index]),
+                isClip: store.isClip(at: index),
                 slot: store.slot(for: store.names[index])
               )
               .id(index)
               .onTapGesture { store.select(index) }
+              .fileDrag { store.dragFiles(from: index) }
             }
           }
         }
@@ -52,6 +54,7 @@ private struct FilmstripCell: View {
   let name: String
   let isCurrent: Bool
   let isMarked: Bool
+  let isClip: Bool
   // Observed per cell: a thumbnail arriving re-renders this cell only.
   @ObservedObject var slot: ThumbSlot
 
@@ -71,6 +74,7 @@ private struct FilmstripCell: View {
       RoundedRectangle(cornerRadius: 4)
         .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
     )
+    .overlay { if isClip { PlayBadge(diameter: 28) } }
     .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
     // Cells are identified by index: a new listing (a result list replacing

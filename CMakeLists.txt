@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.15
+  VERSION 0.1.16
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -716,7 +716,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   dwmapi
   shell32
   comdlg32
-  ole32     # CoInitializeEx for the WinUI island STA
+  ole32     # OleInitialize for the WinUI island STA (and its drag-and-drop)
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
   comctl32  # LoadIconWithScaleDown (PR 8 window icon)
@@ -1132,8 +1132,10 @@ if(MV_BUILD_TESTS)
   # MV_AI_EVAL_DIR) point at staged files; tools/ai-bench runs the timings.
   add_executable(mv_ai_tests
     tests/test_ai_engine.cpp
+    tests/test_ai_face_refine.cpp
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
+    tests/test_ai_query.cpp
   )
   target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_io
     Catch2::Catch2WithMain)

@@ -216,6 +216,66 @@ result<std::vector<float>> clip_model::embed_text(std::string_view utf8) {
   return err(status::corrupt);
 }
 
+namespace {
+
+// Adds a unit vector into `sum` (sized on the first).
+void accumulate(std::vector<float>& sum, std::span<const float> v) {
+  if (sum.empty()) sum.assign(v.size(), 0.0f);
+  float n = 0;
+  for (float x : v) n += x * x;
+  n = std::sqrt(n);
+  if (n <= 0) return;
+  for (std::size_t i = 0; i < v.size() && i < sum.size(); ++i) sum[i] += v[i] / n;
+}
+
+}  // namespace
+
+result<std::vector<float>> embedder::embed_text_mean(std::span<const std::string> texts) {
+  if (texts.empty()) return err(status::invalid_arg);
+  if (texts.size() == 1) return embed_text(texts.front());
+  std::vector<float> sum;
+  for (const std::string& t : texts) {
+    MV_TRY(auto v, embed_text(t));
+    accumulate(sum, v);
+  }
+  l2_normalise(sum);
+  return sum;
+}
+
+result<std::vector<float>> clip_model::embed_text_mean(std::span<const std::string> texts) {
+  if (texts.empty()) return err(status::invalid_arg);
+  if (texts.size() == 1) return embed_text(texts.front());
+  // One run: shorter texts are padded with the end token. CLIP's causal text
+  // tower pools at the first end token, which nothing after it can reach, so
+  // padding changes no embedding (checked on both towers: cosine 1.0 to the
+  // unpadded run, 2026-09-28); a batch of two costs ~5 % over one.
+  std::vector<std::vector<std::int64_t>> ids;
+  std::size_t len = 0;
+  for (const std::string& t : texts) {
+    ids.push_back(tok_.encode(t));
+    len = std::max(len, ids.back().size());
+  }
+  tensor_i64 in;
+  in.shape = {static_cast<std::int64_t>(ids.size()), static_cast<std::int64_t>(len)};
+  in.data.reserve(ids.size() * len);
+  for (const auto& row : ids) {
+    in.data.insert(in.data.end(), row.begin(), row.end());
+    in.data.insert(in.data.end(), len - row.size(), tok_.end_id());
+  }
+  MV_TRY(auto outs, text_->run_ids(in));
+  for (const tensor_f32& t : outs) {
+    if (t.shape.size() == 2 && t.shape[0] == static_cast<std::int64_t>(ids.size()) && t.shape[1] == spec_.dim) {
+      std::vector<float> sum;
+      for (std::size_t r = 0; r < ids.size(); ++r) {
+        accumulate(sum, std::span<const float>(t.data.data() + r * spec_.dim, spec_.dim));
+      }
+      l2_normalise(sum);
+      return sum;
+    }
+  }
+  return err(status::corrupt);
+}
+
 // ---- faces ---------------------------------------------------------------------
 
 result<face_spec> read_face_spec(const std::string& folder) {
@@ -327,14 +387,40 @@ result<std::vector<face_box>> face_models::detect(const rgb_view& img) const {
   return out;
 }
 
-result<std::vector<float>> face_models::embed(const rgb_view& img, const face_box& face) const {
+result<std::vector<float>> face_models::embed(const rgb_view& img, const face_box& face,
+                                              std::vector<float>* aligned) const {
   tensor_f32 in;
   sface_tensor(img, face.landmarks, in.data);
   in.shape = {1, 3, 112, 112};
   MV_TRY(auto outs, embedder_->run(std::span<const tensor_f32>(&in, 1)));
   if (outs.empty() || outs[0].data.empty()) return err(status::corrupt);
   std::vector<float> v = outs[0].data;
+  // Flip averaging (plan/17 "People refinement"): the ArcFace template is
+  // mirror-symmetric, so the mirrored crop is aligned too; the mean of the
+  // two vectors is steadier on a turned or unevenly lit face. A second run of
+  // a 112 x 112 embedder: ~1 ms on a CPU, small beside the 640 detector.
+  constexpr std::size_t kSide = 112;
+  for (std::size_t ch = 0; ch < 3; ++ch) {
+    for (std::size_t y = 0; y < kSide; ++y) {
+      float* r = in.data.data() + (ch * kSide + y) * kSide;
+      std::reverse(r, r + kSide);
+    }
+  }
+  if (auto mirrored = embedder_->run(std::span<const tensor_f32>(&in, 1));
+      mirrored && !mirrored->empty() && (*mirrored)[0].data.size() == v.size()) {
+    for (std::size_t i = 0; i < v.size(); ++i) v[i] += (*mirrored)[0].data[i];
+  }
   l2_normalise(v);
+  if (aligned) {
+    // The crop, unmirrored, for the caller's quality measure.
+    for (std::size_t ch = 0; ch < 3; ++ch) {
+      for (std::size_t y = 0; y < kSide; ++y) {
+        float* r = in.data.data() + (ch * kSide + y) * kSide;
+        std::reverse(r, r + kSide);
+      }
+    }
+    *aligned = std::move(in.data);
+  }
   return v;
 }
 

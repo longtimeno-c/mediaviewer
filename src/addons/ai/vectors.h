@@ -65,11 +65,21 @@ class vector_store {
     // when its best assets score no better than noise.
     static constexpr float kStandOutOverNoise = 1.15f;
     static constexpr float kStrongMarginFactor = 1.5f;
+    // Assets whose best row beats the generic prompts by the calibrated query
+    // margin (find_text fills it; scan() leaves 0). A subject that fills much
+    // of the library cannot stand out from it: its z sits below noise's
+    // because it is the mean (2026-09-28, the owner's "mountain": 34 of 503
+    // assets over the margin, z 1.75 against noise's 2.40, best margin 0.059
+    // against the 0.06 that z asked for). Nonsense had 0-3 such assets of
+    // 503 (0.6 %), real subjects 5-78: at least 5, and 1 % of the assets, as
+    // lucky rows grow with the library.
+    std::size_t over_margin = 0;
+    [[nodiscard]] std::size_t broad_assets() const noexcept { return std::max<std::size_t>(5, assets / 100); }
     [[nodiscard]] bool stands_out(float query_z, float over_noise = kStandOutOverNoise) const noexcept {
       return query_z > 0 && top10_z >= std::max(query_z, over_noise * null_top10_z());
     }
     [[nodiscard]] float margin_needed(float query_margin) const noexcept {
-      const bool believable = assets < kMinAssets || top10_z >= null_top10_z();
+      const bool believable = assets < kMinAssets || top10_z >= null_top10_z() || over_margin >= broad_assets();
       return believable ? query_margin : kStrongMarginFactor * query_margin;
     }
   };

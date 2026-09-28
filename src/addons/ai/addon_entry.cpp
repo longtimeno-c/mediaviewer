@@ -290,6 +290,12 @@ mv_status MV_CALL t_result_snippet(void* ctx, uint64_t id, uint32_t index, char*
     return r ? write_out(*r, out, cap, nullptr) : to_mv(r.error());
   });
 }
+mv_status MV_CALL t_suggest_json(void* ctx, const char* query, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    if (!query) return MV_ERR_INVALID_ARG;
+    return write_out(eng(ctx).suggest_json(query), out, cap, needed);
+  });
+}
 
 static_assert(static_cast<uint32_t>(mv::ai::photos_access::unsupported) == MV_AI_PHOTOS_UNSUPPORTED);
 static_assert(static_cast<uint32_t>(mv::ai::photos_access::not_determined) == MV_AI_PHOTOS_NOT_DETERMINED);
@@ -384,6 +390,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.face_thumb = &t_face_thumb;
     a.root_set_media = &t_root_media;
     a.result_snippet = &t_result_snippet;
+    a.suggest_json = &t_suggest_json;
     a.index_photos_library = &t_index_photos;
     a.photos_access = &t_photos_access;
 
