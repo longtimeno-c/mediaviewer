@@ -871,6 +871,7 @@ if(MV_BUILD_TESTS)
   if(TARGET mv_ai)
     add_executable(mv_ai_tests
       tests/test_ai_engine.cpp
+      tests/test_ai_face_refine.cpp
       tests/test_ai_infer.cpp
       tests/test_ai_audio.cpp
     )

@@ -121,6 +121,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/index_db.h
   ${R}/src/addons/ai/vectors.cpp
   ${R}/src/addons/ai/vectors.h
+  ${R}/src/addons/ai/face_refine.cpp
+  ${R}/src/addons/ai/face_refine.h
   ${R}/src/addons/ai/faces.cpp
   ${R}/src/addons/ai/faces.h
   ${R}/src/addons/ai/engine.cpp
