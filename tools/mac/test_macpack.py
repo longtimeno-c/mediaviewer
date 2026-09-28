@@ -282,6 +282,29 @@ class CrashpadHandlerTests(unittest.TestCase):
             self.assertIn(dst, signed)
             self.assertLess(signed.index(dst), signed.index(app))
 
+    def test_app_is_signed_with_its_entitlements_and_the_appex_with_its_own(self):
+        """Issue #72: the hardened runtime needs the Photos entitlement on the
+        app itself; the sandboxed extension keeps its own file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "MediaViewer.app"
+            (app / "Contents" / "Frameworks").mkdir(parents=True)
+            calls = {}
+            with patch.object(macpack, "codesign",
+                              side_effect=lambda p, *a, **k: calls.__setitem__(p, k.get("entitlements"))), \
+                 patch.object(macpack, "run"):
+                macpack.sign_app(app, "-", Path("QuickLook.entitlements"), hardened=True)
+            self.assertEqual(calls[app], macpack.APP_ENTITLEMENTS)
+            appex = app / "Contents" / "PlugIns" / f"{macpack.APPEX_NAME}.appex"
+            self.assertEqual(calls[appex], Path("QuickLook.entitlements"))
+
+    def test_app_entitlements_grant_photos_and_no_sandbox(self):
+        import plistlib
+        with open(macpack.APP_ENTITLEMENTS, "rb") as f:
+            ent = plistlib.load(f)
+        self.assertIs(ent.get("com.apple.security.personal-information.photos-library"), True)
+        # The viewer opens any folder: sandboxing the app is a different decision.
+        self.assertNotIn("com.apple.security.app-sandbox", ent)
+
     def test_assemble_accepts_the_handler_option(self):
         with patch.object(macpack, "cmd_assemble") as assemble:
             macpack.main(["assemble", "--app", "a", "--exe", "e", "--appex-exe", "x",

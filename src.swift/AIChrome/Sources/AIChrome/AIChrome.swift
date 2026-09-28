@@ -39,6 +39,8 @@ public final class MVAIChrome: NSObject {
     guard let raw = table.pointerValue else { return }
     self.table = AITable(raw.assumingMemoryBound(to: mv_ai_api.self))
     self.host = host
+    // Files made to open Photos results last one session (PhotosLibrary.swift).
+    PhotosLibrary.clearOpened()
   }
 
   @MainActor private func searchModel() -> SearchModel? {
@@ -199,6 +201,7 @@ public final class MVAIChrome: NSObject {
       personSearch = nil
       lister = nil
       hostSetMarkers(path: "", ms: [], current: -1)
+      PhotosLibrary.clearDownloads()  // "cleared after" (issue #72)
       let idle = table?.close(timeout: wait) ?? true
       table = nil
       host = nil

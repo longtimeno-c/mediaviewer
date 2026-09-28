@@ -21,6 +21,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -319,6 +320,93 @@ class gated_embedder final : public mv::infer::embedder {
   std::uint32_t pad_;
 };
 
+// The Photos library (issue #72) without PhotoKit: assets by name, each local
+// or iCloud-only, whose colour comes from the name like a file's. Tests change
+// `lib` after the engine holds the source.
+struct photos_lib {
+  struct item {
+    std::string id;
+    std::int64_t mtime = 1;
+    mv::ai::asset_kind kind = mv::ai::asset_kind::photo;
+    bool local = true;       // false: only iCloud has the original
+    std::string clip_file;   // a local clip's file (the fake sampler reads its name)
+  };
+  std::mutex m;
+  mv::ai::photos_access access = mv::ai::photos_access::full;
+  std::vector<item> items;
+  std::function<void()> changed;
+  std::atomic<int> enumerations{0};
+  std::atomic<int> stills{0};
+  std::atomic<int> videos{0};  // video_file asks
+  void notify() {
+    std::function<void()> f;
+    {
+      std::lock_guard lock(m);
+      f = changed;
+    }
+    if (f) f();
+  }
+};
+
+class fake_photos final : public mv::ai::photos_source {
+ public:
+  explicit fake_photos(std::shared_ptr<photos_lib> lib) : lib_(std::move(lib)) {}
+  mv::ai::photos_access access() const override {
+    std::lock_guard lock(lib_->m);
+    return lib_->access;
+  }
+  mv::expected enumerate(const std::function<bool(const mv::ai::photos_item&)>& visit) override {
+    if (!mv::ai::readable(access())) return mv::err(mv::status::permission_denied);
+    ++lib_->enumerations;
+    std::vector<photos_lib::item> items;
+    {
+      std::lock_guard lock(lib_->m);
+      items = lib_->items;
+    }
+    for (const auto& it : items) {
+      if (!visit(mv::ai::photos_item{it.id, it.mtime, 100, it.kind})) return mv::err(mv::status::cancelled);
+    }
+    return {};
+  }
+  mv::result<mv::ai::rgb_frame> still(std::string_view id, std::uint32_t) override {
+    if (!mv::ai::readable(access())) return mv::err(mv::status::permission_denied);
+    ++lib_->stills;
+    auto it = find(id);
+    if (!it) return mv::err(mv::status::not_found);
+    // A photo only iCloud has has no local derivative; a clip's poster always has one.
+    if (!it->local && it->kind == mv::ai::asset_kind::photo) return mv::err(mv::status::io);
+    const auto img = solid(colour_named(it->id));
+    mv::ai::rgb_frame f;
+    f.width = img.width;
+    f.height = img.height;
+    f.rgb = img.rgb;
+    if (it->id.find("anna") != std::string::npos) f.rgb[2] = 11;  // fake_faces: Anna
+    return f;
+  }
+  mv::result<std::string> video_file(std::string_view id) override {
+    if (!mv::ai::readable(access())) return mv::err(mv::status::permission_denied);
+    ++lib_->videos;
+    auto it = find(id);
+    if (!it) return mv::err(mv::status::not_found);
+    if (!it->local) return mv::err(mv::status::io);
+    return it->clip_file;
+  }
+  void observe(std::function<void()> changed) override {
+    std::lock_guard lock(lib_->m);
+    lib_->changed = std::move(changed);
+  }
+
+ private:
+  std::optional<photos_lib::item> find(std::string_view id) {
+    std::lock_guard lock(lib_->m);
+    for (const auto& it : lib_->items) {
+      if (it.id == id) return it;
+    }
+    return std::nullopt;
+  }
+  std::shared_ptr<photos_lib> lib_;
+};
+
 struct rig {
   scratch_dir dir{"ai"};
   std::mutex events_m;
@@ -342,6 +430,8 @@ struct rig {
   mv::infer::backend lands_on = mv::infer::backend::cpu;
   std::shared_ptr<fake_sound> sound = std::make_shared<fake_sound>();
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
+  // Never the real library: PhotoKit is not asked in a test.
+  std::shared_ptr<photos_lib> library = std::make_shared<photos_lib>();
   std::unique_ptr<engine> eng;
 
   rig() {
@@ -455,6 +545,8 @@ struct rig {
       s.generic_prompts = {"a sound."};
       return s;
     };
+    d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
+    d.photos_rescan_gap_s = 0;
     d.open_speech = [this](std::uint32_t, std::uint32_t) -> mv::result<mv::ai::loaded_speech> {
       if (!audio_available) return mv::err(mv::status::io);
       mv::ai::loaded_speech s;
@@ -498,11 +590,16 @@ struct rig {
       auto p = eng->result_path(id, i);
       REQUIRE(r);
       REQUIRE(p);
-      out.push_back({utf8(fs::path(*p).filename()), r->pts_ms});
+      out.push_back({mv::ai::is_photos_key(*p) ? *p : utf8(fs::path(*p).filename()), r->pts_ms});
     }
     return out;
   }
-  bool idle(int ms = 15000) { return eng->wait_idle(ms); }
+  // An upper bound, not an expectation: a passing run returns in about a
+  // second. Windows runs the workers in THREAD_MODE_BACKGROUND_BEGIN (lowest
+  // CPU and I/O priority), and a Debug build on a CI runner indexing 40 photos
+  // has taken more than 15 s ("clearing the index...", msvc Debug, 2026-09-28,
+  // twice), which says nothing about whether the engine goes idle.
+  bool idle(int ms = 60000) { return eng->wait_idle(ms); }
 };
 
 }  // namespace
@@ -1382,6 +1479,26 @@ TEST_CASE("searches during a migration and across its end use the answering towe
   CHECK(r.status().frames_indexed == 3);  // the old rows went; nothing doubled
 }
 
+// ---- the Photos library (issue #72) ------------------------------------------------
+
+namespace {
+
+bool has_row(const std::vector<std::pair<std::string, std::int64_t>>& rows, const std::string& path) {
+  return std::any_of(rows.begin(), rows.end(), [&](const auto& r) { return r.first == path; });
+}
+
+// Polls until `ok` holds (the control thread rescans on its own tick).
+bool eventually(const std::function<bool()>& ok, int ms = 10000) {
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (std::chrono::steady_clock::now() < until) {
+    if (ok()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return ok();
+}
+
+}  // namespace
+
 // ---- sharing an index (plan/17 "Sharing an index") ---------------------------------------
 
 namespace {
@@ -1420,6 +1537,189 @@ std::string map_json(std::int64_t file_root, const fs::path& dir) {
 }
 
 }  // namespace
+
+TEST_CASE("the Photos library indexes what is on this Mac and counts iCloud-only apart", "[ai][engine][photos]") {
+  rig r;
+  r.file("clips/rgb_clip.mp4");
+  r.file("red_folder.jpg");
+  r.library->items = {
+      {"red-rose", 1, mv::ai::asset_kind::photo, true, ""},
+      {"green-leaf", 1, mv::ai::asset_kind::photo, true, ""},
+      {"blue-cloud", 1, mv::ai::asset_kind::photo, false, ""},          // only in iCloud
+      {"rgb-clip", 1, mv::ai::asset_kind::video, true, utf8(r.photos() / "clips" / "rgb_clip.mp4")},
+      {"red-cloudclip", 1, mv::ai::asset_kind::video, false, ""},        // only in iCloud: its poster
+  };
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  auto root = r.eng->index_photos_library();
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  CHECK(s.state == MV_AI_STATE_IDLE);
+  CHECK(s.assets_total == 6);        // five in Photos, one in the folder
+  CHECK(s.assets_done == 4);         // red, green, the local clip, the folder's photo
+  CHECK(s.assets_unavailable == 2);  // the iCloud-only photo and clip
+  CHECK(s.assets_failed == 0);
+
+  const auto red = r.search("red");
+  CHECK(has_row(red, "photos:red-rose"));
+  CHECK(has_row(red, "red_folder.jpg"));
+  CHECK(has_row(red, "photos:red-cloudclip"));  // found by its poster, at 0 ms
+  CHECK(has_row(r.search("blue"), "photos:rgb-clip"));  // the local clip's blue moment
+  CHECK_FALSE(has_row(r.search("blue"), "photos:blue-cloud"));
+
+  // Scoped to the library ("photos:"): the folder's photo is out.
+  const auto in_library = r.search("red", MV_AI_SCOPE_FOLDER, "photos:");
+  CHECK(has_row(in_library, "photos:red-rose"));
+  CHECK_FALSE(has_row(in_library, "red_folder.jpg"));
+
+  // A Photos still's tile is its key: the chrome draws it from PhotoKit.
+  const std::uint64_t id = r.eng->search_text("red", "photos:", MV_AI_SCOPE_FOLDER, MV_AI_KIND_PHOTOS);
+  REQUIRE(r.eng->wait_search(id, 5000));
+  auto thumb = r.eng->result_thumb(id, 0);
+  REQUIRE(thumb);
+  CHECK(*thumb == "photos:red-rose");
+
+  const std::string roots = r.eng->roots_json();
+  CHECK(roots.find("\"kind\":\"photos\"") != std::string::npos);
+  CHECK(roots.find("\"access\":\"full\"") != std::string::npos);
+  CHECK(roots.find("\"unavailable\":2") != std::string::npos);
+  // It is not a folder: "Index this folder" refuses the key.
+  CHECK_FALSE(r.eng->index_folder("photos:", true));
+}
+
+TEST_CASE("the Photos library is never read before access is granted, and keeps its index when revoked",
+          "[ai][engine][photos]") {
+  rig r;
+  r.library->access = mv::ai::photos_access::not_determined;
+  r.library->items = {{"red-rose", 1, mv::ai::asset_kind::photo, true, ""}};
+  r.start();
+  auto denied = r.eng->index_photos_library();
+  REQUIRE_FALSE(denied);
+  CHECK(denied.error() == mv::status::permission_denied);
+  REQUIRE(r.idle());
+  CHECK(r.library->enumerations == 0);
+  CHECK(r.library->stills == 0);
+
+  r.library->access = mv::ai::photos_access::full;  // the chrome's prompt said yes
+  auto root = r.eng->index_photos_library();
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  CHECK(has_row(r.search("red"), "photos:red-rose"));
+
+  // Revoked in System Settings: the rows stay searchable (like a drive that
+  // is not plugged in), nothing is read, and the index is not "busy".
+  r.library->access = mv::ai::photos_access::denied;
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items.push_back({"green-leaf", 2, mv::ai::asset_kind::photo, true, ""});
+  }
+  const int stills = r.library->stills;
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(r.idle());
+  CHECK(r.library->stills == stills);
+  CHECK(has_row(r.search("red"), "photos:red-rose"));
+  CHECK(r.status().state == MV_AI_STATE_IDLE);
+  CHECK(r.eng->roots_json().find("\"access\":\"denied\"") != std::string::npos);
+}
+
+TEST_CASE("a Photos edit re-queues its asset, a delete drops it, and a change notice rescans",
+          "[ai][engine][photos]") {
+  rig r;
+  r.library->items = {{"red-rose", 1, mv::ai::asset_kind::photo, true, ""},
+                      {"green-leaf", 1, mv::ai::asset_kind::photo, true, ""}};
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded + r.high->images_embedded;
+
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items[0].mtime = 2;         // edited in Photos
+    r.library->items.erase(r.library->items.begin() + 1);  // deleted in Photos
+    r.library->items.push_back({"blue-sky", 1, mv::ai::asset_kind::photo, true, ""});  // imported
+  }
+  r.library->notify();  // PhotoKit's change observer
+  REQUIRE(eventually([&] { return has_row(r.search("blue"), "photos:blue-sky"); }));
+  REQUIRE(r.idle());
+  CHECK_FALSE(has_row(r.search("green"), "photos:green-leaf"));
+  CHECK(has_row(r.search("red"), "photos:red-rose"));
+  // The edit and the import were embedded; nothing else was.
+  CHECK(r.fast->images_embedded + r.high->images_embedded == embedded + 2);
+}
+
+TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once it is local",
+          "[ai][engine][photos]") {
+  rig r;
+  r.library->items = {
+      {"blue-cloud", 1, mv::ai::asset_kind::photo, false, ""},
+      {"red-cloudclip", 1, mv::ai::asset_kind::video, false, ""},  // stays in iCloud throughout
+  };
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_unavailable == 2);
+  CHECK(has_row(r.search("red"), "photos:red-cloudclip"));  // its poster
+  // A favourite toggled elsewhere changes nothing about it: not asked again.
+  const int asked = r.library->stills;
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.library->enumerations >= 2; }));
+  REQUIRE(r.idle());
+  CHECK(r.library->stills == asked);
+
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items[0].local = true;  // the user opened it in Photos: downloaded
+  }
+  const int posters = r.library->stills;
+  r.start();  // the next launch
+  REQUIRE(eventually([&] { return r.status().assets_done == 1; }));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_unavailable == 1);  // the clip, still only in iCloud
+  CHECK(has_row(r.search("blue"), "photos:blue-cloud"));
+  // The clip was asked whether it is here now (one lookup), not read again:
+  // its poster row stayed, and nothing was re-embedded for it.
+  CHECK(has_row(r.search("red"), "photos:red-cloudclip"));
+  CHECK(r.library->stills == posters + 2);  // the photo: the launch check, then its embedding
+}
+
+TEST_CASE("the People pass leaves iCloud-only Photos assets alone until they are local",
+          "[ai][engine][photos][faces]") {
+  rig r;
+  r.library->items = {
+      {"anna-cloud-1", 1, mv::ai::asset_kind::photo, false, ""},
+      {"anna-cloud-2", 1, mv::ai::asset_kind::photo, false, ""},
+      {"red-cloudclip", 1, mv::ai::asset_kind::video, false, ""},
+  };
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->faces_enable(true));
+  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  // Nothing to scan on this Mac: the pass ends instead of asking PhotoKit for
+  // the same clip again and again (it never went idle before this held).
+  REQUIRE(r.idle(10000));
+  const int asked = r.library->videos;
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(r.library->videos == asked);
+  CHECK(mv::json::parse(r.eng->people_json())->a.empty());
+
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items[0].local = true;  // Anna's photos arrived from iCloud
+    r.library->items[1].local = true;
+  }
+  r.start();
+  REQUIRE(eventually([&] { return r.status().assets_done == 2; }));
+  REQUIRE(r.idle());
+  // Their faces were scanned once there were pictures to scan: one person.
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 1);
+  CHECK(*people->a[0].integer("faces") == 2);
+}
 
 TEST_CASE("an index exported on one machine answers on another without embedding again",
           "[ai][engine][transfer]") {

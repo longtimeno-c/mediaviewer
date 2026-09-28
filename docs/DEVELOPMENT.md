@@ -21,7 +21,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | Planned |
 | 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
 | 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](../plan/18-import.md)) | In main, optional download; release packing is `tools/package/release-addon.patch`, to apply; hardware verify owed |
-| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed |
+| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed. Mac Photos library as a source (issue #72): built on a branch, with engine tests and a real-library bench; its owner calls are open (plan/17) |
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
 | 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete, marked ranges (`I` `O`, Delete, `X`), Trim start / end (`[` `]`), draggable piece edges, `J K L` shuttle, frame timecode, Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.13 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
@@ -686,6 +686,26 @@ in the pack by `src/addons/ai/query.*`, so both chromes share it. `mv_ai_tests "
 the parser, names, suggestions and the singular / plural pair with no models; it is pure C++20
 and also compiles on its own (`clang++ -std=c++20 tests/test_ai_query.cpp
 src/addons/ai/query.cpp` with `-Isrc -Itests` and any Catch2).
+
+**The Photos library source (Mac, issue #72; plan/17 "Photos library source").** Engine
+behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
+tools each wrap themselves in a throwaway `.app`, because PhotoKit's permission prompt needs
+`NSPhotoLibraryUsageDescription`. Each asks once for its own access, and prints counts and
+timings only, never an identifier or a name:
+
+- `tools/ai/photos-spike.sh [--stills N] [--videos N] [--opens N] [--edge 448] [--threads 2]`
+  measures the source alone, with no model and no index. It reports:
+  - enumeration time, and the local-rendition rate at the indexer's size;
+  - how many stills and clips are only in iCloud;
+  - the cost of opening a result (resolve plus `clonefile`).
+- `tools/ai-bench/photos-bench.sh <build> --addons <dev add-ons> [--query "a dog"]...` runs the
+  sideloaded pack over the library, as `ai-bench --index` does over a folder. It keeps
+  thumbnails in its own scratch folder.
+
+A local app build that should try the library in Settings needs the new `Info.plist` key and the
+`packaging/macos/MediaViewer.entitlements` entitlement. `mediaviewer_app` adds both. Configure
+with `-DMV_MAC_BUNDLE_ID=io.github.longtimeno-c.mediaviewer.dev`, so that the dev app's Photos
+permission and preferences stay apart from an installed MediaViewer.
 
 ## Test
 

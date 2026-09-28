@@ -77,6 +77,12 @@ std::string key_parent(const std::string& key) {
   return slash == std::string::npos ? std::string() : key.substr(0, slash);
 }
 
+// The folder an asset counts as in: its parent, or the library for a Photos
+// asset (its identifier's slashes are not folders).
+std::string dir_of(const std::string& key) {
+  return is_photos_key(key) ? std::string(kPhotosRoot) : key_parent(key);
+}
+
 bool under(const std::string& key, const std::string& dir_key) {
   return key.size() > dir_key.size() && key.compare(0, dir_key.size(), dir_key) == 0 &&
          key[dir_key.size()] == '/';
@@ -150,7 +156,7 @@ expected engine::start() {
     for (asset_row& a : db_->all_assets()) {
       asset_meta m;
       m.key = path_key(a.path);
-      m.dir_key = key_parent(m.key);
+      m.dir_key = dir_of(m.key);
       m.path = std::move(a.path);
       m.kind = a.kind;
       m.root = a.root_id;
@@ -159,6 +165,10 @@ expected engine::start() {
     }
   }
   roots_cache_ = db_->roots();
+  photos_ = deps_.photos ? deps_.photos() : make_photos_source();
+  for (const root_row& r : roots_cache_) {
+    if (is_photos_key(r.path)) photos_root_ = r.id;
+  }
   control_ = std::thread([this] { control_loop(); });
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
@@ -166,6 +176,7 @@ expected engine::start() {
 
 void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
+  if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
   search_cv_.notify_all();
@@ -355,14 +366,15 @@ void engine::refresh_counts() {
     active_spec = answer_.meta.spec_key;
   }
   const std::uint32_t media = default_media();
-  const counts c = build_spec.empty() ? counts{} : db_->count(build_spec, track_filter{true, MV_AI_MEDIA_PICTURES, media});
+  const std::int64_t skip = skip_root();
+  const counts c = build_spec.empty() ? counts{} : db_->count(build_spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
   std::string sound_spec, speech_spec;
   {
     std::lock_guard lock(models_m_);
     sound_spec = sound_.spec_key;
     speech_spec = speech_.spec_key;
   }
-  const track_filter audio{false, MV_AI_MEDIA_SOUND, media};
+  const track_filter audio{false, MV_AI_MEDIA_SOUND, media, skip};
   const counts cs = sound_spec.empty() ? counts{} : db_->count(sound_spec, audio);
   const counts cp = speech_spec.empty() ? counts{} : db_->count(speech_spec, audio);
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
@@ -401,10 +413,11 @@ void engine::refresh_counts() {
   status_.assets_total = c.assets;
   status_.assets_done = c.done;
   status_.assets_failed = c.failed;
+  status_.assets_unavailable = c.unavailable;
   status_.sound_total = cs.assets;
-  status_.sound_done = cs.done + cs.failed;
+  status_.sound_done = cs.done + cs.failed + cs.unavailable;
   status_.speech_total = cp.assets;
-  status_.speech_done = cp.done + cp.failed;
+  status_.speech_done = cp.done + cp.failed + cp.unavailable;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -418,7 +431,7 @@ void engine::refresh_counts() {
   copy_str(status_.model_utf8, sizeof(status_.model_utf8), build.meta.name);
   copy_str(status_.active_root_utf8, sizeof(status_.active_root_utf8), active_root_);
   status_.migrate_total = build_spec != active_spec ? c.assets : 0;
-  status_.migrate_done = build_spec != active_spec ? c.done + c.failed : 0;
+  status_.migrate_done = build_spec != active_spec ? c.done + c.failed + c.unavailable : 0;
   std::uint32_t flags = 0;
   if (index_full_) flags |= MV_AI_STATUS_INDEX_FULL;
   if (s.faces) flags |= MV_AI_STATUS_FACES_ON;
@@ -453,8 +466,9 @@ void engine::refresh_counts() {
       status_.eta_high_seconds = -1;
     }
   }
-  const bool pending = c.assets > c.done + c.failed || cs.assets > cs.done + cs.failed ||
-                       cp.assets > cp.done + cp.failed;
+  const bool pending = c.assets > c.done + c.failed + c.unavailable ||
+                       cs.assets > cs.done + cs.failed + cs.unavailable ||
+                       cp.assets > cp.done + cp.failed + cp.unavailable;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -989,6 +1003,7 @@ void engine::control_loop() {
   const unsigned n = std::max(1u, std::min(2u, cores / 4));
   for (unsigned i = 0; i < n; ++i) workers_.emplace_back([this, i] { worker_loop(i); });
   double last_full_scan = 0;
+  double last_photos_scan = 0;
   double last_consolidate = now_s();
   std::uint32_t last_state = 0xFFFF;
   while (!stopping_) {
@@ -1017,6 +1032,13 @@ void engine::control_loop() {
     }
     bool all = false;
     std::set<std::int64_t> some;
+    const double t = now_s();
+    // PhotoKit reports bursts (an iCloud sync is many); one enumeration (~0.4 s
+    // warm at 23 k assets) per ten seconds at most.
+    if (photos_root_ != 0 && t - last_photos_scan >= deps_.photos_rescan_gap_s && photos_changed_.exchange(false)) {
+      std::lock_guard lock(control_m_);
+      rescan_roots_.insert(photos_root_);
+    }
     {
       std::lock_guard lock(control_m_);
       all = rescan_all_;
@@ -1024,7 +1046,7 @@ void engine::control_loop() {
       some.swap(rescan_roots_);
       scanning_ = all || !some.empty();
     }
-    const double t = now_s();
+    if (all || some.count(photos_root_)) last_photos_scan = t;
     if (all || (t - last_full_scan) > 15 * 60) {
       scan_all();
       last_full_scan = t;
@@ -1082,7 +1104,35 @@ void engine::scan_all() {
   }
 }
 
+bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& batch, std::int64_t gen,
+                       std::vector<std::int64_t>& changed) {
+  if (batch.empty()) return true;
+  auto r = db_->see_assets(root.id, batch, gen);
+  if (!r) {
+    batch.clear();
+    return false;
+  }
+  std::lock_guard lock(assets_m_);
+  for (std::size_t i = 0; i < batch.size(); ++i) {
+    const index_db::upsert& u = (*r)[i];
+    if (u.changed) changed.push_back(u.id);
+    asset_meta& m = assets_[u.id];
+    m.path = batch[i].path;
+    m.key = path_key(m.path);
+    m.dir_key = dir_of(m.key);
+    m.kind = batch[i].kind;
+    m.root = root.id;
+    m.mtime = batch[i].mtime;
+  }
+  batch.clear();
+  return true;
+}
+
 void engine::scan_root(const root_row& root) {
+  if (is_photos_key(root.path)) {
+    scan_photos(root);
+    return;
+  }
   {
     std::lock_guard lock(status_m_);
     active_root_ = root.path;
@@ -1092,26 +1142,7 @@ void engine::scan_root(const root_row& root) {
   std::vector<std::int64_t> changed;
   bool failed = false;
   const auto flush = [&] {
-    if (batch.empty()) return;
-    auto r = db_->see_assets(root.id, batch, gen);
-    if (!r) {
-      failed = true;
-      batch.clear();
-      return;
-    }
-    std::lock_guard lock(assets_m_);
-    for (std::size_t i = 0; i < batch.size(); ++i) {
-      const index_db::upsert& u = (*r)[i];
-      if (u.changed) changed.push_back(u.id);
-      asset_meta& m = assets_[u.id];
-      m.path = batch[i].path;
-      m.key = path_key(m.path);
-      m.dir_key = key_parent(m.key);
-      m.kind = batch[i].kind;
-      m.root = root.id;
-      m.mtime = batch[i].mtime;
-    }
-    batch.clear();
+    if (!see_batch(root, batch, gen, changed)) failed = true;
   };
   // Live Photo / RAW+JPEG: one row per pair, on the still (plan/17 step 6).
   // The host's own pairing decides, per directory.
@@ -1162,6 +1193,107 @@ void engine::scan_root(const root_row& root) {
   }
   flush();
   if (failed) return;
+  end_root_scan(root, gen, changed);
+}
+
+// The Photos library (issue #72): PhotoKit's enumeration in place of the
+// folder walk. Live Photos and bursts are already one asset each there.
+void engine::scan_photos(const root_row& root) {
+  photos_root_ = root.id;
+  const photos_access access = photos_ ? photos_->access() : photos_access::unsupported;
+  const bool was_readable = photos_readable_.exchange(readable(access));
+  if (!readable(access)) {
+    // Access off (or never granted): keep the rows, like an unreachable
+    // drive, and leave the root out of the work until it comes back.
+    if (was_readable) {
+      std::lock_guard lock(work_m_);
+      queue_.clear();
+      queue_exhausted_ = false;
+    }
+    post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
+    return;
+  }
+  // (Re)attached each scan: a no-op once observing, and the first scan after
+  // access is granted starts it.
+  photos_->observe([this] {
+    photos_changed_ = true;
+    control_cv_.notify_all();
+  });
+  if (!was_readable) {
+    // Once per launch (and when access comes back): what was only in iCloud
+    // may be on this Mac now. Each unavailable asset is asked whether it is
+    // local now (a PhotoKit lookup, milliseconds; a still that is still in
+    // iCloud answers without a decode), and only those that are go back to
+    // pending. The rest keep their state and their stand-in rows (a clip's
+    // poster): nothing is re-read or re-embedded for nothing. Not on every
+    // change either, which would ask about every iCloud-only asset each time
+    // a photo is favourited.
+    std::vector<std::int64_t> again;
+    for (const asset_row& a : db_->unavailable_assets(root.id)) {
+      if (stopping_) return;
+      if (photos_local(a)) again.push_back(a.id);
+    }
+    if (!again.empty() && db_->requeue_unavailable(again)) forget_vectors(again);
+  }
+  {
+    std::lock_guard lock(status_m_);
+    active_root_ = root.path;
+  }
+  const std::int64_t gen = db_->next_generation();
+  std::vector<index_db::seen_file> batch;
+  std::vector<std::int64_t> changed;
+  bool failed = false;
+  const expected walked = photos_->enumerate([&](const photos_item& it) {
+    if (stopping_ || failed) return false;
+    batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
+    if (batch.size() >= 512 && !see_batch(root, batch, gen, changed)) failed = true;
+    return !failed;
+  });
+  if (!walked || stopping_ || failed) return;  // keep what is indexed
+  if (!see_batch(root, batch, gen, changed)) return;
+  end_root_scan(root, gen, changed);
+}
+
+bool engine::photos_local(const asset_row& a) const {
+  if (!photos_) return false;
+  const std::string_view id = photos_id(a.path);
+  if (a.kind == asset_kind::video) return photos_->video_file(id).has_value();
+  return photos_->still(id, kPhotosProbeEdge).has_value();
+}
+
+void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
+  if (ids.empty()) return;
+  for (std::int64_t id : ids) {
+    store_.remove_asset(id);
+    sounds_.remove_asset(id);
+  }
+  {
+    // Their People pass too: an unavailable asset was marked scanned so the
+    // faces track would not ask for it again, and now there is something to scan.
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (std::int64_t id : ids) {
+        (void)faces_->forget_asset(id);
+        faces_scanned_.erase(id);
+      }
+    }
+  }
+  const std::set<std::int64_t> drop(ids.begin(), ids.end());
+  {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
+                                      [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
+                       speech_rows_.end());
+  }
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  work_cv_.notify_all();
+}
+
+void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed) {
   auto gone = db_->end_scan(root.id, gen);
   if (gone) {
     std::lock_guard lock(assets_m_);
@@ -1209,6 +1341,31 @@ void engine::scan_root(const root_row& root) {
   }
   work_cv_.notify_all();
   post(MV_ADDON_EVENT_AI_ROOTS);
+}
+
+// ---- pixels and files: a file or a Photos library asset -----------------------------------------
+
+result<rgb_frame> engine::still_of(const std::string& path, std::uint32_t edge) const {
+  if (!is_photos_key(path)) return host_.decode_still(path, edge);
+  if (!photos_) return err(status::unsupported_format);
+  return photos_->still(photos_id(path), edge);
+}
+
+result<std::string> engine::file_of(const std::string& path) const {
+  if (!is_photos_key(path)) return path;
+  if (!photos_) return err(status::unsupported_format);
+  return photos_->video_file(photos_id(path));
+}
+
+result<rgb_frame> engine::frame_of(const std::string& path, std::int64_t pts_ms, std::uint32_t edge) const {
+  if (pts_ms < 0) return still_of(path, edge);
+  auto file = file_of(path);
+  if (!file) {
+    // An iCloud-only clip: its poster is what was indexed.
+    if (is_photos_key(path) && file.error() == status::io) return still_of(path, edge);
+    return err(file.error());
+  }
+  return host_.video_frame(*file, pts_ms, edge);
 }
 
 // ---- workers --------------------------------------------------------------------------------
@@ -1286,14 +1443,17 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
         if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
       }
     };
-    take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media});
-    take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media});
-    take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media});
+    const std::int64_t skip = skip_root();
+    take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
+    take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+    take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
     if (queue_.empty() && faces_on) {
       std::lock_guard ml(models_m_);
       std::lock_guard al(assets_m_);
+      const std::int64_t skip_faces = skip_root();
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
+        if (skip_faces != 0 && m.root == skip_faces) continue;
         work_item w;
         w.asset.id = id;
         w.asset.path = m.path;
@@ -1389,7 +1549,20 @@ void engine::process_sound(const work_item& item, const loaded_sound& sound) {
   if (!api->audio_open) return;
   void* handle = nullptr;
   std::int64_t duration = 0;
-  if (api->audio_open(api->host, item.asset.path.c_str(), 48000, item.resume_ms, &duration, &handle) != MV_OK) {
+  auto file = file_of(item.asset.path);
+  if (!file) {
+    if (file.error() == status::permission_denied) {
+      photos_readable_ = false;
+      return;
+    }
+    if (file.error() == status::io && is_photos_key(item.asset.path)) {
+      (void)db_->mark_unavailable(item.asset.id, sound.spec_key);
+    } else {
+      (void)db_->fail(item.asset.id, sound.spec_key);
+    }
+    return;
+  }
+  if (api->audio_open(api->host, file->c_str(), 48000, item.resume_ms, &duration, &handle) != MV_OK) {
     // No soundtrack (or unreadable): nothing to index for sound. Done, not failed.
     (void)db_->commit_frames(item.asset.id, sound.spec_key, {}, work_state::done, 0, sound.dim);
     return;
@@ -1492,7 +1665,20 @@ void engine::process_speech(const work_item& item, const loaded_speech& speech) 
   if (!api->audio_open) return;
   void* handle = nullptr;
   std::int64_t duration = 0;
-  if (api->audio_open(api->host, item.asset.path.c_str(), 16000, item.resume_ms, &duration, &handle) != MV_OK) {
+  auto file = file_of(item.asset.path);
+  if (!file) {
+    if (file.error() == status::permission_denied) {
+      photos_readable_ = false;
+      return;
+    }
+    if (file.error() == status::io && is_photos_key(item.asset.path)) {
+      (void)db_->mark_unavailable(item.asset.id, speech.spec_key);
+    } else {
+      (void)db_->fail(item.asset.id, speech.spec_key);
+    }
+    return;
+  }
+  if (api->audio_open(api->host, file->c_str(), 16000, item.resume_ms, &duration, &handle) != MV_OK) {
     (void)db_->commit_speech(item.asset.id, speech.spec_key, {}, work_state::done, 0);
     return;
   }
@@ -1582,9 +1768,22 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
   std::vector<rgb_frame> imgs;
   std::vector<const work_item*> ok;
   for (const work_item& w : items) {
-    auto img = host_.decode_still(w.asset.path, edge);
+    auto img = still_of(w.asset.path, edge);
     if (!img) {
-      if (!faces_only) (void)db_->fail(w.asset.id, clip.meta.spec_key);
+      // Photos access went away mid-run: leave it pending; the next scan
+      // takes the library out of the work until access is back.
+      if (img.error() == status::permission_denied) {
+        photos_readable_ = false;
+        continue;
+      }
+      if (!faces_only) {
+        // Only in iCloud (Optimize Mac Storage): nothing local to read.
+        if (img.error() == status::io && is_photos_key(w.asset.path)) {
+          (void)db_->mark_unavailable(w.asset.id, clip.meta.spec_key);
+        } else {
+          (void)db_->fail(w.asset.id, clip.meta.spec_key);
+        }
+      }
       std::lock_guard lock(models_m_);
       if (faces_ && faces_on) {
         (void)faces_->mark_scanned(w.asset.id, face_spec);
@@ -1641,6 +1840,39 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
   }
 }
 
+void engine::index_poster(const work_item& item, const loaded_clip& clip, std::uint32_t edge) {
+  auto img = still_of(item.asset.path, edge);
+  if (!img) {
+    (void)db_->mark_unavailable(item.asset.id, clip.meta.spec_key);
+    return;
+  }
+  const infer::rgb_view view{img->rgb.data(), img->width, img->height};
+  std::vector<float> e;
+  if (!clip.model->embed_images(std::span<const infer::rgb_view>(&view, 1), e) || e.size() != clip.meta.dim) {
+    (void)db_->fail(item.asset.id, clip.meta.spec_key);
+    return;
+  }
+  frame_in f;
+  f.pts_ms = 0;
+  f.emb = e;
+  f.generic = max_dot(e, clip.generic);
+  if (!db_->mark_unavailable(item.asset.id, clip.meta.spec_key, std::span<const frame_in>(&f, 1), clip.meta.dim)) return;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+  }
+  if (clip.meta.spec_key == active) {
+    std::vector<std::int8_t> q;
+    float scale = 1;
+    quantise(e, q, scale);
+    store_.add(item.asset.id, 0, f.generic, scale, q);
+  }
+  std::lock_guard lock(status_m_);
+  units_done_ += 1;
+  frames_done_ += 1;
+}
+
 void engine::process_video(const work_item& item, const loaded_clip& clip, bool faces_only) {
   bool faces_on = false;
   std::string face_spec;
@@ -1655,14 +1887,37 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
   o.max_gap_ms = faces_only ? 10000 : 2000;
   o.max_long_edge = faces_on ? 768u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
   o.start_ms = faces_only ? 0 : item.resume_ms;
-  auto sampler = host_.open_sampler(item.asset.path, o);
-  if (!sampler) {
-    if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
+  // Nothing to scan for faces: said so, or the faces track would claim the
+  // clip again on its next pass, forever (an unavailable clip is asked again
+  // through forget_vectors once its original is here).
+  const auto no_faces = [&] {
     std::lock_guard lock(models_m_);
     if (faces_ && faces_on) {
       (void)faces_->mark_scanned(item.asset.id, face_spec);
       faces_scanned_.insert(item.asset.id);
     }
+  };
+  auto file = file_of(item.asset.path);
+  if (!file) {
+    if (file.error() == status::permission_denied) {
+      photos_readable_ = false;  // left pending: the next scan skips the library
+      return;
+    }
+    if (file.error() == status::io && is_photos_key(item.asset.path)) {
+      // An iCloud-only clip: its poster, which Photos keeps on this Mac, is
+      // searchable until the original arrives (requeue_unavailable).
+      if (!faces_only) index_poster(item, clip, o.max_long_edge);
+      no_faces();
+      return;
+    }
+    if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
+    no_faces();
+    return;
+  }
+  auto sampler = host_.open_sampler(*file, o);
+  if (!sampler) {
+    if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
+    no_faces();
     return;
   }
   const mv_addon_video_info info = (*sampler)->info();
@@ -1716,7 +1971,7 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
     }
     // The tile a result shows: the moment in the viewer's JPEG-512 cache.
     if (!faces_only) {
-      for (std::size_t i : kept_idx) (void)host_.moment_thumbnail(item.asset.path, batch[i].pts_ms, &batch[i]);
+      for (std::size_t i : kept_idx) (void)host_.moment_thumbnail(*file, batch[i].pts_ms, &batch[i]);
     }
     if (faces_on) {
       for (std::size_t i : kept_idx) faces_of(item.asset.id, item.asset.path, batch[i].pts_ms, batch[i]);
@@ -1822,6 +2077,12 @@ std::string engine::roots_json() {
     w.begin_object();
     w.key("id").integer(r.id);
     w.key("path").string(r.path);
+    const bool photos = is_photos_key(r.path);
+    w.key("kind").string(photos ? "photos" : "folder");
+    if (photos) {
+      w.key("access").string(access_name(photos_library_access()));
+      w.key("unavailable").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->unavailable_in_root(r.id, spec)));
+    }
     w.key("recursive").boolean(r.recursive);
     w.key("enabled").boolean(r.enabled);
     w.key("media").integer(r.media);
@@ -1836,7 +2097,7 @@ std::string engine::roots_json() {
 }
 
 result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive) {
-  if (dir.empty()) return err(status::invalid_arg);
+  if (dir.empty() || is_photos_key(dir)) return err(status::invalid_arg);
   if (importing_elsewhere()) return err(status::busy);
   const std::string key = path_key(dir);
   const std::vector<root_row> roots = db_->roots();
@@ -1858,6 +2119,26 @@ result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive
       if (under(m.key, key)) m.root = id;
     }
   }
+  {
+    std::lock_guard lock(control_m_);
+    rescan_roots_.insert(id);
+  }
+  control_cv_.notify_all();
+  post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(id));
+  return id;
+}
+
+photos_access engine::photos_library_access() const {
+  return photos_ ? photos_->access() : photos_access::unsupported;
+}
+
+result<std::int64_t> engine::index_photos_library() {
+  const photos_access access = photos_library_access();
+  if (access == photos_access::unsupported) return err(status::unsupported_format);
+  if (!readable(access)) return err(status::permission_denied);
+  if (importing_elsewhere()) return err(status::busy);  // as index_folder: not while an import runs
+  MV_TRY(std::int64_t id, db_->add_root(std::string(kPhotosRoot), true));
+  photos_root_ = id;
   {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(id);
@@ -1929,6 +2210,11 @@ expected engine::root_remove(std::int64_t id) {
     queue_exhausted_ = false;
   }
   MV_TRY_VOID(db_->remove_root(id));
+  if (photos_root_ == id) {
+    photos_root_ = 0;
+    photos_readable_ = false;
+    if (photos_) photos_->observe(nullptr);
+  }
   for (std::int64_t a : gone) {
     store_.remove_asset(a);
     sounds_.remove_asset(a);
@@ -2005,6 +2291,9 @@ expected engine::clear_index() {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   expected r = db_->clear();
+  photos_root_ = 0;  // the roots went too
+  photos_readable_ = false;
+  if (photos_) photos_->observe(nullptr);
   {
     std::lock_guard lock(assets_m_);
     assets_.clear();
@@ -3032,7 +3321,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
       if (!have) {
         if (!model) return;
         if (!img) {
-          auto decoded = pts_ms >= 0 ? host_.video_frame(path, pts_ms, 448) : host_.decode_still(path, 448);
+          auto decoded = frame_of(path, pts_ms, 448);
           if (!decoded) return;
           img = std::move(*decoded);
         }
@@ -3083,7 +3372,7 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
       model = faces_model_;
       if (!faces_ || !model) return;
     }
-    auto img = pts_ms >= 0 ? host_.video_frame(path, pts_ms, 1024) : host_.decode_still(path, 1024);
+    auto img = frame_of(path, pts_ms, 1024);
     if (!img) return;
     auto found = model->analyze(*img);
     if (!found || found->empty()) return;
@@ -3104,6 +3393,24 @@ std::uint64_t engine::search_this_person(const std::string& path, std::int64_t p
     group(st, hits, false, 0);
     finish(st);
   });
+}
+
+result<std::string> engine::tile_of(const std::string& path, std::int64_t ms) const {
+  if (is_photos_key(path)) {
+    // A Photos still, or a clip Photos only has in iCloud: the chrome draws the
+    // tile from PhotoKit's own thumbnail cache (no second cache of ours;
+    // plan/17 "do not build a second thumbnail path"), so it gets the key.
+    if (ms < 0) return path;
+    auto file = file_of(path);
+    if (!file) return path;
+    if (auto hit = host_.moment_thumbnail(*file, ms, nullptr)) return hit;
+    MV_TRY(rgb_frame f, host_.video_frame(*file, ms, 512));
+    return host_.moment_thumbnail(*file, ms, &f);
+  }
+  if (ms < 0) return host_.thumbnail(path);
+  if (auto hit = host_.moment_thumbnail(path, ms, nullptr)) return hit;
+  MV_TRY(rgb_frame f, host_.video_frame(path, ms, 512));
+  return host_.moment_thumbnail(path, ms, &f);
 }
 
 result<std::uint32_t> engine::result_count(std::uint64_t id) const {
@@ -3152,10 +3459,7 @@ result<std::string> engine::result_thumb(std::uint64_t id, std::uint32_t index) 
     path = it->second->rows[index].path;
     ms = it->second->rows[index].kind == MV_AI_KIND_VIDEOS ? it->second->rows[index].pts_ms : -1;
   }
-  if (ms < 0) return host_.thumbnail(path);
-  if (auto hit = host_.moment_thumbnail(path, ms, nullptr)) return hit;
-  MV_TRY(rgb_frame f, host_.video_frame(path, ms, 512));
-  return host_.moment_thumbnail(path, ms, &f);
+  return tile_of(path, ms);
 }
 
 result<std::vector<std::pair<std::int64_t, float>>> engine::clip_matches(std::uint64_t id,
@@ -3295,10 +3599,7 @@ result<std::string> engine::face_thumb(std::int64_t face) const {
     MV_TRY(face_row got, faces_->face(face));
     f = std::move(got);
   }
-  if (f.pts_ms < 0) return host_.thumbnail(f.path);
-  if (auto hit = host_.moment_thumbnail(f.path, f.pts_ms, nullptr)) return hit;
-  MV_TRY(rgb_frame frame, host_.video_frame(f.path, f.pts_ms, 512));
-  return host_.moment_thumbnail(f.path, f.pts_ms, &frame);
+  return tile_of(f.path, f.pts_ms);
 }
 
 result<std::int64_t> engine::face_split(const std::vector<std::int64_t>& faces) {

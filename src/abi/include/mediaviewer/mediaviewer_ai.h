@@ -117,6 +117,17 @@ typedef enum mv_ai_scope {
                                           machine for the first time (Core ML's first compile,
                                           minutes; later starts read its cache) */
 
+/* Settings -> Local search -> the Photos library (issue #72; macOS only):
+ * PhotoKit's authorization, as the add-on sees it. */
+typedef enum mv_ai_photos_access {
+  MV_AI_PHOTOS_UNSUPPORTED = 0,    /* no Photos library source here (Windows) */
+  MV_AI_PHOTOS_NOT_DETERMINED = 1, /* never asked: the chrome asks, on a click */
+  MV_AI_PHOTOS_DENIED = 2,
+  MV_AI_PHOTOS_RESTRICTED = 3,
+  MV_AI_PHOTOS_LIMITED = 4,
+  MV_AI_PHOTOS_FULL = 5
+} mv_ai_photos_access;
+
 /* Sharing an index (2026-09-28, plan/17 "Sharing an index"): what an export
  * carries besides the index rows, and what an import takes from a file. */
 #define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
@@ -154,6 +165,10 @@ typedef struct mv_ai_status {
   uint64_t sound_done;
   uint64_t speech_total;
   uint64_t speech_done;
+  /* The Photos library (issue #72, macOS): assets only iCloud has, so nothing
+   * local could be indexed (an iCloud-only clip's poster is). Not failed, not
+   * pending: counted apart. */
+  uint64_t assets_unavailable;
 } mv_ai_status;
 
 /* One result: a photo, or the best moment of a clip with the others grouped
@@ -356,6 +371,23 @@ typedef struct mv_ai_api {
   /* Stops the running export (its .part is removed) or import (what it had
    * not committed is rolled back). [no-block] */
   mv_status(MV_CALL* transfer_cancel)(void* ctx);
+
+  /* ---- the Photos library (issue #72; macOS) ------------------------------ */
+  /* The system Photos library (iCloud Photos included) as one more remembered
+   * root. Read-only and local-only: PhotoKit is asked with network access off,
+   * nothing is written to the library, and an iCloud-only original is counted
+   * in assets_unavailable, never downloaded. Its root has "path":"photos:",
+   * "kind":"photos", "access" and "unavailable" in roots_json. Its results'
+   * paths are "photos:<localIdentifier>": not files. result_thumb and
+   * face_thumb answer that key for a still (the chrome draws it from
+   * PhotoKit); scope_dir "photos:" scopes a search to the library.
+   * The add-on never raises the permission prompt: the chrome asks first (a
+   * click), then calls this. MV_ERR_PERMISSION_DENIED until access is
+   * granted; MV_ERR_UNSUPPORTED_FORMAT where there is no Photos library
+   * source. [no-block] */
+  mv_status(MV_CALL* index_photos_library)(void* ctx, uint64_t* out_root_id);
+  /* mv_ai_photos_access. [no-block] */
+  mv_status(MV_CALL* photos_access)(void* ctx, uint32_t* out_access);
 } mv_ai_api;
 
 #ifdef __cplusplus
