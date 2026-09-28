@@ -109,7 +109,9 @@ final class FolderStore: ObservableObject {
   // Decode order, oldest first, for eviction.
   private var decoded: [String] = []
   private let maxDecoded = 300
-  private var listingGeneration: UInt64 = .max
+  /// The host's listing generation the names above were read at (file search
+  /// tags its filter with it).
+  private(set) var listingGeneration: UInt64 = .max
   private var marksGeneration: UInt64 = .max
   private var pollTimer: Timer?
 
@@ -142,6 +144,8 @@ final class FolderStore: ObservableObject {
       reloadListTitle()
       reloadNames(count: count)
       reloadFolders()
+      // File search closes on another folder and re-filters new names.
+      FileSearchStore.shared.listingChanged(self)
     }
     let cursor = Int(mv_chrome_folder_cursor())
     if cursor != folderCursor { folderCursor = cursor }

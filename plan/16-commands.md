@@ -227,7 +227,7 @@ next one slides into its place (the previous one at the end).
 | Windows | Mac | Command |
 |---|---|---|
 | `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
-| `Ctrl+F` | `⌘F` | Local search (AI pack, plan/17): the search panel, keyboard-focused. Only while the pack is loaded. The same panel opens from the search icon at the right end of the command bar's folder path (and beside "Search: …" while a result list is shown), shown whenever the pack is loaded or starting (a click while it starts opens the panel once it attaches); the gallery sits below the command bar on both hosts, so the icon stays in view over the grid. In the field, typing searches (plan/17 "Query syntax"); while a name is offered for the word being typed, `Tab` completes it (2026-09-28); `Enter` (or Down) moves into the results on the first tile — words still being searched (just typed, or while indexing) wait for their answer, then move; nothing found stays in the field. In the grid, arrows move, `Enter` opens the results in the viewer on that tile, `Ctrl+Enter` / `⌘↩` opens them all as the gallery, a typed character goes back to the field; `Esc` returns to the field, then closes (2026-09-28) |
+| `Ctrl+F` | `⌘F` | Search. **Without Local search** (not installed, being removed, or failed to load): **file search** (2026-09-28, see "File search" below). With it: Local search (AI pack, plan/17), the search panel, keyboard-focused. The same command runs from the search icon at the right end of the command bar's folder path (and beside "Search: …" while a result list is shown), which is always there; with the pack starting at launch, the key or a click opens the panel once it attaches; the gallery sits below the command bar on both hosts, so the icon stays in view over the grid. In the field, typing searches (plan/17 "Query syntax"); while a name is offered for the word being typed, `Tab` completes it (2026-09-28); `Enter` (or Down) moves into the results on the first tile — words still being searched (just typed, or while indexing) wait for their answer, then move; nothing found stays in the field. In the grid, arrows move, `Enter` opens the results in the viewer on that tile, `Ctrl+Enter` / `⌘↩` opens them all as the gallery, a typed character goes back to the field; `Esc` returns to the field, then closes (2026-09-28) |
 | `Ctrl+Shift+F` | `⌘⇧F` | Find similar to the still or paused frame on screen |
 | `N` / `Shift+N` | `N` / `⇧N` | On a clip opened from results: next / previous matching moment |
 | `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
@@ -374,6 +374,19 @@ Chrome, in-memory, no decode.
   not parse every file. Remember the user's sort. *(macOS 2026-09-24: the sort orders, including date taken, ship in the View ▸ Sort By menu. Date-taken keys are read once per file by one background job and the listing re-sorts in place when they land; a file with no stamp sorts by mtime. Windows 2026-09-24: the same five orders and a descending switch in View ▸ Sort by and in Settings, applied by the ABI session (`mv_folder_set_sort`) and saved as `[view] sort`.)*
 - **Filter:** all / photos / videos / RAW. In-memory flag on the listing. RAW flag is
   meaningful from PR 7.
+- **File search (2026-09-28, owner: "can we still have basic file search"):** part of the base
+  app, no add-on and no index. `Ctrl+F` / `⌘F` or the path bar's search icon, while Local
+  search is not installed, shows the gallery if it is hidden and opens a field over the grid
+  ("Find files by name in this folder"). Typing filters the grid, folder tiles too, by a case-
+  and accent-insensitive substring of the name, ~70 ms after the last key; a count shows
+  "N of M". It is a view over the gallery only: the arrows move among the matches, a hidden
+  selection hands over to the first match, and the viewer and filmstrip still walk the whole
+  folder. `Enter` / Down go to the grid on the first match; `Esc` clears the field, then
+  closes it; closing the gallery or opening another folder closes it too. This folder only
+  (the listing already in memory): no disk walk. Names are folded once per listing off the
+  UI thread; a keystroke is one pass over them (≤ 2 ms for 10,000 items). With Local search
+  installed the key and the icon open its panel instead, where `file:name` searches names
+  (plan/17 "Query syntax") among the indexed files.
 - **Typeahead:** with the **filmstrip or gallery** focused, typing jumps to the first item
   whose name starts with what was typed (Explorer-style, 300 ms idle to reset). With the
   **canvas** focused every letter is already a command, so `/` opens a find box over the

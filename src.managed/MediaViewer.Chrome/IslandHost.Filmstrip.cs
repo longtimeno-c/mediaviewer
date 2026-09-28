@@ -247,6 +247,7 @@ public static partial class IslandHost
         // "This folder" scope), and a list asked for from the panel shows in
         // the view it asked for.
         _listOpen = list;
+        bool newFolder = false;
         if (list)
         {
             ApplyPendingListView();
@@ -258,9 +259,12 @@ public static partial class IslandHost
             if (dir.Length > 0 && !string.Equals(dir, _openedFolder, StringComparison.OrdinalIgnoreCase))
             {
                 _openedFolder = dir;
+                newFolder = true;
                 NotifySearchFolder(dir);
             }
         }
+        // File search: a new folder closes it, a new listing re-filters.
+        OnGalleryListing(list, newFolder);
     }
 
     // False on a core older than ABI 0.14, which has no result lists.
@@ -459,6 +463,9 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     public string PairPath { get; set; } = "";
     // PR 7: "RAW", "LIVE" or "".
     public string Badge { get; set; } = "";
+    // File search's key for Name (case and diacritics folded),
+    // filled for a whole listing off the UI thread the first time it is needed.
+    public string? Folded { get; set; }
     public bool Selected
     {
         get => _selected;

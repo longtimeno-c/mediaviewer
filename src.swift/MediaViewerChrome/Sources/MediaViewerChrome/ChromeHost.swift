@@ -116,6 +116,31 @@ public final class MVChromeHost: NSObject {
     _ = empty[Int.random(in: 1...2)]
   }
 
+  /// File search (plan/16 "File search"): the field above the grid appears and
+  /// takes the keyboard with its text selected. main_mac.mm has already shown
+  /// the gallery and made its hosting view first responder.
+  @objc public static func openFileSearch() {
+    MainActor.assumeIsolated { FileSearchStore.shared.open() }
+  }
+
+  /// The gallery closed: so does file search, and its filter with it.
+  @objc public static func closeFileSearch() {
+    MainActor.assumeIsolated { FileSearchStore.shared.close() }
+  }
+
+  /// ⌘F while the Local search command is not there. True when the pack is
+  /// verifying and starting at launch: its panel opens once it attaches, as
+  /// the path icon's click does. False: nothing is on its way, so the host
+  /// opens file search instead.
+  @objc public static func openLocalSearchWhenStarting() -> Bool {
+    MainActor.assumeIsolated {
+      let search = LocalSearchStore.shared
+      guard search.searchAvailable else { return false }
+      search.openSearchWhenReady()
+      return true
+    }
+  }
+
   /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {

@@ -2283,6 +2283,16 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       k = (kinds & ~MV_AI_KIND_ALL) | both;
     }
     auto allowed = scope_assets(scope_dir, scope, k, plan.from_unix, plan.to_unix);
+    // file: / -file: (plan/17 "Query syntax"): the name, one pass over the
+    // assets the scope, kind and dates left.
+    if (plan.has_files()) {
+      std::lock_guard lock(assets_m_);
+      for (auto it = allowed->begin(); it != allowed->end();) {
+        const auto m = assets_.find(*it);
+        const bool keep = m != assets_.end() && query::name_matches(m->second.path, plan.files, plan.not_files);
+        it = keep ? std::next(it) : allowed->erase(it);
+      }
+    }
     const auto keep_only = [&](const std::set<std::int64_t>& keep) {
       for (auto it = allowed->begin(); it != allowed->end();) {
         it = keep.count(*it) ? std::next(it) : allowed->erase(it);
@@ -2379,9 +2389,10 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
       said_rows.clear();
     } else if (plan.people_first.empty() &&
-               (plan.kinds != 0 || plan.has_dates() || !plan.not_people.empty() || !plan.not_text.empty() ||
-                !plan.not_phrases.empty())) {
-      // Filters alone ("video in:2024"): everything they allow, newest first.
+               (plan.kinds != 0 || plan.has_dates() || plan.has_files() || !plan.not_people.empty() ||
+                !plan.not_text.empty() || !plan.not_phrases.empty())) {
+      // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
+      // newest first.
       std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (mtime, asset)
       {
         std::lock_guard lock(assets_m_);

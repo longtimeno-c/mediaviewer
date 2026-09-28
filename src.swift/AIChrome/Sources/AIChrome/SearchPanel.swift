@@ -729,7 +729,7 @@ private struct SyntaxHint: View {
         .font(.system(size: 12, design: .monospaced))
         .foregroundStyle(AITheme.title.opacity(0.8))
       Text("A name finds that person; “quotes” find words said in videos; - leaves something out; "
-           + "video or photo picks a kind; in:, before: and after: use the file's date.")
+           + "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name.")
         .font(AITheme.font(12))
         .foregroundStyle(AITheme.body)
         .multilineTextAlignment(.center)

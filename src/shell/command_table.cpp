@@ -438,7 +438,7 @@ constexpr command_info kCommands[] = {
     {show_original_release, "Release original"},
     {crop_aspect_set, "Crop: aspect ratio", true},
     {crop_straighten_set, "Crop: straighten", true},
-    {search_open, "Search photos and videos…"},
+    {search_open, "Search…"},
     {search_similar, "Find similar"},
     {search_next_match, "Next matching moment"},
     {search_prev_match, "Previous matching moment"},
@@ -604,7 +604,9 @@ std::string describe_commands() {
   const auto line = [&out](command_id id, mode_mask modes, std::string keys, std::size_t row) {
     const command_info* info = find_command(id);
     if (!info || info->keyless || id == back) return;
-    if (!addon_command_available(id)) return;
+    // Ctrl+F stays listed without the AI pack: it is file search then
+    // (plan/16 "File search", 2026-09-28).
+    if (!addon_command_available(id) && id != search_open) return;
     out += std::to_string(static_cast<int>(id));
     out += '\t';
     out += std::to_string(static_cast<int>(modes));
