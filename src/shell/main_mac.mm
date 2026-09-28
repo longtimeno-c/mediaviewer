@@ -21,6 +21,7 @@
 #endif
 
 #include <dlfcn.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -2021,6 +2022,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::vector<float> _editorPeaks;
   NSTimer* _editorTick;
   std::int64_t _editorLastSeek;
+  // MV_EDIT_SELFTEST_SOAK: ticks that saw the player inside a cut while playing
+  // (a frame of what was cut may be on screen), and the jumps over cuts.
+  std::uint64_t _editorGlimpses;
+  std::uint64_t _editorJumps;
+  double _soakHold, _soakCpu0, _soakWall0, _soakPlayCpu, _soakPlayWall, _soakPausedCpu;
   mv::io::sort_order _sort;
   std::string _currentDir;
   // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
@@ -2080,12 +2086,16 @@ static void MvAdoptNewDefaultViewerTypes() {
   MvLabApp* __weak weakApp = self;
   static MvLabApp* __weak g_addon_app = nil;
   g_addon_app = weakApp;
-  MvAddonsStart(
-      [](void*, const char* path) {
-        MvLabApp* app = g_addon_app;
-        if (app && path) (void)[app openEntryPath:path];
-      },
-      nullptr);
+  // The editor soak measures the editor: an add-on indexing in the background
+  // (the AI pack compiles its models) would swamp it.
+  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    MvAddonsStart(
+        [](void*, const char* path) {
+          MvLabApp* app = g_addon_app;
+          if (app && path) (void)[app openEntryPath:path];
+        },
+        nullptr);
+  }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
       initWithContentRect:rect
@@ -5682,6 +5692,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _editorLastSeek = -1;
     return;
   }
+  if (!_timeline.to_timeline(st.position_ns)) ++_editorGlimpses;
   const std::int64_t lead = 20'000'000;  // a frame's worth, so a cut is not glimpsed
   const std::int64_t want = _timeline.next_play_start(st.position_ns, lead);
   if (want < 0) {
@@ -5691,6 +5702,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   if (want != st.position_ns && want != _editorLastSeek) {
     _editorLastSeek = want;
+    ++_editorJumps;
     [self editorSeekSource:want];
   }
 }
@@ -5876,6 +5888,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       case 1: [self editSelfTestSnap:@"c0-viewer" dir:dir]; [self runCommand:edit_workspace back:kNoBack]; break;
       case 2: break;  // the strip is read on a worker
       case 3: [self editSelfTestSnap:@"c1-editor" dir:dir];
+        if (std::getenv("MV_EDIT_SELFTEST_SOAK") != nullptr) {
+          [self editorSoak:dir];
+          return;
+        }
         [self editorSeek:third];
         break;
       case 4: [self editorEdit:1]; [self editorSeek:2 * third]; break;
@@ -5916,6 +5932,102 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                  dispatch_get_main_queue(), ^{
                    [weakSelf editSelfTestStep:step + 1 dir:dir];
                  });
+}
+
+// MV_EDIT_SELFTEST_SOAK=<seconds> (clip only): the Video Editor's cost and seams.
+// Cuts the program to three pieces with two joins, plays it through three
+// times, then sits paused, then closes the editor and sits again, and writes
+// the process's CPU for each phase, the ticks that saw a cut, and the jumps,
+// to state.txt as one `soak:` line. Then quits.
+static double mv_cpu_seconds() {
+  rusage u{};
+  getrusage(RUSAGE_SELF, &u);
+  return static_cast<double>(u.ru_utime.tv_sec + u.ru_stime.tv_sec) +
+         static_cast<double>(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6;
+}
+
+static double mv_wall_seconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+- (void)editorSoak:(NSString*)dir {
+  _soakHold = std::max(1.0, std::atof(std::getenv("MV_EDIT_SELFTEST_SOAK")));
+  const std::int64_t sixth = _timeline.length() / 6;
+  for (int k = 1; k <= 5; ++k) (void)_timeline.split(k * sixth);
+  // Keep sixths 0, 2, 4 and 5: two cuts to jump, and the end of the program.
+  for (int k : {3, 1}) (void)_timeline.remove(static_cast<std::size_t>(k));
+  ++_editorGeneration;
+  [self editorSoakPass:0 dir:dir];
+}
+
+- (void)editorSoakAfter:(double)seconds run:(dispatch_block_t)block {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(seconds * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), block);
+}
+
+- (void)editorSoakPass:(int)pass dir:(NSString*)dir {
+  const double program = static_cast<double>(_timeline.length()) / 1e9;
+  __weak MvLabApp* weakSelf = self;
+  // Paused at the start, whatever the viewer's autoplay left running.
+  if (_lab.video_status_snapshot().playing) mv_chrome_video_toggle();
+  [self editorSeek:0];
+  [self editorSoakAfter:0.6 run:^{
+    MvLabApp* me = weakSelf;
+    if (me == nil) return;
+    if (pass == 0) {
+      me->_editorGlimpses = 0;
+      me->_editorJumps = 0;
+      me->_soakCpu0 = mv_cpu_seconds();
+      me->_soakWall0 = mv_wall_seconds();
+    }
+    if (!me->_lab.video_status_snapshot().playing) [me editorTogglePlay];
+    [me editorSoakAfter:program + 0.8 run:^{
+      MvLabApp* me2 = weakSelf;
+      if (me2 == nil) return;
+      if (pass + 1 < 3) {
+        [me2 editorSoakPass:pass + 1 dir:dir];
+        return;
+      }
+      me2->_soakPlayCpu = mv_cpu_seconds() - me2->_soakCpu0;
+      me2->_soakPlayWall = mv_wall_seconds() - me2->_soakWall0;
+      me2->_soakCpu0 = mv_cpu_seconds();
+      [me2 editorSoakAfter:me2->_soakHold run:^{
+        MvLabApp* me3 = weakSelf;
+        if (me3 == nil) return;
+        me3->_soakPausedCpu = mv_cpu_seconds() - me3->_soakCpu0;
+        [me3 setEditorOpen:NO];
+        [me3 editorSoakAfter:1.0 run:^{
+          MvLabApp* me4 = weakSelf;
+          if (me4 == nil) return;
+          me4->_soakCpu0 = mv_cpu_seconds();
+          [me4 editorSoakAfter:me4->_soakHold run:^{
+            [weakSelf editorSoakFinish:dir program:program];
+          }];
+        }];
+      }];
+    }];
+  }];
+}
+
+- (void)editorSoakFinish:(NSString*)dir program:(double)program {
+  const double closed = mv_cpu_seconds() - _soakCpu0;
+  NSString* line = [NSString
+      stringWithFormat:@"soak: program_s=%.2f passes=3 hold_s=%.0f play_cpu_pct=%.1f paused_cpu_pct=%.1f "
+                       @"closed_cpu_pct=%.1f glimpse_ticks=%llu jumps=%llu\n",
+                       program, _soakHold, 100.0 * _soakPlayCpu / std::max(0.001, _soakPlayWall),
+                       100.0 * _soakPausedCpu / _soakHold, 100.0 * closed / _soakHold,
+                       static_cast<unsigned long long>(_editorGlimpses),
+                       static_cast<unsigned long long>(_editorJumps)];
+  NSString* log = [dir stringByAppendingPathComponent:@"state.txt"];
+  NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:log];
+  if (fh == nil) {
+    [line writeToFile:log atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  } else {
+    [fh seekToEndOfFile];
+    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
+  }
+  [NSApp terminate:nil];
 }
 
 // ---- PR 11: colour adjusts, the adjust pane, the FP16 working image -----------
