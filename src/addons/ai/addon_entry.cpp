@@ -221,6 +221,10 @@ mv_status MV_CALL t_faces_enable(void* ctx, uint32_t enable) {
 mv_status MV_CALL t_people_json(void* ctx, char* out, uint32_t cap, uint32_t* needed) {
   return guard([&] { return write_out(eng(ctx).people_json(), out, cap, needed); });
 }
+mv_status MV_CALL t_people_in_json(void* ctx, const char* scope_dir, uint32_t scope, char* out, uint32_t cap,
+                                   uint32_t* needed) {
+  return guard([&] { return write_out(eng(ctx).people_json(str(scope_dir), scope), out, cap, needed); });
+}
 mv_status MV_CALL t_person_faces_json(void* ctx, uint64_t person, char* out, uint32_t cap, uint32_t* needed) {
   return guard([&] {
     return write_out(eng(ctx).person_faces_json(static_cast<std::int64_t>(person)), out, cap, needed);
@@ -445,6 +449,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.transfer_cancel = &t_transfer_cancel;
     a.index_photos_library = &t_index_photos;
     a.photos_access = &t_photos_access;
+    a.people_in_json = &t_people_in_json;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

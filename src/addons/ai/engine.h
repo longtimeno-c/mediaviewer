@@ -238,7 +238,10 @@ class engine {
 
   // ---- people ------------------------------------------------------------------
   [[nodiscard]] expected faces_enable(bool enable);
-  [[nodiscard]] std::string people_json();                          // [worker-thread]
+  // People, or with `scope` (mv_ai_scope over scope_dir, as a search) the
+  // people with a face there: plan/17 "People in the open folder". [worker-thread]
+  [[nodiscard]] std::string people_json(const std::string& scope_dir = std::string(),
+                                        std::uint32_t scope = MV_AI_SCOPE_ALL);
   [[nodiscard]] std::string person_faces_json(std::int64_t person); // [worker-thread]
   [[nodiscard]] expected person_rename(std::int64_t person, const std::string& name);
   [[nodiscard]] expected person_merge(std::int64_t into, std::int64_t from);

@@ -3519,13 +3519,17 @@ expected engine::faces_enable(bool enable) {
   return {};
 }
 
-std::string engine::people_json() {
+std::string engine::people_json(const std::string& scope_dir, std::uint32_t scope) {
   json::writer w;
   w.begin_array();
   std::vector<person_row> people;
+  // The open folder's assets, as a search would take them; none when the
+  // caller wants everyone.
+  std::shared_ptr<std::set<std::int64_t>> here;
+  if (scope != MV_AI_SCOPE_ALL && !scope_dir.empty()) here = scope_assets(scope_dir, scope, MV_AI_KIND_ALL);
   {
     std::lock_guard lock(models_m_);
-    if (faces_) people = faces_->people(kPeopleMinFaces);
+    if (faces_) people = faces_->people(kPeopleMinFaces, here.get());
   }
   for (const person_row& p : people) {
     w.begin_object();

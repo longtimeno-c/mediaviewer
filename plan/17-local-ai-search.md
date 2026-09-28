@@ -856,6 +856,31 @@ refinement live, the real SFace pack (so flip averaging's gain and the threshold
 real faces), a labelled people set (none exists; it is what should tune join / keep / margin),
 and PR 1's present-loop gate on either platform while a full call runs.
 
+### People in the open folder (2026-09-28, owner)
+
+Owner: "in people I can see everyone in any folder I open; can I just show people from the
+folder / subfolders I'm on?" Both halves, one shared core change.
+
+- **mv.ai.1 appends `people_in_json(scope_dir, scope, out, cap, needed)`** [worker-thread]:
+  `people_json` narrowed to the people with a face in a photo or clip under `scope_dir` by
+  `mv_ai_scope`, the same three scopes `search_text` takes. `faces` counts their faces there and
+  `cover_*` is the clearest of those (pinned first, then score × area), so a card's count and
+  face are the folder's. A person with nobody there is left out. *Who qualifies at all* (the
+  minimum faces, or a name) is still judged over the whole index: a folder never shows a
+  two-face cluster Everywhere would hide, and never hides a named person who is there once.
+  NULL / `MV_AI_SCOPE_ALL` is `people_json`. `faces_db::people(min, assets)` does the work:
+  one indexed pass per person over its faces against the scope's asset set, the set built as a
+  search builds it (`scope_assets`).
+- **Chrome:** a "People in · This folder | + Subfolders | Everywhere · <folder>" control at the
+  top of the grid (Settings → People on the Mac, the People window on Windows), the search
+  panel's words. Default **+ Subfolders**; it follows the folder the viewer opens (the host's
+  `folderChanged` / `OnFolderChanged`); no folder open reads as Everywhere with the control
+  disabled. "Show photos" on a card searches the same scope, so the list is the photos the card
+  counted. Everywhere is exactly what the grid showed before.
+- **Not persisted:** the choice is per window / per Settings session; reopening starts at
+  + Subfolders. The status bar's people count (`mv_ai_status.people`) stays the whole index's.
+- A pack from before the entry (its `struct_size` stops short) shows everyone, as before.
+
 ### Sharing an index (2026-09-28, owner)
 
 Owner: indexing a library once and carrying it to another machine is "much easier than

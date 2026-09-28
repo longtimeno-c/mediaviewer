@@ -183,6 +183,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
             _coverage = 0;
         }
         _window?.OnFolderChanged();
+        _people?.OnFolderChanged();
     }
 
     public void OnItemChanged(string? path)

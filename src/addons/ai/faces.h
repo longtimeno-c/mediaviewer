@@ -107,7 +107,12 @@ class faces_db {
   [[nodiscard]] expected mark_scanned(std::int64_t asset, const std::string& spec);
   [[nodiscard]] expected forget_asset(std::int64_t asset);
 
-  [[nodiscard]] std::vector<person_row> people(std::uint32_t min_faces);
+  // Every person with min_faces faces or a name. With `assets` (the open
+  // folder's, plan/17 "People in the open folder"): only those with a face in
+  // one of them, `faces` counting those faces and `cover` the clearest of them;
+  // the min_faces / name rule still judges the whole person.
+  [[nodiscard]] std::vector<person_row> people(std::uint32_t min_faces,
+                                               const std::set<std::int64_t>* assets = nullptr);
   [[nodiscard]] std::vector<face_row> faces_of(std::int64_t person);
   [[nodiscard]] result<face_row> face(std::int64_t id);
   [[nodiscard]] expected rename(std::int64_t person, const std::string& name);
