@@ -294,6 +294,45 @@ mv_status MV_CALL t_suggest_json(void* ctx, const char* query, char* out, uint32
   });
 }
 
+mv_status MV_CALL t_export_index(void* ctx, const char* dest, const uint64_t* roots, uint32_t count,
+                                 uint32_t flags, uint64_t* out_job) {
+  return guard([&] {
+    if (!dest || (count > 0 && !roots)) return MV_ERR_INVALID_ARG;
+    std::vector<std::int64_t> ids;
+    for (uint32_t i = 0; i < count; ++i) ids.push_back(static_cast<std::int64_t>(roots[i]));
+    auto r = eng(ctx).export_index(dest, std::move(ids), flags);
+    if (!r) return to_mv(r.error());
+    if (out_job) *out_job = *r;
+    return MV_OK;
+  });
+}
+mv_status MV_CALL t_inspect_export(void* ctx, const char* file, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    if (!file) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).inspect_export(file);
+    return r ? write_out(*r, out, cap, needed) : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_import_index(void* ctx, const char* file, const char* map_json, uint32_t flags,
+                                 uint64_t* out_job) {
+  return guard([&] {
+    if (!file || !map_json) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).import_index(file, map_json, flags);
+    if (!r) return to_mv(r.error());
+    if (out_job) *out_job = *r;
+    return MV_OK;
+  });
+}
+mv_status MV_CALL t_transfer_json(void* ctx, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] { return write_out(eng(ctx).transfer_json(), out, cap, needed); });
+}
+mv_status MV_CALL t_transfer_cancel(void* ctx) {
+  return guard([&] {
+    eng(ctx).transfer_cancel();
+    return MV_OK;
+  });
+}
+
 void MV_CALL shutdown(void* addon) {
   try {
     std::unique_ptr<addon_state> state(static_cast<addon_state*>(addon));
@@ -365,6 +404,11 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.result_snippet = &t_result_snippet;
     a.suggest_json = &t_suggest_json;
     a.person_refine = &t_person_refine;
+    a.export_index = &t_export_index;
+    a.inspect_export = &t_inspect_export;
+    a.import_index = &t_import_index;
+    a.transfer_json = &t_transfer_json;
+    a.transfer_cancel = &t_transfer_cancel;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

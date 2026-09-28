@@ -26,6 +26,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -137,6 +138,11 @@ class faces_db {
   // new faces then replace the old ones box by box (add), keeping person and pin.
   [[nodiscard]] expected rescan(std::int64_t asset, const std::string& spec);
   [[nodiscard]] std::uint64_t serial() const noexcept { return serial_; }
+
+  // Sharing an index (transfer.h): `fn` writes on this file's connection with
+  // its lock held; the clusters are then rebuilt from the rows and the next
+  // refinement is a full one.
+  [[nodiscard]] expected import_with(const std::function<expected(sqlite3*)>& fn);
 
   [[nodiscard]] std::uint64_t face_count();
   [[nodiscard]] std::uint32_t person_count(std::uint32_t min_faces);
