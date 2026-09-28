@@ -337,6 +337,7 @@ struct photos_lib {
   std::function<void()> changed;
   std::atomic<int> enumerations{0};
   std::atomic<int> stills{0};
+  std::atomic<int> videos{0};  // video_file asks
   void notify() {
     std::function<void()> f;
     {
@@ -379,10 +380,12 @@ class fake_photos final : public mv::ai::photos_source {
     f.width = img.width;
     f.height = img.height;
     f.rgb = img.rgb;
+    if (it->id.find("anna") != std::string::npos) f.rgb[2] = 11;  // fake_faces: Anna
     return f;
   }
   mv::result<std::string> video_file(std::string_view id) override {
     if (!mv::ai::readable(access())) return mv::err(mv::status::permission_denied);
+    ++lib_->videos;
     auto it = find(id);
     if (!it) return mv::err(mv::status::not_found);
     if (!it->local) return mv::err(mv::status::io);
@@ -1594,11 +1597,15 @@ TEST_CASE("a Photos edit re-queues its asset, a delete drops it, and a change no
 TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once it is local",
           "[ai][engine][photos]") {
   rig r;
-  r.library->items = {{"blue-cloud", 1, mv::ai::asset_kind::photo, false, ""}};
+  r.library->items = {
+      {"blue-cloud", 1, mv::ai::asset_kind::photo, false, ""},
+      {"red-cloudclip", 1, mv::ai::asset_kind::video, false, ""},  // stays in iCloud throughout
+  };
   r.start();
   REQUIRE(r.eng->index_photos_library());
   REQUIRE(r.idle());
-  CHECK(r.status().assets_unavailable == 1);
+  CHECK(r.status().assets_unavailable == 2);
+  CHECK(has_row(r.search("red"), "photos:red-cloudclip"));  // its poster
   // A favourite toggled elsewhere changes nothing about it: not asked again.
   const int asked = r.library->stills;
   r.library->notify();
@@ -1610,8 +1617,52 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
     std::lock_guard lock(r.library->m);
     r.library->items[0].local = true;  // the user opened it in Photos: downloaded
   }
+  const int posters = r.library->stills;
   r.start();  // the next launch
   REQUIRE(eventually([&] { return r.status().assets_done == 1; }));
-  CHECK(r.status().assets_unavailable == 0);
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_unavailable == 1);  // the clip, still only in iCloud
   CHECK(has_row(r.search("blue"), "photos:blue-cloud"));
+  // The clip was asked whether it is here now (one lookup), not read again:
+  // its poster row stayed, and nothing was re-embedded for it.
+  CHECK(has_row(r.search("red"), "photos:red-cloudclip"));
+  CHECK(r.library->stills == posters + 2);  // the photo: the launch check, then its embedding
+}
+
+TEST_CASE("the People pass leaves iCloud-only Photos assets alone until they are local",
+          "[ai][engine][photos][faces]") {
+  rig r;
+  r.library->items = {
+      {"anna-cloud-1", 1, mv::ai::asset_kind::photo, false, ""},
+      {"anna-cloud-2", 1, mv::ai::asset_kind::photo, false, ""},
+      {"red-cloudclip", 1, mv::ai::asset_kind::video, false, ""},
+  };
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->faces_enable(true));
+  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  // Nothing to scan on this Mac: the pass ends instead of asking PhotoKit for
+  // the same clip again and again (it never went idle before this held).
+  REQUIRE(r.idle(10000));
+  const int asked = r.library->videos;
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(r.library->videos == asked);
+  CHECK(mv::json::parse(r.eng->people_json())->a.empty());
+
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items[0].local = true;  // Anna's photos arrived from iCloud
+    r.library->items[1].local = true;
+  }
+  r.start();
+  REQUIRE(eventually([&] { return r.status().assets_done == 2; }));
+  REQUIRE(r.idle());
+  // Their faces were scanned once there were pictures to scan: one person.
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 1);
+  CHECK(*people->a[0].integer("faces") == 2);
 }

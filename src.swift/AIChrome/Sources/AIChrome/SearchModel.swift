@@ -764,7 +764,6 @@ final class SearchModel: ObservableObject {
   private func preparePhotosThenOpen(gallery: Bool) {
     prepareTask?.cancel()
     fetchTask?.cancel()
-    DispatchQueue.global(qos: .utility).async { PhotosLibrary.clearDownloads() }
     let list = results
     let keys = list.filter { $0.isPhotos }.map { $0.path }
     let search = shown
@@ -859,6 +858,11 @@ final class SearchModel: ObservableObject {
     listedReadOnly = readOnly
     listedTitle = request["title"] as? String ?? ""
     guard chrome?.hostOpenList(request, from: self) == true else { return false }
+    // The last list's on-view iCloud downloads go now that the viewer has let
+    // go of that list ("cleared after", issue #72): not before, when Cancel or
+    // a failure would have left the viewer on a file that was gone. Nothing in
+    // the new list is one of them (an original is fetched only on view).
+    DispatchQueue.global(qos: .utility).async { PhotosLibrary.clearDownloads() }
     let old = listed
     listed = shown
     if old != listed { releaseIfUnused(old) }

@@ -1203,9 +1203,19 @@ void engine::scan_photos(const root_row& root) {
   });
   if (!was_readable) {
     // Once per launch (and when access comes back): what was only in iCloud
-    // may be on this Mac now. Not on every change, which would re-ask for
-    // every iCloud-only clip each time a photo is favourited.
-    if (auto again = db_->requeue_unavailable(root.id)) forget_vectors(*again);
+    // may be on this Mac now. Each unavailable asset is asked whether it is
+    // local now (a PhotoKit lookup, milliseconds; a still that is still in
+    // iCloud answers without a decode), and only those that are go back to
+    // pending. The rest keep their state and their stand-in rows (a clip's
+    // poster): nothing is re-read or re-embedded for nothing. Not on every
+    // change either, which would ask about every iCloud-only asset each time
+    // a photo is favourited.
+    std::vector<std::int64_t> again;
+    for (const asset_row& a : db_->unavailable_assets(root.id)) {
+      if (stopping_) return;
+      if (photos_local(a)) again.push_back(a.id);
+    }
+    if (!again.empty() && db_->requeue_unavailable(again)) forget_vectors(again);
   }
   {
     std::lock_guard lock(status_m_);
@@ -1226,11 +1236,29 @@ void engine::scan_photos(const root_row& root) {
   end_root_scan(root, gen, changed);
 }
 
+bool engine::photos_local(const asset_row& a) const {
+  if (!photos_) return false;
+  const std::string_view id = photos_id(a.path);
+  if (a.kind == asset_kind::video) return photos_->video_file(id).has_value();
+  return photos_->still(id, kPhotosProbeEdge).has_value();
+}
+
 void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
   if (ids.empty()) return;
   for (std::int64_t id : ids) {
     store_.remove_asset(id);
     sounds_.remove_asset(id);
+  }
+  {
+    // Their People pass too: an unavailable asset was marked scanned so the
+    // faces track would not ask for it again, and now there is something to scan.
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (std::int64_t id : ids) {
+        (void)faces_->forget_asset(id);
+        faces_scanned_.erase(id);
+      }
+    }
   }
   const std::set<std::int64_t> drop(ids.begin(), ids.end());
   {
@@ -1841,29 +1869,37 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
   o.max_gap_ms = faces_only ? 10000 : 2000;
   o.max_long_edge = faces_on ? 768u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
   o.start_ms = faces_only ? 0 : item.resume_ms;
+  // Nothing to scan for faces: said so, or the faces track would claim the
+  // clip again on its next pass, forever (an unavailable clip is asked again
+  // through forget_vectors once its original is here).
+  const auto no_faces = [&] {
+    std::lock_guard lock(models_m_);
+    if (faces_ && faces_on) {
+      (void)faces_->mark_scanned(item.asset.id, face_spec);
+      faces_scanned_.insert(item.asset.id);
+    }
+  };
   auto file = file_of(item.asset.path);
   if (!file) {
     if (file.error() == status::permission_denied) {
-      photos_readable_ = false;
+      photos_readable_ = false;  // left pending: the next scan skips the library
       return;
     }
     if (file.error() == status::io && is_photos_key(item.asset.path)) {
       // An iCloud-only clip: its poster, which Photos keeps on this Mac, is
       // searchable until the original arrives (requeue_unavailable).
       if (!faces_only) index_poster(item, clip, o.max_long_edge);
+      no_faces();
       return;
     }
     if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
+    no_faces();
     return;
   }
   auto sampler = host_.open_sampler(*file, o);
   if (!sampler) {
     if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
-    std::lock_guard lock(models_m_);
-    if (faces_ && faces_on) {
-      (void)faces_->mark_scanned(item.asset.id, face_spec);
-      faces_scanned_.insert(item.asset.id);
-    }
+    no_faces();
     return;
   }
   const mv_addon_video_info info = (*sampler)->info();

@@ -724,8 +724,10 @@ struct ManagementView: View {
     // Access as the pack last saw it, or as PhotoKit says now (a change in
     // System Settings shows before the next scan).
     let off = photosDenied || root.access == "denied" || root.access == "restricted"
-    let handled = max(0, root.done)  // done counts iCloud-only ones too: nothing more to read
-    let indexed = max(0, handled - max(0, root.unavailable))
+    // "done" is what was read and embedded; an iCloud-only asset is handled
+    // too (nothing on this Mac to read), so the bar counts both.
+    let indexed = max(0, root.done)
+    let handled = indexed + max(0, root.unavailable)
     return VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
@@ -745,7 +747,7 @@ struct ManagementView: View {
               Text(" · \(countText(UInt64(root.unavailable))) only in iCloud")
                 .help("Optimize Mac Storage keeps these originals in iCloud and no picture of them on this Mac, "
                       + "so there is nothing to read without downloading. They are indexed once Photos has them "
-                      + "here (MediaViewer checks each time it starts). An iCloud-only video is found by its poster.")
+                      + "here (MediaViewer checks each of them when it starts). An iCloud-only video is found by its poster.")
             }
             Text(root.enabled ? "" : " · paused")
           }
