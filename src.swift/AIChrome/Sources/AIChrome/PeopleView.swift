@@ -240,6 +240,8 @@ struct PersonSheet: View {
   @State private var faces: [Face] = []
   @State private var selection = Set<UInt64>()
   @State private var loading = true
+  @State private var refining = false
+  @State private var refineNote = ""
   @FocusState private var focused: Bool
 
   var body: some View {
@@ -298,6 +300,16 @@ struct PersonSheet: View {
           selection = []
         }
         .disabled(selection.count < 1)
+        if model.canRefine {
+          Button("Refine faces") { refine() }
+            .disabled(refining || loading)
+            .help("Check every face against this person and move out the ones that don't match")
+          if refining {
+            ProgressView().controlSize(.small)
+          } else if !refineNote.isEmpty {
+            Text(refineNote).font(AITheme.font(12)).foregroundStyle(AITheme.body)
+          }
+        }
         Spacer()
         Button("Done", action: done).keyboardShortcut(.defaultAction)
       }
@@ -308,6 +320,24 @@ struct PersonSheet: View {
       faces = await model.faces(of: person.id)
       loading = false
       focused = true
+    }
+  }
+
+  private func refine() {
+    refining = true
+    refineNote = ""
+    selection = []
+    Task {
+      let removed = await model.refine(person.id)
+      let now = await model.faces(of: person.id)
+      withAnimation(.easeOut(duration: 0.18)) { faces = now }
+      refining = false
+      switch removed {
+      case nil: refineNote = "Couldn't refine"
+      case 0: refineNote = "All faces match"
+      case 1: refineNote = "1 face moved out"
+      case let n?: refineNote = "\(n) faces moved out"
+      }
     }
   }
 
