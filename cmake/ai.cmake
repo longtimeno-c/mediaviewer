@@ -127,6 +127,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/query.h
   ${R}/src/addons/ai/faces.cpp
   ${R}/src/addons/ai/faces.h
+  ${R}/src/addons/ai/transfer.cpp
+  ${R}/src/addons/ai/transfer.h
   ${R}/src/addons/ai/engine.cpp
   ${R}/src/addons/ai/engine.h
   ${R}/src/addons/ai/pack.cpp

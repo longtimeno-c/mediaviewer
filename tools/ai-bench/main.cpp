@@ -10,6 +10,13 @@
 //            [--compute 0..4] [--quality 0..2] [--timeout <s>] [--query "text"]...
 //            [--busy-after <s> --busy-for <s>]   (the viewer "presents" then: yield check)
 //            [--quit-after <s> [--quit-budget <s>] [--quit-hash] [--quit-legacy]]
+//            [--export <file> [--export-flags N]]      after indexing (MV_AI_TRANSFER_*)
+//            [--import <file> --import-to <dir> [--import-flags N]]   every root of the file -> dir
+//            [--make-thumbs <dir>] [--count-thumbs <dir>]   the viewer's JPEG-512 cache, first / last
+//
+// --export / --import (plan/17 "Sharing an index"): two --addons folders are two
+// machines. Import prints what inspect_export said and the outcome, then waits
+// for the rescan; "assets_per_s" staying 0 says nothing was embedded again.
 //
 // --quit-after: after the index and query steps, keeps the pack running for
 // <s> seconds, then quits the way the hosts do (addon/host.h "Quit": the stop
@@ -30,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -40,6 +48,8 @@
 #include "addon/manifest.h"
 #include "abi/addon_media.h"
 #include "addon/store.h"
+#include "image/thumb.h"
+#include "io/file.h"
 
 namespace {
 
@@ -112,6 +122,8 @@ int main(int argc, char** argv) {
   int media = -1, compute = -1, quality = -1;
   double timeout = 3600, busy_after = -1, busy_for = 0, quit_after = -1, quit_budget = 0.5;
   bool quit_hash = false, quit_legacy = false;
+  std::string export_file, import_file, import_to, make_thumbs, count_thumbs;
+  unsigned export_flags = 0, import_flags = 0;
   std::vector<std::string> queries;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -130,6 +142,13 @@ int main(int argc, char** argv) {
     else if (a == "--quit-hash") quit_hash = true;
     else if (a == "--quit-legacy") quit_legacy = true;
     else if (a == "--quit-budget") quit_budget = std::stod(next());
+    else if (a == "--export") export_file = next();
+    else if (a == "--export-flags") export_flags = static_cast<unsigned>(std::stoul(next()));
+    else if (a == "--import") import_file = next();
+    else if (a == "--import-to") import_to = next();
+    else if (a == "--import-flags") import_flags = static_cast<unsigned>(std::stoul(next()));
+    else if (a == "--make-thumbs") make_thumbs = next();
+    else if (a == "--count-thumbs") count_thumbs = next();
   }
   if (addons.empty()) {
     std::fprintf(stderr, "usage: ai-bench --addons <dir> [--index <dir>] [--query text]...\n");
@@ -146,6 +165,31 @@ int main(int argc, char** argv) {
   svc.video_frame = &mv::addon::media::video_frame;
   svc.moment_thumbnail = &mv::addon::media::moment_thumbnail;
   svc.open_audio = &mv::addon::media::open_audio;
+  svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
+  svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
+  // The files of a folder, for the thumbnail steps (not its subfolders).
+  const auto files_in = [](const std::string& dir) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(std::filesystem::path(std::u8string(dir.begin(), dir.end())), ec)) {
+      if (!e.is_regular_file()) continue;
+      const std::u8string u = e.path().u8string();
+      out.emplace_back(u.begin(), u.end());
+    }
+    return out;
+  };
+  if (!make_thumbs.empty()) {
+    // As the gallery would: the viewer's own JPEG-512, stored through the host
+    // table's bytes entry (which decodes and checks what it stores).
+    unsigned made = 0;
+    for (const std::string& f : files_in(make_thumbs)) {
+      auto bytes = mv::io::read_all(f);
+      if (!bytes) continue;
+      auto jpeg = mv::image::make_thumb_jpeg(*bytes);
+      if (jpeg && mv::addon::media::store_thumbnail_jpeg(f, -1, *jpeg)) ++made;
+    }
+    std::printf("{\"thumbs_made\":%u}\n", made);
+  }
   const double t_load = now_s();
   auto loaded = mv::addon::loaded_addon::load(store, "ai", std::move(svc));
   if (!loaded) {
@@ -175,6 +219,76 @@ int main(int argc, char** argv) {
     }
     print_status(ai, t0);
     std::printf("{\"indexed_s\":%.1f}\n", now_s() - t0);
+  }
+  // The buffer rule for the JSON calls.
+  const auto json = [](auto&& call) {
+    std::vector<char> buf(64 * 1024);
+    uint32_t needed = 0;
+    if (call(buf.data(), static_cast<uint32_t>(buf.size()), &needed) != MV_OK) {
+      buf.resize(needed + 1);
+      if (call(buf.data(), static_cast<uint32_t>(buf.size()), &needed) != MV_OK) return std::string();
+    }
+    return std::string(buf.data());
+  };
+  const auto wait_transfer = [&] {
+    const double tt = now_s();
+    std::string last;
+    while (now_s() - tt < timeout) {
+      last = json([&](char* o, uint32_t c, uint32_t* n) { return ai->transfer_json(ai->ctx, o, c, n); });
+      if (last.find("\"done\":true") != std::string::npos) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::printf("{\"transfer_s\":%.2f,\"transfer\":%s}\n", now_s() - tt, last.empty() ? "null" : last.c_str());
+    std::fflush(stdout);
+  };
+  if (!export_file.empty()) {
+    uint64_t job = 0;
+    if (ai->export_index(ai->ctx, export_file.c_str(), nullptr, 0, export_flags, &job) != MV_OK) return 1;
+    wait_transfer();
+  }
+  if (!import_file.empty() && !import_to.empty()) {
+    const std::string info =
+        json([&](char* o, uint32_t c, uint32_t* n) { return ai->inspect_export(ai->ctx, import_file.c_str(), o, c, n); });
+    std::printf("{\"inspect\":%s}\n", info.empty() ? "null" : info.c_str());
+    // Every root of the file to --import-to (a one-folder export, a card).
+    std::string map = "[";
+    for (std::size_t at = info.find("\"roots\":"); at != std::string::npos;) {
+      at = info.find("{\"id\":", at);
+      if (at == std::string::npos) break;
+      at += 6;
+      const long long id = std::atoll(info.c_str() + at);
+      std::string dir;
+      for (char ch : import_to) {
+        if (ch == '\\' || ch == '"') dir += '\\';
+        dir += ch;
+      }
+      map += (map.size() > 1 ? "," : "") + std::string("{\"id\":") + std::to_string(id) + ",\"path\":\"" + dir + "\"}";
+    }
+    map += "]";
+    uint64_t job = 0;
+    const double t_import = now_s();
+    if (ai->import_index(ai->ctx, import_file.c_str(), map.c_str(), import_flags, &job) != MV_OK) return 1;
+    wait_transfer();
+    // The rescan that follows: a file that differs here is embedded again.
+    double last = 0;
+    while (now_s() - t_import < timeout) {
+      const double t = now_s() - t_import;
+      if (t - last >= 2) {
+        print_status(ai, t_import);
+        last = t;
+      }
+      if (t > 3 && idle(ai)) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    print_status(ai, t_import);
+  }
+  if (!count_thumbs.empty()) {
+    unsigned hits = 0, total = 0;
+    for (const std::string& f : files_in(count_thumbs)) {
+      ++total;
+      if (mv::addon::media::thumbnail_jpeg(f, -1)) ++hits;
+    }
+    std::printf("{\"thumbs_cached\":%u,\"files\":%u}\n", hits, total);
   }
   for (const std::string& q : queries) {
     const double tq = now_s();

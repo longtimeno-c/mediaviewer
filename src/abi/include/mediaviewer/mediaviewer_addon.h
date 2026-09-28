@@ -311,6 +311,18 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* audio_read)(void* host, void* audio, float* out, uint32_t max_samples,
                                  uint32_t* out_count, int64_t* out_start_ms);
   void(MV_CALL* audio_close)(void* host, void* audio);
+
+  /* ---- sharing an index (2026-09-28, plan/17 "Sharing an index") ---------- */
+  /* The JPEG-512 the viewer's cache already holds for a file (pts_ms < 0) or
+   * for one of its moments, as bytes. Never makes one: MV_ERR_IO on a miss.
+   * A short buffer returns MV_ERR_INVALID_ARG with *out_size set. */
+  mv_status(MV_CALL* thumbnail_jpeg)(void* host, const char* path_utf8, int64_t pts_ms,
+                                     uint8_t* out, uint64_t cap, uint64_t* out_size);
+  /* Stores a JPEG-512 made on another machine under this machine's stamp of
+   * the file (it must exist). The bytes are untrusted: the host decodes them
+   * and refuses anything but a JPEG whose long edge is at most 512. */
+  mv_status(MV_CALL* thumbnail_store_jpeg)(void* host, const char* path_utf8, int64_t pts_ms,
+                                           const uint8_t* jpeg, uint64_t size);
 } mv_host_api;
 
 typedef struct mv_addon_api {

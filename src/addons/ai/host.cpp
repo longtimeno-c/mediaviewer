@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/host.h"
 
+#include <cstddef>
 #include <cstring>
 
 namespace mv::ai {
@@ -181,6 +182,38 @@ result<std::string> host::piece_dir(const std::string& piece) const {
         return x->api->piece_dir(x->api->host, x->piece->c_str(), out, cap);
       },
       &ctx);
+}
+
+bool host::has_thumbnail_bytes() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, thumbnail_store_jpeg) +
+                                          sizeof(api_->thumbnail_store_jpeg) &&
+         api_->thumbnail_jpeg && api_->thumbnail_store_jpeg;
+}
+
+result<std::vector<std::uint8_t>> host::thumbnail_jpeg(const std::string& path,
+                                                       std::int64_t pts_ms) const {
+  if (!has_thumbnail_bytes()) return err(status::unsupported_format);
+  std::vector<std::uint8_t> buf(96u * 1024u);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    uint64_t n = 0;
+    const mv_status s = api_->thumbnail_jpeg(api_->host, path.c_str(), pts_ms, buf.data(),
+                                             static_cast<uint64_t>(buf.size()), &n);
+    if (s == MV_OK) {
+      buf.resize(static_cast<std::size_t>(n));
+      return buf;
+    }
+    if (s != MV_ERR_INVALID_ARG || n <= buf.size() || n > (8u << 20)) return err(to_status(s));
+    buf.resize(static_cast<std::size_t>(n));
+  }
+  return err(status::internal);
+}
+
+expected host::store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
+                                    std::span<const std::uint8_t> jpeg) const {
+  if (!has_thumbnail_bytes()) return err(status::unsupported_format);
+  const mv_status s = api_->thumbnail_store_jpeg(api_->host, path.c_str(), pts_ms, jpeg.data(),
+                                                 static_cast<uint64_t>(jpeg.size()));
+  return s == MV_OK ? expected{} : err(to_status(s));
 }
 
 bool host::should_yield() const noexcept {
