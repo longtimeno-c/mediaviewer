@@ -24,7 +24,9 @@ public static partial class IslandHost
 {
     private static UpdateService? _updater;
     private static Button? _updateButton;
-    private static ProgressBar? _updateProgress;
+    // A JobBar, not a ProgressBar: WinUI's has no default style in this island
+    // app, and this one sits in the bar, so every launch fail-fasted (0.1.14-0.1.18).
+    private static JobBar? _updateProgress;
     // Checking / downloading are status, not an action: smaller than the bar's
     // buttons. "Update ready — restart" keeps the bar's size.
     private const double UpdateStatusFontSize = 12;
@@ -65,19 +67,14 @@ public static partial class IslandHost
         _updateButton.Visibility = Visibility.Collapsed;
         ToolTipService.SetToolTip(_updateButton,
             "A new version is downloaded. Restart to use it, or it installs when you close MediaViewer.");
-        _updateProgress = new ProgressBar
-        {
-            Width = 90,
-            Minimum = 0,
-            Maximum = 100,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 10, 0),
-            Visibility = Visibility.Collapsed,
-        };
-        AutomationProperties.SetName(_updateProgress, "Update download progress");
+        _updateProgress = new JobBar { Visibility = Visibility.Collapsed };
+        _updateProgress.Root.Width = 90;
+        _updateProgress.Root.VerticalAlignment = VerticalAlignment.Center;
+        _updateProgress.Root.Margin = new Thickness(0, 0, 10, 0);
+        AutomationProperties.SetName(_updateProgress.Root, "Update download progress");
         var group = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         group.Children.Add(_updateButton);
-        group.Children.Add(_updateProgress);
+        group.Children.Add(_updateProgress.Root);
         return group;
     }
 
@@ -128,7 +125,7 @@ public static partial class IslandHost
             {
                 // Determinate once Velopack has reported a percent.
                 _updateProgress.IsIndeterminate = s.Percent is null;
-                _updateProgress.Value = s.Percent ?? 0;
+                _updateProgress.Value = (s.Percent ?? 0) / 100.0;
                 _updateProgress.Visibility = downloading ? Visibility.Visible : Visibility.Collapsed;
             }
             if (text is null)
