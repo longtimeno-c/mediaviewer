@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 #include "addons/ai/platform.h"
@@ -240,11 +241,12 @@ std::string engine::settings_json() const {
   w.key("video_index_setting").integer(s.video_index);
   w.key("precision").integer(s.precision);
   {
-    std::lock_guard lock(models_m_);
-    w.key("faces_ready").boolean(static_cast<bool>(faces_model_));
-    w.key("audio_ready").boolean(static_cast<bool>(sound_.model) || static_cast<bool>(speech_.model));
-    w.key("sound_model").string(sound_.name);
-    w.key("speech_model").string(speech_.name);
+    // Not models_m_: this is the UI thread's call (pieces_).
+    std::lock_guard lock(pieces_m_);
+    w.key("faces_ready").boolean(pieces_.faces_ready);
+    w.key("audio_ready").boolean(pieces_.sound_ready || pieces_.speech_ready);
+    w.key("sound_model").string(pieces_.sound_name);
+    w.key("speech_model").string(pieces_.speech_name);
   }
   w.key("available").begin_object();
   w.key("cuda").boolean(deps_.backend_available && deps_.backend_available(infer::backend::cuda));
@@ -418,7 +420,7 @@ void engine::refresh_counts() {
   if (s.faces) flags |= MV_AI_STATUS_FACES_ON;
   if (face_total > 0 || faces_ready) flags |= MV_AI_STATUS_FACES_READY;
   if (models_failed_) flags |= MV_AI_STATUS_NO_MODELS;
-  if (first_compile_ && !models_ready_ && !models_failed_) flags |= MV_AI_STATUS_FIRST_COMPILE;
+  if (first_compile_ && (loading_ || !models_ready_) && !models_failed_) flags |= MV_AI_STATUS_FIRST_COMPILE;
   if (!sound_spec.empty() || !speech_spec.empty()) flags |= MV_AI_STATUS_AUDIO_READY;
   status_.flags = flags;
 
@@ -452,7 +454,7 @@ void engine::refresh_counts() {
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
-  } else if (!models_ready_) {
+  } else if (!models_ready_ || loading_) {
     state = MV_AI_STATE_LOADING;
   } else if (paused_ || index_full_) {
     state = MV_AI_STATE_PAUSED;
@@ -511,10 +513,20 @@ bool engine::wait_viewer_quiet() {
 }
 
 void engine::load_models() {
-  models_ready_ = false;
+  // A reload keeps the towers in answering searches until the new ones are
+  // open (the swap below); only a first load (or one after a failure) has
+  // nothing to answer with. The indexer waits either way (loading_).
+  loading_ = true;
+  struct done_loading {
+    std::atomic<bool>* flag;
+    ~done_loading() { *flag = false; }
+  } const done{&loading_};
+  const bool reloading = models_ready_.load();
+  if (!reloading) models_ready_ = false;
   if (!wait_viewer_quiet()) return;
   if (deps_.prepare) deps_.prepare();
   if (!deps_.open_clip) {
+    models_ready_ = false;
     models_failed_ = true;
     return;
   }
@@ -522,6 +534,32 @@ void engine::load_models() {
   {
     std::lock_guard lock(settings_m_);
     s = settings_;
+  }
+  if (reloading) {
+    // Already running what these settings ask for: nothing opens. Quality
+    // High where Auto already chose High (Core ML) is the same tower, and
+    // reopening it was a second multi-minute Core ML compile of L/14 beside
+    // the first, with gigabytes written (2026-09-28).
+    std::uint32_t quality = 0;
+    std::uint32_t compute = 0;
+    infer::backend on = infer::backend::cpu;
+    bool have_model = false;
+    {
+      std::lock_guard lock(models_m_);
+      have_model = build_.model != nullptr;
+      quality = build_.meta.quality;
+      compute = build_compute_;
+      on = build_.on;
+    }
+    if (have_model && compute == s.compute && effective_quality(on) == quality) {
+      post(MV_ADDON_EVENT_AI_STATUS);
+      return;
+    }
+  }
+  if (reloading) {
+    // Say so while the new tower opens (the one in service still answers).
+    refresh_counts();
+    post(MV_ADDON_EVENT_AI_STATUS);
   }
   // Open the preferred tower on the chosen compute; with Auto quality, the
   // backend that tower lands on decides between the two.
@@ -543,10 +581,14 @@ void engine::load_models() {
     const std::uint32_t want = effective_quality(opened->on);
     if (want != opened->meta.quality) {
       auto other = deps_.open_clip(want, s.compute);
-      if (other) opened = std::move(other);
+      if (other) {
+        retire(std::move(opened->model));
+        opened = std::move(other);
+      }
     }
   }
   if (!opened) {
+    models_ready_ = false;
     models_failed_ = true;
     post(MV_ADDON_EVENT_AI_COMPUTE, 0, -1);
     return;
@@ -568,14 +610,25 @@ void engine::load_models() {
   loaded_clip answer = build;
   if (!fresh && active != build.meta.spec_key) {
     bool found = false;
+    {
+      // Migrating already and the answering tower is still in: keep it
+      // rather than open it a second time.
+      std::lock_guard lock(models_m_);
+      if (answer_.model && answer_.meta.spec_key == active) {
+        answer = answer_;
+        found = true;
+      }
+    }
     for (std::uint32_t q : have) {
+      if (found) break;
       if (q == build.meta.quality) continue;
       auto other = deps_.open_clip(q, MV_AI_COMPUTE_CPU_ONLY);
       if (other && other->meta.spec_key == active) {
         embed_generic(*other);
         answer = std::move(*other);
         found = true;
-        break;
+      } else if (other) {
+        retire(std::move(other->model));
       }
     }
     if (!found) {
@@ -590,22 +643,41 @@ void engine::load_models() {
   (void)db_->set_meta("active_spec", active);
   faces_parts people = open_faces_parts(s);
   const std::uint32_t speech_quality = build.meta.quality;
+  const std::uint32_t answer_dim = answer.meta.dim;
+  // What goes out is released below, after the swap and with no lock held:
+  // a tower's destructor can wait minutes for a Core ML compile (retire).
+  loaded_clip old_build, old_answer;
+  faces_parts old_people;
+  loaded_sound old_sound;
+  loaded_speech old_speech;
+  begin_answer_swap();
   {
     std::lock_guard lock(models_m_);
+    old_build = std::move(build_);
+    old_answer = std::move(answer_);
+    old_people.model = std::move(faces_model_);
+    old_people.db = std::move(faces_);
+    old_sound = std::move(sound_);
+    old_speech = std::move(speech_);
     build_ = std::move(build);
     answer_ = std::move(answer);
+    build_compute_ = s.compute;
     faces_model_ = std::move(people.model);
     faces_ = std::move(people.db);
     faces_scanned_ = std::move(people.scanned);
     sound_ = {};
     speech_ = {};
+    publish_pieces_locked();
   }
-  load_vectors(active, answer_.meta.dim);
+  load_vectors(active, answer_dim);
   sounds_.reset(0);
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
   }
+  end_answer_swap();
+  retire(std::move(old_build.model));
+  retire(std::move(old_answer.model));
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -615,10 +687,61 @@ void engine::load_models() {
   // a GPU) load behind them rather than holding the whole pack in LOADING.
   models_failed_ = false;
   models_ready_ = true;
+  loading_ = false;
   work_cv_.notify_all();
-  post(MV_ADDON_EVENT_AI_COMPUTE, 0, static_cast<std::int64_t>(build_.on));
+  infer::backend landed = infer::backend::cpu;
+  {
+    std::lock_guard lock(models_m_);
+    landed = build_.on;
+  }
+  post(MV_ADDON_EVENT_AI_COMPUTE, 0, static_cast<std::int64_t>(landed));
 
   load_audio(s, speech_quality, false);
+}
+
+void engine::retire(std::shared_ptr<infer::embedder> model) {
+  if (!model) return;
+  {
+    std::lock_guard lock(models_m_);
+    if (model == build_.model || model == answer_.model) return;  // still in service
+  }
+  for (const auto& r : retired_) {
+    if (r == model) return;
+  }
+  retired_.push_back(std::move(model));
+  reap_retired();
+}
+
+void engine::reap_retired() {
+  // use_count 1: nothing else can reach it (it is in neither slot), so no
+  // other thread can take a copy between the test and the release.
+  retired_.erase(std::remove_if(retired_.begin(), retired_.end(),
+                                [](const std::shared_ptr<infer::embedder>& m) {
+                                  return m.use_count() == 1 && !m->settling();
+                                }),
+                 retired_.end());
+}
+
+void engine::publish_pieces_locked() {
+  pieces_view v;
+  v.faces_ready = faces_model_ != nullptr;
+  v.sound_ready = sound_.model != nullptr;
+  v.speech_ready = speech_.model != nullptr;
+  v.sound_name = sound_.name;
+  v.speech_name = speech_.name;
+  std::lock_guard lock(pieces_m_);
+  pieces_ = std::move(v);
+}
+
+std::uint64_t engine::settled_answer_gen() const {
+  // A swap holds the generation odd for the vector reload only (the towers
+  // opened before it began): well under a second at 100 k frames.
+  for (int i = 0; i < 1000 && !stopping_; ++i) {
+    const std::uint64_t g = answer_gen_.load();
+    if ((g & 1) == 0) return g;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return answer_gen_.load();
 }
 
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {
@@ -675,12 +798,14 @@ void engine::load_pieces() {
     if (model && !faces_spec.empty() && model->spec_key() == faces_spec) {
       std::lock_guard lock(models_m_);
       faces_model_ = std::move(model);
+      publish_pieces_locked();
     } else {
       faces_parts people = model ? open_faces_parts(s, std::move(model)) : faces_parts{};
       std::lock_guard lock(models_m_);
       faces_model_ = std::move(people.model);
       faces_ = std::move(people.db);
       faces_scanned_ = std::move(people.scanned);
+      publish_pieces_locked();
     }
     post(MV_ADDON_EVENT_AI_PEOPLE);
   }
@@ -721,6 +846,7 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
       std::lock_guard lock(models_m_);
       sound_ = {};
       speech_ = {};
+      publish_pieces_locked();
     }
     sounds_.reset(0);
     std::lock_guard lock(speech_m_);
@@ -745,6 +871,7 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
     std::lock_guard lock(models_m_);
     sound_ = std::move(sound);
     speech_ = std::move(speech);
+    publish_pieces_locked();
   }
   {
     std::lock_guard lock(work_m_);
@@ -772,12 +899,21 @@ void engine::maybe_finish_migration() {
   const counts c = db_->count(build_spec);
   if (c.assets > c.done + c.failed) return;
   // The new index is complete: it answers from now on, and the old vectors go.
+  // The tower and its vectors change together (answer_gen_), and the old
+  // tower is released off the lock (retire).
+  loaded_clip old_answer;
+  std::uint32_t dim = 0;
+  begin_answer_swap();
   {
     std::lock_guard lock(models_m_);
+    old_answer = std::move(answer_);
     answer_ = build_;
+    dim = build_.meta.dim;
   }
   (void)db_->set_meta("active_spec", build_spec);
-  load_vectors(build_spec, build_.meta.dim);
+  load_vectors(build_spec, dim);
+  end_answer_swap();
+  retire(std::move(old_answer.model));
   (void)db_->drop_spec(active_spec);
   post(MV_ADDON_EVENT_AI_STATUS);
 }
@@ -785,6 +921,7 @@ void engine::maybe_finish_migration() {
 // ---- control ------------------------------------------------------------------------------
 
 void engine::control_loop() {
+  loading_ = true;
   load_models();
   const unsigned cores = std::max(1u, platform::hardware_threads());
   const unsigned n = std::max(1u, std::min(2u, cores / 4));
@@ -793,10 +930,13 @@ void engine::control_loop() {
   double last_consolidate = now_s();
   std::uint32_t last_state = 0xFFFF;
   while (!stopping_) {
-    if (reload_models_.exchange(false)) {
+    if (reload_models_.load()) {
+      loading_ = true;  // before the flag clears (wait_idle reads them in the other order)
+      reload_models_ = false;
       reload_pieces_ = false;  // a full load reads the pieces too
       load_models();
       refresh_counts();
+      ++reloads_done_;
     } else if (reload_pieces_.exchange(false)) {
       load_pieces();
     }
@@ -821,6 +961,7 @@ void engine::control_loop() {
     refresh_counts();
     scanning_ = false;
     maybe_finish_migration();
+    reap_retired();
     // Plugging in ends an override even while no worker is asking (idle).
     if (battery_override_ && !power_state().on_battery) battery_override_ = false;
     if (t - last_consolidate > 60) {
@@ -1010,7 +1151,7 @@ platform::power engine::power_state() const {
 
 bool engine::wait_turn() {
   while (!stopping_) {
-    if (clearing_ || !models_ready_ || paused_ || index_full_) {
+    if (clearing_ || !models_ready_ || loading_ || paused_ || index_full_) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(200));
       continue;
@@ -1032,8 +1173,8 @@ std::uint32_t engine::default_media() const {
   if (v != MV_AI_MEDIA_DEFAULT) return v;
   // Unset: pictures, and sound too once the ai-audio piece is installed
   // (installing it is the choice to index what clips sound like).
-  std::lock_guard lock(models_m_);
-  return sound_.model ? MV_AI_MEDIA_BOTH : MV_AI_MEDIA_PICTURES;
+  std::lock_guard lock(pieces_m_);
+  return pieces_.sound_ready ? MV_AI_MEDIA_BOTH : MV_AI_MEDIA_PICTURES;
 }
 
 bool engine::claim(std::vector<work_item>& out, track& t) {
@@ -1556,7 +1697,10 @@ bool engine::wait_idle(int ms) {
     bool idle = false;
     {
       std::lock_guard lock(work_m_);
-      if (models_ready_ && queue_exhausted_ && busy_workers_ == 0 && in_flight_.empty()) {
+      // The reload flag before loading_: the control thread sets loading_
+      // before it clears the flag, so one of the two reads true.
+      const bool reloading = reload_models_.load() || loading_.load();
+      if (models_ready_ && !reloading && queue_exhausted_ && busy_workers_ == 0 && in_flight_.empty()) {
         std::lock_guard cl(control_m_);
         idle = !rescan_all_ && rescan_roots_.empty() && !scanning_;
       }
@@ -2030,12 +2174,7 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   }
 }
 
-std::vector<float> engine::query_vector(const std::string& text) {
-  loaded_clip answer;
-  {
-    std::lock_guard lock(models_m_);
-    answer = answer_;
-  }
+std::vector<float> engine::query_vector(const loaded_clip& answer, const std::string& text) {
   if (!answer.model) return {};
   const std::string key = answer.meta.spec_key + "\x1f" + text;
   {
@@ -2127,21 +2266,33 @@ std::uint64_t engine::search_text(const std::string& query, const std::string& s
       allow = [base, person_assets](std::int64_t a) { return person_assets.count(a) && base(a); };
     }
     if (find & MV_AI_FIND_PICTURES) {
-      const std::vector<float> v = query_vector(q);
-      if (!v.empty()) {
-        text_thresholds t;
+      // The query is embedded by the tower whose vectors are in the matrix,
+      // and both are read as one pair: a migration finishing (or a reload)
+      // meanwhile runs the query again on the new pair.
+      for (int attempt = 0; attempt < 3 && !stopping_; ++attempt) {
+        const std::uint64_t gen = settled_answer_gen();
+        loaded_clip answer;
         {
           std::lock_guard lock(models_m_);
-          t.result_margin = answer_.meta.result_margin;
-          t.query_margin = answer_.meta.query_margin;
-          t.query_z = answer_.meta.query_z;
-          t.result_z = answer_.meta.result_z;
+          answer.model = answer_.model;
+          answer.meta = answer_.meta;
         }
-        // The rule, its noise scaling and the Precision setting: find_text
-        // (vectors.h), the same function the calibration runs (plan/17).
-        const auto hits = find_text(store_, v, allow, t, precision_scale::at(precision), person_assets.empty());
+        const std::vector<float> v = query_vector(answer, q);
+        std::vector<vector_store::hit> hits;
+        if (!v.empty()) {
+          text_thresholds t;
+          t.result_margin = answer.meta.result_margin;
+          t.query_margin = answer.meta.query_margin;
+          t.query_z = answer.meta.query_z;
+          t.result_z = answer.meta.result_z;
+          // The rule, its noise scaling and the Precision setting: find_text
+          // (vectors.h), the same function the calibration runs (plan/17).
+          hits = find_text(store_, v, allow, t, precision_scale::at(precision), person_assets.empty());
+        }
+        if (answer_gen_.load() != gen) continue;
         // Already through the "nothing found" test: group only ranks.
         group(st, hits, true, -1.0f, MV_AI_MATCH_PICTURE, true);
+        break;
       }
     }
     merge_audio(st, q, allow, find, precision);
@@ -2166,29 +2317,38 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
       }
     }
     // An indexed still or sampled moment is its own query; a paused frame
-    // that was never sampled is embedded now (plan/17 "Find similar").
-    bool have = false;
-    if (self != 0 && pts_ms < 0) have = store_.vector_of(self, -1, q);
-    if (!have) {
-      loaded_clip answer;
+    // that was never sampled is embedded now (plan/17 "Find similar"). The
+    // query and the matrix it scans come from one model (answer_gen_).
+    std::vector<vector_store::hit> hits;
+    std::optional<rgb_frame> img;  // decoded once, embedded again after a swap
+    for (int attempt = 0; attempt < 3 && !stopping_; ++attempt) {
+      const std::uint64_t gen = settled_answer_gen();
+      std::shared_ptr<infer::embedder> model;
+      float similar_min = 0;
       {
         std::lock_guard lock(models_m_);
-        answer = answer_;
+        model = answer_.model;
+        similar_min = answer_.meta.similar_min;
       }
-      if (!answer.model) return;
-      auto img = pts_ms >= 0 ? host_.video_frame(path, pts_ms, 448) : host_.decode_still(path, 448);
-      if (!img) return;
-      const infer::rgb_view view{img->rgb.data(), img->width, img->height};
-      std::vector<float> e;
-      if (!answer.model->embed_images(std::span<const infer::rgb_view>(&view, 1), e)) return;
-      q = std::move(e);
+      q.clear();
+      bool have = false;
+      if (self != 0 && pts_ms < 0) have = store_.vector_of(self, -1, q);
+      if (!have) {
+        if (!model) return;
+        if (!img) {
+          auto decoded = pts_ms >= 0 ? host_.video_frame(path, pts_ms, 448) : host_.decode_still(path, 448);
+          if (!decoded) return;
+          img = std::move(*decoded);
+        }
+        const infer::rgb_view view{img->rgb.data(), img->width, img->height};
+        std::vector<float> e;
+        if (!model->embed_images(std::span<const infer::rgb_view>(&view, 1), e)) return;
+        q = std::move(e);
+      }
+      hits = store_.scan(q, scope_filter(scope_dir, scope, kinds), 5000, false, 0, similar_min);
+      if (answer_gen_.load() == gen) break;
+      hits.clear();
     }
-    float similar_min;
-    {
-      std::lock_guard lock(models_m_);
-      similar_min = answer_.meta.similar_min;
-    }
-    auto hits = store_.scan(q, scope_filter(scope_dir, scope, kinds), 5000, false, 0, similar_min);
     // Not the query itself: the same still, or the same moment of the clip.
     hits.erase(std::remove_if(hits.begin(), hits.end(),
                               [&](const vector_store::hit& h) {
@@ -2347,6 +2507,7 @@ expected engine::faces_enable(bool enable) {
     faces_.reset();
     faces_model_.reset();
     faces_scanned_.clear();
+    publish_pieces_locked();
     faces_db::destroy(join(data_dir_, "faces.db"));
   } else {
     reload_pieces_ = true;  // opens People; the picture towers stay

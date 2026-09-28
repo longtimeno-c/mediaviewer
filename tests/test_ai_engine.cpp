@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -258,6 +259,66 @@ class fake_speech final : public mv::ai::speech_model {
   std::atomic<int> windows{0};
 };
 
+// A tower a test can hold at each step the pack's Core ML tower takes long
+// over (2026-09-28): its open (the rig's `tower` hook waits on `open`), its
+// image embeds (`embed`), and its last release (`death`: upgrading_clip's
+// destructor waits for a compile in progress, minutes on a first L/14
+// compile). Every hold is bounded, so a regression fails the timing checks
+// rather than hanging the suite. `pad` zero dimensions make it another
+// vector space's size.
+struct gates {
+  std::atomic<bool> open{false};
+  std::atomic<bool> embed{false};
+  std::atomic<bool> death{false};
+  std::atomic<int> opens_waiting{0};
+  std::atomic<int> died{0};
+  std::mutex m;
+  std::vector<std::thread::id> died_on;
+};
+
+void hold_while(const std::atomic<bool>& flag) {
+  for (int i = 0; i < 2000 && flag.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+}
+
+class gated_embedder final : public mv::infer::embedder {
+ public:
+  gated_embedder(std::shared_ptr<fake_embedder> inner, gates* g, std::uint32_t pad = 0)
+      : inner_(std::move(inner)), g_(g), pad_(pad) {}
+  ~gated_embedder() override {
+    hold_while(g_->death);
+    std::lock_guard lock(g_->m);
+    g_->died_on.push_back(std::this_thread::get_id());
+    ++g_->died;
+  }
+  std::uint32_t dim() const noexcept override { return inner_->dim() + pad_; }
+  const std::string& spec_key() const noexcept override { return inner_->spec_key(); }
+  mv::infer::backend on() const noexcept override { return mv::infer::backend::cpu; }
+  bool settling() const noexcept override { return g_->death.load(); }
+  mv::expected embed_images(std::span<const mv::infer::rgb_view> images, std::vector<float>& out) override {
+    hold_while(g_->embed);
+    std::vector<float> plain;
+    MV_TRY_VOID(inner_->embed_images(images, plain));
+    out.clear();
+    const std::size_t d = inner_->dim();
+    for (std::size_t i = 0; i + d <= plain.size(); i += d) {
+      out.insert(out.end(), plain.begin() + static_cast<std::ptrdiff_t>(i),
+                 plain.begin() + static_cast<std::ptrdiff_t>(i + d));
+      out.insert(out.end(), pad_, 0.0f);
+    }
+    return {};
+  }
+  mv::result<std::vector<float>> embed_text(std::string_view text) override {
+    MV_TRY(std::vector<float> v, inner_->embed_text(text));
+    v.insert(v.end(), pad_, 0.0f);
+    return v;
+  }
+
+ private:
+  std::shared_ptr<fake_embedder> inner_;
+  gates* g_;
+  std::uint32_t pad_;
+};
+
 struct rig {
   scratch_dir dir{"ai"};
   std::mutex events_m;
@@ -274,6 +335,10 @@ struct rig {
   std::atomic<bool> faces_available{true};
   std::atomic<bool> audio_available{false};
   std::atomic<int> clip_opens{0};
+  // A test's own towers (fresh instances, gates); unset: `fast` and `high`.
+  std::function<std::shared_ptr<mv::infer::embedder>(std::uint32_t quality)> tower;
+  // The backend open_clip reports (Core ML: Auto quality chooses High).
+  mv::infer::backend lands_on = mv::infer::backend::cpu;
   std::shared_ptr<fake_sound> sound = std::make_shared<fake_sound>();
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
   std::unique_ptr<engine> eng;
@@ -333,12 +398,17 @@ struct rig {
     d.open_clip = [this](std::uint32_t quality, std::uint32_t) -> mv::result<mv::ai::loaded_clip> {
       ++clip_opens;
       mv::ai::loaded_clip c;
-      c.model = quality == 2 ? std::static_pointer_cast<mv::infer::embedder>(high)
-                             : std::static_pointer_cast<mv::infer::embedder>(fast);
+      if (tower) {
+        c.model = tower(quality);
+      } else {
+        c.model = quality == 2 ? std::static_pointer_cast<mv::infer::embedder>(high)
+                               : std::static_pointer_cast<mv::infer::embedder>(fast);
+      }
+      c.on = lands_on;
       c.meta.name = quality == 2 ? "Fake high" : "Fake fast";
       c.meta.spec_key = c.model->spec_key();
       c.meta.quality = quality;
-      c.meta.dim = kDim;
+      c.meta.dim = c.model->dim();
       c.meta.input_edge = 16;
       c.meta.dedupe = 0.97f;
       c.meta.query_margin = 0.04f;
@@ -1066,4 +1136,208 @@ TEST_CASE("audio: a piece installed under a running pack keeps the picture tower
   REQUIRE(gone);
   CHECK(r.search("birthday anna").empty());
   CHECK(r.clip_opens.load() == opens);
+}
+
+namespace {
+
+double ms_since(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+template <typename Fn>
+double timed(Fn&& fn) {
+  const auto t0 = std::chrono::steady_clock::now();
+  fn();
+  return ms_since(t0);
+}
+
+bool wait_for(const std::function<bool()>& done, int ms) {
+  const auto t0 = std::chrono::steady_clock::now();
+  while (!done()) {
+    if (ms_since(t0) > ms) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return true;
+}
+
+}  // namespace
+
+// Owner, 2026-09-28: "I set Search quality to High, then tried to adjust the
+// search Precision and it crashed." The reload opened L/14 again beside the
+// Core ML compile already running, and swapped the towers under models_m_,
+// where the replaced tower's destructor waited for its compile (minutes);
+// settings_json, which the chrome calls on the main thread after every
+// Settings change, waited on models_m_. Every call a chrome makes from its UI
+// thread must return at once while a tower opens, and while a replaced one
+// takes minutes to go.
+TEST_CASE("a quality change never blocks Settings, Precision or a search while towers open and go",
+          "[ai][engine]") {
+  gates g;  // outlives the engine: its towers go when it does
+  rig r;
+  r.tower = [&](std::uint32_t quality) -> std::shared_ptr<mv::infer::embedder> {
+    if (quality == 2) {
+      ++g.opens_waiting;
+      hold_while(g.open);  // CreateSession of a big tower
+      --g.opens_waiting;
+    }
+    return std::make_shared<gated_embedder>(quality == 2 ? r.high : r.fast, &g);
+  };
+  r.file("red.jpg");
+  r.file("green.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->active_spec() == "fake-fast/fp16/pre1");
+  const int died_before = g.died.load();  // Auto's first look at High, closed at start
+
+  g.open = true;
+  g.death = true;
+  REQUIRE(r.eng->set_setting("quality", "2"));
+  REQUIRE(wait_for([&] { return g.opens_waiting.load() == 1; }, 5000));
+
+  // The new tower is still opening: Settings, Precision and its re-run answer
+  // now, the re-run from the tower in service.
+  CHECK(timed([&] { REQUIRE(r.eng->set_setting("precision", "1")); }) < 250);
+  CHECK(timed([&] { (void)r.eng->settings_json(); }) < 50);
+  CHECK(timed([&] { (void)r.status(); }) < 50);
+  std::vector<std::pair<std::string, std::int64_t>> red;
+  CHECK(timed([&] { red = r.search("red"); }) < 1000);
+  REQUIRE_FALSE(red.empty());
+  CHECK(red.front().first == "red.jpg");
+  CHECK(r.status().state == MV_AI_STATE_LOADING);
+
+  // Open: the swap, the migration, and its end, when the Fast tower goes
+  // while its destructor is held. Nothing the UI calls waits for any of it.
+  g.open = false;
+  double worst_settings = 0, worst_status = 0, worst_set = 0, worst_search = 0;
+  int empty_results = 0;
+  int level = 0;
+  const bool migrated = wait_for(
+      [&] {
+        worst_settings = std::max(worst_settings, timed([&] { (void)r.eng->settings_json(); }));
+        worst_status = std::max(worst_status, timed([&] { (void)r.status(); }));
+        worst_set = std::max(worst_set, timed([&] {
+                               (void)r.eng->set_setting("precision", std::to_string(1 + (level++ % 2)));
+                             }));
+        std::vector<std::pair<std::string, std::int64_t>> rows;
+        worst_search = std::max(worst_search, timed([&] { rows = r.search("red"); }));
+        if (rows.empty() || rows.front().first != "red.jpg") ++empty_results;
+        return r.eng->reloads_done() >= 1 && r.eng->active_spec() == "fake-high/fp16/pre1";
+      },
+      15000);
+  REQUIRE(migrated);
+  CHECK(worst_settings < 50);
+  CHECK(worst_status < 50);
+  CHECK(worst_set < 250);
+  CHECK(worst_search < 1000);
+  CHECK(empty_results == 0);
+
+  // The Fast tower is out of service but still "compiling": it is kept,
+  // then released on the engine's own thread once that is done.
+  CHECK(g.died.load() == died_before);
+  g.death = false;
+  REQUIRE(wait_for([&] { return g.died.load() == died_before + 1; }, 5000));
+  {
+    std::lock_guard lock(g.m);
+    CHECK(g.died_on.back() != std::this_thread::get_id());
+  }
+  CHECK(r.search("green").front().first == "green.jpg");
+}
+
+// Auto already runs High where the Neural Engine does (Apple silicon), so
+// choosing High is the same tower: no reload, no second Core ML compile.
+TEST_CASE("choosing the quality Auto already chose reopens nothing", "[ai][engine]") {
+  rig r;
+  r.lands_on = mv::infer::backend::coreml;
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.status().quality == 2u);
+  REQUIRE(r.eng->active_spec() == "fake-high/fp16/pre1");
+  const int opens = r.clip_opens.load();
+  const int embedded = r.high->images_embedded.load();
+
+  REQUIRE(r.eng->set_setting("quality", "2"));  // High, explicitly
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 1; }, 5000));
+  CHECK(r.clip_opens.load() == opens);
+  REQUIRE(r.eng->set_setting("quality", "0"));  // and back to Auto
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 2; }, 5000));
+  CHECK(r.clip_opens.load() == opens);
+  REQUIRE(r.idle());
+  CHECK(r.eng->active_spec() == "fake-high/fp16/pre1");
+  CHECK(r.high->images_embedded.load() == embedded);  // nothing re-indexed
+  CHECK(r.search("red").front().first == "red.jpg");
+
+  // Another tower does open, and migrates.
+  REQUIRE(r.eng->set_setting("quality", "1"));
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 3; }, 5000));
+  CHECK(r.clip_opens.load() > opens);
+  REQUIRE(r.idle());
+  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, 5000));
+  CHECK(r.search("red").front().first == "red.jpg");
+}
+
+// The query is embedded by the tower whose vectors are in the matrix, and
+// the two change as one at a migration's end: never a Fast query against High
+// vectors (another size here, so a mix would find nothing).
+TEST_CASE("searches during a migration and across its end use the answering tower", "[ai][engine]") {
+  gates g;
+  rig r;
+  r.tower = [&](std::uint32_t quality) -> std::shared_ptr<mv::infer::embedder> {
+    if (quality == 2) return std::make_shared<gated_embedder>(r.high, &g, 4);
+    return std::make_shared<gated_embedder>(r.fast, &g);
+  };
+  r.file("red.jpg");
+  r.file("green.jpg");
+  r.file("blue.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->active_spec() == "fake-fast/fp16/pre1");
+
+  g.embed = true;  // the High tower's indexing waits: the migration stays mid-way
+  REQUIRE(r.eng->set_setting("quality", "2"));
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 1; }, 5000));
+  CHECK(r.eng->active_spec() == "fake-fast/fp16/pre1");
+  for (int i = 0; i < 3; ++i) {
+    const auto rows = r.search("red");
+    REQUIRE_FALSE(rows.empty());
+    CHECK(rows.front().first == "red.jpg");
+  }
+
+  // Searches run back to back across the migration's end (no assertion on
+  // this thread: the results are counted and checked after).
+  std::atomic<bool> stop{false};
+  std::atomic<int> runs{0};
+  std::atomic<int> wrong{0};
+  std::thread searcher([&] {
+    while (!stop) {
+      const std::uint64_t id = r.eng->search_text("red", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+      bool ok = r.eng->wait_search(id, 5000);
+      if (ok) {
+        auto n = r.eng->result_count(id);
+        ok = n && *n > 0;
+        if (ok) {
+          auto p = r.eng->result_path(id, 0);
+          ok = p && utf8(fs::path(*p).filename()) == "red.jpg";
+        }
+      }
+      if (!ok) ++wrong;
+      ++runs;
+    }
+  });
+  g.embed = false;
+  const bool migrated = wait_for([&] { return r.eng->active_spec() == "fake-high/fp16/pre1"; }, 15000);
+  const int at_end = runs.load();
+  (void)wait_for([&] { return runs.load() >= at_end + 3; }, 5000);
+  stop = true;
+  searcher.join();
+  REQUIRE(migrated);
+  CHECK(runs.load() > 0);
+  CHECK(wrong.load() == 0);
+  const auto after = r.search("red");
+  REQUIRE_FALSE(after.empty());
+  CHECK(after.front().first == "red.jpg");
+  CHECK(r.status().frames_indexed == 3);  // the old rows went; nothing doubled
 }

@@ -230,6 +230,8 @@ class engine {
   bool wait_idle(int ms);
   bool wait_search(std::uint64_t id, int ms);
   [[nodiscard]] std::string active_spec() const;
+  // Model reloads the control thread has finished (a no-op one included).
+  [[nodiscard]] std::uint64_t reloads_done() const noexcept { return reloads_done_.load(); }
 
  private:
   struct asset_meta {
@@ -314,6 +316,23 @@ class engine {
   void load_vectors(const std::string& spec, std::uint32_t dim);
   std::uint32_t effective_quality(infer::backend on) const;
   void maybe_finish_migration();
+  // The answering tower and the search matrix change together (a reload, the
+  // end of a migration): answer_gen_ is odd while they do, and a search that
+  // saw it change starts again on the new pair, so a query vector never
+  // scans vectors of another model (plan/17 "never mixed").
+  void begin_answer_swap() noexcept { answer_gen_.fetch_add(1); }
+  void end_answer_swap() noexcept { answer_gen_.fetch_add(1); }
+  // An even generation (waits out a swap in progress: the vector reload).
+  [[nodiscard]] std::uint64_t settled_answer_gen() const;
+  // A tower taken out of service. Its last reference goes on the control
+  // thread with no lock held, once nothing else holds it and it has stopped
+  // settling (Core ML still compiling it: its destructor waits for that,
+  // minutes on a first compile). Never under models_m_, never on a thread a
+  // chrome calls from.
+  void retire(std::shared_ptr<infer::embedder> model);
+  void reap_retired();
+  // With models_m_ held: what Settings reads of the pieces (pieces_).
+  void publish_pieces_locked();
   // search helpers
   std::uint64_t submit(std::function<void(search_state&)> run);
   std::function<bool(std::int64_t)> scope_filter(const std::string& scope_dir, std::uint32_t scope,
@@ -326,7 +345,7 @@ class engine {
   void add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, float score, float rank,
                std::uint32_t match, std::string snippet) const;
   static void finish(search_state& st);
-  std::vector<float> query_vector(const std::string& text);
+  std::vector<float> query_vector(const loaded_clip& answer, const std::string& text);
   // settings
   void save_settings() const;
   void load_settings();
@@ -344,6 +363,7 @@ class engine {
   mutable std::mutex models_m_;
   loaded_clip build_;   // the tower indexing now (the target)
   loaded_clip answer_;  // the tower whose vectors answer queries (the active spec)
+  std::uint32_t build_compute_ = MV_AI_COMPUTE_AUTO;  // the compute choice build_ opened on
   std::shared_ptr<face_analyzer> faces_model_;
   std::unique_ptr<faces_db> faces_;
   std::set<std::int64_t> faces_scanned_;  // under models_m_
@@ -357,6 +377,25 @@ class engine {
   std::atomic<bool> reload_models_{false};
   std::atomic<bool> reload_pieces_{false};
   std::atomic<bool> first_compile_{false};  // this load compiles a tower for the first time
+  // load_models is opening towers. The towers already in keep answering
+  // searches meanwhile (a reload); the indexer waits for the new ones.
+  std::atomic<bool> loading_{false};
+  std::atomic<std::uint64_t> answer_gen_{0};
+  std::atomic<std::uint64_t> reloads_done_{0};
+  std::vector<std::shared_ptr<infer::embedder>> retired_;  // control thread only
+
+  // What settings_json reports of the pieces, so that call (the UI thread's)
+  // never takes models_m_, which a worker holds across a People database
+  // write. Written under models_m_ -> pieces_m_ (a leaf).
+  struct pieces_view {
+    bool faces_ready = false;
+    bool sound_ready = false;
+    bool speech_ready = false;
+    std::string sound_name;
+    std::string speech_name;
+  };
+  mutable std::mutex pieces_m_;
+  pieces_view pieces_;
 
   vector_store store_;
   mutable std::mutex assets_m_;

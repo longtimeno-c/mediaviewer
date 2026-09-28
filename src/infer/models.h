@@ -61,6 +61,10 @@ class embedder {
   [[nodiscard]] virtual result<std::vector<float>> embed_text(std::string_view utf8) = 0;
   // Why a provider asked for was not used (Settings' reason line), once known.
   [[nodiscard]] virtual provider_fault fault() const noexcept { return provider_fault::none; }
+  // Still finishing an open in the background (Core ML compiling it): the
+  // destructor would wait for that, so the last reference should not go on a
+  // thread that must stay responsive.
+  [[nodiscard]] virtual bool settling() const noexcept { return false; }
 };
 
 // Core ML's image tower runs at this fixed batch (the engine's photo batch).
