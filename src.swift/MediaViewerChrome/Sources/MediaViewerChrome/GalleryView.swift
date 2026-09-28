@@ -284,7 +284,7 @@ private struct GalleryCell: View {
           RoundedRectangle(cornerRadius: 6)
             .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
         )
-        .overlay { if isClip { PlayBadge() } }
+        .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
       Text(name)
         .font(.caption)
@@ -299,18 +299,3 @@ private struct GalleryCell: View {
   }
 }
 
-/// Over a clip's tile, so videos read apart from stills without opening them.
-private struct PlayBadge: View {
-  var body: some View {
-    Image(systemName: "play.fill")
-      .font(.system(size: 16, weight: .semibold))
-      .foregroundStyle(.white)
-      .offset(x: 1.5)  // the triangle's optical centre sits left of its box
-      .frame(width: 40, height: 40)
-      .background(Circle().fill(.black.opacity(0.6)))
-      .overlay(Circle().strokeBorder(.white.opacity(0.8), lineWidth: 1.5))
-      .shadow(radius: 1)
-      .allowsHitTesting(false)
-      .accessibilityLabel("Video")
-  }
-}

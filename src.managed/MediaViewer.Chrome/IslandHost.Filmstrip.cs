@@ -416,7 +416,7 @@ public static partial class IslandHost
                 MaxWidth = 88,
             };
             var col = new StackPanel { Spacing = 4 };
-            col.Children.Add(WithBadge(image, vm.Badge));
+            col.Children.Add(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28));
             col.Children.Add(name);
             var border = new Border
             {
@@ -460,7 +460,7 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     public string PairPath { get; set; } = "";
     // PR 7: "RAW", "LIVE" or "".
     public string Badge { get; set; } = "";
-    // A video: the gallery tile carries a play badge so clips read apart
+    // A video: gallery and filmstrip tiles carry a play badge so clips read apart
     // from stills at a glance. False on a core older than ABI 0.15.
     public bool IsClip { get; set; }
     public bool Selected
