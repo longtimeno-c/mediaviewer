@@ -854,6 +854,38 @@ public static partial class IslandHost
         return card;
     }
 
+    // A clip's gallery or filmstrip tile: a play glyph in a dark disc over the
+    // centre, so videos read apart from stills without opening them. Like
+    // WithBadge it is not hit-test visible, so taps and drags stay the tile's.
+    private static UIElement WithPlayBadge(UIElement thumb, bool clip, double diameter)
+    {
+        if (!clip) return thumb;
+        var grid = new Grid();
+        grid.Children.Add(thumb);
+        grid.Children.Add(new Border
+        {
+            Width = diameter,
+            Height = diameter,
+            CornerRadius = new CornerRadius(diameter / 2),
+            Background = new SolidColorBrush(ColorHelper.FromArgb(0x99, 0, 0, 0)),
+            BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(0xCC, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1.5),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Child = new FontIcon
+            {
+                Glyph = "\uF5B0",  // PlaySolid
+                FontFamily = new FontFamily("Segoe Fluent Icons,Segoe MDL2 Assets"),
+                FontSize = diameter * 0.4,
+                // The triangle's optical centre sits left of its box.
+                Margin = new Thickness(diameter * 0.075, 0, 0, 0),
+                Foreground = new SolidColorBrush(Colors.White),
+            },
+        });
+        return grid;
+    }
+
     private sealed class GalleryFactory : IElementFactory
     {
         public UIElement GetElement(ElementFactoryGetArgs args)
@@ -879,7 +911,7 @@ public static partial class IslandHost
             var clipped = new Border
             {
                 CornerRadius = new CornerRadius(6),
-                Child = WithBadge(image, vm.Badge),
+                Child = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40),
                 Width = GalleryTile,
                 Height = GalleryTile,
             };

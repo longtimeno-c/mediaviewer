@@ -484,6 +484,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
 - (BOOL)currentItemIsVideo;
+- (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
@@ -697,6 +698,9 @@ extern "C" int32_t mv_chrome_marked_count(void) {
 }
 extern "C" bool mv_chrome_is_marked(int32_t index) {
   return g_chrome_app && [g_chrome_app isIndexMarked:index] == YES;
+}
+extern "C" bool mv_chrome_item_is_video(int32_t index) {
+  return g_chrome_app && [g_chrome_app itemIsVideoAtIndex:index] == YES;
 }
 // --- Video transport (PR 19). Commands are the same latched counters the keys
 // bump; the render thread consumes them. Status is what the render thread
@@ -3433,6 +3437,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_items.empty()) return NO;
   const std::size_t i = _index.current();
   return i < _items.size() && mv::shell::is_video_name(_items[i].name_utf8);
+}
+- (BOOL)itemIsVideoAtIndex:(NSInteger)index {
+  return index >= 0 && static_cast<std::size_t>(index) < _items.size() &&
+         mv::shell::is_video_name(_items[static_cast<std::size_t>(index)].name_utf8);
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
