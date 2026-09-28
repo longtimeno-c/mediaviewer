@@ -478,9 +478,12 @@ Drop files or a folder on the window, the gallery, or the filmstrip. Drag a
 thumbnail (gallery, filmstrip, or a Local search result) or the current image
 (at fit) out to Explorer or another app, such as a video editor: the drag
 carries the original file itself (`CF_HDROP` on Windows, `public.file-url` on
-the Mac), copy-only, never a copy of it. On the Mac, dragging a marked cell drags
-every marked item; an unmarked cell drags itself. Pass
-paths on the command line: the first one that exists opens (a file opens its
+the Mac), copy-only and read-only, never a copy of it; on Windows a thumbnail
+brings its RAW / Live Photo pair. Dragging a marked thumbnail drags every
+marked item, in folder order; an unmarked one drags itself (both platforms).
+A drag of ours let go over our own window, gallery or filmstrip is refused
+rather than reopening the folder. Pass paths on the command line: the first
+one that exists opens (a file opens its
 folder with that file selected).
 Files added to or removed from the open folder show up without a restart.
 
@@ -489,6 +492,7 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
+| Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`) |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
 | `Ctrl+,` | Settings: **General** has grouped preferences with aligned switches and automatic saving; **Keyboard shortcuts** has the searchable remapping list. Both pages scroll independently of the header and Done button. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |

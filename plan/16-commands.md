@@ -136,6 +136,7 @@ command table as image zoom, in its own mode, and does not intercept text input.
 | `F11` / `F` | Fullscreen, also available from View → Full screen. `F3` stays the frame-time overlay |
 | `Ctrl+O` | Open media (file picker) |
 | `Ctrl+Shift+O` | Open folder |
+| *(menu, unbound)* | **Recent folders** (PR 15; 2026-09-28): the jump list's folders, reachable without a mouse. Mac: File ▸ Open Recent (the menu bar, or Help's search). Windows: Open ▸ Recent folders on the command bar (`Tab` to the bar, `Enter` on Open, `Right` into the list). Chrome over the same list, not a keyed row; a folder that has gone beeps and leaves the list, as a welcome-card click does |
 | `Ctrl+E` | Show the current file in Explorer, selected |
 | `Ctrl+,` | Settings (view defaults and remappable keys). Colour scheme, chrome/canvas/overlay palette, and a user-supplied font are **v1.1** ([10-roadmap.md](10-roadmap.md)) |
 | `Ctrl+W` / `Alt+F4` | Close window |
@@ -194,6 +195,12 @@ ranges. **Marks are a separate set.**
 | `Ctrl+Shift+S` | Windows Share (`IDataTransferManager`) |
 | `Ctrl+E` | Reveal in Explorer |
 | `Ctrl+Enter` | Open with the user-configured external editor (`ShellExecuteEx`, no wait) |
+
+**Drag-out** (mouse, both hosts, 2026-09-28): a gallery or filmstrip cell drags the original file
+(and its pair), copy-only and read-only; a marked cell drags every marked item in listing order, an
+unmarked one only itself. The canvas's drag (a drag at fit on Windows, `⌘`-drag on the Mac) is
+copy-only too. A drag of ours let go over our own window, gallery or filmstrip is refused, not a
+reopen of the folder it came from.
 
 Copy/move never overwrite an original. Collision: `name (2).ext`. Destinations remembered
 (last five) in settings. This is FastStone's culling loop and it is why a viewer replaces a

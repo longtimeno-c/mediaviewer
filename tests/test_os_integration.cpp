@@ -116,6 +116,15 @@ TEST_CASE("the welcome card's recent rows name the folder and where it lives", "
     fill_welcome_recents(one, "/Users/ana", r);
     CHECK(std::string(r.where[0]) == "/Users/anabel");
   }
+  SECTION("a Windows home matches whatever its case and separators") {
+    const std::vector<std::string> win = {"c:\\users\\Ana\\Pictures\\Iceland", "C:/Users/Ana/Desktop/x",
+                                          "C:\\Users\\Anabel\\x"};
+    fill_welcome_recents(win, "C:\\Users\\Ana\\", r);
+    REQUIRE(r.count == 3);
+    CHECK(std::string(r.where[0]) == "~\\Pictures");
+    CHECK(std::string(r.where[1]) == "~/Desktop");
+    CHECK(std::string(r.where[2]) == "C:\\Users\\Anabel");
+  }
   SECTION("at most kMax rows") {
     std::vector<std::string> many;
     for (int i = 0; i < 10; ++i) many.push_back("/x/" + std::to_string(i));

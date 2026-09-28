@@ -288,6 +288,9 @@ expected chrome_host::load() noexcept {
   share_files_ = get_entry(L"ShareFiles");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
+  // Optional: without them a drag carries one cell and Open lists no recents.
+  set_drag_paths_ = get_entry(L"SetDragPaths");
+  set_recent_folders_ = get_entry(L"SetRecentFolders");
   // Optional the same way: file search (Ctrl+F without Local search, its Esc
   // and filter steps).
   gallery_search_ = get_entry(L"GallerySearch");
@@ -866,6 +869,23 @@ void chrome_host::set_command_table(const std::string& utf8) noexcept {
   args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8.data()));
   args.length = static_cast<std::int32_t>(utf8.size());
   (void)set_command_table_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_drag_paths(const std::string& utf8_lines, bool own_drag) noexcept {
+  if (!attached_ || !set_drag_paths_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8_lines.data()));
+  args.length = static_cast<std::int32_t>(utf8_lines.size());
+  args.reserved = own_drag ? 1 : 0;
+  (void)set_drag_paths_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_recent_folders(const std::string& utf8_lines) noexcept {
+  if (!attached_ || !set_recent_folders_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8_lines.data()));
+  args.length = static_cast<std::int32_t>(utf8_lines.size());
+  (void)set_recent_folders_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {

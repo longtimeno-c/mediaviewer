@@ -125,6 +125,9 @@ constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
 constexpr UINT kMsgFlattenDone = WM_APP + 0x76;     // Ctrl+Alt+C's bake finished (any thread posts)
 constexpr UINT kMsgJumpListPruned = WM_APP + 0x77;  // folders the user removed from the jump list
 constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed over its paths
+// One of our own drags ended. Posted, not handled inline, so a WM_DROPFILES
+// the shell posted for that drop is seen (and refused) while the flag holds.
+constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -358,6 +361,13 @@ struct app_state {
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
+  // The user's profile folder (FOLDERID_Profile) as UTF-8, read once: the
+  // welcome card writes it as "~" (the Mac passes NSHomeDirectory()).
+  std::string home_utf8;
+  // One of our own file drags is in flight (the canvas's, or a gallery /
+  // filmstrip cell's). Our own drop targets refuse it rather than reopening
+  // the folder it came from; the Mac's cells return no operation in-app.
+  bool own_drag = false;
   // Soaks and scripted runs open fixtures, not the user's folders: they never
   // reach settings.ini [recent] or the jump list.
   bool record_recent = true;
@@ -508,7 +518,7 @@ void publish(app_state* app) noexcept {
 // The rows from app->recent_folders; one redraw when they change.
 void refresh_welcome_recents(app_state* app) noexcept {
   mv::shell::welcome_recents next;
-  if (welcome_lists_recents(app)) mv::shell::fill_welcome_recents(app->recent_folders, {}, next);
+  if (welcome_lists_recents(app)) mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, next);
   if (std::memcmp(&next, &app->input.recents, sizeof(next)) == 0) return;
   app->input.recents = next;
   ++app->input.activity_seq;
@@ -578,11 +588,13 @@ void update_title(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void note_recent_folder(app_state* app, const std::string& utf8_dir);
+void open_welcome_row(app_state* app, int row);
+void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
 void reveal_current_in_explorer(app_state* app) noexcept;
-void begin_file_drag(HWND hwnd, const std::string& utf8) noexcept;
+void begin_file_drag(app_state* app, HWND hwnd, const std::string& utf8) noexcept;
 void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
 void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
@@ -924,10 +936,34 @@ void reveal_current_in_explorer(app_state* app) noexcept {
   if (app->window && ::GetForegroundWindow() == app->window) focus_canvas(app);
 }
 
+// Our own drag is over. The flag drops once the queue has drained past it
+// (kMsgOwnDragEnded), so a WM_DROPFILES or island drop posted for that very
+// drop still finds it set.
+void end_own_drag(app_state* app) noexcept {
+  if (!app || !app->own_drag) return;
+  if (app->window && ::PostMessageW(app->window, kMsgOwnDragEnded, 0, 0)) return;
+  app->own_drag = false;
+  app->chrome.set_drag_paths({}, false);
+}
+
+// %USERPROFILE% as UTF-8, from the known folder rather than the environment.
+std::string profile_folder_utf8() {
+  PWSTR path = nullptr;
+  std::string out;
+  if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DEFAULT, nullptr, &path)) && path) {
+    out = utf8_from_wide(path);
+  }
+  ::CoTaskMemFree(path);
+  return out;
+}
+
 // Shell IDataObject for the file, so Explorer / other apps receive a real
 // CF_HDROP. Modal; the UI thread is inside OLE's drag loop until drop or Esc.
-void begin_file_drag(HWND hwnd, const std::string& utf8) noexcept {
-  if (!hwnd || utf8.empty()) return;
+// Copy only (the Mac returns NSDragOperationCopy): a link or a move would let
+// Explorer take the original out of the folder or leave a shortcut to it.
+// Our own window and islands refuse the drop while it is in flight.
+void begin_file_drag(app_state* app, HWND hwnd, const std::string& utf8) noexcept {
+  if (!app || !hwnd || utf8.empty()) return;
   const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
   if (n <= 1) return;
   std::wstring wide(static_cast<std::size_t>(n), L'\0');
@@ -942,9 +978,12 @@ void begin_file_drag(HWND hwnd, const std::string& utf8) noexcept {
       item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data));
   item->Release();
   if (FAILED(hr) || !data) return;
+  app->own_drag = true;
+  app->chrome.set_drag_paths({}, true);
   DWORD effect = DROPEFFECT_COPY;
-  (void)::SHDoDragDrop(hwnd, data, nullptr, DROPEFFECT_COPY | DROPEFFECT_LINK, &effect);
+  (void)::SHDoDragDrop(hwnd, data, nullptr, DROPEFFECT_COPY, &effect);
   data->Release();
+  end_own_drag(app);
 }
 
 // Paths from a XAML island drop (WM_COPYDATA), newline-separated UTF-16.
@@ -3698,6 +3737,39 @@ void chrome_on_command(void* ctx, int command, float arg) {
       open_path(app, wide);
       return;
     }
+    case mv::shell::chrome_cmd_drag_items: {
+      // A gallery / filmstrip cell is starting a drag (FolderStore.dragFiles on
+      // the Mac): a marked cell drags every marked item in listing order, each
+      // with its RAW / Live pair. Answered inside this call, before
+      // DragStarting returns. An unmarked cell gets no list and drags itself
+      // (and its pair, which the island already holds): no pass over the
+      // listing for the common case.
+      app->own_drag = true;
+      std::string lines;
+      if (!app->marks.empty()) {
+        const std::uint32_t count = folder_count(app);
+        const auto index = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
+        if (index < count && app->marks.contains(item_path_at(app, index))) {
+          std::vector<std::string> picks;
+          for (std::uint32_t i = 0; i < count; ++i) {
+            std::string p = item_path_at(app, i);
+            if (!p.empty() && app->marks.contains(p)) picks.push_back(std::move(p));
+          }
+          for (const std::string& p : expand_pair_targets(app, std::move(picks))) {
+            lines += p;
+            lines += '\n';
+          }
+        }
+      }
+      app->chrome.set_drag_paths(lines, true);
+      return;
+    }
+    case mv::shell::chrome_cmd_drag_ended:
+      end_own_drag(app);
+      return;
+    case mv::shell::chrome_cmd_open_recent:
+      open_welcome_row(app, static_cast<int>(arg));
+      return;
     case mv::shell::chrome_cmd_addon_state: {
       // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
       // (Milestone G), 2 / 3 the AI pack (Milestone H).
@@ -4920,7 +4992,7 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
     if (!r->ok) {
       ::MessageBeep(MB_ICONWARNING);
     } else if (app && app->window && (::GetAsyncKeyState(button) & 0x8000) != 0) {
-      begin_file_drag(app->window, r->path);
+      begin_file_drag(app, app->window, r->path);
     }
     return;
   }
@@ -5082,10 +5154,27 @@ void note_recent_folder(app_state* app, const std::string& utf8_dir) {
   app->recent_folders = std::move(next);
   mv::shell::save_recent_folders(app->recent_folders);
   publish_jump_list(app);
+  push_recent_folders(app);
   refresh_welcome_recents(app);
 }
 
-// A click on one of the welcome card's recent folders: the jump list's route.
+// Open > Recent folders: the jump list's labels (recent_folder_labels, as the
+// Mac's File > Open Recent), "label\tpath\n" per folder.
+void push_recent_folders(app_state* app) {
+  if (!app || !app->chrome.attached()) return;
+  const std::vector<std::string> labels = mv::shell::recent_folder_labels(app->recent_folders);
+  std::string lines;
+  for (std::size_t i = 0; i < app->recent_folders.size() && i < labels.size(); ++i) {
+    lines += labels[i];
+    lines += '\t';
+    lines += app->recent_folders[i];
+    lines += '\n';
+  }
+  app->chrome.set_recent_folders(lines);
+}
+
+// A click on one of the welcome card's recent folders, or Open > Recent
+// folders: the jump list's route.
 void open_welcome_row(app_state* app, int row) {
   if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
@@ -5096,6 +5185,7 @@ void open_welcome_row(app_state* app, int row) {
     std::erase(app->recent_folders, dir);
     mv::shell::save_recent_folders(app->recent_folders);
     publish_jump_list(app);
+    push_recent_folders(app);
     refresh_welcome_recents(app);
     return;
   }
@@ -5109,7 +5199,10 @@ void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string
   std::erase_if(app->recent_folders, [&](const std::string& f) {
     return std::find(pruned->begin(), pruned->end(), f) != pruned->end();
   });
-  if (app->recent_folders.size() != before) mv::shell::save_recent_folders(app->recent_folders);
+  if (app->recent_folders.size() != before) {
+    mv::shell::save_recent_folders(app->recent_folders);
+    push_recent_folders(app);
+  }
   refresh_welcome_recents(app);
 }
 
@@ -6257,6 +6350,7 @@ bool attach_chrome(app_state* app) {
   app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
   // `?` and the palette read the same static table as the router (plan/16).
   publish_command_table(app);
+  push_recent_folders(app);
   app->chrome.refresh_island_windows();
   return true;
 }
@@ -6533,7 +6627,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           // a plain drag stays the original.
           const bool edited = (::GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
                               (::GetKeyState(VK_MENU) & 0x8000) != 0;
-          if (!edited || !start_flatten(app, true)) begin_file_drag(hwnd, current_item_path(app));
+          if (!edited || !start_flatten(app, true)) begin_file_drag(app, hwnd, current_item_path(app));
           return 0;
         }
       }
@@ -6588,7 +6682,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           app->file_drag_x = GET_X_LPARAM(lparam);
           app->file_drag_y = GET_Y_LPARAM(lparam);
         }
-        if (msg == WM_LBUTTONDOWN) app->welcome_press = welcome_row_at_pointer(app);
+        if (msg == WM_LBUTTONDOWN) {
+          // Hit-test where this click is, not where the last WM_MOUSEMOVE
+          // was (the release does the same).
+          app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+          app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+          app->welcome_press = welcome_row_at_pointer(app);
+        }
       }
       else if (!app->input.mouse_down[0] && !app->input.mouse_down[1] &&
                !app->input.mouse_down[2]) {
@@ -6631,6 +6731,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if (!cds || cds->dwData != 0x4D560001ul || !cds->lpData || cds->cbData < 2) return 0;
       const auto* w = static_cast<const wchar_t*>(cds->lpData);
       const std::size_t n = static_cast<std::size_t>(cds->cbData) / sizeof(wchar_t);
+      // An island forwarding our own drag back to us: nothing to open.
+      if (app->own_drag) return 1;
       std::wstring_view blob(w, n);
       if (!blob.empty() && blob.back() == L'\0') blob.remove_suffix(1);
       open_dropped_wide_list(app, blob);
@@ -6641,6 +6743,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       // Every dropped entry, at any path length; open_paths picks the first
       // that exists (plan/16).
       auto drop = reinterpret_cast<HDROP>(wparam);
+      // Our own drag let go over our own canvas: refused, not a reopen of the
+      // folder it came from (the Mac's in-app drags carry no operation).
+      if (app->own_drag) {
+        ::DragFinish(drop);
+        return 0;
+      }
       const UINT count = ::DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
       std::vector<std::wstring> paths;
       for (UINT i = 0; i < count && i < 256; ++i) {
@@ -6680,6 +6788,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ::SetForegroundWindow(hwnd);
       return 0;
     }
+
+    case kMsgOwnDragEnded:
+      app->own_drag = false;
+      app->chrome.set_drag_paths({}, false);
+      return 0;
 
     case kMsgJumpListPruned:
       on_jump_list_pruned(app, std::unique_ptr<std::vector<std::string>>(
@@ -7043,11 +7156,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.input.background = app.settings.background;
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
+  app.home_utf8 = profile_folder_utf8();
   app.record_recent = !harness_run;
   // Straight into the snapshot: the render thread is not up yet. A launch
   // with a path to open never shows the rows, not even for its first frame.
   if (requested_paths.empty() && welcome_lists_recents(&app)) {
-    mv::shell::fill_welcome_recents(app.recent_folders, {}, app.input.recents);
+    mv::shell::fill_welcome_recents(app.recent_folders, app.home_utf8, app.input.recents);
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
