@@ -18,8 +18,8 @@ app to install.
 Final Cut Pro (sandboxed) ─ Extensions ▸ "MediaViewer Search"
   MediaViewerSearch.appex  (sandbox + app group; AppKit panel; drag = FCPXML + file URLs)
         │ NSXPCConnection, Mach service "<team>.io.github.longtimeno-c.mediaviewer.fcp.search"
-  MediaViewerSearchAgent   (launchd on demand via SMAppService, registered by the app when
-                            Final Cut Pro is turned on; hardened runtime)
+  MediaViewer --search-agent (the app's own executable, started by launchd on demand via
+                            SMAppService, registered when Final Cut Pro is turned on)
         │ loaded_addon::load(store, "ai", …, MV_AI_READER_ENTRY_SYMBOL)
   libmv_ai (the installed Local search pack)  engine_options::read_only
         │ SQLITE_OPEN_READONLY
@@ -39,9 +39,12 @@ Final Cut Pro (sandboxed) ─ Extensions ▸ "MediaViewer Search"
 
 ### In the app, off until turned on
 
-`macpack.py assemble` puts `MediaViewerSearch.appex` in `Contents/PlugIns`, the agent in
-`Contents/Helpers` and its launchd job in `Contents/Library/LaunchAgents`, arm64 only (a universal
-app keeps them as the arm64 build signed them). Settings > Local search shows **Final Cut Pro**
+`macpack.py assemble` puts `MediaViewerSearch.appex` in `Contents/PlugIns` and the agent's
+launchd job in `Contents/Library/LaunchAgents`, arm64 only (a universal app keeps them as the
+arm64 build signed them). The agent is MediaViewer's own executable: the job runs
+`MediaViewer --search-agent`, and `main()` hands over to `MvSearchAgentMain` before the viewer
+starts anything. The app already links everything the agent needs except `agent_mac.mm` and
+`mv_nle`, which add 49 KB to it. Settings > Local search shows **Final Cut Pro**
 once Core is installed. Turning it on registers the agent (`SMAppService`) and elects the extension
 in (`pluginkit -e use`); turning it off, or removing Core, reverses both. A fresh install elects
 the extension out once, in a background block 10 s after launch. While it is on, the same block
@@ -131,8 +134,8 @@ adds one text-tower run (~10–30 ms).
 
 ### Phase 0: built, hands-on owed
 
-The extension and agent build, and are assembled and signed into MediaViewer.app: the extension is
-sandboxed with the app group, the agent hardened. Whether FCP lists and loads an extension whose
+The extension and the agent build into MediaViewer.app, where they are assembled and signed: the
+extension is sandboxed with the app group, and the agent runs as the app's hardened executable. Whether FCP lists and loads an extension whose
 principal class is our own `NSViewController` (no `ProExtensionHost` linked), and what it does
 with the dragged FCPXML (rational-millisecond times, asset durations, sandbox access to the
 `src` files, external volumes), is the hands-on run in FCP, not yet done. The panel's first rows

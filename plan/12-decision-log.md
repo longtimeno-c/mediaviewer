@@ -2864,16 +2864,26 @@ and Phase 1, ship the extension **as another add-on that can be installed**, and
 
 Owner, reviewing PR 87: a separate "MediaViewer for Final Cut Pro.app" to install and open is
 annoying. Ship the pieces in the standard app bundle and download only the bulk when the add-on
-is installed. The bulk is already the Local search pack, which the agent hosts; the FCP-specific
-code is small (the agent about 1.9 MB, the extension about 160 KB, both linking the system only).
+is installed. The bulk is already the Local search pack, which the agent hosts. The FCP-specific
+code is small: the extension is about 180 KB and links the system only.
 
-- **In MediaViewer.app, arm64 only:** `Contents/PlugIns/MediaViewerSearch.appex`,
-  `Contents/Helpers/MediaViewerSearchAgent`, and its launchd job in
-  `Contents/Library/LaunchAgents`. The container app, `fcp_bundle` and `fcp_bundle.py` are gone;
-  `macpack.py` assembles and signs the pieces with the app, and a Sparkle update replaces them with
-  it. `lipo_merge.py` lets these paths be arm64 only (the Intel build has no AI pack).
+- **In MediaViewer.app, arm64 only:** `Contents/PlugIns/MediaViewerSearch.appex` and the agent's
+  launchd job in `Contents/Library/LaunchAgents`. The container app, `fcp_bundle` and
+  `fcp_bundle.py` are gone. `macpack.py` assembles and signs the pieces with the app, and a
+  Sparkle update replaces them with it. `lipo_merge.py` lets these paths be arm64 only (the Intel
+  build has no AI pack).
+- **The agent is MediaViewer's own executable** (owner, the same review: "9/10 users won't have
+  Final Cut Pro"). A separate agent binary was 1.8 MB, mostly copies of the add-on store, the
+  verifier and SQLite that the app already links. The job runs
+  `Contents/MacOS/MediaViewer --search-agent`, and `main()` hands over before anything of the viewer
+  starts (no window, no crash reporter, no add-ons). The executable grew 49 KB (12.56 → 12.61 MB)
+  and the bundle shrank 54 → 52 MB. Measured against the standalone agent, same pack and index
+  (504 assets), alternated new/old/new/old: cold first query 4.69 / 4.71 s vs 4.46 / 5.55 s; RSS
+  914 MB vs 916 / 921 MB; warm p95 3.69 / 3.58 ms vs 4.10 / 3.02 ms (20 runs × 5 queries), with
+  identical rows; idle exit 52 s. The agent now shares the app's signature and entitlements.
+  `shell` may include `nle` (`check-module-graph.ps1`).
 - **Off until turned on.** Settings > Local search shows a Final Cut Pro row once Core is installed.
-  **Turn on** registers the agent with `SMAppService` and elects the extension in with `pluginkit`;
+  **Turn on** registers the agent with `SMAppService` and elects the extension in with `pluginkit`.
   **Turn off**, or removing Core, unregisters the agent and elects it out. Off, nothing runs and
   Login Items lists nothing. Nothing is downloaded: the pieces are in the app, and the pack is the
   bulk the owner already installed.
@@ -2883,10 +2893,11 @@ code is small (the agent about 1.9 MB, the extension about 160 KB, both linking 
   block 10 s after launch, and records that in user defaults. Whether FCP honours the election is
   checked in the Phase 0 hands-on run; if it does not, the panel reads "turn on Final Cut Pro in
   MediaViewer".
-- **The base bundle changes, at no runtime cost to the viewer.** The app never loads the extension
-  or the agent. Its launch gains one background block (two `stat`s, then at most one service
-  manager call or one `pluginkit`) 10 s after launch; nothing on the launch or render path. The
-  Mac launch → first pixel and PR 1 soak are to be re-run against the base to confirm.
+- **The base bundle changes, at no runtime cost to the viewer.** The viewer never loads the
+  extension or runs agent code. Its launch gains one argument compare in `main()` and one
+  background block 10 s after launch (two `stat`s, then at most one service manager call or one
+  `pluginkit`); nothing on the launch or render path. The Mac launch → first pixel and PR 1 soak
+  are still to be re-run against the base to confirm.
 - **The names follow the app.** The extension is `<app id>.finalcut`, the agent's job is associated
   with the app's bundle id (so Login Items shows "MediaViewer"), and the app group and Mach service
   keep their names (`<team>.<app id>.fcp`, `….search`). `MV_FCP_TEAM_ID` is the team the app is

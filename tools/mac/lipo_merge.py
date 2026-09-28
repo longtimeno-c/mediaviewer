@@ -32,7 +32,6 @@ REQUIRED = frozenset({"arm64", "x86_64"})
 # They stay arm64 in the universal app, copied as the arm64 build signed them;
 # on an Intel Mac the app never turns them on.
 ARM64_ONLY = (
-    "Contents/Helpers/MediaViewerSearchAgent",
     "Contents/Library/LaunchAgents/",
     "Contents/PlugIns/MediaViewerSearch.appex/",
 )

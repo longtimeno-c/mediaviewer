@@ -9,13 +9,19 @@
   search, and unregisters it when turned off. launchd starts it when the extension looks up the
   Mach service (named under the extension's app group, which is what lets a
   sandboxed client reach it) and nothing keeps it alive: it exits when idle.
+  The program is MediaViewer's own executable in agent mode (main_mac.mm).
 -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>@MV_FCP_MACH_SERVICE@</string>
   <key>BundleProgram</key>
-  <string>Contents/Helpers/MediaViewerSearchAgent</string>
+  <string>Contents/MacOS/MediaViewer</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>MediaViewer</string>
+    <string>--search-agent</string>
+  </array>
   <key>MachServices</key>
   <dict>
     <key>@MV_FCP_MACH_SERVICE@</key>

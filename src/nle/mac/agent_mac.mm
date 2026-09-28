@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Local search agent (plan/23 Phase 1): a launchd agent, started on
 // demand when Final Cut Pro's workflow extension looks up its Mach service,
+// as MediaViewer.app's own executable with `--search-agent` (main_mac.mm
+// calls MvSearchAgentMain before anything of the viewer starts; the app
+// already carries the add-on store, the verifier and SQLite, so the agent adds
+// only this file and mv_nle to it),
 // that hosts the installed AI pack through its read-only door and answers
 // searches over XPC. Not sandboxed (it reads the app's index and the viewer's
 // thumbnail cache, as the app does); hardened runtime and library validation,
@@ -34,6 +38,7 @@
 #include "nle/search_session.h"
 #include "nle/search_wire.h"
 #include "io/paths.h"
+#include "nle/mac/agent_mac.h"
 #import "nle/mac/agent_protocol.h"
 
 namespace {
@@ -218,7 +223,7 @@ NSData* failure(std::uint64_t correlation, mv::status code) {
 
 @end
 
-int main() {
+int MvSearchAgentMain() {
   @autoreleasepool {
     MVAgent* agent = [[MVAgent alloc] init];
     NSXPCListener* listener = [[NSXPCListener alloc] initWithMachServiceName:@MV_FCP_MACH_SERVICE];

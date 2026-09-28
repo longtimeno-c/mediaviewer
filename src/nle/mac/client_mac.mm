@@ -138,10 +138,11 @@ int main(int argc, char** argv) {
       return bench(std::stoi(args[1]), std::vector<std::string>(args.begin() + 2, args.end()));
     }
     if (args.size() == 2 && args[0] == "--wait-exit") {
-      // Polls launchd for a running agent process; exits 0 once it is gone.
+      // Polls for a running agent process (MediaViewer in agent mode, not the
+      // viewer); exits 0 once it is gone.
       const int limit = std::stoi(args[1]);
       for (int s = 0; s <= limit; ++s) {
-        if (system("pgrep -x MediaViewerSearchAgent >/dev/null") != 0) {
+        if (system("pgrep -f '(^|/)MediaViewer --search-agent$' >/dev/null") != 0) {
           std::printf("{\"exited_after_s\":%d}\n", s);
           return 0;
         }

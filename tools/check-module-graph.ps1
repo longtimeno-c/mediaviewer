@@ -47,13 +47,15 @@ $allowed = [ordered]@{
     'addon'  = @('addon', 'io', 'core')
     'addons' = @('addons', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
-    'shell'  = @('shell', 'abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
+    # plan/23: the Mac app's main() hands `--search-agent` to nle's agent.
+    'shell'  = @('shell', 'abi', 'addon', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # PR 15: Explorer's host (the thumbnail handler DLL). A sibling of shell,
     # never included by it: it reaches the core through image/ and codec/.
     'shellext' = @('shellext', 'image', 'codec', 'gfx', 'io', 'core')
-    # plan/23: the Local search agent and FCPXML export, a host of the AI pack
-    # (a sibling of shell, never included by it): it loads the pack through
-    # addon/ and reads the viewer's thumbnail cache (image/thumb.h's key).
+    # plan/23: the Local search agent and FCPXML export, a host of the AI pack:
+    # it loads the pack through addon/ and reads the viewer's thumbnail cache
+    # (image/thumb.h's key). Below shell (the Mac app's executable is also the
+    # agent, entered from main()); it never includes shell.
     'nle'    = @('nle', 'addon', 'image', 'io', 'core')
 }
 

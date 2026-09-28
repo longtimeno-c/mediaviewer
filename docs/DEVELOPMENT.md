@@ -688,16 +688,17 @@ agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
   the same index, the index byte-identical after a reader session, catch-up, the wire format's
   bounds, the FCPXML, and the thumbnail cache read without a write.
 - **Mac only, in MediaViewer.app:** on an arm64 build, `mediaviewer_app` puts the workflow
-  extension in `Contents/PlugIns/MediaViewerSearch.appex`, the agent in
-  `Contents/Helpers/MediaViewerSearchAgent` and its launchd job in `Contents/Library/LaunchAgents`.
+  extension in `Contents/PlugIns/MediaViewerSearch.appex` and the agent's launchd job in
+  `Contents/Library/LaunchAgents`. The agent is the app's own executable run as
+  `MediaViewer --search-agent`.
   Configure with `-DMV_FCP_TEAM_ID=<team>` (the team the app is signed by; it prefixes the Mach
-  service and the extension's app group). A dev-key build signs the agent with
-  `packaging/macos/fcp/Agent-dev.entitlements` so it can load a locally built pack. `assemble`
+  service and the extension's app group). A dev-key build's agent accepts unsigned clients, so
+  an ad hoc `mv-search-client` can reach it. `assemble`
   signs ad hoc, which FCP and the agent's peer check refuse; to try it for real, sign with
   `python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID
   Application: …" --skip-notarize --allow-no-updater`, which keeps the extension's entitlements.
   To try the agent without turning it on, bootstrap a launchd job whose `Program` is the app's
-  `Contents/Helpers/MediaViewerSearchAgent`, whose
+  `Contents/MacOS/MediaViewer`, whose `ProgramArguments` are `MediaViewer --search-agent`, whose
   `MachServices` names `<team>.io.github.longtimeno-c.mediaviewer.fcp.search`, and (dev) whose
   `EnvironmentVariables` set `MV_DEV_ADDONS_DIR`; then, with `mv-search-client` signed by the same
   team: `mv-search-client mountain --thumbs`, `mv-search-client --bench 20 mountain beach dog`

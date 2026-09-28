@@ -4,8 +4,9 @@
 // day). MediaViewer.app carries the pieces, arm64 only (cmake/darwin-fcp.cmake):
 //
 //   Contents/PlugIns/MediaViewerSearch.appex         the workflow extension
-//   Contents/Helpers/MediaViewerSearchAgent          the Local search agent
-//   Contents/Library/LaunchAgents/<service>.plist    its launchd job
+//   Contents/Library/LaunchAgents/<service>.plist    the Local search agent's
+//                                                    launchd job: this app's own
+//                                                    executable, --search-agent
 //
 // Both are dormant until the owner turns Final Cut Pro on in Settings > Local
 // search, which is offered once the Local search pack is installed: the
@@ -54,7 +55,7 @@ bool pieces_present() {
   NSBundle* b = NSBundle.mainBundle;
   NSFileManager* fm = NSFileManager.defaultManager;
   NSString* appex = [b.builtInPlugInsPath stringByAppendingPathComponent:@"MediaViewerSearch.appex"];
-  NSString* agent = [b.bundlePath stringByAppendingPathComponent:@"Contents/Helpers/MediaViewerSearchAgent"];
+  NSString* agent = [b.bundlePath stringByAppendingPathComponent:@"Contents/Library/LaunchAgents/" MV_FCP_AGENT_PLIST];
   return [fm fileExistsAtPath:appex] && [fm fileExistsAtPath:agent];
 }
 
