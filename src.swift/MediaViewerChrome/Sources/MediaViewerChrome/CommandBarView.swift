@@ -315,12 +315,14 @@ private struct UpdateBarItem: View {
 /// The trail from the highest folder reached to the one on screen, in the
 /// command bar just left of `?`. Up and Root are icons outside the scrolling
 /// ancestor trail; the current name stays pinned and a long middle becomes an
-/// ancestor menu; a search icon (Local search loaded) ends it. Shown whenever
+/// ancestor menu; a search icon (Local search installed) ends it. Shown whenever
 /// a folder is open, including while a photo is on the canvas.
 struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
   @State private var trailWidth: CGFloat = 0
+  @State private var nameWidth: CGFloat = 0
   private let maxTrailWidth: CGFloat = 300
+  private let maxNameWidth: CGFloat = 200
 
   var body: some View {
     // Milestone H: a result list has no folder trail; its title stands in.
@@ -382,12 +384,26 @@ struct PathBar: View {
       .onPreferenceChange(TrailWidthKey.self) { trailWidth = $0 }
 
       if let current = shown.last {
+        // As wide as the name, up to a cap: a bare maxWidth frame took the
+        // whole 200 pt for a short name and left the search icon adrift
+        // beside nothing (owner report, 2026-09-28).
         Text(current.name)
           .fontWeight(.semibold)
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
           .truncationMode(.middle)
-          .frame(maxWidth: 200, alignment: .leading)
+          .frame(width: min(nameWidth, maxNameWidth), alignment: .leading)
+          .background(
+            Text(current.name)
+              .fontWeight(.semibold)
+              .lineLimit(1)
+              .fixedSize()
+              .hidden()
+              .background(GeometryReader { geo in
+                Color.clear.preference(key: NameWidthKey.self, value: ceil(geo.size.width))
+              })
+          )
+          .onPreferenceChange(NameWidthKey.self) { nameWidth = $0 }
           .layoutPriority(1)
           .help(crumbs.last?.path ?? current.name)
       }
@@ -431,7 +447,7 @@ private struct ListTitleBar: View {
       .help("Close the results and return to the folder (Esc)")
       Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 4)
       // The ⌘F panel again in one click (Local search loaded); else a plain glyph.
-      if search.loaded {
+      if search.searchAvailable {
         PathSearchButton()
       } else {
         Image(systemName: "magnifyingglass").foregroundStyle(MVTheme.body)
@@ -466,21 +482,29 @@ private struct PathPiece: Identifiable {
   let isEllipsis: Bool
 }
 
+private struct NameWidthKey: PreferenceKey {
+  static let defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 private struct TrailWidthKey: PreferenceKey {
   static let defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 /// The path group's search icon (owner, 2026-09-28; it replaced the gallery
-/// search bar): opens the Local search panel exactly as ⌘F does. Only while
-/// the pack is loaded, so the command exists; absent otherwise, never dead.
+/// search bar): opens the Local search panel exactly as ⌘F does. Shown while
+/// the pack is loaded or still starting at launch; a click while it starts
+/// opens the panel once it attaches. Absent with Local search not installed
+/// (or failed to load), never dead.
 private struct PathSearchButton: View {
   @ObservedObject private var search = LocalSearchStore.shared
 
   var body: some View {
-    if search.loaded {
-      PathIcon(symbol: "magnifyingglass", enabled: true) { search.openSearch() }
-        .help("Search photos and videos (⌘F)")
+    if search.searchAvailable {
+      PathIcon(symbol: "magnifyingglass", enabled: true) { search.openSearchWhenReady() }
+        .help(search.loaded ? "Search photos and videos (⌘F)"
+                            : "Search photos and videos (⌘F). Local search is starting…")
         .accessibilityLabel("Search")
     }
   }

@@ -304,9 +304,13 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
 - [ ] **Path bar search icon** (2026-09-28): with the pack loaded, a magnifier ends the command
       bar's folder path (tooltip "Search photos and videos (⌘F)", VoiceOver "Search"); a click
       opens the panel exactly as ⌘F does. While a result list is shown it sits beside
-      "Search: …" and reopens the panel in one click. With the pack not loaded (or removed in
-      Settings) the icon is absent, not dimmed. The gallery has no search bar; `/` on its
-      folder row finds a tile by name.
+      "Search: …" and reopens the panel in one click. With the pack not installed, removed in
+      Settings or failed to load, the icon is absent, not dimmed. Right after launch, while the
+      pack verifies and starts, the icon is already there; a click then opens the panel once it
+      attaches. Press `G`: the command bar, the folder path and the icon stay above the grid
+      (the gallery starts below the bar, as on Windows), and a result list opened as the gallery
+      keeps "Back to folder". A short folder name has the icon right after it, not 200 pt away.
+      The gallery has no search bar; `/` on its folder row finds a tile by name.
 - [ ] **Folder offer:** open an un-indexed folder, ⌘F: "This folder is not indexed yet" with
       "Index this folder" / "Index this folder and subfolders"; choosing one starts indexing and
       results appear as the index grows (the panel re-runs every ~4 s while indexing without

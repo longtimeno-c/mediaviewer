@@ -107,6 +107,8 @@ final class LocalSearchStore: ObservableObject {
   private var ticks = 0
   private var probed = false
   private var checkingRemovals = false
+  /// The search icon was clicked while the pack was still starting.
+  private var openWhenLoaded = false
   /// What to say once each queued removal has landed.
   private var removedText: [String: String] = [:]
 
@@ -134,6 +136,11 @@ final class LocalSearchStore: ObservableObject {
       chromeGeneration += 1
     }
     if busy != loading { loading = busy }
+    if openWhenLoaded, loaded || !loading {
+      // Attached: open as the click asked. The load failed: drop it.
+      openWhenLoaded = false
+      if loaded { openSearch() }
+    }
     let err = AddonStore.readString { mv_addon2_load_error("ai", $0, $1) }
     if err != loadError { loadError = err }
     // The pill: at most 2 Hz, and only while the pack is loaded.
@@ -447,6 +454,7 @@ final class LocalSearchStore: ObservableObject {
   func remove(_ id: String, keepData: Bool) {
     confirmingRemove = nil
     let title = pieces.first(where: { $0.id == id })?.title ?? id
+    if id == "ai" { openWhenLoaded = false }
     if id == "ai" && loaded {
       // The embedded management view stops using the table now, not at the
       // next poll: the pack is unloaded by the call below.
@@ -473,6 +481,21 @@ final class LocalSearchStore: ObservableObject {
   }
 
   func openSearch() { _ = mv_addon2_run_command("search_open") }
+
+  /// The path bar's search icon shows whenever Local search is on its way to
+  /// being usable: loaded, or verifying and starting at launch (seconds for
+  /// the 2.3 GB pack). It replaced the gallery search bar, so it must not be
+  /// missing just because the pack is still starting (owner, 2026-09-28).
+  var searchAvailable: Bool { loaded || loading }
+
+  /// The icon's click: the panel now, or the moment the pack attaches.
+  func openSearchWhenReady() {
+    if loaded {
+      openSearch()
+    } else if loading {
+      openWhenLoaded = true
+    }
+  }
   /// Ignore the battery pause until the Mac is next on power (not saved).
   func indexAnyway() { _ = mv_addon2_run_command("index_anyway") }
 }

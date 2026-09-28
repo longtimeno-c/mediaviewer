@@ -607,7 +607,7 @@ public static partial class IslandHost
         // Opens the Local search panel exactly as Ctrl+F does (the same
         // ISearchChrome command). Beside the folder name, or beside
         // "Search: ..." while a result list is shown.
-        _barSearchButton = PathIconButton("\uE721", () => SearchChrome?.RunCommand(SearchCommand.Open));
+        _barSearchButton = PathIconButton("\uE721", OpenSearchFromPath);
         AutomationProperties.SetName(_barSearchButton, "Search");
         ToolTipService.SetToolTip(_barSearchButton, "Search photos and videos (Ctrl+F)");
         _barSearchButton.Margin = new Thickness(4, 0, 0, 0);
@@ -661,11 +661,18 @@ public static partial class IslandHost
         UpdatePathSearchButton();
     }
 
-    // Only while the pack is loaded, so Ctrl+F's command exists: no dead button.
+    // While the pack is loaded, or verified and starting at launch (seconds
+    // for the whole pack): it replaced the gallery search bar, so it is there
+    // whenever Local search is installed and usable (owner, 2026-09-28). Not
+    // installed, or failed to load: absent, never a dead button.
     private static void UpdatePathSearchButton()
     {
         if (_barSearchButton is null) return;
-        _barSearchButton.Visibility = SearchChrome is not null ? Visibility.Visible : Visibility.Collapsed;
+        bool loaded = SearchChrome is not null;
+        _barSearchButton.Visibility = loaded || AiStarting() ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(_barSearchButton, loaded
+            ? "Search photos and videos (Ctrl+F)"
+            : "Search photos and videos (Ctrl+F). Local search is starting…");
     }
 
     private static void FillPathTrail(StackPanel? trail, Button? up, Button? root, TextBlock? current, FrameworkElement? row)

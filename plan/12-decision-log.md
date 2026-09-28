@@ -2760,3 +2760,16 @@ again, as before 2026-09-27. In its place a magnifier icon ends the command bar'
 answer goes only to the model that owns it (Mac), the result-list fixes, and "Index this folder"
 inside the ⌘F panel. The `gallery_search` id was the last appended command, so removing it
 renumbers nothing.
+
+**Amended the same day (owner report on 0.1.15, Mac: "there is no gallery search icon on the far
+right of the folders at the top").** The icon was built and shown (the pack was loaded; the
+window's accessibility tree had the 26 pt button at the end of the path), but the Mac gallery
+was a full-container overlay pinned to the top of the window, over the command bar: with the
+grid up, the path, its icon and a result list's "Back to folder" were all hidden. The old bar
+lived inside the gallery, so removing it left nothing there. The Mac gallery now starts below
+the command bar, as the Windows gallery island always has (`chrome_host::show_gallery`,
+y = bar); the Mac Edit button already assumed the bar was visible over the grid. Also: the
+icon shows while the pack is starting at launch as well as once loaded (a click then opens the
+panel when it attaches), on both hosts, because it replaces the bar and should be there
+whenever Local search is installed; and the Mac folder name hugs its text (a bare `maxWidth`
+frame took 200 pt and left the icon adrift beside a short name).

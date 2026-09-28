@@ -679,7 +679,7 @@ CLAP's own "nothing found" calibration, Core ML coverage and throughput, and eve
 ### Gallery search bar (2026-09-27)
 
 Removed 2026-09-28 at the owner's request; replaced by a search icon in the path bar (it opens
-the `Ctrl+F` / `⌘F` panel, only while the pack is loaded; plan/12 2026-09-28).
+the `Ctrl+F` / `⌘F` panel; shown while the pack is loaded or starting; plan/12 2026-09-28).
 
 ## Open decisions (owner)
 
