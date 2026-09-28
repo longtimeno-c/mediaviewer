@@ -2904,6 +2904,35 @@ code is small: the extension is about 180 KB and links the system only.
   signed by. The extension's entitlements are applied when the app is assembled, and
   `macpack.py release` keeps them.
 
+## 2026-09-28 — Final Cut Pro: the extension loads FCP's own ProExtension.framework (Phase 0 finding)
+
+Phase 0's hands-on run (owner, FCP on macOS 26, the 0.1.18 release) answered open question 5.
+FCP **does not** accept a workflow extension without Apple's framework. Its
+`ProExtension.framework` declares the extension point (`NSExtensionSDK`) with
+`ProExtensionRemoteContext` as every extension's context class and `ProExtensionRequestHandling`
+as its principal class. ExtensionFoundation looks the context class up when FCP connects and
+traps if it is absent. That was the spinning puzzle piece and four `MediaViewerSearch` crash
+reports.
+
+- **Load FCP's copy at runtime; ship nothing of Apple's** (owner chose this over embedding the
+  Workflow Extensions SDK framework, and over a stand-in class). The extension's own `main`
+  finds Final Cut Pro by bundle id (`com.apple.FinalCut`, then the trial, then `/Applications`),
+  `dlopen`s `Contents/Frameworks/ProExtension.framework`, and only then calls
+  `NSExtensionMain`. If the framework or the class is missing, it logs a fault and exits rather
+  than trap. The framework always matches the running FCP, and nothing is redistributed.
+- **The Info.plist no longer names a principal class.** The point's `ProExtensionRequestHandling`
+  applies, and it makes our view controller from `ProExtensionPrincipalViewControllerClass`.
+- **`com.apple.security.cs.disable-library-validation` on the extension only.** Apple
+  (`PTN9T2S29T`) signs the framework, not our team. The sandbox is unchanged: the app group is
+  still the only grant, and reading and mapping `/Applications` is within it. Checked with a
+  Developer ID-signed build: `main` loads the framework and resolves the class in the sandbox.
+  FCP's own run of the fix is the next hands-on step.
+- **Licence.** Loading a proprietary Apple framework into GPL-3.0-or-later code at run time is
+  the owner's call as copyright holder: no Apple code is distributed, and the extension is
+  useless without Final Cut Pro, which carries the framework. See `plan/11`.
+- **Risk.** An FCP update that moves or renames the framework or the classes stops the panel. It
+  fails safe: an exit with a logged fault, never a hang. Apple's SDK framework is the fallback.
+
 ## 2026-09-28 — People refinement runs only on request
 
 Owner: the refinement should run only "when I press a button" in the person's faces view

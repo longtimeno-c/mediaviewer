@@ -72,7 +72,8 @@ add_executable(MediaViewerSearch
 target_include_directories(MediaViewerSearch PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(MediaViewerSearch PRIVATE mv_project_options "-framework Foundation" "-framework AppKit")
 target_compile_definitions(MediaViewerSearch PRIVATE ${_fcp_defs})
-target_link_options(MediaViewerSearch PRIVATE "-e" "_NSExtensionMain" "-fapplication-extension")
+# Its own main: loads FCP's ProExtension.framework, then NSExtensionMain.
+target_link_options(MediaViewerSearch PRIVATE "-fapplication-extension")
 
 set_source_files_properties("${_fcp}/agent_mac.mm" "${_fcp}/client_mac.mm"
                             PROPERTIES COMPILE_FLAGS "-fobjc-arc")

@@ -6,10 +6,12 @@
   MediaViewerSearch.appex: the Final Cut Pro workflow extension (plan/23),
   in MediaViewer.app/Contents/PlugIns (arm64 only, like Local search). It ships
   with every app and stays hidden (a PlugInKit "ignore" election) until the
-  owner turns Final Cut Pro on in Settings > Local search. FCP's own ProExtension framework declares the extension point
-  (com.apple.FinalCut.WorkflowExtension); this bundle links no Apple SDK
-  framework and embeds none. Its principal class is our view controller,
-  which FCP shows in a floating window. Phase 0 records whether FCP takes it.
+  owner turns Final Cut Pro on in Settings > Local search. FCP's own
+  ProExtension framework declares the extension point
+  (com.apple.FinalCut.WorkflowExtension) and its context and principal
+  classes. This bundle embeds none of it: its main loads the framework from
+  the installed Final Cut Pro (extension_mac.mm). Our view controller is
+  ProExtensionPrincipalViewControllerClass, shown in a floating window.
 -->
 <plist version="1.0">
 <dict>
@@ -37,8 +39,9 @@
   <dict>
     <key>NSExtensionPointIdentifier</key>
     <string>com.apple.FinalCut.WorkflowExtension</string>
-    <key>NSExtensionPrincipalClass</key>
-    <string>MVSearchViewController</string>
+    <!-- No NSExtensionPrincipalClass: the extension point's own
+         ProExtensionRequestHandling (FCP's ProExtension.framework, loaded
+         by main in extension_mac.mm) makes the view controller below. -->
     <key>NSExtensionAttributes</key>
     <dict>
       <key>ProExtensionPrincipalViewControllerClass</key>

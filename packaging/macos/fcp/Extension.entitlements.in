@@ -6,10 +6,15 @@
   App extensions must be sandboxed. The app group is the only grant: it lets
   the panel look up the search agent's Mach service (named under the group).
   No network, no file access: every result and tile comes from the agent.
+  Library validation off: the extension loads ProExtension.framework from the
+  installed Final Cut Pro (Apple-signed, not our team), which FCP's extension
+  point requires (extension_mac.mm main; plan/12 2026-09-28).
 -->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
   <key>com.apple.security.application-groups</key>
   <array>

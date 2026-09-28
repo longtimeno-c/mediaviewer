@@ -132,16 +132,26 @@ while it indexes; the index is small (5.8 k frames), so a 100 k-frame library's 
 `ai-bench` number, not this one. Repeated queries hit the text-tower cache; a first-time query
 adds one text-tower run (~10–30 ms).
 
-### Phase 0: built, hands-on owed
+### Phase 0: in progress in FCP
 
 The extension and the agent build into MediaViewer.app, where they are assembled and signed: the
-extension is sandboxed with the app group, and the agent runs as the app's hardened executable. Whether FCP lists and loads an extension whose
-principal class is our own `NSViewController` (no `ProExtensionHost` linked), and what it does
-with the dragged FCPXML (rational-millisecond times, asset durations, sandbox access to the
-`src` files, external volumes), is the hands-on run in FCP, not yet done. The panel's first rows
-are the spike's hard-coded drag (`~/Movies/test/clip1.mov`, `clip2.mov`, `photo.jpg`). The
-same run checks that the `pluginkit` election hides the extension from FCP while it is off, and
-that FCP finds it inside MediaViewer.app.
+extension is sandboxed with the app group, and the agent runs as the app's hardened executable.
+
+First run in FCP (owner, 2026-09-28, release 0.1.18):
+- The Settings switch registers the agent and elects the extension in (`+`), and FCP finds the
+  extension inside MediaViewer.app.
+- The extension then trapped on FCP's first connection: FCP's extension point needs
+  `ProExtension.framework`'s `ProExtensionRemoteContext`. The fix loads the framework from the
+  installed FCP before `NSExtensionMain` (plan/12).
+
+Still to see in FCP:
+- the panel opening;
+- what FCP does with the dragged FCPXML (rational-millisecond times, asset durations, sandbox
+  access to the `src` files, external volumes);
+- the election hiding the extension while it is off.
+
+The panel's first rows are the spike's hard-coded drag (`~/Movies/test/clip1.mov`, `clip2.mov`,
+`photo.jpg`).
 
 ### Not in this slice
 
@@ -158,7 +168,9 @@ pieces are signed and notarised with the app, and a Sparkle update replaces them
    half), rather than asking a running app.
 4. Does FCP read FCPXML `src` media from a third-party drag without a prompt, including on
    external volumes? (Phase 0.)
-5. `ProExtensionHost` redistribution: not needed if FCP accepts our principal class (Phase 0).
+5. ~~`ProExtensionHost` redistribution~~: FCP does not accept an extension without
+   `ProExtension.framework` (Phase 0, 2026-09-28). The extension loads the copy inside the
+   installed Final Cut Pro at run time and ships none (plan/12, plan/11).
 6. Clip range: fixed −2 s / +3 s for now (`fcpxml_options`).
 7. Search only; the panel points at MediaViewer to index.
 8. Keyword collection from the query: on by default in the spike; a setting in Phase 2.

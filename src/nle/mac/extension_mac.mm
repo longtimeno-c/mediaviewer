@@ -6,14 +6,20 @@
 // sandboxed and reads nothing of the user's: every search and every tile comes
 // from the search agent over XPC (agent_protocol.h).
 //
-// Phase 0 asks one question of FCP, empirically: does it take this principal
-// class, with no Apple SDK framework linked or embedded (FCP carries its own
-// ProExtensionHost), and does a drag of FCPXML + file URLs import? So: a
+// Phase 0 asked FCP, empirically, whether it takes an extension with no Apple
+// SDK framework. It does not (2026-09-28): its extension point names
+// ProExtension.framework's classes as the context and principal class, and
+// the process traps without them. So main() below loads that framework from
+// the installed Final Cut Pro before the extension starts; we ship nothing of
+// Apple's. Our view controller is ProExtensionPrincipalViewControllerClass.
+// Phase 0's other question: does a drag of FCPXML + file URLs import? So: a
 // search field, a list of results, and a drag source. The first row, "Test
 // drag", is the spike's hard-coded document (~/Movies/test: two clips with
 // ranges and a photo, keyword "MV: test"). Phase 2 replaces this with the
 // SwiftUI grid.
 #import <AppKit/AppKit.h>
+#include <dlfcn.h>
+#include <os/log.h>
 
 #include <pwd.h>
 #include <unistd.h>
@@ -297,3 +303,51 @@ NSString* mmss(std::int64_t ms) {
 }
 
 @end
+
+// ---- entry ---------------------------------------------------------------------------
+
+// Foundation's app-extension entry point (what `-e _NSExtensionMain` named).
+extern "C" int NSExtensionMain(int argc, char* argv[]);
+
+namespace {
+
+// Final Cut Pro's ProExtension.framework declares the workflow extension point:
+// every extension's context is its ProExtensionRemoteContext and its principal
+// class is ProExtensionRequestHandling, which makes our view controller.
+// ExtensionFoundation looks the context class up on FCP's first connection and
+// traps if it is missing. Loaded from the Final Cut Pro installed here, so it
+// always matches the host and nothing of Apple's is redistributed; Apple signs
+// it, hence com.apple.security.cs.disable-library-validation (plan/12
+// 2026-09-28). Read-only: the sandbox may read and map /Applications.
+bool load_pro_extension(os_log_t log) {
+  NSMutableArray<NSURL*>* apps = [NSMutableArray array];
+  for (NSString* bundle in @[ @"com.apple.FinalCut", @"com.apple.FinalCutTrial" ]) {
+    if (NSURL* url = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:bundle]) [apps addObject:url];
+  }
+  [apps addObject:[NSURL fileURLWithPath:@"/Applications/Final Cut Pro.app"]];
+  for (NSURL* app in apps) {
+    NSString* framework =
+        [app.path stringByAppendingPathComponent:@"Contents/Frameworks/ProExtension.framework/ProExtension"];
+    if (dlopen(framework.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL)) {
+      os_log(log, "ProExtension loaded from Final Cut Pro");
+      return true;
+    }
+    os_log_error(log, "ProExtension did not load: %{public}s", dlerror());
+  }
+  return false;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+  @autoreleasepool {
+    os_log_t log = os_log_create("io.github.longtimeno-c.mediaviewer.fcp", "extension");
+    if (!load_pro_extension(log) || !NSClassFromString(@"ProExtensionRemoteContext")) {
+      // Nothing to host us with: FCP moved or dropped the framework. Exiting
+      // is kinder than ExtensionFoundation's trap, and says why in the log.
+      os_log_fault(log, "Final Cut Pro's ProExtension.framework is not available; not starting");
+      return 1;
+    }
+  }
+  return NSExtensionMain(argc, argv);
+}
