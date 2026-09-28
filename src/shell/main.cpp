@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <windows.h>
 #include <objbase.h>
+#include <ole2.h>
 #include <shellapi.h>
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -6943,8 +6944,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // failure mode is a blurry window nobody files a bug about.
   ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-  // WinUI islands require an STA. GetOpenFileName wants one too.
-  (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  // WinUI islands require an STA. GetOpenFileName wants one too. OLE, not just
+  // COM: drag-and-drop out of this thread (the islands' DragStarting file drags
+  // from the gallery / filmstrip, and the canvas's SHDoDragDrop) is OLE
+  // DoDragDrop, which fails on a thread that only called CoInitializeEx.
+  // OleInitialize enters the same STA, so everything above still holds.
+  (void)::OleInitialize(nullptr);
   // PR 15: before the first window, so its taskbar button, the Start / pinned
   // shortcuts (mediaviewer.iss) and the jump list are one entry.
   (void)::SetCurrentProcessExplicitAppUserModelID(kAppUserModelId);
