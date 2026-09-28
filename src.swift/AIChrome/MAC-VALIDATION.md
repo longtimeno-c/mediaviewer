@@ -197,9 +197,10 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       `codesign --remove-signature` on copies) shows no ORT, no model, no `AI.bundle`; the
       packaging assert still fails if an ORT dylib is copied into `Contents/Frameworks`.
 - [ ] **Base app unchanged with no piece installed.** Fresh user (empty
-      `~/Library/Application Support/MediaViewer/Add-ons`): no ⌘F / ⌘⇧F / N binding in `?` or in
-      Settings → Keyboard shortcuts; ⌘F does nothing; no pill in the command bar; the only
-      surface is Settings → Local search offering Install.
+      `~/Library/Application Support/MediaViewer/Add-ons`): no ⌘⇧F / N binding in `?` or in
+      Settings → Keyboard shortcuts; ⌘F is listed as "Search…" and opens file search (the base
+      app's find-by-name over the gallery, 2026-09-28); no pill in the command bar; the only
+      Local search surface is Settings → Local search offering Install.
 - [ ] **Nothing downloads before the click.** With a proxy (mitmproxy, system proxy + CA trusted)
       open Settings: only the two manifest GETs (`…-ai-macos.json`, `.json.sig`, and the People
       pair) appear; the archive is requested only after "Install local search — downloads ~N GB,
@@ -209,7 +210,7 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       are `User-Agent: MediaViewer` plus the transport's own; no cookies; nothing from the user
       (paths, names, machine id).
 - [ ] **Tamper refusal.** Flip one byte in an installed model file → next launch Settings says the
-      installed copy did not verify and Local search is not started (no ⌘F). Same for an edited
+      installed copy did not verify and Local search is not started (⌘F is file search). Same for an edited
       `manifest.json`, a removed file, and an extra file in the version folder. A pack signed
       with a non-pinned key is refused before the archive is fetched.
 - [ ] **3 GB ceiling.** With Core installed, fake a People manifest whose `installed_size` would
@@ -310,7 +311,10 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       bar's folder path (tooltip "Search photos and videos (⌘F)", VoiceOver "Search"); a click
       opens the panel exactly as ⌘F does. While a result list is shown it sits beside
       "Search: …" and reopens the panel in one click. With the pack not installed, removed in
-      Settings or failed to load, the icon is absent, not dimmed. Right after launch, while the
+      Settings or failed to load, the icon is still there (tooltip "Find files by name in this
+      folder (⌘F)") and opens file search: the grid comes up with a field over it, typing
+      narrows the tiles (folders too) with "N of M", arrows move among matches, Return goes to
+      the first match, Esc clears then closes, and `G` / another folder closes it. Right after launch, while the
       pack verifies and starts, the icon is already there; a click then opens the panel once it
       attaches. Press `G`: the command bar, the folder path and the icon stay above the grid
       (the gallery starts below the bar, as on Windows), and a result list opened as the gallery

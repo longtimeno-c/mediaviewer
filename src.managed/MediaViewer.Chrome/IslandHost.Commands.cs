@@ -272,6 +272,7 @@ public static partial class IslandHost
         private readonly Rectangle _caret;
         private readonly Border _inner;
         private readonly string _placeholder;
+        private readonly bool _bare;
         private readonly List<(string Text, int Caret)> _undo = new();
         private readonly List<(string Text, int Caret)> _redo = new();
         private Microsoft.UI.Dispatching.DispatcherQueueTimer? _blink;
@@ -285,9 +286,12 @@ public static partial class IslandHost
         public event Action? Submitted;
         public event Action? MoveDown;
 
-        public FakeInput(string placeholder, double width = 0)
+        // `bare`: no box of its own, for a field whose container draws one
+        // (file search).
+        public FakeInput(string placeholder, double width = 0, bool bare = false)
         {
             _placeholder = placeholder;
+            _bare = bare;
             ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
             if (width > 0) Width = width;
             else HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -658,6 +662,14 @@ public static partial class IslandHost
             }
             _caret.Visibility = focused ? Visibility.Visible : Visibility.Collapsed;
             _caret.Opacity = 1;
+            if (_bare)
+            {
+                _inner.Background = Brush(Colors.Transparent);
+                _inner.BorderThickness = new Thickness(0);
+                _inner.Padding = new Thickness(4, 5, 4, 5);
+                _inner.MinHeight = 0;
+                return;
+            }
             _inner.BorderBrush = Brush(focused ? Title : Hairline);
             _inner.BorderThickness = new Thickness(focused ? 2 : 1);
         }

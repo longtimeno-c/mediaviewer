@@ -190,6 +190,35 @@ TEST_CASE("query: dates are the file's, in UTC", "[ai][query]") {
   CHECK(q::days_from_civil(2000, 3, 1) == 11017);
 }
 
+TEST_CASE("query: file: matches the file's name", "[ai][query]") {
+  auto p = run("file:IMG_12 beach");
+  CHECK(p.files == std::vector<std::string>{"img_12"});
+  CHECK(p.text == "beach");
+  CHECK(p.narrows());
+  CHECK(p.has_files());
+
+  p = run("file:\"Trip José\" -file:copy");
+  CHECK(p.files == std::vector<std::string>{"trip jose"});
+  CHECK(p.not_files == std::vector<std::string>{"copy"});
+  CHECK(p.text.empty());
+
+  // Being typed: no filter, and "file" is never searched as a word.
+  p = run("file:");
+  CHECK_FALSE(p.has_files());
+  CHECK(p.text.empty());
+
+  const std::vector<std::string> want = {"img_12"};
+  const std::vector<std::string> none;
+  CHECK(q::name_matches("/Users/a/DCIM/IMG_1234.HEIC", want, none));
+  CHECK(q::name_matches("C:\\Photos\\img_12.jpg", want, none));
+  // The folder does not count, only the name.
+  CHECK_FALSE(q::name_matches("/img_12/other.jpg", want, none));
+  CHECK_FALSE(q::name_matches("/a/IMG_1234 copy.jpg", want, std::vector<std::string>{"copy"}));
+  // A decomposed Mac name (e + U+0301) folds like a typed é.
+  CHECK(q::name_matches("/a/Trip Jose\xCC\x81 1.mov", std::vector<std::string>{"trip jose 1"}, none));
+  CHECK(q::name_matches("/a/Trip Jos\xC3\xA9.mov", std::vector<std::string>{"trip jose"}, none));
+}
+
 TEST_CASE("query: a lone word that starts a name shows them first", "[ai][query]") {
   auto p = run("Trist");
   CHECK(p.people.empty());
