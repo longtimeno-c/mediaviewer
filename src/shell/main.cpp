@@ -349,6 +349,7 @@ struct app_state {
   bool game_on = false;          // Space on an empty window started the runner
   bool file_drag_armed = false;
   int welcome_press = -1;        // the welcome card's recent row under the left press
+  bool welcome_press_remove = false;  // ... and the press was on its remove button
   int file_drag_x = 0;
   int file_drag_y = 0;
   std::wstring last_title;       // the status line last written to the title bar
@@ -509,6 +510,7 @@ void publish(app_state* app) noexcept {
   if (app->input.recents.count != 0 && !welcome_lists_recents(app)) {
     app->input.recents.count = 0;
     app->input.recents.hover = -1;
+    app->input.recents.hover_remove = false;
     ++app->input.activity_seq;
   }
   app->lab.publish(app->input);
@@ -526,8 +528,10 @@ void refresh_welcome_recents(app_state* app) noexcept {
 }
 
 // The recent row under the pointer, hit-tested on the layout the render
-// thread draws (welcome_layout.h); -1 when the card lists none.
-int welcome_row_at_pointer(const app_state* app) noexcept {
+// thread draws (welcome_layout.h); -1 when the card lists none. `on_remove`
+// says whether the pointer is on that row's remove button.
+int welcome_row_at_pointer(const app_state* app, bool* on_remove = nullptr) noexcept {
+  if (on_remove) *on_remove = false;
   const auto& in = app->input;
   if (in.recents.count == 0 || !in.mouse_in_client || app->game_on || !welcome_lists_recents(app)) {
     return -1;
@@ -536,7 +540,16 @@ int welcome_row_at_pointer(const app_state* app) noexcept {
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
                                 static_cast<float>(in.chrome_height_px), scale, in.recents.count);
-  return mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
+  const int row = mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
+  if (row >= 0 && on_remove) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
+  return row;
+}
+
+// The drawn hover (row and remove button) from the pointer. The caller publishes.
+void update_welcome_hover(app_state* app) noexcept {
+  bool on_remove = false;
+  app->input.recents.hover = static_cast<std::int8_t>(welcome_row_at_pointer(app, &on_remove));
+  app->input.recents.hover_remove = on_remove;
 }
 
 // The settings word the island sees: view_settings plus [update] auto_check
@@ -589,6 +602,7 @@ void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void open_welcome_row(app_state* app, int row);
+void remove_welcome_row(app_state* app, int row);
 void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
@@ -5173,6 +5187,16 @@ void push_recent_folders(app_state* app) {
   app->chrome.set_recent_folders(lines);
 }
 
+// Drops `dir` from every recent list: settings, jump list, chrome, card.
+void forget_recent_folder(app_state* app, const std::string& dir) {
+  const std::string gone = dir;  // `dir` may be an element of the list
+  std::erase(app->recent_folders, gone);
+  mv::shell::save_recent_folders(app->recent_folders);
+  publish_jump_list(app);
+  push_recent_folders(app);
+  refresh_welcome_recents(app);
+}
+
 // A click on one of the welcome card's recent folders, or Open > Recent
 // folders: the jump list's route.
 void open_welcome_row(app_state* app, int row) {
@@ -5182,15 +5206,22 @@ void open_welcome_row(app_state* app, int row) {
   if (!is_dir || !is_dir.value()) {
     // The card was ejected or the folder deleted: it is no longer a place to go.
     ::MessageBeep(MB_ICONWARNING);
-    std::erase(app->recent_folders, dir);
-    mv::shell::save_recent_folders(app->recent_folders);
-    publish_jump_list(app);
-    push_recent_folders(app);
-    refresh_welcome_recents(app);
+    forget_recent_folder(app, dir);
     return;
   }
   open_path(app, wide_from_utf8(dir));
   focus_canvas(app);
+}
+
+// The x on a welcome card row: the folder leaves the card, the jump list and
+// Open > Recent folders. The folder itself is not touched.
+void remove_welcome_row(app_state* app, int row) {
+  if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+  forget_recent_folder(app, app->recent_folders[static_cast<std::size_t>(row)]);
+  // The next folder slides up under the pointer: hover it without waiting for a move.
+  update_welcome_hover(app);
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string>> pruned) {
@@ -6601,9 +6632,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->input.mouse_in_client = true;
       // A recent folder under the pointer: highlighted, with the hand cursor
       // (WM_SETCURSOR). The move above already redraws.
-      if (app->input.recents.count != 0) {
-        app->input.recents.hover = static_cast<std::int8_t>(welcome_row_at_pointer(app));
-      }
+      if (app->input.recents.count != 0) update_welcome_hover(app);
       // Issue #38: movement (and entry) wakes the transport. Only a real move:
       // parking an island can send a synthetic one at the same spot.
       if (moved) transport_activity(app);
@@ -6640,6 +6669,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
       app->input.recents.hover = -1;
+      app->input.recents.hover_remove = false;
       publish(app);
       transport_activity(app);  // onto the bar or out of the window
       return 0;
@@ -6687,7 +6717,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           // was (the release does the same).
           app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
           app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
-          app->welcome_press = welcome_row_at_pointer(app);
+          app->welcome_press = welcome_row_at_pointer(app, &app->welcome_press_remove);
         }
       }
       else if (!app->input.mouse_down[0] && !app->input.mouse_down[1] &&
@@ -6696,12 +6726,17 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         app->file_drag_armed = false;
       }
       publish(app);
-      // A click on a recent folder: pressed and released on the same row.
+      // A click on a recent folder (or its x): pressed and released on the
+      // same row and the same part of it.
       if (msg == WM_LBUTTONUP && app->welcome_press >= 0) {
         const int pressed = std::exchange(app->welcome_press, -1);
         app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
         app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
-        if (welcome_row_at_pointer(app) == pressed) open_welcome_row(app, pressed);
+        bool on_remove = false;
+        if (welcome_row_at_pointer(app, &on_remove) == pressed && on_remove == app->welcome_press_remove) {
+          if (on_remove) remove_welcome_row(app, pressed);
+          else open_welcome_row(app, pressed);
+        }
       }
       return 0;
     }
