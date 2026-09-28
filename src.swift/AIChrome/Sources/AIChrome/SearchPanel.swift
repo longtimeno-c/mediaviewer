@@ -108,6 +108,15 @@ final class SearchPanelController: NSObject {
       state.escSeq += 1
       return true
     }
+    if code == 48 {  // kVK_Tab: a person's name for the word being typed
+      guard let editor, editor.isFieldEditor, !editor.hasMarkedText(), model.acceptSuggestion() else { return false }
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          _ = NSApp.sendAction(#selector(NSResponder.moveToEndOfDocument(_:)), to: nil, from: nil)
+        }
+      }
+      return true
+    }
     guard code == 125,  // kVK_DownArrow
           let editor, editor.isFieldEditor, !model.results.isEmpty else { return false }
     state.gridSeq += 1
@@ -217,6 +226,9 @@ struct SearchRootView: View {
   var body: some View {
     VStack(spacing: 0) {
       header
+      if !model.suggestions.isEmpty && model.reference == nil {
+        suggestionRow
+      }
       chips
       Rectangle().fill(AITheme.hairline).frame(height: 1)
       content
@@ -312,7 +324,7 @@ struct SearchRootView: View {
         .transition(.opacity.combined(with: .scale(scale: 0.94)))
         Spacer(minLength: 0)
       }
-      TextField(model.reference == nil ? "Describe a photo or a moment — “dog on a beach”" : "",
+      TextField(model.reference == nil ? "Describe a photo or a moment, or name someone" : "",
                 text: $model.query)
         .textFieldStyle(.plain)
         .font(AITheme.font(22))
@@ -341,6 +353,41 @@ struct SearchRootView: View {
     }
     .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
     .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: model.reference)
+  }
+
+  // MARK: people while typing
+
+  /// "Trist" → Tristan: Tab (or a click) completes the word, so results for
+  /// the person follow. Only while a word is being typed (SearchModel).
+  private var suggestionRow: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "person.crop.circle")
+        .foregroundStyle(AITheme.body)
+        .accessibilityHidden(true)
+      ForEach(Array(model.suggestions.enumerated()), id: \.element.id) { i, s in
+        Button {
+          model.acceptSuggestion(s)
+          focusField()
+        } label: {
+          HStack(spacing: 5) {
+            Text(s.name).font(AITheme.font(13)).foregroundStyle(AITheme.title)
+            if i == 0 {
+              Text("Tab").font(AITheme.font(11)).foregroundStyle(AITheme.body)
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(AITheme.hairline, lineWidth: 1))
+            }
+          }
+          .padding(.horizontal, 9).padding(.vertical, 4)
+          .background(Capsule().fill(Color.accentColor.opacity(i == 0 ? 0.18 : 0.08)))
+        }
+        .buttonStyle(.plain)
+        .help("Search for \(s.name)")
+        .accessibilityLabel("Person: \(s.name)")
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 18).padding(.bottom, 10)
+    .transition(.opacity)
   }
 
   // MARK: scope and kind chips
@@ -494,9 +541,10 @@ struct SearchRootView: View {
           Text("Nothing close to \(reference.label.lowercased()) yet.")
             .font(AITheme.font(15)).foregroundStyle(AITheme.title)
         } else {
-          Text("Nothing matches “\(model.query)”. Try describing what's in the picture: “dog on a beach”.")
+          Text("Nothing matches “\(model.query)”. Try fewer words, or describe what's in the picture.")
             .font(AITheme.font(15)).foregroundStyle(AITheme.title)
             .multilineTextAlignment(.center).frame(maxWidth: 460)
+          SyntaxHint()
         }
         if model.indexing {
           Text("Indexing is still running; more may match soon.")
@@ -507,6 +555,7 @@ struct SearchRootView: View {
              + (model.audioReady ? " Or a sound, “dog barking”, or words someone said." : ""))
           .font(AITheme.font(14)).foregroundStyle(AITheme.body)
           .multilineTextAlignment(.center).frame(maxWidth: 460)
+        SyntaxHint()
         if model.indexing {
           Text("Results appear as the index grows.")
             .font(AITheme.font(13)).foregroundStyle(AITheme.body)
@@ -667,6 +716,29 @@ private struct SearchStatusPill: View {
   let onPause: (Bool) -> Void
 
   var body: some View { StatusPill(line: status.line, onIndexAnyway: onIndexAnyway, onPause: onPause) }
+}
+
+// MARK: query syntax
+
+/// The query language in one line (plan/17 "Query syntax"): the pack parses
+/// it, so the Windows panel shows the same examples.
+private struct SyntaxHint: View {
+  var body: some View {
+    VStack(spacing: 4) {
+      Text("Sam beach   ·   Sam “happy birthday”   ·   Sam or Alex   ·   -video   ·   in:2024")
+        .font(.system(size: 12, design: .monospaced))
+        .foregroundStyle(AITheme.title.opacity(0.8))
+      Text("A name finds that person; “quotes” find words said in videos; - leaves something out; "
+           + "video or photo picks a kind; in:, before: and after: use the file's date.")
+        .font(AITheme.font(12))
+        .foregroundStyle(AITheme.body)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: 520)
+    .padding(.top, 6)
+    .accessibilityElement(children: .combine)
+  }
 }
 
 // MARK: filter controls

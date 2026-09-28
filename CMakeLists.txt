@@ -1134,6 +1134,7 @@ if(MV_BUILD_TESTS)
     tests/test_ai_engine.cpp
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
+    tests/test_ai_query.cpp
   )
   target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_io
     Catch2::Catch2WithMain)

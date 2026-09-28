@@ -262,6 +262,17 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
     best = std::max(best, margin);
     ++seen;
   }
+  {
+    // How many assets clear the calibrated query margin (scan_stats::
+    // over_margin), counted up to what margin_needed asks for.
+    const std::size_t enough = stats.broad_assets();
+    std::set<std::int64_t> seen;
+    for (const vector_store::hit& h : hits) {
+      if (h.score - h.generic < t.query_margin) continue;
+      if (seen.insert(h.asset).second && seen.size() >= enough) break;
+    }
+    stats.over_margin = seen.size();
+  }
   if (row_margin > t.result_margin) {
     hits.erase(std::remove_if(hits.begin(), hits.end(),
                               [&](const vector_store::hit& h) { return h.score - h.generic < row_margin; }),

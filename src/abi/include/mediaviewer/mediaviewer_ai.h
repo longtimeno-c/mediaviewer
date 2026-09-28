@@ -221,8 +221,10 @@ typedef struct mv_ai_api {
   /* Natural-language query. `scope_dir` may be NULL for MV_AI_SCOPE_ALL.
    * Runs on a worker; MV_ADDON_EVENT_AI_SEARCH_DONE carries the id and the
    * result count (0: "nothing found" — the min-score cutoff, not the
-   * least-bad ten). A query naming a person (PR 24) narrows to that person.
-   * [no-block] */
+   * least-bad ten). The query language (plan/17 "Query syntax"): a named
+   * person narrows to them, "quoted words" must be said, -x leaves x out,
+   * video / photo and in: / before: / after: filter; the kind bits here and
+   * the query's must both hold. [no-block] */
   mv_status(MV_CALL* search_text)(void* ctx, const char* query_utf8, const char* scope_dir_utf8,
                                   uint32_t scope, uint32_t kinds, uint64_t* out_search_id);
   /* Find similar: a still (pts_ms = -1) or the frame of a clip at pts_ms,
@@ -288,6 +290,17 @@ typedef struct mv_ai_api {
    * Lisbon..."), empty otherwise. */
   mv_status(MV_CALL* result_snippet)(void* ctx, uint64_t search_id, uint32_t index, char* out_utf8,
                                      uint32_t cap);
+
+  /* ---- query language (2026-09-28, plan/17 "Query syntax") ---------------- */
+  /* search_text parses its query in the pack (people, "words said",
+   * -exclusions, video / photo, in: / before: / after: file dates), so both
+   * chromes mean the same by the same words. This names people for the word
+   * being typed; pass the field untrimmed (a trailing space means the word is
+   * finished). [{"id":1,"name":"Tristan","completion":"Tristan "}], best
+   * first, at most five; the chrome sets the field to `completion` when one
+   * is accepted (Tab). [worker-thread] */
+  mv_status(MV_CALL* suggest_json)(void* ctx, const char* query_utf8, char* out, uint32_t cap,
+                                   uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

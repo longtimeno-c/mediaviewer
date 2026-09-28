@@ -293,6 +293,9 @@ class upgrading_clip final : public infer::embedder {
     return model()->embed_images(images, out);
   }
   result<std::vector<float>> embed_text(std::string_view utf8) override { return model()->embed_text(utf8); }
+  result<std::vector<float>> embed_text_mean(std::span<const std::string> texts) override {
+    return model()->embed_text_mean(texts);
+  }
 
  private:
   std::shared_ptr<infer::embedder> model() const {
