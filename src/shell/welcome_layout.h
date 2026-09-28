@@ -22,6 +22,7 @@ struct welcome_recents {
   static constexpr int kMax = 6;
   std::uint8_t count = 0;  // 0 = no rows: nothing opened yet, or something is open
   std::int8_t hover = -1;  // the row under the pointer, drawn highlighted
+  bool hover_remove = false;  // the pointer is on that row's remove button
   char label[kMax][96] = {};
   char where[kMax][192] = {};
 };
@@ -40,6 +41,7 @@ inline constexpr float kWelcomeBaseH = 262.0f;    // the card without recents
 inline constexpr float kWelcomeRecentsTop = 292.0f;  // first row, from the card's top
 inline constexpr float kWelcomeRowH = 32.0f;
 inline constexpr float kWelcomeRowsPad = 14.0f;   // below the last row
+inline constexpr float kWelcomeRemoveW = 30.0f;   // a row's remove button, at its right end
 
 // `chrome` is the command bar covering the top of the canvas; `lift` floats the
 // card up as it fades into the runner (draw_welcome's `alpha`).
@@ -78,6 +80,12 @@ inline constexpr float kWelcomeRowsPad = 14.0f;   // below the last row
   if (!g.fits || g.rows <= 0 || x < g.row_x0 || x >= g.row_x1 || y < g.rows_top) return -1;
   const int row = static_cast<int>((y - g.rows_top) / g.row_h);
   return row < g.rows ? row : -1;
+}
+
+// Whether x on a row (welcome_row_at >= 0) is its remove button rather than
+// the folder: the hovered row draws an x there that drops it from the list.
+[[nodiscard]] inline bool welcome_on_remove(const welcome_geometry& g, float x) noexcept {
+  return g.fits && x >= g.row_x1 - kWelcomeRemoveW * (g.row_h / kWelcomeRowH) && x < g.row_x1;
 }
 
 }  // namespace mv::shell

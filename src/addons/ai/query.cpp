@@ -139,7 +139,8 @@ std::vector<token> tokens_of(std::string_view s) {
       while (j < s.size() && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z'))) ++j;
       if (j > i && j < s.size() && s[j] == ':') {
         const std::string op = lower_ascii(s.substr(i, j - i));
-        if (is_one_of(op, {"in", "before", "after", "since", "until", "is", "type", "kind", "person", "said"})) {
+        if (is_one_of(op, {"in", "before", "after", "since", "until", "is", "type", "kind", "person", "said",
+                          "file"})) {
           t.op = op;
           i = j + 1;
         } else {
@@ -290,6 +291,35 @@ std::string fold(std::string_view s) {
     }
   }
   return out;
+}
+
+bool name_matches(std::string_view path, std::span<const std::string> files,
+                  std::span<const std::string> not_files) {
+  if (files.empty() && not_files.empty()) return true;
+  const std::size_t slash = path.find_last_of("/\\");
+  std::string name = fold(slash == std::string_view::npos ? path : path.substr(slash + 1));
+  // A Mac file name is often decomposed (e + U+0301): drop the combining
+  // marks (U+0300-U+036F) so it folds like a typed "é".
+  std::size_t w = 0;
+  for (std::size_t r = 0; r < name.size(); ++r) {
+    const auto c = static_cast<unsigned char>(name[r]);
+    if (r + 1 < name.size()) {
+      const auto n = static_cast<unsigned char>(name[r + 1]);
+      if ((c == 0xCC && n >= 0x80 && n <= 0xBF) || (c == 0xCD && n >= 0x80 && n <= 0xAF)) {
+        ++r;
+        continue;
+      }
+    }
+    name[w++] = name[r];
+  }
+  name.resize(w);
+  for (const std::string& f : files) {
+    if (name.find(f) == std::string::npos) return false;
+  }
+  for (const std::string& f : not_files) {
+    if (name.find(f) != std::string::npos) return false;
+  }
+  return true;
 }
 
 std::vector<std::string> words_of(std::string_view utf8) {
@@ -474,6 +504,13 @@ parsed parse(std::string_view utf8) {
       or_pending = !p.words.empty();
       continue;
     }
+    if (t.op == "file") {
+      // A file name, quoted or not. "file:" still being typed is dropped.
+      std::string f = fold(t.text);
+      if (!f.empty()) (t.negated ? p.not_files : p.files).push_back(std::move(f));
+      or_pending = false;
+      continue;
+    }
     if (t.quoted && (t.op.empty() || t.op == "said")) {
       if (!words_of(t.text).empty()) p.phrases.push_back({t.text, t.negated, t.open});
       or_pending = false;
@@ -560,6 +597,8 @@ plan resolve(const parsed& p, std::span<const person_name> people) {
   if ((p.kinds != 0 || p.not_kinds != 0) && out.kinds == 0) out.impossible = true;
   out.from_unix = p.from_unix;
   out.to_unix = p.to_unix;
+  out.files = p.files;
+  out.not_files = p.not_files;
   if (out.from_unix >= out.to_unix) out.impossible = true;
   for (const parsed::phrase& ph : p.phrases) {
     if (ph.negated) {

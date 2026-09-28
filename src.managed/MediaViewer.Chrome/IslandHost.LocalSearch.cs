@@ -70,15 +70,12 @@ public static partial class IslandHost
     private static bool AiStarting() =>
         AiSlot.Chrome is null && AiSlot.Busy && !AiSlot.Removing && _aiInstalling != AiSlot && AiSlot.Usable;
 
-    // The path bar's search icon: the panel now, or once the pack attaches.
+    // The path bar's search icon: the panel now, or once the pack attaches;
+    // without Local search, file search (IslandHost.FileSearch.cs), the
+    // gallery coming up first when it is hidden.
     private static void OpenSearchFromPath()
     {
-        if (SearchChrome is ISearchChrome search)
-        {
-            search.RunCommand(SearchCommand.Open);
-            return;
-        }
-        if (AiStarting()) _searchOpenPending = true;
+        if (OpenFileSearch() == FileSearchNeedsGallery && !_galleryVisible) Send(Command.ToggleGallery);
     }
 
     // A load of the AI pack started or failed: the icon follows.

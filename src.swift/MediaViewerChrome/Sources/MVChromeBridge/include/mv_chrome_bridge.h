@@ -184,6 +184,21 @@ int32_t mv_chrome_folder_cursor(void);
 // The in-progress folder-name query (`/`, folder row active). False when idle;
 // an empty string means the query is open and nothing has been typed yet.
 bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
+// File search (plan/16 "File search", 2026-09-28): find by name over the
+// gallery, base app, no index. Shows the gallery if it is hidden and gives the
+// field above the grid the keyboard. The path bar's search icon runs it when
+// Local search is not installed; ⌘F falls back to it the same way. [main-thread]
+void mv_chrome_file_search(void);
+// The field gives the keyboard back to the grid (Esc, Down, Return).
+void mv_chrome_gallery_blur(void);
+// What file search's name filter shows, in grid order: item indices and
+// child-folder indices of the listing `listing_generation` (mv_chrome_listing_generation).
+// While `active` and the gallery is up, its keys move among these only and a
+// selection the filter hides moves to the first tile shown; the viewer still
+// walks the whole folder. A stale generation is ignored until the next push.
+void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool active,
+                                  const int32_t* items, int32_t item_count,
+                                  const int32_t* folders, int32_t folder_count);
 
 // Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.
@@ -582,6 +597,9 @@ typedef struct mv_editor_view {
   int32_t edited;         // anything cut: Export has something to write
   int32_t strip_count;
   int32_t peak_count;
+  int64_t mark_in_ns;     // the marked range on the program; -1 unset
+  int64_t mark_out_ns;
+  double frame_rate;      // the clip's; 0 unknown (timecode falls back to hundredths)
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -598,13 +616,23 @@ int32_t mv_chrome_editor_peaks(float* out, int32_t cap);
 void mv_chrome_editor_seek(int64_t timeline_ns);
 void mv_chrome_editor_toggle_play(void);
 void mv_chrome_editor_step(int32_t frames);
-// 1 split at the playhead, 2 delete the selected piece, 3 set in, 4 set out,
-// 5 undo, 6 redo. A change that changes nothing beeps.
+// 1 split at the playhead, 2 delete (the marked range, else the selected
+// piece), 3 set in (cut everything before), 4 set out (cut everything after),
+// 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks. A change that
+// changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
 void mv_chrome_editor_select(int32_t index);
 // Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
 void mv_chrome_editor_export(int32_t exact);
+// Asks before discarding an edit that has not been exported.
 void mv_chrome_editor_close(void);
+// Dragging a piece's edge (edge 0 in, 1 out): begin, move in source time (the
+// return is where the edge is, clamped; -1 not trimming), end. One undo step.
+bool mv_chrome_editor_trim_begin(int32_t index, int32_t edge);
+int64_t mv_chrome_editor_trim_to(int64_t source_ns);
+void mv_chrome_editor_trim_end(void);
+// J K L: key 0 J, 1 K, 2 L; phase 0 down, 1 auto-repeat, 2 up.
+void mv_chrome_editor_shuttle(int32_t key, int32_t phase);
 
 #ifdef __cplusplus
 }

@@ -14,6 +14,9 @@
 //   in:2024  before:2025-06  after:2023  since:2024-03-01
 //                          the file's date (modification time, UTC)
 //   said:hello             same as "hello"
+//   file:IMG_12  file:"my trip"  -file:copy
+//                          the file's name contains the text (case and accents
+//                          folded); the base app's file search, in the query
 //
 // A lone word that starts a name ("Trist", or "Tristna" with a typo) shows
 // that person's photos first and what the word describes after them: results
@@ -51,6 +54,8 @@ struct parsed {
   std::uint32_t not_kinds = 0;
   std::int64_t from_unix = std::numeric_limits<std::int64_t>::min();  // inclusive
   std::int64_t to_unix = std::numeric_limits<std::int64_t>::max();    // exclusive
+  std::vector<std::string> files;      // file:x, folded: the name must contain each
+  std::vector<std::string> not_files;  // -file:x, folded: the name must contain none
   [[nodiscard]] bool has_dates() const noexcept {
     return from_unix != std::numeric_limits<std::int64_t>::min() ||
            to_unix != std::numeric_limits<std::int64_t>::max();
@@ -76,6 +81,8 @@ struct plan {
   std::uint32_t kinds = 0;                        // MV_AI_KIND_* to keep; 0 = any
   std::int64_t from_unix = std::numeric_limits<std::int64_t>::min();
   std::int64_t to_unix = std::numeric_limits<std::int64_t>::max();
+  std::vector<std::string> files;      // folded: the file's name contains each
+  std::vector<std::string> not_files;  // folded: and none of these
   // A lone word that only starts (or nearly spells) a name: those people
   // lead, and `text` answers after them (a union, not a filter).
   std::vector<std::int64_t> people_first;
@@ -87,7 +94,9 @@ struct plan {
            to_unix != std::numeric_limits<std::int64_t>::max();
   }
   // Anything that narrows the assets before ranking (not scope or kind).
-  [[nodiscard]] bool narrows() const noexcept { return !people.empty() || !phrases.empty(); }
+  [[nodiscard]] bool narrows() const noexcept { return !people.empty() || !phrases.empty() || !files.empty(); }
+  // A file name term, kept or left out.
+  [[nodiscard]] bool has_files() const noexcept { return !files.empty() || !not_files.empty(); }
 };
 
 [[nodiscard]] plan resolve(const parsed& p, std::span<const person_name> people);
@@ -107,6 +116,9 @@ struct suggestion {
 
 // Lower-case, with common Latin accents folded ("José" -> "jose").
 [[nodiscard]] std::string fold(std::string_view utf8);
+// file: / -file: against a path's last component (either separator).
+[[nodiscard]] bool name_matches(std::string_view path, std::span<const std::string> files,
+                                std::span<const std::string> not_files);
 // Words as the speech index stores them (infer::speech_words' rule: letters,
 // digits and bytes >= 0x80, lower-cased, an apostrophe never splits).
 [[nodiscard]] std::vector<std::string> words_of(std::string_view utf8);

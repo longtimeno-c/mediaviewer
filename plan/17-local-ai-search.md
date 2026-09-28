@@ -718,7 +718,8 @@ and a description in one query (`Tristan:"hello"`). One parser in the pack
 | `-Nico`, `-beach`, `-"goodbye"`, `-video` | leave out a person, what a picture search finds, a phrase said, a kind |
 | `beach video`, `is:photo`, `videos of Anna` | a kind: the last word, `is:` / `type:`, or a leading "videos of"; "photos of …" asks for anything (a spoken request) |
 | `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **file's** date (modification time, UTC). Capture dates (EXIF) are not in the index; a camera dump copied without its times will not match |
-| `video in:2024` | filters alone: everything they allow, newest first |
+| `file:IMG_12`, `file:"trip 2024"`, `-file:copy` | the file's **name** (not its folder) contains the text, case and accents folded (2026-09-28, owner: file search "as a keyword like file:[filename]" when Local search is installed). Indexed files only: a folder not yet indexed has nothing to match, and the base app's file search (plan/16) needs no index |
+| `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first |
 
 Typing a name: the panel names people for the word being typed (`suggest_json`, appended to
 `mv.ai.1`; prefix first, then a near spelling of one letter, two from eight letters); **Tab** or
@@ -730,7 +731,9 @@ searched. Per keystroke the parse is linear in the query and one `SELECT` of the
 ### Gallery search bar (2026-09-27)
 
 Removed 2026-09-28 at the owner's request; replaced by a search icon in the path bar (it opens
-the `Ctrl+F` / `⌘F` panel; shown while the pack is loaded or starting; plan/12 2026-09-28).
+the `Ctrl+F` / `⌘F` panel; plan/12 2026-09-28). Later the same day the icon became always
+visible: without the pack it and `Ctrl+F` open the base app's file search, the old bar's Names
+mode shown on request (plan/16 "File search").
 
 ### People refinement (2026-09-28, owner report)
 

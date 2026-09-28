@@ -107,6 +107,24 @@ enum chrome_command : int {
   // the piece there; editor_action: arg is a chrome_editor_action.
   chrome_cmd_editor_seek = 1023,
   chrome_cmd_editor_action = 1024,
+  // Drag-out (the Mac's FolderStore.dragFiles). drag_items: a gallery or
+  // filmstrip cell started a drag; arg is its folder index. Native answers at
+  // once, inside the call, with set_drag_paths: every marked item in listing
+  // order, pairs expanded, when that cell is marked; else nothing, and the
+  // cell drags itself (and its pair).
+  // drag_ended: that drag finished (dropped or cancelled). While one of our
+  // own drags is in flight, our own drop targets refuse it.
+  chrome_cmd_drag_items = 1025,
+  chrome_cmd_drag_ended = 1026,
+  // Open > Recent folders (the Mac's File > Open Recent): arg is the row in
+  // the list set_recent_folders last pushed. A folder that is gone beeps and
+  // leaves the list, as a welcome-card click does.
+  chrome_cmd_open_recent = 1027,
+  // A piece's edge dragged on the timeline. trim_grab: arg is index * 2 +
+  // edge (0 in, 1 out), or -1 to let go; trim_to: arg is the edge's new
+  // source time in milliseconds (exact to 4.6 h in a float). One undo a drag.
+  chrome_cmd_editor_trim_grab = 1028,
+  chrome_cmd_editor_trim_to = 1029,
 };
 
 // chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
@@ -123,8 +141,11 @@ enum class chrome_editor_action : std::int32_t {
   step_forward = 9,
   export_keyframe = 10,  // keep_ranges, cut on keyframes (instant)
   export_exact = 11,     // keep_ranges, re-encoded (frame-accurate)
-  close = 12,
+  close = 12,        // asks first when the edit has not been exported
   show = 13,         // the viewer's "Editing in the Video Editor" card: raise the window
+  mark_in = 14,      // I: marks, cuts nothing (the Mac bridge's codes too)
+  mark_out = 15,     // O
+  clear_marks = 16,  // X
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -155,6 +176,21 @@ struct chrome_popup_args {
 };
 
 static_assert(sizeof(chrome_popup_args) == 8, "keep in sync with ChromePopupArgs");
+
+// File search (plan/16 "File search", 2026-09-28): find by name over the
+// gallery, base app, no index. The island answers whether it took the key;
+// if not, native does what it did without it. Mirrored by
+// IslandHost.FileSearch.cs (entry GallerySearch).
+enum class gallery_search_action : std::int32_t {
+  open = 0,    // Ctrl+F without the Local search command: see gallery_search_answer
+  escape = 1,  // Esc while a text control has focus: clear the field, then close it
+  step = 2,    // Left / Right (arg -1 / +1): walk the name filter's matches
+};
+enum class gallery_search_answer : std::int32_t {
+  took = 0,           // done: the field has the keyboard, or Local search's panel opens
+  declined = 1,       // not taken (also: no chrome entry, nothing listed)
+  needs_gallery = 2,  // open: show the gallery; the field opens once it is shown
+};
 
 struct chrome_table_args {
   std::uint64_t utf8;  // describe_commands() text, valid for the call only
@@ -221,6 +257,9 @@ static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
+static_assert(chrome_cmd_drag_items >= kCommandCount && chrome_cmd_drag_ended >= kCommandCount);
+static_assert(chrome_cmd_open_recent >= kCommandCount);
+static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -244,7 +283,9 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_meta_comment,
       chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index,
       chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date,
-      chrome_cmd_editor_seek, chrome_cmd_editor_action};
+      chrome_cmd_editor_seek, chrome_cmd_editor_action,
+      chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
+      chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -428,10 +469,12 @@ struct chrome_editor_view_args {
   std::uint64_t pieces;        // const int64_t*: (in, out) source pairs, program order
   std::uint64_t name_utf8;
   std::int32_t name_len;
-  std::int32_t reserved;
+  std::int32_t frame_rate_milli;  // the clip's rate x 1000 (29970); 0 unknown
+  std::int64_t mark_in_ns;        // the marked range on the program; -1 unset
+  std::int64_t mark_out_ns;
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 88, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 104, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {
@@ -725,6 +768,15 @@ class chrome_host {
   [[nodiscard]] bool show_addon(std::int32_t family, std::int32_t kind,
                                 const std::string& json) noexcept;
 
+  // Drag-out. The answer to chrome_cmd_drag_items: the files to drag, one
+  // UTF-8 path per line (empty: drag the cell alone). `own_drag` tells the
+  // islands one of our drags is in flight (true with the answer, and around
+  // the canvas's own drag), so they refuse to take it back; false when it ends.
+  void set_drag_paths(const std::string& utf8_lines, bool own_drag) noexcept;
+  // Open > Recent folders: "label\tpath\n" lines, most recent first. Pushed
+  // at attach and whenever the list changes.
+  void set_recent_folders(const std::string& utf8_lines) noexcept;
+
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
   // PR 10 export dialog (a flyout like `?`), preselecting `last_choice`
@@ -733,6 +785,10 @@ class chrome_host {
     show_popup(chrome_popup::export_image, last_choice);
   }
   void navigate_gallery(std::int32_t direction, std::int32_t index) noexcept;
+  // File search. Optional entry: a chrome without it declines everything,
+  // and every caller falls back to its old behaviour.
+  [[nodiscard]] gallery_search_answer gallery_search(gallery_search_action action,
+                                                     std::int32_t arg = 0) noexcept;
   void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
   void apply_browse(std::int32_t folder_cursor, bool can_go_up, const std::string& crumbs,
                     bool finding = false, const std::string& query = {}) noexcept;
@@ -793,6 +849,8 @@ class chrome_host {
   chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn share_files_ = nullptr;
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
+  chrome_entry_fn set_drag_paths_ = nullptr;
+  chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;
@@ -815,6 +873,7 @@ class chrome_host {
   chrome_entry_fn detach_editor_ = nullptr;
   bool editor_attached_ = false;
   chrome_entry_fn navigate_gallery_ = nullptr;
+  chrome_entry_fn gallery_search_ = nullptr;  // optional: file search
   chrome_entry_fn scale_gallery_ = nullptr;
   chrome_entry_fn apply_browse_ = nullptr;
   chrome_entry_fn update_restart_ = nullptr;
