@@ -646,6 +646,13 @@ Local search), what captions, nonsense, "helicopter" and near-miss category quer
 `MV_AI_CALIBRATION_CACHE=<folder>` to keep the embeddings between runs. On a Mac the first Core ML open of a
 tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
 
+The search field's query language (`Tristan beach`, `Tristan "hello"`, `Tristan or Aaryan`,
+`@tri`, `-beach`, `beach video`, `in:2024`, `before:2025-06`; plan/17 "Query syntax") is parsed
+in the pack by `src/addons/ai/query.*`, so both chromes share it. `mv_ai_tests "[query]"` covers
+the parser, names, suggestions and the singular / plural pair with no models; it is pure C++20
+and also compiles on its own (`clang++ -std=c++20 tests/test_ai_query.cpp
+src/addons/ai/query.cpp` with `-Isrc -Itests` and any Catch2).
+
 ## Test
 
 ```powershell

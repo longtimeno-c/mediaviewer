@@ -114,6 +114,9 @@ internal sealed class SearchWindow : Window, IDisposable
     private bool _visible;
     private bool _disposing;
     private bool _settingText;
+    // People while typing (plan/17 "Query syntax"): "Trist" → Tristan; Tab takes the first.
+    private StackPanel _suggestRow = null!;
+    private List<(ulong Id, string Name, string Completion)> _suggestions = new();
     private long _lastRunTick;
     private ulong _lastRunFrames;
     private int _batch;
@@ -214,7 +217,7 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             FontFamily = _look.Font,
             FontSize = 22,
-            PlaceholderText = "Describe a photo or a moment — “dog on a beach”",
+            PlaceholderText = "Describe a photo or a moment, or name someone",
             BorderThickness = new Thickness(0),
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             Padding = new Thickness(8, 6, 8, 6),
@@ -243,7 +246,18 @@ internal sealed class SearchWindow : Window, IDisposable
             BorderBrush = _look[AddonColour.Hairline],
             BorderThickness = new Thickness(1),
         };
-        body.Children.Add(queryCard);
+        _suggestRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Margin = new Thickness(6, 0, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetName(_suggestRow, "People matching the word being typed");
+        var queryArea = new StackPanel { Spacing = 8 };
+        queryArea.Children.Add(queryCard);
+        queryArea.Children.Add(_suggestRow);
+        body.Children.Add(queryArea);
 
         // Filters (2026-09-27): three captioned groups instead of nine look-alike
         // chips. "Look in" and "Show" are single-choice segmented tracks; "Match
@@ -716,6 +730,7 @@ internal sealed class SearchWindow : Window, IDisposable
             _settingText = true;
             _query.Text = "";
             _settingText = false;
+            ShowSuggestions(new());
         }
         else if (_similar is not null && !_visible)
         {
@@ -797,8 +812,93 @@ internal sealed class SearchWindow : Window, IDisposable
         if (_similar is not null && _query.Text.Length > 0) ClearSimilar(runQuery: false);
         _openWhenReady = null;
         _focusWhenReady = 0;
+        RefreshSuggestions();
         _debounce.Stop();
         _debounce.Start();
+    }
+
+    /// <summary>
+    /// Named people for the word being typed, from the pack (a faces.db read,
+    /// so off the UI thread); an answer for words since changed is dropped.
+    /// </summary>
+    private void RefreshSuggestions()
+    {
+        string text = _query.Text;  // untrimmed: a trailing space means the word is finished
+        if (_similar is not null || text.Length == 0 || char.IsWhiteSpace(text[^1]))
+        {
+            ShowSuggestions(new());
+            return;
+        }
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            var found = new List<(ulong, string, string)>();
+            try
+            {
+                using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(api.SuggestJson(text));
+                foreach (System.Text.Json.JsonElement e in doc.RootElement.EnumerateArray())
+                {
+                    found.Add((e.GetProperty("id").GetUInt64(), e.GetProperty("name").GetString() ?? "",
+                               e.GetProperty("completion").GetString() ?? ""));
+                }
+            }
+            catch (MediaViewerException) { }
+            catch (System.Text.Json.JsonException) { }
+            catch (InvalidOperationException) { }
+            catch (KeyNotFoundException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_disposing || _query.Text != text) return;
+                ShowSuggestions(found);
+            });
+        });
+    }
+
+    private void ShowSuggestions(List<(ulong Id, string Name, string Completion)> list)
+    {
+        if (list.Count == 0 && _suggestions.Count == 0) return;
+        _suggestions = list;
+        _suggestRow.Children.Clear();
+        for (int i = 0; i < list.Count; ++i)
+        {
+            var s = list[i];
+            var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            label.Children.Add(_look.Text(s.Name, 13, AddonColour.Title, wrap: false));
+            if (i == 0)
+            {
+                label.Children.Add(new Border
+                {
+                    Child = _look.Text("Tab", 11, AddonColour.Body, wrap: false),
+                    Padding = new Thickness(4, 0, 4, 0),
+                    CornerRadius = new CornerRadius(3),
+                    BorderBrush = _look[AddonColour.Hairline],
+                    BorderThickness = new Thickness(1),
+                });
+            }
+            var button = new Button
+            {
+                Content = label,
+                Padding = new Thickness(10, 3, 10, 3),
+                CornerRadius = new CornerRadius(14),
+                Background = _look.Tint(AddonColour.Accent, i == 0 ? 48 : 20),
+                BorderThickness = new Thickness(0),
+                IsTabStop = false,  // Tab in the query takes the first; the grid keeps the keyboard model
+            };
+            AutomationProperties.SetName(button, $"Person: {s.Name}");
+            ToolTipService.SetToolTip(button, $"Search for {s.Name}");
+            button.Click += (_, _) => AcceptSuggestion(s.Completion);
+            _suggestRow.Children.Add(button);
+        }
+        _suggestRow.Visibility = list.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Tab or a click on a name: the query takes its completion (and searches).</summary>
+    private void AcceptSuggestion(string completion)
+    {
+        ShowSuggestions(new());
+        _query.Text = completion;  // TextChanged runs the search
+        _query.Focus(FocusState.Keyboard);
+        _query.Select(_query.Text.Length, 0);
     }
 
     private void ClearSimilar(bool runQuery)
@@ -820,7 +920,7 @@ internal sealed class SearchWindow : Window, IDisposable
                                  (_similar.Value.PtsMs >= 0 ? $" at {Look.Moment(_similar.Value.PtsMs)}" : "") : "";
         _query.PlaceholderText = on
             ? "Or describe something else"
-            : "Describe a photo or a moment — “dog on a beach”";
+            : "Describe a photo or a moment, or name someone";
     }
 
     private void SetScope(MvAiScope scope, bool run = true)
@@ -1049,7 +1149,8 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         ShowEmpty("Describe what you are looking for.",
                   "“guy on a skateboard”, “birthday cake”, “sunset over water”. Photos and moments in videos both count." +
-                  (AudioReady ? " Or try a sound — “dog barking” — or words someone said." : ""));
+                  (AudioReady ? " Or try a sound — “dog barking” — or words someone said." : ""),
+                  syntax: true);
     }
 
     private void ShowNothing()
@@ -1073,9 +1174,10 @@ internal sealed class SearchWindow : Window, IDisposable
             return;
         }
         ShowEmpty($"Nothing matches “{q}”.",
-                  "Try describing what's in the picture: “dog on a beach”." +
+                  "Try fewer words, or describe what's in the picture." +
                   (AudioReady ? " Or try a sound — “dog barking” — or words someone said." : "") +
-                  (indexing ? " Results appear as the index grows." : ""));
+                  (indexing ? " Results appear as the index grows." : ""),
+                  syntax: true);
     }
 
     private void ShowIndexOffer()
@@ -1098,7 +1200,7 @@ internal sealed class SearchWindow : Window, IDisposable
         FadeIn(_empty);
     }
 
-    private void ShowEmpty(string title, string detail)
+    private void ShowEmpty(string title, string detail, bool syntax = false)
     {
         _indexOffered = false;
         _gridHost.Visibility = Visibility.Collapsed;
@@ -1106,6 +1208,19 @@ internal sealed class SearchWindow : Window, IDisposable
         _count.Text = "";
         _empty.Children.Add(Centre(_look.Text(title, 18, AddonColour.Title)));
         _empty.Children.Add(Centre(_look.Text(detail, 14)));
+        if (syntax)
+        {
+            // The query language in one line (plan/17 "Query syntax"); the pack
+            // parses it, so the Mac panel shows the same examples.
+            TextBlock examples = Centre(_look.Text(
+                "Sam beach   ·   Sam “happy birthday”   ·   Sam or Alex   ·   -video   ·   in:2024", 12, AddonColour.Title));
+            examples.FontFamily = new FontFamily("Cascadia Mono, Consolas");
+            examples.Margin = new Thickness(0, 10, 0, 0);
+            _empty.Children.Add(examples);
+            _empty.Children.Add(Centre(_look.Text(
+                "A name finds that person; “quotes” find words said in videos; - leaves something out; " +
+                "video or photo picks a kind; in:, before: and after: use the file's date.", 12)));
+        }
         _empty.Visibility = Visibility.Visible;
         FadeIn(_empty);
     }
@@ -1324,6 +1439,10 @@ internal sealed class SearchWindow : Window, IDisposable
                 return;
             case VirtualKey.F when ctrl:
                 FocusQuery();
+                e.Handled = true;
+                return;
+            case VirtualKey.Tab when inQuery && !ctrl && _suggestions.Count > 0 && !Down(VirtualKey.Shift):
+                AcceptSuggestion(_suggestions[0].Completion);
                 e.Handled = true;
                 return;
             case VirtualKey.Down when inQuery:

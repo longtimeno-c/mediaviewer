@@ -214,6 +214,9 @@ public unsafe struct MvAiApi
     // audio (2026-09-27)
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetMedia;
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, MvStatus> ResultSnippet;
+
+    // query language (2026-09-28, plan/17 "Query syntax")
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> SuggestJson;
 }
 
 /// <summary>
@@ -425,6 +428,20 @@ public sealed unsafe class AiApi
     /// <summary>Worker: the words that matched, for a speech result; "" otherwise.</summary>
     public string ResultSnippet(ulong search, uint index) =>
         ReadPath((b, c) => _api->ResultSnippet(Ctx, search, index, (byte*)b, c));
+
+    /// <summary>
+    /// Worker (reads faces.db): named people for the word being typed, as
+    /// <c>[{"id":1,"name":"Tristan","completion":"Tristan "}]</c>. Pass the
+    /// field untrimmed: a trailing space means the word is finished.
+    /// </summary>
+    public string SuggestJson(string query)
+    {
+        byte[] q = Z(query);
+        return ReadJson((b, c, n) =>
+        {
+            fixed (byte* p = q) return _api->SuggestJson(Ctx, p, b, c, n);
+        });
+    }
 
     /// <summary>Worker: the JPEG a face was found in (made on a miss); crop it in the view with the face's box.</summary>
     public string FaceThumb(ulong face) =>

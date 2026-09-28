@@ -490,6 +490,29 @@ with other words, not with the index; that is a later item (a vocabulary of labe
 once per model), not a threshold. CLAP scales its two margins the same way (no z rule yet);
 spoken words need all the query's words at 3-4 and half at 0-1 (one word alone still whole).
 
+**Amended 2026-09-28: a subject that fills the library ("mountain").** The owner saw
+"mountain" return nothing while "mountains" returned 274 photos, and scenes "not showing any
+more". Replayed with the engine's own `find_text` over a copy of the owner's index (503 assets,
+L/14, Precision 2) and the pack's text tower: "mountain" had its ten best assets at z **1.75**,
+below the **2.40** noise alone scores at 503 assets, so the 2026-09-27 rule asked 1.5 x the
+margin (0.060) of a query that does not stand out, and its best margin was **0.059**; "mountains"
+reached 0.070 and passed. The rule assumed a query below noise is nonsense, but a subject in
+half the library (274 of 503 assets) cannot stand out from it: it *is* the mean (the "scan
+stats" test had said so since the z rule was written; the noise scaling made it bite). The two
+words rank almost the same rows (Jaccard 0.93 of the rows over the result margin); the gate
+alone split them. Now a query is believable at the calibrated margin when its rows clear that
+margin on at least **max(5, 1 % of the assets)** assets (`scan_stats::over_margin`): on the
+owner's index 12 nonsense strings had 0-3 such assets (0.6 %) and 11 subjects it seems to lack
+("dog", "beach", "a cat", ...) 0, while "mountain" had 34, "mountains" 78, "lake" 16, "sky" 10,
+"car" 6. Before / after on that index: "mountain" 0 -> 260 assets, "lakes" 0 -> 48, "sky" 0 ->
+113, "car" 0 -> 28; the 25 others (with "cars" at 1 and "snowboarding" at 3) still find
+nothing. The gap is thin (3 against 5) and measured on one 503-asset
+library: the 1 % is a guess for large ones, and the COCO held-out `[.calibration]` has not been
+re-run with it; that is the next calibration item. As well, a picture query's last noun is embedded
+in **both numbers and averaged** (`query::number_forms`, one batched run of the text tower,
+~5 % over one text), so "mountain" and "mountains" are the same query (277 assets either way).
+CLAP and the speech words keep the words as typed.
+
 **Recall target for PR 22 (recorded here as plan/17 asked):** on the labelled set, the top five
 for each natural-language query hold at least four relevant items (P@5 >= 0.8), "guy on a
 skateboard" included; the COCO-1k proxy R@10 >= 0.88 (Fast) / >= 0.90 (High). The owner's real
@@ -675,6 +698,34 @@ the query time on CPU-only and Mac target hardware (the text tower dominates the
 Enter-lands-on-frame, the keyboard-only flow, HDR clip check, the minidump check, the index /
 manifest fuzzers, a real camera-dump eval set (the z rule was calibrated on 300 COCO photos),
 CLAP's own "nothing found" calibration, Core ML coverage and throughput, and every Mac build.
+
+### Query syntax (2026-09-28)
+
+Owner: "Trist" found nothing until the whole name was typed, and he wanted people, words said
+and a description in one query (`Tristan:"hello"`). One parser in the pack
+(`src/addons/ai/query.*`, `mv_ai_tests "[query]"`), so both chromes and the Voice add-on
+([19](19-voice.md)) mean the same thing by the same words. Terms narrow each other (AND).
+
+| Typed | Means |
+|---|---|
+| `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript has those words in that order; the line is the snippet |
+| `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip (before 2026-09-28 "and" meant either) |
+| `Tristan or Aaryan` | either |
+| `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
+| `@tri`, `person:"anna s"` | a person by the start of a name, or a near spelling; nobody by that name: nothing found |
+| `Trist`, `tristna` (alone) | a lone word that starts or nearly spells a name: those people first, then what the word describes (so "car" still finds cars when there is a Carla) |
+| `-Nico`, `-beach`, `-"goodbye"`, `-video` | leave out a person, what a picture search finds, a phrase said, a kind |
+| `beach video`, `is:photo`, `videos of Anna` | a kind: the last word, `is:` / `type:`, or a leading "videos of"; "photos of …" asks for anything (a spoken request) |
+| `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **file's** date (modification time, UTC). Capture dates (EXIF) are not in the index; a camera dump copied without its times will not match |
+| `video in:2024` | filters alone: everything they allow, newest first |
+
+Typing a name: the panel names people for the word being typed (`suggest_json`, appended to
+`mv.ai.1`; prefix first, then a near spelling of one letter, two from eight letters); **Tab** or
+a click completes the word. Not in the index, so not in the syntax: OCR (quoted words search
+speech only until an OCR piece exists), places, EXIF capture dates, camera. A word that is not a
+name, a kind or an operator stays in the description; an unfinished `in:20` is ignored, not
+searched. Per keystroke the parse is linear in the query and one `SELECT` of the named people.
 
 ### Gallery search bar (2026-09-27)
 
