@@ -2242,10 +2242,14 @@ static void MvAdoptNewDefaultViewerTypes() {
     preferredWidth,
   ]];
 
-  // Gallery: a full-container overlay (plan/16: "covers the canvas like an
-  // overlay"), hidden by default -- `G` shows it, a click or Esc hides it
-  // again. The canvas keeps rendering underneath; hiding this view is enough,
-  // no chrome_*_px accounting needed the way the filmstrip strip needs.
+  // Gallery: an overlay over the canvas below the command bar (plan/16:
+  // "covers the canvas like an overlay"), hidden by default -- `G` shows it, a
+  // click or Esc hides it again. The canvas keeps rendering underneath; hiding
+  // this view is enough, no chrome_*_px accounting needed the way the
+  // filmstrip strip needs. It starts under the bar, as the Windows gallery
+  // island does (chrome_host::show_gallery, y = bar): covering the bar hid the
+  // folder path, its search icon and a result list's "Back to folder" while
+  // the grid was up (owner report, 2026-09-28).
   self.galleryHost = [MVChromeHost makeGalleryView];
   self.galleryHost.hidden = YES;
   self.galleryHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2255,7 +2259,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   [NSLayoutConstraint activateConstraints:@[
     [self.galleryHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
     [self.galleryHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-    [self.galleryHost.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [self.galleryHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.galleryHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
