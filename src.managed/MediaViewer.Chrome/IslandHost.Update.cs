@@ -50,7 +50,16 @@ public static partial class IslandHost
 
     private static void DispatcherQueueControllerTryEnqueue(Action action)
     {
-        try { _dispatcher?.DispatcherQueue.TryEnqueue(() => action()); }
+        // The catch inside the callback matters more than the one outside: an
+        // exception escaping a dispatcher callback takes the process down.
+        try
+        {
+            _dispatcher?.DispatcherQueue.TryEnqueue(() =>
+            {
+                try { action(); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            });
+        }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
     }
 

@@ -99,7 +99,7 @@ internal sealed class ImportWindow : Window
     private readonly ListView _whereFilesGo = new() { SelectionMode = ListViewSelectionMode.None, MaxHeight = 220 };
     private readonly StackPanel _progressPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
     private readonly StackPanel _summaryPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
-    private readonly InfoBar _banner = new() { IsOpen = false, IsClosable = true };
+    private readonly Banner _banner = new();
     private readonly SemaphoreSlim _thumbGate = new(2);
     private readonly HyperlinkButton _whyLink = new() { Content = "Why?", FontSize = 12, Visibility = Visibility.Collapsed, Padding = new Thickness(0) };
 
@@ -156,8 +156,8 @@ internal sealed class ImportWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        Grid.SetColumnSpan(_banner, 3);
-        root.Children.Add(_banner);
+        Grid.SetColumnSpan(_banner.Root, 3);
+        root.Children.Add(_banner.Root);
 
         // Sources.
         var left = new StackPanel { Spacing = 8, Padding = new Thickness(12) };
@@ -429,8 +429,17 @@ internal sealed class ImportWindow : Window
         var picker = new FolderPicker();
         picker.FileTypeFilter.Add("*");
         WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
-        Windows.Storage.StorageFolder? f = await picker.PickSingleFolderAsync();
-        return f?.Path;
+        // Every caller is an async void click handler: a picker failure that
+        // escaped here would take the process down. As ManagePanel.AddFolder.
+        try
+        {
+            Windows.Storage.StorageFolder? f = await picker.PickSingleFolderAsync();
+            return f?.Path;
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private async Task CheckUnfinished()
@@ -618,7 +627,12 @@ internal sealed class ImportWindow : Window
             {
                 string? path = ImportChrome.Try(() => _api.Thumbnail(plan, (uint)tile.Index));
                 if (path is null) return;
-                DispatcherQueue.TryEnqueue(() => tile.Thumb = new BitmapImage(new Uri(path)));
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    // Nothing may escape a dispatcher callback (a crash), as SearchWindow's thumbs.
+                    try { tile.Thumb = new BitmapImage(new Uri(path)); }
+                    catch (Exception ex) when (ex is UriFormatException or ArgumentException) { }
+                });
             }
             finally
             {
@@ -873,13 +887,15 @@ internal sealed class ImportWindow : Window
         {
             ulong verified;
             unsafe { verified = p.BytesVerified[d]; }
-            _progressPanel.Children.Add(new ProgressBar
+            // A FlatBar, not a ProgressBar: that control has no default style in
+            // this island host and fail-fasts when it enters the tree.
+            var bar = new MediaViewer.Shared.FlatBar(Banner.Neutral, Banner.Accent)
             {
-                Maximum = Math.Max(1, p.BytesTotal),
-                Value = verified,
-                Width = 520,
-                HorizontalAlignment = HorizontalAlignment.Left,
-            });
+                Value = p.BytesTotal == 0 ? 0 : (double)verified / p.BytesTotal,
+            };
+            bar.Root.Width = 520;
+            bar.Root.HorizontalAlignment = HorizontalAlignment.Left;
+            _progressPanel.Children.Add(bar.Root);
         }
         string state = p.State == MvImportJobState.Paused ? "Paused" : "Copying";
         _progressPanel.Children.Add(Text(
@@ -1012,6 +1028,18 @@ internal sealed class ImportWindow : Window
         string json;
         try { json = await Task.Run(() => _api.HistoryJson()); }
         catch (MediaViewerException) { return; }
+        // async void: nothing may escape. A malformed history row or a second
+        // dialog already open (ShowAsync throws) just shows nothing.
+        try { await ShowHistoryDialog(json); }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException
+                                       or System.Runtime.InteropServices.COMException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+    }
+
+    private async Task ShowHistoryDialog(string json)
+    {
         var list = new ListView { SelectionMode = ListViewSelectionMode.None, MaxHeight = 480 };
         using (JsonDocument doc = JsonDocument.Parse(json))
         {
@@ -1048,6 +1076,66 @@ internal sealed class ImportWindow : Window
             SetCopying(true);
         }
         catch (MediaViewerException ex) { _bottomText.Text = "Could not verify: " + ex.Status; }
+    }
+
+    // ---- banner -------------------------------------------------------------------------
+
+    /// <summary>
+    /// The "import was interrupted" banner: title, message, one action, close.
+    /// Not an InfoBar: that control has no default style in this island host
+    /// and fail-fasts (0xC000027B) the moment it enters the tree, which this
+    /// one does when the window is built.
+    /// </summary>
+    private sealed class Banner
+    {
+        // Translucent, so they read on the light and the dark theme alike.
+        internal static readonly SolidColorBrush Neutral = new(ColorHelper.FromArgb(0x33, 0x80, 0x80, 0x80));
+        internal static readonly SolidColorBrush Accent = new(
+            new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent));
+
+        public readonly Border Root;
+        private readonly TextBlock _title = new() { FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+        private readonly TextBlock _message = new() { TextWrapping = TextWrapping.Wrap };
+        private readonly ContentControl _action = new() { VerticalAlignment = VerticalAlignment.Center };
+
+        public Banner()
+        {
+            var text = new StackPanel { Spacing = 2 };
+            text.Children.Add(_title);
+            text.Children.Add(_message);
+            var close = new Button { Content = "✕", Padding = new Thickness(8, 4, 8, 4), VerticalAlignment = VerticalAlignment.Center };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(close, "Close");
+            close.Click += (_, _) => IsOpen = false;
+            var row = new Grid { ColumnSpacing = 12 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.Children.Add(text);
+            Grid.SetColumn(_action, 1);
+            row.Children.Add(_action);
+            Grid.SetColumn(close, 2);
+            row.Children.Add(close);
+            Root = new Border
+            {
+                Child = row,
+                Background = Neutral,
+                BorderBrush = Accent,
+                BorderThickness = new Thickness(0, 0, 0, 2),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(14, 10, 10, 10),
+                Margin = new Thickness(0, 0, 0, 8),
+                Visibility = Visibility.Collapsed,
+            };
+        }
+
+        public string Title { set => _title.Text = value; }
+        public string Message { set => _message.Text = value; }
+        public Button? ActionButton { set => _action.Content = value; }
+
+        public bool IsOpen
+        {
+            set => Root.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     // ---- keyboard -----------------------------------------------------------------------

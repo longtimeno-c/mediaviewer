@@ -730,6 +730,8 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only
 .\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
+.\tools\check-winui-controls.ps1   # no ProgressBar / ProgressRing / DropDownButton / InfoBar...: they
+                                   # fail-fast in the island host (use JobBar, Shared\FlatBar.cs, a Button + Flyout)
 .\tools\licence-check.ps1          # no GPL FFmpeg, no software HEVC/AAC encoder
 
 # PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,

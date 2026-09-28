@@ -631,6 +631,14 @@ public static partial class IslandHost
         if (_dispatcher is not null) return;
         CrashCapture.Install();  // plan/13: managed exceptions -> local report
         _dispatcher = DispatcherQueueController.CreateOnCurrentThread();
+        // What Application.Start gives a normal WinUI app, and islands do not:
+        // without it every `await` in UI code (ours and the add-ons') resumed
+        // on the thread pool and Progress<T> reported there, so touching XAML
+        // after one threw RPC_E_WRONG_THREAD -- a crash, or a swallowed failure
+        // (paste, Import's folder pickers, drag and drop). Nothing on this
+        // thread blocks on a Task, so resuming here cannot deadlock.
+        SynchronizationContext.SetSynchronizationContext(
+            new DispatcherQueueSynchronizationContext(_dispatcher.DispatcherQueue));
         // Island init path. Application after this throws; styles are set on
         // the bar itself (custom templates, not generic.xaml).
         _xaml = WindowsXamlManager.InitializeForCurrentThread();

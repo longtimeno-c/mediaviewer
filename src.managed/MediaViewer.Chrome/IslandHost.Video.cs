@@ -342,7 +342,9 @@ public static partial class IslandHost
 
     private static void OnMediaButton(SystemMediaTransportControls sender, SystemMediaTransportControlsButtonPressedEventArgs args)
     {
-        _dispatcher?.DispatcherQueue.TryEnqueue(() => {
+        // The helper catches: native refusing a play / seek (MediaViewerException)
+        // must not escape a dispatcher callback.
+        DispatcherQueueControllerTryEnqueue(() => {
             if (args.Button == SystemMediaTransportControlsButton.Play) _folderSession?.VideoPlay();
             else if (args.Button == SystemMediaTransportControlsButton.Pause) _folderSession?.VideoPause();
             else if (args.Button == SystemMediaTransportControlsButton.Next) Send(Command.Next);
@@ -351,7 +353,7 @@ public static partial class IslandHost
     }
 
     private static void OnMediaSeek(SystemMediaTransportControls sender, PlaybackPositionChangeRequestedEventArgs args) =>
-        _dispatcher?.DispatcherQueue.TryEnqueue(() => _folderSession?.VideoSeek(args.RequestedPlaybackPosition.Ticks * 100, true));
+        DispatcherQueueControllerTryEnqueue(() => _folderSession?.VideoSeek(args.RequestedPlaybackPosition.Ticks * 100, true));
 
     private static void StopVideoControls()
     {
