@@ -1,0 +1,4 @@
+module CAiApi {
+  header "cai.h"
+  export *
+}

@@ -64,6 +64,23 @@ TEST_CASE("a tagged AdobeRGB file does not decode as sRGB", "[colour][d6]") {
   REQUIRE(b->rgba[1] > 100);
 }
 
+TEST_CASE("a greyscale JPEG with its own grey profile displays through it", "[colour][d6]") {
+  // A gray ICC cannot drive an RGBA transform; it used to fail as CORRUPT, so
+  // such files did not open (and the AI index skipped them).
+  constexpr int w = 16, h = 16;
+  std::vector<std::uint8_t> grey(static_cast<std::size_t>(w) * h, 128);
+  auto bytes = fixtures::jpeg_rgb(w, h, grey.data(), fixtures::linear_grey_icc(), true);
+  REQUIRE_FALSE(bytes.empty());
+  auto img = decode_bytes(bytes);
+  REQUIRE(img);
+  REQUIRE(img->icc_tagged);
+  // Linear 0.5 is sRGB ~188: the profile was applied, not skipped as sRGB.
+  REQUIRE(std::abs(static_cast<int>(img->rgba[0]) - 188) <= 3);
+  REQUIRE(img->rgba[1] == img->rgba[0]);
+  REQUIRE(img->rgba[2] == img->rgba[0]);
+  REQUIRE(img->rgba[3] == 255);
+}
+
 TEST_CASE("a broken ICC profile fails rather than displaying as sRGB", "[colour][d6]") {
   constexpr int w = 8, h = 8;
   std::vector<std::uint8_t> rgb(static_cast<std::size_t>(w) * h * 3, 40);

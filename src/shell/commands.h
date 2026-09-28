@@ -306,6 +306,12 @@ enum class command_id : std::uint16_t {
   // + 16 for portrait) and its straighten slider (argument = degrees).
   crop_aspect_set,
   crop_straighten_set,
+  // Milestone H, PR 22 (plan/17 "UI and commands", plan/16). Appended. Listed,
+  // routed and shown only while the AI pack is loaded.
+  search_open,         // Ctrl+F: the search box, keyboard-focused
+  search_similar,      // Ctrl+Shift+F: photos and moments like the one on screen
+  search_next_match,   // N on a clip opened from results: the next matching moment
+  search_prev_match,   // Shift+N: the previous one
   count
 };
 
@@ -366,7 +372,15 @@ void reset_live_bindings() noexcept;
 // Add-on commands (plan/18: "They exist only while Import is installed").
 // With the add-on absent, describe_commands() does not list them and the host
 // does not run them, so the key falls through as if unbound.
+// Milestone H: one flag per add-on family, so Import's keys and the AI pack's
+// come and go independently. The bool overloads are Import's (Milestone G).
+enum class addon_family : std::uint8_t { none = 0, import = 1, ai = 2 };
+[[nodiscard]] addon_family addon_family_of(command_id id) noexcept;
 [[nodiscard]] bool is_addon_command(command_id id) noexcept;
+void set_addon_commands_available(addon_family family, bool available) noexcept;
+[[nodiscard]] bool addon_commands_available(addon_family family) noexcept;
+// Whether this add-on command may run now (always true for a base command).
+[[nodiscard]] bool addon_command_available(command_id id) noexcept;
 void set_addon_commands_available(bool available) noexcept;
 [[nodiscard]] bool addon_commands_available() noexcept;
 

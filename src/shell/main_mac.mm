@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <cmath>
 #include <cstdint>
@@ -159,7 +160,10 @@ static bool MvCommandSupported(mv::shell::command_id c) {
       return true;
     // Milestone G: only while the Import add-on is loaded (plan/18).
     case open_import: case import_now:
-      return mv::shell::addon_commands_available();
+      return mv::shell::addon_commands_available(mv::shell::addon_family::import);
+    // Milestone H: only while the AI pack is loaded (plan/17 "UI and commands").
+    case search_open: case search_similar: case search_next_match: case search_prev_match:
+      return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
       return false;
   }
@@ -174,6 +178,8 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 MvLabApp* g_chrome_app = nullptr;
 
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+// _shownMoment after a new search: matches no moment, so the clip reopens.
+constexpr std::int64_t kShownMomentStale = INT64_MIN;
 
 // --browse-soak (the Windows lab's harness, main.cpp browse_run): open a
 // folder, dwell on the first photo, jump to photos past its prefetched
@@ -305,7 +311,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // responds to. The @implementation stays further down, after MvMetalView's,
 // so the file still reads outside-in (canvas, then chrome/app).
 @class MvMetalView;
-@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate
+@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate
 #if MV_WITH_SPARKLE
                                  , SPUUpdaterDelegate
 #endif
@@ -426,6 +432,13 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // Issue #38: pointer, click, transport key or transport button. Wakes the
 // clip's controls and restarts their idle clock; a no-op with no clip.
 - (void)transportActivity;
+// The welcome card's recent folders (welcome_layout.h): the row under the
+// pointer at the snapshot's mouse position, or -1 when the card lists none
+// (anything open). -welcomePointerMoved updates the drawn hover and returns
+// whether a row is under the pointer; -openWelcomeRow: opens one.
+- (int)welcomeRowAtPointer;
+- (BOOL)welcomePointerMoved;
+- (void)openWelcomeRow:(int)row;
 // Settings screen (plan/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
@@ -561,6 +574,23 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)editorSelect:(int32_t)index;
 - (void)editorExport:(BOOL)exact;
 - (void)setEditorOpen:(BOOL)open;
+// Milestone H (plan/17): result listings from the AI pack's search panel, and
+// its match markers on the scrub bar. The Mac twin of mv_folder_open_list.
+- (BOOL)openListTitled:(const std::string&)title
+                 paths:(std::vector<std::string>)paths
+               moments:(std::vector<std::int64_t>)moments
+                select:(std::size_t)select
+               gallery:(BOOL)gallery;
+- (void)closeList;
+- (BOOL)listOpen;
+- (BOOL)liveClipIsShown;
+- (std::string)listTitle;
+- (std::string)currentItemPath;
+- (void)setScrubMarkers:(std::vector<std::int64_t>)ms
+                current:(int32_t)current
+                forPath:(const std::string&)path;
+- (uint64_t)scrubGeneration;
+- (int32_t)scrubMarkersInto:(int64_t*)out cap:(int32_t)cap current:(int32_t*)current;
 @end
 
 // Filmstrip/gallery bridge functions (mv_chrome_bridge.h). Placed here,
@@ -770,6 +800,64 @@ extern "C" int32_t mv_chrome_folder_cursor(void) {
 extern "C" bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size) {
   return g_chrome_app && [g_chrome_app folderQueryInto:out_buf size:out_buf_size] == YES;
 }
+// ---- Milestone H: result listings and scrub markers (plan/17) -------------------
+extern "C" bool mv_chrome_open_list(const char* title_utf8, const char* const* paths_utf8,
+                                    const int64_t* moments_ms, int32_t count, int32_t select_index,
+                                    bool gallery) {
+  if (!g_chrome_app || !paths_utf8 || count <= 0) return false;
+  (void)mv::shell::crash::note_native_call();
+  std::vector<std::string> paths;
+  std::vector<std::int64_t> moments;
+  paths.reserve(static_cast<std::size_t>(count));
+  moments.reserve(static_cast<std::size_t>(count));
+  for (int32_t i = 0; i < count; ++i) {
+    if (!paths_utf8[i] || !*paths_utf8[i]) continue;
+    paths.emplace_back(paths_utf8[i]);
+    moments.push_back(moments_ms ? moments_ms[i] : -1);
+  }
+  if (paths.empty()) return false;
+  // An empty path was skipped above, so find the chosen tile by its path.
+  std::size_t select = 0;
+  if (select_index >= 0 && select_index < count && paths_utf8[select_index]) {
+    const std::string want(paths_utf8[select_index]);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      if (paths[i] == want) {
+        select = i;
+        break;
+      }
+    }
+  }
+  return [g_chrome_app openListTitled:std::string(title_utf8 ? title_utf8 : "")
+                                paths:std::move(paths)
+                              moments:std::move(moments)
+                               select:select
+                              gallery:gallery ? YES : NO] == YES;
+}
+extern "C" bool mv_chrome_list_open(void) { return g_chrome_app && [g_chrome_app listOpen] == YES; }
+bool MvViewerSeekShownClip(int64_t position_ms) {
+  if (!g_chrome_app || [g_chrome_app liveClipIsShown] != YES) return false;
+  mv_chrome_video_seek(position_ms, true);
+  return true;
+}
+extern "C" void mv_chrome_close_list(void) {
+  if (g_chrome_app) [g_chrome_app closeList];
+}
+extern "C" void mv_chrome_set_scrub_markers(const char* clip_path_utf8, const int64_t* ms,
+                                            int32_t count, int32_t current) {
+  if (!g_chrome_app) return;
+  std::vector<std::int64_t> v;
+  if (ms && count > 0) v.assign(ms, ms + count);
+  [g_chrome_app setScrubMarkers:std::move(v)
+                        current:current
+                        forPath:std::string(clip_path_utf8 ? clip_path_utf8 : "")];
+}
+extern "C" uint64_t mv_chrome_scrub_markers_generation(void) {
+  return g_chrome_app ? [g_chrome_app scrubGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current) {
+  if (current) *current = -1;
+  return g_chrome_app ? [g_chrome_app scrubMarkersInto:out cap:cap current:current] : 0;
+}
 // ---- PR 9 bridge: metadata pane, folder tree, sort -------------------------------
 namespace {
 
@@ -814,6 +902,13 @@ const char* MvKindName(mv::meta::stream_kind k) {
 }
 
 }  // namespace
+
+extern "C" int32_t mv_chrome_list_title(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app listTitle] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_current_item_path(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app currentItemPath] : std::string{}, buf, size);
+}
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
   return g_chrome_app ? [g_chrome_app metaGeneration] : 0;
@@ -1364,7 +1459,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @property(nonatomic, assign) MvLabApp* app;
 @end
 
-@implementation MvMetalView
+@implementation MvMetalView {
+  int _welcomePress;  // welcome row under the left press, + 1; 0 = none
+}
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
   if (self.app) [self.app syncHomeAppearance];
@@ -1512,6 +1609,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
       return;
     }
   }
+  [self trackPointer:event];
+  _welcomePress = self.app ? [self.app welcomeRowAtPointer] + 1 : 0;
   self.snap->mouse_down[0] = true;
   ++self.snap->activity_seq;
   [self publish];
@@ -1519,11 +1618,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
-  (void)event;
   self.snap->mouse_down[0] = false;
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+  // A click on a recent folder: pressed and released on the same row.
+  const int pressed = _welcomePress - 1;
+  _welcomePress = 0;
+  if (pressed >= 0 && self.app) {
+    [self trackPointer:event];
+    if ([self.app welcomeRowAtPointer] == pressed) [self.app openWelcomeRow:pressed];
+  }
 }
 - (void)rightMouseDown:(NSEvent*)event {
   (void)event;
@@ -1560,17 +1665,29 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)mouseExited:(NSEvent*)event {
   (void)event;
   self.snap->mouse_in_client = false;
+  if (self.app && self.snap->recents.hover >= 0) {
+    (void)[self.app welcomePointerMoved];
+    [NSCursor.arrowCursor set];
+  }
   if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
   if (self.snap->eyedropper && self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];  // a pointer hidden over the video comes back
 }
-- (void)mouseMoved:(NSEvent*)event {
+- (void)trackPointer:(NSEvent*)event {
   const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
   const NSPoint backing = [self convertPointToBacking:p];
   self.snap->mouse_x = static_cast<float>(backing.x);
   self.snap->mouse_y = static_cast<float>(self.snap->height) - static_cast<float>(backing.y);
   self.snap->mouse_in_client = NSPointInRect(p, self.bounds);
+}
+- (void)mouseMoved:(NSEvent*)event {
+  [self trackPointer:event];
+  // A recent folder under the pointer reads as a link. Only a change of row
+  // redraws (the app bumps the snapshot); an empty welcome stays idle.
+  if (self.app && self.snap->recents.count > 0) {
+    [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+  }
   if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
   if (self.snap->eyedropper && self.lab) self.lab->wake();
@@ -1593,6 +1710,88 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) (void)[self.app handleKeyEvent:event];
 }
 @end
+
+// ---- Default viewer (plan/13) --------------------------------------------------
+
+// The types to become the default for are read back from our own Info.plist, so
+// the prompt, Finder's Open With list and the Quick Look extension cannot
+// disagree. `name` picks one CFBundleDocumentTypes entry ("Image", "Video");
+// nil = all of them.
+static NSArray<NSString*>* MvDeclaredContentTypes(NSString* name) {
+  NSMutableArray<NSString*>* types = [NSMutableArray array];
+  for (NSDictionary* docType in NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"]) {
+    if (name != nil && ![docType[@"CFBundleTypeName"] isEqual:name]) continue;
+    for (NSString* identifier in docType[@"LSItemContentTypes"]) [types addObject:identifier];
+  }
+  return types;
+}
+
+static void MvSetDefaultViewer(NSArray<NSString*>* identifiers) {
+  NSURL* app = NSBundle.mainBundle.bundleURL;
+  for (NSString* identifier in identifiers) {
+    UTType* type = [UTType typeWithIdentifier:identifier];
+    if (!type) continue;
+    [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:app
+                                          toOpenContentType:type
+                                          completionHandler:^(NSError* error) {
+                                            if (error) MV_LOG_WARN("default viewer: a type was not set");
+                                          }];
+  }
+}
+
+// What the user was offered and whether they took it. A type added in a later
+// release (video joined the stills after the first builds shipped) is not in
+// MVDefaultViewerTypes; if they chose "all supported photos and videos",
+// MvAdoptNewDefaultViewerTypes gives it to them too, once. A type they later
+// moved to another app in Finder stays moved: it is already in the record.
+static NSString* const kDefaultsViewerTypes = @"MVDefaultViewerTypes";
+static NSString* const kDefaultsViewerChosen = @"MVDefaultViewerChosen";
+
+static void MvRecordDefaultViewerOffer(BOOL chosen) {
+  NSUserDefaults* d = NSUserDefaults.standardUserDefaults;
+  [d setObject:MvDeclaredContentTypes(nil) forKey:kDefaultsViewerTypes];
+  [d setBool:chosen forKey:kDefaultsViewerChosen];
+}
+
+#if MV_APP_BUNDLE
+// Launch, off the main thread and after the first picture: LaunchServices
+// queries are synchronous and never belong on the open path (rule 1).
+static void MvAdoptNewDefaultViewerTypes() {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(3 * NSEC_PER_SEC)),
+                 dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSUserDefaults* d = NSUserDefaults.standardUserDefaults;
+    NSArray* offered = [d arrayForKey:kDefaultsViewerTypes];
+    if (offered == nil) {
+      // An install from before the record: that prompt offered the stills.
+      // Still opening one of them means the user said yes.
+      NSArray<NSString*>* stills = MvDeclaredContentTypes(@"Image");
+      NSString* ours = NSBundle.mainBundle.bundleIdentifier;
+      BOOL chosen = NO;
+      for (NSString* identifier in stills) {
+        UTType* type = [UTType typeWithIdentifier:identifier];
+        NSURL* handler = type ? [NSWorkspace.sharedWorkspace URLForApplicationToOpenContentType:type] : nil;
+        if (handler && [[NSBundle bundleWithURL:handler].bundleIdentifier isEqualToString:ours]) {
+          chosen = YES;
+          break;
+        }
+      }
+      offered = stills;
+      [d setObject:offered forKey:kDefaultsViewerTypes];
+      [d setBool:chosen forKey:kDefaultsViewerChosen];
+    }
+    if (![d boolForKey:kDefaultsViewerChosen]) return;
+    NSArray<NSString*>* declared = MvDeclaredContentTypes(nil);
+    NSMutableArray<NSString*>* added = [NSMutableArray array];
+    for (NSString* identifier in declared) {
+      if (![offered containsObject:identifier]) [added addObject:identifier];
+    }
+    if (added.count == 0) return;
+    MV_LOG_INFO("default viewer: adopting types added since the user chose MediaViewer");
+    MvSetDefaultViewer(added);
+    [d setObject:declared forKey:kDefaultsViewerTypes];
+  });
+}
+#endif
 
 @implementation MvLabApp {
   mv::shell::present_lab_mac _lab;
@@ -1655,6 +1854,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // value-initializes to 0 as of C++20 (this file builds -std=c++2a), so
   // this starts at 0 regardless.
   std::atomic<std::uint64_t> _openGeneration;
+  // Held by the open job across its _openGeneration check and the
+  // folder->open() / open_list() call, so a superseded job cannot pass the
+  // check and then run after the newer one (leaving a result list, or a
+  // folder, the user has already left). Worker threads only.
+  std::mutex _folderOpenMutex;
   NSTimer* _folderPollTimer;
   // What -selectIndex: last handed to the lab, and the lab's item id for it.
   // A relist that lands on the same file (same size and mtime) keeps that
@@ -1665,6 +1869,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   std::int64_t _shownMtime;
   std::uint64_t _shownSize;
   std::uint64_t _shownItem;
+  // Milestone H: the moment the shown clip was opened at (-1 none). The same
+  // result selected again keeps the clip where it is; another moment of it
+  // reopens. kShownMomentStale after a new search, so its moment opens afresh.
+  std::int64_t _shownMoment;
   NSTimer* _browseTimer;
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
@@ -1691,6 +1899,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   int32_t _viewFlags;
   int _captureRow;
   id _captureMonitor;
+  id _textEditMonitor;
   uint64_t _keysGeneration;
 
   // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
@@ -1807,10 +2016,25 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   std::string _currentDir;
   // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
   std::vector<std::string> _recentFolders;
+  NSMenu* _openRecentMenu;  // File > Open Recent, rebuilt as it opens
   // PR 15: Now Playing. The timer runs only while a clip is on the canvas.
   NSTimer* _nowPlayingTimer;
   BOOL _remoteCommandsWired;
   mv::shell::present_lab_mac::video_status _nowPlayingShown;
+  // Milestone H (plan/17): a result listing is open. `_currentDir` is "" then,
+  // `_moments` is parallel to `_items` (the moment a clip opens paused on, -1
+  // none) and `_listNames` holds display names made unique within the list
+  // (two folders' IMG_0001.JPG), which also key Swift's thumbnail slots.
+  BOOL _listOpen;
+  std::string _listTitle;
+  std::string _listReturnDir;
+  std::vector<std::int64_t> _moments;
+  std::vector<std::string> _listNames;
+  // The AI chrome's match markers for one clip (mv_chrome_set_scrub_markers).
+  std::vector<std::int64_t> _scrubMs;
+  std::string _scrubPath;
+  int32_t _scrubCurrent;
+  std::uint64_t _scrubGeneration;
 #if MV_WITH_SPARKLE
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
@@ -2169,6 +2393,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ]];
 
   [self installMainMenu];
+  [self installTextEditKeys];
 
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
@@ -2186,6 +2411,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     return;
   }
   _options.jobs = &_jobs;
+  // Milestone H: a clip opened on its moment shows its cached thumbnail first.
+  // _folder lives as long as the process (MvLabApp is never destroyed).
+  {
+    const mv::shell::folder_model* folder = &_folder;
+    _options.clip_thumb = [folder](const std::string& path, std::int64_t mtime, std::uint64_t size,
+                                   std::int64_t moment_ms) {
+      return folder->cached_clip_thumb(path, mtime, size, moment_ms);
+    };
+  }
   if (auto started = _lab.start((__bridge void*)self.view, _options); !started) {
     MV_LOG_ERROR("present lab failed to start");
     [NSApp terminate:nil];
@@ -2207,6 +2441,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   _askedDefaultViewer = [defaults boolForKey:@"MVAskedDefaultViewer"];
   _installerChecked = _askedDefaultViewer;
+  if (_askedDefaultViewer && _options.soak_seconds <= 0.0) MvAdoptNewDefaultViewerTypes();
   if (!_askedDefaultViewer) {
     mv::shell::find_installer_leftover(^(mv::shell::installer_leftover found) {
       self->_installer = found;
@@ -2497,6 +2732,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   _folderFind = NO;
   _folderQuery.clear();
+  // Opening a directory ends a result listing (mv_folder_open_list's rule).
+  if (_listOpen) {
+    _listOpen = NO;
+    _listTitle.clear();
+    _listReturnDir.clear();
+    _moments.clear();
+    _listNames.clear();
+    ++_listingGeneration;
+  }
   if (navigation) {
     _browsePath.visit(dir);
   } else {
@@ -2535,6 +2779,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     _shownPath = select_path;
     _shownMtime = kShownStampUnknown;
     _shownSize = 0;
+    _shownMoment = -1;
   }
 
   // folder_model::open() itself is real I/O -- opening, and maybe creating,
@@ -2548,14 +2793,16 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   mv::job_system* jobs = &_jobs;
   const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   std::atomic<std::uint64_t>* open_generation = &_openGeneration;
+  std::mutex* open_mutex = &_folderOpenMutex;
   _jobs.submit_at(mv::background_generation,
-                  [folder, jobs, dir, my_generation, open_generation](
+                  [folder, jobs, dir, my_generation, open_generation, open_mutex](
                       const mv::job_context&) -> mv::status {
                     // A newer -openEntryPath: call already arrived: calling
                     // folder->open() now would race that one's own open()
                     // call outside folder_model's internal locking (see
                     // _openGeneration's declaration comment). Let the newer
                     // request own this folder_model unopposed instead.
+                    std::lock_guard<std::mutex> lock(*open_mutex);
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
                     }
@@ -2569,6 +2816,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                     return mv::status::ok;
                   });
   [self updateChromeBarHeight];
+  // Milestone H: the AI chrome notes the folder (note_folder_opened) so a
+  // covered root queues its delta and the search panel knows its scope.
+  MvAddonsFolderOpened(dir);
   return YES;
 }
 
@@ -2593,16 +2843,29 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
   // items, the current one still selected, no image reload.
-  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken) {
+  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
     [self resortKeepingSelection];
   }
   if (!_folder.consume_changed()) return;
-  _items = _folder.items();
-  _subdirs = _folder.subfolders();
+  mv::shell::folder_model::listing listing = _folder.snapshot();
+  // A relist that belongs to the other kind of listing (a folder's watch
+  // firing just as a result list opens, or the list a folder open is
+  // replacing) is not what is on screen now.
+  if (listing.is_list != static_cast<bool>(_listOpen)) return;
+  _items = std::move(listing.items);
+  _subdirs = std::move(listing.subdirs);
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
     _folderCursor = static_cast<NSInteger>(_subdirs.size()) - 1;
   }
-  [self sortItems];
+  if (_listOpen) {
+    // Best match first: a result list keeps the order it was given.
+    _moments = std::move(listing.moments);
+    _moments.resize(_items.size(), -1);
+    _listTitle = listing.title;
+    [self makeListNames];
+  } else {
+    [self sortItems];
+  }
   ++_listingGeneration;
 
   // Marks are kept by path specifically so they survive a relist that
@@ -2669,7 +2932,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self trimItemChanged];
   [self nowPlayingItemChanged];
 
+  if (!_scrubMs.empty()) ++_scrubGeneration;  // markers belong to one clip
   if (_items.empty()) {
+    MvAddonsItemChanged(std::string());
     _wantSelectedPath.clear();
     _shownPath.clear();
     _shownItem = 0;
@@ -2682,17 +2947,26 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   } else {
     const mv::io::dir_entry& entry = _items[_index.current()];
     _wantSelectedPath = entry.path_utf8;
+    // Milestone H: a clip from a result list opens paused on its moment.
+    const std::size_t at = _index.current();
+    const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
     // Already on screen or loading: a relist (a file added elsewhere in the
     // folder, a thumbnail written) or the listing that follows an open keeps
-    // that load. Every FSEvents change used to re-read and re-decode it.
+    // that load. Every FSEvents change used to re-read and re-decode it. A
+    // result keeps it too when it is the same moment (the tile already shown,
+    // or next/prev held at the list's edge); another moment of the same clip
+    // opens afresh.
     const bool same = _shownItem != 0 && entry.path_utf8 == _shownPath &&
+                      moment == _shownMoment &&
                       (_shownMtime == kShownStampUnknown ||
                        (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
-    if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size);
+    if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+    _shownMoment = moment;
     _shownPath = entry.path_utf8;
     _shownMtime = entry.mtime_unix;
     _shownSize = entry.size;
     [self editItemOpened:entry item:_shownItem];
+    MvAddonsItemChanged(entry.path_utf8);
     // Decode the neighbours behind it, so the next arrow shows a full image
     // at once (Windows' ±2 prefetch). The lab skips clips, animations and
     // what it already holds; the next navigation abandons the rest.
@@ -3061,7 +3335,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return NO;
-  const std::string& name = _items[static_cast<std::size_t>(index)].name_utf8;
+  const std::string& name = [self displayNameAt:static_cast<std::size_t>(index)];
   const std::size_t n = std::min(name.size(), static_cast<std::size_t>(size) - 1);
   std::memcpy(buf, name.data(), n);
   buf[n] = '\0';
@@ -3081,7 +3355,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // callback firing, `name` still names the file this thumbnail is actually
   // for, which is exactly why mv_chrome_bridge.h keys the callback by name
   // rather than by the index this request started at.
-  const std::string name = entry.name_utf8;
+  const std::string name = [self displayNameAt:static_cast<std::size_t>(index)];
+  // Milestone H: a result list's clip tile shows its matched moment.
+  const auto at = static_cast<std::size_t>(index);
+  const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
   _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
                         [name](std::string /*path_utf8*/, std::string thumb_path) {
                           dispatch_async(dispatch_get_main_queue(), ^{
@@ -3090,7 +3367,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
                                                                       ? nullptr
                                                                       : thumb_path.c_str());
                           });
-                        });
+                        },
+                        moment);
 }
 
 - (BOOL)filmstripVisible {
@@ -3676,7 +3954,7 @@ enum MvMenuCmd : NSInteger {
   automatic.target = self;
 #endif
 #if MV_APP_BUNDLE
-  NSMenuItem* makeDefault = [app addItemWithTitle:@"Make MediaViewer the Default Photo Viewer"
+  NSMenuItem* makeDefault = [app addItemWithTitle:@"Make MediaViewer the Default for Photos and Videos"
                                            action:@selector(makeDefaultViewer)
                                     keyEquivalent:@""];
   makeDefault.target = self;
@@ -3688,6 +3966,10 @@ enum MvMenuCmd : NSInteger {
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
+  NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
+  _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
+  _openRecentMenu.delegate = self;
+  openRecent.submenu = _openRecentMenu;
   [file addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Mark / Unmark" cmd:kMenuMark key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Marked To…" cmd:kMenuCopyTo key:@"" mods:0 toMenu:file];
@@ -3840,6 +4122,8 @@ enum MvMenuCmd : NSInteger {
                   const bool go = response == NSAlertFirstButtonReturn;
                   if (go && makeDefault.state == NSControlStateValueOn) {
                     [self makeDefaultViewer];
+                  } else {
+                    MvRecordDefaultViewerOffer(NO);
                   }
                   if (go && tidy != nil && tidy.state == NSControlStateValueOn) {
                     mv::shell::clean_up_installer(leftover, ^(bool ok) {
@@ -3864,23 +4148,9 @@ enum MvMenuCmd : NSInteger {
   [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
-// The type list is read back from our own Info.plist, so the prompt, Finder's
-// Open With list, and the Quick Look extension cannot disagree. macOS shows
-// its own confirmation per type; nothing is set without it.
 - (void)makeDefaultViewer {
-  NSArray* docTypes = NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"];
-  NSURL* app = NSBundle.mainBundle.bundleURL;
-  for (NSDictionary* docType in docTypes) {
-    for (NSString* identifier in docType[@"LSItemContentTypes"]) {
-      UTType* type = [UTType typeWithIdentifier:identifier];
-      if (!type) continue;
-      [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:app
-                                            toOpenContentType:type
-                                            completionHandler:^(NSError* error) {
-                                              if (error) MV_LOG_WARN("default viewer: a type was not set");
-                                            }];
-    }
-  }
+  MvSetDefaultViewer(MvDeclaredContentTypes(nil));
+  MvRecordDefaultViewerOffer(YES);
 }
 
 - (int32_t)updatePhase {
@@ -4127,6 +4397,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
+  // Milestone H: Esc from a result list is the path bar's "Back to folder".
+  s.list_open = _listOpen;
   return s;
 }
 
@@ -4271,6 +4543,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
           ++_snap.game_exit_seq;
           [self pokeSnapshot];
           break;
+        case mv::shell::back_target::result_list: [self closeList]; break;
         default: break;
       }
       return YES;
@@ -4320,6 +4593,19 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
       MvAddonsImportNow(paths);
       return !paths.empty();
+    }
+    // Milestone H (plan/17 "UI and commands"): the AI chrome runs these; the
+    // key falls through, as if unbound, while the pack is not loaded.
+    case search_open:
+    case search_similar:
+    case search_next_match:
+    case search_prev_match: {
+      if (!mv::shell::addon_command_available(command)) return NO;
+      const char* name = command == search_open         ? "search_open"
+                         : command == search_similar    ? "search_similar"
+                         : command == search_next_match ? "search_next_match"
+                                                        : "search_prev_match";
+      return MvAddonsRunCommand(name) ? YES : NO;
     }
     case reveal_in_explorer: {
       NSString* path = [self currentItemPathForDrag];
@@ -6180,7 +6466,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 }
 
 - (void)resortKeepingSelection {
-  if (_items.empty()) return;
+  // A result list is ranked, not sorted (plan/17 "best match first").
+  if (_items.empty() || _listOpen) return;
   const std::size_t at = std::min(_index.current(), _items.size() - 1);
   const std::string current = _items[at].path_utf8;
   [self sortItems];
@@ -6199,6 +6486,159 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self publish];
 }
 
+// ---- Milestone H: result listings (plan/17; mv_folder_open_list's twin) -------
+- (const std::string&)displayNameAt:(std::size_t)index {
+  if (_listOpen && index < _listNames.size()) return _listNames[index];
+  return _items[index].name_utf8;
+}
+
+// Two results can share a file name (every camera writes IMG_0001.JPG). The
+// gallery keys thumbnails by name, so a repeated name gets its folder added.
+- (void)makeListNames {
+  _listNames.clear();
+  _listNames.reserve(_items.size());
+  std::vector<std::string> sorted;
+  sorted.reserve(_items.size());
+  for (const auto& e : _items) sorted.push_back(e.name_utf8);
+  std::sort(sorted.begin(), sorted.end());
+  for (const auto& e : _items) {
+    const auto range = std::equal_range(sorted.begin(), sorted.end(), e.name_utf8);
+    if (range.second - range.first < 2) {
+      _listNames.push_back(e.name_utf8);
+      continue;
+    }
+    const std::string parent = mv::shell::browse_path::parent_of(e.path_utf8);
+    _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
+  }
+  // Still equal (same name in two folders of the same name): the full path is
+  // unique, so every name falls back to it.
+  std::vector<std::string> check = _listNames;
+  std::sort(check.begin(), check.end());
+  if (std::adjacent_find(check.begin(), check.end()) != check.end()) {
+    for (std::size_t i = 0; i < _items.size(); ++i) _listNames[i] = _items[i].path_utf8;
+  }
+}
+
+- (BOOL)openListTitled:(const std::string&)title
+                 paths:(std::vector<std::string>)paths
+               moments:(std::vector<std::int64_t>)moments
+                select:(std::size_t)select
+               gallery:(BOOL)gallery {
+  if (paths.empty()) return NO;
+  moments.resize(paths.size(), -1);
+  if (!_listOpen) _listReturnDir = _currentDir;
+  _listOpen = YES;
+  _listTitle = title;
+  _listNames.clear();
+  _moments.clear();
+  _folderFind = NO;
+  _folderQuery.clear();
+  _browsePath.reset("");
+  _folderCursor = -1;
+  _subdirs.clear();
+  _siblings.clear();
+  _siblingIndex = -1;
+  _revealChild.clear();
+  _galleryIfEmptyDir.clear();
+  _wantSelectedPath = select < paths.size() ? paths[select] : std::string();
+  // A new search lands its chosen clip on its moment again, even when that
+  // result is already on screen (and has since played on).
+  if (_shownMoment >= 0) _shownMoment = kShownMomentStale;
+  // mv_folder_directory reports "" while a list is open; so does this host.
+  _currentDir.clear();
+  _items.clear();
+  _index.reset(0);
+  _metaRecord.reset();
+  ++_metaGeneration;
+  ++_listingGeneration;
+
+  std::vector<mv::shell::folder_model::list_entry> entries;
+  entries.reserve(paths.size());
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    entries.push_back({std::move(paths[i]), moments[i]});
+  }
+  // A stat per result and the thumbnail cache: never on the main thread
+  // (rule 1). Superseded like -openPath:'s own open.
+  mv::shell::folder_model* folder = &_folder;
+  mv::job_system* jobs = &_jobs;
+  const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  std::atomic<std::uint64_t>* open_generation = &_openGeneration;
+  std::mutex* open_mutex = &_folderOpenMutex;
+  _jobs.submit_at(mv::background_generation,
+                  [folder, jobs, title, entries = std::move(entries), my_generation,
+                   open_generation, open_mutex](const mv::job_context&) mutable -> mv::status {
+                    std::lock_guard<std::mutex> lock(*open_mutex);
+                    if (open_generation->load(std::memory_order_acquire) != my_generation) {
+                      return mv::status::cancelled;
+                    }
+                    auto opened = folder->open_list(title, std::move(entries), *jobs);
+                    if (!opened) {
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        NSBeep();
+                      });
+                      return opened.error();
+                    }
+                    return mv::status::ok;
+                  });
+  // Enter shows the chosen result on the canvas; Cmd+Enter the whole list as
+  // the gallery grid (the chrome brief, plan/17 "Results are the gallery").
+  // A list opened from Settings (a person's photos) is what the person asked
+  // to see: Settings steps aside (owner report, 2026-09-27).
+  [self setSettingsVisible:NO];
+  [self setGalleryVisible:gallery];
+  [self updateChromeBarHeight];
+  return YES;
+}
+
+- (void)closeList {
+  if (!_listOpen) return;
+  const std::string back = _listReturnDir;
+  if (!back.empty() && [self openPath:back.c_str() navigation:NO]) return;
+  // Nothing to return to: an empty window, as before anything was opened.
+  _listOpen = NO;
+  _listTitle.clear();
+  _listReturnDir.clear();
+  _moments.clear();
+  _listNames.clear();
+  _items.clear();
+  ++_listingGeneration;
+  [self selectIndex:0];
+  [self updateChromeBarHeight];
+}
+
+- (BOOL)listOpen { return _listOpen; }
+// The clip the render thread has adopted is the item on screen, not the one
+// before it while the new one is still opening.
+- (BOOL)liveClipIsShown {
+  const auto st = _lab.video_status_snapshot();
+  return st.active && _shownItem != 0 && st.item == _shownItem ? YES : NO;
+}
+- (std::string)listTitle { return _listOpen ? _listTitle : std::string(); }
+- (std::string)currentItemPath {
+  if (_items.empty() || _index.current() >= _items.size()) return {};
+  return _items[_index.current()].path_utf8;
+}
+
+- (void)setScrubMarkers:(std::vector<std::int64_t>)ms
+                current:(int32_t)current
+                forPath:(const std::string&)path {
+  _scrubMs = std::move(ms);
+  _scrubPath = _scrubMs.empty() ? std::string() : path;
+  _scrubCurrent = current;
+  ++_scrubGeneration;
+}
+- (uint64_t)scrubGeneration { return _scrubGeneration; }
+- (int32_t)scrubMarkersInto:(int64_t*)out cap:(int32_t)cap current:(int32_t*)current {
+  // Only the clip on screen: markers for a clip the user has left are stale.
+  if (_scrubMs.empty() || _scrubPath != [self currentItemPath]) return 0;
+  if (current) *current = _scrubCurrent;
+  const auto n = static_cast<int32_t>(_scrubMs.size());
+  if (out && cap > 0) {
+    std::memcpy(out, _scrubMs.data(), sizeof(int64_t) * static_cast<std::size_t>(std::min(n, cap)));
+  }
+  return n;
+}
+
 - (int32_t)sortOrder { return mv::io::pack_sort(_sort); }
 - (void)setSortOrder:(int32_t)packed {
   const mv::io::sort_order next = mv::io::unpack_sort(packed);
@@ -6214,11 +6654,58 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // opened from Finder, the Dock, Open, a drop or argv counts; walking siblings
 // or the tree does not (-openPath:navigation: passes those as navigation).
 - (void)noteRecentFolder:(const std::string&)dir {
+  [self refreshWelcomeRecents];  // something is opening: the card's rows go
   if (_options.soak_seconds > 0.0) return;  // a soak's fixture is not a folder the user opened
   std::vector<std::string> next = mv::shell::push_recent_folder(_recentFolders, dir);
   if (next == _recentFolders) return;
   _recentFolders = std::move(next);
   [self persistRecentFolders];
+}
+
+// The welcome card lists recent folders only while nothing has been opened:
+// once a folder or file is chosen the card is a hint again, not a menu.
+- (BOOL)welcomeListsRecents {
+  return _currentDir.empty() && _items.empty() && _wantSelectedPath.empty() && _shownPath.empty() &&
+         !_listOpen && !_gameOn && _options.soak_seconds <= 0.0;
+}
+
+- (void)refreshWelcomeRecents {
+  mv::shell::welcome_recents next;
+  if ([self welcomeListsRecents]) {
+    const char* home = NSHomeDirectory().fileSystemRepresentation;
+    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", next);
+  }
+  if (std::memcmp(&next, &_snap.recents, sizeof(next)) == 0) return;
+  _snap.recents = next;
+  [self publish];  // one redraw
+}
+
+- (int)welcomeRowAtPointer {
+  if (_snap.recents.count == 0 || !_snap.mouse_in_client || ![self welcomeListsRecents]) return -1;
+  const float scale = _snap.dpi_scale > 0.0f ? _snap.dpi_scale : 1.0f;
+  const mv::shell::welcome_geometry g =
+      mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
+                                static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count);
+  return mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
+}
+
+- (BOOL)welcomePointerMoved {
+  const int row = [self welcomeRowAtPointer];
+  if (row != _snap.recents.hover) {
+    _snap.recents.hover = static_cast<std::int8_t>(row);
+    [self publish];
+  }
+  return row >= 0;
+}
+
+- (void)openWelcomeRow:(int)row {
+  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
+  NSString* path = [NSString stringWithUTF8String:_recentFolders[static_cast<std::size_t>(row)].c_str()];
+  if (!path) return;
+  [NSCursor.arrowCursor set];
+  NSMenuItem* item = [[NSMenuItem alloc] init];
+  item.representedObject = path;
+  [self openRecentFolder:item];
 }
 
 - (void)persistRecentFolders {
@@ -6234,6 +6721,20 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (_recentFolders.empty()) return nil;
   NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
   [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
+  [self addRecentFolderItemsTo:menu];
+  return menu;
+}
+
+// File > Open Recent: the Dock menu's list, so the keyboard reaches it too
+// (the menu bar, or Help's search).
+- (void)menuNeedsUpdate:(NSMenu*)menu {
+  if (menu != _openRecentMenu) return;
+  [menu removeAllItems];
+  [self addRecentFolderItemsTo:menu];
+  if (_recentFolders.empty()) [menu addItemWithTitle:@"No Recent Folders" action:nil keyEquivalent:@""];
+}
+
+- (void)addRecentFolderItemsTo:(NSMenu*)menu {
   const std::vector<std::string> labels = mv::shell::recent_folder_labels(_recentFolders);
   for (std::size_t i = 0; i < _recentFolders.size(); ++i) {
     NSString* path = [NSString stringWithUTF8String:_recentFolders[i].c_str()];
@@ -6243,7 +6744,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     item.target = self;
     item.representedObject = path;
   }
-  return menu;
 }
 
 - (void)openRecentFolder:(NSMenuItem*)item {
@@ -6257,6 +6757,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   const std::string gone = path.UTF8String;
   std::erase(_recentFolders, gone);
   [self persistRecentFolders];
+  [self refreshWelcomeRecents];
 }
 
 // ⌘⌥C: the still as the canvas shows it, edits baked, as a PNG. The bake is
@@ -6489,6 +6990,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       _recentFolders.emplace_back([entry UTF8String]);
     }
   }
+  // A launch with a path to open never shows the rows, not even for a frame.
+  if (_options.open_path.empty() && [self welcomeListsRecents]) {
+    const char* home = NSHomeDirectory().fileSystemRepresentation;
+    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", _snap.recents);
+  }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
@@ -6513,6 +7019,59 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _captureMonitor = nil;
   if (_captureRow >= 0) ++_keysGeneration;
   _captureRow = -1;
+}
+
+// ⌘A / ⌘C / ⌘X / ⌘V / ⌘Z / ⇧⌘Z in a text field (owner, 2026-09-27: "Cmd+A in
+// the search bar"). A field editor gets these only as Edit menu items, and
+// this app has none on purpose: on the canvas those keys are the viewer's own
+// commands (⌘A marks all, ⌘C copies the image, ⌘Z undoes an edit), routed by
+// keyDown:. So when a text editor is first responder in the key window (every
+// SwiftUI TextField: the ⌘F panel, Settings, People,
+// Import, the metadata pane), the chord is handed to it here and goes no
+// further; anywhere else the event is left alone and routes exactly as before.
+// ⌃A stays the field's own "start of line"; Esc is never taken here.
+- (void)installTextEditKeys {
+  if (_textEditMonitor) return;
+  __weak MvLabApp* weakSelf = self;
+  _textEditMonitor = [NSEvent
+      addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                   handler:^NSEvent*(NSEvent* event) {
+                                     MvLabApp* strong = weakSelf;
+                                     if (!strong || strong->_captureRow >= 0) return event;
+                                     return [strong handleTextEditKey:event] ? nil : event;
+                                   }];
+}
+
+- (BOOL)handleTextEditKey:(NSEvent*)event {
+  const NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  if ((flags & NSEventModifierFlagCommand) == 0 || (flags & NSEventModifierFlagControl) != 0) return NO;
+  NSResponder* first = NSApp.keyWindow.firstResponder;
+  if (![first isKindOfClass:[NSText class]]) return NO;
+  NSText* editor = (NSText*)first;
+  // An input method composing owns its keys until it commits.
+  if ([editor isKindOfClass:[NSTextView class]] && [(NSTextView*)editor hasMarkedText]) return NO;
+  mv::shell::key_event e;
+  e.k = MvKeyFromEvent(event, &e.mods);
+  e.repeat = event.isARepeat;
+  NSUndoManager* undo = editor.undoManager;
+  switch (mv::shell::text_edit_for(e)) {
+    case mv::shell::text_edit::none: return NO;
+    case mv::shell::text_edit::select_all: [editor selectAll:nil]; return YES;
+    case mv::shell::text_edit::copy: [editor copy:nil]; return YES;
+    case mv::shell::text_edit::cut:
+      if (editor.isEditable) [editor cut:nil];
+      return YES;
+    case mv::shell::text_edit::paste:
+      if (editor.isEditable) [editor paste:nil];
+      return YES;
+    case mv::shell::text_edit::undo:
+      if (editor.isEditable && undo.canUndo) [undo undo];
+      return YES;
+    case mv::shell::text_edit::redo:
+      if (editor.isEditable && undo.canRedo) [undo redo];
+      return YES;
+  }
+  return NO;
 }
 
 // "Choose a shortcut, then press its replacement. Esc cancels." A local monitor
@@ -6625,6 +7184,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _metaWriteDebounce = nil;
   std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
+  // Add-on chromes shut down here, before their packs stop (below, off the
+  // main thread): nothing may call a table whose add-on is gone. Nothing
+  // here waits on a pack.
+  MvAddonsQuit();
   // Jobs first: submit_image_load()'s job holds a raw (non-retaining)
   // id<MTLDevice> pointer, so it must finish before _lab.stop() reaches
   // device_.destroy() on the render thread -- shutdown() drains queued jobs
@@ -6641,6 +7204,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);
       if (!out.ok) MV_LOG_WARN("exit: metadata write failed: %s", mv::status_name(out.error));  // never the path
     }
+    // Half a second from Quit for the add-ons to stop (an idle pack takes
+    // ~0.06 s). One still in a model load or a Core ML compile (seconds to a
+    // minute, not cancellable) is left to the exit (addons_mac.h).
+    MvAddonsWaitStopped(0.5);
     _lab.stop();
     // Not dispatch_async(main queue): while NSTerminateLater is pending,
     // -[NSApplication terminate:] spins a nested run loop in a mode that does
@@ -6773,6 +7340,10 @@ static std::uint64_t MvNowMs() {
   (void)notification;
   _snap.window_active = true;
   [self.view publish];
+  // The render thread presents only while the window is key (present_policy).
+  // What landed while another window was (the search panel: a clip opened on
+  // its moment, a still) is owed a frame now, not at the next key press.
+  _lab.wake();
 }
 - (void)windowDidResignKey:(NSNotification*)notification {
   (void)notification;

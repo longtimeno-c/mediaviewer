@@ -5,7 +5,12 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <condition_variable>
+#include <map>
+#include <mutex>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "core/json.h"
 #include "io/file_port.h"
@@ -14,7 +19,7 @@ namespace mv::addon {
 namespace {
 
 // UpdateKeys.ProductionPublicKeyHex (src.managed/MediaViewer.Updater).
-constexpr std::uint8_t kPinnedKey[32] = {
+[[maybe_unused]] constexpr std::uint8_t kPinnedKey[32] = {
     0x04, 0x51, 0xbf, 0xec, 0xfb, 0x6a, 0x26, 0xd9, 0x05, 0x8f, 0xb0, 0x9c, 0xfa, 0x7a, 0x93, 0x05,
     0xdc, 0xf1, 0xce, 0xa7, 0xc8, 0x72, 0x21, 0xe9, 0x18, 0x5b, 0x00, 0x38, 0xb1, 0xcc, 0x90, 0x8c,
 };
@@ -79,13 +84,60 @@ const char* rejection_name(rejection r) noexcept {
     case rejection::file_mismatch: return "file_mismatch";
     case rejection::unexpected_file: return "unexpected_file";
     case rejection::needs_update: return "needs_update";
+    case rejection::over_ceiling: return "over_ceiling";
   }
   return "unknown";
 }
 
+std::uint32_t negotiated_host_api(const manifest& m, std::uint32_t host_api) noexcept {
+  return std::min(host_api, m.host_api_max);
+}
+
+std::string_view current_arch() noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+  return "x86_64";
+#else
+  return "other";
+#endif
+}
+
+std::uint64_t family_ceiling(std::string_view family) noexcept {
+  // plan/17 "The AI pack": Core + the selected vendor piece + Faces <= 3 GB.
+  // Decimal GB, the unit the Settings page shows.
+  if (family == "ai") return 3'000'000'000ull;
+  return 0;
+}
+
+#if defined(MV_ADDON_DEV_PUBLIC_KEY_HEX)
+// A developer build (CMake MV_ADDON_DEV_PUBLIC_KEY, never set by the release
+// workflow) trusts a development key instead, so a locally signed pack can be
+// sideloaded and the whole install / load / run path exercised without the
+// release key (Milestone H validation). The warning at configure time says so.
+namespace {
+constexpr std::uint8_t nibble(char c) {
+  return static_cast<std::uint8_t>(c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' + 10 : 0));
+}
+constexpr char kDevHex[] = MV_ADDON_DEV_PUBLIC_KEY_HEX;
+static_assert(sizeof(kDevHex) == 65, "MV_ADDON_DEV_PUBLIC_KEY must be 64 lowercase hex digits");
+struct dev_key {
+  std::uint8_t b[32]{};
+  constexpr dev_key() {
+    for (int i = 0; i < 32; ++i) b[i] = static_cast<std::uint8_t>(nibble(kDevHex[2 * i]) << 4 | nibble(kDevHex[2 * i + 1]));
+  }
+};
+constexpr dev_key kDevKey{};
+}  // namespace
+
+std::span<const std::uint8_t, 32> pinned_public_key() noexcept {
+  return std::span<const std::uint8_t, 32>(kDevKey.b);
+}
+#else
 std::span<const std::uint8_t, 32> pinned_public_key() noexcept {
   return std::span<const std::uint8_t, 32>(kPinnedKey);
 }
+#endif
 
 bool safe_relative_path(std::string_view path) noexcept {
   if (path.empty() || path.size() > 512) return false;
@@ -108,7 +160,7 @@ bool safe_relative_path(std::string_view path) noexcept {
 
 decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std::uint8_t> signature,
                         std::span<const std::uint8_t> public_key, std::uint32_t host_api,
-                        std::string_view expected_platform) {
+                        std::string_view expected_platform, std::uint32_t host_api_oldest) {
   decision d;
   // 1. Signature first. Nothing below runs on unauthenticated bytes.
   if (public_key.size() != 32 ||
@@ -145,6 +197,13 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   const json::value* host = doc->find("host_api");
   const json::value* files = doc->find("files");
   const json::value* archive = doc->find("archive");
+  // Optional (Milestone H). Absent is "", present must be a string.
+  const json::value* part_of_v = doc->find("part_of");
+  const json::value* arch_v = doc->find("arch");
+  if ((part_of_v && part_of_v->k != json::kind::string) ||
+      (arch_v && arch_v->k != json::kind::string)) {
+    return d;
+  }
   if (!id || !name || !version || !platform || !native || !chrome || !size || *size < 0 || !host ||
       host->k != json::kind::object || !files || files->k != json::kind::array || files->a.empty() ||
       !archive) {
@@ -172,6 +231,14 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   m.platform = *platform;
   m.native = *native;
   m.chrome = *chrome;
+  m.part_of = part_of_v ? part_of_v->s : std::string();
+  m.arch = arch_v ? arch_v->s : std::string();
+  if (!m.part_of.empty() &&
+      (m.part_of.size() > 32 || m.part_of == m.id ||
+       !std::all_of(m.part_of.begin(), m.part_of.end(),
+                    [](char c) { return (c >= 'a' && c <= 'z') || c == '-'; }))) {
+    return d;
+  }
   m.installed_size = static_cast<std::uint64_t>(*size);
   m.host_api_min = static_cast<std::uint32_t>(*host_min);
   m.host_api_max = static_cast<std::uint32_t>(*host_max);
@@ -201,8 +268,14 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
       return f.path == p || f.path.rfind(p + "/", 0) == 0;
     });
   };
-  if (!safe_relative_path(m.native) || !safe_relative_path(m.chrome) || !listed(m.native) ||
-      !listed(m.chrome)) {
+  if (m.part_of.empty()) {
+    if (!safe_relative_path(m.native) || !safe_relative_path(m.chrome) || !listed(m.native) ||
+        !listed(m.chrome)) {
+      d.why = rejection::unsafe_path;
+      return d;
+    }
+  } else if (!m.native.empty() || !m.chrome.empty()) {
+    // A piece runs nothing of its own: the parent loads it.
     d.why = rejection::unsafe_path;
     return d;
   }
@@ -216,7 +289,13 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
     d.why = rejection::wrong_platform;
     return d;
   }
-  if (host_api < m.host_api_min || host_api > m.host_api_max) {
+  // Only this build's own platform knows its architecture; the packing
+  // tool's cross-check (another platform) does not judge it.
+  if (!m.arch.empty() && expected_platform == kPlatform && m.arch != current_arch()) {
+    d.why = rejection::wrong_platform;
+    return d;
+  }
+  if (m.host_api_min > host_api || m.host_api_max < host_api_oldest) {
     d.why = rejection::needs_update;
     return d;
   }
@@ -263,16 +342,93 @@ std::string sha256_file(const std::string& path) {
   return s;
 }
 
+namespace {
+
+// Hashed once per process (Milestone H): the AI pack is gigabytes, and a
+// start lists the add-ons, loads one, and asks for its pieces, each of which
+// verified every byte again (~6 GB hashed per launch with the whole pack).
+// The first check of a version folder hashes every file, as before; a later
+// one in the same process still stats every file and walks for extras, and
+// hashes again only if any size or modification time moved. Keyed by the
+// folder and the signed hashes, so a new version or manifest verifies afresh.
+struct verified_snapshot {
+  std::vector<std::pair<std::uint64_t, std::int64_t>> files;  // size, mtime_ns
+};
+std::mutex g_verified_m;
+std::map<std::string, verified_snapshot> g_verified;
+// Folders being hashed now (keys as above). A second caller for the same
+// folder waits for the first and takes its answer instead of hashing the same
+// gigabytes beside it: at launch the pack's load and Settings' installed-state
+// read both verified the AI pack at once, each taking the full time
+// (2026-09-27, "Settings forgets what is installed").
+std::condition_variable g_verified_cv;
+std::set<std::string> g_hashing;
+
+}  // namespace
+
+void note_verified_move(const std::string& from_dir, const std::string& to_dir) {
+  // A rename keeps every file's size and modification time, so what was
+  // hashed in staging is what now sits in the version folder (store::install).
+  std::lock_guard lock(g_verified_m);
+  const std::string prefix = from_dir + '\n';
+  std::vector<std::pair<std::string, verified_snapshot>> moved;
+  for (auto it = g_verified.lower_bound(prefix);
+       it != g_verified.end() && it->first.compare(0, prefix.size(), prefix) == 0;) {
+    moved.emplace_back(to_dir + it->first.substr(from_dir.size()), std::move(it->second));
+    it = g_verified.erase(it);
+  }
+  for (auto& [key, snap] : moved) g_verified[key] = std::move(snap);
+}
+
 rejection verify_files(const std::string& dir, const manifest& m) {
   std::set<std::string> listed;
+  std::string key = dir;
+  verified_snapshot now;
+  now.files.reserve(m.files.size());
   for (const manifest_file& f : m.files) {
     const std::string full = io::join_path(dir, io::native_relative(f.path));
     auto st = io::stat_path(full);
     if (!st || st->is_directory) return rejection::file_missing;
     if (st->size != f.size) return rejection::file_mismatch;
-    if (sha256_file(full) != f.sha256) return rejection::file_mismatch;
-    listed.insert(f.path);
+    now.files.emplace_back(st->size, st->mtime_ns);
+    key += '\n';
+    key += f.path;
+    key += ':';
+    key += f.sha256;
   }
+  bool hashed = false;
+  {
+    std::unique_lock lock(g_verified_m);
+    // Another thread hashing this folder: its answer is this one's.
+    g_verified_cv.wait(lock, [&] { return g_hashing.count(key) == 0; });
+    const auto it = g_verified.find(key);
+    hashed = it != g_verified.end() && it->second.files == now.files;
+    if (!hashed) g_hashing.insert(key);
+  }
+  if (!hashed) {
+    struct done_hashing {
+      const std::string& key;
+      ~done_hashing() {
+        {
+          std::lock_guard lock(g_verified_m);
+          g_hashing.erase(key);
+        }
+        g_verified_cv.notify_all();
+      }
+    } const release{key};
+    for (const manifest_file& f : m.files) {
+      if (sha256_file(io::join_path(dir, io::native_relative(f.path))) != f.sha256) {
+        std::lock_guard lock(g_verified_m);
+        g_verified.erase(key);
+        return rejection::file_mismatch;
+      }
+    }
+    // Recorded before the waiters wake so they find it; the walk for extra
+    // files below still runs for every caller and takes it back out.
+    std::lock_guard lock(g_verified_m);
+    g_verified[key] = now;
+  }
+  for (const manifest_file& f : m.files) listed.insert(f.path);
   // Nothing else may sit beside them: a dropped-in DLL would otherwise ride
   // along with a valid signature. The walk skips nothing (a hidden DLL loads
   // as well as a visible one) and follows no link: a link, a junction, or a
@@ -298,7 +454,11 @@ rejection verify_files(const std::string& dir, const manifest& m) {
     extra = rejection::unexpected_file;
     return false;
   });
-  if (extra == rejection::none && !walked) return rejection::file_missing;
+  if (extra == rejection::none && !walked) extra = rejection::file_missing;
+  if (extra != rejection::none) {
+    std::lock_guard lock(g_verified_m);
+    g_verified.erase(key);
+  }
   return extra;
 }
 

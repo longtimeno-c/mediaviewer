@@ -49,6 +49,8 @@ constexpr binding kBindings[] = {
     row(key::end, mod_none, kWalk, edge, last),
     row(key::page_up, mod_none, kWalk, repeat, skip_back),
     row(key::page_down, mod_none, kWalk, repeat, skip_forward),
+    // Esc walks out (key_router's resolve_back): ... gallery, fullscreen, the
+    // canvas, and last a result list's "Back to folder" (Milestone H).
     row(key::escape, mod_none, kAllModes, edge, back),
     row(key::f5, mod_none, kBrowse | kVideo, edge, slideshow_start),
     row(C('F'), mod_none, kAllModes, edge, fullscreen),
@@ -269,6 +271,14 @@ constexpr binding kBindings[] = {
     row(C('A'), mod_none, kCrop, edge, crop_aspect_cycle),
     row(C('X'), mod_none, kCrop, edge, crop_aspect_swap),
     row(C('Y'), mod_none, kBrowse, momentary, show_original, none, show_original_release),
+    // Milestone H, PR 22 (plan/17 "UI and commands"). Appended; only while
+    // the AI pack is loaded. Ctrl+F is find everywhere else; `/` stays
+    // find-by-name in the gallery. N / Shift+N walk the matching moments of
+    // the clip on screen; plain N is free in video.
+    row(C('F'), mod_ctrl, kViewing, edge, search_open),
+    row(C('F'), mod_ctrl | mod_shift, kViewing, edge, search_similar),
+    row(C('N'), mod_none, kVideo, edge, search_next_match),
+    row(C('N'), mod_shift, kVideo, edge, search_prev_match),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -428,6 +438,10 @@ constexpr command_info kCommands[] = {
     {show_original_release, "Release original"},
     {crop_aspect_set, "Crop: aspect ratio", true},
     {crop_straighten_set, "Crop: straighten", true},
+    {search_open, "Search photos and videos…"},
+    {search_similar, "Find similar"},
+    {search_next_match, "Next matching moment"},
+    {search_prev_match, "Previous matching moment"},
 };
 
 const char* named_key(key k) noexcept {
@@ -526,12 +540,37 @@ std::span<const command_info> command_infos() noexcept { return kCommands; }
 std::span<const command_id> pending_commands() noexcept { return {}; }
 
 namespace {
-std::atomic<bool> g_addon_commands{false};
+std::atomic<bool> g_addon_commands[3]{};  // by addon_family
 }  // namespace
 
-bool is_addon_command(command_id id) noexcept { return id == open_import || id == import_now; }
-void set_addon_commands_available(bool available) noexcept { g_addon_commands = available; }
-bool addon_commands_available() noexcept { return g_addon_commands.load(); }
+addon_family addon_family_of(command_id id) noexcept {
+  switch (id) {
+    case open_import:
+    case import_now:
+      return addon_family::import;
+    case search_open:
+    case search_similar:
+    case search_next_match:
+    case search_prev_match:
+      return addon_family::ai;
+    default:
+      return addon_family::none;
+  }
+}
+bool is_addon_command(command_id id) noexcept { return addon_family_of(id) != addon_family::none; }
+void set_addon_commands_available(addon_family family, bool available) noexcept {
+  g_addon_commands[static_cast<int>(family)] = available;
+}
+bool addon_commands_available(addon_family family) noexcept {
+  return family == addon_family::none || g_addon_commands[static_cast<int>(family)].load();
+}
+bool addon_command_available(command_id id) noexcept {
+  return addon_commands_available(addon_family_of(id));
+}
+void set_addon_commands_available(bool available) noexcept {
+  set_addon_commands_available(addon_family::import, available);
+}
+bool addon_commands_available() noexcept { return addon_commands_available(addon_family::import); }
 
 std::string key_label(key k, std::uint8_t mods) {
   std::string out;
@@ -565,7 +604,7 @@ std::string describe_commands() {
   const auto line = [&out](command_id id, mode_mask modes, std::string keys, std::size_t row) {
     const command_info* info = find_command(id);
     if (!info || info->keyless || id == back) return;
-    if (is_addon_command(id) && !addon_commands_available()) return;
+    if (!addon_command_available(id)) return;
     out += std::to_string(static_cast<int>(id));
     out += '\t';
     out += std::to_string(static_cast<int>(modes));

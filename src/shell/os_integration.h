@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 
+#include "shell/welcome_layout.h"
+
 namespace mv::shell {
 
 // The jump list's and the Dock menu's "Recent folders", most recent first.
@@ -35,6 +37,13 @@ inline constexpr std::size_t kMaxRecentFolders = 10;
 // name, and where two share it, " — <parent>" on each of those, so "DCIM" on
 // one card is not "DCIM" on another.
 [[nodiscard]] std::vector<std::string> recent_folder_labels(std::span<const std::string> utf8_dirs);
+
+// The welcome card's rows for `utf8_dirs` (most recent first; the first
+// welcome_recents::kMax): each folder's display name, and where it lives -- its
+// parent, with `home` (the user's home folder, "" for none) written as "~".
+// Text is cut at a UTF-8 boundary to fit. The hover is cleared.
+void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
+                          welcome_recents& out) noexcept;
 
 // Ctrl+Shift+C / ⌘⇧C: the paths as text, one per line, in the order given,
 // separated by `newline` ("\r\n" on Windows, "\n" on macOS) with none after

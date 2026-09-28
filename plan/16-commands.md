@@ -73,8 +73,12 @@ because skip and shuttle are the same gesture at two durations, not to double th
 | **Slideshow** | After `F5` | Next on a timer; `Esc` leaves |
 | **Crop** | Adjust geometry (PR 10): `Shift+C` on a still | Nudge crop; `Enter` commits, `Esc` cancels |
 
-`Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas. The gallery
-covers the canvas like an overlay, so it closes before the window-level states. It does not quit from a
+`Esc` walks **out**: crop → pane → gallery → fullscreen / slideshow → canvas → result list. The gallery
+covers the canvas like an overlay, so it closes before the window-level states. A search result
+list ("Search: …", plan/17) is a place rather than an overlay, so it is the outermost step: with
+nothing else to leave, `Esc` is the path bar's **Back to folder** (2026-09-27, both hosts; the
+router's `result_list` target). Over a list the grid closes first and the next `Esc` goes back, the
+same two steps as the gallery over a folder then the canvas. It does not quit from a
 nested mode. Lab `Esc` = quit is a harness thing and dies in PR 6 for the shipped chrome
 (`Alt+F4` / `Ctrl+W` still close).
 
@@ -223,6 +227,9 @@ next one slides into its place (the previous one at the end).
 | Windows | Mac | Command |
 |---|---|---|
 | `Ctrl+Shift+I` | `⌘⇧I` | Open the Import window (with the viewer's marks for "Marked in viewer") |
+| `Ctrl+F` | `⌘F` | Local search (AI pack, plan/17): the search panel, keyboard-focused. Only while the pack is loaded. The same panel opens from the search icon at the right end of the command bar's folder path (and beside "Search: …" while a result list is shown), shown only while the pack is loaded. In the field, typing searches; `Enter` (or Down) moves into the results on the first tile — words still being searched (just typed, or while indexing) wait for their answer, then move; nothing found stays in the field. In the grid, arrows move, `Enter` opens the results in the viewer on that tile, `Ctrl+Enter` / `⌘↩` opens them all as the gallery, a typed character goes back to the field; `Esc` returns to the field, then closes (2026-09-28) |
+| `Ctrl+Shift+F` | `⌘⇧F` | Find similar to the still or paused frame on screen |
+| `N` / `Shift+N` | `N` / `⇧N` | On a clip opened from results: next / previous matching moment |
 | `Ctrl+Shift+F7` | `⌘⇧F7` | Import the marked (else current) files now with the last preset |
 
 Both rows are in the one command table and are listed, routed and shown in `?` / Settings **only while

@@ -93,6 +93,8 @@ set_target_properties(mv_io PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ---- the add-on host and the Import add-on --------------------------------------
 set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
+# Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
+include("${MV_ROOT}/cmake/ai.cmake")
 
 # ---- tests ----------------------------------------------------------------------
 enable_testing()
@@ -154,6 +156,7 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_common.cpp"
     "${MV_ROOT}/src/edit/clip_copy.cpp"
     "${MV_ROOT}/src/edit/clip_encode.cpp"
+    "${MV_ROOT}/src/edit/clip_sample.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
     "${MV_ROOT}/src/edit/clip_wire.cpp"

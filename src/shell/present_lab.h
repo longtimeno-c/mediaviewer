@@ -420,6 +420,10 @@ class present_lab {
   bool was_presenting_ = false;
   bool painted_static_ = false;
   bool live_presenting_ = false;  // this frame: sweep, springs, or input tail
+  // plan/17 "Yield policy": the last dropped frame, which holds the busy
+  // signal for background add-on work for two seconds.
+  std::uint64_t busy_drops_seen_ = 0;
+  double busy_drop_at_ = -1.0e9;
   input_cursor input_cursor_;
   gfx::idle_stats idle_stats_;
   std::int64_t measurement_start_qpc_ = 0;

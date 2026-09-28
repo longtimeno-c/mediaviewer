@@ -827,7 +827,7 @@ reading of the plan and stand unless reopened.
 | 2 | **HDR (PQ/HLG) HEIC/AVIF stills are tone-mapped to SDR in the decoder** with the `gfx/video_blit.cpp` curves and handed on as display-referred sRGB. | `image/colour.cpp` refuses `scene_referred`; HDR output is v1.1. | **open** — confirm tone-mapping in `codec/` rather than a scene-referred colour stage |
 | 3 | CICP SDR camera transfers (BT.709/601/2020) display with the sRGB curve; gamma 2.2/2.8/linear get a synthesised ICC. Display P3 nclx gets a synthesised ICC v4 profile. | Browser behaviour; P3-as-sRGB is the D6 bug. | stands |
 | 4 | **No display-path orientation exists yet.** TIFF returns stored order; HEIC gets libheif's irot/imir; AVIF applies irot/imir/clap itself; RAW preview *and* full decode are rotated in pixels by LibRaw's flip. A later EXIF-orientation pass must skip RAW or it rotates twice. | plan/04 wants orientation on the display path; building it is not a PR 7 line item. | **open** — schedule the orientation pass (JPEG EXIF is also unhandled) |
-| 5 | TIFF: 16/32-bit round to 8; float clamps 0–1 (untagged → linear then sRGB encode); CMYK converts naïvely (1−C)(1−K); **grey and CMYK ICC profiles are dropped** because `to_display` builds an RGBA transform. | RGBA8 raster; a grey profile would make a valid file `corrupt`. Grey JPEG/PNG with a grey profile likely share the gap. | **open** — colour stage should learn grey profiles |
+| 5 | TIFF: 16/32-bit round to 8; float clamps 0–1 (untagged → linear then sRGB encode); CMYK converts naïvely (1−C)(1−K); **grey and CMYK ICC profiles are dropped** because `to_display` builds an RGBA transform. | RGBA8 raster; a grey profile would make a valid file `corrupt`. Grey JPEG/PNG with a grey profile likely share the gap. | **open (TIFF only)** — 2026-09-27 (Milestone H): the colour stage now takes a grey profile over grey pixels (R = G = B) and still fails one over colour pixels, so grey JPEG/PNG with a grey ICC display (they were `corrupt`, found by the AI indexer on COCO). TIFF still drops grey ICC in `codec/tiff.cpp`; passing it through is a separate change |
 | 6 | RAW full decode: PPG demosaic, camera WB, sRGB 8-bit, highlight clip, **auto-bright on**. Measured 0.8–1.7 s on 16–42 MP samples — **misses plan/09's < 500 ms** (vcpkg LibRaw has no OpenMP; GPU demosaic is out of v1, D4). First pixel is the embedded preview (11–69 ms, JPEG-comparable). Full decode is still 7–41 luma levels brighter than the preview; cancel granularity is one LibRaw stage (≤ ~550 ms). | AHD was 2.5–4.7 s; auto-bright off left a ~36-level gap vs the embedded JPEG. | **open** — accept the target miss for v1 or pursue an OpenMP LibRaw build |
 | 7 | **JPG+MOV pairs as a Live Photo** (iPhone "Most Compatible"), as well as HEIC+MOV. Pairing is by basename only; the ContentIdentifier check in plan/04 is not done (needs metadata, PR 9). RAW+HEIC counts as RAW+JPEG. Groups of three or more stay separate. | Exact, cheap, never hides a file. | **open** — confirm JPG+MOV |
 | 8 | **File operations on a paired stop act on both halves** (copy/move-to, Recycle Bin, drag-out); the prompt names both files. Collision renaming is per file, so a pair can land as `x (2).JPG` beside `x.NEF`. | Deleting only the JPEG would make the RAW reappear as its own stop. | **open** |
@@ -2434,6 +2434,64 @@ were not compiled on this machine. Run the issue's acceptance on both: mouse, ke
 touchpad, seek drag, Narrator / VoiceOver, pause, end, fullscreen ↔ windowed, both themes, and
 PresentMon / Instruments on idle playback for no extra repaint, plus both present-loop gates.
 
+## 2026-09-26 — Milestone H: two CLIP towers, host table v2, pieces, and a dev key
+
+**Towers.** The PR 20 spike (plan/17 "Implementation notes") measured ViT-L/14 at +6 points R@1
+over ViT-B/32 but 1.9 img/s on CPU. Both ship; Auto picks by the backend. int8 weights rejected;
+int8 *stored vectors* accepted (<= 0.5 points).
+
+**"Nothing found".** A generic-prompt margin, not an absolute cosine floor (which cannot
+separate nonsense from real queries on CLIP).
+
+**Host table v2 without breaking Import.** Versions only append, so the host now serves
+every layout from `MV_ADDON_HOST_API_OLDEST` up and hands an add-on the newest both know. The
+alternative, bumping Import's range, would have made every installed Import 1.0.0 "need an
+update" the day Local search shipped.
+
+**Pieces.** Per-piece Install/Remove (plan/17) is one add-on id per piece with `part_of`:
+`ai`, `ai-faces`, `ai-cuda`. A vendor piece carries its own ORT build (ORT loads provider DLLs
+from its own folder), so it takes effect at the next start. NVIDIA's CUDA runtime and cuDNN are
+user-supplied until their licence review is done.
+
+**Mac arm64 only.** ORT 1.30 has no x86_64 macOS binary.
+
+**`MV_ADDON_DEV_PUBLIC_KEY`.** A developer build may trust a local key so a pack can be
+sideloaded and the full path validated; with it set, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR`
+keep the run out of the user's install. CMake warns, and refuses it under GitHub Actions.
+
+**Results are a listing.** `mv_folder_open_list` (ABI 0.14; 0.11 on the branch, renumbered past main's 0.12 and 0.13 at the merges) puts results in the existing gallery
+rather than a second grid, as plan/17 asks.
+
+## 2026-09-27 — Milestone H: audio search, and what the first real runs changed
+
+**Audio is in (owner).** plan/17 had speech transcript search out of scope, "a later, separate
+pack". The owner asked for audio as a separate index option: a video's soundtrack, searched for
+what it sounds like (LAION CLAP) and what is said (Whisper), per folder Pictures / Sound / Both.
+Video soundtracks only (standalone audio is not a D5 format). It is its own piece, `ai-audio`
+(~1 GB), inside the 3 GB family ceiling, so nobody downloads it unasked. CLAP
+`larger_clap_general` over `htsat-unfused` on ESC-50 zero-shot (87.2 % vs 84.4 %); Whisper small
+on a GPU, base on CPU (real-time factors in plan/17 *Audio*).
+
+**"Nothing found" learned short queries.** The 2026-09-26 margin was calibrated on caption-like
+queries; one-word subjects ranked correctly but were discarded ("dog": 1 of 15 photos shown).
+A query also passes when its ten best assets stand out (top-ten z >= 2.5 over per-asset best
+scores), and its rows >= 2.0 SD above the mean show with the margin rows. 300 COCO photos:
+real queries kept 6/17 -> 15/17 (B/32) and 7/17 -> 14/17 (L/14), nonsense still all rejected.
+Not a reversal of the margin: an added test. The owner's eval set is still owed.
+
+**Model loading waits for a quiet viewer.** Measured: loading the pack during the PR 1 soak
+dropped two frames. The provider self-test's CPU half is kept between runs (~15 s of a 40 s
+load), and Settings no longer loads the runtime from the UI thread (rule 1).
+
+**Add-on files are hashed once per process.** List, load and each piece lookup hashed every file
+again: ~6 GB per launch with the whole pack. The first check still hashes (plan/18
+verify-before-load); later checks in the process stat every file (size and a new full-precision
+`io::file_stat::mtime_ns`) and re-walk for extra files. Not caught: a same-user rewrite that keeps
+the size and the exact modification time within one run, which the same user could already do
+between verify and load.
+
+**Grey ICC profiles** (PR 7 row 5) now display for JPEG / PNG; TIFF still drops them.
+
 ## 2026-09-27 — The Windows transport hugs its controls
 
 **Amends** 2026-09-26 (issue #38) on Windows only. The island was a fixed ≤ 880 DIP box with
@@ -2612,3 +2670,93 @@ same walk by key ([21](21-video-editor.md) "What was run (Windows)"). The Window
 viewer's window passed twice after one run failed on a single 50 ms frame, on a machine in use.
 **Owed:** both present-loop gates with the editor open, a real keyboard and mouse on the
 interactive desktop, Narrator, 200 % and a light theme.
+
+## 2026-09-27 — Mac: Core ML runs the picture towers with pinned shapes; audio stays on CPU
+
+**Amends** plan/17 *Runtime* and *Audio* on the Mac only ("Mac runs ONNX Runtime with the Core ML
+provider"; "Whisper small where the picture tower runs High on a GPU / the Neural Engine").
+
+**Why.** Measured on the first Mac build (M5, ORT 1.30). With the exports' dynamic input shapes
+Core ML took 130 / 830 (B/32) and 250 / 1,622 (L/14) nodes and ran no faster than CPU, so
+"Core ML" was CPU with extra copies. Pinned at open (batch 4, 3 x side x side) it takes every
+node: B/32 499 img/s against 73 on CPU, L/14 ~30 against 4.9, cosine >= 0.998 to the reference.
+The price is a compile on each Mac: 82 s / 5.3 min the first time, and still 17 s / 64 s from
+the cache (ORT inlines the weights), so the pack answers on CPU and swaps Core ML in when ready.
+CLAP's audio tower does not compile on Core ML and Whisper's aborts the process inside MPSGraph,
+so both run on CPU on the Mac whatever the compute setting; Whisper small still follows High.
+
+**What.** `infer::session_options::fixed_dims`, `clip_model` pins its Core ML image tower to
+`kCoreMLImageBatch` and splits / pads; `pack.cpp` never gives audio Core ML. Windows is unchanged
+(CUDA / OpenVINO take dynamic shapes).
+
+## 2026-09-27 — Add-on updates are offered in Settings, not silent
+
+**Amends** plan/18 *Updates* ("an installed add-on updates silently with the app"), which was
+never built: nothing looked for a newer add-on once one was installed, so Import stayed at the
+version first installed (the owner, on the 0.1.10 preview, still had Import 0.1.6).
+
+**What.** Opening Settings probes the release channel for installed add-ons too; when the signed
+manifest there is newer (dotted numeric compare, as the store's), Import and each Local search
+piece show **Update to X**. Explicit, not silent: it is a download of up to ~1.2 GB, and nothing
+is fetched without a click (plan/17's rule). The store no longer deletes older versions at
+install: it writes `prune.pending` naming the new one and removes the rest at the next start, so
+a running pack keeps its files (the Mac deleted them under it; Windows could not delete a loaded
+DLL and left half a folder). A new piece is picked up at once (reload); a new Import or Core
+takes over at the next start, because a loaded bundle's classes cannot be replaced in the
+running app. Add-ons still ship on stable releases only; previews carry none.
+
+## 2026-09-27 — Local search: a Precision scale over the calibrated "nothing found" rule
+
+**Amends** plan/17 *"Nothing found"* (the fixed calibration, amended twice today) with a user
+setting. The owner: the model "seems to confuse helicopter with plane … maybe have a scale in
+Settings (default in the middle, which is what we have now)".
+
+**What.** Settings -> Local search -> Precision, five steps (Broader … Stricter). The middle is
+the calibrated rule, unchanged row for row (a test runs the old code beside the new). Levels
+scale the stand-out factor, the query and row margins and the row z, and at 3-4 keep only rows
+near the best one; "nothing found" always reads the calibrated rows, so a stricter level answers
+a subset of a looser one. Read per search: no reload, no re-index. Numbers in plan/17
+*Precision scale*.
+
+**Why these numbers.** Measured, not chosen: on 300 and 1,000 COCO photos, level 3 is where
+L/14 stops answering "helicopter" with planes (captions still found 139-143 / 150), level 4
+where B/32 does too (131-137 / 150). B/32 cannot separate "a helicopter" from "a dog" (both
+1.33 x noise), so its level 4 also says nothing found for "a dog"; recorded, not hidden. Level 0
+finds at least today's captions and more rows, and answers 5-10 of 25 nonsense strings.
+
+## 2026-09-28 — Local search Settings: one scale, queued installs, no budget bar
+
+**Amends** plan/17 "UI and commands" (Settings -> Local search) on the owner's review, both
+platforms.
+
+- **Search quality leaves Settings.** "Why do we need two options? Can we just have the
+  scale?" Precision is the one knob. The model stays on the engine's Auto (High where CUDA /
+  Core ML runs it, Fast on CPU only); the `quality` setting and its migration are unchanged. A
+  Fast or High stored before is not rewritten: a "Search model" row says so, with *Use Auto*.
+- **Install clicks queue.** Core, People and Sound/Audio can be clicked at once, and an
+  *Install all* is offered while none is installed. Downloads still run one at a time, Core
+  first; each piece's 3 GB check runs before its own download, after the one before it has
+  landed; pieces waiting on a Core that fails are dropped with a note.
+- **The "1.2 GB of 3 GB" bar is gone** ("a bit naff"). Per-piece sizes and the 3 GB refusal
+  sentence stay.
+- **Download progress is real on the Mac.** The async `URLSession.download(from:delegate:)`
+  task's `Progress` counted a few units, not bytes, so the bar sat at 0 % until Checking; a
+  download task on its own delegate session now reports bytes ~10 times a second (Windows:
+  by time, not 1 % steps). Indeterminate phases animate; with Reduce Motion / animations off
+  the bar is still.
+
+## 2026-09-28 — The gallery search bar is removed; a search icon in the path bar opens ⌘F
+
+Owner request: "Remove the recently added search bar in the gallery. Add a search icon on the
+right side of the folders (the folder path) and when pressed it opens the ⌘F menu." The
+2026-09-27 bar (plan/17 "Gallery search bar": Names filter, Contents via the pack, the pack's
+index control; command `gallery_search` on `/`) is gone on both hosts, with its host bridges
+(Mac `mv_chrome_set_gallery_filter`, `mv_addon2_gallery_*`, the AI chrome's `-galleryAccessory` /
+`-galleryQuery:` / `-galleryVisible:`; Windows `IGallerySearchChrome`, the `GallerySearch` chrome
+entry and its Esc / Left / Right hooks). `/` in the gallery is find-by-name on the folder row
+again, as before 2026-09-27. In its place a magnifier icon ends the command bar's folder path
+(and sits beside "Search: …" while a result list is shown); it runs the same command as
+`Ctrl+F` / `⌘F` and shows only while Local search is loaded. Kept from that work: each search
+answer goes only to the model that owns it (Mac), the result-list fixes, and "Index this folder"
+inside the ⌘F panel. The `gallery_search` id was the last appended command, so removing it
+renumbers nothing.

@@ -55,6 +55,9 @@ struct file_stat {
   std::uint64_t size = 0;
   std::int64_t mtime_unix = 0;
   bool is_directory = false;
+  // The same time at the filesystem's own precision (ns since the Unix
+  // epoch; NTFS keeps 100 ns): tells apart two writes within one second.
+  std::int64_t mtime_ns = 0;
 };
 
 // status::io when nothing is there or it cannot be read.

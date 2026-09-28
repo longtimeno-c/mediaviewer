@@ -65,6 +65,9 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   out.is_directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   out.size = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
   out.mtime_unix = unix_from_filetime(data.ftLastWriteTime);
+  const std::int64_t ticks = (static_cast<std::int64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                             data.ftLastWriteTime.dwLowDateTime;
+  out.mtime_ns = (ticks - kEpochDelta) * 100;
   return out;
 }
 

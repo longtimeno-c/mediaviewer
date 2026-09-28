@@ -54,3 +54,19 @@ TEST_CASE("the JPEG-512 thumbnail is the pixels, encoded", "[image][thumb]") {
   CHECK(size->width == mv::image::kThumbLongEdge);
   CHECK(size->height == mv::image::kThumbLongEdge / 2);
 }
+
+// Milestone H: a clip moment's cache row. The AI pack writes it (addon_media
+// moment_thumbnail) and both hosts read it for result tiles and the clip's
+// first pixel, so the spelling is one function and must not drift.
+TEST_CASE("a moment's thumbnail row sits beside the clip's poster", "[image][thumb]") {
+  const mv::image::thumb_key poster{"/Volumes/Card/DCIM/CLIP0001.MP4", 1'700'000'000, 123456789};
+  const mv::image::thumb_key moment =
+      mv::image::moment_thumb_key(poster.path, 83'250, poster.mtime_unix, poster.size);
+  CHECK(moment.path == "/Volumes/Card/DCIM/CLIP0001.MP4#t=83250");
+  // The file's own stamp: a clip edited since invalidates its moments too.
+  CHECK(moment.mtime_unix == poster.mtime_unix);
+  CHECK(moment.size == poster.size);
+  CHECK(mv::image::moment_thumb_key(poster.path, 0, 1, 2).path ==
+        "/Volumes/Card/DCIM/CLIP0001.MP4#t=0");
+  CHECK(mv::image::moment_thumb_key(poster.path, 83'251, 1, 2).path != moment.path);
+}

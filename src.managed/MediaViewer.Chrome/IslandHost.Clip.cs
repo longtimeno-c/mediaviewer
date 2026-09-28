@@ -109,6 +109,8 @@ public static partial class IslandHost
         var grid = new Grid { Width = SeekWidth, VerticalAlignment = VerticalAlignment.Center };
         grid.Children.Add(seek);
         grid.Children.Add(_trimMarks);
+        // Milestone H: Local search's matching moments (IslandHost.LocalSearch.cs).
+        grid.Children.Add(BuildMatchMarks());
         return grid;
     }
 
@@ -139,6 +141,7 @@ public static partial class IslandHost
     private static void DropTrimUi()
     {
         _trimMarks = null;
+        _matchMarks = null;
         _trimBar = null;
         _trimLabel = null;
     }

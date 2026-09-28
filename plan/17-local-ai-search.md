@@ -1,6 +1,6 @@
 # 17 — Local AI search (video moments and photos)
 
-**Status: proposed 2026-09-24, amended 2026-09-25, post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
+**Status: proposed 2026-09-24, amended 2026-09-25 and 2026-09-27 (audio), post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
 Nothing here changes the PR 1–8 viewer. It is an opt-in add-on that arrives as a separate
 component, after the viewer ships.
 
@@ -66,8 +66,9 @@ shared vector space; search is a dot product. This is the only class of model th
   assumption.
 - Multilingual text queries are a *model* property (e.g. multilingual SigLIP variants), decided
   in PR 20 on the eval set. English-only is an acceptable first pack.
-- **Out of scope for this doc:** speech transcript search (Whisper over a video's own audio), OCR, object boxes,
-  captioning. Each is a later, separate pack with its own tower. Speaking a query
+- **Out of scope for this doc:** OCR, object boxes, captioning. Each is a later, separate pack
+  with its own tower. (Speech transcript search and sound search over a video's own soundtrack
+  were out of scope here until the owner added them on 2026-09-27: see *Audio* below.) Speaking a query
   ("pull up all the photos that include…") is not a tower in this pack: it is the Voice
   add-on ([19](19-voice.md)), which calls this search and ships as its own install.
 
@@ -253,6 +254,9 @@ whose entire selling point is smoothness.
 - **Yield policy:** indexing **pauses** during video playback, slideshow, and any window where
   the render loop is animating (springs, pan, fullscreen transitions), and on battery below a
   threshold, and when the F3 frame-time overlay's rolling p99 exceeds budget. Idle → resume.
+  The battery pause has a session override (owner, 2026-09-27): **Index anyway** wherever
+  "Paused on battery" shows (search footer, Settings, the command-bar pill's menu on Mac) sets `battery_override`, never saved; going back to AC or a restart ends
+  it. The viewer's own yields are not overridable.
 - **GPU:** a vendor provider runs at low GPU priority where it exposes one; the CPU backend is the pressure valve. If a
   present is late while an inference dispatch is in flight, the yield policy backs off — this is
   measured, not assumed (see verify).
@@ -260,6 +264,19 @@ whose entire selling point is smoothness.
   Counted against the budgets in [02-architecture.md](02-architecture.md).
 - **Disk:** the index has a size cap and per-folder delete. Show its size in Settings. This cap is
   separate from the 3 GB installed add-on ceiling.
+- **Loading (2026-09-27, measured).** Opening the models is the heaviest thing the pack does
+  (a GPU context, a gigabyte of weights, the self-test). Done during the PR 1 soak it dropped two
+  frames, so the load waits for the same quiet viewer indexing does, and reports LOADING with
+  `yield_reason` VIEWER meanwhile. Pictures become searchable first; the audio models open after
+  them. Settings never loads the runtime (it asked from the UI thread): until the control thread
+  has, it shows no models. The provider self-test's CPU half is kept (`selftest.txt`: the CPU
+  reference embedding and time, keyed by runtime, provider, model and piece), taking ~15 s off
+  a 40 s CUDA ViT-L load; the provider still runs and is checked against it every start. The
+  Windows status pill no longer appears, or spins, for a load that is waiting: a spinning element
+  over a busy canvas cost the soak its frame-statistics continuity.
+- **Verification (2026-09-27).** Listing, loading and each piece lookup hashed every file again
+  (~6 GB per launch with the whole pack). The first check in a process hashes; later ones stat
+  every file (size and modification time at the filesystem's precision) and re-walk for extras.
 
 ## ABI
 
@@ -364,6 +381,305 @@ spike; correcting a cluster persists and re-applies; deleting face data leaves t
 intact and leaves no face vectors on disk (checked by scanning the index and pack folders);
 a forced crash minidump contains no face vectors or crops; PR 1's present-loop holds while
 faces are indexing.
+
+## Implementation notes (2026-09-26, Milestone H branch `milestone-h-local-ai-search`)
+
+All five slices (PRs 20-24) are written as one change, like Import's four, because they share
+one engine. **Windows: built and tested. Mac: built and tested with the real pack (2026-09-27,
+"Verified on macOS" below)**; the Mac checklist is `src.swift/AIChrome/MAC-VALIDATION.md`. Every present-loop gate and hardware timing on both
+platforms is still owed unless listed as done below.
+
+### PR 20 spike results (measured on this dev box: Ryzen 16 threads, RTX 4070, ORT 1.30)
+
+Eval: 1,000 COCO Karpathy-test images, text -> image with each image's first caption, plus
+eight labelled natural-language queries (P@10 by caption keywords, 1,225 images).
+
+| Tower (ONNX, Xenova export of OpenAI CLIP, MIT) | R@1 | R@5 | R@10 | mean P@10 | "guy on a skateboard" P@10 | CPU img/s (4 thr) | CUDA img/s | size |
+|---|---|---|---|---|---|---|---|---|
+| ViT-B/32 fp32 | 0.494 | 0.777 | 0.888 | 0.86 | 1.0 | 20.1 | - | 606 MB |
+| **ViT-B/32 fp16** | 0.493 | 0.777 | 0.888 | 0.86 | 1.0 | 23.3 | 150.8 | 303 MB |
+| ViT-B/32 int8 | 0.398 | 0.695 | 0.822 | 0.88 | 1.0 | 31.5 | - | 154 MB |
+| ViT-B/16 fp16 | 0.500 | 0.794 | 0.885 | 0.84 | - | 8.5 | 135.7 | 300 MB |
+| **ViT-L/14 fp16** | 0.555 | 0.812 | 0.905 | 0.90 | 1.0 | 1.9 | 98.0 | 856 MB |
+
+**Selected (owner rule: "prefer the better model up to 3 GB when the recall gain is real"):**
+both **ViT-L/14 fp16** (quality "High", +6 points R@1 over B/32) and **ViT-B/32 fp16** ("Fast")
+ship in the Core pack. Auto picks High where an accelerated provider runs it (CUDA, Core ML) and
+Fast on CPU only, where L/14's 1.9 img/s would take days on a 300,000-asset library. int8
+rejected (-6.6 points R@10); B/16 rejected (no R@10 gain at 2.7x B/32's CPU cost). Stored
+vectors are int8 with a per-vector scale: measured loss <= 0.5 points R@1 on both towers.
+Changing quality migrates (PR 23): the old index answers until the new one completes.
+
+**"Nothing found" (the min-score cutoff).** An absolute cosine floor does not separate
+nonsense from real queries on CLIP (their top scores overlap), and a collection z-score does
+little better. What works: each stored vector also stores its best cosine against five generic
+prompts ("a photo.", ...); a query is "nothing found" unless one of its top ten rows beats its
+generic score by **0.04**, and a result row must beat it by 0.015. At 0.04: 96-99 % of real
+queries kept, 69-100 % of nonsense rejected (B/32 and L/14, 300 and 1,000 images). Recorded in
+each model.json.
+
+**Amended 2026-09-27: short queries.** That calibration used caption-like queries. On one-word
+subjects the margin threw away correct rankings: "dog" sits close to "a photo.", so on the
+300-image set "dog" returned 1 of its 15 photos, and only 6 of 17 real queries (B/32) and 7 of
+17 (L/14) passed at all, while their top five were right. A query now also passes when its ten
+best **assets** stand out from the rest of the index: the mean of the ten best per-asset scores
+at least **2.5** standard deviations above the mean of every asset's best score (`query_z`).
+When it does, a row at least **2.0** SD above that mean is a result as well as the margin rows
+(`result_z`). Per asset, so a long clip's hundreds of similar frames count once; below 30 assets
+the margin alone decides. Same set: 15 / 17 (B/32) and 14 / 17 (L/14) real queries kept, 3 / 3
+nonsense rejected on both; "dog" returns 15 rows, "a cat" 12. Pictures only: CLAP keeps the
+margin rule until it has its own calibration.
+
+**Amended again 2026-09-27 (Mac run): the z threshold scales with the index.** `top10_z`
+is the mean of the ten best assets in SDs, and for a query that matches nothing it grows with
+the number of assets like the top ten of N noise draws: 2.20 at 300, 2.64 at 1,000, 3.35 at
+10,000. The fixed 2.5 was calibrated at 300, so on 1,000 COCO photos **every** nonsense query
+passed (z 2.56-2.88; 23 / 25 and 25 / 25 of a held-out nonsense list, B/32 / L/14) and a real
+library would return results for gibberish. Now (`vector_store::scan_stats`): a query stands
+out at z >= max(query_z, 1.15 x the noise expectation for its asset count); the margin alone
+passes it at `query_margin` only when its best assets score at least like noise, else at 1.5 x
+(one nonsense query's best margin was 0.050 at 300 photos). Held out (captions of 150 photos
+in the index, 25 nonsense strings): at 1,000 photos B/32 finds 149 / 150 captions and 2 / 25
+nonsense (was 150 and 23), L/14 146 / 150 and 7 / 25 (was 150 and 25); at 300, 146 and 2 /
+144 and 5. The labelled queries keep P@5 >= 0.8 at both sizes (`mv_ai_tests "[eval]"`,
+`"[.calibration]"`). L/14's remaining nonsense passes are the next calibration item, on the
+owner's real set.
+
+**Precision scale (2026-09-27, owner: "the model seems to confuse helicopter with plane … a
+scale in Settings, default in the middle").** Settings -> Local search -> **Precision**, five
+steps from Broader to Stricter; the middle (2, the default) is the rule above, unchanged row for
+row (`"[ai][infer][vectors]"` proves it against the old code). The engine setting `precision`
+(0-4, saved with compute and quality) is read by each search as it starts: no reload, no
+re-index, and the chrome re-runs an open search. One function, `find_text` (`vectors.h`), is
+the engine's picture and sound search and what the calibration runs. Per level it scales the
+stand-out factor (the calibrated query_z with it), the query margin, the row margin and the row
+z, and at 3-4 keeps only rows within Δ SDs of the best row:
+
+| Level | stand-out x noise | query margin | row margin | row z | Δ (SD) |
+|---|---|---|---|---|---|
+| 0 Broadest | 1.10 | x 0.8 | x 0.33 | x 0.8 | - |
+| 1 | 1.12 | x 0.9 | x 0.67 | x 0.9 | - |
+| **2 (default)** | **1.15** | **x 1** | **x 1** | **x 1** | - |
+| 3 | 1.23 | x 1.125 | x 1.5 | x 1.2 | 3 |
+| 4 Strictest | 1.35 | x 1.25 | x 2 | x 1.4 | 2 |
+
+"Nothing found" always reads the calibrated rows, so each stricter level answers a subset of
+the looser one (checked on every query below). Measured on the COCO Karpathy-test set with the
+engine's int8 store (held-out captions of photos 150-299, 25 nonsense strings; "helicopter" /
+"a helicopter" rows, COCO has planes and no helicopters; category P / R: rows a caption keyword
+calls relevant, over the nine queries a plane, a bus, a truck, a cat, a dog, a horse, a cow, a
+sandwich, a pizza):
+
+| Tower, photos | Level | Captions found | Nonsense found | "helicopter" rows | Category P | Category R |
+|---|---|---|---|---|---|---|
+| B/32, 300 | 0 / 1 / **2** / 3 / 4 | 147 / 147 / **145** / 141 / 131 of 150 | 5 / 4 / **2** / 0 / 0 | 20 / 17 / **15** / 9 / 0 | .39 / .46 / **.59** / .85 / .90 | .81 / .80 / **.73** / .69 / .49 |
+| B/32, 1,000 | 0 / 1 / **2** / 3 / 4 | 150 / 150 / **150** / 145 / 137 | 7 / 5 / **2** / 1 / 0 | 67 / 47 / **36** / 22 / 0 | .36 / .46 / **.58** / .84 / .93 | .83 / .81 / **.78** / .71 / .43 |
+| L/14, 300 | 0 / 1 / **2** / 3 / 4 | 147 / 146 / **144** / 139 / 136 | 10 / 6 / **4** / 1 / 0 | 19 / 14 / **10** / 0 / 0 | .40 / .51 / **.59** / .85 / .92 | .88 / .88 / **.85** / .69 / .46 |
+| L/14, 1,000 | 0 / 1 / **2** / 3 / 4 | 147 / 147 / **146** / 143 / 140 | 10 / 9 / **7** / 2 / 1 | 65 / 44 / **27** / 0 / 0 | .42 / .51 / **.61** / .76 / .88 | .87 / .84 / **.81** / .70 / .50 |
+
+What the numbers say. L/14 (High, what Core ML and CUDA machines run) tells "helicopter" from a
+real one-word subject: its planes stand out at 1.19-1.21 x noise against 1.25-1.37 for "a dog"
+and "dog", so level 3 says nothing found for it on both sizes. B/32 (Fast, CPU-only machines)
+cannot: its "a helicopter" stands out at 1.33 x noise, exactly as its "a dog" does, with a
+better margin (0.039 against 0.022). Level 3 therefore still shows B/32's planes (fewer), and
+level 4, which rejects them, also says nothing found for "a dog" and "a sandwich" on B/32 (and
+for "a dog" on L/14 at 300 photos). The B/32 gap at level 4 is thin (1.327 against 1.35). Level
+0 finds at least what 2 finds and more rows (recall +0.03-0.08), at the price of 5-10 of 25
+nonsense strings answered. Knowing that a plane is not a helicopter needs the query compared
+with other words, not with the index; that is a later item (a vocabulary of labels embedded
+once per model), not a threshold. CLAP scales its two margins the same way (no z rule yet);
+spoken words need all the query's words at 3-4 and half at 0-1 (one word alone still whole).
+
+**Recall target for PR 22 (recorded here as plan/17 asked):** on the labelled set, the top five
+for each natural-language query hold at least four relevant items (P@5 >= 0.8), "guy on a
+skateboard" included; the COCO-1k proxy R@10 >= 0.88 (Fast) / >= 0.90 (High). The owner's real
+camera-dump eval set (kept out of git) is still to be labelled and run.
+
+**Licence gate:** CLIP weights MIT (OpenAI's model card discourages "deployed use"; that is a
+usage note, not a licence term; flagged to the owner), YuNet MIT, SFace Apache-2.0, ONNX
+Runtime MIT. `tools/package/ai-models.py check` enforces the allow-list; a CC-BY-NC file fails
+the pack (tested).
+
+**Sizes:** Core ~1.18 GB installed (both towers, tokenizer, ORT CPU, mv_ai, chrome), People
+piece 39 MB, NVIDIA piece ~205 MB (ORT's CUDA 13 build only: the CUDA runtime and cuDNN are
+**user-supplied**, NVIDIA's EULA review against GPL-3.0-or-later not done). Worst supported
+combination ~1.4-1.85 GB of 3 GB. OpenVINO has a code path but no piece yet (no Intel dev box).
+**macOS: arm64 only** - Microsoft ships no x86_64 macOS build of ORT 1.30; Intel Macs are not
+offered Local search.
+
+### What was built
+
+- **Host table v2** (`mediaviewer_addon.h`): stills and sampled video frames as pixels, moment
+  thumbnails in the existing JPEG-512 cache (`path#t=ms` rows), and verified family pieces.
+  Versions only append; the host serves every layout from 1 up and negotiates, so Import 1.0.0
+  keeps loading (plan/18). Manifests gain `part_of` (pieces) and `arch`; the store enforces the
+  3 GB family ceiling and hashes only the add-on being loaded.
+- **Sampler** (`src/edit/clip_sample.*`): its own software decoder, keyframes via
+  `skip_frame = NONKEY`, grid fill for long GOPs from kept packets, min/max gap, rotation, SAR,
+  the SDR tone map for PQ/HLG (the clip core's `rgba_converter`, now shared). Hardware decode
+  (D3D11VA / VideoToolbox) for the sampler is a later optimisation, not done.
+- **`src/infer`**: ORT loaded at run time (never linked; telemetry events off), the CLIP BPE
+  tokenizer (matches the checkpoint's tokenizer.json on 19 golden strings), PIL-exact bicubic
+  preprocessing, CPU / CUDA / OpenVINO / Core ML sessions, the Auto self-test (agree with CPU
+  within cosine 0.99, and be faster, else CPU with the reason), YuNet + SFace.
+- **`src/addons/ai`** (`mv_ai`, `mv.ai.1` in `mediaviewer_ai.h`): index.db, remembered roots
+  with delta scans and pairing (one row per Live Photo / RAW+JPEG pair), background workers at
+  OS background priority yielding to the viewer (and for two seconds after any dropped frame),
+  battery and user pause, dedupe, resume per asset, stale detection, the in-memory int8 matrix
+  (deviation: loaded, not mapped; ~77 MB at 100 k L/14 frames), per-clip grouping, find-similar,
+  people in a separate faces.db with rename / merge / not-this-person / split, one-click
+  deletion.
+- **Results in the gallery**: base ABI 0.14 `mv_folder_open_list` - the same gallery, filmstrip,
+  keys and thumbnails over a result list; a clip opens paused on its moment.
+- **Commands** (plan/16): `Ctrl+F` search, `Ctrl+Shift+F` find similar, `N` / `Shift+N` next /
+  previous matching moment; listed only while the pack is loaded.
+- **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
+  status pill, scrub-bar match dots, Settings -> Local search with per-piece install (clicks
+  queue, Core first; "Install all"), compute / precision (the model stays on Auto), roots, People.
+
+### Audio (added 2026-09-27, owner)
+
+The owner asked for audio as a separate index option: a video's **soundtrack**, indexed for what
+it **sounds like** (CLAP) and for what is **said** (Whisper transcripts). Standalone audio files
+are not a D5 format and stay out.
+
+- **The option.** Settings "Index videos for" is Pictures / Sound / Both, and each remembered
+  folder may override it (`root_set_media`, `MV_AI_MEDIA_*`). Unset means Pictures, or Both once
+  the audio piece is installed: installing it is the choice. Adding Sound to a folder queues its
+  clips; removing it drops their audio rows.
+- **The piece.** `ai-audio` (~1 GB: CLAP ~377 MB, Whisper small ~463 MB and base ~140 MB, their
+  tokenizers), `part_of` ai, inside the 3 GB family ceiling with every other piece
+  (`ai-models.py` checks the largest combination). Nobody downloads it who does not want it.
+- **Sounds: LAION CLAP `larger_clap_general`** (Apache-2.0; Xenova ONNX export, fp16), 48 kHz,
+  10 s windows on a 5 s hop, stored like frames (int8 vectors, a generic-prompt score each).
+  Picked over `htsat-unfused` on ESC-50 zero-shot: **87.2 %** against 84.4 %.
+- **Speech: Whisper** (onnx-community exports, Apache-2.0) through the merged KV-cache decoder
+  with timestamp rules, a no-speech and log-probability guard, a re-listen when a window ends
+  mid-sentence or stops early, and an energy-based refinement of segment starts. **small**
+  where the picture tower runs High (a GPU / the Neural Engine), **base** elsewhere. Real-time
+  factor on this dev box:
+
+  | Model | CPU (2 threads) | CUDA |
+  |---|---|---|
+  | base | 0.075 | 0.029 |
+  | small | 0.23 | 0.036 |
+
+  Mel features match `transformers`' `audio_utils` (periodic Hann, centred reflect padding,
+  Slaney mels); the tokenizer is GPT-2 byte-level BPE (RoBERTa's for CLAP, Whisper's decode).
+- **Host table.** v2 appends `audio_open` / `audio_read` / `audio_close`: mono float PCM at a
+  requested rate from the viewer's own FFmpeg, from a start time (`src/edit/clip_sample.*`).
+- **Search.** `MV_AI_FIND_PICTURES` / `SOUNDS` / `SPEECH` choose the towers (none set: all).
+  Each model's rows rank in its own units (margin over its generic prompts for pictures and
+  sounds, word coverage for speech) and merge per clip; a speech result carries its sentence
+  (`result_snippet`). `MV_AI_STATUS_AUDIO_READY` and the sound / speech counts are in the status.
+- **Chrome.** Both platforms: the option in Settings and per folder, "Sounds" and "Speech" in
+  the search panel's filter, the snippet under a spoken result.
+
+### Verified on Windows (2026-09-26)
+
+- Embeddings within cosine 0.999 of the ORT-Python reference on CPU for both towers and
+  three cards; CUDA 0.9991-0.99999 (`mv_ai_tests`, `tests/data/ai/reference.json`).
+- Labelled ranking: >= 4 of top 5 relevant for every query on both towers, "guy on a
+  skateboard" included; nonsense finds nothing.
+- Engine suite (fake models over the real host table): indexing, resume without redoing
+  committed frames, re-queue on edit, delta on reopen, removal, scope, grouping, dedupe, yield,
+  pause, migration never mixing specs, clear, size cap, find-similar, people corrections that
+  persist, and face deletion leaving no faces.db.
+- Tamper / extra-file / non-pinned-key refusal and the ceiling (`test_addon_pack.py`), Import's
+  41 cases, the full `mv_tests` suite, a full Release build with `/W4 /WX`.
+
+### Verified on Windows (2026-09-27)
+
+- Audio: FFT and mel features match the Python reference (`tests/data/ai/audio_reference.json`),
+  CLAP embeddings at cosine ~1.0 to it, and Whisper base and small both find all three
+  sentences of the speech clip at their times (`test_ai_audio.cpp`); the engine's audio tracks
+  with fake models (`test_ai_engine.cpp`).
+- The real pack end to end (`ai-bench`, dev-signed, sideloaded with `ai-sideload.py`): CUDA,
+  ViT-L; 301 COCO photos indexed, 0 failed (three greyscale JPEGs with a grey ICC failed until the
+  colour stage learned grey profiles, plan/12 PR 7 row 5); queries ~32 ms; "dog", "a cat", "car",
+  "a train" find their photos, "xyzzy plugh qwertyuiop" and "asdf" find nothing.
+- `< 100 ms over 100 k frames`: the int8 scan of 100,000 ViT-L rows (2,000 clips x 50, with
+  the per-asset stats) takes **31 ms** on one core here (`mv_ai_tests "[perf]"`, which fails
+  over 100 ms in optimised builds); with the ~30 ms CUDA text tower a query is ~60 ms.
+- The PR 1 soak with the whole pack (all four pieces) sideloaded: 0 dropped frames, p99 16.9 ms,
+  in 5 of the last 7 runs of 60 s. The two failures were each one missed vsync (33.4 ms, no
+  dropped frame); the same single miss occurred with no add-on at all (1 of 4 30 s runs) on
+  this shared dev box. Before this session's loading fixes the pack run dropped two frames and
+  lost frame-statistics continuity. Worst case, ViT-L indexing a 4K HEVC clip on CUDA in
+  **another process that does not yield**: 0 dropped, p99 16.8 ms, one missed vsync.
+- **PR 21's 1-hour 4K HEVC clip** (a synthetic NVENC test pattern with a soundtrack, so its
+  dedupe is not real footage's): pictures, sound and speech indexed in **302 s** on CUDA with
+  ViT-L and Whisper small - model load ~25 s, 255 picture moments ~190 s, sound ~70 s, speech
+  ~17 s. The picture phase is bounded by the sampler's software 4K HEVC keyframe decode, not the
+  model (hardware decode for the sampler is the noted later optimisation).
+- `mv_tests` (641 cases), `mv_ai_tests` (29), Import (41), PR 16, broken-file and clean-VM
+  suites, `test_addon_pack.py` (16), a full Release build with `/W4 /WX`.
+
+### Verified on macOS (2026-09-27, Apple M5, 24 GB, macOS 26.6, ORT 1.30)
+
+First build of the Mac half. It compiled after two fixes (an `id` parameter shadowing the ObjC
+type; an unused pinned key under `-Werror` in a dev-key build). `cmake/darwin.cmake` now builds
+`mv_ai_tests` and `ai-bench` like Windows, and defines no AI target at all on Intel (ORT ships no
+x86_64 macOS build; the release's Intel leg would otherwise have tried to link an arm64 pack
+against x64 dependencies).
+
+**Core ML (PR 20 spike on the Mac).** The Xenova exports declare every input dimension dynamic.
+Core ML compiles only static shapes, so with the shapes left free ORT placed **130 of 830**
+(B/32) and **250 of 1,622** (L/14) nodes on it, in 13 and 25 partitions: no faster than CPU
+(B/32 76 against 68 img/s, L/14 4.8 against 5.0) and B/32 drifted to cosine 0.990 from the
+reference, at the self-test's edge. Pinning the image tower's free dimensions at open
+(`session_options::fixed_dims`, batch 4 = the engine's photo batch; `embed_images` splits and
+pads other batch sizes) puts **every node** on Core ML:
+
+| Tower | CPU (2 threads) | Core ML, pinned | cosine to reference (Core ML) | first compile | cached open |
+|---|---|---|---|---|---|
+| ViT-B/32 fp16 | 73 img/s | **499 img/s** | 0.9992 | 82 s | 17 s |
+| ViT-L/14 fp16 | 4.9 img/s | **31 img/s** | 0.9983 | 5.3 min | 64 s |
+
+Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14). `MLComputeUnits=CPUAndGPU` compiled B/32
+faster (67 s, 386 img/s) but L/14 had not finished after 25 minutes; `ALL` stays. Even from
+its cache (`data/cache/coreml` in the pack's folder) an open takes 17 s / 64 s: ORT's converter
+inlines the weights, so Core ML re-parses a 1 GB / 3.5 GB `model.mil` every time (it is not the
+graph optimizer: the basic level inlines them too, and no optimisation loses the coverage). So
+on the Mac the pack **answers on CPU at once** and a background thread opens Core ML, runs the
+same self-test, and swaps it in (`upgrading_clip` in `pack.cpp`); the status shows CPU until
+then. The cache is ~1.2 GB (B/32) / ~4.1 GB (L/14) of derived data outside the 3 GB installed-size
+ceiling: Remove deletes `data/cache` even when it keeps the index (`store::remove`), and each
+start prunes entries whose model is gone (ORT keys them by the model's path, so an older pack's).
+
+**Audio stays on CPU on the Mac.** CLAP's audio tower does not compile on Core ML (unbounded
+dimensions) and Whisper's **aborts the process** inside MPSGraph ("original module failed
+verification"), which no fallback can catch; the decoder's growing KV cache cannot be pinned.
+`pack.cpp` never gives the audio models Core ML.
+
+**Fixed from the Mac runs (shared code):** Whisper base could stop after the first sentence of
+a full 30 s window and the full-window seek then skipped everything said up to its last 5 s
+(the §12b clip lost "landing in Lisbon"); the re-listen now applies to full windows too.
+
+**Review fixes (Mac host and chrome, compile-checked, then run):** the add-on store was created
+from two threads at launch; Remove and reload joined the pack's workers and deleted up to 3 GB
+on the main thread; a slow result list could leave the folder model stuck in list mode;
+re-selecting the current result reopened the clip; a failed or superseded search's results
+could be shown for the next query; Return before results landed opened the previous query's
+list; Sounds / Speech bits were sent with the piece absent; tiles re-animated and the grid
+scrolled on every indexing re-run; blank tiles after a re-run; blocking pack calls in the
+management view; pack calls after unload.
+
+Tests on the Mac: `mv_tests` 513 (5 RAW-corpus skips), Import 41, `mv_ai_tests` with the real
+pack: the CPU reference (both towers, CLAP), Whisper base and small on the speech clip, the
+grey-ICC JPEG, the Core ML agreement cases (new), `test_addon_pack.py`, `test_macpack.py` (33).
+
+Owed (both platforms unless stated): a quiet machine for the soak's single-miss question (the D6
+quiet-machine item in CLAUDE.md), the 1-hour timing on real 4K footage, the 300,000-asset range,
+the query time on CPU-only and Mac target hardware (the text tower dominates there),
+Enter-lands-on-frame, the keyboard-only flow, HDR clip check, the minidump check, the index /
+manifest fuzzers, a real camera-dump eval set (the z rule was calibrated on 300 COCO photos),
+CLAP's own "nothing found" calibration, Core ML coverage and throughput, and every Mac build.
+
+### Gallery search bar (2026-09-27)
+
+Removed 2026-09-28 at the owner's request; replaced by a search icon in the path bar (it opens
+the `Ctrl+F` / `⌘F` panel, only while the pack is loaded; plan/12 2026-09-28).
 
 ## Open decisions (owner)
 

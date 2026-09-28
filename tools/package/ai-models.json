@@ -1,0 +1,138 @@
+{
+  "comment": "The AI pack's model files (plan/17 'Model choice'), pinned by revision and SHA-256. Chosen by the PR 20 spike (plan/17 'PR 20 spike results'). Every file names its licence; tools/package/ai-models.py refuses one outside ALLOWED_LICENCES (the weights-licence gate).",
+  "pieces": {
+    "ai": {
+      "folders": {
+        "models/clip-tokenizer": {
+          "files": [
+            {"repo": "Xenova/clip-vit-base-patch32", "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+             "file": "vocab.json", "as": "vocab.json", "size": 862328,
+             "sha256": "5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363", "licence": "MIT"},
+            {"repo": "Xenova/clip-vit-base-patch32", "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+             "file": "merges.txt", "as": "merges.txt", "size": 524619,
+             "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a", "licence": "MIT"}
+          ]
+        },
+        "models/clip-b32": {
+          "model": {
+            "id": "clip-vit-b32", "name": "CLIP ViT-B/32", "quality": 1, "precision": "fp16",
+            "dim": 512, "image_size": 224, "image": "image.onnx", "text": "text.onnx",
+            "tokenizer": "clip-tokenizer", "context": 77,
+            "mean": [0.48145466, 0.4578275, 0.40821073], "std": [0.26862954, 0.26130258, 0.27577711],
+            "dedupe": 0.97, "query_margin": 0.04, "query_z": 2.5, "result_z": 2.0, "result_margin": 0.015, "similar_min": 0.62,
+            "generic_prompts": ["a photo.", "a picture of something.", "an image.", "a photo of a thing.", "a blurry photo."]
+          },
+          "files": [
+            {"repo": "Xenova/clip-vit-base-patch32", "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+             "file": "onnx/vision_model_fp16.onnx", "as": "image.onnx", "size": 176080659,
+             "sha256": "35c4e0fb0aeee527dcde1693520b214a34424a786babd530f35366bad5844efd", "licence": "MIT"},
+            {"repo": "Xenova/clip-vit-base-patch32", "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+             "file": "onnx/text_model_fp16.onnx", "as": "text.onnx", "size": 127339794,
+             "sha256": "df587ffbf248bf20d44fa6e16adc5ebc27ead691860e5333dbdaab5fd6bf3f6e", "licence": "MIT"}
+          ]
+        },
+        "models/clip-l14": {
+          "model": {
+            "id": "clip-vit-l14", "name": "CLIP ViT-L/14", "quality": 2, "precision": "fp16",
+            "dim": 768, "image_size": 224, "image": "image.onnx", "text": "text.onnx",
+            "tokenizer": "clip-tokenizer", "context": 77,
+            "mean": [0.48145466, 0.4578275, 0.40821073], "std": [0.26862954, 0.26130258, 0.27577711],
+            "dedupe": 0.97, "query_margin": 0.04, "query_z": 2.5, "result_z": 2.0, "result_margin": 0.015, "similar_min": 0.62,
+            "generic_prompts": ["a photo.", "a picture of something.", "an image.", "a photo of a thing.", "a blurry photo."]
+          },
+          "files": [
+            {"repo": "Xenova/clip-vit-large-patch14", "revision": "c307790166907339eed5a9a53a249af534102536",
+             "file": "onnx/vision_model_fp16.onnx", "as": "image.onnx", "size": 608690866,
+             "sha256": "6e6b9e280b73bdc432b6c3b1c05f33596bbe5570f6825f1174eaa207fc1d22dc", "licence": "MIT"},
+            {"repo": "Xenova/clip-vit-large-patch14", "revision": "c307790166907339eed5a9a53a249af534102536",
+             "file": "onnx/text_model_fp16.onnx", "as": "text.onnx", "size": 247784246,
+             "sha256": "643d385d6adbc4b9067f3f94384cc63a8409accb1bfd414496d17df84b161032", "licence": "MIT"}
+          ]
+        }
+      }
+    },
+    "ai-audio": {
+      "folders": {
+        "models/clap-tokenizer": {
+          "files": [
+            {"repo": "Xenova/larger_clap_general", "revision": "d78c3994912c441f0151a5cc44d86f6b7bf4c861",
+             "file": "vocab.json", "as": "vocab.json", "size": 798293,
+             "sha256": "ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e", "licence": "Apache-2.0"},
+            {"repo": "Xenova/larger_clap_general", "revision": "d78c3994912c441f0151a5cc44d86f6b7bf4c861",
+             "file": "merges.txt", "as": "merges.txt", "size": 456318,
+             "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5", "licence": "Apache-2.0"}
+          ]
+        },
+        "models/clap-general": {
+          "model": {
+            "id": "clap-general", "name": "LAION CLAP (general)", "precision": "fp16", "dim": 512,
+            "audio": "audio.onnx", "text": "text.onnx", "tokenizer": "clap-tokenizer", "bos": 0, "eos": 2,
+            "window_ms": 10000, "hop_ms": 5000, "dedupe": 0.97, "query_margin": 0.04, "result_margin": 0.015,
+            "generic_prompts": ["a sound.", "noise.", "an audio recording.", "this is a sound.", "background noise."]
+          },
+          "files": [
+            {"repo": "Xenova/larger_clap_general", "revision": "d78c3994912c441f0151a5cc44d86f6b7bf4c861",
+             "file": "onnx/audio_model_fp16.onnx", "as": "audio.onnx", "size": 143432227,
+             "sha256": "7331cfbef5e9b7eec56e489c93737556f5e22c8abf8978280f0ad38c4b2b1ed1", "licence": "Apache-2.0"},
+            {"repo": "Xenova/larger_clap_general", "revision": "d78c3994912c441f0151a5cc44d86f6b7bf4c861",
+             "file": "onnx/text_model_fp16.onnx", "as": "text.onnx", "size": 251029088,
+             "sha256": "9c06f2aa8b7da59c3a781c682cbca510206d198e2d0c9ebadb78927e38df7f94", "licence": "Apache-2.0"}
+          ]
+        },
+        "models/whisper-tokenizer": {
+          "files": [
+            {"repo": "onnx-community/whisper-base", "revision": "1846881b6b3a3024392c1eea3ad983695bc23925",
+             "file": "vocab.json", "as": "vocab.json", "size": 1036584,
+             "sha256": "50d6a919f0a0601d56a04eb583c780d18553aa388254ba3158eb6a00f13e2c1a", "licence": "Apache-2.0"},
+            {"repo": "onnx-community/whisper-base", "revision": "1846881b6b3a3024392c1eea3ad983695bc23925",
+             "file": "merges.txt", "as": "merges.txt", "size": 493869,
+             "sha256": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6", "licence": "Apache-2.0"}
+          ]
+        },
+        "models/whisper-base": {
+          "model": {"id": "whisper-base", "name": "Whisper base", "precision": "fp16", "quality": 1,
+                    "encoder": "encoder.onnx", "decoder": "decoder.onnx", "tokenizer": "whisper-tokenizer"},
+          "files": [
+            {"repo": "onnx-community/whisper-base", "revision": "1846881b6b3a3024392c1eea3ad983695bc23925",
+             "file": "onnx/encoder_model_fp16.onnx", "as": "encoder.onnx", "size": 41332612,
+             "sha256": "ffba51b20185377c1b89362b1128148d0132de936a32b200af973da2a11a5369", "licence": "Apache-2.0"},
+            {"repo": "onnx-community/whisper-base", "revision": "1846881b6b3a3024392c1eea3ad983695bc23925",
+             "file": "onnx/decoder_model_merged_fp16.onnx", "as": "decoder.onnx", "size": 104727818,
+             "sha256": "2078fb08b753e3a74120e6a52446eef1b98f6152d1da43658731367a93fd71a4", "licence": "Apache-2.0"}
+          ]
+        },
+        "models/whisper-small": {
+          "model": {"id": "whisper-small", "name": "Whisper small", "precision": "fp16", "quality": 2,
+                    "encoder": "encoder.onnx", "decoder": "decoder.onnx", "tokenizer": "whisper-tokenizer"},
+          "files": [
+            {"repo": "onnx-community/whisper-small", "revision": "36050c46d777d46dc4b5f43f6d90574fc38f8732",
+             "file": "onnx/encoder_model_fp16.onnx", "as": "encoder.onnx", "size": 176607756,
+             "sha256": "5549cd8666ff4b694ceb128bfa48b95bdcceec29075cf2c2212f90002cc058de", "licence": "Apache-2.0"},
+            {"repo": "onnx-community/whisper-small", "revision": "36050c46d777d46dc4b5f43f6d90574fc38f8732",
+             "file": "onnx/decoder_model_merged_fp16.onnx", "as": "decoder.onnx", "size": 308583076,
+             "sha256": "22aba6c7f5193701cbe1519051b6ef097eb530ad6887b7093065ec59b830f61d", "licence": "Apache-2.0"}
+          ]
+        }
+      }
+    },
+    "ai-faces": {
+      "folders": {
+        "models/faces": {
+          "model": {
+            "detector": "yunet.onnx", "embedder": "sface.onnx", "detector_side": 640,
+            "min_confidence": 0.8, "nms_iou": 0.3, "min_face_fraction": 0.04, "same_person": 0.40,
+            "spec": "yunet-2023mar+sface-2021dec/pre1"
+          },
+          "files": [
+            {"repo": "opencv/face_detection_yunet", "revision": "3cc26e7f1014a5ee5d74a42acee58bafc9d0a310",
+             "file": "face_detection_yunet_2023mar.onnx", "as": "yunet.onnx", "size": 232589,
+             "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4", "licence": "MIT"},
+            {"repo": "opencv/face_recognition_sface", "revision": "3d7082438a6e4551e840c9b2bb60b71e8da4b524",
+             "file": "face_recognition_sface_2021dec.onnx", "as": "sface.onnx", "size": 38696353,
+             "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79", "licence": "Apache-2.0"}
+          ]
+        }
+      }
+    }
+  }
+}

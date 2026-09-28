@@ -39,6 +39,32 @@ class folder_model {
   [[nodiscard]] expected open(std::string_view dir_utf8, job_system& jobs) noexcept;
   void close() noexcept;
 
+  // Milestone H (plan/17 "UI and commands"; the Mac twin of mv_folder_open_list
+  // in abi/abi.cpp): a listing that is not a directory -- search results. The
+  // items keep the order given (best match first; no sort), are not paired
+  // and are not watched; a file that no longer exists drops out. An item with
+  // a moment (>= 0) is a clip that opens paused on that frame. directory() is
+  // "" while a list is open; open() of a directory ends it. Real I/O (a stat
+  // per item, the thumbnail cache): call it on a worker, as open() is.
+  struct list_entry {
+    std::string path_utf8;
+    std::int64_t moment_ms = -1;
+  };
+  [[nodiscard]] expected open_list(std::string title_utf8, std::vector<list_entry> entries,
+                                   job_system& jobs) noexcept;
+
+  // Everything a relist replaced, read under one lock so the pieces agree
+  // (moments[i] belongs to items[i]; empty unless is_list).
+  struct listing {
+    std::vector<io::dir_entry> items;
+    std::vector<io::subdir_entry> subdirs;
+    std::vector<std::int64_t> moments;
+    std::string title;
+    std::string dir;
+    bool is_list = false;
+  };
+  [[nodiscard]] listing snapshot() const;
+
   // A snapshot of the current listing. Copies under the lock — callers are
   // expected to poll this at UI-refresh cadence, not per frame; a filmstrip
   // holding thousands of items should diff by name/mtime rather than take
@@ -79,8 +105,19 @@ class folder_model {
   // Safe to call after this object is later destroyed while the job is still
   // in flight: `on_ready` still fires (job_system's contract), operating on
   // the shared cache state, which the job keeps alive.
+  //
+  // Milestone H: `moment_ms` >= 0 is a result list's clip tile. It shows the
+  // moment's own row (image/thumb.h moment_thumb_key, the pack stores them),
+  // made here from that one frame when the pack has not; a clip whose moment
+  // cannot be decoded falls back to its poster like any folder tile.
   void request_thumb(std::string path_utf8, std::int64_t mtime_unix, std::uint64_t size,
-                     thumb_ready_fn on_ready);
+                     thumb_ready_fn on_ready, std::int64_t moment_ms = -1);
+
+  // [pool thread] The cached JPEG-512 for a clip about to open on `moment_ms`:
+  // the moment's row, else the clip's poster; "" when neither is cached. A
+  // lookup only, never a decode (rule 3's "disk thumb" step for a clip).
+  [[nodiscard]] std::string cached_clip_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
+                                              std::uint64_t size, std::int64_t moment_ms) const;
 
  private:
   // job_system's queue can outlive this object (jobs already submitted when
@@ -93,6 +130,10 @@ class folder_model {
     std::string dir;
     std::vector<io::dir_entry> items;
     std::vector<io::subdir_entry> subdirs;
+    // Milestone H result lists: parallel to `items`, and the list's title.
+    std::vector<std::int64_t> moments;
+    std::string list_title;
+    bool is_list = false;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
     changed_fn notify = nullptr;
@@ -111,6 +152,11 @@ class folder_model {
   static status relist_now(shared_state& state, const std::string& dir);
 
   std::shared_ptr<shared_state> state_;
+  // open() and open_list() one at a time: each starts or stops `watcher_` and
+  // re-points `thumbs`, and the one that finishes last must be the one whose
+  // listing stands. Workers only; close() (main thread, at teardown) does not
+  // take it.
+  std::mutex ops_mutex_;
   io::directory_watcher watcher_;
   job_system* jobs_ = nullptr;
 };

@@ -229,6 +229,47 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             for name in release.addon_asset_names(platform):
                 self.assertIn(name, names)
 
+    def ai_assets(self, addons=release.AI_ADDONS):
+        os.environ['MV_RELEASE_AI'] = '1'
+        for addon in addons:
+            for platform in release.ADDON_PLATFORMS:
+                base = f'mediaviewer-addon-{addon}-{platform}'
+                (self.folder / (base + '.zip')).write_bytes(b'models')
+                (self.folder / (base + '.json')).write_text(json.dumps({
+                    'id': addon, 'platform': platform, 'version': '0.1.1',
+                    'archive': {'path': base + '.zip', 'size': 6,
+                                'sha256': hashlib.sha256(b'models').hexdigest()}}))
+                (self.folder / (base + '.json.sig')).write_bytes(b's' * 64)
+
+    def test_stable_uploads_the_ai_pack_and_its_pieces(self):
+        self.stable_assets()
+        self.ai_assets()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for addon in release.AI_ADDONS:
+            for platform in release.ADDON_PLATFORMS:
+                for name in release.addon_asset_names(platform, addon):
+                    self.assertIn(name, names)
+
+    def test_stable_needs_every_ai_piece_once_the_workflow_packs_them(self):
+        self.stable_assets()
+        self.ai_assets(addons=('ai', 'ai-faces'))
+        with patch.object(release, 'gh') as cli:
+            with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-ai-audio-'):
+                release.publish(self.folder)
+            cli.assert_not_called()
+
+    def test_ai_piece_manifest_must_name_its_own_id(self):
+        self.stable_assets()
+        self.ai_assets()
+        m = self.folder / 'mediaviewer-addon-ai-faces-win-x64.json'
+        m.write_text(m.read_text().replace('"ai-faces"', '"ai"'))
+        with self.assertRaisesRegex(ValueError, 'id/platform mismatch'):
+            release.publish(self.folder)
+
+    def test_previews_carry_no_ai_pack(self):
+        os.environ['MV_RELEASE_AI'] = '1'
+        self.assertEqual(release.required_addons('preview'), [])
+
     def test_stable_rejects_appcast_pointing_to_another_release(self):
         self.stable_assets()
         feed = self.folder / 'appcast.xml'

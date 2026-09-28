@@ -286,6 +286,8 @@ expected chrome_host::load() noexcept {
   show_import_ = get_entry(L"ShowImport");
   // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
   share_files_ = get_entry(L"ShareFiles");
+  // Optional (Milestone H): the add-on command hand-off by family.
+  show_addon_ = get_entry(L"ShowAddon");
 
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
@@ -893,6 +895,20 @@ void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) 
   std::memcpy(buf.data() + 4, &len, 4);
   if (!paths_json.empty()) std::memcpy(buf.data() + 8, paths_json.data(), paths_json.size());
   (void)show_import_(buf.data(), static_cast<std::int32_t>(buf.size()));
+}
+
+bool chrome_host::show_addon(std::int32_t family, std::int32_t kind,
+                             const std::string& json) noexcept {
+  if (!attached_ || !show_addon_) return false;
+  // { int32 family; int32 kind; int32 byte count; UTF-8 JSON }, mirrored by
+  // IslandHost.ShowAddon. 0 back: the add-on ran it.
+  std::vector<std::uint8_t> buf(12 + json.size());
+  const auto len = static_cast<std::int32_t>(json.size());
+  std::memcpy(buf.data(), &family, 4);
+  std::memcpy(buf.data() + 4, &kind, 4);
+  std::memcpy(buf.data() + 8, &len, 4);
+  if (!json.empty()) std::memcpy(buf.data() + 12, json.data(), json.size());
+  return show_addon_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {

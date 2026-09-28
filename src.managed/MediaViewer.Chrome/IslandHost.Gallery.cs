@@ -48,6 +48,9 @@ public static partial class IslandHost
     private static Button? _barRootButton;
     private static TextBlock? _barPathCurrent;
     private static StackPanel? _barCrumbTrail;
+    // The trail's search icon (owner, 2026-09-28; it replaced the gallery
+    // search bar): Ctrl+F's panel, shown only while Local search is loaded.
+    private static Button? _barSearchButton;
     private static bool _galleryVisible;
     private static readonly ObservableCollection<FolderCardVm> Folders = new();
     private static int _folderCursor = -1;
@@ -530,6 +533,9 @@ public static partial class IslandHost
             switch (e.Key)
             {
                 case Windows.System.VirtualKey.Escape:
+                    // The grid closes, over a result list too; the next Esc,
+                    // on the canvas, is "Back to folder" (plan/16 `Esc`, the
+                    // native router's result_list step, same as the Mac).
                     Send(Command.CloseGallery);
                     e.Handled = true;
                     break;
@@ -570,8 +576,8 @@ public static partial class IslandHost
 
     // The folder trail, in the command bar just left of `?` (Mac PathBar in
     // CommandBarView.swift). Up and Root are icons outside the scrolling
-    // ancestor trail; the current name is pinned at the end. Collapsed with no
-    // folder open.
+    // ancestor trail; the current name is pinned at the end, then the search
+    // icon while Local search is loaded. Collapsed with no folder open.
     private static FrameworkElement BuildBarPathRow()
     {
         _barUpButton = PathIconButton("\uE74A", () => Send(Command.FolderUp));
@@ -598,6 +604,14 @@ public static partial class IslandHost
             MaxWidth = 200, TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(4, 0, 0, 0),
         };
+        // Opens the Local search panel exactly as Ctrl+F does (the same
+        // ISearchChrome command). Beside the folder name, or beside
+        // "Search: ..." while a result list is shown.
+        _barSearchButton = PathIconButton("\uE721", () => SearchChrome?.RunCommand(SearchCommand.Open));
+        AutomationProperties.SetName(_barSearchButton, "Search");
+        ToolTipService.SetToolTip(_barSearchButton, "Search photos and videos (Ctrl+F)");
+        _barSearchButton.Margin = new Thickness(4, 0, 0, 0);
+        _barSearchButton.Visibility = Visibility.Collapsed;
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -610,6 +624,7 @@ public static partial class IslandHost
         row.Children.Add(_barRootButton);
         row.Children.Add(scroller);
         row.Children.Add(_barPathCurrent);
+        row.Children.Add(_barSearchButton);
         row.Children.Add(new Border
         {
             Width = 1, Height = 18,
@@ -640,8 +655,18 @@ public static partial class IslandHost
         VerticalScrollMode = ScrollMode.Disabled,
     };
 
-    private static void RebuildPathBars() =>
+    private static void RebuildPathBars()
+    {
         FillPathTrail(_barCrumbTrail, _barUpButton, _barRootButton, _barPathCurrent, _barPathRow);
+        UpdatePathSearchButton();
+    }
+
+    // Only while the pack is loaded, so Ctrl+F's command exists: no dead button.
+    private static void UpdatePathSearchButton()
+    {
+        if (_barSearchButton is null) return;
+        _barSearchButton.Visibility = SearchChrome is not null ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private static void FillPathTrail(StackPanel? trail, Button? up, Button? root, TextBlock? current, FrameworkElement? row)
     {

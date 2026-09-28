@@ -6,9 +6,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -50,6 +52,13 @@ struct mac_lab_options {
   // job_system worker, never on the render thread (rule 1, plan/02).
   std::string open_path;
   mv::job_system* jobs = nullptr;  // non-owning; started by main_mac.mm
+  // Milestone H, rule 3 for a clip opened on a moment: [pool thread] the cached
+  // JPEG-512 to show while the clip opens and seeks (the moment's row, else the
+  // clip's poster), "" for none. A cache lookup, never a decode. Unset: the
+  // previous picture stays up until the sought frame, as before.
+  std::function<std::string(const std::string& path_utf8, std::int64_t mtime_unix,
+                            std::uint64_t size, std::int64_t moment_ms)>
+      clip_thumb;
 };
 
 class present_lab_mac {
@@ -81,8 +90,14 @@ class present_lab_mac {
   // has one: a still cached under that exact stamp is shown at once, full
   // resolution, with no read or decode. Without one the file always loads.
   static constexpr std::int64_t kNoStamp = INT64_MIN;
+  //
+  // Milestone H (plan/17 "Enter on a video tile opens the clip and seeks to
+  // that PTS, paused on the frame"): a clip with `moment_ms` >= 0 does not
+  // start playing; it is paused and sought exactly to the moment as the
+  // render thread adopts it, so no frame of the clip's head is shown or heard.
+  // A still ignores the moment.
   std::uint64_t open_item(std::string path_utf8, std::int64_t mtime_unix = kNoStamp,
-                          std::uint64_t size = 0) noexcept;
+                          std::uint64_t size = 0, std::int64_t moment_ms = -1) noexcept;
 
   // --browse-soak (the Windows lab's twin, present_lab.h): mark a navigation
   // just before selecting, then poll until the new item's first image is on
@@ -139,6 +154,10 @@ class present_lab_mac {
     std::int64_t position_ns = 0;  // PR 13: trim markers need the frame, not the ms
     int rate_x100 = 100;
     float volume = 1.0f;
+    // The open_item() id the live clip belongs to. While a newer item is still
+    // opening this is the previous clip's, so a seek meant for the new one can
+    // tell it would land on the old (Milestone H: N / Shift+N).
+    std::uint64_t item = 0;
   };
   // [any-thread] Whether an animated still (GIF/APNG/WebP) is open on the
   // canvas right now -- read by main_mac.mm's keyDown: to route Space/,/.
@@ -157,6 +176,7 @@ class present_lab_mac {
     s.duration_ms = vs_dur_ms_.load(std::memory_order_relaxed);
     s.rate_x100 = vs_rate_x100_.load(std::memory_order_relaxed);
     s.volume = vs_volume_.load(std::memory_order_relaxed);
+    s.item = vs_item_.load(std::memory_order_relaxed);
     return s;
   }
 
@@ -218,7 +238,12 @@ class present_lab_mac {
   std::vector<cached_still> still_cache_;
   std::uint64_t still_cache_bytes_ = 0;
   // PR 19: opens a clip on a worker (open_media blocks on I/O) and posts it.
-  void submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept;
+  void submit_video_open(std::string path_utf8, std::uint64_t item_id,
+                         std::int64_t moment_ms) noexcept;
+  // Milestone H: the clip's cached thumbnail (options_.clip_thumb) up as a
+  // preview of `item_id` while the clip opens; its first frame replaces it.
+  void submit_clip_placeholder(std::string path_utf8, std::int64_t mtime_unix, std::uint64_t size,
+                               std::int64_t moment_ms, std::uint64_t item_id) noexcept;
   // [render-thread] Frees the current clip: releases its frames now, closes the
   // media_source (which joins its threads) on a worker, never here.
   void retire_media() noexcept;
@@ -305,10 +330,16 @@ class present_lab_mac {
   struct pending_media {
     player::media_source* source = nullptr;
     std::uint64_t item = 0;
+    // Milestone H: >= 0 opens the clip paused on this moment (open_item's
+    // moment_ms), the Mac twin of the core's open_video_worker seek.
+    std::int64_t moment_ms = -1;
   };
   gfx::video_blitter_mac video_blitter_;
   std::atomic<pending_media*> pending_media_{nullptr};
   std::atomic<std::uint64_t> video_opening_{0};  // item id being opened, 0 = none
+  // The item id of the clip open_item() last opened (0 after a still): a
+  // preview image carrying it is that clip's placeholder, not a still.
+  std::atomic<std::uint64_t> clip_item_{0};
   player::media_source* media_ = nullptr;
   std::uint64_t media_item_ = 0;
   player::video_frame* video_frame_ = nullptr;
@@ -362,6 +393,7 @@ class present_lab_mac {
   std::atomic<std::int64_t> vs_dur_ms_{0};
   std::atomic<int> vs_rate_x100_{100};
   std::atomic<float> vs_volume_{1.0f};
+  std::atomic<std::uint64_t> vs_item_{0};
 
   publish_slot<input_snapshot> input_;
   std::thread render_thread_;
@@ -386,7 +418,14 @@ class present_lab_mac {
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
   bool was_presenting_ = false;
+  // plan/17 "Yield policy": the last dropped frame holds the busy signal for
+  // background add-on work (the AI indexer) for two seconds.
+  std::uint64_t busy_drops_seen_ = 0;
+  double busy_drop_at_ = -1.0e9;
   bool painted_static_ = false;
+  // A frame asked for while presenting was not allowed (the window not key, a
+  // search panel over it): owed once it is, or the new picture waits for input.
+  bool redraw_owed_ = false;
   input_cursor input_cursor_;
   gfx::metal_idle_stats idle_stats_;
   double measurement_start_seconds_ = 0.0;

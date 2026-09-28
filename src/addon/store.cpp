@@ -13,6 +13,9 @@ namespace mv::addon {
 namespace {
 
 constexpr const char* kRemoveMarker = "remove.pending";  // in <dir>/, not a version
+// An update names the version that replaced the older ones; they go at the
+// next start, never under a running copy (in <dir>/, not a version).
+constexpr const char* kPruneMarker = "prune.pending";
 
 result<std::vector<std::uint8_t>> read_small(const std::string& path) {
   auto st = io::stat_path(path);
@@ -122,38 +125,90 @@ std::vector<installed> store::list() const {
   auto dirs = io::child_directories(root_);
   if (!dirs) return out;
   for (const std::string& name : *dirs) {
-    const std::string addon_dir = io::join_path(root_, name);
-    if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) continue;  // being removed
-    auto versions = io::child_directories(addon_dir);
-    if (!versions) continue;
-    std::vector<std::string> sorted;
-    for (const std::string& v : *versions) {
-      if (v != "data") sorted.push_back(v);
-    }
-    std::sort(sorted.begin(), sorted.end(),
-              [](const std::string& a, const std::string& b) { return compare_versions(a, b) > 0; });
-    // The newest version that verifies wins; a tampered newer copy does not
-    // hide a good older one, and is reported only if nothing verifies.
     installed best;
-    bool have = false;
-    for (const std::string& v : sorted) {
-      installed i = inspect(io::join_path(addon_dir, v), name);
-      if (!have || (best.state != install_state::ok && i.state == install_state::ok)) {
-        best = std::move(i);
-        have = true;
-      }
-      if (best.state == install_state::ok) break;
-    }
-    if (have) out.push_back(std::move(best));
+    if (best_in(name, best)) out.push_back(std::move(best));
   }
   return out;
 }
 
+namespace {
+
+std::vector<std::string> versions_newest_first(const std::string& addon_dir) {
+  std::vector<std::string> sorted;
+  auto versions = io::child_directories(addon_dir);
+  if (!versions) return sorted;
+  for (const std::string& v : *versions) {
+    if (v != "data") sorted.push_back(v);
+  }
+  std::sort(sorted.begin(), sorted.end(),
+            [](const std::string& a, const std::string& b) { return compare_versions(a, b) > 0; });
+  return sorted;
+}
+
+}  // namespace
+
+bool store::best_in(const std::string& name, installed& best) const {
+  const std::string addon_dir = io::join_path(root_, name);
+  if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) return false;  // being removed
+  // The newest version that verifies wins; a tampered newer copy does not
+  // hide a good older one, and is reported only if nothing verifies.
+  bool have = false;
+  for (const std::string& v : versions_newest_first(addon_dir)) {
+    installed i = inspect(io::join_path(addon_dir, v), name);
+    if (!have || (best.state != install_state::ok && i.state == install_state::ok)) {
+      best = std::move(i);
+      have = true;
+    }
+    if (best.state == install_state::ok) break;
+  }
+  return have;
+}
+
+bool store::peek(const std::string& name, manifest& out) const {
+  const std::string addon_dir = io::join_path(root_, name);
+  if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) return false;
+  for (const std::string& v : versions_newest_first(addon_dir)) {
+    const std::string dir = io::join_path(addon_dir, v);
+    auto bytes = read_small(io::join_path(dir, "manifest.json"));
+    auto sig = read_small(io::join_path(dir, "manifest.json.sig"));
+    if (!bytes || !sig) continue;
+    const decision d = check_manifest(*bytes, *sig, key_, host_api_);
+    if (d.trusted() || d.why == rejection::needs_update) {
+      out = d.m;
+      return true;
+    }
+  }
+  return false;
+}
+
 result<installed> store::find(const std::string& id) const {
+  auto dirs = io::child_directories(root_);
+  if (dirs) {
+    for (const std::string& name : *dirs) {
+      manifest m;
+      if (!peek(name, m) || m.id != id) continue;
+      installed best;
+      if (best_in(name, best)) return best;
+    }
+  }
+  // Not found by a signed manifest: a tampered or half-removed folder still
+  // answers as list() reports it (state invalid), not as absent.
   for (installed& i : list()) {
     if (i.id == id) return std::move(i);
   }
   return err(status::invalid_arg);
+}
+
+store::family_room store::family_usage(std::string_view family) const {
+  family_room room;
+  room.ceiling = family_ceiling(family);
+  auto dirs = io::child_directories(root_);
+  if (!dirs) return room;
+  for (const std::string& name : *dirs) {
+    manifest m;
+    if (peek(name, m) && family_of(m) == family) room.used += m.installed_size;
+  }
+  return room;
 }
 
 result<std::string> store::make_staging() const {
@@ -189,6 +244,21 @@ result<installed> store::install(const std::string& staged_dir) const {
     return err(status::corrupt);
   }
 
+  // plan/17: a family (the AI pack's Core, vendor piece and Faces) has one
+  // installed-size ceiling. The manifest's own size is signed; so are the
+  // installed ones this sums. Replacing a version replaces its size.
+  if (const std::uint64_t ceiling = family_ceiling(family_of(d.m)); ceiling != 0) {
+    std::uint64_t total = d.m.installed_size;
+    if (auto dirs = io::child_directories(root_)) {
+      for (const std::string& name : *dirs) {
+        manifest other;
+        if (!peek(name, other) || other.id == d.m.id) continue;
+        if (family_of(other) == family_of(d.m)) total += other.installed_size;
+      }
+    }
+    if (total > ceiling) return err(status::unsupported_format);
+  }
+
   const std::string name = dir_name_for(d.m);
   const std::string addon_dir = io::join_path(root_, name);
   MV_TRY_VOID(io::make_directories(addon_dir));
@@ -200,12 +270,27 @@ result<installed> store::install(const std::string& staged_dir) const {
   }
   MV_TRY(const io::rename_outcome moved, io::rename_no_replace(staged_dir, target));
   if (moved != io::rename_outcome::renamed) return err(status::io);
+  // The files hashed in staging are the ones now in `target` (a rename): the
+  // inspect below stats and walks them rather than hashing gigabytes again.
+  note_verified_move(staged_dir, target);
 
-  // Older versions go now, or at next start if one is loaded.
+  // Older versions go at the next start (startup_cleanup), not now: the one
+  // this replaces may be running, and a pack opens its model files long
+  // after it loads (and a Windows DLL cannot be deleted while loaded). Until
+  // then the newest version that verifies is the one that loads.
   if (auto versions = io::child_directories(addon_dir)) {
-    for (const std::string& v : *versions) {
-      if (v == "data" || v == d.m.version) continue;
-      (void)io::remove_tree(io::join_path(addon_dir, v));
+    const bool older = std::any_of(versions->begin(), versions->end(), [&](const std::string& v) {
+      return v != "data" && v != d.m.version;
+    });
+    if (older) {
+      io::file_writer w;
+      const std::string marker = io::join_path(addon_dir, kPruneMarker);
+      (void)io::remove_file(marker);
+      if (auto made = w.create_new(marker); made && *made == io::rename_outcome::renamed) {
+        (void)w.write(std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(d.m.version.data()), d.m.version.size()));
+        (void)w.close();
+      }
     }
   }
   installed out = inspect(target, name);
@@ -238,7 +323,12 @@ expected store::remove(const std::string& id, bool keep_data) const {
     if (!mine) continue;
     found = true;
     for (const std::string& v : *versions) {
-      if (v == "data" && keep_data) continue;
+      if (v == "data" && keep_data) {
+        // Keeping the data keeps what the user made (an index), never an
+        // add-on's derived cache (the Mac's compiled Core ML models, GBs).
+        (void)io::remove_tree(io::join_path(io::join_path(addon_dir, v), "cache"));
+        continue;
+      }
       ok = io::remove_tree(io::join_path(addon_dir, v)).has_value() && ok;
     }
     if (!keep_data || !io::stat_path(io::join_path(addon_dir, "data"))) {
@@ -266,6 +356,19 @@ void store::startup_cleanup() const {
   if (!dirs) return;
   for (const std::string& name : *dirs) {
     const std::string addon_dir = io::join_path(root_, name);
+    // An update's older versions (install): nothing has loaded them yet.
+    const std::string prune = io::join_path(addon_dir, kPruneMarker);
+    if (auto kept = read_small(prune)) {
+      const std::string version(kept->begin(), kept->end());
+      if (!version.empty() && io::stat_path(io::join_path(addon_dir, version))) {
+        if (auto versions = io::child_directories(addon_dir)) {
+          for (const std::string& v : *versions) {
+            if (v != "data" && v != version) (void)io::remove_tree(io::join_path(addon_dir, v));
+          }
+        }
+      }
+      (void)io::remove_file(prune);
+    }
     const std::string marker = io::join_path(addon_dir, kRemoveMarker);
     auto text = read_small(marker);
     if (!text) continue;

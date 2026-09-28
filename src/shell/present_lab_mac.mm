@@ -473,14 +473,15 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
 // PR 19. open_media() blocks on I/O and probing, so it runs here on a worker;
 // the render thread only ever sees the finished media_source. A clip the user
 // navigated away from before it opened is closed here, never posted.
-void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t item_id) noexcept {
+void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t item_id,
+                                        std::int64_t moment_ms) noexcept {
   if (path_utf8.empty() || !options_.jobs) return;
   void* mtl_device = device_.native_device();
   video_opening_.store(item_id, std::memory_order_release);
   wake();  // present at vblank while it loads (present_request::video_loading)
 
   options_.jobs->submit(
-      [this, path = std::move(path_utf8), mtl_device, item_id](const job_context& ctx) -> status {
+      [this, path = std::move(path_utf8), mtl_device, item_id, moment_ms](const job_context& ctx) -> status {
         const double t0 = monotonic_seconds();
         auto opened = player::open_media(path.c_str(), mtl_device);
         std::uint64_t expected = item_id;
@@ -495,11 +496,45 @@ void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t ite
           return status::cancelled;
         }
         MV_LOG_INFO("open: video ready in %.0f ms", (monotonic_seconds() - t0) * 1000.0);
-        auto* pm = new pending_media{opened.value(), item_id};
+        auto* pm = new pending_media{opened.value(), item_id, moment_ms};
         if (pending_media* old = pending_media_.exchange(pm)) {
           player::close_media(old->source);  // a clip superseded before it was shown
           delete old;
         }
+        wake();
+        return status::ok;
+      });
+}
+
+// A lookup and a 512-px JPEG decode on a worker, at the view generation
+// open_item() just set: navigating on abandons it like any open.
+void present_lab_mac::submit_clip_placeholder(std::string path_utf8, std::int64_t mtime_unix,
+                                              std::uint64_t size, std::int64_t moment_ms,
+                                              std::uint64_t item_id) noexcept {
+  if (!options_.jobs || !options_.clip_thumb) return;
+  void* mtl_device = device_.native_device();
+  options_.jobs->submit(
+      [this, path = std::move(path_utf8), mtime_unix, size, moment_ms, item_id,
+       mtl_device](const job_context& ctx) -> status {
+        const std::string jpeg = options_.clip_thumb(path, mtime_unix, size, moment_ms);
+        if (jpeg.empty()) return status::ok;  // nothing cached: the sought frame is first
+        if (ctx.cancelled()) return status::cancelled;
+        std::ifstream f(jpeg, std::ios::binary | std::ios::ate);
+        if (!f) return status::ok;
+        const std::streamoff bytes_size = f.tellg();
+        if (bytes_size <= 0) return status::ok;
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(bytes_size));
+        f.seekg(0);
+        if (!f.read(reinterpret_cast<char*>(bytes.data()), bytes_size)) return status::ok;
+        auto decoded = image::decode_bytes_mac(bytes, &ctx);
+        if (!decoded) return decoded.error() == status::cancelled ? status::cancelled : status::ok;
+        auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+        if (!uploaded) return uploaded.error() == status::cancelled ? status::cancelled : status::ok;
+        if (ctx.cancelled()) return status::cancelled;
+        auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+        img->item_id = item_id;
+        img->preview = true;
+        delete pending_image_.exchange(img);
         wake();
         return status::ok;
       });
@@ -521,6 +556,7 @@ void present_lab_mac::update_video_status() noexcept {
   vs_muted_.store(video_muted_, std::memory_order_relaxed);
   vs_rate_x100_.store(kRateX100[std::clamp(speed_rung_, 0, 5)], std::memory_order_relaxed);
   vs_volume_.store(video_volume_, std::memory_order_relaxed);
+  vs_item_.store(media_item_, std::memory_order_relaxed);
   vs_active_.store(true, std::memory_order_release);
 }
 
@@ -784,7 +820,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
 }
 
 std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mtime_unix,
-                                         std::uint64_t size) noexcept {
+                                         std::uint64_t size, std::int64_t moment_ms) noexcept {
   if (path_utf8.empty() || !options_.jobs) return 0;
   // Abandons whatever the previous open_item() call had in flight (folder
   // navigation is a new view intent) without touching folder_model_mac's own
@@ -793,8 +829,17 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mti
   options_.jobs->bump_generation();
   const std::uint64_t item = ++item_counter_;
   if (is_video_name(path_utf8)) {
-    submit_video_open(std::move(path_utf8), item);
-  } else if (!cacheable_still(path_utf8) || !cache_publish(path_utf8, mtime_unix, size, item)) {
+    clip_item_.store(item, std::memory_order_release);
+    // Rule 3 for a clip landing on a moment: its cached thumbnail goes up
+    // while the clip opens and decodes forward to the sought frame.
+    if (moment_ms >= 0 && mtime_unix != kNoStamp && options_.clip_thumb) {
+      submit_clip_placeholder(path_utf8, mtime_unix, size, moment_ms, item);
+    }
+    submit_video_open(std::move(path_utf8), item, moment_ms);
+    return item;
+  }
+  clip_item_.store(0, std::memory_order_release);
+  if (!cacheable_still(path_utf8) || !cache_publish(path_utf8, mtime_unix, size, item)) {
     loading_item_.store(item, std::memory_order_release);
     submit_image_load(std::move(path_utf8), item);
   }
@@ -1244,7 +1289,16 @@ void present_lab_mac::render_thread_main() noexcept {
 
         // PR 17: a background job finished decoding --open. Take it over and
         // fit it once; a resize while in fit mode re-fits below.
-        if (image::gpu_image_mac* loaded = pending_image_.exchange(nullptr)) {
+        image::gpu_image_mac* loaded = pending_image_.exchange(nullptr);
+        // Milestone H: a clip's placeholder (submit_clip_placeholder) stands in
+        // until the clip's first frame; one that lands after it is too late.
+        const bool clip_placeholder = loaded && loaded->preview && loaded->item_id != 0 &&
+                                      loaded->item_id == clip_item_.load(std::memory_order_acquire);
+        if (clip_placeholder && media_ && media_item_ == loaded->item_id && video_frame_) {
+          delete loaded;
+          loaded = nullptr;
+        }
+        if (loaded) {
           // Same item, better pixels (preview -> full): keep the view as a
           // fraction of the image so nothing pops, refits or snaps. A new
           // item resets and fits.
@@ -1280,9 +1334,13 @@ void present_lab_mac::render_thread_main() noexcept {
           {
             const edit_view* ev = edit_for(current_image_->item_id);
             applied_edit_ = ev ? *ev : edit_view{};
-            shown_w_.store(current_image_->width, std::memory_order_relaxed);
-            shown_h_.store(current_image_->height, std::memory_order_relaxed);
-            shown_item_.store(current_image_->item_id, std::memory_order_release);
+            // A clip's placeholder is not a still on screen: no crop bounds,
+            // no browse-soak "still shown", no default-viewer prompt.
+            if (!clip_placeholder) {
+              shown_w_.store(current_image_->width, std::memory_order_relaxed);
+              shown_h_.store(current_image_->height, std::memory_order_relaxed);
+              shown_item_.store(current_image_->item_id, std::memory_order_release);
+            }
           }
           const edit::placement landed = place_image(*current_image_);
           if (refinement) {
@@ -1290,7 +1348,7 @@ void present_lab_mac::render_thread_main() noexcept {
                            static_cast<float>(landed.cropped.h),
                            usable_window_w(snapshot), usable_window_h(snapshot));
           } else {
-            stills_shown_.fetch_add(1, std::memory_order_acq_rel);
+            if (!clip_placeholder) stills_shown_.fetch_add(1, std::memory_order_acq_rel);
             // plan/16 sticky zoom: off (default) fits every item; on keeps the
             // mode, or the zoom and pan fraction (same as the Windows lab).
             const auto new_w = static_cast<float>(landed.cropped.w);
@@ -1367,12 +1425,29 @@ void present_lab_mac::render_thread_main() noexcept {
           retire_media();
           media_ = pm->source;
           media_item_ = pm->item;
+          const std::int64_t moment_ms = pm->moment_ms;
           delete pm;
           speed_rung_ = 2;
           video_muted_ = false;
           media_->set_volume(video_volume_);
-          // Under the gallery it stays paused on its first frame (issue #44).
-          if (hold_.autoplay(media_item_)) media_->play();
+          if (moment_ms >= 0) {
+            // Milestone H: a search result lands paused on its moment. The
+            // exact seek decodes forward from the keyframe before it and
+            // presents that one frame (media_source preview), then idles.
+            // Opened under the gallery (G while it was still opening), the
+            // hold took it for a clip about to autoplay and would start it on
+            // release: it never was, so it stays paused as an explicit Pause
+            // would leave it. Only for the live item; a stale adoption must
+            // not cancel the resume of the one still opening.
+            if (media_item_ == item_counter_.load(std::memory_order_acquire)) {
+              hold_.user_transport();
+            }
+            media_->pause();
+            media_->seek(static_cast<player::time_ns>(moment_ms) * 1'000'000, /*exact=*/true);
+          } else if (hold_.autoplay(media_item_)) {
+            // Under the gallery it stays paused on its first frame (issue #44).
+            media_->play();
+          }
           redraw = true;
           if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
         }
@@ -1445,15 +1520,23 @@ void present_lab_mac::render_thread_main() noexcept {
         }
         req.video_active = (media_ && media_->needs_present()) || anim_live_;
         req.video_loading = video_opening_.load(std::memory_order_acquire) != 0;
-        req.redraw = redraw || fade_.active(elapsed);
+        req.redraw = redraw || redraw_owed_ || fade_.active(elapsed);
         req.painted_static = painted_static_;
         req.elapsed_seconds = elapsed;
         req.last_input_time = last_input_time_;
         const auto decision = gfx::decide_present(req);
-        mv::shell::g_present_busy.store(decision.live, std::memory_order_relaxed);
+        if (const std::uint64_t drops = pacer_.dropped_frames_so_far(); drops > busy_drops_seen_) {
+          busy_drops_seen_ = drops;
+          busy_drop_at_ = elapsed;
+        }
+        const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
+        mv::shell::g_present_busy.store(decision.live || frame_pressure, std::memory_order_relaxed);
 
         CAMetalDisplayLink* live_link = (__bridge CAMetalDisplayLink*)display_link_;
         if (!decision.wants_frame) {
+          // Presenting allowed, not live and not asked: nothing was owed. Not
+          // allowed (the window not key): what changed is owed for when it is.
+          redraw_owed_ = req.redraw;
           if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
           was_presenting_ = false;
           live_link.paused = YES;
@@ -1607,11 +1690,12 @@ void present_lab_mac::render_thread_main() noexcept {
             game_.update(dt);
             // Game over or the outro finished: idle again, nothing moves.
             if (game_.state() == dino_game::phase::over || !game_.active()) animating_ = false;
-            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_));
+            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_),
+                         &snapshot.recents);
             draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale, theme);
           } else {
             last_game_elapsed_ = 0.0;
-            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme);
+            draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, 1.0f, &snapshot.recents);
           }
         }
 
@@ -1741,6 +1825,7 @@ void present_lab_mac::render_thread_main() noexcept {
         ++total_presents_;
         pacer_.frame_end(tick);
         if (!decision.live) painted_static_ = true;
+        redraw_owed_ = false;
         commit_nav_present();
       }
     }

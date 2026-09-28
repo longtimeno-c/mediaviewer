@@ -42,6 +42,9 @@ struct view_state {
   bool crop = false;       // PR 10: crop mode on the canvas
   bool trim = false;       // PR 13: trim armed on the current clip
   bool game = false;       // the empty-window runner is up (Space on an empty view)
+  // Milestone H: a search result list ("Search: ...") is open in place of a
+  // folder and there is somewhere to go back to (plan/16 `Esc`).
+  bool list_open = false;
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
@@ -62,6 +65,7 @@ enum class back_target : std::uint8_t {
   fullscreen,
   canvas_focus,
   game,  // leave the empty-window runner (dino_game.h)
+  result_list,  // Milestone H: back from a result list to its folder ("Back to folder")
 };
 
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;
@@ -72,6 +76,18 @@ struct key_event {
   bool repeat = false;  // typematic
   bool up = false;
 };
+
+// The standard editing chords a text field owns (owner, 2026-09-27: "Cmd+A /
+// Ctrl+A in the search bar"). With a text control focused the router already
+// leaves every key but Esc to it; this names the chords a host must make sure
+// the field actually gets. The Mac field editor gets them only through Edit
+// menu items the viewer does not have (⌘A, ⌘C and ⌘Z are its own commands on
+// the canvas), so the host hands them over; the Windows FakeInput reads them
+// itself (and Ctrl+Y, Windows' other redo). Ctrl here is the host's primary
+// modifier (⌘ on the Mac).
+enum class text_edit : std::uint8_t { none, select_all, copy, cut, paste, undo, redo };
+
+[[nodiscard]] text_edit text_edit_for(const key_event& e) noexcept;
 
 struct route {
   command_id command = command_id::none;

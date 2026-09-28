@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Copyright (C) 2026 longtimeno-c -->
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+  <!-- Milestone H (plan/17): the AI pack's Windows chrome - the search panel,
+       the management panel Settings embeds, and the people window. Shipped in
+       the signed "ai" add-on archive beside mv_ai.dll, never in the base
+       install. Loaded by IslandHost.Addons.cs into its own collectible
+       AssemblyLoadContext; MediaViewer.Interop (IAddonHost2, ISearchChrome,
+       AiApi) and the Windows App SDK come from the host, so neither is copied
+       here. The UI is built in code, like Import's: no XAML compile step. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>MediaViewer.Ai.Chrome</RootNamespace>
+    <AssemblyName>MediaViewer.Ai.Chrome</AssemblyName>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4948" />
+    <!-- Compile against the host's WinUI; the host process already has it loaded. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" ExcludeAssets="runtime;native" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MediaViewer.Interop\MediaViewer.Interop.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

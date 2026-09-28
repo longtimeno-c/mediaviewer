@@ -94,8 +94,9 @@ struct jpeg_dest {
   std::array<std::uint8_t, 4096> buf{};
 };
 
+// `grey`: one byte per pixel in `rgb`, written as a greyscale JPEG.
 inline std::vector<std::uint8_t> jpeg_rgb(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgb,
-                                          const std::vector<std::uint8_t>& icc = {}) {
+                                          const std::vector<std::uint8_t>& icc = {}, bool grey = false) {
   std::vector<std::uint8_t> out;
   jpeg_compress_struct cinfo{};
   jpeg_error_mgr err{};
@@ -125,8 +126,9 @@ inline std::vector<std::uint8_t> jpeg_rgb(std::uint32_t w, std::uint32_t h, cons
 
   cinfo.image_width = w;
   cinfo.image_height = h;
-  cinfo.input_components = 3;
-  cinfo.in_color_space = JCS_RGB;
+  const int comps = grey ? 1 : 3;
+  cinfo.input_components = comps;
+  cinfo.in_color_space = grey ? JCS_GRAYSCALE : JCS_RGB;
   jpeg_set_defaults(&cinfo);
   jpeg_set_quality(&cinfo, 100, TRUE);
   jpeg_start_compress(&cinfo, TRUE);
@@ -149,9 +151,9 @@ inline std::vector<std::uint8_t> jpeg_rgb(std::uint32_t w, std::uint32_t h, cons
     }
   }
 
-  std::vector<JSAMPLE> row(static_cast<std::size_t>(w) * 3);
+  std::vector<JSAMPLE> row(static_cast<std::size_t>(w) * comps);
   while (cinfo.next_scanline < cinfo.image_height) {
-    const std::uint8_t* src = rgb + static_cast<std::size_t>(cinfo.next_scanline) * w * 3;
+    const std::uint8_t* src = rgb + static_cast<std::size_t>(cinfo.next_scanline) * w * comps;
     std::memcpy(row.data(), src, row.size());
     JSAMPROW rows[1] = {row.data()};
     jpeg_write_scanlines(&cinfo, rows, 1);
@@ -171,6 +173,22 @@ inline std::vector<std::uint8_t> adobe_rgb_icc() {
   cmsToneCurve* g = cmsBuildGamma(nullptr, 2.2);
   cmsToneCurve* curves[3] = {g, g, g};
   cmsHPROFILE p = cmsCreateRGBProfile(&d65, &primaries, curves);
+  cmsFreeToneCurve(g);
+  if (!p) return {};
+  cmsUInt32Number bytes = 0;
+  cmsSaveProfileToMem(p, nullptr, &bytes);
+  std::vector<std::uint8_t> out(bytes);
+  cmsSaveProfileToMem(p, out.data(), &bytes);
+  out.resize(bytes);
+  cmsCloseProfile(p);
+  return out;
+}
+
+// A linear-light grey profile (gamma 1.0, D50 white): a greyscale JPEG that
+// carries its own gray ICC, as scanned and archive photos often do.
+inline std::vector<std::uint8_t> linear_grey_icc() {
+  cmsToneCurve* g = cmsBuildGamma(nullptr, 1.0);
+  cmsHPROFILE p = cmsCreateGrayProfile(cmsD50_xyY(), g);
   cmsFreeToneCurve(g);
   if (!p) return {};
   cmsUInt32Number bytes = 0;

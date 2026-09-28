@@ -18,13 +18,17 @@ struct FilmstripView: View {
         // (and requesting 2000 thumbnails) up front is exactly the hitch.
         LazyHStack(spacing: 4) {
           ForEach(store.names.indices, id: \.self) { index in
-            FilmstripCell(
-              index: index, name: store.names[index], isCurrent: index == store.currentIndex,
-              isMarked: store.markedNames.contains(store.names[index]),
-              slot: store.slot(for: store.names[index])
-            )
-            .id(index)
-            .onTapGesture { store.select(index) }
+            // A stale row of a list that just shrank (a search result replacing
+            // the folder): skip it, never index past the end.
+            if store.names.indices.contains(index) {
+              FilmstripCell(
+                index: index, name: store.names[index], isCurrent: index == store.currentIndex,
+                isMarked: store.markedNames.contains(store.names[index]),
+                slot: store.slot(for: store.names[index])
+              )
+              .id(index)
+              .onTapGesture { store.select(index) }
+            }
           }
         }
         .padding(.horizontal, 8)
@@ -69,5 +73,8 @@ private struct FilmstripCell: View {
     )
     .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
+    // Cells are identified by index: a new listing (a result list replacing
+    // the folder) reuses them without a fresh onAppear, so ask again.
+    .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }

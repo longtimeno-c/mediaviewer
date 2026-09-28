@@ -121,6 +121,12 @@ public static partial class IslandHost
         AddTelemetrySettingsRow(view);
         var addons = new StackPanel { Spacing = 8, Margin = new Thickness(0, 20, 0, 0) };
         AddAddonsSettingsRow(addons);
+        // Milestone H (IslandHost.LocalSearch.cs): Local search is the second
+        // item of Add-ons, and the one surface the AI pack has while it is not
+        // installed.
+        var localSearch = new StackPanel { Spacing = 8, Margin = new Thickness(0, 16, 0, 0) };
+        AddLocalSearchSettings(localSearch);
+        addons.Children.Add(localSearch);
         view.Children.Add(addons);
 
         var keysHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };

@@ -18,6 +18,8 @@ public static partial class IslandHost
     {
         Canvas, PanelBg, Surface, Title, Body, Hairline, Selection,
         TrimAccent, TrimKeep, KeyframeTick, StarOn,
+        // FakeInput's selected text: its highlight and the text on it.
+        TextSelection, TextSelectionInk,
     }
 
     private static readonly Dictionary<ChromeColour, SolidColorBrush> ThemeBrushes = new();
@@ -85,6 +87,8 @@ public static partial class IslandHost
         Color accent = _themeSettings.GetColorValue(dark ? UIColorType.AccentLight2 : UIColorType.AccentDark2);
         Color selection = Blend(canvas, accent, 0.14);
         Color keep = ColorHelper.FromArgb(70, accent.R, accent.G, accent.B);
+        Color textSelection = ColorHelper.FromArgb(96, accent.R, accent.G, accent.B);
+        Color textSelectionInk = title;
 
         if (contrast)
         {
@@ -94,6 +98,8 @@ public static partial class IslandHost
             canvas = panel = surface = selection = SystemColour(5); // COLOR_WINDOW
             title = body = line = accent = SystemColour(8);         // COLOR_WINDOWTEXT
             keep = SystemColour(13);                               // COLOR_HIGHLIGHT
+            textSelection = SystemColour(13);                      // COLOR_HIGHLIGHT
+            textSelectionInk = SystemColour(14);                   // COLOR_HIGHLIGHTTEXT
         }
 
         Set(ChromeColour.Canvas, canvas);
@@ -107,6 +113,8 @@ public static partial class IslandHost
         Set(ChromeColour.TrimKeep, keep);
         Set(ChromeColour.KeyframeTick, body);
         Set(ChromeColour.StarOn, accent);
+        Set(ChromeColour.TextSelection, textSelection);
+        Set(ChromeColour.TextSelectionInk, textSelectionInk);
 
         // The native welcome/game is outside the XAML tree. Ship the current
         // system window colour to its snapshot on the UI thread, including
@@ -117,6 +125,9 @@ public static partial class IslandHost
         _themeTitleDark = dark && !contrast;
         ApplyTitleBarTheme(_themeWindow);
         ApplyTitleBarTheme(_editorThemeWindow);  // PR 30: the Video Editor window
+
+        // Milestone H: an add-on's own window follows (IAddonHost2.ThemeChanged).
+        RaiseHostThemeChanged();
     }
 
     private static bool _themeTitleDark = true;

@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 13 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges */
+#define MV_ABI_VERSION_MINOR 14 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -388,6 +388,28 @@ MV_API mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8
  * old texture. A path that is not cached is fine (MV_OK). Does not select,
  * decode or touch the file. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path);
+
+/* 0.14 (Milestone H, PR 22; plan/17 "UI and commands"). A listing that is
+ * not a directory: search results, shown by the same gallery, filmstrip,
+ * selection, keyboard model and thumbnail cache as a folder. Items keep the
+ * order given (best match first; the sort order does not apply), are never
+ * paired and are not watched. An item with a moment (`moments_ms[i]` >= 0)
+ * is a clip that opens PAUSED on that frame (an exact seek: the keyframe
+ * before it, decoded forward). `moments_ms` may be NULL (all -1).
+ * mv_folder_directory reports "" while a list is open; its title is
+ * mv_folder_list_title. FOLDER_READY carries the count, as for a folder.
+ * mv_folder_open of a directory ends the list. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_open_list(mv_session_t session, const char* title_utf8,
+                                             const char* const* paths_utf8,
+                                             const int64_t* moments_ms, uint32_t count,
+                                             uint32_t select_index, uint64_t* out_job_id);
+/* The list's title ("guy on a skateboard"), or "" when a directory is open.
+ * Buffer rules as mv_folder_item_name. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_list_title(mv_session_t session, char* utf8, uint32_t cap,
+                                              uint32_t* out_bytes);
+/* The moment an item opens on, -1 for none. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index,
+                                               int64_t* out_ms);
 
 /* -------------------------------------------------------------------------
  * PR 5 — video. plan/05-video-pipeline.md, plan/14-abi.md.

@@ -4,7 +4,10 @@
 
 #include <utility>
 
+#include "abi/addon_media.h"
+#include "image/thumb.h"
 #include "io/file.h"
+#include "io/file_port.h"
 #include "io/paths.h"
 #include "player/poster.h"
 #include "shell/media_kind.h"
@@ -17,11 +20,18 @@ folder_model::~folder_model() { close(); }
 
 expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcept {
   if (dir_utf8.empty()) return err(status::invalid_arg);
+  std::lock_guard<std::mutex> ops(ops_mutex_);
   jobs_ = &jobs;
 
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->dir.assign(dir_utf8);
+    // A result list's items are not this folder's: never let a relist that
+    // has not landed yet be read as them.
+    if (state_->is_list) state_->items.clear();
+    state_->is_list = false;
+    state_->list_title.clear();
+    state_->moments.clear();
     state_->generation.fetch_add(1, std::memory_order_acq_rel);
   }
 
@@ -42,6 +52,70 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
   // missed.
   (void)relist_now(*state_, std::string(dir_utf8));
   return {};
+}
+
+expected folder_model::open_list(std::string title_utf8, std::vector<list_entry> entries,
+                                 job_system& jobs) noexcept {
+  std::lock_guard<std::mutex> ops(ops_mutex_);
+  jobs_ = &jobs;
+  // Nothing to watch: a result list changes only when the user searches again.
+  watcher_.stop();
+  std::uint64_t mine = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->dir.clear();  // a queued relist of the old folder now drops itself
+    mine = state_->generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+  }
+  auto cache = io::thumb_cache_dir();
+  if (!cache) return err(cache.error());
+  if (!state_->thumbs.is_open()) {
+    if (auto opened = state_->thumbs.open(cache.value()); !opened) return opened;
+  }
+  // One stat per result: size and mtime key the thumbnail cache. A file
+  // deleted or moved since it was indexed simply drops out.
+  std::vector<io::dir_entry> items;
+  std::vector<std::int64_t> moments;
+  items.reserve(entries.size());
+  moments.reserve(entries.size());
+  for (list_entry& e : entries) {
+    auto st = io::stat_path(e.path_utf8);
+    if (!st || st.value().is_directory) continue;
+    io::dir_entry d;
+    d.name_utf8 = std::string(io::file_name_of(e.path_utf8));
+    d.size = st.value().size;
+    d.mtime_unix = st.value().mtime_unix;
+    d.path_utf8 = std::move(e.path_utf8);
+    items.push_back(std::move(d));
+    moments.push_back(e.moment_ms);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    // close() may have moved the model on while the stats ran (it does not
+    // take ops_mutex_): it wins, rather than a list marked open over it.
+    if (state_->generation.load(std::memory_order_acquire) != mine) return {};
+    state_->is_list = true;
+    state_->list_title = std::move(title_utf8);
+    state_->items = std::move(items);
+    state_->moments = std::move(moments);
+    state_->subdirs.clear();
+  }
+  state_->changed.store(true, std::memory_order_release);
+  if (state_->notify) state_->notify(state_->notify_user);
+  return {};
+}
+
+folder_model::listing folder_model::snapshot() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  listing out;
+  out.items = state_->items;
+  out.subdirs = state_->subdirs;
+  out.is_list = state_->is_list;
+  if (state_->is_list) {
+    out.moments = state_->moments;
+    out.title = state_->list_title;
+  }
+  out.dir = state_->dir;
+  return out;
 }
 
 void folder_model::set_changed_notify(changed_fn fn, void* user) noexcept {
@@ -78,6 +152,10 @@ void folder_model::close() noexcept {
     state_->dir.clear();
     state_->items.clear();
     state_->subdirs.clear();
+    state_->moments.clear();
+    state_->list_title.clear();
+    state_->is_list = false;
+    state_->generation.fetch_add(1, std::memory_order_acq_rel);
   }
   // Jobs already submitted to `jobs_` (relist/thumb) keep their own
   // std::shared_ptr<shared_state> and finish safely against it; this object
@@ -155,8 +233,21 @@ void folder_model::request_summary(std::string dir_utf8, summary_ready_fn on_rea
                    });
 }
 
+std::string folder_model::cached_clip_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
+                                            std::uint64_t size, std::int64_t moment_ms) const {
+  image::thumb_store& thumbs = state_->thumbs;
+  if (moment_ms >= 0) {
+    auto hit = thumbs.lookup(image::moment_thumb_key(path_utf8, moment_ms, mtime_unix, size));
+    if (hit && !hit.value().empty()) return std::move(hit).value();
+  }
+  auto poster = thumbs.lookup(image::thumb_key{path_utf8, mtime_unix, size});
+  if (poster && !poster.value().empty()) return std::move(poster).value();
+  return {};
+}
+
 void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
-                                 std::uint64_t size, thumb_ready_fn on_ready) {
+                                 std::uint64_t size, thumb_ready_fn on_ready,
+                                 std::int64_t moment_ms) {
   if (!jobs_) {
     if (on_ready) on_ready(std::move(path_utf8), {});
     return;
@@ -175,8 +266,8 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
   // destructor runs before it starts or finishes.
   jobs_->submit_at(background_generation,
                    [state = state_, path = std::move(path_utf8), mtime_unix, size,
-                    on_ready = std::move(on_ready), requested_generation](
-                       const job_context& ctx) -> status {
+                    on_ready = std::move(on_ready), requested_generation,
+                    moment_ms](const job_context& ctx) -> status {
                      const auto stale = [&] {
                        return state->generation.load(std::memory_order_acquire) !=
                               requested_generation;
@@ -184,6 +275,28 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                      if (stale()) {
                        if (on_ready) on_ready(path, {});
                        return status::cancelled;
+                     }
+
+                     // A result list's clip tile: the matched moment, not the
+                     // clip's head. Made from that one frame when the pack has
+                     // not stored it; the poster below if it cannot be.
+                     if (moment_ms >= 0 && is_video_name(path)) {
+                       const image::thumb_key mkey =
+                           image::moment_thumb_key(path, moment_ms, mtime_unix, size);
+                       if (auto hit = state->thumbs.lookup(mkey); hit && !hit.value().empty()) {
+                         if (on_ready) on_ready(path, hit.value());
+                         return status::ok;
+                       }
+                       if (auto frame = addon::media::encode_moment_thumb(path, moment_ms)) {
+                         if (stale()) {
+                           if (on_ready) on_ready(path, {});
+                           return status::cancelled;
+                         }
+                         if (auto stored = state->thumbs.store(mkey, frame.value())) {
+                           if (on_ready) on_ready(path, stored.value());
+                           return status::ok;
+                         }
+                       }
                      }
 
                      const image::thumb_key key{path, mtime_unix, size};

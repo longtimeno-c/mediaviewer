@@ -560,6 +560,12 @@ void present_lab::render_thread_main() noexcept {
         if (device_.d3d()) device_.d3d()->QueryInterface(IID_PPV_ARGS(mine.GetAddressOf()));
         if (!ready->device || !mine || ready->device.Get() != mine.Get()) {
           mv::abi::release_gpu_image(ready);
+        } else if (ready->quality == image::gpu_quality::preview && current_video_.texture &&
+                   current_video_.generation == ready->view_generation) {
+          // Milestone H: a clip's placeholder (abi.cpp open_video_worker) that
+          // lost the race to the clip's own first frame. A paused clip presents
+          // that frame once, so it must not be covered.
+          mv::abi::release_gpu_image(ready);
         } else {
           const float old_w = media_width();
           const float old_h = media_height();
@@ -1077,7 +1083,14 @@ void present_lab::render_thread_main() noexcept {
     live_presenting_ = live;
     // plan/18 "Priority": a background import waits between buffers while
     // this loop is presenting frames. One relaxed store; never blocks.
-    mv_present_set_busy(live ? 1u : 0u);
+    // plan/17 "Yield policy": a dropped frame keeps the signal up for two
+    // seconds, so the AI indexer also backs off when presents run late.
+    if (const std::uint64_t drops = pacer_.dropped_frames_so_far(); drops > busy_drops_seen_) {
+      busy_drops_seen_ = drops;
+      busy_drop_at_ = elapsed;
+    }
+    const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
+    mv_present_set_busy(live || frame_pressure ? 1u : 0u);
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || options_.present_when_inactive ||
                           snapshot.window_active);
@@ -1812,12 +1825,13 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
     game_.update(dt);
     // Game over or the outro finished: idle again, nothing moves.
     if (game_.state() == dino_game::phase::over || !game_.active()) animating_ = false;
-    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_));
+    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_),
+                 &snapshot.recents);
     draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale, theme);
     return;
   }
   last_game_elapsed_ = 0.0;
-  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme);
+  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, 1.0f, &snapshot.recents);
 }
 
 void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {

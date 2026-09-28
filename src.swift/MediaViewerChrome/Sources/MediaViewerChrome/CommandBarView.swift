@@ -226,6 +226,8 @@ public struct CommandBarView: View {
         UpdateBarItem()
         // Milestone G: the one-time Import hint and a running import's line.
         AddonBarItems()
+        // Milestone H: the indexing pill, only while the AI pack is indexing.
+        LocalSearchBarItem()
         Spacer()
         // PR 12: what a rating key or a metadata write just did.
         if !notice.text.isEmpty {
@@ -246,7 +248,7 @@ public struct CommandBarView: View {
         }
         // The folder trail sits beside `?` rather than in a row of its own, so
         // opening a folder does not push the canvas down.
-        if !store.crumbs.isEmpty {
+        if !store.crumbs.isEmpty || store.listTitle != nil {
           PathBar()
           Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, 4)
         }
@@ -313,14 +315,23 @@ private struct UpdateBarItem: View {
 /// The trail from the highest folder reached to the one on screen, in the
 /// command bar just left of `?`. Up and Root are icons outside the scrolling
 /// ancestor trail; the current name stays pinned and a long middle becomes an
-/// ancestor menu. Shown whenever a folder is open, including while a photo is
-/// on the canvas.
+/// ancestor menu; a search icon (Local search loaded) ends it. Shown whenever
+/// a folder is open, including while a photo is on the canvas.
 struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
   @State private var trailWidth: CGFloat = 0
   private let maxTrailWidth: CGFloat = 300
 
   var body: some View {
+    // Milestone H: a result list has no folder trail; its title stands in.
+    if let title = store.listTitle {
+      ListTitleBar(title: title)
+    } else {
+      trail
+    }
+  }
+
+  @ViewBuilder private var trail: some View {
     let crumbs = store.crumbs
     let shown = display(crumbs)
     HStack(spacing: 2) {
@@ -380,6 +391,7 @@ struct PathBar: View {
           .layoutPriority(1)
           .help(crumbs.last?.path ?? current.name)
       }
+      PathSearchButton()
     }
     .font(MVTheme.font(14))
     .padding(.horizontal, 6)
@@ -401,6 +413,52 @@ struct PathBar: View {
   }
 }
 
+/// The path row while search results are open (plan/17 "Results are the
+/// gallery"): what was searched, how many results, and the way back.
+private struct ListTitleBar: View {
+  @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var search = LocalSearchStore.shared
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Button { store.closeList() } label: {
+        Label("Back to folder", systemImage: "chevron.backward")
+      }
+      .buttonStyle(.borderless)
+      .fixedSize()
+      .foregroundStyle(MVTheme.title)
+      .help("Close the results and return to the folder (Esc)")
+      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 4)
+      // The ⌘F panel again in one click (Local search loaded); else a plain glyph.
+      if search.loaded {
+        PathSearchButton()
+      } else {
+        Image(systemName: "magnifyingglass").foregroundStyle(MVTheme.body)
+      }
+      // "Search: <query>", the Windows breadcrumb's wording.
+      Text(title.isEmpty ? "Search results" : "Search: " + title)
+        .font(MVTheme.font(14))
+        .fontWeight(.semibold)
+        .foregroundStyle(MVTheme.title)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .layoutPriority(1)
+      Text(store.itemCount == 1 ? "1 result" : "\(store.itemCount) results")
+        .font(MVTheme.font(13))
+        .foregroundStyle(MVTheme.body)
+        .contentTransition(.numericText())
+      Spacer(minLength: 0)
+    }
+    .font(MVTheme.font(14))
+    .padding(.horizontal, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(MVTheme.canvas)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Search results for \(title)")
+  }
+}
+
 private struct PathPiece: Identifiable {
   let id: Int
   let index: Int
@@ -411,6 +469,21 @@ private struct PathPiece: Identifiable {
 private struct TrailWidthKey: PreferenceKey {
   static let defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// The path group's search icon (owner, 2026-09-28; it replaced the gallery
+/// search bar): opens the Local search panel exactly as ⌘F does. Only while
+/// the pack is loaded, so the command exists; absent otherwise, never dead.
+private struct PathSearchButton: View {
+  @ObservedObject private var search = LocalSearchStore.shared
+
+  var body: some View {
+    if search.loaded {
+      PathIcon(symbol: "magnifyingglass", enabled: true) { search.openSearch() }
+        .help("Search photos and videos (⌘F)")
+        .accessibilityLabel("Search")
+    }
+  }
 }
 
 /// A square icon button for the path group, with the bar's hover wash.

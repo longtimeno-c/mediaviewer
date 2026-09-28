@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "addon/manifest.h"
@@ -55,12 +56,22 @@ class store {
   [[nodiscard]] result<std::string> make_staging() const;
 
   // Verifies a staged folder (manifest.json + .sig + files) and moves it into
-  // place. The folder is consumed either way. An older version than one that
-  // is installed and verifies is refused (status::corrupt): no downgrades. Older versions are removed, or
-  // marked for removal at next start if they are loaded right now.
+  // place. The folder is consumed either way. A family over its ceiling
+  // (family_ceiling; the AI pack's 3 GB) is refused: status::unsupported_format,
+  // like an add-on that needs a newer app; family_usage says which. An older version than one that
+  // is installed and verifies is refused (status::corrupt): no downgrades. Older versions stay until
+  // the next start (startup_cleanup): the one replaced may be running. The newest that verifies loads.
   [[nodiscard]] result<installed> install(const std::string& staged_dir) const;
 
-  // Removes every version. keep_data = false also deletes <dir>/data.
+  // Installed bytes of a family's verified members, and its ceiling (0 none).
+  struct family_room {
+    std::uint64_t used = 0;
+    std::uint64_t ceiling = 0;
+  };
+  [[nodiscard]] family_room family_usage(std::string_view family) const;
+
+  // Removes every version. keep_data = false also deletes <dir>/data; true
+  // keeps it but for <dir>/data/cache, an add-on's derived, rebuildable files.
   // Anything locked (loaded) is marked and removed at next start.
   [[nodiscard]] expected remove(const std::string& id, bool keep_data) const;
 
@@ -71,6 +82,13 @@ class store {
 
  private:
   [[nodiscard]] installed inspect(const std::string& version_dir, const std::string& dir_name) const;
+  // The newest version of one add-on folder that verifies (list()'s rule).
+  [[nodiscard]] bool best_in(const std::string& dir_name, installed& out) const;
+  // The newest signed manifest in an add-on folder, WITHOUT hashing its
+  // files: which add-on a folder holds, and its signed installed size. A
+  // multi-GB pack (the AI Core) makes a full verify cost seconds, so only the
+  // add-on being loaded is hashed (Milestone H).
+  [[nodiscard]] bool peek(const std::string& dir_name, manifest& out) const;
 
   std::string root_;
   std::vector<std::uint8_t> key_;

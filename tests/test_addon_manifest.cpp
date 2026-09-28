@@ -8,8 +8,10 @@
 
 #include <mediaviewer/mediaviewer_import.h>
 
+#include <atomic>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "addon/host.h"
@@ -116,10 +118,13 @@ TEST_CASE("a manifest is trusted only with a good signature from the pinned key"
   REQUIRE(mv::addon::check_manifest(bytes_of(m), sig, zeros, MV_ADDON_HOST_API).why ==
           rejection::key_not_configured);
 
-  // The pinned production key is the updater's.
+  // The pinned production key is the updater's (a developer build pins its
+  // own instead, and says so at configure time).
+#if !defined(MV_TEST_DEV_ADDON_KEY)
   const auto pinned = mv::addon::pinned_public_key();
   REQUIRE(pinned[0] == 0x04);
   REQUIRE(pinned[31] == 0x8c);
+#endif
 }
 
 TEST_CASE("manifest policy: platform, host API range, unsafe paths", "[addon][manifest]") {
@@ -173,7 +178,10 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     auto listed = st.list();
     REQUIRE(listed.size() == 1);
     REQUIRE(listed[0].version == "1.2.3");
-    // Sideloaded tamper after install: the next load refuses it.
+    // A second check in the same process answers from the verified snapshot.
+    REQUIRE(st.list()[0].state == mv::addon::install_state::ok);
+    // Sideloaded tamper after install, same size and within the same second:
+    // the next load refuses it (the snapshot is to the filesystem's precision).
     write_bytes(fs::path(listed[0].dir) / "mv_import.bin", pattern(4096, 8));
     REQUIRE(st.list()[0].state == mv::addon::install_state::invalid);
     REQUIRE(st.remove("import", false));
@@ -246,6 +254,14 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     stage(*new_stage, files, newer, k.sign(newer));
     REQUIRE(st.install(*new_stage));
     REQUIRE(st.list()[0].version == "1.10.0");
+    // The version it replaced may be running: it stays until the next start.
+    const fs::path addon_dir = fs::path(st.list()[0].dir).parent_path();
+    REQUIRE(fs::exists(addon_dir / "1.2.3"));
+    st.startup_cleanup();
+    CHECK_FALSE(fs::exists(addon_dir / "1.2.3"));
+    CHECK(fs::exists(addon_dir / "1.10.0"));
+    CHECK_FALSE(fs::exists(addon_dir / "prune.pending"));
+    CHECK(st.list()[0].version == "1.10.0");
   }
   SECTION("a manifest signed by someone else") {
     keypair other;
@@ -254,6 +270,45 @@ TEST_CASE("install verifies every file; a tampered or extra file is refused", "[
     stage(*staged, files, m, other.sign(m));
     REQUIRE_FALSE(st.install(*staged));
   }
+}
+
+// 2026-09-27: at launch the pack's load and Settings' installed-state read
+// verify the same folder at once; the second waits for the first's answer.
+TEST_CASE("concurrent state reads of one install agree, and still catch a planted file",
+          "[addon][store]") {
+  keypair k;
+  scratch_dir s("addons_concurrent");
+  mv::addon::store st(utf8(s.root()), k.pub, MV_ADDON_HOST_API);
+  const std::vector<file_spec> files{{"mv_import.bin", pattern(1 << 20, 3)},
+                                     {"LICENSES/THIRD-PARTY.md", {'o', 'k'}}};
+  const std::string m = manifest_json(files, "mv_import.bin");
+  auto staged = st.make_staging();
+  REQUIRE(staged);
+  stage(*staged, files, m, k.sign(m));
+  auto inst = st.install(*staged);
+  REQUIRE(inst);
+  // Installed from staging by a rename: already verified, and still is.
+  REQUIRE(st.find("import")->state == mv::addon::install_state::ok);
+
+  // A fresh copy of the folder (a new key) read from eight threads at once.
+  const fs::path copy = fs::path(inst->dir).parent_path() / "1.2.4";
+  fs::copy(inst->dir, copy, fs::copy_options::recursive);
+  const std::string m2 = manifest_json(files, "mv_import.bin", "1.2.4");
+  write_text(copy / "manifest.json", m2);
+  write_bytes(copy / "manifest.json.sig", k.sign(m2));
+  std::vector<std::thread> readers;
+  std::atomic<int> ok{0};
+  for (int i = 0; i < 8; ++i) {
+    readers.emplace_back([&] {
+      auto found = st.find("import");
+      if (found && found->version == "1.2.4" && found->state == mv::addon::install_state::ok) ++ok;
+    });
+  }
+  for (std::thread& t : readers) t.join();
+  CHECK(ok.load() == 8);
+  // The answer was cached, but the walk for extra files runs on every read.
+  write_text(copy / "planted.dll", "planted");
+  CHECK(st.find("import")->version == "1.2.3");  // the newest that verifies
 }
 
 TEST_CASE("with no add-on installed nothing is written and nothing loads", "[addon][store]") {
@@ -302,7 +357,13 @@ TEST_CASE("the real Import module installs, loads, answers, and shuts down", "[a
   // import.db lives in the add-on's own data folder.
   loaded->reset();
   REQUIRE(fs::exists(fs::path(st.list()[0].data_dir) / "import.db"));
-  // Removing it can keep or delete that data.
+  // Removing it can keep or delete that data; keeping it never keeps the
+  // add-on's derived cache (data/cache: the Mac's compiled Core ML models).
+  const fs::path data = st.list()[0].data_dir;
+  fs::create_directories(data / "cache" / "coreml");
+  { std::ofstream(data / "cache" / "coreml" / "model.bin") << "x"; }
   REQUIRE(st.remove("import", true));
   REQUIRE(st.list().empty());
+  CHECK(fs::exists(data / "import.db"));
+  CHECK_FALSE(fs::exists(data / "cache"));
 }

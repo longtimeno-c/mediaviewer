@@ -18,6 +18,25 @@ std::string g_addons_override;
 std::string g_snapshot_override;
 std::string g_clipboard_override;
 
+std::string utf8_from_wide(const wchar_t* wide);
+
+// Developer builds only (cmake/import.cmake: MV_ADDON_DEV_PUBLIC_KEY sets
+// MV_DEV_OVERRIDES): a validation run keeps its add-ons and thumbnails out of
+// the user's real %LocalAppData%\MediaViewer. Release builds read no variable.
+std::string dev_override(const wchar_t* name) {
+#if defined(MV_DEV_OVERRIDES)
+  wchar_t buf[MAX_PATH]{};
+  const DWORD n = ::GetEnvironmentVariableW(name, buf, MAX_PATH);
+  if (n > 0 && n < MAX_PATH) {
+    ::CreateDirectoryW(buf, nullptr);
+    return utf8_from_wide(buf);
+  }
+#else
+  (void)name;
+#endif
+  return {};
+}
+
 std::string utf8_from_wide(const wchar_t* wide) {
   if (!wide || !wide[0]) return {};
   const int n = ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
@@ -39,6 +58,7 @@ result<std::string> thumb_cache_dir() {
     std::lock_guard lock(g_mu);
     if (!g_override.empty()) return g_override;
   }
+  if (std::string dev = dev_override(L"MV_DEV_THUMBS_DIR"); !dev.empty()) return dev;
 
   wchar_t local[MAX_PATH]{};
   const HRESULT hr =
@@ -68,6 +88,7 @@ result<std::string> addons_dir() {
     std::lock_guard lock(g_mu);
     if (!g_addons_override.empty()) return g_addons_override;
   }
+  if (std::string dev = dev_override(L"MV_DEV_ADDONS_DIR"); !dev.empty()) return dev;
   wchar_t local[MAX_PATH]{};
   if (FAILED(::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, local))) {
     return err(status::io);

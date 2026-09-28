@@ -4,6 +4,8 @@
 // (D6, plan/03-rendering.md). Untagged JPEG/PNG/BMP is assumed sRGB.
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <span>
 
@@ -64,6 +66,10 @@ class display_transform {
   void* context_ = nullptr;    // cmsContext
   void* transform_ = nullptr;  // cmsHTRANSFORM; null when the profile is sRGB
   bool passthrough_ = false;   // the profile is sRGB in effect: copy through
+  // A grey profile (a greyscale JPEG with its own gray ICC): the decoder has
+  // expanded grey to R = G = B, so one 256-entry grey → sRGB table does it.
+  bool grey_ = false;
+  std::array<std::uint8_t, 256 * 3> grey_lut_{};
 };
 
 // The display_transform for `icc`, from a small most-recently-used cache

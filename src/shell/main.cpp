@@ -39,6 +39,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <commctrl.h>  // LoadIconWithScaleDown (comctl32 v6 via app.manifest)
@@ -47,6 +48,7 @@
 #include "shell/app_icon.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
+#include "mediaviewer/mediaviewer_addon.h"
 #include "mediaviewer/mediaviewer_clip.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
@@ -188,6 +190,12 @@ struct app_state {
   bool focus_adjust_next = false;  // PR 11: Shift+A focuses the pane's first slider
   bool focus_tree_next = false;
   std::string current_dir;  // the open folder, for the tree's root
+  // Milestone H: a result list (mv_folder_open_list, opened by the AI chrome)
+  // is on screen instead of current_dir's listing. Its title is the last
+  // breadcrumb; Up, Ctrl+Up and Esc from its gallery go back to current_dir
+  // on the item that was open before (list_return_select).
+  std::string list_title;
+  std::string list_return_select;
   // PR 26: breadcrumb trail, gallery folder-tile cursor, auto-open for a
   // folder of folders. trail is string arithmetic, no I/O.
   mv::shell::browse_path trail;
@@ -336,6 +344,7 @@ struct app_state {
   bool settings_open = false;    // settings screen covering the canvas
   bool game_on = false;          // Space on an empty window started the runner
   bool file_drag_armed = false;
+  int welcome_press = -1;        // the welcome card's recent row under the left press
   int file_drag_x = 0;
   int file_drag_y = 0;
   std::wstring last_title;       // the status line last written to the title bar
@@ -478,9 +487,45 @@ app_state* state_from(HWND hwnd) noexcept {
   return reinterpret_cast<app_state*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
+// The welcome card lists recent folders only until something opens (the Mac
+// host's -welcomeListsRecents). Every open route moves `mode` off `none`.
+bool welcome_lists_recents(const app_state* app) noexcept {
+  return app->mode == open_mode::none && app->early_open_dir.empty() && app->record_recent;
+}
+
 void publish(app_state* app) noexcept {
+  // The card's rows go the moment anything opens, whichever route opened it.
+  if (app->input.recents.count != 0 && !welcome_lists_recents(app)) {
+    app->input.recents.count = 0;
+    app->input.recents.hover = -1;
+    ++app->input.activity_seq;
+  }
   app->lab.publish(app->input);
   app->lab.wake();
+}
+
+// The rows from app->recent_folders; one redraw when they change.
+void refresh_welcome_recents(app_state* app) noexcept {
+  mv::shell::welcome_recents next;
+  if (welcome_lists_recents(app)) mv::shell::fill_welcome_recents(app->recent_folders, {}, next);
+  if (std::memcmp(&next, &app->input.recents, sizeof(next)) == 0) return;
+  app->input.recents = next;
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The recent row under the pointer, hit-tested on the layout the render
+// thread draws (welcome_layout.h); -1 when the card lists none.
+int welcome_row_at_pointer(const app_state* app) noexcept {
+  const auto& in = app->input;
+  if (in.recents.count == 0 || !in.mouse_in_client || app->game_on || !welcome_lists_recents(app)) {
+    return -1;
+  }
+  const float scale = in.dpi_scale > 0.0f ? in.dpi_scale : 1.0f;
+  const mv::shell::welcome_geometry g =
+      mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
+                                static_cast<float>(in.chrome_height_px), scale, in.recents.count);
+  return mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
 }
 
 // The settings word the island sees: view_settings plus [update] auto_check
@@ -571,6 +616,9 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   seed_siblings_for(app, dir);
   app->folder_find = false;
   app->folder_query.clear();
+  // A directory ends a result list (mediaviewer.h 0.14).
+  app->list_title.clear();
+  app->list_return_select.clear();
   const bool opened_early =
       !navigation && dir == app->early_open_dir && select == app->early_open_select;
   app->early_open_dir.clear();
@@ -2694,9 +2742,27 @@ void push_browse_state(app_state* app) {
     blob += c.path;
     blob += '\n';
   }
+  // Milestone H: a result list is one step below the folder it came from.
+  // Its crumb has no path (the gallery shows it as the current name), and Up
+  // goes back to the folder.
+  const bool list = !app->list_title.empty();
+  if (list) {
+    blob += "Search: ";
+    for (const char ch : app->list_title) blob += ch == '\t' || ch == '\n' ? ' ' : ch;
+    blob += "\t\n";
+  }
   const bool finding = folder_find_live(app);
-  app->chrome.apply_browse(app->folder_cursor, !app->trail.parent().empty(), blob, finding,
+  app->chrome.apply_browse(app->folder_cursor, list || !app->trail.parent().empty(), blob, finding,
                            app->folder_query);
+}
+
+// Milestone H: back from a result list to the folder it was opened over, on
+// the item that was open then. False when no list is open.
+bool leave_result_list(app_state* app) {
+  if (!app || app->list_title.empty() || app->current_dir.empty()) return false;
+  const std::string select = app->list_return_select;
+  open_folder(app, wide_from_utf8(app->current_dir), wide_from_utf8(select), true);
+  return true;
 }
 
 void open_utf8_dir(app_state* app, std::string_view utf8, bool navigation) {
@@ -2724,6 +2790,7 @@ void open_crumb_at(app_state* app, std::int32_t index) {
 
 bool navigate_folder_up(app_state* app) {
   if (!app) return false;
+  if (leave_result_list(app)) return true;
   const std::string parent = app->trail.parent();
   if (parent.empty()) return false;
   open_utf8_dir(app, parent, true);
@@ -3630,9 +3697,13 @@ void chrome_on_command(void* ctx, int command, float arg) {
       open_path(app, wide);
       return;
     }
-    case mv::shell::chrome_cmd_addon_state:
-      // The chrome installed, loaded, or removed the Import add-on.
-      mv::shell::set_addon_commands_available(arg != 0.0f);
+    case mv::shell::chrome_cmd_addon_state: {
+      // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
+      // (Milestone G), 2 / 3 the AI pack (Milestone H).
+      const int v = static_cast<int>(arg);
+      mv::shell::set_addon_commands_available(
+          v >= 2 ? mv::shell::addon_family::ai : mv::shell::addon_family::import, (v & 1) != 0);
+    }
       app->chrome.set_command_table(mv::shell::describe_commands());
       return;
     case mv::shell::chrome_cmd_export:
@@ -3702,6 +3773,17 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (plan/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
+      // Milestone H: a result list, or a directory again. The item that was
+      // open before the first list is where Up returns.
+      {
+        char title[512]{};
+        std::uint32_t bytes = 0;
+        if (mv_folder_list_title(app->session, title, sizeof(title), &bytes) != MV_OK) title[0] = '\0';
+        title[sizeof(title) - 1] = '\0';
+        if (title[0] != '\0' && app->list_title.empty()) app->list_return_select = app->edit_path;
+        app->list_title = title;
+        if (app->list_title.empty()) app->list_return_select.clear();
+      }
       refresh_item_info(app);
       refresh_mark_state(app);
       // The watcher fires this for a folder that gained or lost a subfolder too.
@@ -3927,6 +4009,9 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   if (app->ws.open) s.pane_open = true;  // PR 29: Esc closes the Edit workspace
   if (app->mode != open_mode::none) app->game_on = false;  // a file opened over the runner
   s.game = app->game_on;
+  // Milestone H: Esc from a result list is the path bar's "Back to folder"
+  // (leave_result_list's own condition, so the key is never swallowed).
+  s.list_open = !app->list_title.empty() && !app->current_dir.empty();
   return s;
 }
 
@@ -4454,7 +4539,12 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       focus_canvas(app);
       return;
     case back_target::gallery:
+      // Milestone H: the grid over a result list closes like any gallery; the
+      // next Esc (result_list) goes back to the folder, as on the Mac.
       set_gallery(app, false);
+      return;
+    case back_target::result_list:
+      (void)leave_result_list(app);
       return;
     case back_target::pane:
       // Esc from the canvas closes what is open: the Edit workspace (PR 29;
@@ -4985,6 +5075,25 @@ void note_recent_folder(app_state* app, const std::string& utf8_dir) {
   app->recent_folders = std::move(next);
   mv::shell::save_recent_folders(app->recent_folders);
   publish_jump_list(app);
+  refresh_welcome_recents(app);
+}
+
+// A click on one of the welcome card's recent folders: the jump list's route.
+void open_welcome_row(app_state* app, int row) {
+  if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+  const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
+  const auto is_dir = mv::io::is_directory(dir);
+  if (!is_dir || !is_dir.value()) {
+    // The card was ejected or the folder deleted: it is no longer a place to go.
+    ::MessageBeep(MB_ICONWARNING);
+    std::erase(app->recent_folders, dir);
+    mv::shell::save_recent_folders(app->recent_folders);
+    publish_jump_list(app);
+    refresh_welcome_recents(app);
+    return;
+  }
+  open_path(app, wide_from_utf8(dir));
+  focus_canvas(app);
 }
 
 void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string>> pruned) {
@@ -4994,6 +5103,7 @@ void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string
     return std::find(pruned->begin(), pruned->end(), f) != pruned->end();
   });
   if (app->recent_folders.size() != before) mv::shell::save_recent_folders(app->recent_folders);
+  refresh_welcome_recents(app);
 }
 
 // The taskbar thumbnail toolbar's glyphs, drawn at the small-icon size: white
@@ -5195,6 +5305,32 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       w.end_array();
       app->chrome.show_import(1, w.str());
       return true;
+    }
+    // Milestone H (plan/17 "UI and commands"): the AI pack's commands exist
+    // only while it is loaded; its chrome does the work. What is on screen
+    // rides along (the chrome can also read it from the session).
+    case search_open:
+    case search_similar:
+    case search_next_match:
+    case search_prev_match: {
+      if (!mv::shell::addon_command_available(command)) return false;
+      const std::int32_t kind = command == search_open        ? 0
+                                : command == search_similar   ? 1
+                                : command == search_next_match ? 2
+                                                               : 3;
+      const bool video = video_mode(app);
+      std::uint32_t state = MV_PLAY_STOPPED;
+      if (video) (void)mv_video_state(app->session, &state);
+      mv::json::writer w;
+      w.begin_object();
+      w.key("path").string(current_item_path(app));
+      w.key("video").boolean(video);
+      w.key("position_ms").integer(video ? clip_position(app) / 1000000 : -1);
+      w.key("paused").boolean(state != MV_PLAY_PLAYING);
+      w.end_object();
+      // N with no further match (or no pack to ask) falls through as unbound.
+      return app->chrome.show_addon(static_cast<std::int32_t>(mv::shell::addon_family::ai), kind,
+                                    w.str());
     }
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
@@ -5671,6 +5807,13 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   const bool is_down = msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN;
   const bool is_up = msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP;
   if (!is_down && !is_up) return false;
+  // Milestone H: an add-on's own top-level window (the search panel, the
+  // people window) marks itself; its keys are its text and its grid, never
+  // viewer commands. Import's window predates the mark and is unchanged.
+  if (msg.hwnd) {
+    const HWND top = ::GetAncestor(msg.hwnd, GA_ROOT);
+    if (top && top != app->window && ::GetPropW(top, L"MediaViewer.AddonWindow")) return false;
+  }
   // PR 30: keys aimed at the Video Editor are its own (editor_key). While it
   // is open the viewer's keys raise it instead: the canvas is over there, and
   // A / D here would walk the folder out from under the edit. Alt+ keys still
@@ -6334,6 +6477,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
       app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
       app->input.mouse_in_client = true;
+      // A recent folder under the pointer: highlighted, with the hand cursor
+      // (WM_SETCURSOR). The move above already redraws.
+      if (app->input.recents.count != 0) {
+        app->input.recents.hover = static_cast<std::int8_t>(welcome_row_at_pointer(app));
+      }
       // Issue #38: movement (and entry) wakes the transport. Only a real move:
       // parking an island can send a synthetic one at the same spot.
       if (moved) transport_activity(app);
@@ -6369,6 +6517,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
+      app->input.recents.hover = -1;
       publish(app);
       transport_activity(app);  // onto the bar or out of the window
       return 0;
@@ -6380,6 +6529,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
           app->autohide.pointer_hidden()) {
         ::SetCursor(nullptr);
+        return TRUE;
+      }
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
+          app->input.recents.hover >= 0) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
         return TRUE;
       }
       break;
@@ -6406,6 +6560,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
           app->file_drag_x = GET_X_LPARAM(lparam);
           app->file_drag_y = GET_Y_LPARAM(lparam);
         }
+        if (msg == WM_LBUTTONDOWN) app->welcome_press = welcome_row_at_pointer(app);
       }
       else if (!app->input.mouse_down[0] && !app->input.mouse_down[1] &&
                !app->input.mouse_down[2]) {
@@ -6413,6 +6568,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         app->file_drag_armed = false;
       }
       publish(app);
+      // A click on a recent folder: pressed and released on the same row.
+      if (msg == WM_LBUTTONUP && app->welcome_press >= 0) {
+        const int pressed = std::exchange(app->welcome_press, -1);
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        if (welcome_row_at_pointer(app) == pressed) open_welcome_row(app, pressed);
+      }
       return 0;
     }
 
@@ -6850,6 +7012,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.record_recent = !harness_run;
+  // Straight into the snapshot: the render thread is not up yet. A launch
+  // with a path to open never shows the rows, not even for its first frame.
+  if (requested_paths.empty() && welcome_lists_recents(&app)) {
+    mv::shell::fill_welcome_recents(app.recent_folders, {}, app.input.recents);
+  }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   for (const auto& o : mv::shell::load_key_overrides()) {
@@ -6999,6 +7166,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     }
   }
 
+  // Quit never waits on an add-on (addon/host.h "Quit"): Import starts to
+  // stop now, alongside the teardown below; the AI pack is left running, and
+  // nothing is unloaded. Before 2026-09-27 the loaded set was torn down by
+  // static destruction after main returned, joining a pack's model load or
+  // inference batch (seconds), and could free it under a chrome read.
+  (void)mv_addon_quit();
+  const ULONGLONG addons_quit_at = ::GetTickCount64();
+
   // PR 12: writes the user asked for and has not seen land — a rating inside
   // its 250 ms debounce, a comment queued behind another write, a rotation
   // inside its own debounce. The window is gone, so nothing waits on them now:
@@ -7047,8 +7222,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.lab.stop();
   app.jobs.shutdown();
   const int code = app.lab.exit_code();
+  // Whatever is left of half a second since mv_addon_quit (an idle add-on
+  // stops in well under that; a model load or a copy step can take seconds).
+  constexpr ULONGLONG kQuitAddonBudgetMs = 500;
+  const ULONGLONG quit_spent = ::GetTickCount64() - addons_quit_at;
+  const bool addons_stopped =
+      mv_addon_quit_wait(quit_spent >= kQuitAddonBudgetMs
+                             ? 0u
+                             : static_cast<uint32_t>(kQuitAddonBudgetMs - quit_spent)) == MV_OK;
 
   mv_session_release(app.session);
   mv::trace::provider_unregister();
+  if (!addons_stopped) {
+    // An add-on thread may still be running (the AI pack always is): static
+    // destructors and DLL detach must not run under it. Everything this
+    // process had to write has been written above.
+    std::fflush(nullptr);
+    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(code));
+  }
   return code;
 }

@@ -194,6 +194,55 @@ public sealed partial class MediaViewerSession : IDisposable
         ThrowIfFailed(NativeMethods.mv_folder_request_summary(_handle, index));
 
     /// <summary>
+    /// ABI 0.14: shows <paramref name="paths"/> as the listing, in that order
+    /// (search results). A clip with a moment (>= 0) opens paused on it. The
+    /// answer arrives as <see cref="MvCompletionKind.FolderReady"/>, as for a folder.
+    /// </summary>
+    public unsafe ulong OpenList(string title, IReadOnlyList<string> paths, IReadOnlyList<long>? momentsMs,
+                                 uint selectIndex)
+    {
+        ArgumentNullException.ThrowIfNull(title);
+        ArgumentNullException.ThrowIfNull(paths);
+        if (momentsMs is not null && momentsMs.Count != paths.Count)
+            throw new ArgumentException("one moment per path", nameof(momentsMs));
+        // One block: every path NUL-terminated, pinned for the call only (the
+        // core copies before it returns).
+        var offsets = new int[paths.Count];
+        var blob = new List<byte>(paths.Count * 96);
+        for (int i = 0; i < paths.Count; ++i)
+        {
+            offsets[i] = blob.Count;
+            blob.AddRange(System.Text.Encoding.UTF8.GetBytes(paths[i]));
+            blob.Add(0);
+        }
+        byte[] bytes = blob.ToArray();
+        byte[] titleBytes = System.Text.Encoding.UTF8.GetBytes(title + "\0");
+        long[]? moments = momentsMs?.ToArray();
+        var pointers = new IntPtr[paths.Count];
+        ulong jobId;
+        fixed (byte* b = bytes)
+        fixed (byte* t = titleBytes)
+        fixed (IntPtr* p = pointers)
+        fixed (long* m = moments)
+        {
+            for (int i = 0; i < offsets.Length; ++i) pointers[i] = (IntPtr)(b + offsets[i]);
+            ThrowIfFailed(NativeMethods.mv_folder_open_list(_handle, t, (byte**)p, moments is null ? null : m,
+                                                            (uint)paths.Count, selectIndex, out jobId));
+        }
+        return jobId;
+    }
+
+    /// <summary>The open result list's title, or "" while a directory is open.</summary>
+    public string ListTitle => ReadUtf8(NativeMethods.mv_folder_list_title);
+
+    /// <summary>The moment an item opens on, -1 for none (always -1 in a folder).</summary>
+    public long ItemMoment(uint index)
+    {
+        ThrowIfFailed(NativeMethods.mv_folder_item_moment(_handle, index, out long ms));
+        return ms;
+    }
+
+    /// <summary>
     /// The immediate subfolders of <paramref name="dir"/> for the folder tree (PR 9): hidden,
     /// system and dot directories skipped, sorted by name. One directory read, so call it off
     /// the UI thread. Returns an empty list when the directory cannot be read.

@@ -59,7 +59,27 @@ back_target resolve_back(const view_state& s) noexcept {
   // it before it moves focus, so one press is enough wherever focus is.
   if (s.game) return back_target::game;
   if (s.focus != focus_kind::canvas) return back_target::canvas_focus;
+  // Milestone H: a result list is a place, not an overlay: the outermost level.
+  // Every overlay and window state above goes first (the grid over the list
+  // closes, then the next Esc is "Back to folder").
+  if (s.list_open) return back_target::result_list;
   return back_target::none;
+}
+
+text_edit text_edit_for(const key_event& e) noexcept {
+  if (e.up) return text_edit::none;
+  if (e.mods == mod_ctrl) {
+    switch (static_cast<std::uint16_t>(e.k)) {
+      case 'A': return text_edit::select_all;
+      case 'C': return text_edit::copy;
+      case 'X': return text_edit::cut;
+      case 'V': return text_edit::paste;
+      case 'Z': return text_edit::undo;
+      default: return text_edit::none;
+    }
+  }
+  if (e.mods == (mod_ctrl | mod_shift) && e.k == char_key('Z')) return text_edit::redo;
+  return text_edit::none;
 }
 
 key_router::key_router() noexcept { rebuild(live_bindings()); }

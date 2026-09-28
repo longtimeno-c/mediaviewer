@@ -72,27 +72,40 @@ def prepare():
     print(f'{mode}: {version} ({tag})')
 
 
-# The optional Import add-on (plan/18), one signed package per platform. The
-# apps fetch it from releases/latest, so once the release workflow packs it
-# (MV_RELEASE_ADDONS=1) every stable release must carry it.
+# The optional add-ons, one signed package per add-on and platform. The apps
+# fetch them from releases/latest, so once the release workflow packs them every
+# stable release must carry them: Import (plan/18) with MV_RELEASE_ADDONS=1, and
+# the Local search pack and its pieces (plan/17) with MV_RELEASE_AI=1.
 ADDON_PLATFORMS = ('win-x64', 'macos')
+AI_ADDONS = ('ai', 'ai-audio', 'ai-faces')
+
+
+def required_addons(mode):
+    if mode != 'stable':
+        return []
+    ids = []
+    if os.environ.get('MV_RELEASE_ADDONS') == '1':
+        ids.append('import')
+    if os.environ.get('MV_RELEASE_AI') == '1':
+        ids += AI_ADDONS
+    return ids
 
 
 def addons_required(mode):
-    return mode == 'stable' and os.environ.get('MV_RELEASE_ADDONS') == '1'
+    return bool(required_addons(mode))
 
 
-def addon_asset_names(platform):
-    base = f'mediaviewer-addon-import-{platform}'
+def addon_asset_names(platform, addon='import'):
+    base = f'mediaviewer-addon-{addon}-{platform}'
     return [base + '.zip', base + '.json', base + '.json.sig']
 
 
-def validate_addon(folder, version, platform):
+def validate_addon(folder, version, platform, addon='import'):
     """Shape only; the signature is the app's to check (addon-pack.py packed
     it with --require-pinned-key)."""
-    zip_name, manifest_name, sig_name = addon_asset_names(platform)
+    zip_name, manifest_name, sig_name = addon_asset_names(platform, addon)
     manifest = json.loads((folder / manifest_name).read_text())
-    if manifest.get('id') != 'import' or manifest.get('platform') != platform:
+    if manifest.get('id') != addon or manifest.get('platform') != platform:
         raise ValueError(f'Add-on manifest id/platform mismatch: {manifest_name}')
     if manifest.get('version') != version:
         raise ValueError(f'Add-on version {manifest.get("version")} is not the release version: {manifest_name}')
@@ -111,9 +124,9 @@ def validate_assets(folder, version, mode, repo, tag):
         names += [f'MediaViewer-{version}-full.nupkg', 'RELEASES', 'releases.win.json',
                   'assets.win.json', 'mediaviewer-manifest.json', 'mediaviewer-manifest.json.sig',
                   f'MediaViewer-{version}.zip', 'appcast.xml']
-        if addons_required(mode):
+        for addon in required_addons(mode):
             for platform in ADDON_PLATFORMS:
-                names += addon_asset_names(platform)
+                names += addon_asset_names(platform, addon)
     for name in names:
         path = folder / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -124,9 +137,9 @@ def validate_assets(folder, version, mode, repo, tag):
             raise ValueError('Windows manifest version/channel mismatch')
         if (folder / 'mediaviewer-manifest.json.sig').stat().st_size != 64:
             raise ValueError('Invalid Windows signature length')
-        if addons_required(mode):
+        for addon in required_addons(mode):
             for platform in ADDON_PLATFORMS:
-                validate_addon(folder, version, platform)
+                validate_addon(folder, version, platform, addon)
         for package in manifest['packages']:
             name = package['file']
             if Path(name).name != name or '/' in name or '\\' in name:

@@ -254,14 +254,30 @@ public static partial class IslandHost
     // Type-in field with no WinUI TextBox: that control in a Flyout or this
     // island is a Microsoft.UI.Xaml fail-fast (0xC000027B). Settings filter
     // uses the same stand-in.
+    //
+    // It edits like a text box (owner, 2026-09-27: "Ctrl+A in the search bar
+    // to clear / rewrite it"): a caret and a selection, Ctrl+A / C / X / V,
+    // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z), ← → Home End with Shift to select and
+    // Ctrl for words, Backspace / Delete (Ctrl: a word). The native router
+    // leaves every key but Esc to it (FocusKind.Text), so Esc still blurs.
     private sealed class FakeInput : ContentControl
     {
-        private readonly TextBlock _label;
+        private const int UndoDepth = 100;
+
+        private readonly StackPanel _row;
+        private readonly TextBlock _before;
+        private readonly Border _selection;
+        private readonly TextBlock _selected;
+        private readonly TextBlock _after;
         private readonly Rectangle _caret;
         private readonly Border _inner;
         private readonly string _placeholder;
+        private readonly List<(string Text, int Caret)> _undo = new();
+        private readonly List<(string Text, int Caret)> _redo = new();
         private Microsoft.UI.Dispatching.DispatcherQueueTimer? _blink;
-        private bool _selectAll;
+        private int _caretAt;
+        private int _anchor;
+        private bool _typing;  // the last edit was a typed character: the next one joins its undo step
         private bool _tookChar;
 
         public string Text { get; private set; } = "";
@@ -278,11 +294,12 @@ public static partial class IslandHost
             IsTabStop = true;
             AllowFocusOnInteraction = true;
             UseSystemFocusVisuals = true;
-            _label = new TextBlock
+            _before = MakeRun();
+            _selected = MakeRun();
+            _after = MakeRun();
+            _selection = new Border
             {
-                FontFamily = UiFont,
-                FontSize = UiFontSize,
-                Foreground = Brush(Body),
+                Child = _selected,
                 VerticalAlignment = VerticalAlignment.Center,
                 IsHitTestVisible = false,
             };
@@ -296,16 +313,18 @@ public static partial class IslandHost
                 Visibility = Visibility.Collapsed,
                 IsHitTestVisible = false,
             };
-            var row = new StackPanel
+            _row = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            row.Children.Add(_label);
-            row.Children.Add(_caret);
+            _row.Children.Add(_before);
+            _row.Children.Add(_caret);
+            _row.Children.Add(_selection);
+            _row.Children.Add(_after);
             _inner = new Border
             {
-                Child = row,
+                Child = _row,
                 Background = Brush(Canvas),
                 BorderBrush = Brush(Hairline),
                 BorderThickness = new Thickness(1),
@@ -320,14 +339,15 @@ public static partial class IslandHost
             LostFocus += (_, _) =>
             {
                 StopCaret();
-                _selectAll = false;
+                _anchor = _caretAt;
+                _typing = false;
                 Paint();
             };
             PointerPressed += (_, e) =>
             {
                 Focus(FocusState.Pointer);
-                _selectAll = Text.Length > 0;
-                Paint();
+                // A click takes the whole text, so typing replaces it.
+                SelectAll();
                 e.Handled = true;
             };
             CharacterReceived += (_, e) =>
@@ -335,37 +355,13 @@ public static partial class IslandHost
                 char c = e.Character;
                 if (char.IsControl(c)) return;
                 _tookChar = true;
-                Append(c);
+                Type(c.ToString());
                 e.Handled = true;
             };
             KeyDown += (_, e) =>
             {
                 _tookChar = false;
-                if (e.Key == Windows.System.VirtualKey.Enter)
-                {
-                    Submitted?.Invoke();
-                    e.Handled = true;
-                }
-                else if (e.Key == Windows.System.VirtualKey.Down)
-                {
-                    MoveDown?.Invoke();
-                    e.Handled = true;
-                }
-                else if (e.Key == Windows.System.VirtualKey.Back && Text.Length > 0)
-                {
-                    Text = _selectAll ? "" : Text[..^1];
-                    _selectAll = false;
-                    Changed?.Invoke();
-                    Paint();
-                    e.Handled = true;
-                }
-                else if (e.Key == Windows.System.VirtualKey.A && Down(Windows.System.VirtualKey.Control)
-                         && Text.Length > 0)
-                {
-                    _selectAll = true;
-                    Paint();
-                    e.Handled = true;
-                }
+                if (OnKey(e.Key)) e.Handled = true;
             };
             KeyUp += (_, e) =>
             {
@@ -373,17 +369,91 @@ public static partial class IslandHost
                 // ContentControl; letters still have to reach the filter.
                 if (_tookChar) return;
                 if (!TryCharFromKey(e, out char c)) return;
-                Append(c);
+                Type(c.ToString());
                 e.Handled = true;
             };
         }
 
-        private void Append(char c)
+        private static TextBlock MakeRun() => new()
         {
-            Text = _selectAll ? c.ToString() : Text + c;
-            _selectAll = false;
-            Changed?.Invoke();
-            Paint();
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+
+        private int SelStart => Math.Min(_anchor, _caretAt);
+        private int SelEnd => Math.Max(_anchor, _caretAt);
+        private bool HasSelection => _anchor != _caretAt;
+
+        // True when the key was the field's.
+        private bool OnKey(Windows.System.VirtualKey key)
+        {
+            bool ctrl = Down(Windows.System.VirtualKey.Control);
+            bool shift = Down(Windows.System.VirtualKey.Shift);
+            if (Down(Windows.System.VirtualKey.Menu)) return false;  // Alt+ belongs to the system
+            bool caretKey = key is Windows.System.VirtualKey.Left or Windows.System.VirtualKey.Right or
+                Windows.System.VirtualKey.Home or Windows.System.VirtualKey.End or
+                Windows.System.VirtualKey.Back or Windows.System.VirtualKey.Delete;
+            // An empty field has nothing to move over or delete: those keys go
+            // on to its container, as they always did.
+            if (caretKey && Text.Length == 0) return false;
+            switch (key)
+            {
+                case Windows.System.VirtualKey.Enter:
+                    Submitted?.Invoke();
+                    return true;
+                case Windows.System.VirtualKey.Down:
+                    MoveDown?.Invoke();
+                    return true;
+                case Windows.System.VirtualKey.Left:
+                    if (HasSelection && !shift) MoveCaret(ctrl ? WordLeft(SelStart) : SelStart, false);
+                    else MoveCaret(ctrl ? WordLeft(_caretAt) : CharLeft(_caretAt), shift);
+                    return true;
+                case Windows.System.VirtualKey.Right:
+                    if (HasSelection && !shift) MoveCaret(ctrl ? WordRight(SelEnd) : SelEnd, false);
+                    else MoveCaret(ctrl ? WordRight(_caretAt) : CharRight(_caretAt), shift);
+                    return true;
+                case Windows.System.VirtualKey.Home:
+                    MoveCaret(0, shift);
+                    return true;
+                case Windows.System.VirtualKey.End:
+                    MoveCaret(Text.Length, shift);
+                    return true;
+                case Windows.System.VirtualKey.Back:
+                    if (HasSelection) Replace(SelStart, SelEnd, "");
+                    else if (_caretAt > 0) Replace(ctrl ? WordLeft(_caretAt) : CharLeft(_caretAt), _caretAt, "");
+                    return true;
+                case Windows.System.VirtualKey.Delete:
+                    if (HasSelection) Replace(SelStart, SelEnd, "");
+                    else if (_caretAt < Text.Length) Replace(_caretAt, ctrl ? WordRight(_caretAt) : CharRight(_caretAt), "");
+                    return true;
+            }
+            if (!ctrl) return false;
+            switch (key)
+            {
+                case Windows.System.VirtualKey.A:
+                    SelectAll();
+                    return true;
+                case Windows.System.VirtualKey.C:
+                    CopySelection();
+                    return true;
+                case Windows.System.VirtualKey.X:
+                    if (CopySelection()) Replace(SelStart, SelEnd, "");
+                    return true;
+                case Windows.System.VirtualKey.V:
+                    PasteAsync();
+                    return true;
+                case Windows.System.VirtualKey.Z:
+                    if (shift) Redo();
+                    else Undo();
+                    return true;
+                case Windows.System.VirtualKey.Y:
+                    Redo();
+                    return true;
+            }
+            return false;
         }
 
         private static bool TryCharFromKey(KeyRoutedEventArgs e, out char c)
@@ -407,25 +477,189 @@ public static partial class IslandHost
             return false;
         }
 
+        // ---- editing ----------------------------------------------------------------
+
+        private void Type(string s)
+        {
+            bool joins = _typing && !HasSelection;
+            Replace(SelStart, SelEnd, s, joins);
+            _typing = true;
+        }
+
+        // Every edit goes through here: one undo step (typing joins the last),
+        // the caret after the new text, Changed once.
+        private void Replace(int start, int end, string s, bool joinUndo = false)
+        {
+            string next = Text[..start] + s + Text[end..];
+            if (next == Text) return;
+            if (!joinUndo) Push(_undo, (Text, _caretAt));
+            _redo.Clear();
+            _typing = false;
+            Text = next;
+            _caretAt = _anchor = start + s.Length;
+            Changed?.Invoke();
+            Paint();
+        }
+
+        private static void Push(List<(string Text, int Caret)> stack, (string Text, int Caret) state)
+        {
+            stack.Add(state);
+            if (stack.Count > UndoDepth) stack.RemoveAt(0);
+        }
+
+        private void Undo() => Step(_undo, _redo);
+        private void Redo() => Step(_redo, _undo);
+
+        private void Step(List<(string Text, int Caret)> source, List<(string Text, int Caret)> target)
+        {
+            _typing = false;
+            if (source.Count == 0) return;
+            (string text, int caret) = source[^1];
+            source.RemoveAt(source.Count - 1);
+            Push(target, (Text, _caretAt));
+            Text = text;
+            _caretAt = _anchor = Math.Clamp(caret, 0, text.Length);
+            Changed?.Invoke();
+            Paint();
+        }
+
+        private void MoveCaret(int to, bool extend)
+        {
+            _typing = false;
+            _caretAt = Math.Clamp(to, 0, Text.Length);
+            if (!extend) _anchor = _caretAt;
+            Paint();
+        }
+
+        private bool CopySelection()
+        {
+            if (!HasSelection) return false;
+            try
+            {
+                var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+                package.SetText(Text.Substring(SelStart, SelEnd - SelStart));
+                Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Another process holding the clipboard: nothing is cut either.
+                System.Diagnostics.Debug.WriteLine(ex);
+                return false;
+            }
+        }
+
+        private async void PasteAsync()
+        {
+            // Never let an exception out of an async void: that is a fail-fast.
+            try
+            {
+                var view = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
+                if (!view.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.Text)) return;
+                string pasted = await view.GetTextAsync();
+                // One line: breaks and tabs become spaces, other controls go.
+                var line = new System.Text.StringBuilder(pasted.Length);
+                foreach (char ch in pasted)
+                {
+                    if (ch == '\r' || ch == '\n' || ch == '\t') line.Append(' ');
+                    else if (!char.IsControl(ch)) line.Append(ch);
+                }
+                if (line.Length == 0) return;
+                Replace(SelStart, SelEnd, line.ToString());
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+            }
+        }
+
+        private int CharLeft(int i)
+        {
+            if (i <= 0) return 0;
+            --i;
+            if (i > 0 && char.IsLowSurrogate(Text[i]) && char.IsHighSurrogate(Text[i - 1])) --i;
+            return i;
+        }
+
+        private int CharRight(int i)
+        {
+            if (i >= Text.Length) return Text.Length;
+            ++i;
+            if (i < Text.Length && char.IsLowSurrogate(Text[i]) && char.IsHighSurrogate(Text[i - 1])) ++i;
+            return i;
+        }
+
+        // Ctrl+← / Ctrl+Backspace: to the start of this word or the one before.
+        private int WordLeft(int i)
+        {
+            while (i > 0 && char.IsWhiteSpace(Text[i - 1])) --i;
+            while (i > 0 && !char.IsWhiteSpace(Text[i - 1])) --i;
+            return i;
+        }
+
+        // Ctrl+→ / Ctrl+Delete: past this word and the spaces after it.
+        private int WordRight(int i)
+        {
+            while (i < Text.Length && !char.IsWhiteSpace(Text[i])) ++i;
+            while (i < Text.Length && char.IsWhiteSpace(Text[i])) ++i;
+            return i;
+        }
+
         public void SetText(string value)
         {
             string next = value ?? "";
             if (next == Text) return;
             Text = next;
-            _selectAll = false;
+            _caretAt = _anchor = next.Length;
+            _undo.Clear();
+            _redo.Clear();
+            _typing = false;
+            Paint();
+        }
+
+        /// <summary>Selects the text, so the next character replaces it.</summary>
+        public void SelectAll()
+        {
+            _typing = false;
+            _anchor = 0;
+            _caretAt = Text.Length;
             Paint();
         }
 
         private void Paint()
         {
+            bool focused = FocusState != FocusState.Unfocused;
             bool empty = Text.Length == 0;
-            _label.Text = empty ? (FocusState != FocusState.Unfocused ? "" : _placeholder) : Text;
-            _label.Foreground = Brush(empty ? Body : Title);
-            _caret.Visibility = FocusState == FocusState.Unfocused
-                ? Visibility.Collapsed : Visibility.Visible;
+            if (empty)
+            {
+                _before.Text = focused ? "" : _placeholder;
+                _selected.Text = "";
+                _after.Text = "";
+            }
+            else
+            {
+                int start = SelStart, end = SelEnd;
+                _before.Text = Text[..start];
+                _selected.Text = Text[start..end];
+                _after.Text = Text[end..];
+            }
+            var ink = Brush(empty ? Body : Title);
+            _before.Foreground = ink;
+            _after.Foreground = ink;
+            bool shown = focused && HasSelection;
+            _selected.Foreground = shown ? Brush(TextSelectionInk) : ink;
+            _selection.Background = shown ? Brush(TextSelection) : null;
+            // The caret sits at its end of the selection.
+            int at = HasSelection && _caretAt == SelEnd ? 2 : 1;
+            if (_row.Children.IndexOf(_caret) != at)
+            {
+                _row.Children.Remove(_caret);
+                _row.Children.Insert(at, _caret);
+            }
+            _caret.Visibility = focused ? Visibility.Visible : Visibility.Collapsed;
             _caret.Opacity = 1;
-            _inner.BorderBrush = Brush(FocusState == FocusState.Unfocused ? Hairline : Title);
-            _inner.BorderThickness = new Thickness(FocusState == FocusState.Unfocused ? 1 : 2);
+            _inner.BorderBrush = Brush(focused ? Title : Hairline);
+            _inner.BorderThickness = new Thickness(focused ? 2 : 1);
         }
 
         private void StartCaret()

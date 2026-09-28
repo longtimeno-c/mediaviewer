@@ -17,6 +17,13 @@ public enum MvAddonEvent : uint
     VolumeArrived = 5,
     VolumeRemoved = 6,
     VerifyDone = 7,
+
+    // The AI pack (plan/17), 20 and up so the base chrome routes by kind alone.
+    AiStatus = 20,
+    AiSearchDone = 21,  // id = search id, payload = result count
+    AiRoots = 22,
+    AiCompute = 23,     // payload = MvAiBackend
+    AiPeople = 24,
 }
 
 /// <summary>Mirrors <c>mv_import_job_state</c>.</summary>
@@ -297,6 +304,10 @@ public static unsafe partial class AddonNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_family_usage(byte* family, ulong* used, ulong* ceiling);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_addon_load(IntPtr session, byte* id, byte* iface, IntPtr* outIface,
         byte* chrome, uint chromeCap);
 
@@ -378,6 +389,22 @@ public static unsafe partial class AddonNative
         fixed (byte* p = Z(id)) Check(mv_addon_remove(p, keepData ? 1u : 0u), "mv_addon_remove");
     }
 
+    /// <summary>Milestone H: a family's installed bytes and its ceiling (0 = none).
+    /// An older core without the export reports (0, 0).</summary>
+    public static (ulong Used, ulong Ceiling) FamilyUsage(string family)
+    {
+        ulong used = 0, ceiling = 0;
+        try
+        {
+            fixed (byte* p = Z(family)) Check(mv_addon_family_usage(p, &used, &ceiling), "mv_addon_family_usage");
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return (0, 0);
+        }
+        return (used, ceiling);
+    }
+
     /// <summary>Loads (or returns the loaded) add-on; the interface table and the chrome path.</summary>
     public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId)
     {
@@ -454,4 +481,105 @@ public interface IAddonChrome
     /// <summary>An add-on completion from the session queue.</summary>
     void OnEvent(AddonCompletion e);
     void Shutdown();
+}
+
+// ---- Milestone H ---------------------------------------------------------------
+// New interfaces, never new members on the two above: an installed Import
+// 1.0.0 chrome was compiled against IAddonHost / IAddonChrome as they are.
+
+/// <summary>What is on screen, for find-similar and match walking.</summary>
+/// <param name="Path">The open item's path; empty when nothing is open.</param>
+/// <param name="PositionMs">The clip's position; -1 for a still.</param>
+public readonly record struct AddonCurrentItem(string Path, bool IsVideo, long PositionMs, bool Paused);
+
+/// <summary>The base chrome's colour roles, for an add-on to match it.</summary>
+public enum AddonColour
+{
+    Canvas, PanelBg, Surface, Title, Body, Hairline, Selection, Accent,
+}
+
+/// <summary>
+/// Milestone H additions to <see cref="IAddonHost"/> (plan/17 "UI and
+/// commands"). Every member is UI-thread only unless it says otherwise, and
+/// none of them blocks.
+/// </summary>
+public interface IAddonHost2 : IAddonHost
+{
+    /// <summary>The main window, to centre a panel over and to own it.</summary>
+    IntPtr MainWindow { get; }
+
+    /// <summary>The folder the viewer has open, or the one an open result list came from; null for none.</summary>
+    string? CurrentFolder { get; }
+
+    AddonCurrentItem CurrentItem();
+
+    /// <summary>
+    /// Shows <paramref name="paths"/> as the viewer's listing (mv_folder_open_list):
+    /// the gallery, filmstrip and keys work over it as over a folder. A clip with
+    /// a moment opens paused on it. <paramref name="gallery"/> opens the grid (G).
+    /// </summary>
+    void OpenList(string title, IReadOnlyList<string> paths, IReadOnlyList<long>? momentsMs,
+                  int selectIndex, bool gallery);
+
+    /// <summary>Seeks the open clip; a paused clip stays paused.</summary>
+    void SeekVideo(long ms, bool exact);
+
+    /// <summary>Accent dots over the scrub bar; empty clears. The current one is larger.</summary>
+    void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex);
+
+    /// <summary>The compact pill in the command bar; null hides it. Clicking it
+    /// runs <see cref="SearchCommand.Open"/>.</summary>
+    void SetIndexingStatus(string? text, bool busy);
+
+    /// <summary>Opens Settings (Local search is on its General page).</summary>
+    void ShowSettings();
+
+    /// <summary>Whether a family piece ("ai-faces", "ai-cuda") is installed and verified.</summary>
+    bool IsPieceInstalled(string pieceId);
+
+    /// <summary>ARGB of a base colour role, current for light / dark / high contrast.</summary>
+    uint Colour(AddonColour role);
+
+    /// <summary>The base UI font as a FontFamily source string, and its size.</summary>
+    string UiFontFamily { get; }
+    double UiFontSize { get; }
+
+    /// <summary>False when Windows asks for reduced motion.</summary>
+    bool AnimationsEnabled { get; }
+
+    /// <summary>Raised on the UI thread when appearance or contrast changes.</summary>
+    event Action? ThemeChanged;
+}
+
+/// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>
+public static class SearchCommand
+{
+    public const int Open = 0;        // Ctrl+F
+    public const int Similar = 1;     // Ctrl+Shift+F
+    public const int NextMatch = 2;   // N on a clip
+    public const int PrevMatch = 3;   // Shift+N
+}
+
+/// <summary>The AI chrome's side of Milestone H, next to <see cref="IAddonChrome"/>.</summary>
+public interface ISearchChrome
+{
+    /// <summary>A <see cref="SearchCommand"/> from the router. False: nothing to do.</summary>
+    bool RunCommand(int command);
+
+    /// <summary>The viewer opened a folder (null: a result list or nothing).</summary>
+    void OnFolderChanged(string? dir);
+
+    /// <summary>The viewer's current item changed (null: nothing open).</summary>
+    void OnItemChanged(string? path);
+
+    /// <summary>
+    /// The management panel for Settings → Local search, a
+    /// Microsoft.UI.Xaml.UIElement (object here: this assembly does not
+    /// reference WinUI). Built for an island: no TextBox.
+    /// </summary>
+    object? BuildSettingsPanel();
+
+    /// <summary>A family piece (ai-faces, ai-cuda) was installed or removed while
+    /// the pack is loaded: the chrome asks the pack to pick it up.</summary>
+    void OnPiecesChanged();
 }

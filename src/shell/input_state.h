@@ -15,6 +15,8 @@
 
 #include <cstdint>
 
+#include "shell/welcome_layout.h"
+
 namespace mv::shell {
 
 enum class mouse_button : std::uint32_t { left = 0, right = 1, middle = 2, count = 3 };
@@ -109,6 +111,10 @@ struct input_snapshot {
   // OS chrome colour, 0xRRGGBB. Only the empty welcome/game view uses it;
   // The default canvas follows this colour too; explicit choices remain fixed.
   std::uint32_t home_background_rgb = 0x21232Au;
+  // The welcome card's recent folders (labels only; the host keeps the paths
+  // and hit-tests the rows). count 0 once anything is open. A change bumps
+  // activity_seq for its one redraw.
+  welcome_recents recents;
   bool sticky_zoom = false;     // S
   bool clipping = false;        // C
   bool loupe = false;           // held Z

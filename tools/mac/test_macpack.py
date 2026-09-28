@@ -205,6 +205,40 @@ class AddonSigningTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     macpack.sign_addon(Path(tmp), "-")
 
+    def test_nested_runtime_dylib_is_signed_before_the_bundle(self):
+        """Milestone H: the AI pack keeps ONNX Runtime in a subfolder; it is
+        signed (deepest first) but nothing inside the bundle is signed twice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            addon = Path(tmp) / "ai"
+            (addon / "AI.bundle" / "Contents" / "MacOS").mkdir(parents=True)
+            (addon / "AI.bundle" / "Contents" / "MacOS" / "AI").write_bytes(b"\xca\xfe\xba\xbe")
+            (addon / "AI.bundle" / "Contents" / "Frameworks").mkdir()
+            (addon / "AI.bundle" / "Contents" / "Frameworks" / "libx.dylib").write_bytes(b"x")
+            (addon / "runtime").mkdir()
+            (addon / "runtime" / "libonnxruntime.1.dylib").write_bytes(b"\xca\xfe\xba\xbe")
+            (addon / "libmv_ai.dylib").write_bytes(b"\xca\xfe\xba\xbe")
+            (addon / "models").mkdir()
+            (addon / "models" / "clip.onnx").write_bytes(b"model")
+            signed = []
+            with patch.object(macpack, "codesign", side_effect=lambda p, *a, **k: signed.append(p)), \
+                 patch.object(macpack, "run"):
+                macpack.sign_addon(addon, "Developer ID Application: Test (TEAM)")
+            self.assertEqual(signed, [addon / "runtime" / "libonnxruntime.1.dylib",
+                                      addon / "libmv_ai.dylib", addon / "AI.bundle"])
+
+    def test_code_free_piece_signs_nothing_and_skips_notarization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            piece = Path(tmp) / "ai-faces"
+            (piece / "models").mkdir(parents=True)
+            (piece / "models" / "faces.onnx").write_bytes(b"model")
+            with patch.object(macpack, "codesign") as sign, patch.object(macpack, "run"):
+                self.assertEqual(macpack.sign_addon(piece, "-", piece=True), [])
+                sign.assert_not_called()
+            with patch.object(macpack, "run"), patch.object(macpack, "notarize") as notarize:
+                macpack.main(["addon", "--dir", str(piece), "--piece", "--identity", "I",
+                              "--notary-profile", "p"])
+                notarize.assert_not_called()
+
     def test_addon_command_notarizes_unless_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             addon = self._addon(Path(tmp))

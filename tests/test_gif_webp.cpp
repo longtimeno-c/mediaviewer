@@ -505,12 +505,21 @@ TEST_CASE("the 8-bit display transform matches the float reference within one co
       REQUIRE(got->rgba[p + 3] == grid.rgba[p + 3]);  // alpha is untouched
     }
   }
-  // A grey profile on RGB pixels still fails rather than displaying as sRGB.
+  // A grey profile on RGB pixels still fails rather than displaying as sRGB;
+  // on grey pixels (R = G = B) it is applied (plan/12, PR 7 row 5).
   auto grey_icc = save_profile(cmsCreateGrayProfile(cmsD50_xyY(), [] {
     static cmsToneCurve* g = cmsBuildGamma(nullptr, 2.2);
     return g;
   }()));
-  REQUIRE_FALSE(mv::image::display_transform::create(grey_icc));
+  auto grey = mv::image::display_transform::create(grey_icc);
+  REQUIRE(grey);
+  REQUIRE_FALSE(grey.value()->apply(colour_grid(grey_icc)));
+  mv::codec::raster neutral = colour_grid(grey_icc);
+  for (std::size_t p = 0; p < neutral.rgba.size(); p += 4) {
+    neutral.rgba[p + 1] = neutral.rgba[p];
+    neutral.rgba[p + 2] = neutral.rgba[p];
+  }
+  REQUIRE(grey.value()->apply(std::move(neutral)));
 }
 
 TEST_CASE("a 2048 x 2048 tagged frame avoids the starvation regression", "[image][colour][perf]") {

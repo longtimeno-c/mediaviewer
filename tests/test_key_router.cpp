@@ -380,6 +380,51 @@ TEST_CASE("Esc walks out and never quits", "[shell][router]") {
   REQUIRE(r.on_key(rep(key::escape), s).command == command_id::none);
 }
 
+TEST_CASE("Esc in a result list is Back to folder, after everything over it",
+          "[shell][router]") {
+  key_router r;
+  view_state s = clip();
+  s.list_open = true;
+  // From the viewer: one Esc goes back to the folder.
+  auto esc = r.on_key(down(key::escape), s);
+  REQUIRE(esc.handled);
+  REQUIRE(esc.command == command_id::back);
+  REQUIRE(esc.back == back_target::result_list);
+  // A held Esc does not leave the list on typematic repeat.
+  REQUIRE(r.on_key(rep(key::escape), s).command == command_id::none);
+
+  // The grid over the list closes first; fullscreen and focus go before it too.
+  s.gallery_open = true;
+  s.fullscreen = true;
+  s.focus = focus_kind::filmstrip;
+  const back_target order[] = {back_target::gallery, back_target::fullscreen,
+                               back_target::canvas_focus, back_target::result_list};
+  for (const auto want : order) {
+    const auto got = r.on_key(down(key::escape), s);
+    REQUIRE(got.back == want);
+    switch (want) {
+      case back_target::gallery: s.gallery_open = false; break;
+      case back_target::fullscreen: s.fullscreen = false; break;
+      case back_target::canvas_focus: s.focus = focus_kind::canvas; break;
+      case back_target::result_list: s.list_open = false; break;
+      default: break;
+    }
+  }
+  // Back in the folder: nothing left to leave.
+  REQUIRE_FALSE(r.on_key(down(key::escape), s).handled);
+
+  // A text field (the metadata pane's) and a popup still own Esc first.
+  s.list_open = true;
+  s.focus = focus_kind::text;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::blur_text);
+  s.focus = focus_kind::canvas;
+  s.popup_open = true;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::popup);
+  s.popup_open = false;
+  s.settings_open = true;
+  REQUIRE(resolve_back(s) == back_target::settings);
+}
+
 TEST_CASE("a focused text control owns every key but Esc", "[shell][router]") {
   key_router r;
   view_state s = still();
@@ -393,6 +438,59 @@ TEST_CASE("a focused text control owns every key but Esc", "[shell][router]") {
   const auto esc = r.on_key(down(key::escape), s);
   REQUIRE(esc.handled);
   REQUIRE(esc.back == back_target::blur_text);
+}
+
+// Owner, 2026-09-27: "Cmd+A / Ctrl+A in the search bar selects the text."
+TEST_CASE("a focused text field gets the editing chords; the canvas keeps its commands",
+          "[shell][router]") {
+  key_router r;
+  struct chord {
+    key_event e;
+    text_edit edit;
+  };
+  const chord chords[] = {
+      {down(char_key('A'), mod_ctrl), text_edit::select_all},
+      {down(char_key('C'), mod_ctrl), text_edit::copy},
+      {down(char_key('X'), mod_ctrl), text_edit::cut},
+      {down(char_key('V'), mod_ctrl), text_edit::paste},
+      {down(char_key('Z'), mod_ctrl), text_edit::undo},
+      {down(char_key('Z'), mod_ctrl | mod_shift), text_edit::redo},
+  };
+  for (const view_state base : {still(), clip()}) {
+    view_state s = base;
+    s.gallery_open = true;  // a text field while the grid is up
+    s.focus = focus_kind::text;
+    for (const chord& c : chords) {
+      // Not the app's command (Ctrl+A would be Mark all, Ctrl+C Copy, Ctrl+Z
+      // Undo edit): not handled, so the key goes on to the field.
+      const route routed = r.on_key(c.e, s);
+      REQUIRE(routed.command == command_id::none);
+      REQUIRE_FALSE(routed.handled);
+      REQUIRE(text_edit_for(c.e) == c.edit);
+    }
+    // Word and line navigation belong to the field as well.
+    const std::uint8_t navigation_mods[] = {mod_none, mod_shift, mod_ctrl, mod_ctrl | mod_shift};
+    for (const std::uint8_t mods : navigation_mods) {
+      for (const key k : {key::left, key::right, key::home, key::end, key::backspace, key::del}) {
+        REQUIRE_FALSE(r.on_key(down(k, mods), s).handled);
+      }
+    }
+    // Esc still leaves the field first, before the gallery under it.
+    const route esc = r.on_key(down(key::escape), s);
+    REQUIRE(esc.command == command_id::back);
+    REQUIRE(esc.back == back_target::blur_text);
+  }
+  // With no text field focused the same chords are the viewer's own again.
+  const view_state canvas = still();
+  REQUIRE(r.on_key(down(char_key('A'), mod_ctrl), canvas).command == command_id::mark_all);
+  REQUIRE(r.on_key(down(char_key('C'), mod_ctrl), canvas).command == command_id::copy_clipboard);
+  REQUIRE(r.on_key(down(char_key('Z'), mod_ctrl), canvas).command == command_id::undo_edit);
+  // Only the chords: plain letters, Alt chords and key-ups are not edits.
+  REQUIRE(text_edit_for(down(char_key('A'))) == text_edit::none);
+  REQUIRE(text_edit_for(down(char_key('A'), mod_ctrl | mod_alt)) == text_edit::none);
+  REQUIRE(text_edit_for(down(char_key('A'), mod_ctrl | mod_shift)) == text_edit::none);
+  REQUIRE(text_edit_for(key_event{char_key('A'), mod_ctrl, false, true}) == text_edit::none);
+  REQUIRE(text_edit_for(down(char_key('O'), mod_ctrl)) == text_edit::none);
 }
 
 TEST_CASE("island focus keeps in-pane traversal and still takes global keys", "[shell][router]") {
@@ -675,8 +773,9 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     pos = end + 1;
     ++lines;
   }
-  // Import's two rows are absent while the add-on is (plan/18).
-  REQUIRE(lines + 2 >= default_bindings().size());
+  // Import's two rows (plan/18) and the AI pack's four (plan/17) are absent
+  // while their add-ons are.
+  REQUIRE(lines + 6 >= default_bindings().size());
 }
 
 TEST_CASE("Import's commands exist only while the add-on is installed", "[shell][router]") {

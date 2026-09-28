@@ -12,10 +12,10 @@ media-player control, so decoding never stands between you and the screen.
 
 | | |
 |---|---|
-| **Windows 10/11, x64** | [MediaViewer-0.1.2-Setup.exe](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2-Setup.exe) |
-| **Mac, Apple Silicon, macOS 14+** | [MediaViewer-0.1.2.dmg](https://github.com/longtimeno-c/mediaviewer/releases/download/v0.1.2/MediaViewer-0.1.2.dmg) |
+| **Windows 10/11, x64** | `MediaViewer-<version>-Setup.exe` from the [latest release](https://github.com/longtimeno-c/mediaviewer/releases/latest) |
+| **Mac, macOS 14+, Apple Silicon and Intel** | `MediaViewer-<version>.dmg` from the [latest release](https://github.com/longtimeno-c/mediaviewer/releases/latest) |
 
-Windows may show a SmartScreen warning the first time. This installer is not Authenticode-signed. Checksums are on the [release page](https://github.com/longtimeno-c/mediaviewer/releases/tag/v0.1.2).
+Windows may show a SmartScreen warning the first time: the installer is not Authenticode-signed. Checksums are on each release page.
 
 Setup's Finish page offers to delete the setup `.exe` once it closes. On a Mac, the first-launch setup sheet offers to eject the MediaViewer disk and move the `.dmg` to the Trash. Both boxes start ticked.
 
@@ -128,7 +128,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 - **Nothing about your files leaves the machine.** Telemetry is opt-in and off by default. Crash reports are captured
   locally, scrubbed of paths, filenames and your username, and never sent without asking.
 - **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
-- **Installs per user**, with a public installer and a background updater. The 0.1.2 installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
+- **Installs per user**, with a public installer and a background updater. The installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
 - **Stable or preview updates.** Updates follow stable releases by default. **Settings → Update channel → Preview**
   also installs signed preview builds as they are published; switching back to Stable keeps the installed version
   until a newer stable release arrives.
@@ -136,20 +136,50 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 
 ---
 
+## Edit without touching the original
+
+**Edit image / Edit video** in the command bar (or `Enter`) opens a docked Edit workspace beside the picture.
+
+- **Lossless rotate and flip** for JPEGs, with no re-encode. **Crop** with aspect presets, and **straighten**.
+- **Colour adjustments**: exposure, contrast and white balance. They are non-destructive, with a before/after view.
+- **Every metadata tag is editable**: date taken, location, and any EXIF, IPTC or XMP tag can be changed or removed, with a byte-exact Revert.
+- **Export** writes a new file with the metadata carried over. RAW, HEIC and video edits go to an XMP sidecar.
+
+## Cut video in seconds
+
+- **Video Editor.** *Edit video* opens the clip in its own window, with a timeline of thumbnails and a waveform. It offers Split, Delete, Set in, Set out and Undo. Export is either instant keyframe cuts or frame-accurate cuts on the GPU encoder.
+- **Trim, extract and remux.** Lossless trims on keyframes or frame-accurate ones, a frame as PNG or JPEG, the audio track (copy, WAV or FLAC), a range as GIF or WebP, and MP4 ↔ MKV.
+- **Every result is a new file** beside the clip.
+
+## At home on Windows and macOS
+
+- **Explorer thumbnails** for HEIC, AVIF and RAW, and a **Spotlight importer** and **Quick Look** on the Mac.
+- **Recent folders** on the home screen, in the jump list and the Dock.
+- **Taskbar and Now Playing media controls**, drag-out, copy path or edited image, the Share sheet, and single-window open.
+- **The same core on both platforms:** Direct3D 11 and WinUI on Windows, Metal and SwiftUI on the Mac.
+
+## Optional add-ons
+
+Add-ons install from **Settings → Add-ons**. They are signed and verified, never bundled with the app, and removable at any time.
+
+- **Import.** Copies a card or folder into your library.
+  - It skips what is already there by content, and verifies every copy by reading it back.
+  - It sorts into dated folders, keeping RAW+JPEG and Live Photo pairs together.
+  - It resumes after an unplug and can back up to a second drive.
+- **Local search.** Type what you are looking for ("guy on a skateboard", "dog barking", "happy birthday") and get the photos and the exact moments in videos. All of it is computed on your computer; nothing is uploaded.
+  - Pictures use OpenAI CLIP in two sizes, picked for your hardware, with NVIDIA acceleration on Windows and Core ML on Apple silicon.
+  - An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
+  - An optional, deletable **People** index finds faces.
+  - `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
+
 ## Coming next
 
 | Soon | |
 |---|---|
-| **Lossless rotate, crop and export** | Rotate and flip JPEGs without re-encoding, straighten and crop, export with metadata carried over |
-| **Colour adjustments** | Exposure, contrast and white balance, non-destructive |
-| **Edit workspace** | An **Edit image / Edit video** button (or `Enter`) opens a docked Edit pane beside the picture: crop with aspect presets, straighten, rotate, colour, before/after, and every metadata tag (date taken, location, any EXIF / IPTC / XMP tag) edited or removed with a byte-exact Revert. RAW, HEIC and video edits go to an XMP sidecar; originals are never modified ([plan/20](plan/20-edit-workspace.md)) |
-| **Video Editor** | *Edit video* (or `Enter` on a clip) opens its own window: the clip in the preview, a timeline with thumbnails and a waveform, Split / Delete / Set in / Set out / Undo, and Export as instant keyframe cuts or frame-accurate on the GPU encoder. Grading, audio and delivery tools are a proposed optional add-on ([plan/21](plan/21-video-editor.md), [plan/22](plan/22-editor-addon.md)) |
-| **Video trim, extract and remux** | Instant lossless cuts on keyframes or frame-accurate cuts on the GPU encoder, audio extraction, MP4 ↔ MKV, all as new files beside the clip |
-| **Windows and macOS integration** | Explorer thumbnails for HEIC, AVIF and RAW, Recent folders in the jump list and Dock, taskbar and Now Playing media controls, copy path or edited image, the Share sheet, and single-window open. Explorer's Details-pane properties and tab-grouped windows come later |
-| **Import** (optional add-on) | Copy cards with duplicate detection, verification, date-based folders, backups and resume, installed from Settings → Add-ons |
-| **Local AI search** (optional add-on) | Find "dog on a beach" across your dump, entirely on your machine |
-| **Voice search** (optional add-on) | Speak the query; speech runs on-device |
-| **macOS** | The same core with a native Metal and SwiftUI app; it already builds, browses and plays video, and is being brought to parity |
+| **Voice search** (optional add-on) | Speak the query to Local search. Speech runs on-device ([plan/19](plan/19-voice.md)) |
+| **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([plan/21](plan/21-video-editor.md)) |
+| **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([plan/22](plan/22-editor-addon.md)) |
+| **Explorer details** | Explorer's Details-pane properties and tab-grouped windows |
 
 ## From source
 

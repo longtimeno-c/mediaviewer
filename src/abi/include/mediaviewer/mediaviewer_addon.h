@@ -37,8 +37,20 @@ extern "C" {
 /* The host function table's version. An add-on's manifest declares the range
  * it supports (host_api.min .. host_api.max); outside it the add-on is not
  * loaded and the app says it needs an update. Additive changes append fields
- * and bump this; `struct_size` lets an older add-on read a newer table. */
-#define MV_ADDON_HOST_API 1
+ * and bump this; `struct_size` lets an older add-on read a newer table.
+ *
+ * Negotiation (Milestone H, 2026-09-26): because every version only APPENDS,
+ * this host still serves every layout from MV_ADDON_HOST_API_OLDEST up. An
+ * add-on loads when its range meets [OLDEST, MV_ADDON_HOST_API]; mv_addon_get
+ * receives min(MV_ADDON_HOST_API, the add-on's max) and the table's host_api
+ * says the same. So Import 1.0.0 (host_api 1..1) keeps loading beside the
+ * AI pack (2..2) without an update.
+ *
+ *   1  Milestone G: io, folder model, pairing, thumbnails, scheduling.
+ *   2  Milestone H: stills and video frames as pixels, moment thumbnails,
+ *      family pieces (plan/17 "The AI pack"). */
+#define MV_ADDON_HOST_API 2
+#define MV_ADDON_HOST_API_OLDEST 1
 
 /* Add-on completion kinds, posted through the host's completion queue with
  * mv_completion.kind = MV_COMPLETION_ADDON. job_id is the add-on's own id,
@@ -53,8 +65,50 @@ typedef enum mv_addon_event_kind {
   MV_ADDON_EVENT_JOB_DONE = 4,       /* finished, failed or cancelled; see the summary */
   MV_ADDON_EVENT_VOLUME_ARRIVED = 5,
   MV_ADDON_EVENT_VOLUME_REMOVED = 6,
-  MV_ADDON_EVENT_VERIFY_DONE = 7     /* verify-a-folder finished */
+  MV_ADDON_EVENT_VERIFY_DONE = 7,    /* verify-a-folder finished */
+
+  /* The AI pack (plan/17), 20 and up so a chrome can route by kind alone. */
+  MV_ADDON_EVENT_AI_STATUS = 20,     /* indexing progress / state; poll mv.ai.1 status */
+  MV_ADDON_EVENT_AI_SEARCH_DONE = 21,/* id = search id; payload = result count */
+  MV_ADDON_EVENT_AI_ROOTS = 22,      /* the remembered roots changed */
+  MV_ADDON_EVENT_AI_COMPUTE = 23,    /* the compute self-test finished; payload = mv_ai_backend */
+  MV_ADDON_EVENT_AI_PEOPLE = 24      /* the people clusters changed (PR 24) */
 } mv_addon_event_kind;
+
+/* ---- v2: pixels for the AI pack ------------------------------------------ */
+
+/* Frames from a video, sampled for an index (plan/17 "Frame sampling"): a
+ * decoder instance of its own, never the playback decoder. */
+typedef struct mv_addon_sampler_options {
+  uint32_t struct_size;
+  uint32_t min_gap_ms;      /* drop keyframes closer than this to the last kept */
+  uint32_t max_gap_ms;      /* decode forward to fill a longer keyframe gap */
+  uint32_t max_long_edge;   /* frames are box-scaled to fit */
+  int64_t start_ms;         /* resume: first frame at or after this time */
+} mv_addon_sampler_options;
+
+typedef struct mv_addon_video_info {
+  int64_t duration_ms;
+  uint32_t width;           /* display size, after rotation */
+  uint32_t height;
+  uint32_t hdr;             /* 1 = PQ / HLG, tone-mapped to SDR before the caller sees it */
+  uint32_t reserved;
+} mv_addon_video_info;
+
+#define MV_ADDON_FRAME_KEYFRAME 1u  /* a real keyframe */
+#define MV_ADDON_FRAME_GRID_FILL 2u /* decoded forward to honour max_gap_ms */
+#define MV_ADDON_FRAME_END 4u       /* no more frames; no pixels written */
+
+typedef struct mv_addon_sampled_frame {
+  uint32_t width;
+  uint32_t height;
+  int64_t pts_ms;           /* from the start of the clip */
+  int64_t pts_tb;           /* the same instant in the stream time base */
+  int32_t tb_num;
+  int32_t tb_den;
+  uint32_t flags;           /* MV_ADDON_FRAME_* */
+  uint32_t reserved;
+} mv_addon_sampled_frame;
 
 typedef struct mv_addon_file_entry {
   const char* path_utf8;      /* absolute */
@@ -205,6 +259,58 @@ typedef struct mv_host_api {
 
   /* Never a path, a file name, or a hash (rule 6). level: 0 info, 1 warn, 2 error. */
   void(MV_CALL* log)(void* host, int32_t level, const char* message_ascii);
+
+  /* ---- v2 (Milestone H): pixels. Worker threads only; every call may read
+   * and decode for tens of milliseconds. Pixels are 8-bit sRGB RGB, tightly
+   * packed (stride = width * 3). A buffer too small returns
+   * MV_ERR_INVALID_ARG with the size written, so the caller can grow it. -- */
+
+  /* A still at first-pixel quality: the embedded RAW preview or a DCT-scaled
+   * JPEG, never a full RAW develop (plan/17 step 6). Colour-managed to sRGB,
+   * EXIF-oriented, long edge <= max_long_edge. */
+  mv_status(MV_CALL* decode_still_rgb)(void* host, const char* path_utf8, uint32_t max_long_edge,
+                                       uint8_t* out_rgb, uint64_t cap, uint32_t* out_width,
+                                       uint32_t* out_height);
+  /* The sampler: keyframes, min/max gaps, rotation, the SDR tone-map for
+   * PQ/HLG (plan/17 steps 1, 2 and 4). `out_sampler` is closed with
+   * sampler_close on the thread that uses it. */
+  mv_status(MV_CALL* sampler_open)(void* host, const char* path_utf8,
+                                   const mv_addon_sampler_options* options,
+                                   mv_addon_video_info* out_info, void** out_sampler);
+  /* The next sampled frame. MV_OK with MV_ADDON_FRAME_END at the end. */
+  mv_status(MV_CALL* sampler_next)(void* host, void* sampler, uint8_t* out_rgb, uint64_t cap,
+                                   mv_addon_sampled_frame* out_frame);
+  void(MV_CALL* sampler_close)(void* host, void* sampler);
+  /* The frame shown at `pts_ms` (decoded forward from the keyframe before
+   * it), for "find similar" on a paused frame that was never sampled. */
+  mv_status(MV_CALL* video_frame_rgb)(void* host, const char* path_utf8, int64_t pts_ms,
+                                      uint32_t max_long_edge, uint8_t* out_rgb, uint64_t cap,
+                                      uint32_t* out_width, uint32_t* out_height);
+  /* A result tile for a moment inside a clip, in the viewer's own JPEG-512
+   * cache (keyed by the file and the moment): `rgb` may be NULL to look one
+   * up, else it is encoded and stored. Writes the JPEG's path. MV_ERR_IO on a
+   * lookup miss. */
+  mv_status(MV_CALL* moment_thumbnail)(void* host, const char* path_utf8, int64_t pts_ms,
+                                       const uint8_t* rgb, uint32_t width, uint32_t height,
+                                       char* out_utf8, uint32_t capacity);
+  /* The version folder of an installed, verified piece of this add-on's
+   * family ("ai-faces", "ai-cuda"; plan/17 per-piece Install/Remove).
+   * MV_ERR_IO when the piece is not installed; MV_ERR_CORRUPT when it fails
+   * verification (its files are never handed out). */
+  mv_status(MV_CALL* piece_dir)(void* host, const char* piece_id, char* out_utf8,
+                                uint32_t capacity);
+
+  /* A clip's soundtrack for the audio index (sounds and speech, plan/17
+   * "Audio", 2026-09-27): mono float PCM at `sample_rate`, from `start_ms`,
+   * its own decoder (never the player's). MV_ERR_UNSUPPORTED_FORMAT: the file
+   * has no audio. `out_duration_ms` may be NULL. */
+  mv_status(MV_CALL* audio_open)(void* host, const char* path_utf8, uint32_t sample_rate,
+                                 int64_t start_ms, int64_t* out_duration_ms, void** out_audio);
+  /* Up to `max_samples` more samples into `out`; `*out_count` 0 is the end.
+   * `*out_start_ms` is the first sample's time on the player's timeline. */
+  mv_status(MV_CALL* audio_read)(void* host, void* audio, float* out, uint32_t max_samples,
+                                 uint32_t* out_count, int64_t* out_start_ms);
+  void(MV_CALL* audio_close)(void* host, void* audio);
 } mv_host_api;
 
 typedef struct mv_addon_api {
@@ -261,6 +367,14 @@ MV_API mv_status MV_CALL mv_addon_make_staging(char* out_utf8, uint32_t cap);
  * it into place. The staging folder is consumed either way. */
 MV_API mv_status MV_CALL mv_addon_install(const char* staged_dir_utf8);
 
+/* Milestone H: a family's installed bytes and its ceiling (0 = none), for
+ * "Install local search, downloads ~N GB, uses ~N GB" and the 3 GB rule
+ * (plan/17): the chrome refuses before downloading a piece that would not
+ * fit, and mv_addon_install refuses it again (MV_ERR_UNSUPPORTED_FORMAT).
+ * `family` is the parent's id ("ai"). [worker-thread] */
+MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out_used,
+                                               uint64_t* out_ceiling);
+
 /* Unloads if loaded, then removes every version; keep_data = 0 also deletes
  * the add-on's data (import.db). Locked files are removed at next start. */
 MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
@@ -276,6 +390,22 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
 
 /* Shuts the add-on down (its jobs stop, resumable) and unloads it. [ui-thread] */
 MV_API mv_status MV_CALL mv_addon_unload(const char* id);
+
+/* Quit (not Remove), once, after the chrome has gone: every loaded add-on is
+ * taken out of the loaded set and nothing is unloaded. Import's stop (its jobs
+ * cancel and clean their temporaries) starts on a thread of its own; the AI
+ * family is not stopped at all, since a chrome read may still be inside it.
+ * Returns at once. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_addon_quit(void);
+
+/* After mv_addon_quit: waits up to `timeout_ms` for the stops it started.
+ * MV_OK when no add-on code can run any more; MV_ERR_TIMEOUT when some still
+ * may (a model load, an inference batch, a copy step), and the host must then
+ * end the process without running static destructors or DLL detach
+ * (TerminateProcess), which that code may still be using. Its data is safe to
+ * lose mid-step: SQLite WAL transactions and temporaries renamed into place.
+ * [any-thread] */
+MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* The base app's own card watch, for the one-time "Install Import?" hint
  * when a card appears and Import is not installed (plan/18). Posts
