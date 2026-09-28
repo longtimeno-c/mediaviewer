@@ -13,6 +13,13 @@
 //   speech(id, asset_id, spec, start_ms, end_ms, text)                  -- schema 2 (audio)
 //   meta(key, value)
 //
+// Photos library (issue #72, macOS): a root whose path is "photos:" holds the
+// system library's assets, each keyed "photos:<localIdentifier>"
+// (photos_source.h). No schema change: the key scheme is the source. Its
+// progress may be `unavailable` (4): only iCloud has the asset, so there was
+// nothing local to embed; it is neither done nor failed, and it re-queues when
+// the library changes (requeue_unavailable).
+//
 // Schema 2 (2026-09-27, audio): roots.media says what a folder's videos are
 // indexed for (MV_AI_MEDIA_PICTURES / _SOUND; 0 follows the default), sound
 // embeddings are frames rows under the CLAP spec, and transcripts live in
@@ -42,7 +49,7 @@ struct sqlite3;
 namespace mv::ai {
 
 enum class asset_kind : std::uint8_t { photo = 1, video = 2 };
-enum class work_state : std::uint8_t { pending = 0, partial = 1, done = 2, failed = 3 };
+enum class work_state : std::uint8_t { pending = 0, partial = 1, done = 2, failed = 3, unavailable = 4 };
 
 struct root_row {
   std::int64_t id = 0;
@@ -59,6 +66,7 @@ struct track_filter {
   bool photos = true;
   std::uint32_t media_bit = 1;
   std::uint32_t default_media = 1;
+  std::int64_t skip_root = 0;  // a root to leave out (the Photos library while access is off)
 };
 
 struct speech_in {
@@ -113,6 +121,7 @@ struct counts {
   std::uint64_t frames = 0;   // rows for `spec`
   std::uint64_t pending_video_ms = 0;  // remaining clip time, for the ETA
   std::uint64_t pending_photos = 0;
+  std::uint64_t unavailable = 0;  // only in iCloud (the Photos library)
 };
 
 // int8 quantisation of an L2-normalised vector: v ~= q * scale.
@@ -175,6 +184,15 @@ class index_db {
                                        std::span<const frame_in> frames, work_state state,
                                        std::int64_t resume_ms, std::uint32_t dim);
   [[nodiscard]] expected fail(std::int64_t asset, const std::string& spec);
+  // Nothing local to read in full (an iCloud-only Photos asset): not a failure,
+  // not retried until requeue_unavailable. `frames` may hold what was local (an
+  // iCloud-only clip's poster), searchable meanwhile.
+  [[nodiscard]] expected mark_unavailable(std::int64_t asset, const std::string& spec,
+                                          std::span<const frame_in> frames = {}, std::uint32_t dim = 0);
+  // Every unavailable asset of `root` goes back to pending, its stand-in rows
+  // dropped (an original may have been downloaded since). Returns their ids so
+  // the search matrix can drop them too.
+  [[nodiscard]] result<std::vector<std::int64_t>> requeue_unavailable(std::int64_t root);
   // A clip's transcript segments, with progress, in one transaction.
   [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
                                        std::span<const speech_in> segments, work_state state,
@@ -191,6 +209,7 @@ class index_db {
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
+  [[nodiscard]] std::uint64_t unavailable_in_root(std::int64_t root, const std::string& spec);
   // Every stored frame of `spec`, streamed.
   [[nodiscard]] expected each_frame(const std::string& spec,
                                     const std::function<void(const frame_out&)>& visit);

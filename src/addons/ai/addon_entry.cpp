@@ -280,6 +280,30 @@ mv_status MV_CALL t_result_snippet(void* ctx, uint64_t id, uint32_t index, char*
   });
 }
 
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::unsupported) == MV_AI_PHOTOS_UNSUPPORTED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::not_determined) == MV_AI_PHOTOS_NOT_DETERMINED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::denied) == MV_AI_PHOTOS_DENIED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::restricted) == MV_AI_PHOTOS_RESTRICTED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::limited) == MV_AI_PHOTOS_LIMITED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::full) == MV_AI_PHOTOS_FULL);
+
+mv_status MV_CALL t_index_photos(void* ctx, uint64_t* out_root) {
+  return guard([&] {
+    if (!out_root) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).index_photos_library();
+    if (!r) return to_mv(r.error());
+    *out_root = static_cast<uint64_t>(*r);
+    return MV_OK;
+  });
+}
+mv_status MV_CALL t_photos_access(void* ctx, uint32_t* out) {
+  return guard([&] {
+    if (!out) return MV_ERR_INVALID_ARG;
+    *out = static_cast<uint32_t>(eng(ctx).photos_library_access());
+    return MV_OK;
+  });
+}
+
 void MV_CALL shutdown(void* addon) {
   try {
     std::unique_ptr<addon_state> state(static_cast<addon_state*>(addon));
@@ -349,6 +373,8 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.face_thumb = &t_face_thumb;
     a.root_set_media = &t_root_media;
     a.result_snippet = &t_result_snippet;
+    a.index_photos_library = &t_index_photos;
+    a.photos_access = &t_photos_access;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);
