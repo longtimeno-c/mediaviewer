@@ -716,7 +716,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   dwmapi
   shell32
   comdlg32
-  ole32     # CoInitializeEx for the WinUI island STA
+  ole32     # OleInitialize for the WinUI island STA (and its drag-and-drop)
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
   comctl32  # LoadIconWithScaleDown (PR 8 window icon)

@@ -107,6 +107,19 @@ enum chrome_command : int {
   // the piece there; editor_action: arg is a chrome_editor_action.
   chrome_cmd_editor_seek = 1023,
   chrome_cmd_editor_action = 1024,
+  // Drag-out (the Mac's FolderStore.dragFiles). drag_items: a gallery or
+  // filmstrip cell started a drag; arg is its folder index. Native answers at
+  // once, inside the call, with set_drag_paths: every marked item in listing
+  // order, pairs expanded, when that cell is marked; else nothing, and the
+  // cell drags itself (and its pair).
+  // drag_ended: that drag finished (dropped or cancelled). While one of our
+  // own drags is in flight, our own drop targets refuse it.
+  chrome_cmd_drag_items = 1025,
+  chrome_cmd_drag_ended = 1026,
+  // Open > Recent folders (the Mac's File > Open Recent): arg is the row in
+  // the list set_recent_folders last pushed. A folder that is gone beeps and
+  // leaves the list, as a welcome-card click does.
+  chrome_cmd_open_recent = 1027,
 };
 
 // chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
@@ -221,6 +234,8 @@ static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
+static_assert(chrome_cmd_drag_items >= kCommandCount && chrome_cmd_drag_ended >= kCommandCount);
+static_assert(chrome_cmd_open_recent >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -244,7 +259,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_addon_state, chrome_cmd_open_path, chrome_cmd_meta_comment,
       chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index,
       chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date,
-      chrome_cmd_editor_seek, chrome_cmd_editor_action};
+      chrome_cmd_editor_seek, chrome_cmd_editor_action,
+      chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -725,6 +741,15 @@ class chrome_host {
   [[nodiscard]] bool show_addon(std::int32_t family, std::int32_t kind,
                                 const std::string& json) noexcept;
 
+  // Drag-out. The answer to chrome_cmd_drag_items: the files to drag, one
+  // UTF-8 path per line (empty: drag the cell alone). `own_drag` tells the
+  // islands one of our drags is in flight (true with the answer, and around
+  // the canvas's own drag), so they refuse to take it back; false when it ends.
+  void set_drag_paths(const std::string& utf8_lines, bool own_drag) noexcept;
+  // Open > Recent folders: "label\tpath\n" lines, most recent first. Pushed
+  // at attach and whenever the list changes.
+  void set_recent_folders(const std::string& utf8_lines) noexcept;
+
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
   // PR 10 export dialog (a flyout like `?`), preselecting `last_choice`
@@ -793,6 +818,8 @@ class chrome_host {
   chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn share_files_ = nullptr;
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
+  chrome_entry_fn set_drag_paths_ = nullptr;
+  chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

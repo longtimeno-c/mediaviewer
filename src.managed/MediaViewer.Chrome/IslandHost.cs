@@ -138,6 +138,13 @@ public static partial class IslandHost
         // is an EditorActions value (chrome_editor_action).
         public const int EditorSeek = 1023;
         public const int EditorAction = 1024;
+        // Drag-out (IslandHost.DragDrop.cs). DragItems: a cell starts a drag,
+        // arg is its folder index; native answers inside the call with
+        // SetDragPaths. DragEnded: that drag finished. OpenRecent: arg is the
+        // row of Open > Recent folders (SetRecentFolders).
+        public const int DragItems = 1025;
+        public const int DragEnded = 1026;
+        public const int OpenRecent = 1027;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -171,6 +178,7 @@ public static partial class IslandHost
                 ClipTool, ClipIndex,
                 EditTab, EditAction, MetaTags, MetaDate,
                 EditorSeek, EditorAction,
+                DragItems, DragEnded, OpenRecent,
             };
             unchecked
             {
@@ -1118,6 +1126,7 @@ public static partial class IslandHost
         flyout.Items.Clear();
         flyout.Items.Add(Item("Media…", "Ctrl+O", () => { Send(Command.Open); RestoreCanvasFocus(); }));
         flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => { Send(Command.OpenFolder); RestoreCanvasFocus(); }));
+        flyout.Items.Add(RecentFoldersSubMenu());
         flyout.Items.Add(Sep());
         string? name = _selectedIndex >= 0 && _selectedIndex < Items.Count
             ? Items[_selectedIndex].Name
@@ -1138,6 +1147,66 @@ public static partial class IslandHost
             string path = Items[_selectedIndex].Path;
             if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
             flyout.Items.Add(reveal);
+        }
+    }
+
+    // Open > Recent folders: the Mac's File > Open Recent, so the keyboard
+    // reaches the jump list's folders (Tab to the bar, Open, arrows). Native
+    // owns the list and pushes it (SetRecentFolders); a row posts its index,
+    // and a folder that has gone beeps and leaves the list, as on the card.
+    private static readonly List<(string Label, string Path)> RecentFolders = new();
+
+    private static MenuFlyoutSubItem RecentFoldersSubMenu()
+    {
+        var sub = new MenuFlyoutSubItem { Text = "Recent folders" };
+        if (RecentFolders.Count == 0)
+        {
+            MenuFlyoutItem none = Item("No recent folders", null, () => { });
+            none.IsEnabled = false;
+            sub.Items.Add(none);
+            return sub;
+        }
+        for (int i = 0; i < RecentFolders.Count; i++)
+        {
+            int row = i;
+            MenuFlyoutItem item = Item(RecentFolders[i].Label, null, () =>
+            {
+                Send(Command.OpenRecent, row);
+                RestoreCanvasFocus();
+            });
+            ToolTipService.SetToolTip(item, RecentFolders[i].Path);
+            sub.Items.Add(item);
+        }
+        return sub;
+    }
+
+    /// <summary>Native pushes the recent folders, most recent first. In:
+    /// ChromeTableArgs, UTF-8 "label\tpath\n" lines. The Open menu reads
+    /// them when it next opens.</summary>
+    public static int SetRecentFolders(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < TableArgsSize) return unchecked((int)0x80070057);
+            ChromeTableArgs a = Marshal.PtrToStructure<ChromeTableArgs>(arg);
+            string text = a.Utf8 == 0 || a.Length <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Utf8), a.Length) ?? "";
+            RecentFolders.Clear();
+            // Every line is a row: native posts back the index, so none is skipped.
+            foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                int tab = line.IndexOf('\t');
+                string label = tab < 0 ? line : line[..tab];
+                string path = tab < 0 ? line : line[(tab + 1)..];
+                RecentFolders.Add((label.Length > 0 ? label : path, path));
+            }
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
         }
     }
 
