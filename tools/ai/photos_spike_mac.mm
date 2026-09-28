@@ -18,6 +18,8 @@
 #import <Photos/Photos.h>
 
 #include <mach/mach.h>
+#include <sys/clonefile.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -54,7 +56,7 @@ double pct(std::vector<double> v, double p) {
 
 int main(int argc, char** argv) {
   @autoreleasepool {
-    std::size_t stills = 1000, videos = 20;
+    std::size_t stills = 1000, videos = 20, opens = 200;
     std::uint32_t edge = 448;
     unsigned threads = 2;
     std::string out = "photos-spike.json";
@@ -64,6 +66,7 @@ int main(int argc, char** argv) {
       else if (!std::strcmp(argv[i], "--edge")) edge = static_cast<std::uint32_t>(std::strtoul(argv[i + 1], nullptr, 10));
       else if (!std::strcmp(argv[i], "--threads")) threads = static_cast<unsigned>(std::strtoul(argv[i + 1], nullptr, 10));
       else if (!std::strcmp(argv[i], "--out")) out = argv[i + 1];
+      else if (!std::strcmp(argv[i], "--opens")) opens = std::strtoul(argv[i + 1], nullptr, 10);
     }
     FILE* f = std::fopen(out.c_str(), "w");
     if (!f) return 2;
@@ -160,6 +163,67 @@ int main(int argc, char** argv) {
                  "  \"videos_resolved\": {\"asked\": %zu, \"local\": %zu, \"icloud_only\": %zu, \"failed\": %zu,"
                  " \"p50_ms\": %.1f, \"max_ms\": %.1f},\n",
                  std::min(v_asked, videos), v_ok, v_cloud, v_failed, pct(vms, 0.5), pct(vms, 1.0));
+    // Opening a result in the viewer (the chrome's PhotosLibrary.swift): the
+    // current rendition's file from PhotoKit, cloned (APFS: no bytes copied)
+    // into a scratch folder the viewer may write to without touching Photos.
+    {
+      NSString* dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"mv-photos-open"];
+      [[NSFileManager defaultManager] removeItemAtPath:dir error:nil];
+      [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+      std::vector<std::string> ids;
+      for (const photos_item& it : items) {
+        if (it.kind == asset_kind::photo) ids.push_back(it.id);
+      }
+      if (ids.size() > opens && opens > 0) {
+        std::vector<std::string> spread;
+        for (std::size_t i = 0; i < opens; ++i) spread.push_back(ids[i * ids.size() / opens]);
+        ids.swap(spread);
+      }
+      std::size_t cloned = 0, copied = 0, cloud = 0, other = 0;
+      std::vector<double> oms;
+      const double t3 = now_s();
+      std::size_t n = 0;
+      // PhotoKit answers content-editing requests on the main queue: the loop
+      // runs on a worker while the main thread's run loop serves it.
+      std::atomic<bool> finished{false};
+      std::thread worker([&] {
+      for (const std::string& id : ids) {
+        @autoreleasepool {
+          const double a = now_s();
+          PHAsset* asset = [PHAsset fetchAssetsWithLocalIdentifiers:@[ [NSString stringWithUTF8String:id.c_str()] ]
+                                                            options:nil].firstObject;
+          PHContentEditingInputRequestOptions* o = [[PHContentEditingInputRequestOptions alloc] init];
+          o.networkAccessAllowed = NO;
+          dispatch_semaphore_t got = dispatch_semaphore_create(0);
+          __block NSURL* url = nil;
+          [asset requestContentEditingInputWithOptions:o
+                                     completionHandler:^(PHContentEditingInput* in, NSDictionary*) {
+                                       url = in.fullSizeImageURL;
+                                       dispatch_semaphore_signal(got);
+                                     }];
+          dispatch_semaphore_wait(got, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+          if (!url) {
+            ++cloud;
+          } else {
+            NSString* dst = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%zu.%@", n++, url.pathExtension]];
+            if (clonefile(url.fileSystemRepresentation, dst.fileSystemRepresentation, 0) == 0) ++cloned;
+            else if ([[NSFileManager defaultManager] copyItemAtURL:url toURL:[NSURL fileURLWithPath:dst] error:nil]) ++copied;
+            else ++other;
+          }
+          oms.push_back((now_s() - a) * 1000.0);
+        }
+      }
+      finished = true;
+      });
+      while (!finished) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+      worker.join();
+      const double open_s = now_s() - t3;
+      std::fprintf(f,
+                   "  \"open\": {\"asked\": %zu, \"cloned\": %zu, \"copied\": %zu, \"icloud_only\": %zu, \"failed\": %zu,"
+                   " \"seconds\": %.3f, \"p50_ms\": %.1f, \"p95_ms\": %.1f, \"max_ms\": %.1f},\n",
+                   ids.size(), cloned, copied, cloud, other, open_s, pct(oms, 0.5), pct(oms, 0.95), pct(oms, 1.0));
+      [[NSFileManager defaultManager] removeItemAtPath:dir error:nil];
+    }
     std::fprintf(f, "  \"peak_footprint_mb\": %.1f\n}\n", peak_mb());
     std::fclose(f);
   }

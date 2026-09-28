@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
+  MediaViewer.app under the hardened runtime. Not sandboxed (the viewer opens
+  any folder the user points it at); this lists only what the runtime would
+  otherwise refuse.
+
+  photos-library: Local search may index the system Photos library (issue #72,
+  plan/17 "Photos library source"). Without it the hardened runtime denies
+  PhotoKit silently. The permission prompt still belongs to the user, from a
+  click in Settings; nothing reads the library until they allow it, and the
+  base viewer never touches PhotoKit.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.personal-information.photos-library</key>
+  <true/>
+</dict>
+</plist>

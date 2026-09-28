@@ -221,6 +221,7 @@ struct SearchRootView: View {
       Rectangle().fill(AITheme.hairline).frame(height: 1)
       content
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) { preparingBanner }
       Rectangle().fill(AITheme.hairline).frame(height: 1)
       footer
     }
@@ -232,7 +233,8 @@ struct SearchRootView: View {
     .opacity(panel.shown ? 1 : 0)
     .padding(SearchPanelController.margin)
     .onChange(of: panel.escSeq) { _, _ in
-      if focus == .grid && model.reference == nil { focus = .field } else { close() }
+      if model.preparing != nil { model.cancelPreparing() }  // stop opening, stay here
+      else if focus == .grid && model.reference == nil { focus = .field } else { close() }
     }
     .onKeyPress(characters: ["f"]) { press in
       guard press.modifiers.contains(.command) else { return .ignored }
@@ -381,8 +383,9 @@ struct SearchRootView: View {
   private func scopeGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Look in" : nil) {
       SegmentTrack {
-        ForEach(SearchScope.allCases) { s in
-          let needsFolder = s != .all && model.folder.isEmpty
+        // "Photos" only once the Photos library is indexed (Settings).
+        ForEach(SearchScope.allCases.filter { $0 != .photos || model.photosIndexed }) { s in
+          let needsFolder = (s == .folder || s == .tree) && model.folder.isEmpty
           FilterButton(label: s.label, on: model.scope == s, style: .segment,
                        available: !needsFolder,
                        help: needsFolder ? "Open a folder to search just that folder." : s.help) {
@@ -425,6 +428,27 @@ struct SearchRootView: View {
           }
         }
       }
+    }
+  }
+
+  /// Opening Photos results: each becomes a file first (usually milliseconds
+  /// each, so this shows only for a long list).
+  @ViewBuilder
+  private var preparingBanner: some View {
+    if let p = model.preparing {
+      HStack(spacing: 10) {
+        ProgressView(value: p.total == 0 ? 0 : Double(p.done) / Double(p.total))
+          .progressViewStyle(.linear).frame(width: 120)
+        Text("Getting \(p.total == 1 ? "the photo" : "\(p.total) items") from your Photos library…")
+          .font(AITheme.font(12)).foregroundStyle(AITheme.title)
+        Button("Cancel") { model.cancelPreparing() }.controlSize(.small)
+      }
+      .padding(.horizontal, 14).padding(.vertical, 8)
+      .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.regularMaterial))
+      .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AITheme.hairline, lineWidth: 1))
+      .padding(.bottom, 12)
+      .transition(.opacity.combined(with: .move(edge: .bottom)))
+      .accessibilityElement(children: .combine)
     }
   }
 
@@ -865,6 +889,19 @@ private struct ResultTile: View {
     }
     .frame(width: size, height: h)
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(alignment: .topTrailing) {
+      // From the Photos library, not a folder (issue #72): opens as a copy.
+      if result.isPhotos {
+        Image(systemName: "photo.on.rectangle.angled")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.white)
+          .padding(4)
+          .background(Circle().fill(.black.opacity(0.6)))
+          .padding(5)
+          .help("From your Photos library")
+          .accessibilityLabel("From your Photos library")
+      }
+    }
     .overlay(alignment: .topLeading) {
       // Only when something other than the picture matched: a sound or words.
       if !badges.isEmpty {

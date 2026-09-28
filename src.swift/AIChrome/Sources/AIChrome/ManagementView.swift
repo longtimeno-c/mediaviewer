@@ -13,6 +13,7 @@
 // Status is polled at ≤ 4 Hz only while this view is on screen.
 import AppKit
 import CAiApi
+import Photos
 import SwiftUI
 
 struct RootRow: Identifiable, Equatable {
@@ -24,6 +25,12 @@ struct RootRow: Identifiable, Equatable {
   let done: Int64
   let bytes: Int64
   let media: UInt32       // MV_AI_MEDIA_*: what its videos are indexed for (0 = the setting)
+  // The Photos library root (issue #72): "photos"; its PhotoKit access as the
+  // pack sees it; its assets only iCloud has.
+  var kind = "folder"
+  var access = ""
+  var unavailable: Int64 = 0
+  var isPhotos: Bool { kind == "photos" }
 }
 
 struct Person: Identifiable, Equatable {
@@ -63,6 +70,13 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var audioReady = false
   @Published private(set) var models: [(quality: Int, name: String)] = []
   @Published private(set) var roots: [RootRow] = []
+  var folderRoots: [RootRow] { roots.filter { !$0.isPhotos } }
+  var photosRoot: RootRow? { roots.first { $0.isPhotos } }
+  /// The pack has a Photos library source (macOS, issue #72).
+  let photosSupported: Bool
+  /// PhotoKit's answer, read when Settings shows and after the prompt.
+  @Published private(set) var photosAccess: PHAuthorizationStatus = .notDetermined
+  @Published private(set) var photosAdding = false
   @Published private(set) var people: [Person] = []
   @Published var confirming: Confirm?
   @Published var message = ""
@@ -87,6 +101,8 @@ final class ManagementModel: ObservableObject {
 
   init(table: AITable) {
     self.table = table
+    photosSupported = table.hasPhotos
+    photosAccess = PhotosLibrary.status
     reloadSettings()
     pollStatus()
   }
@@ -97,6 +113,7 @@ final class ManagementModel: ObservableObject {
     visible += 1
     guard visible == 1 else { return }
     reloadSettings()
+    photosAccess = PhotosLibrary.status  // it may have changed in System Settings
     reloadRoots()
     reloadPeople()
     pollStatus()
@@ -208,7 +225,9 @@ final class ManagementModel: ObservableObject {
         RootRow(id: UInt64(clamping: int64($0["id"])), path: $0["path"] as? String ?? "",
                 recursive: $0["recursive"] as? Bool ?? false, enabled: $0["enabled"] as? Bool ?? true,
                 assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]),
-                media: UInt32(clamping: int64($0["media"])))
+                media: UInt32(clamping: int64($0["media"])),
+                kind: $0["kind"] as? String ?? "folder", access: $0["access"] as? String ?? "",
+                unavailable: int64($0["unavailable"]))
       }
       await MainActor.run { if rows != self.roots { self.roots = rows } }
     }
@@ -256,6 +275,25 @@ final class ManagementModel: ObservableObject {
     _ = table.a.index_folder?(table.ctx, url.path, recursive ? 1 : 0, &root)
     reloadRoots()
     pollStatus()
+  }
+
+  /// Settings → Photos Library → Add: the system's prompt (only here, only
+  /// from this click), then the pack remembers the library and indexes it.
+  func addPhotosLibrary() {
+    guard photosSupported, !photosAdding else { return }
+    photosAdding = true
+    Task { @MainActor in
+      let answer = await PhotosLibrary.requestAccess()
+      photosAccess = answer
+      if answer == .authorized || answer == .limited {
+        var root: UInt64 = 0
+        let st = table.call { table.a.index_photos_library?(table.ctx, &root) ?? MV_ERR_INVALID_ARG }
+        if st != MV_OK { note("The Photos library could not be added.") }
+      }
+      photosAdding = false
+      reloadRoots()
+      pollStatus()
+    }
   }
 
   func clearIndex() {
@@ -516,13 +554,16 @@ struct ManagementView: View {
           .help(model.audioReady ? "" : "Sound and Both need the Sound piece: install it above.")
         }
       }
+      if model.photosSupported {
+        section("Photos Library") { photosSection }
+      }
       section("Indexed folders") {
-        if model.roots.isEmpty {
+        if model.folderRoots.isEmpty {
           Text("No folders yet. Open a folder and press ⌘F to index it, or add one here.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .padding(12)
         }
-        ForEach(model.roots) { root in
+        ForEach(model.folderRoots) { root in
           rootRow(root)
             .transition(.opacity.combined(with: .move(edge: .top)))
           Rectangle().fill(AITheme.hairline).frame(height: 1)
@@ -624,6 +665,117 @@ struct ManagementView: View {
     return "Set to \(high ? "High" : "Fast")" + (name.isEmpty ? "" : " (\(name))") + " earlier. "
       + "Auto chooses the model for this Mac and re-indexes in the background if it changes; "
       + "the old index answers until the new one is ready."
+  }
+
+  // MARK: the Photos library (issue #72)
+
+  private var photosDenied: Bool { model.photosAccess == .denied || model.photosAccess == .restricted }
+
+  @ViewBuilder
+  private var photosSection: some View {
+    if let root = model.photosRoot {
+      photosRow(root)
+    } else if !PhotosLibrary.declared {
+      row("Search your Photos library",
+          detail: "This version of MediaViewer cannot ask for access to Photos. Update MediaViewer to search your Photos library.") {
+        EmptyView()
+      }
+    } else if photosDenied {
+      row("Search your Photos library",
+          detail: model.photosAccess == .restricted
+            ? "Access to Photos is restricted on this Mac (Screen Time or a profile)."
+            : "MediaViewer is not allowed to read your Photos library. Turn it on in System Settings → Privacy & Security → Photos, then come back here.") {
+        if model.photosAccess == .denied {
+          Button("Open Privacy Settings") { PhotosLibrary.openPrivacySettings() }
+        }
+      }
+    } else {
+      row("Search your Photos library",
+          detail: "Find photos and videos in the Photos app, iCloud Photos included, by describing them. "
+            + "Only what is already on this Mac is read: nothing is downloaded, nothing is sent anywhere, "
+            + "and your library is never changed.") {
+        Button(model.photosAdding ? "Adding…" : "Add Photos Library") { model.addPhotosLibrary() }
+          .disabled(model.photosAdding)
+          .help(model.photosAccess == .notDetermined
+                ? "macOS asks once whether MediaViewer may read your Photos library."
+                : "Index your Photos library in the background.")
+      }
+    }
+  }
+
+  private func photosRow(_ root: RootRow) -> some View {
+    // Access as the pack last saw it, or as PhotoKit says now (a change in
+    // System Settings shows before the next scan).
+    let off = photosDenied || root.access == "denied" || root.access == "restricted"
+    let handled = max(0, root.done)  // done counts iCloud-only ones too: nothing more to read
+    let indexed = max(0, handled - max(0, root.unavailable))
+    return VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 6) {
+            Image(systemName: "photo.on.rectangle.angled").foregroundStyle(AITheme.body)
+            Text("Photos Library").font(AITheme.font(13)).foregroundStyle(AITheme.title)
+            if root.access == "limited" {
+              Text("selected photos only").font(AITheme.font(11)).foregroundStyle(AITheme.body)
+            }
+          }
+          ProgressView(value: root.assets == 0 ? 0 : min(1, Double(handled) / Double(root.assets)))
+            .progressViewStyle(.linear)
+            .tint(root.enabled && !off ? .accentColor : .secondary)
+          HStack(spacing: 0) {
+            Text("\(countText(UInt64(indexed))) of \(countText(UInt64(max(0, root.assets)))) indexed")
+            if root.unavailable > 0 {
+              Text(" · \(countText(UInt64(root.unavailable))) only in iCloud")
+                .help("Optimize Mac Storage keeps these originals in iCloud and no picture of them on this Mac, "
+                      + "so there is nothing to read without downloading. They are indexed once Photos has them "
+                      + "here (MediaViewer checks each time it starts). An iCloud-only video is found by its poster.")
+            }
+            Text(root.enabled ? "" : " · paused")
+          }
+          .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
+          .disabled(off)
+        Menu {
+          ForEach(Self.mediaChoices) { choice in
+            Button {
+              model.setRootMedia(root.id, choice.value)
+            } label: {
+              if root.media == choice.value { Label(choice.label, systemImage: "checkmark") } else { Text(choice.label) }
+            }
+            .disabled(choice.value & MV_AI_MEDIA_SOUND != 0 && !model.audioReady)
+          }
+        } label: {
+          Text(Self.mediaLabel(root.media))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("What the library's videos are indexed for")
+        Button("Rescan") { model.rescan(root.id) }.disabled(off)
+        if model.confirming == .removeRoot(root.id) {
+          Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
+          Button("Cancel") { model.confirming = nil }
+        } else {
+          Button("Remove…") { model.confirming = .removeRoot(root.id) }
+            .help("Stop searching your Photos library and delete its rows from the index. Your library is not touched.")
+        }
+      }
+      if off {
+        HStack(spacing: 8) {
+          Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+          Text("MediaViewer can no longer read your Photos library. What was indexed can still be found, "
+               + "but nothing new is added until access is back.")
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 0)
+          Button("Open Privacy Settings") { PhotosLibrary.openPrivacySettings() }
+        }
+        .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        .padding(.top, 8)
+      }
+    }
+    .font(AITheme.font(12))
+    .padding(12)
   }
 
   private func rootRow(_ root: RootRow) -> some View {

@@ -28,7 +28,12 @@ struct AIResult: Identifiable, Equatable, Sendable {
   /// Stable across a re-run of the same search while the index grows, so a
   /// tile that is already on screen keeps its picture and does not fade in again.
   var id: String { "\(path)|\(ptsMs)" }
-  var name: String { (path as NSString).lastPathComponent }
+  var name: String {
+    // A Photos library asset's key is no name (issue #72).
+    guard !isPhotos else { return isClip ? "Video from Photos" : "Photo from Photos" }
+    return (path as NSString).lastPathComponent
+  }
+  var isPhotos: Bool { PhotosLibrary.isKey(path) }
   var isClip: Bool { ptsMs >= 0 }
   /// The same tile on screen (a re-run moves only `search` and `index`).
   func looksLike(_ o: AIResult) -> Bool { path == o.path && ptsMs == o.ptsMs && kind == o.kind && more == o.more && match == o.match }
@@ -42,7 +47,8 @@ final class SearchStatus: ObservableObject {
 }
 
 enum SearchScope: UInt32, CaseIterable, Identifiable {
-  case folder = 0, tree = 1, all = 2
+  /// `photos` is the chrome's own: the pack's FOLDER scope over "photos:".
+  case folder = 0, tree = 1, all = 2, photos = 3
   var id: UInt32 { rawValue }
   /// Short, so the three sit as one control: the group's caption ("Look in")
   /// and the tooltip say the rest.
@@ -51,13 +57,15 @@ enum SearchScope: UInt32, CaseIterable, Identifiable {
     case .folder: return "This folder"
     case .tree: return "+ Subfolders"
     case .all: return "Everywhere"
+    case .photos: return "Photos"
     }
   }
   var help: String {
     switch self {
     case .folder: return "Search the open folder only."
     case .tree: return "Search the open folder and the folders inside it."
-    case .all: return "Search every folder in the index."
+    case .all: return "Search every folder in the index, and your Photos library if it is indexed."
+    case .photos: return "Search your Photos library only."
     }
   }
 }
@@ -180,6 +188,10 @@ final class SearchModel: ObservableObject {
   let status = SearchStatus()
   @Published private(set) var indexing = false      // status.line.indexing, published on change
   @Published private(set) var folder = ""           // the scope folder ("" none open)
+  /// The Photos library is an indexed root (issue #72): the "Photos" scope shows.
+  @Published private(set) var photosIndexed = false
+  /// Photos results being made into files for the viewer: (done, total).
+  @Published private(set) var preparing: (done: Int, total: Int)?
   @Published private(set) var resultsGeneration = 0 // moves with every new result set
 
   private var slots: [String: ImageSlot] = [:]
@@ -237,6 +249,12 @@ final class SearchModel: ObservableObject {
   }
 
   func refreshCoverage() {
+    var library: UInt32 = 0
+    if table.hasPhotos, table.a.folder_coverage?(table.ctx, PhotosLibrary.rootKey, &library) == MV_OK {
+      if (library != 0) != photosIndexed { photosIndexed = library != 0 }
+    }
+    if scope == .photos && !photosIndexed { scope = .all }
+    if scope == .photos { coverage = 2; return }
     guard !folder.isEmpty else { coverage = 2; return }
     var state: UInt32 = 2
     if table.a.folder_coverage?(table.ctx, folder, &state) == MV_OK { coverage = state }
@@ -327,8 +345,14 @@ final class SearchModel: ObservableObject {
 
   func chipsChanged() { run(keepSelection: false) }
 
-  private var scopeDir: String? { scope == .all || folder.isEmpty ? nil : folder }
-  private var effectiveScope: UInt32 { folder.isEmpty ? SearchScope.all.rawValue : scope.rawValue }
+  private var scopeDir: String? {
+    if scope == .photos { return PhotosLibrary.rootKey }
+    return scope == .all || folder.isEmpty ? nil : folder
+  }
+  private var effectiveScope: UInt32 {
+    if scope == .photos { return SearchScope.folder.rawValue }
+    return folder.isEmpty ? SearchScope.all.rawValue : scope.rawValue
+  }
 
   /// What a run asked for, by search id: read back when its answer lands.
   private struct Run {
@@ -676,11 +700,65 @@ final class SearchModel: ObservableObject {
 
   private func openNow(gallery: Bool) -> Bool {
     guard !results.isEmpty, shown != 0 else { return false }
+    if results.contains(where: { $0.isPhotos }) {
+      preparePhotosThenOpen(gallery: gallery)
+      return true
+    }
+    return openList(results.map { $0.path }, results, gallery: gallery)
+  }
+
+  private var prepareTask: Task<Void, Never>?
+
+  /// Photos results become files first (PhotosLibrary "Opening"): a clone of
+  /// the original, or a labelled preview. Usually a few milliseconds each;
+  /// the panel says so while it runs, and Esc stops it.
+  private func preparePhotosThenOpen(gallery: Bool) {
+    prepareTask?.cancel()
+    let list = results
+    let keys = list.filter { $0.isPhotos }.map { $0.path }
+    let search = shown
+    let total = keys.count
+    preparing = (0, total)
+    let model = self  // main-actor isolated, so Sendable; the task is short
+    let report: @Sendable (Int) -> Void = { done in
+      Task { @MainActor in
+        if let p = model.preparing, done > p.done { model.preparing = (done, total) }
+      }
+    }
+    prepareTask = Task { [weak self] in
+      let files = await PhotosLibrary.files(for: keys, progress: report)
+      guard let self, !Task.isCancelled else { return }
+      self.preparing = nil
+      self.prepareTask = nil
+      // A newer search replaced these results meanwhile: nothing to open.
+      guard self.shown == search else { return }
+      var fileOf: [String: String] = [:]
+      for (k, f) in zip(keys, files) { if let f { fileOf[k] = f } }
+      // An asset deleted from Photos since it was indexed drops out.
+      let kept = list.filter { !$0.isPhotos || fileOf[$0.path] != nil }
+      guard !kept.isEmpty else {
+        self.showFailure()
+        return
+      }
+      for (k, f) in fileOf { PhotosOpened.shared.remember(file: f, key: k) }
+      _ = self.openList(kept.map { fileOf[$0.path] ?? $0.path }, kept, gallery: gallery)
+    }
+  }
+
+  func cancelPreparing() {
+    prepareTask?.cancel()
+    prepareTask = nil
+    preparing = nil
+  }
+
+  private func openList(_ paths: [String], _ list: [AIResult], gallery: Bool) -> Bool {
+    let chosen = results.indices.contains(selected) ? results[selected].id : ""
+    let select = list.firstIndex(where: { $0.id == chosen }) ?? 0
     let request: NSDictionary = [
       "title": shownTitle.isEmpty ? "Search results" : shownTitle,
-      "paths": results.map { $0.path },
-      "moments": results.map { NSNumber(value: $0.ptsMs) },
-      "select": NSNumber(value: min(max(selected, 0), results.count - 1)),
+      "paths": paths,
+      "moments": list.map { NSNumber(value: $0.ptsMs) },
+      "select": NSNumber(value: min(max(select, 0), list.count - 1)),
       "gallery": NSNumber(value: gallery),
     ]
     guard chrome?.hostOpenList(request, from: self) == true else { return false }
@@ -701,7 +779,8 @@ final class SearchModel: ObservableObject {
   func findSimilar(path: String, isVideo: Bool, positionMs: Int64) {
     guard !path.isEmpty else { return }
     let pts = isVideo ? max(0, positionMs) : -1
-    reference = Reference(kind: .similar(path: path, ptsMs: pts),
+    // An opened Photos result asks about its library asset, not the copy.
+    reference = Reference(kind: .similar(path: PhotosOpened.shared.key(for: path), ptsMs: pts),
                           label: "Similar to \((path as NSString).lastPathComponent)")
     run(keepSelection: false)
   }
@@ -739,11 +818,12 @@ final class SearchModel: ObservableObject {
       if !markerPath.isEmpty { clearMarkers() }
       return
     }
-    let opened = search == shown ? (results.first(where: { $0.path == path })?.ptsMs ?? -1) : -1
+    let asked = PhotosOpened.shared.key(for: path)
+    let opened = search == shown ? (results.first(where: { $0.path == asked })?.ptsMs ?? -1) : -1
     let t = table
     let seq = markerSeq
     Task.detached {
-      let ms = SearchModel.clipMatches(t, search: search, path: path)
+      let ms = SearchModel.clipMatches(t, search: search, path: asked)
       await MainActor.run {
         // Another clip (or a step) since: these are not its markers.
         guard seq == self.markerSeq else { return }
@@ -789,7 +869,7 @@ final class SearchModel: ObservableObject {
     // Read now if the markers are for another clip (a no-block count and copy).
     if markerPath != path {
       markerSeq += 1  // an older read still in flight does not overwrite these
-      markerMs = SearchModel.clipMatches(table, search: search, path: path)
+      markerMs = SearchModel.clipMatches(table, search: search, path: PhotosOpened.shared.key(for: path))
       markerPath = path
     }
     guard !markerMs.isEmpty else { return false }

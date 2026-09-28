@@ -887,7 +887,8 @@ endif()
 
 # ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
 if(TARGET mv_ai)
-  add_executable(ai-bench tools/ai-bench/main.cpp)
+  add_executable(ai-bench tools/ai-bench/main.cpp tools/ai-bench/photos_ask_mac.mm)
+  target_link_libraries(ai-bench PRIVATE "-framework Photos")
   target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
   target_include_directories(ai-bench PRIVATE src src/abi/include)
 endif()

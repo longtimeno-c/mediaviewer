@@ -2760,3 +2760,37 @@ again, as before 2026-09-27. In its place a magnifier icon ends the command bar'
 answer goes only to the model that owns it (Mac), the result-list fixes, and "Index this folder"
 inside the ⌘F panel. The `gallery_search` id was the last appended command, so removing it
 renumbers nothing.
+
+## 2026-09-28 — The Mac's Photos library as a Local search source (issue #72): built, with its owner calls left open
+
+Issue #72 asked whether Local search can index the Photos library (iCloud Photos on a Mac)
+as a source. The answer is yes, and a first slice is built on branch `mac-photos-library-source`
+(plan/17 "Photos library source"). The issue listed calls that must not be decided silently.
+Each has a **proposed default**, built so that it can be changed. None is settled until the
+owner says so:
+
+| Call | Proposed default (built) | Why | Alternatives |
+|---|---|---|---|
+| Download iCloud-only originals to index them | **No.** Network access is off in every PhotoKit request; such assets are *unavailable* and counted apart; a clip is found by its local poster | Indexing what is on the Mac sends nothing anywhere (rule 6). A download is a network fetch on the user's behalf, and "not cloud anything" (plan/17) | A separate opt-in, per library |
+| Open a Photos result | A **clone** of the local original (APFS: no bytes copied), else a `(preview).jpg` of Photos' best local picture, in `~/Library/Caches/MediaViewer/Photos Library/` | The viewer rates, renames, moves and trashes files. Handed a path inside the library, it could change the library (rule 5). Measured: only 13 % of originals were local on the owner's library | A PhotoKit-backed read-only viewer source (a viewer change); "Show in Photos" (no public API reveals one asset) |
+| A Mac-only source in a dual-track add-on (D9) | Acceptable: `photos_source.h` is portable, Windows builds `photos_none.cpp` | There is no PhotoKit on Windows, and iCloud for Windows syncs to a folder, which a folder root covers | Hold the slice until a Windows equivalent exists |
+| Read-only (rule 5) | Enforced: no write API is called | — | — |
+| Identifiers (rule 6) | `photos:<localIdentifier>` is treated like a path: kept in `index.db` only, never logged, never printed by the bench tools | — | — |
+| Not hurting the viewer | Photos work runs in the same background workers, with the same yield policy | — | The in-app Mac PR 1 soak while indexing the library is still owed |
+
+**A change to the base app.** plan/17's PR 20 verify line says the Mac base app bundle is
+unchanged with the pack absent. This slice adds two things to it:
+
+- `NSPhotoLibraryUsageDescription` in `Info.plist`. Without it, macOS terminates an app that
+  asks for Photos access.
+- The hardened-runtime entitlement `com.apple.security.personal-information.photos-library`
+  (`packaging/macos/MediaViewer.entitlements`, signed onto the app by `tools/mac/macpack.py`).
+  Without it, macOS silently denies Photos access to a hardened app.
+
+Neither can live in the pack, because TCC attributes the request to the app. They grant nothing
+by themselves: the prompt comes only from a click in Settings, and the base viewer never calls
+PhotoKit. An AI chrome running in an app without them hides the button and asks the user to
+update. This is flagged for the owner, not quietly accepted.
+
+**Not built, because the measurements did not call for it:** persistent change tokens. A full
+re-enumeration of 23,089 assets takes 0.43 s warm, so the scan is the delta.

@@ -8,6 +8,8 @@
 //
 //   ai-bench --addons <folder> --index <media folder> [--recursive] [--media 1|2|3]
 //            [--compute 0..4] [--quality 0..2] [--timeout <s>] [--query "text"]...
+//   ai-bench --addons <folder> --photos ...   the Mac's Photos library instead (issue #72;
+//            macOS, run through tools/ai-bench/photos-bench.sh for the permission prompt)
 //            [--busy-after <s> --busy-for <s>]   (the viewer "presents" then: yield check)
 //            [--quit-after <s> [--quit-budget <s>] [--quit-hash] [--quit-legacy]]
 //
@@ -41,6 +43,10 @@
 #include "abi/addon_media.h"
 #include "addon/store.h"
 
+#if defined(__APPLE__)
+bool ai_bench_ask_photos();
+#endif
+
 namespace {
 
 std::atomic<bool> g_busy{false};
@@ -56,14 +62,15 @@ void print_status(const mv_ai_api* ai, double t0) {
   std::printf("{\"t\":%.1f,\"state\":%u,\"yield\":%u,\"backend\":%u,\"fault\":%u,\"model\":\"%s\","
               "\"assets\":%llu,\"done\":%llu,\"failed\":%llu,\"frames\":%llu,\"assets_per_s\":%.2f,"
               "\"frames_per_s\":%.2f,\"eta\":[%.0f,%.0f],\"sound\":[%llu,%llu],\"speech\":[%llu,%llu],"
-              "\"index_bytes\":%llu,\"flags\":%u}\n",
+              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu}\n",
               now_s() - t0, s.state, s.yield_reason, s.backend, s.provider_fault, s.model_utf8,
               static_cast<unsigned long long>(s.assets_total), static_cast<unsigned long long>(s.assets_done),
               static_cast<unsigned long long>(s.assets_failed), static_cast<unsigned long long>(s.frames_indexed),
               s.assets_per_second, s.frames_per_second, s.eta_low_seconds, s.eta_high_seconds,
               static_cast<unsigned long long>(s.sound_done), static_cast<unsigned long long>(s.sound_total),
               static_cast<unsigned long long>(s.speech_done), static_cast<unsigned long long>(s.speech_total),
-              static_cast<unsigned long long>(s.index_bytes), s.flags);
+              static_cast<unsigned long long>(s.index_bytes), s.flags,
+              static_cast<unsigned long long>(s.assets_unavailable));
   std::fflush(stdout);
 }
 
@@ -111,7 +118,7 @@ int main(int argc, char** argv) {
   bool recursive = false;
   int media = -1, compute = -1, quality = -1;
   double timeout = 3600, busy_after = -1, busy_for = 0, quit_after = -1, quit_budget = 0.5;
-  bool quit_hash = false, quit_legacy = false;
+  bool quit_hash = false, quit_legacy = false, photos = false;
   std::vector<std::string> queries;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -130,6 +137,7 @@ int main(int argc, char** argv) {
     else if (a == "--quit-hash") quit_hash = true;
     else if (a == "--quit-legacy") quit_legacy = true;
     else if (a == "--quit-budget") quit_budget = std::stod(next());
+    else if (a == "--photos") photos = true;
   }
   if (addons.empty()) {
     std::fprintf(stderr, "usage: ai-bench --addons <dir> [--index <dir>] [--query text]...\n");
@@ -159,9 +167,23 @@ int main(int argc, char** argv) {
   if (quality >= 0) ai->set_setting(ai->ctx, "quality", std::to_string(quality).c_str());
   if (media >= 0) ai->set_setting(ai->ctx, "video_index", std::to_string(media).c_str());
   const double t0 = now_s();
-  if (!folder.empty()) {
+  if (!folder.empty() || photos) {
     uint64_t root = 0;
-    if (ai->index_folder(ai->ctx, folder.c_str(), recursive ? 1u : 0u, &root) != MV_OK) return 1;
+    if (photos) {
+#if defined(__APPLE__)
+      if (!ai_bench_ask_photos()) {
+        std::fprintf(stderr, "no access to the Photos library\n");
+        return 1;
+      }
+#endif
+      const mv_status st = ai->index_photos_library ? ai->index_photos_library(ai->ctx, &root) : MV_ERR_UNSUPPORTED_FORMAT;
+      if (st != MV_OK) {
+        std::fprintf(stderr, "index_photos_library: %d\n", static_cast<int>(st));
+        return 1;
+      }
+    } else if (ai->index_folder(ai->ctx, folder.c_str(), recursive ? 1u : 0u, &root) != MV_OK) {
+      return 1;
+    }
     double last = 0;
     while (now_s() - t0 < timeout) {
       const double t = now_s() - t0;
@@ -192,6 +214,8 @@ int main(int argc, char** argv) {
       ai->result_path(ai->ctx, id, i, path, sizeof path);
       if (ai->result_snippet) ai->result_snippet(ai->ctx, id, i, snip, sizeof snip);
       const char* name = std::strrchr(path, '\\') ? std::strrchr(path, '\\') + 1 : path;
+      // A Photos asset's identifier is as private as a path: never printed.
+      if (std::strncmp(path, "photos:", 7) == 0) name = r.pts_ms >= 0 ? "photos:video" : "photos:photo";
       std::printf("%s{\"file\":\"%s\",\"ms\":%lld,\"score\":%.3f,\"match\":%u,\"snippet\":\"%s\"}", i ? "," : "",
                   name, static_cast<long long>(r.pts_ms), r.score, r.match, snip);
     }

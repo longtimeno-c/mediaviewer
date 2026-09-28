@@ -1,6 +1,6 @@
 # 17 — Local AI search (video moments and photos)
 
-**Status: proposed 2026-09-24, amended 2026-09-25 and 2026-09-27 (audio), post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
+**Status: proposed 2026-09-24, amended 2026-09-25, 2026-09-27 (audio) and 2026-09-28 (Photos library source, macOS), post-v1. Not in PR 8. Milestone H, PRs 20–24 (renumbered 2026-09-24 from 21–25; it follows the Import add-on, PRs 16–19). Windows and macOS together (owner, 2026-09-24).**
 Nothing here changes the PR 1–8 viewer. It is an opt-in add-on that arrives as a separate
 component, after the viewer ships.
 
@@ -681,6 +681,95 @@ CLAP's own "nothing found" calibration, Core ML coverage and throughput, and eve
 Removed 2026-09-28 at the owner's request; replaced by a search icon in the path bar (it opens
 the `Ctrl+F` / `⌘F` panel, only while the pack is loaded; plan/12 2026-09-28).
 
+## Photos library source (macOS, issue #72, 2026-09-28)
+
+**Status: built as a first slice on branch `mac-photos-library-source`; the owner calls below are
+proposed defaults, not decisions** (plan/12 2026-09-28). The system Photos library (where iCloud
+Photos lives on a Mac) is one more remembered root beside folder roots, feeding the same
+indexer, index and search. Mac-only under D9: the source is behind a portable interface
+(`src/addons/ai/photos_source.h`; PhotoKit in `photos_mac.mm`, `photos_none.cpp` elsewhere). The
+index and search are shared. Windows has no PhotoKit, and iCloud for Windows syncs to a folder,
+which a folder root already covers.
+
+**Source, not a folder.** A Photos asset has no path. It is keyed `photos:<localIdentifier>`
+under one root whose path is `photos:`. The key scheme is the source, so there is no schema
+change. `(mtime, size)` is `(modificationDate, pixel count)`: an edit in Photos re-queues the
+asset, like an edited file. The scan is PhotoKit's enumeration of the user's library: iCloud
+Photos included, shared albums and the Hidden album excluded, one row per burst and per Live
+Photo (its still). A `PHPhotoLibraryChangeObserver` rescans, at most once per 10 s (an iCloud
+sync arrives as a burst). The full re-enumeration is the delta. Persistent change tokens are
+not used because the measured cost does not need them (below).
+
+**Local only, read-only.** Every PhotoKit request has network access off. Nothing is written to
+the library. A still is embedded from PhotoKit's local rendition at the indexer's size (the
+edit as Photos shows it, colour-matched to sRGB by CoreGraphics, D6). A clip is sampled from
+its local file, which `requestAVAsset` hands over. The host's sampler and audio reader open it
+read-only. An asset only iCloud has is **unavailable** (progress state 4), and is neither done
+nor failed:
+
+- `mv_ai_status.assets_unavailable` counts these assets; Settings says "N only in iCloud".
+- An iCloud-only clip is found by its local poster, stored as one row at 0 ms.
+- They are asked again once per launch, and when access returns. They are not asked on every
+  change notice, which would re-ask for every iCloud-only clip each time a photo is favourited.
+
+**Permission.** The pack never raises the system prompt. Settings → Local search → *Photos
+Library* → **Add Photos Library** asks, from that click, and only then calls
+`index_photos_library`. Until then the source answers `permission_denied` without touching
+PhotoKit's library, because any fetch would itself raise the prompt. When access is off
+(denied, restricted, or revoked later), the rows stay searchable, like a drive that is not
+plugged in, and the root is left out of the work. Settings then says so and offers *Open
+Privacy Settings*.
+
+- The base app gains `NSPhotoLibraryUsageDescription` in its Info.plist.
+- It also gains the hardened-runtime entitlement
+  `com.apple.security.personal-information.photos-library`
+  (`packaging/macos/MediaViewer.entitlements`).
+- Without these, macOS kills an app that asks, and denies one that runs hardened. They cannot
+  live in the pack. This is a change to the base bundle with the pack absent: see plan/12.
+
+**Search and results.** `scope_dir "photos:"` scopes a search to the library: the search
+panel's *Look in* row gains a **Photos** segment once the library is indexed. *Everywhere*
+includes the library.
+
+- A Photos still's tile is the key itself. The chrome draws it from PhotoKit's own cached
+  rendition, so there is no second thumbnail cache.
+- A result shows a small Photos badge.
+
+**Opening a result (proposed default).** Enter makes each Photos result a file of its own in
+`~/Library/Caches/MediaViewer/Photos Library/`, because the viewer rates, renames and moves
+files, and must never do that inside the library:
+
+- **Original on this Mac:** an APFS clone (`clonefile`). It copies no bytes, and a change to it
+  never reaches the library.
+- **Original only in iCloud:** Photos' best local picture, written as `<name> (preview).jpg`,
+  so the viewer's title says what it is.
+
+The folder is emptied each time the pack's chrome attaches. The scrub markers, N / Shift+N and
+Find Similar on an opened Photos result ask about the asset, not the copy. A rating or edit
+made in the viewer lands on the copy and is lost with it: a read-only list mode in the viewer
+is the follow-up if the owner keeps this default.
+
+### Measured (2026-09-28, Apple M5, macOS 26.6, the owner's library: 23,089 assets, Optimize Mac Storage on)
+
+`tools/ai/photos-spike.sh` (the source alone, no model) and `tools/ai-bench/photos-bench.sh`
+(the whole pack):
+
+| What | Result |
+|---|---|
+| Enumeration (the scan and the delta) | 0.92 s cold, 0.43 s warm (0.53 / 0.23 s on a second run) |
+| Local still at the indexer's 448 px, 2 threads | 304–411 per s, p50 4.3–5.7 ms, p95 6.4–10.5 ms |
+| Stills with a local rendition | 979 of 1,000 sampled (2.1 % iCloud-only) |
+| Clips with a local file | 0 of 20 sampled: with Optimize Mac Storage, clips are posters only |
+| Originals on this Mac (what opening can clone) | 26 of 200 sampled (13 %); the rest open as previews |
+| Opening: resolve + clone, per asset | p50 7.0 ms, p95 9.6 ms; 0 bytes copied |
+| Peak footprint of the source alone | 70 MB (stills), 212 MB (with opening) |
+
+PhotoKit is not the bottleneck: the image tower is (ViT-L/14 31 img/s, B/32 499 img/s on
+Core ML, above).
+
+Owed: the Mac PR 1 present-loop soak **while indexing the library** in the app, and a library
+with Optimize Mac Storage off. The Windows half is nothing by design (D9 question below).
+
 ## Open decisions (owner)
 
 1. ~~**D3D12 / DirectML.**~~ **Settled 2026-09-24:** vendor providers (OpenVINO, CUDA/TensorRT)
@@ -692,6 +781,14 @@ the `Ctrl+F` / `⌘F` panel, only while the pack is loaded; plan/12 2026-09-28).
    quality may use the full 3 GB optional-install budget.
 3. ~~**Is this a D10?**~~ **Settled 2026-09-24: no.** It stays a plan/17 proposal plus the
    decision-log entry; it is not a numbered D-decision.
+4. **Photos library: download iCloud originals to index them?** (issue #72) Proposed: no. The
+   index uses only what is on this Mac, and a fetch from iCloud is a network request on the
+   user's behalf. A separate opt-in, or nothing, is the owner's call (plan/12 2026-09-28).
+5. **Photos library: how a result opens.** Proposed and built: a clone of the local original,
+   else a labelled preview, in a cache folder. Alternatives: a PhotoKit-backed read-only viewer
+   source (a viewer change), or a hand-off to Photos (no public API reveals one asset).
+6. **A Mac-only source in a dual-track add-on (D9).** Proposed: acceptable, because the
+   interface is portable and Windows' iCloud is a folder. The owner's confirmation is needed.
 
 ## Explicitly not in this feature
 

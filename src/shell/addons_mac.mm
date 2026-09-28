@@ -998,7 +998,9 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
   out->provider_fault = static_cast<int32_t>(st.provider_fault);
   out->flags = st.flags;
   out->assets_total = st.assets_total;
-  out->assets_done = st.assets_done;
+  // Photos library assets only iCloud has are handled too (issue #72): there
+  // is nothing on this Mac to read. Zero from an older pack.
+  out->assets_done = st.assets_done + st.assets_unavailable;
   out->frames_indexed = st.frames_indexed;
   out->eta_low_seconds = st.eta_low_seconds;
   out->eta_high_seconds = st.eta_high_seconds;

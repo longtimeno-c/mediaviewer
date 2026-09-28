@@ -6,6 +6,8 @@
 // here logs a path, a query or a name (rule 6).
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -63,7 +65,16 @@ std::string str(const char* s) { return s ? std::string(s) : std::string(); }
 mv_status MV_CALL t_status(void* ctx, mv_ai_status* out) {
   return guard([&] {
     if (!out) return MV_ERR_INVALID_ARG;
-    eng(ctx).status(*out);
+    // The caller's struct may be older and shorter (a host or chrome built
+    // before a field was appended: assets_unavailable, 2026-09-28): fill only
+    // what it declared. 0 means "as this header" (the fields up to today).
+    const std::size_t want = out->struct_size == 0 ? sizeof(mv_ai_status)
+                                                   : std::min<std::size_t>(out->struct_size, sizeof(mv_ai_status));
+    if (want < offsetof(mv_ai_status, assets_total)) return MV_ERR_INVALID_ARG;
+    mv_ai_status full{};
+    eng(ctx).status(full);
+    full.struct_size = static_cast<uint32_t>(want);
+    std::memcpy(out, &full, want);
     return MV_OK;
   });
 }
