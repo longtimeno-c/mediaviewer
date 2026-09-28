@@ -340,6 +340,25 @@ final class FolderStore: ObservableObject {
 
   func select(_ index: Int) { mv_chrome_select_index(Int32(index)) }
 
+  /// The files a drag from the cell at `index` carries: every marked item in
+  /// listing order when that cell is marked (the marks are the multi-selection,
+  /// as for ⌘C and F7/F8), else that item alone. Full paths of the originals,
+  /// with the thumbnail already decoded for each (nil when not in memory). No
+  /// file I/O: paths come from the host's listing, images from the slots.
+  func dragFiles(from index: Int) -> [(path: String, image: CGImage?)] {
+    guard names.indices.contains(index) else { return [] }
+    var indices = [index]
+    if markedCount > 1, mv_chrome_is_marked(Int32(index)) {
+      indices = names.indices.filter { mv_chrome_is_marked(Int32($0)) }
+    }
+    return indices.compactMap { i in
+      let path = Self.bridgeString { mv_chrome_item_path(Int32(i), $0, $1) }
+      guard !path.isEmpty else { return nil }
+      return (path, slots[names[i]]?.image)
+    }
+  }
+
+
   func selectAndCloseGallery(_ index: Int) { mv_chrome_select_index_and_close_gallery(Int32(index)) }
 
   func adjustGalleryCellSize(direction: Int) {

@@ -91,3 +91,75 @@ TEST_CASE("each version's handler gets its own folder; the rest are pruned", "[s
   CHECK(plan_shellext_install("..", existing).version_dir.empty());
   CHECK(plan_shellext_install("0.1\\..\\x", existing).version_dir.empty());
 }
+
+TEST_CASE("the welcome card's recent rows name the folder and where it lives", "[shell][os]") {
+  const std::vector<std::string> dirs = {"/Users/ana/Pictures/2026-09 Iceland/", "D:\\Iceland", "D:\\",
+                                         "/Volumes/CARD_A/DCIM", "/Photos", "/Users/ana"};
+  welcome_recents r;
+  r.hover = 2;
+  fill_welcome_recents(dirs, "/Users/ana/", r);
+  REQUIRE(r.count == 6);
+  CHECK(r.hover == -1);
+  CHECK(std::string(r.label[0]) == "2026-09 Iceland");
+  CHECK(std::string(r.where[0]) == "~/Pictures");
+  CHECK(std::string(r.label[1]) == "Iceland");
+  CHECK(std::string(r.where[1]) == "D:\\");
+  CHECK(std::string(r.label[2]) == "D:\\");
+  CHECK(std::string(r.where[2]).empty());
+  CHECK(std::string(r.where[3]) == "/Volumes/CARD_A");
+  CHECK(std::string(r.where[4]) == "/");
+  CHECK(std::string(r.label[5]) == "ana");
+  CHECK(std::string(r.where[5]) == "/Users");  // home's own parent is not under home
+
+  SECTION("a folder beside home is not under it") {
+    const std::vector<std::string> one = {"/Users/anabel/Photos"};
+    fill_welcome_recents(one, "/Users/ana", r);
+    CHECK(std::string(r.where[0]) == "/Users/anabel");
+  }
+  SECTION("at most kMax rows") {
+    std::vector<std::string> many;
+    for (int i = 0; i < 10; ++i) many.push_back("/x/" + std::to_string(i));
+    fill_welcome_recents(many, "", r);
+    CHECK(r.count == welcome_recents::kMax);
+  }
+  SECTION("a long name is cut at a character boundary") {
+    std::string name;
+    for (int i = 0; i < 60; ++i) name += "\xC3\xA9";  // é, two bytes each
+    const std::vector<std::string> one = {"/x/" + name};
+    fill_welcome_recents(one, "", r);
+    const std::string label = r.label[0];
+    CHECK(label.size() == sizeof(r.label[0]) - 2);  // 94: 95 would split an é
+    CHECK(label.size() % 2 == 0);
+  }
+}
+
+TEST_CASE("the welcome card's rows are hit where they are drawn", "[shell][os]") {
+  const float w = 1600.0f, h = 1000.0f, chrome = 80.0f, scale = 2.0f;
+  const welcome_geometry plain = layout_welcome(w, h, chrome, scale, 0);
+  REQUIRE(plain.fits);
+  CHECK(plain.rows == 0);
+  CHECK(welcome_row_at(plain, w * 0.5f, plain.hi_y - 1.0f) == -1);
+
+  const welcome_geometry g = layout_welcome(w, h, chrome, scale, 3);
+  REQUIRE(g.fits);
+  REQUIRE(g.rows == 3);
+  CHECK(g.hi_y - g.lo_y > plain.hi_y - plain.lo_y);
+  const float cx = w * 0.5f;
+  CHECK(welcome_row_at(g, cx, g.rows_top - 1.0f) == -1);
+  CHECK(welcome_row_at(g, cx, g.rows_top + 1.0f) == 0);
+  CHECK(welcome_row_at(g, cx, g.rows_top + g.row_h * 2.5f) == 2);
+  CHECK(welcome_row_at(g, cx, g.rows_top + g.row_h * 3.0f) == -1);
+  CHECK(welcome_row_at(g, g.row_x0 - 1.0f, g.rows_top + 1.0f) == -1);
+
+  SECTION("a short window drops rows before it drops the card") {
+    const welcome_geometry tight = layout_welcome(w, 700.0f, chrome, scale, 6);
+    REQUIRE(tight.fits);
+    CHECK(tight.rows < 6);
+    CHECK(tight.hi_y - tight.lo_y <= 700.0f - chrome);
+  }
+  SECTION("too short for the card: nothing, and nothing to hit") {
+    const welcome_geometry none = layout_welcome(w, 400.0f, chrome, scale, 6);
+    CHECK_FALSE(none.fits);
+    CHECK(welcome_row_at(none, cx, 300.0f) == -1);
+  }
+}

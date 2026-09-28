@@ -70,6 +70,52 @@ std::vector<std::string> recent_folder_labels(std::span<const std::string> utf8_
   return labels;
 }
 
+namespace {
+
+// `src` into `dst` (`cap` bytes), NUL-terminated, cut before a character that
+// would not fit.
+void copy_utf8(std::string_view src, char* dst, std::size_t cap) noexcept {
+  if (cap == 0) return;
+  std::size_t n = std::min(src.size(), cap - 1);
+  if (n < src.size()) {
+    while (n > 0 && (static_cast<unsigned char>(src[n]) & 0xC0u) == 0x80u) --n;
+  }
+  std::copy_n(src.data(), n, dst);
+  dst[n] = '\0';
+}
+
+}  // namespace
+
+void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
+                          welcome_recents& out) noexcept {
+  out.count = 0;
+  out.hover = -1;
+  home = trim_separator(home);
+  for (const std::string& d : utf8_dirs) {
+    if (out.count >= welcome_recents::kMax) break;
+    const std::string_view dir = trim_separator(d);
+    if (dir.empty()) continue;
+    const int i = out.count++;
+    // A root ("/", "D:\") is its own label and lives nowhere.
+    const std::size_t sep = dir.find_last_of("/\\");
+    if (sep == std::string_view::npos || sep + 1 == dir.size()) {
+      copy_utf8(dir, out.label[i], sizeof(out.label[i]));
+      out.where[i][0] = '\0';
+      continue;
+    }
+    copy_utf8(dir.substr(sep + 1), out.label[i], sizeof(out.label[i]));
+    std::string_view parent = dir.substr(0, sep == 0 ? 1 : sep);
+    if (parent.size() == 2 && parent[1] == ':') parent = dir.substr(0, 3);  // "D:\"
+    if (home.size() > 1 && parent.size() >= home.size() && parent.substr(0, home.size()) == home &&
+        (parent.size() == home.size() || is_separator(parent[home.size()]))) {
+      out.where[i][0] = '~';
+      copy_utf8(parent.substr(home.size()), out.where[i] + 1, sizeof(out.where[i]) - 1);
+    } else {
+      copy_utf8(parent, out.where[i], sizeof(out.where[i]));
+    }
+  }
+}
+
 std::string paths_as_text(std::span<const std::string> utf8_paths, std::string_view newline) {
   std::string out;
   for (const std::string& p : utf8_paths) {

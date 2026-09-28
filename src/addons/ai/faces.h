@@ -32,6 +32,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "addons/ai/face_refine.h"
@@ -114,6 +115,8 @@ class faces_db {
   [[nodiscard]] result<std::int64_t> split(std::span<const std::int64_t> faces);
   // Named people whose name matches (case-insensitive, whole name).
   [[nodiscard]] std::vector<std::int64_t> people_named(const std::string& name);
+  // Every named person, (id, name): the query language's names (query.h).
+  [[nodiscard]] std::vector<std::pair<std::int64_t, std::string>> names();
   // The person nearest a face vector, if within `same_person`.
   [[nodiscard]] std::int64_t nearest_person(std::span<const float> emb);
   // The idle pass: merges clusters (not two named ones) whose faces resemble

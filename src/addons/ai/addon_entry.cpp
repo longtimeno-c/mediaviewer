@@ -279,6 +279,12 @@ mv_status MV_CALL t_result_snippet(void* ctx, uint64_t id, uint32_t index, char*
     return r ? write_out(*r, out, cap, nullptr) : to_mv(r.error());
   });
 }
+mv_status MV_CALL t_suggest_json(void* ctx, const char* query, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    if (!query) return MV_ERR_INVALID_ARG;
+    return write_out(eng(ctx).suggest_json(query), out, cap, needed);
+  });
+}
 
 void MV_CALL shutdown(void* addon) {
   try {
@@ -349,6 +355,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.face_thumb = &t_face_thumb;
     a.root_set_media = &t_root_media;
     a.result_snippet = &t_result_snippet;
+    a.suggest_json = &t_suggest_json;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

@@ -154,7 +154,7 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 ## At home on Windows and macOS
 
 - **Explorer thumbnails** for HEIC, AVIF and RAW, and a **Spotlight importer** and **Quick Look** on the Mac.
-- **Recent folders** in the jump list and the Dock.
+- **Recent folders** on the home screen, in the jump list and the Dock.
 - **Taskbar and Now Playing media controls**, drag-out, copy path or edited image, the Share sheet, and single-window open.
 - **The same core on both platforms:** Direct3D 11 and WinUI on Windows, Metal and SwiftUI on the Mac.
 

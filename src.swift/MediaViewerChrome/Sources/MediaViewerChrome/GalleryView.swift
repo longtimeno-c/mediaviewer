@@ -74,6 +74,8 @@ struct GalleryView: View {
                     )
                     .id(index)
                     .onTapGesture { store.selectAndCloseGallery(index) }
+                    // Drag out the original (the marks, when this cell is one).
+                    .fileDrag { store.dragFiles(from: index) }
                   }
                 }
               }

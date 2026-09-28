@@ -72,6 +72,11 @@ int32_t mv_chrome_current_index(void);
 // `out_buf` untouched if `index` is out of `[0, mv_chrome_item_count())`.
 bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size);
 
+// The full UTF-8 path of the original at `index` (a folder item or a result
+// list's entry), for a file drag out of the gallery / filmstrip. Returns the
+// byte length needed, as the tables; 0 when `index` is out of range.
+int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.

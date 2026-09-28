@@ -123,6 +123,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/vectors.h
   ${R}/src/addons/ai/face_refine.cpp
   ${R}/src/addons/ai/face_refine.h
+  ${R}/src/addons/ai/query.cpp
+  ${R}/src/addons/ai/query.h
   ${R}/src/addons/ai/faces.cpp
   ${R}/src/addons/ai/faces.h
   ${R}/src/addons/ai/engine.cpp

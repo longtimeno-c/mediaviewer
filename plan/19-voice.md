@@ -20,7 +20,11 @@ box, so a mis-hearing can be corrected by typing. A short spoken line reports th
 
 There is no second index, no second embedding model, and no intent parser. The utterance
 **is** the query, filler included. "Pull up all the photos that include…" is a fine sentence
-for the text tower; stripping it down to keywords would be a different product.
+for the text tower; stripping it down to keywords would be a different product. The pack's
+own query language ([17](17-local-ai-search.md#query-syntax-2026-09-28)) reads the transcript
+exactly as it reads a typed query: a lead-in ("pull up all the …", "show me …") is trimmed, a
+named person narrows, "photos of" still asks for anything, and "videos of" asks for videos.
+Voice adds no parsing of its own.
 
 ## Why it is its own add-on
 

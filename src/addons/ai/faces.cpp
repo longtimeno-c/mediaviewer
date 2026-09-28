@@ -571,6 +571,14 @@ std::vector<std::int64_t> faces_db::people_named(const std::string& name) {
   return out;
 }
 
+std::vector<std::pair<std::int64_t, std::string>> faces_db::names() {
+  std::lock_guard lock(m_);
+  std::vector<std::pair<std::int64_t, std::string>> out;
+  stmt s(db_, "SELECT id, name FROM people WHERE name != ''");
+  while (s.step_row()) out.emplace_back(s.i64(0), s.text(1));
+  return out;
+}
+
 std::int64_t faces_db::nearest_person(std::span<const float> emb) {
   std::lock_guard lock(m_);
   std::int64_t best = 0;
