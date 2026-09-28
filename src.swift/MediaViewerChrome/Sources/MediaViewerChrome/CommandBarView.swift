@@ -315,8 +315,8 @@ private struct UpdateBarItem: View {
 /// The trail from the highest folder reached to the one on screen, in the
 /// command bar just left of `?`. Up and Root are icons outside the scrolling
 /// ancestor trail; the current name stays pinned and a long middle becomes an
-/// ancestor menu; a search icon (Local search installed) ends it. Shown whenever
-/// a folder is open, including while a photo is on the canvas.
+/// ancestor menu; a search icon ends it. Shown whenever a folder is open,
+/// including while a photo is on the canvas.
 struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
   @State private var trailWidth: CGFloat = 0
@@ -493,20 +493,25 @@ private struct TrailWidthKey: PreferenceKey {
 }
 
 /// The path group's search icon (owner, 2026-09-28; it replaced the gallery
-/// search bar): opens the Local search panel exactly as ⌘F does. Shown while
-/// the pack is loaded or still starting at launch; a click while it starts
-/// opens the panel once it attaches. Absent with Local search not installed
-/// (or failed to load), never dead.
+/// search bar). Always there: it does what ⌘F does. With Local search loaded
+/// or still starting at launch it opens that panel (a click while it starts
+/// opens it once it attaches); without it, file search, which needs no add-on
+/// and no index (plan/16 "File search").
 private struct PathSearchButton: View {
   @ObservedObject private var search = LocalSearchStore.shared
 
   var body: some View {
-    if search.searchAvailable {
-      PathIcon(symbol: "magnifyingglass", enabled: true) { search.openSearchWhenReady() }
-        .help(search.loaded ? "Search photos and videos (⌘F)"
-                            : "Search photos and videos (⌘F). Local search is starting…")
-        .accessibilityLabel("Search")
+    PathIcon(symbol: "magnifyingglass", enabled: true) {
+      if search.searchAvailable {
+        search.openSearchWhenReady()
+      } else {
+        mv_chrome_file_search()
+      }
     }
+    .help(search.loaded ? "Search photos and videos (⌘F)"
+          : search.searchAvailable ? "Search photos and videos (⌘F). Local search is starting…"
+          : "Find files by name in this folder (⌘F)")
+    .accessibilityLabel(search.searchAvailable ? "Search" : "Find files by name")
   }
 }
 

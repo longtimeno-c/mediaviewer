@@ -141,8 +141,8 @@ Both hosts, on the shared cut list (`video_timeline`: marks, `remove_range`, `be
   CPU while playing at 14.8 / 15.2 % before and 10.9 / 10.8 % after (two valid alternated pairs;
   paused and closed were inside noise), and no playback tick inside a cut on either build.
 - Windows: the same keys, marks, trim, snapping and close guard in `main.cpp` and the island
-  (ABI of the island: `chrome_editor_view_args` is 104 bytes; `editor_trim_grab` 1025 and
-  `editor_trim_to` 1026). Built in CI only; its self-test and a hands-on pass are owed.
+  (ABI of the island: `chrome_editor_view_args` is 104 bytes; `editor_trim_grab` 1028 and
+  `editor_trim_to` 1029). Built in CI only; its self-test and a hands-on pass are owed.
 
 ## Architecture (PRs 31–35; PR 30's pieces are in the table above)
 
