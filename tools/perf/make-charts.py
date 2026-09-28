@@ -36,6 +36,7 @@ INPUTS = {
     "compare-open.svg": ["compare/screen.json"],
     "compare-pan.svg": ["compare/screen.json"],
     "compare-video.svg": ["compare/screen.json"],
+    "search-accuracy.svg": ["search.json"],
 }
 
 BG, FG, MUTED, GRID = "#14181f", "#e6e9ef", "#8b94a5", "#2a303b"
@@ -324,6 +325,43 @@ def compare_screen():
     return charts
 
 
+def search_accuracy():
+    report = json.loads((PERF / "search.json").read_text())
+    towers = [(t, n) for t, n in (("clip-l14", "High (CLIP ViT-L/14)"), ("clip-b32", "Fast (CLIP ViT-B/32)"))
+              if t in report["towers"]]
+    size = max(int(k) for t, _ in towers for k in report["towers"][t])
+    at = {t: report["towers"][t][str(size)] for t, _ in towers}
+    metrics = [
+        ("Top five right (described searches)", lambda d: d["labelled_p5_mean"]),
+        ("Results that are relevant", lambda d: d["category_precision"]),
+        ("Relevant photos found", lambda d: d["category_recall"]),
+        ("An exact description finds its photo", lambda d: d["captions_own_photo"] / d["captions"]),
+        ("Gibberish gets \u201cnothing found\u201d", lambda d: 1 - d["nonsense_answered"] / d["nonsense"]),
+    ]
+    colours = [ACCENT, GOOD]
+    w, left, top, bar, gap = 820, 270, 86, 16, 26
+    h = top + len(metrics) * (len(towers) * (bar + 5) + gap) + 44
+    px = lambda v: left + (w - left - 100) * v
+    body = []
+    x = left
+    for (_, name), c in zip(towers, colours):
+        body.append(f'<rect x="{x}" y="48" width="12" height="12" rx="2" fill="{c}"/>')
+        body.append(text(x + 18, 59, name, 12, FG))
+        x += 220
+    y = top
+    for label, fn in metrics:
+        body.append(text(left - 12, y + len(towers) * (bar + 5) / 2, label, 12, FG, "end"))
+        for (t, _), c in zip(towers, colours):
+            v = fn(at[t])
+            body.append(f'<rect x="{left}" y="{y}" width="{max(px(v) - left, 2):.1f}" height="{bar}" rx="3" fill="{c}"/>')
+            body.append(text(px(v) + 6, y + 12, f"{100 * v:.0f} %", 11, FG))
+            y += bar + 5
+        y += gap
+    body.append(text(24, h - 26, f"A {size:,}-photo library of labelled COCO photos, default Precision. Relevant: the photo's", 11))
+    body.append(text(24, h - 11, "captions name the subject. Described searches: \u201cguy on a skateboard\u201d, \u201cgiraffes\u201d, \u201ca dog\u201d and others.", 11))
+    return svg(w, h, "".join(body), "How well Local search finds things")
+
+
 def missing(name):
     return [p for p in INPUTS[name] if not (PERF / p).exists()]
 
@@ -339,7 +377,7 @@ def main(argv=None):
     IMG.mkdir(parents=True, exist_ok=True)
     jobs = [("perf-pacing.svg", pacing), ("perf-first-pixel.svg", first_pixel),
             ("perf-browse.svg", browse), ("perf-video.svg", video_pacing),
-            ("perf-av-sync.svg", drift)]
+            ("perf-av-sync.svg", drift), ("search-accuracy.svg", search_accuracy)]
     skipped = []
     for name, fn in jobs:
         if missing(name):

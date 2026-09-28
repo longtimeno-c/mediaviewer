@@ -1,0 +1,146 @@
+{
+  "precision_level": 2,
+  "eval": "COCO 2017 captions: val2017, then train2017 by image id",
+  "machine": {
+    "date": "2026-09-28",
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "cpu": "Apple M5",
+    "quick": false,
+    "commit": "94f195c"
+  },
+  "towers": {
+    "clip-b32": {
+      "1000": {
+        "captions": 500,
+        "captions_found": 475,
+        "captions_own_photo": 460,
+        "nonsense": 85,
+        "nonsense_answered": 5,
+        "nonsense_rows_median": 10,
+        "category_precision": 0.719,
+        "category_recall": 0.691,
+        "labelled_p5_mean": 0.886,
+        "labelled_p5_min": 0.8,
+        "absent_subject_rows": [
+          8,
+          9
+        ]
+      },
+      "5000": {
+        "captions": 500,
+        "captions_found": 476,
+        "captions_own_photo": 459,
+        "nonsense": 85,
+        "nonsense_answered": 8,
+        "nonsense_rows_median": 59.0,
+        "category_precision": 0.741,
+        "category_recall": 0.731,
+        "labelled_p5_mean": 1,
+        "labelled_p5_min": 1,
+        "absent_subject_rows": [
+          35,
+          42
+        ]
+      },
+      "10000": {
+        "captions": 500,
+        "captions_found": 482,
+        "captions_own_photo": 466,
+        "nonsense": 85,
+        "nonsense_answered": 9,
+        "nonsense_rows_median": 91,
+        "category_precision": 0.741,
+        "category_recall": 0.725,
+        "labelled_p5_mean": 0.914,
+        "labelled_p5_min": 0.8,
+        "absent_subject_rows": [
+          68,
+          84
+        ]
+      },
+      "24992": {
+        "captions": 500,
+        "captions_found": 489,
+        "captions_own_photo": 470,
+        "nonsense": 85,
+        "nonsense_answered": 9,
+        "nonsense_rows_median": 196,
+        "category_precision": 0.737,
+        "category_recall": 0.723,
+        "labelled_p5_mean": 0.943,
+        "labelled_p5_min": 0.8,
+        "absent_subject_rows": [
+          181,
+          219
+        ]
+      }
+    },
+    "clip-l14": {
+      "1000": {
+        "captions": 500,
+        "captions_found": 478,
+        "captions_own_photo": 474,
+        "nonsense": 85,
+        "nonsense_answered": 11,
+        "nonsense_rows_median": 57,
+        "category_precision": 0.854,
+        "category_recall": 0.713,
+        "labelled_p5_mean": 0.971,
+        "labelled_p5_min": 0.8,
+        "absent_subject_rows": [
+          0,
+          0
+        ]
+      },
+      "5000": {
+        "captions": 500,
+        "captions_found": 486,
+        "captions_own_photo": 480,
+        "nonsense": 85,
+        "nonsense_answered": 15,
+        "nonsense_rows_median": 69,
+        "category_precision": 0.873,
+        "category_recall": 0.753,
+        "labelled_p5_mean": 1,
+        "labelled_p5_min": 1,
+        "absent_subject_rows": [
+          0,
+          0
+        ]
+      },
+      "10000": {
+        "captions": 500,
+        "captions_found": 486,
+        "captions_own_photo": 479,
+        "nonsense": 85,
+        "nonsense_answered": 22,
+        "nonsense_rows_median": 121.5,
+        "category_precision": 0.874,
+        "category_recall": 0.747,
+        "labelled_p5_mean": 1,
+        "labelled_p5_min": 1,
+        "absent_subject_rows": [
+          7,
+          6
+        ]
+      },
+      "24992": {
+        "captions": 500,
+        "captions_found": 489,
+        "captions_own_photo": 483,
+        "nonsense": 85,
+        "nonsense_answered": 23,
+        "nonsense_rows_median": 221,
+        "category_precision": 0.872,
+        "category_recall": 0.749,
+        "labelled_p5_mean": 1,
+        "labelled_p5_min": 1,
+        "absent_subject_rows": [
+          38,
+          47
+        ]
+      }
+    }
+  }
+}

@@ -28,8 +28,10 @@ import os
 import pathlib
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -55,6 +57,10 @@ def default_bin():
 
 class Stage:
     """One harness run. `plan` returns the commands; `needs` the files it cannot run without."""
+
+    # machine.json describes the machine behind the timing charts; a stage whose numbers do not
+    # depend on the machine (search accuracy) records its own and leaves machine.json alone.
+    timing = True
 
     def __init__(self, name, what, charts, windows_only=False):
         self.name, self.what, self.charts, self.windows_only = name, what, charts, windows_only
@@ -90,6 +96,7 @@ class Context:
         self.lab = self.bin / f"mediaviewer_lab{exe}"
         self.frametime = self.bin / f"frametime{exe}"
         self.tests = self.bin / f"mv_tests{exe}"
+        self.ai_tests = self.bin / f"mv_ai_tests{exe}"
 
     def secs(self, full):
         return max(3, full // 12) if self.quick else full
@@ -247,7 +254,70 @@ class Bench(Stage):
         return [ctx.out / "bench.json"]
 
 
-STAGES = [Pacing(), Pan(), FirstPixel(), Browse(), Video(), AvSync(), Compare(), Bench()]
+class Search(Stage):
+    """Local search accuracy: mv_ai_tests "[.calibration]" over a labelled photo set at library
+    sizes (plan/17, issue #85). The per-query JSONL (MBs) goes to a temporary folder; search.json
+    keeps the default Precision level's summary per tower and size."""
+
+    timing = False
+    SIZES = (1000, 5000, 10000, 25000)
+
+    def __init__(self):
+        super().__init__("search", "Local search accuracy at library sizes (mv_ai_tests [.calibration])",
+                         ["search-accuracy.svg"])
+        self.raw = None
+
+    def needs(self, ctx):
+        pack, evald = os.environ.get("MV_AI_PACK_DIR", ""), os.environ.get("MV_AI_EVAL_DIR", "")
+        return [ctx.ai_tests, pack or "MV_AI_PACK_DIR (the AI pack)",
+                (pathlib.Path(evald) / "labels.json") if evald else "MV_AI_EVAL_DIR (labelled photos)"]
+
+    def plan(self, ctx):
+        return [[str(ctx.ai_tests), "[.calibration]"]]
+
+    def env(self, ctx):
+        self.raw = pathlib.Path(tempfile.mkdtemp(prefix="mv-search-"))
+        sizes = self.SIZES[:1] if ctx.quick else self.SIZES
+        return {"MV_AI_CALIBRATION_SIZES": ",".join(map(str, sizes)),
+                "MV_AI_CALIBRATION_OUT": str(self.raw / "{tower}.jsonl")}
+
+    def after(self, ctx):
+        if not self.raw:
+            return
+        rows = [json.loads(line) for f in sorted(self.raw.glob("*.jsonl")) for line in f.open()]
+        shutil.rmtree(self.raw, ignore_errors=True)
+        if not rows:
+            return
+        towers = {}
+        for (tower, size) in sorted({(r["tower"], r["size"]) for r in rows}):
+            rs = [r for r in rows if r["tower"] == tower and r["size"] == size and r["level"] == 2]
+            kind = lambda *k: [r for r in rs if r["kind"] in k]
+            caps, junk = kind("caption"), kind("nonsense_tune", "nonsense_heldout")
+            cats = [r for r in kind("category") if "helicopter" not in r["text"]]
+            lab = kind("labelled")
+            answered = [r["rows"] for r in junk if r["passed"]]
+            towers.setdefault(tower, {})[str(size)] = {
+                "captions": len(caps),
+                "captions_found": sum(r["passed"] for r in caps),
+                "captions_own_photo": sum(r["found_own"] for r in caps),
+                "nonsense": len(junk),
+                "nonsense_answered": len(answered),
+                "nonsense_rows_median": statistics.median(answered) if answered else 0,
+                "category_precision": round(sum(r["relevant"] for r in cats) / max(1, sum(r["rows"] for r in cats)), 3),
+                "category_recall": round(sum(r["relevant"] for r in cats) / max(1, sum(r["pool"] for r in cats)), 3),
+                "labelled_p5_mean": round(statistics.mean(r["p5"] for r in lab), 3),
+                "labelled_p5_min": min(r["p5"] for r in lab),
+                "absent_subject_rows": [r["rows"] for r in kind("category") if "helicopter" in r["text"]],
+            }
+        report = {"precision_level": 2, "eval": os.environ.get("MV_AI_EVAL_NAME", "labelled photo set"),
+                  "machine": machine_info(ctx), "towers": towers}
+        (ctx.out / "search.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    def outputs(self, ctx):
+        return [ctx.out / "search.json"]
+
+
+STAGES = [Pacing(), Pan(), FirstPixel(), Browse(), Video(), AvSync(), Compare(), Bench(), Search()]
 
 
 def machine_info(ctx):
@@ -359,7 +429,8 @@ def main(argv=None):
         awake.terminate()
     if args.dry_run:
         return 0
-    (ctx.out / "machine.json").write_text(json.dumps(machine_info(ctx), indent=2) + "\n")
+    if any(s.timing for s in stages):
+        (ctx.out / "machine.json").write_text(json.dumps(machine_info(ctx), indent=2) + "\n")
     charts = subprocess.run([sys.executable, str(ROOT / "tools" / "perf" / "make-charts.py"),
                              "--perf", str(ctx.out), "--img", str(ctx.img)], cwd=ROOT)
     for name, gone in skipped:

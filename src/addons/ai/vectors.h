@@ -30,6 +30,7 @@ class vector_store {
   explicit vector_store(std::uint32_t dim = 0) : dim_(dim) {}
 
   void reset(std::uint32_t dim);
+  void clear();  // every row, keeping the dimension and the labels
   [[nodiscard]] std::uint32_t dim() const noexcept { return dim_; }
   [[nodiscard]] std::size_t rows() const;
   [[nodiscard]] std::size_t live_rows() const;
@@ -59,12 +60,23 @@ class vector_store {
     // 2.6 at 1,000, 3.3 at 10,000, so a fixed z threshold stops meaning
     // "stands out" as the index grows (plan/17, 2026-09-27).
     [[nodiscard]] float null_top10_z() const noexcept;
-    // The "nothing found" rule on these stats (plan/17). A query stands out at
-    // model.json's query_z (calibrated at ~300 assets) or 15 % over noise,
-    // whichever is higher. A margin-only pass needs 1.5 x the model's margin
-    // when its best assets score no better than noise.
-    static constexpr float kStandOutOverNoise = 1.15f;
-    static constexpr float kStrongMarginFactor = 1.5f;
+    // The "nothing found" rule on these stats (plan/17; recalibrated at 1,000
+    // to 25,000 COCO photos, both towers, issue #85). A real library's best
+    // scores have a heavier tail than noise, so gibberish sits at 0.9-1.35 x
+    // noise's z and real subjects at 1.15-1.8: z alone cannot tell them apart,
+    // nor can the margin, and both drift up with the library. A query passes
+    // on its best margin alone at margin_alone(), or when it stands out at
+    // model.json's query_z or 18 % over noise (whichever is higher) with a
+    // best margin of stand_out_margin(). Both margins move with log10 of the
+    // assets over 1,000 (from 100 assets up).
+    static constexpr float kStandOutOverNoise = 1.18f;
+    [[nodiscard]] float log_scale() const noexcept;  // log10(assets / 1,000), >= -1
+    [[nodiscard]] float margin_alone(float query_margin) const noexcept {
+      return query_margin * (1.375f + 0.125f * log_scale());
+    }
+    [[nodiscard]] float stand_out_margin(float query_margin) const noexcept {
+      return query_margin * 0.375f * (1.0f + log_scale());
+    }
     // Assets whose best row beats the generic prompts by the calibrated query
     // margin (find_text fills it; scan() leaves 0). A subject that fills much
     // of the library cannot stand out from it: its z sits below noise's
@@ -78,17 +90,31 @@ class vector_store {
     [[nodiscard]] bool stands_out(float query_z, float over_noise = kStandOutOverNoise) const noexcept {
       return query_z > 0 && top10_z >= std::max(query_z, over_noise * null_top10_z());
     }
+    // What the best margin must reach for a query that does not stand out.
+    // Too few assets to say, or a subject in 1 % of the library ("mountain"),
+    // the calibrated margin; else margin_alone.
     [[nodiscard]] float margin_needed(float query_margin) const noexcept {
-      const bool believable = assets < kMinAssets || top10_z >= null_top10_z() || over_margin >= broad_assets();
-      return believable ? query_margin : kStrongMarginFactor * query_margin;
+      const bool broad = assets < kMinAssets || over_margin >= broad_assets();
+      return broad ? query_margin : margin_alone(query_margin);
     }
   };
   // The `k` best rows whose asset passes `allow` (may be empty: all), with
   // score - generic >= min_margin when `use_margin`, and score >= min_score.
+  // With `use_labels`, only rows the query scores at least like their
+  // label bar (set_labels); a row whose bar is not known yet passes.
   [[nodiscard]] std::vector<hit> scan(std::span<const float> query,
                                       const std::function<bool(std::int64_t)>& allow,
                                       std::size_t k, bool use_margin, float min_margin,
-                                      float min_score, scan_stats* stats = nullptr) const;
+                                      float min_score, scan_stats* stats = nullptr,
+                                      bool use_labels = false) const;
+  // The label vocabulary (vocabulary.h) embedded by this store's tower:
+  // `count` unit vectors of dim() floats. Each row's bar is the score of its
+  // (kLabelsAbove + 1)-th best label; rows added from now on get theirs as
+  // they come, and the rows already here are filled in chunks, so searches
+  // and the indexer never wait on the whole pass (~50 us a row). reset()
+  // drops the labels.
+  void set_labels(std::span<const float> vocab, std::size_t count);
+  [[nodiscard]] bool has_labels() const;
   // Every live row of one asset, in time order (a clip's matches).
   [[nodiscard]] std::vector<hit> rows_of(std::int64_t asset, std::span<const float> query) const;
   // The stored vector of a row nearest `pts_ms` in `asset`, dequantised.
@@ -96,6 +122,7 @@ class vector_store {
 
  private:
   void compact_locked();
+  [[nodiscard]] float label_bar_locked(std::size_t row) const noexcept;
 
   mutable std::shared_mutex m_;
   std::uint32_t dim_ = 0;
@@ -103,6 +130,10 @@ class vector_store {
   std::vector<std::int64_t> pts_;
   std::vector<float> generic_;
   std::vector<float> scale_;
+  std::vector<float> bar_;  // per row: the label bar, NaN until known
+  std::vector<std::int8_t> labels_;  // label count * dim, int8
+  std::vector<float> label_scale_;
+  std::uint64_t layout_ = 0;  // bumped when rows move (compaction, reset)
   std::vector<std::uint8_t> alive_;
   std::vector<std::int8_t> data_;  // rows * dim
   std::size_t dead_ = 0;

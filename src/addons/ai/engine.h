@@ -382,6 +382,7 @@ class engine {
   // with the present loop for the GPU. False when stopping.
   bool wait_viewer_quiet();
   void load_vectors(const std::string& spec, std::uint32_t dim);
+  void load_labels();  // after load_vectors: the label vocabulary into store_ (issue #85)
   std::uint32_t effective_quality(infer::backend on) const;
   void maybe_finish_migration();
   // The answering tower and the search matrix change together (a reload, the

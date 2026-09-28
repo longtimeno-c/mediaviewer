@@ -16,6 +16,7 @@
 #include "addons/ai/platform.h"
 #include "addons/ai/query.h"
 #include "addons/ai/transfer.h"
+#include "addons/ai/vocabulary.h"
 #include "core/json.h"
 
 namespace mv::ai {
@@ -714,6 +715,7 @@ void engine::load_models() {
   }
   post(MV_ADDON_EVENT_AI_COMPUTE, 0, static_cast<std::int64_t>(landed));
 
+  load_labels();
   load_audio(s, speech_quality, false);
 }
 
@@ -964,6 +966,68 @@ void engine::load_vectors(const std::string& spec, std::uint32_t dim) {
   (void)db_->each_frame(spec, [&](const frame_out& f) { store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb); });
 }
 
+void engine::load_labels() {
+  // The label vocabulary in the answering tower's space (vocabulary.h, issue
+  // #85): embedded once per tower and label list, kept in labels.f32 beside
+  // the index (a few seconds of text tower on first use), then each row's bar
+  // is filled behind the searches. Until then every row passes, as before.
+  loaded_clip answer;
+  {
+    std::lock_guard lock(models_m_);
+    answer.model = answer_.model;
+    answer.meta = answer_.meta;
+  }
+  if (!answer.model || answer.meta.dim == 0 || store_.dim() != answer.meta.dim) return;
+  const auto words = labels();
+  std::uint64_t key = 1469598103934665603ull;  // FNV-1a of the tower and the list
+  const auto mix = [&](std::string_view s) {
+    for (unsigned char c : s) key = (key ^ c) * 1099511628211ull;
+    key = (key ^ 0xFFu) * 1099511628211ull;
+  };
+  mix(answer.meta.spec_key);
+  for (std::string_view w : words) mix(w);
+  const std::uint32_t dim = answer.meta.dim;
+  const std::uint32_t count = static_cast<std::uint32_t>(words.size());
+  const std::string file = join(data_dir_, "labels.f32");
+  std::vector<float> vocab;
+  {
+    std::ifstream in(fs_path(file), std::ios::binary);
+    std::uint64_t k = 0;
+    std::uint32_t n = 0, d = 0;
+    if (in.read(reinterpret_cast<char*>(&k), 8) && in.read(reinterpret_cast<char*>(&n), 4) &&
+        in.read(reinterpret_cast<char*>(&d), 4) && k == key && n == count && d == dim) {
+      vocab.resize(std::size_t{count} * dim);
+      if (!in.read(reinterpret_cast<char*>(vocab.data()), static_cast<std::streamsize>(vocab.size() * 4))) vocab.clear();
+    }
+  }
+  if (vocab.empty()) {
+    vocab.reserve(std::size_t{count} * dim);
+    for (std::string_view w : words) {
+      if (stopping_ || reload_models_) return;
+      auto v = answer.model->embed_text(w);
+      if (!v || v->size() != dim) return;
+      vocab.insert(vocab.end(), v->begin(), v->end());
+    }
+    const std::string tmp = file + ".tmp";
+    {
+      std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char*>(&key), 8);
+      out.write(reinterpret_cast<const char*>(&count), 4);
+      out.write(reinterpret_cast<const char*>(&dim), 4);
+      out.write(reinterpret_cast<const char*>(vocab.data()), static_cast<std::streamsize>(vocab.size() * 4));
+    }
+    std::error_code ec;
+    std::filesystem::rename(fs_path(tmp), fs_path(file), ec);
+  }
+  // The tower may have changed while the labels embedded: the store is only
+  // given labels of the tower whose vectors it holds.
+  {
+    std::lock_guard lock(models_m_);
+    if (answer_.model != answer.model) return;
+  }
+  store_.set_labels(vocab, count);
+}
+
 void engine::maybe_finish_migration() {
   std::string build_spec, active_spec;
   {
@@ -992,6 +1056,7 @@ void engine::maybe_finish_migration() {
   retire(std::move(old_answer.model));
   (void)db_->drop_spec(active_spec);
   post(MV_ADDON_EVENT_AI_STATUS);
+  load_labels();
 }
 
 // ---- control ------------------------------------------------------------------------------
@@ -2298,7 +2363,7 @@ expected engine::clear_index() {
     std::lock_guard lock(assets_m_);
     assets_.clear();
   }
-  store_.reset(store_.dim());
+  store_.clear();
   sounds_.reset(sounds_.dim());
   {
     std::lock_guard lock(speech_m_);
@@ -2789,6 +2854,7 @@ void engine::reload_from_db() {
     begin_answer_swap();
     load_vectors(active, dim);
     end_answer_swap();
+    load_labels();  // the reset dropped them; labels.f32 has this tower's
   }
   if (!sound_spec.empty()) {
     sounds_.reset(sound_dim);
