@@ -178,13 +178,21 @@ public static partial class IslandHost
         return slot.Progress.Root;
     }
 
-    // UI thread: Progress<T> made here reports on the dispatcher.
-    private static IProgress<AddonPhase> PhaseReporter(AddonSlot slot) => new Progress<AddonPhase>(p =>
+    // Reports land on the UI thread through the dispatcher. Not Progress<T>:
+    // this island's UI thread has no SynchronizationContext, so Progress<T>
+    // ran the handler on the thread pool, and touching the bar there threw
+    // RPC_E_WRONG_THREAD (0.1.19: a crash while the Local search pack installed).
+    private static IProgress<AddonPhase> PhaseReporter(AddonSlot slot) => new UiProgress<AddonPhase>(p =>
     {
         if (!slot.Busy) return;  // a late report after the install finished
         slot.Phase = p;
         slot.Progress?.Show(p);
     });
+
+    private sealed class UiProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => DispatcherQueueControllerTryEnqueue(() => handler(value));
+    }
 
     private static bool _addonsStarted;
     // The first installed-state read has landed (StartAddons). It verifies
