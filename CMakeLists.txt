@@ -683,6 +683,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/settings.h
   src/shell/settings_store.cpp
   src/shell/settings_store.h
+  src/shell/welcome_layout.h
   src/shell/welcome_screen.h
   src/shell/update_guard.cpp
   src/shell/update_guard.h

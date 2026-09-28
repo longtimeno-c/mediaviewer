@@ -311,7 +311,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // responds to. The @implementation stays further down, after MvMetalView's,
 // so the file still reads outside-in (canvas, then chrome/app).
 @class MvMetalView;
-@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate
+@interface MvLabApp : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate
 #if MV_WITH_SPARKLE
                                  , SPUUpdaterDelegate
 #endif
@@ -432,6 +432,13 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // Issue #38: pointer, click, transport key or transport button. Wakes the
 // clip's controls and restarts their idle clock; a no-op with no clip.
 - (void)transportActivity;
+// The welcome card's recent folders (welcome_layout.h): the row under the
+// pointer at the snapshot's mouse position, or -1 when the card lists none
+// (anything open). -welcomePointerMoved updates the drawn hover and returns
+// whether a row is under the pointer; -openWelcomeRow: opens one.
+- (int)welcomeRowAtPointer;
+- (BOOL)welcomePointerMoved;
+- (void)openWelcomeRow:(int)row;
 // Settings screen (plan/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
@@ -1452,7 +1459,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @property(nonatomic, assign) MvLabApp* app;
 @end
 
-@implementation MvMetalView
+@implementation MvMetalView {
+  int _welcomePress;  // welcome row under the left press, + 1; 0 = none
+}
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
   if (self.app) [self.app syncHomeAppearance];
@@ -1600,6 +1609,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
       return;
     }
   }
+  [self trackPointer:event];
+  _welcomePress = self.app ? [self.app welcomeRowAtPointer] + 1 : 0;
   self.snap->mouse_down[0] = true;
   ++self.snap->activity_seq;
   [self publish];
@@ -1607,11 +1618,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
-  (void)event;
   self.snap->mouse_down[0] = false;
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+  // A click on a recent folder: pressed and released on the same row.
+  const int pressed = _welcomePress - 1;
+  _welcomePress = 0;
+  if (pressed >= 0 && self.app) {
+    [self trackPointer:event];
+    if ([self.app welcomeRowAtPointer] == pressed) [self.app openWelcomeRow:pressed];
+  }
 }
 - (void)rightMouseDown:(NSEvent*)event {
   (void)event;
@@ -1648,17 +1665,29 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)mouseExited:(NSEvent*)event {
   (void)event;
   self.snap->mouse_in_client = false;
+  if (self.app && self.snap->recents.hover >= 0) {
+    (void)[self.app welcomePointerMoved];
+    [NSCursor.arrowCursor set];
+  }
   if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
   if (self.snap->eyedropper && self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];  // a pointer hidden over the video comes back
 }
-- (void)mouseMoved:(NSEvent*)event {
+- (void)trackPointer:(NSEvent*)event {
   const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
   const NSPoint backing = [self convertPointToBacking:p];
   self.snap->mouse_x = static_cast<float>(backing.x);
   self.snap->mouse_y = static_cast<float>(self.snap->height) - static_cast<float>(backing.y);
   self.snap->mouse_in_client = NSPointInRect(p, self.bounds);
+}
+- (void)mouseMoved:(NSEvent*)event {
+  [self trackPointer:event];
+  // A recent folder under the pointer reads as a link. Only a change of row
+  // redraws (the app bumps the snapshot); an empty welcome stays idle.
+  if (self.app && self.snap->recents.count > 0) {
+    [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+  }
   if (self.snap->eyedropper) ++self.snap->activity_seq;
   [self publish];
   if (self.snap->eyedropper && self.lab) self.lab->wake();
@@ -1681,6 +1710,88 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) (void)[self.app handleKeyEvent:event];
 }
 @end
+
+// ---- Default viewer (plan/13) --------------------------------------------------
+
+// The types to become the default for are read back from our own Info.plist, so
+// the prompt, Finder's Open With list and the Quick Look extension cannot
+// disagree. `name` picks one CFBundleDocumentTypes entry ("Image", "Video");
+// nil = all of them.
+static NSArray<NSString*>* MvDeclaredContentTypes(NSString* name) {
+  NSMutableArray<NSString*>* types = [NSMutableArray array];
+  for (NSDictionary* docType in NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"]) {
+    if (name != nil && ![docType[@"CFBundleTypeName"] isEqual:name]) continue;
+    for (NSString* identifier in docType[@"LSItemContentTypes"]) [types addObject:identifier];
+  }
+  return types;
+}
+
+static void MvSetDefaultViewer(NSArray<NSString*>* identifiers) {
+  NSURL* app = NSBundle.mainBundle.bundleURL;
+  for (NSString* identifier in identifiers) {
+    UTType* type = [UTType typeWithIdentifier:identifier];
+    if (!type) continue;
+    [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:app
+                                          toOpenContentType:type
+                                          completionHandler:^(NSError* error) {
+                                            if (error) MV_LOG_WARN("default viewer: a type was not set");
+                                          }];
+  }
+}
+
+// What the user was offered and whether they took it. A type added in a later
+// release (video joined the stills after the first builds shipped) is not in
+// MVDefaultViewerTypes; if they chose "all supported photos and videos",
+// MvAdoptNewDefaultViewerTypes gives it to them too, once. A type they later
+// moved to another app in Finder stays moved: it is already in the record.
+static NSString* const kDefaultsViewerTypes = @"MVDefaultViewerTypes";
+static NSString* const kDefaultsViewerChosen = @"MVDefaultViewerChosen";
+
+static void MvRecordDefaultViewerOffer(BOOL chosen) {
+  NSUserDefaults* d = NSUserDefaults.standardUserDefaults;
+  [d setObject:MvDeclaredContentTypes(nil) forKey:kDefaultsViewerTypes];
+  [d setBool:chosen forKey:kDefaultsViewerChosen];
+}
+
+#if MV_APP_BUNDLE
+// Launch, off the main thread and after the first picture: LaunchServices
+// queries are synchronous and never belong on the open path (rule 1).
+static void MvAdoptNewDefaultViewerTypes() {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(3 * NSEC_PER_SEC)),
+                 dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSUserDefaults* d = NSUserDefaults.standardUserDefaults;
+    NSArray* offered = [d arrayForKey:kDefaultsViewerTypes];
+    if (offered == nil) {
+      // An install from before the record: that prompt offered the stills.
+      // Still opening one of them means the user said yes.
+      NSArray<NSString*>* stills = MvDeclaredContentTypes(@"Image");
+      NSString* ours = NSBundle.mainBundle.bundleIdentifier;
+      BOOL chosen = NO;
+      for (NSString* identifier in stills) {
+        UTType* type = [UTType typeWithIdentifier:identifier];
+        NSURL* handler = type ? [NSWorkspace.sharedWorkspace URLForApplicationToOpenContentType:type] : nil;
+        if (handler && [[NSBundle bundleWithURL:handler].bundleIdentifier isEqualToString:ours]) {
+          chosen = YES;
+          break;
+        }
+      }
+      offered = stills;
+      [d setObject:offered forKey:kDefaultsViewerTypes];
+      [d setBool:chosen forKey:kDefaultsViewerChosen];
+    }
+    if (![d boolForKey:kDefaultsViewerChosen]) return;
+    NSArray<NSString*>* declared = MvDeclaredContentTypes(nil);
+    NSMutableArray<NSString*>* added = [NSMutableArray array];
+    for (NSString* identifier in declared) {
+      if (![offered containsObject:identifier]) [added addObject:identifier];
+    }
+    if (added.count == 0) return;
+    MV_LOG_INFO("default viewer: adopting types added since the user chose MediaViewer");
+    MvSetDefaultViewer(added);
+    [d setObject:declared forKey:kDefaultsViewerTypes];
+  });
+}
+#endif
 
 @implementation MvLabApp {
   mv::shell::present_lab_mac _lab;
@@ -1905,6 +2016,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   std::string _currentDir;
   // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
   std::vector<std::string> _recentFolders;
+  NSMenu* _openRecentMenu;  // File > Open Recent, rebuilt as it opens
   // PR 15: Now Playing. The timer runs only while a clip is on the canvas.
   NSTimer* _nowPlayingTimer;
   BOOL _remoteCommandsWired;
@@ -2329,6 +2441,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   _askedDefaultViewer = [defaults boolForKey:@"MVAskedDefaultViewer"];
   _installerChecked = _askedDefaultViewer;
+  if (_askedDefaultViewer && _options.soak_seconds <= 0.0) MvAdoptNewDefaultViewerTypes();
   if (!_askedDefaultViewer) {
     mv::shell::find_installer_leftover(^(mv::shell::installer_leftover found) {
       self->_installer = found;
@@ -3841,7 +3954,7 @@ enum MvMenuCmd : NSInteger {
   automatic.target = self;
 #endif
 #if MV_APP_BUNDLE
-  NSMenuItem* makeDefault = [app addItemWithTitle:@"Make MediaViewer the Default Photo Viewer"
+  NSMenuItem* makeDefault = [app addItemWithTitle:@"Make MediaViewer the Default for Photos and Videos"
                                            action:@selector(makeDefaultViewer)
                                     keyEquivalent:@""];
   makeDefault.target = self;
@@ -3853,6 +3966,10 @@ enum MvMenuCmd : NSInteger {
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
+  NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
+  _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
+  _openRecentMenu.delegate = self;
+  openRecent.submenu = _openRecentMenu;
   [file addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Mark / Unmark" cmd:kMenuMark key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Marked To…" cmd:kMenuCopyTo key:@"" mods:0 toMenu:file];
@@ -4005,6 +4122,8 @@ enum MvMenuCmd : NSInteger {
                   const bool go = response == NSAlertFirstButtonReturn;
                   if (go && makeDefault.state == NSControlStateValueOn) {
                     [self makeDefaultViewer];
+                  } else {
+                    MvRecordDefaultViewerOffer(NO);
                   }
                   if (go && tidy != nil && tidy.state == NSControlStateValueOn) {
                     mv::shell::clean_up_installer(leftover, ^(bool ok) {
@@ -4029,23 +4148,9 @@ enum MvMenuCmd : NSInteger {
   [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
-// The type list is read back from our own Info.plist, so the prompt, Finder's
-// Open With list, and the Quick Look extension cannot disagree. macOS shows
-// its own confirmation per type; nothing is set without it.
 - (void)makeDefaultViewer {
-  NSArray* docTypes = NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"];
-  NSURL* app = NSBundle.mainBundle.bundleURL;
-  for (NSDictionary* docType in docTypes) {
-    for (NSString* identifier in docType[@"LSItemContentTypes"]) {
-      UTType* type = [UTType typeWithIdentifier:identifier];
-      if (!type) continue;
-      [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:app
-                                            toOpenContentType:type
-                                            completionHandler:^(NSError* error) {
-                                              if (error) MV_LOG_WARN("default viewer: a type was not set");
-                                            }];
-    }
-  }
+  MvSetDefaultViewer(MvDeclaredContentTypes(nil));
+  MvRecordDefaultViewerOffer(YES);
 }
 
 - (int32_t)updatePhase {
@@ -6549,11 +6654,58 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // opened from Finder, the Dock, Open, a drop or argv counts; walking siblings
 // or the tree does not (-openPath:navigation: passes those as navigation).
 - (void)noteRecentFolder:(const std::string&)dir {
+  [self refreshWelcomeRecents];  // something is opening: the card's rows go
   if (_options.soak_seconds > 0.0) return;  // a soak's fixture is not a folder the user opened
   std::vector<std::string> next = mv::shell::push_recent_folder(_recentFolders, dir);
   if (next == _recentFolders) return;
   _recentFolders = std::move(next);
   [self persistRecentFolders];
+}
+
+// The welcome card lists recent folders only while nothing has been opened:
+// once a folder or file is chosen the card is a hint again, not a menu.
+- (BOOL)welcomeListsRecents {
+  return _currentDir.empty() && _items.empty() && _wantSelectedPath.empty() && _shownPath.empty() &&
+         !_listOpen && !_gameOn && _options.soak_seconds <= 0.0;
+}
+
+- (void)refreshWelcomeRecents {
+  mv::shell::welcome_recents next;
+  if ([self welcomeListsRecents]) {
+    const char* home = NSHomeDirectory().fileSystemRepresentation;
+    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", next);
+  }
+  if (std::memcmp(&next, &_snap.recents, sizeof(next)) == 0) return;
+  _snap.recents = next;
+  [self publish];  // one redraw
+}
+
+- (int)welcomeRowAtPointer {
+  if (_snap.recents.count == 0 || !_snap.mouse_in_client || ![self welcomeListsRecents]) return -1;
+  const float scale = _snap.dpi_scale > 0.0f ? _snap.dpi_scale : 1.0f;
+  const mv::shell::welcome_geometry g =
+      mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
+                                static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count);
+  return mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
+}
+
+- (BOOL)welcomePointerMoved {
+  const int row = [self welcomeRowAtPointer];
+  if (row != _snap.recents.hover) {
+    _snap.recents.hover = static_cast<std::int8_t>(row);
+    [self publish];
+  }
+  return row >= 0;
+}
+
+- (void)openWelcomeRow:(int)row {
+  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
+  NSString* path = [NSString stringWithUTF8String:_recentFolders[static_cast<std::size_t>(row)].c_str()];
+  if (!path) return;
+  [NSCursor.arrowCursor set];
+  NSMenuItem* item = [[NSMenuItem alloc] init];
+  item.representedObject = path;
+  [self openRecentFolder:item];
 }
 
 - (void)persistRecentFolders {
@@ -6569,6 +6721,20 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (_recentFolders.empty()) return nil;
   NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
   [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
+  [self addRecentFolderItemsTo:menu];
+  return menu;
+}
+
+// File > Open Recent: the Dock menu's list, so the keyboard reaches it too
+// (the menu bar, or Help's search).
+- (void)menuNeedsUpdate:(NSMenu*)menu {
+  if (menu != _openRecentMenu) return;
+  [menu removeAllItems];
+  [self addRecentFolderItemsTo:menu];
+  if (_recentFolders.empty()) [menu addItemWithTitle:@"No Recent Folders" action:nil keyEquivalent:@""];
+}
+
+- (void)addRecentFolderItemsTo:(NSMenu*)menu {
   const std::vector<std::string> labels = mv::shell::recent_folder_labels(_recentFolders);
   for (std::size_t i = 0; i < _recentFolders.size(); ++i) {
     NSString* path = [NSString stringWithUTF8String:_recentFolders[i].c_str()];
@@ -6578,7 +6744,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     item.target = self;
     item.representedObject = path;
   }
-  return menu;
 }
 
 - (void)openRecentFolder:(NSMenuItem*)item {
@@ -6592,6 +6757,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   const std::string gone = path.UTF8String;
   std::erase(_recentFolders, gone);
   [self persistRecentFolders];
+  [self refreshWelcomeRecents];
 }
 
 // ⌘⌥C: the still as the canvas shows it, edits baked, as a PNG. The bake is
@@ -6823,6 +6989,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
         _recentFolders.size() < mv::shell::kMaxRecentFolders) {
       _recentFolders.emplace_back([entry UTF8String]);
     }
+  }
+  // A launch with a path to open never shows the rows, not even for a frame.
+  if (_options.open_path.empty() && [self welcomeListsRecents]) {
+    const char* home = NSHomeDirectory().fileSystemRepresentation;
+    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", _snap.recents);
   }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).

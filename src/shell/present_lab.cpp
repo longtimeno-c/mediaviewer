@@ -1825,12 +1825,13 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
     game_.update(dt);
     // Game over or the outro finished: idle again, nothing moves.
     if (game_.state() == dino_game::phase::over || !game_.active()) animating_ = false;
-    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_));
+    draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, welcome_alpha(game_),
+                 &snapshot.recents);
     draw_dino(bg, ImGui::GetFont(), game_, w, h, chrome, scale, theme);
     return;
   }
   last_game_elapsed_ = 0.0;
-  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme);
+  draw_welcome(bg, ImGui::GetFont(), w, h, chrome, scale, text, theme, 1.0f, &snapshot.recents);
 }
 
 void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
