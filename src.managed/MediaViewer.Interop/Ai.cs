@@ -238,6 +238,14 @@ public unsafe struct MvAiApi
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, ulong*, MvStatus> ImportIndex;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, uint*, MvStatus> TransferJson;
     public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> TransferCancel;
+
+    // the Mac's Photos library source (issue #72): the slots, so what follows
+    // lines up; a Windows pack answers UNSUPPORTED and this chrome never calls them
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong*, MvStatus> IndexPhotosLibrary;
+    public delegate* unmanaged[Cdecl]<IntPtr, uint*, MvStatus> PhotosAccess;
+
+    // people in the open folder (2026-09-28, plan/17 "People in the open folder")
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, byte*, uint, uint*, MvStatus> PeopleInJson;
 }
 
 /// <summary>
@@ -420,6 +428,20 @@ public sealed unsafe class AiApi
     public void FacesEnable(bool enable) => Check(_api->FacesEnable(Ctx, enable ? 1u : 0u));
     /// <summary>Worker.</summary>
     public string PeopleJson() => ReadJson((b, c, n) => _api->PeopleJson(Ctx, b, c, n));
+    /// <summary>
+    /// Worker: the people with a face in <paramref name="scopeDir"/> under
+    /// <paramref name="scope"/>, their faces there counted and covered there
+    /// (plan/17 "People in the open folder"). No folder, or All, is everyone.
+    /// </summary>
+    public string PeopleJson(string? scopeDir, MvAiScope scope)
+    {
+        if (scopeDir is null || scope == MvAiScope.All) return PeopleJson();
+        byte[] dir = Z(scopeDir);
+        return ReadJson((b, c, n) =>
+        {
+            fixed (byte* d = dir) return _api->PeopleInJson(Ctx, d, (uint)scope, b, c, n);
+        });
+    }
     /// <summary>Worker.</summary>
     public string PersonFacesJson(ulong person) => ReadJson((b, c, n) => _api->PersonFacesJson(Ctx, person, b, c, n));
     public void PersonRename(ulong person, string name) { fixed (byte* p = Z(name)) Check(_api->PersonRename(Ctx, person, p)); }

@@ -78,6 +78,14 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var photosAccess: PHAuthorizationStatus = .notDetermined
   @Published private(set) var photosAdding = false
   @Published private(set) var people: [Person] = []
+  /// Which people the grid shows (plan/17 "People in the open folder"): those
+  /// with a face in the open folder, in it and below (the default), or
+  /// everyone. `.photos` is never chosen here.
+  @Published var peopleScope: SearchScope = .tree {
+    didSet { if peopleScope != oldValue { reloadPeople() } }
+  }
+  /// The folder the viewer has open ("" none): the grid's scope folder.
+  @Published private(set) var folder = ""
   @Published var confirming: Confirm?
   @Published var message = ""
   /// What the last People action did ("Merged 2 people into Sam."), shown in
@@ -350,6 +358,24 @@ final class ManagementModel: ObservableObject {
     }
   }
 
+  /// The viewer opened `dir`: the grid follows it (read again only while
+  /// Settings is showing; appeared() reads on its own).
+  func folderChanged(_ dir: String) {
+    guard dir != folder else { return }
+    folder = dir
+    if visible > 0 { reloadPeople() }
+  }
+
+  /// The grid's scope as the pack takes it: nil / ALL when no folder is open
+  /// or Everywhere is chosen.
+  var peopleScopeDir: String? { folder.isEmpty || peopleScope == .all ? nil : folder }
+  var peopleScopeValue: UInt32 { peopleScopeDir == nil ? SearchScope.all.rawValue : peopleScope.rawValue }
+  /// "Photos" (the open folder's name) for the scope control.
+  var folderName: String {
+    let leaf = (folder as NSString).lastPathComponent
+    return leaf.isEmpty ? folder : leaf
+  }
+
   func reloadPeople() {
     guard facesOn else {
       if !people.isEmpty { people = [] }
@@ -361,8 +387,16 @@ final class ManagementModel: ObservableObject {
     }
     peopleLoading = true
     let t = table
+    let dir = peopleScopeDir
+    let scope = peopleScopeValue
     Task.detached {
-      let json = t.json { t.a.people_json?(t.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+      // A pack from before people_in_json was appended shows everyone.
+      let json = t.json { out, cap, needed in
+        if let dir, let scoped = t.a.people_in_json {
+          return scoped(t.ctx, dir, scope, out, cap, needed)
+        }
+        return t.a.people_json?(t.ctx, out, cap, needed) ?? MV_ERR_INVALID_ARG
+      }
       let list: [Person] = (parseJSON(json) as? [[String: Any]] ?? []).map {
         Person(id: UInt64(clamping: int64($0["id"])), name: $0["name"] as? String ?? "",
                faces: Int(int64($0["faces"])), coverFace: UInt64(clamping: int64($0["cover_face"])),
@@ -488,7 +522,7 @@ final class ManagementModel: ObservableObject {
     guard let chrome, opening == nil else { return }
     opening = person.id
     let name = person.name.isEmpty ? "this person" : person.name
-    chrome.showPerson(id: person.id, name: person.name) { [weak self] outcome in
+    chrome.showPerson(id: person.id, name: person.name, scope: peopleScope, folder: folder) { [weak self] outcome in
       guard let self else { return }
       self.opening = nil
       switch outcome {

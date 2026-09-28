@@ -448,7 +448,7 @@ expected faces_db::forget_asset(std::int64_t asset) {
   return {};
 }
 
-std::vector<person_row> faces_db::people(std::uint32_t min_faces) {
+std::vector<person_row> faces_db::people(std::uint32_t min_faces, const std::set<std::int64_t>* assets) {
   std::lock_guard lock(m_);
   std::vector<person_row> out;
   stmt s(db_, "SELECT p.id, p.name, COUNT(f.id) FROM people p JOIN faces f ON f.person_id = p.id"
@@ -462,11 +462,33 @@ std::vector<person_row> faces_db::people(std::uint32_t min_faces) {
     p.faces = static_cast<std::uint32_t>(s.i64(2));
     out.push_back(std::move(p));
   }
+  // The cover: the user's pinned face first, else the largest confident one.
+  // In a folder scope the same order, over that folder's faces only, and the
+  // count is theirs too; nobody there, no card.
   const std::string sql = std::string("SELECT ") + kFaceCols +
-                          " FROM faces WHERE person_id = ?1 ORDER BY pinned DESC, score * w * h DESC LIMIT 1";
+                          " FROM faces WHERE person_id = ?1 ORDER BY pinned DESC, score * w * h DESC" +
+                          (assets ? "" : " LIMIT 1");
   for (person_row& p : out) {
     stmt c(db_, sql.c_str());
-    if (c.bind(1, p.id).step_row()) p.cover = face_from(c);
+    c.bind(1, p.id);
+    if (!assets) {
+      if (c.step_row()) p.cover = face_from(c);
+      continue;
+    }
+    std::uint32_t here = 0;
+    while (c.step_row()) {
+      if (assets->count(c.i64(1)) == 0) continue;
+      if (here++ == 0) p.cover = face_from(c);
+    }
+    p.faces = here;
+  }
+  if (assets) {
+    out.erase(std::remove_if(out.begin(), out.end(), [](const person_row& p) { return p.faces == 0; }),
+              out.end());
+    std::stable_sort(out.begin(), out.end(), [](const person_row& a, const person_row& b) {
+      if (a.name.empty() != b.name.empty()) return !a.name.empty();
+      return a.faces > b.faces;
+    });
   }
   return out;
 }

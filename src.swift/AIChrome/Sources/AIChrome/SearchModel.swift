@@ -895,10 +895,11 @@ final class SearchModel: ObservableObject {
   /// Hears how openPerson ended, once.
   private var personDone: ((PersonOpen) -> Void)?
 
-  /// People → a person: their photos and moments, from every folder, opened
-  /// straight into the gallery as a result list, the panel never shown.
-  func openPerson(id: UInt64, name: String, done: @escaping (PersonOpen) -> Void) {
-    scope = .all
+  /// People → a person: their photos and moments, from every folder or from
+  /// the grid's own scope, opened straight into the gallery as a result list,
+  /// the panel never shown.
+  func openPerson(id: UInt64, name: String, scope: SearchScope = .all, done: @escaping (PersonOpen) -> Void) {
+    self.scope = scope == .photos ? .all : scope
     kinds = .all
     finds = []
     query = ""
