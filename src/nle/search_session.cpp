@@ -102,6 +102,21 @@ void search_session::on_event(const mv_addon_event& e) {
   cv_.notify_all();
 }
 
+result<std::string> search_session::roots_json(int timeout_ms) const {
+  if (!wait_ready(timeout_ms)) return err(status::busy);
+  std::string json = read_string([&](char* b, std::uint32_t c) { return api_->roots_json(api_->ctx, b, c, nullptr); });
+  if (json.empty()) return err(status::io);
+  return json;
+}
+
+result<std::string> search_session::suggest_json(const std::string& query, int timeout_ms) const {
+  if (!wait_ready(timeout_ms)) return err(status::busy);
+  std::string json = read_string(
+      [&](char* b, std::uint32_t c) { return api_->suggest_json(api_->ctx, query.c_str(), b, c, nullptr); });
+  if (json.empty()) return err(status::io);
+  return json;
+}
+
 reply search_session::run(const request& r, const std::string& text, const std::string& scope_dir, int timeout_ms) {
   reply out;
   out.correlation_id = r.correlation_id;

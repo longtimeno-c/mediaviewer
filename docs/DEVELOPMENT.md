@@ -744,7 +744,13 @@ agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
   with `pluginkit`; allow MediaViewer under Login Items if asked), then Extensions ▸ MediaViewer
   Search. **Turn off** reverses both. `pluginkit -m -i io.github.longtimeno-c.mediaviewer.finalcut`
   shows the election (`+` in, `-` out); a fresh install elects it out 10 s after first launch.
-  The first rows are the Phase 0 test drag (`~/Movies/test/clip1.mov`, `clip2.mov`, `photo.jpg`).
+  The panel searches the open library's folder by default; the scope picker switches to any
+  indexed folder or all of them. Space plays the selected result with sound, N / Shift+N step
+  through its matches, and hovering a tile scrubs it. The options menu sets the drag's clip
+  handles and the keyword collection, and shows the Phase 0 test drag (`~/Movies/test`).
+  The panel logs to the `io.github.longtimeno-c.mediaviewer.fcp` subsystem. Read it with
+  `/usr/bin/log show --predicate 'subsystem == "io.github.longtimeno-c.mediaviewer.fcp"'`; in zsh,
+  a bare `log` is a shell builtin.
 
 ## Test
 

@@ -2933,6 +2933,36 @@ reports.
 - **Risk.** An FCP update that moves or renames the framework or the classes stops the panel. It
   fails safe: an exit with a logged fault, never a hang. Apple's SDK framework is the fallback.
 
+## 2026-09-28 — Final Cut Pro panel, Phase 2: library scope, playback with sound, an AppKit grid (plan/23)
+
+Owner, once the 0.1.20 panel showed: a better UI, better search options, a better preview of
+clips, and search linked to the Final Cut Pro project rather than the whole index. Three calls,
+all the owner's (asked, 2026-09-28):
+
+- **Scope: the open library's folder by default.** The panel reads the open library from FCP's
+  own host objects (`ProExtensionHost.framework`, loaded like `ProExtension`: `FCPXHostSingleton`
+  > `timeline.activeSequence` > `container` ... > `FCPXLibrary.url`). It searches that folder
+  and everything below it (`MV_AI_SCOPE_TREE`). A picker switches to any indexed folder or the
+  whole index, and the choice is remembered per library. "Media the project uses" was offered
+  and not chosen: FCP does not expose it, and reading the library's database would break on
+  updates. The host objects travel as Apple Events to FCP, so the extension gains
+  `com.apple.security.automation.apple-events` and a `temporary-exception.apple-events` for
+  `com.apple.FinalCut` / `com.apple.FinalCutTrial`, and `NSAppleEventsUsageDescription`.
+- **Playback with sound: the sandbox widens to read-only files.** The owner chose full playback
+  over silent frames from the agent. The extension gains
+  `com.apple.security.temporary-exception.files.absolute-path.read-only` for `/`: it can read
+  any file the user can, and write none. That is a Developer ID-only entitlement; the Mac App
+  Store is not a channel (plan/11). Hover-scrub decodes frames in the panel from the same
+  access. Results and tiles still come from the agent. Checked in a sandboxed harness with the
+  extension's entitlements and the owner's installed 0.1.20 agent: a search answers, a result's
+  clip opens and plays, and a write is refused.
+- **An AppKit grid, not SwiftUI** (plan/23 named a SwiftUI grid for Phase 2). The extension is
+  one Objective-C++ file built by CMake with `-fapplication-extension`. SwiftUI would add a
+  second Swift package build to the `.appex`, for no difference the owner sees. The grid is an
+  `NSCollectionView` with an `AVPlayerView` above it.
+- **The agent answers two more read-only questions:** the indexed folders (`roots_json`) and
+  names as they are typed (`suggest_json`). `[search-agent]` checks both against the app's engine.
+
 ## 2026-09-28 — The Mac's Photos library as a Local search source (issue #72): built, with its owner calls left open
 
 Issue #72 asked whether Local search can index the Photos library (iCloud Photos on a Mac)

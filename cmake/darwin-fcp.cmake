@@ -70,8 +70,10 @@ add_executable(MediaViewerSearch
   "${CMAKE_SOURCE_DIR}/src/nle/fcpxml.cpp"
   "${CMAKE_SOURCE_DIR}/src/nle/search_wire.cpp")
 target_include_directories(MediaViewerSearch PRIVATE "${CMAKE_SOURCE_DIR}/src")
-target_link_libraries(MediaViewerSearch PRIVATE mv_project_options "-framework Foundation" "-framework AppKit")
-target_compile_definitions(MediaViewerSearch PRIVATE ${_fcp_defs})
+target_link_libraries(MediaViewerSearch PRIVATE mv_project_options "-framework Foundation" "-framework AppKit"
+  "-framework AVFoundation" "-framework AVKit" "-framework CoreMedia")
+target_compile_definitions(MediaViewerSearch PRIVATE ${_fcp_defs}
+  MV_FCP_APP_BUNDLE_ID="${MV_MAC_BUNDLE_ID}")  # "Open in MediaViewer"
 # Its own main: loads FCP's ProExtension.framework, then NSExtensionMain.
 target_link_options(MediaViewerSearch PRIVATE "-fapplication-extension")
 

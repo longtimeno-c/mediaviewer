@@ -108,8 +108,8 @@ FCPXML, and a file-URL-only variant.
 The tests live in `mv_ai_tests` (the AI suite's binary, arm64 on the Mac) under
 `[search-agent]`, not `mv_tests`.
 
-**Phase 2 — Panel and drag hand-off** (SwiftUI grid, scope and kind filters, keyboard-only,
-multi-select), **Phase 3 — People, scenes, the round trip** (`FCPXTimeline`, "Reveal in
+**Phase 2 — Panel and drag hand-off** (a grid, scope and kind filters, keyboard-only,
+multi-select; built 2026-09-28, see "Phase 2" below), **Phase 3 — People, scenes, the round trip** (`FCPXTimeline`, "Reveal in
 MediaViewer") and **Phase 4 — other NLEs** (a Premiere UXP or Resolve panel as the Windows half)
 are as issue #71 has them.
 
@@ -158,9 +158,32 @@ Still to see in FCP:
 The panel's first rows are the spike's hard-coded drag (`~/Movies/test/clip1.mov`, `clip2.mov`,
 `photo.jpg`).
 
+### Phase 2: the panel (built, owed in FCP)
+
+The panel (`extension_mac.mm`, AppKit; plan/12 says why not SwiftUI):
+
+- **Search field.** Live, with a 0.35 s debounce; Return searches at once. The app's query
+  language works as typed (`@Anna`, `-night`, `video`, `in:2024`), and named people appear as
+  buttons under the field (Tab takes the first).
+- **Kind:** All, Video or Photos.
+- **Scope:** the open library's folder and below by default (read from FCP), any indexed folder,
+  or all of them. The choice is remembered per library, and the panel follows FCP when another
+  project opens. When nothing is indexed there, it says so and points at MediaViewer.
+- **Preview:** the selected result plays at its match, with sound (`AVPlayerView`, read-only file
+  access). Space plays and pauses, Return plays from just before the match, and N / Shift+N step
+  through the clip's other matches.
+- **Grid:** the viewer's tiles, with the match time, the clip length and "+N" more matches.
+  Hovering scrubs through the clip. Multi-select and drag hand FCPXML plus file URLs to FCP. The
+  context menu has Find similar (Cmd+Shift+F), Show in Finder and Open in MediaViewer.
+- **Options:** the clip handles a drag uses (1 s, 2/3 s, 5 s, 10 s, or the whole clip), whether
+  the search becomes a keyword collection (open question 8), and the Phase 0 test drag.
+
+Owed in FCP: the library scope (the host objects over Apple Events, and the Automation prompt),
+the panel's size in FCP's window, and the drag with each handle setting.
+
 ### Not in this slice
 
-The SwiftUI grid (Phase 2), and crash reporting for the agent (the app's Crashpad and scrubbing
+Crash reporting for the agent (the app's Crashpad and scrubbing
 should be attached before it ships). There is no add-on manifest entry or separate packing: the
 pieces are signed and notarised with the app, and a Sparkle update replaces them with it.
 
@@ -178,4 +201,4 @@ pieces are signed and notarised with the app, and a Sparkle update replaces them
    installed Final Cut Pro at run time and ships none (plan/12, plan/11).
 6. Clip range: fixed −2 s / +3 s for now (`fcpxml_options`).
 7. Search only; the panel points at MediaViewer to index.
-8. Keyword collection from the query: on by default in the spike; a setting in Phase 2.
+8. ~~Keyword collection from the query~~: on by default, a switch in the panel's options (Phase 2).

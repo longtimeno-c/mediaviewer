@@ -204,6 +204,23 @@ NSData* failure(std::uint64_t correlation, mv::status code) {
   });
 }
 
+- (void)rootsWithReply:(void (^)(NSString*))reply {
+  dispatch_async(_work, ^{
+    [self loadPack];
+    auto json = self->_session ? self->_session->roots_json(kSearchTimeoutMs) : mv::result<std::string>(mv::err(mv::status::not_found));
+    reply(json ? [NSString stringWithUTF8String:json->c_str()] : nil);
+  });
+}
+
+- (void)suggest:(NSString*)text withReply:(void (^)(NSString*))reply {
+  const std::string q = text ? std::string(text.UTF8String) : std::string();
+  dispatch_async(_work, ^{
+    [self loadPack];
+    auto json = self->_session ? self->_session->suggest_json(q, 2000) : mv::result<std::string>(mv::err(mv::status::not_found));
+    reply(json ? [NSString stringWithUTF8String:json->c_str()] : nil);
+  });
+}
+
 - (void)thumbnail:(NSString*)path withReply:(void (^)(NSData*))reply {
   // Only a file in the viewer's own cache, by its resolved path: this is not
   // a way to read anything else on the disk.

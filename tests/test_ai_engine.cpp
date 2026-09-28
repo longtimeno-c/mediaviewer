@@ -1770,10 +1770,45 @@ struct table_over {
       *o = *r;
       return MV_OK;
     };
+    api.roots_json = [](void* c, char* o, std::uint32_t cap, std::uint32_t*) { return copy(of(c).roots_json(), o, cap); };
+    api.suggest_json = [](void* c, const char* q, char* o, std::uint32_t cap, std::uint32_t*) {
+      return copy(of(c).suggest_json(q), o, cap);
+    };
   }
 };
 
 }  // namespace
+
+TEST_CASE("the panel's scope picker and completions come from the reader", "[ai][search-agent]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.start();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE_FALSE(people->a.empty());
+  REQUIRE(r.eng->person_rename(*people->a[0].integer("id"), "Anna"));
+  auto rd = r.start_reader();
+  table_over t(*rd);
+  auto session = mv::nle::search_session::over(&t.api);
+  auto roots = session->roots_json(5000);
+  REQUIRE(roots);
+  auto parsed = mv::json::parse(*roots);
+  REQUIRE(parsed);
+  REQUIRE(parsed->a.size() == 1);
+  const std::string* path = parsed->a[0].str("path");
+  REQUIRE(path);
+  CHECK(*path == utf8(r.photos()));
+  // The reader sees the name the app gave, as the panel types it.
+  auto names = session->suggest_json("@An", 5000);
+  REQUIRE(names);
+  CHECK(names->find("\"Anna\"") != std::string::npos);
+  CHECK(*names == r.eng->suggest_json("@An"));
+}
 
 TEST_CASE("the agent's session returns the in-app top-K through the reader, over the wire", "[ai][search-agent]") {
   rig r;

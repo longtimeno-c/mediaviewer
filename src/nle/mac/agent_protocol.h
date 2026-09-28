@@ -27,4 +27,11 @@
 // thumb (the extension's sandbox cannot read the viewer's cache). nil when it
 // was not, or it has gone.
 - (void)thumbnail:(NSString*)path withReply:(void (^)(NSData* jpeg))reply;
+
+// The panel's scope picker: mv.ai.1 roots_json (the indexed folders), or nil
+// while Local search is loading or unavailable.
+- (void)rootsWithReply:(void (^)(NSString* json))reply;
+
+// Completions for the word being typed: mv.ai.1 suggest_json (named people).
+- (void)suggest:(NSString*)text withReply:(void (^)(NSString* json))reply;
 @end

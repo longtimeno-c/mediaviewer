@@ -35,6 +35,8 @@
   <string>@MV_MAC_BUILD_NUMBER@</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>MediaViewer Search asks Final Cut Pro which library is open, to search the footage beside it.</string>
   <key>NSExtension</key>
   <dict>
     <key>NSExtensionPointIdentifier</key>

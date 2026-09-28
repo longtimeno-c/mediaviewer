@@ -53,6 +53,13 @@ class search_session {
   [[nodiscard]] reply run(const request& r, const std::string& text, const std::string& scope_dir,
                           int timeout_ms);
 
+  // The remembered folders, as mv.ai.1 roots_json has them: the panel's scope
+  // picker. status::busy while the pack is still loading. [worker-thread]
+  [[nodiscard]] result<std::string> roots_json(int timeout_ms) const;
+  // Named people for the word being typed (mv.ai.1 suggest_json), for the
+  // panel's completions. [worker-thread]
+  [[nodiscard]] result<std::string> suggest_json(const std::string& query, int timeout_ms) const;
+
   // The host's event sink: a finished search wakes run() at once.
   void on_event(const mv_addon_event& e);
 
