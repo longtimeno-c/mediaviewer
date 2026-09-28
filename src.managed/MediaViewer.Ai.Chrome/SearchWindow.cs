@@ -880,7 +880,7 @@ internal sealed class SearchWindow : Window, IDisposable
                 Content = label,
                 Padding = new Thickness(10, 3, 10, 3),
                 CornerRadius = new CornerRadius(14),
-                Background = _look.Tint(AddonColour.Accent, i == 0 ? 48 : 20),
+                Background = _look.Tint(AddonColour.Accent, (byte)(i == 0 ? 48 : 20)),
                 BorderThickness = new Thickness(0),
                 IsTabStop = false,  // Tab in the query takes the first; the grid keeps the keyboard model
             };
