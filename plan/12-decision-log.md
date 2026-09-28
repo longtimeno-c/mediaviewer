@@ -2857,6 +2857,15 @@ update. This is flagged for the owner, not quietly accepted.
 **Not built, because the measurements did not call for it:** persistent change tokens. A full
 re-enumeration of 23,089 assets takes 0.43 s warm, so the scan is the delta.
 
+**Owner calls, the same day (PR #86):**
+
+| Call | Decision | What changed |
+|---|---|---|
+| iCloud-only originals | "maybe when viewing but is cleared after" | The index still never downloads. An original is fetched only when its preview is actually viewed (after 400 ms on it). It is deleted when the next list opens and at quit |
+| How a result opens | "without writing" | The APFS clones are gone. The viewer reads the file in place, and `shell/write_guard.h` refuses every write, move, Trash, rotate, export and trim for a Photos library file or a listed preview, beeping with a notice. The menu and the metadata pane show those actions disabled |
+| Mac-only source (D9) | "yes this is mac only" | — |
+| Base-app plist key + entitlement | "yes" | The PR 20 "base bundle unchanged with the pack absent" line now excepts these two |
+
 ## 2026-09-28 — Video Editor: I / O mark a range; J K L shuttle
 
 From the Final Cut Pro assessment (issue #80), the owner chose both calls.

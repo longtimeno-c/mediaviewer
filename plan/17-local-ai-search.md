@@ -851,8 +851,10 @@ and PR 1's present-loop gate on either platform while a full call runs.
 
 ## Photos library source (macOS, issue #72, 2026-09-28)
 
-**Status: built as a first slice on branch `mac-photos-library-source`; the owner calls below are
-proposed defaults, not decisions** (plan/12 2026-09-28). The system Photos library (where iCloud
+**Status: built on branch `mac-photos-library-source` (PR #86). The owner settled its calls on
+2026-09-28** (plan/12): Mac-only is fine; the base-app key and entitlement are accepted; results
+open in place and are never written; an iCloud original is downloaded only when viewed, and
+cleared after. The system Photos library (where iCloud
 Photos lives on a Mac) is one more remembered root beside folder roots, feeding the same
 indexer, index and search. Mac-only under D9: the source is behind a portable interface
 (`src/addons/ai/photos_source.h`; PhotoKit in `photos_mac.mm`, `photos_none.cpp` elsewhere). The
@@ -903,19 +905,30 @@ includes the library.
   rendition, so there is no second thumbnail cache.
 - A result shows a small Photos badge.
 
-**Opening a result (proposed default).** Enter makes each Photos result a file of its own in
-`~/Library/Caches/MediaViewer/Photos Library/`, because the viewer rates, renames and moves
-files, and must never do that inside the library:
+**Opening a result (owner, 2026-09-28: "without writing").** The viewer reads each result where
+Photos keeps it: the current rendition's file (`requestContentEditingInput` / `requestAVAsset`).
+There are no copies. The host refuses every write to it (`src/shell/write_guard.h`). Any path
+inside a `*.photoslibrary` bundle is protected, and so is any file the list registered:
 
-- **Original on this Mac:** an APFS clone (`clonefile`). It copies no bytes, and a change to it
-  never reaches the library.
-- **Original only in iCloud:** Photos' best local picture, written as `<name> (preview).jpg`,
-  so the viewer's title says what it is.
+- **Refused:** Move to Trash, Move To, ratings and every metadata edit (the pane's edit
+  controls show disabled), rotate / flip, Save copy / export, and trims / clip exports (they
+  would write beside the source).
+- **Allowed:** Copy To and drag-out, because both copy.
 
-The folder is emptied each time the pack's chrome attaches. The scrub markers, N / Shift+N and
-Find Similar on an opened Photos result ask about the asset, not the copy. A rating or edit
-made in the viewer lands on the copy and is lost with it: a read-only list mode in the viewer
-is the follow-up if the owner keeps this default.
+A refusal beeps and says "From your Photos library: read-only here."
+
+**An original only iCloud has** (Optimize Mac Storage: most, on the owner's library) opens at
+once as Photos' best local picture, `<name> (preview).jpg`, in
+`~/Library/Caches/MediaViewer/Photos Library/`. If the user actually stays on it (400 ms), the
+original comes from iCloud (owner: "when viewing but … cleared after"). It is the only network
+request, it is made on the user's own viewing, and it replaces the preview in place. That is
+the viewer's usual first-picture-then-full-resolution refinement.
+
+- **Cleared:** downloads are deleted when the next list opens and at quit; the whole folder is
+  emptied when the chrome attaches.
+- **Mapping back:** scrub markers, N / Shift+N and Find Similar on an opened Photos result ask
+  about the asset, not the file.
+- **The index** still never downloads.
 
 ### Measured (2026-09-28, Apple M5, macOS 26.6, the owner's library: 23,089 assets, Optimize Mac Storage on)
 
@@ -928,8 +941,8 @@ is the follow-up if the owner keeps this default.
 | Local still at the indexer's 448 px, 2 threads | 304–411 per s, p50 4.3–5.7 ms, p95 6.4–10.5 ms |
 | Stills with a local rendition | 979 of 1,000 sampled (2.1 % iCloud-only) |
 | Clips with a local file | 0 of 20 sampled: with Optimize Mac Storage, clips are posters only |
-| Originals on this Mac (what opening can clone) | 26 of 200 sampled (13 %); the rest open as previews |
-| Opening: resolve + clone, per asset | p50 7.0 ms, p95 9.6 ms; 0 bytes copied |
+| Originals on this Mac (open in place at once) | 26 of 200 sampled (13 %); the rest open as previews, the original fetched on view |
+| Opening: resolve the file, per asset (the spike also clones; the app no longer does) | p50 7.0 ms, p95 9.6 ms |
 | Peak footprint of the source alone | 70 MB (stills), 212 MB (with opening) |
 
 PhotoKit is not the bottleneck: the image tower is (ViT-L/14 31 img/s, B/32 499 img/s on
@@ -986,14 +999,13 @@ What the numbers say:
    quality may use the full 3 GB optional-install budget.
 3. ~~**Is this a D10?**~~ **Settled 2026-09-24: no.** It stays a plan/17 proposal plus the
    decision-log entry; it is not a numbered D-decision.
-4. **Photos library: download iCloud originals to index them?** (issue #72) Proposed: no. The
-   index uses only what is on this Mac, and a fetch from iCloud is a network request on the
-   user's behalf. A separate opt-in, or nothing, is the owner's call (plan/12 2026-09-28).
-5. **Photos library: how a result opens.** Proposed and built: a clone of the local original,
-   else a labelled preview, in a cache folder. Alternatives: a PhotoKit-backed read-only viewer
-   source (a viewer change), or a hand-off to Photos (no public API reveals one asset).
-6. **A Mac-only source in a dual-track add-on (D9).** Proposed: acceptable, because the
-   interface is portable and Windows' iCloud is a folder. The owner's confirmation is needed.
+4. ~~**Photos library: download iCloud originals?**~~ **Settled 2026-09-28:** the index never does;
+   the viewer fetches an original only when that item is viewed, and clears it after.
+5. ~~**Photos library: how a result opens.**~~ **Settled 2026-09-28:** in place, read-only
+   (`shell/write_guard.h`); no copies.
+6. ~~**A Mac-only source in a dual-track add-on (D9).**~~ **Settled 2026-09-28:** yes, it is Mac
+   only. The base-app `NSPhotoLibraryUsageDescription` and photos-library entitlement are
+   accepted too.
 
 ## Explicitly not in this feature
 

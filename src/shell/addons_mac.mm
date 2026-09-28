@@ -61,6 +61,7 @@
 #include "shell/commands.h"
 #include "shell/media_kind.h"
 #include "shell/present_busy.h"
+#include "shell/write_guard.h"
 
 // The selectors the Import.bundle principal class answers (MVImportChrome in
 // src.swift/ImportChrome). Declared here only so the calls type-check; the
@@ -505,6 +506,15 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
     ms.push_back(m ? m.longLongValue : -1);
   }
   for (const std::string& k : keep) ptrs.push_back(k.c_str());
+  // Photos library files (issue #72): viewed in place or as previews, never
+  // written (shell/write_guard.h). A list without them clears the set.
+  std::vector<std::string> read_only;
+  if (NSArray* ro = [request[@"readOnly"] isKindOfClass:[NSArray class]] ? request[@"readOnly"] : nil) {
+    for (id p in ro) {
+      if ([p isKindOfClass:[NSString class]]) read_only.emplace_back([(NSString*)p UTF8String] ?: "");
+    }
+  }
+  mv::shell::set_read_only_paths(read_only);
   const bool ok = mv_chrome_open_list(title.UTF8String ?: "", ptrs.data(), ms.data(),
                                       static_cast<int32_t>(ptrs.size()), select, gallery);
   return ok ? @YES : @NO;
