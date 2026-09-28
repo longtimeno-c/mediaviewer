@@ -159,6 +159,12 @@ TEST_CASE("the welcome card's rows are hit where they are drawn", "[shell][os]")
   CHECK(welcome_row_at(g, cx, g.rows_top + g.row_h * 2.5f) == 2);
   CHECK(welcome_row_at(g, cx, g.rows_top + g.row_h * 3.0f) == -1);
   CHECK(welcome_row_at(g, g.row_x0 - 1.0f, g.rows_top + 1.0f) == -1);
+  // The x at a row's right end removes; the rest of the row opens.
+  CHECK(welcome_on_remove(g, g.row_x1 - 1.0f));
+  CHECK(welcome_on_remove(g, g.row_x1 - (kWelcomeRemoveW - 1.0f) * scale));
+  CHECK_FALSE(welcome_on_remove(g, g.row_x1 - (kWelcomeRemoveW + 1.0f) * scale));
+  CHECK_FALSE(welcome_on_remove(g, cx));
+  CHECK_FALSE(welcome_on_remove(g, g.row_x1));
 
   SECTION("a short window drops rows before it drops the card") {
     const welcome_geometry tight = layout_welcome(w, 700.0f, chrome, scale, 6);

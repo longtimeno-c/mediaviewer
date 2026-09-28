@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// People refinement (plan/17 PR 24, "Refinement"): a background re-check of
-// every face against the person it was filed under, after the online
-// clustering in faces_db::add. Pure logic over vectors: no SQLite, no model,
+// People refinement (plan/17 PR 24, "Refinement"): a re-check of a person's
+// faces against the person they were filed under, after the online
+// clustering in faces_db::add. Runs only when the user asks (the person's
+// "Refine" in People), never in the background. Pure logic over vectors: no SQLite, no model,
 // no threads, so the rules are tested on synthetic embeddings.
 //
 // Scores are in PAIRWISE cosine units (the units SFace's 0.363 verification
@@ -93,6 +94,10 @@ struct refine_input {
   std::span<const person_proto> fixed;    // candidates not rebuilt this call
   std::span<const std::int64_t> named;    // sorted ids of named persons
   bool regroup = false;
+  // Set: judge only the faces filed under this person (the user asked to
+  // refine them); every other face stays put and serves as a candidate, and
+  // regroup draws only on faces this call took from `focus`.
+  std::int64_t focus = 0;
   const std::atomic<bool>* cancel = nullptr;  // set: stop early, change nothing
 };
 

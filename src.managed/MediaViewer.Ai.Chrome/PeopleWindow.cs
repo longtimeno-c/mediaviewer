@@ -53,6 +53,8 @@ internal sealed class PeopleWindow : Window
     private readonly Button _reject;
     private readonly Button _split;
     private readonly Button _photos;
+    private readonly Button _refine;
+    private bool _refining;
     private readonly DropDownButton _merge;
     private readonly Grid _detail;
     private readonly StackPanel _mergeBar;
@@ -165,6 +167,8 @@ internal sealed class PeopleWindow : Window
         _reject = _look.Button("Not this person", RejectSelected);
         ToolTipService.SetToolTip(_reject, "The face leaves this person and never rejoins them (Delete)");
         _split = _look.Button("Split into new person", SplitSelected);
+        _refine = _look.Button("Refine faces", RefinePerson);
+        ToolTipService.SetToolTip(_refine, "Check every face against this person and move out the ones that don't match");
 
         var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         head.Children.Add(_name);
@@ -173,6 +177,7 @@ internal sealed class PeopleWindow : Window
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(_reject);
         actions.Children.Add(_split);
+        actions.Children.Add(_refine);
         actions.Children.Add(_look.Text("Select faces (Ctrl / Shift for several) to correct them.", 12));
         _detail = new Grid { RowSpacing = 10, Padding = new Thickness(16), Visibility = Visibility.Collapsed };
         _detail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -536,6 +541,7 @@ internal sealed class PeopleWindow : Window
         _split.IsEnabled = n > 0 && n < _faceItems.Count;
         _merge.IsEnabled = _person is not null && _peopleItems.Count > 1;
         _photos.IsEnabled = _person is not null;
+        _refine.IsEnabled = _person is not null && !_refining;
     }
 
     private void CommitName()
@@ -571,6 +577,35 @@ internal sealed class PeopleWindow : Window
         foreach (FaceVm vm in _faceItems.Where(v => faces.Contains(v.Id)).ToList()) _faceItems.Remove(vm);
         UpdateButtons();
         // AI_PEOPLE brings the new person into the list.
+    }
+
+    private void RefinePerson()
+    {
+        if (_person is null || _refining) return;
+        PersonVm p = _person;
+        _refining = true;
+        UpdateButtons();
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            uint? removed = null;
+            try { removed = api.PersonRefine(p.Id); }
+            catch (MediaViewerException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _refining = false;
+                ShowNote(removed switch
+                {
+                    null => "Couldn't refine this person. Try again.",
+                    0 => $"All of {p.Label}'s faces match.",
+                    1 => $"1 face moved out of {p.Label}.",
+                    _ => $"{removed} faces moved out of {p.Label}.",
+                });
+                if (_person?.Id == p.Id) ShowPerson(_person, focusFaces: false);
+                else UpdateButtons();
+                Refresh();
+            });
+        });
     }
 
     private void FillMergeMenu()

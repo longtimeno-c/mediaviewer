@@ -255,6 +255,14 @@ mv_status MV_CALL t_face_split(void* ctx, const uint64_t* faces, uint32_t count,
     return MV_OK;
   });
 }
+mv_status MV_CALL t_person_refine(void* ctx, uint64_t person, uint32_t* out_removed) {
+  return guard([&] {
+    auto r = eng(ctx).person_refine(static_cast<std::int64_t>(person));
+    if (!r) return to_mv(r.error());
+    if (out_removed) *out_removed = *r;
+    return MV_OK;
+  });
+}
 mv_status MV_CALL t_search_person(void* ctx, uint64_t person, const char* scope_dir, uint32_t scope,
                                   uint64_t* out_id) {
   return guard([&] {
@@ -391,6 +399,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.root_set_media = &t_root_media;
     a.result_snippet = &t_result_snippet;
     a.suggest_json = &t_suggest_json;
+    a.person_refine = &t_person_refine;
     a.index_photos_library = &t_index_photos;
     a.photos_access = &t_photos_access;
 

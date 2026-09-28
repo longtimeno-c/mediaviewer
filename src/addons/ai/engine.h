@@ -241,6 +241,9 @@ class engine {
   [[nodiscard]] expected person_merge(std::int64_t into, std::int64_t from);
   [[nodiscard]] expected face_reject(std::int64_t face);
   [[nodiscard]] result<std::int64_t> face_split(const std::vector<std::int64_t>& faces);
+  // "Refine": files this person's misplaced faces out (plan/17 "People
+  // refinement"); how many left them. Only ever on request. [worker-thread]
+  [[nodiscard]] result<std::uint32_t> person_refine(std::int64_t person);
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
   // ---- for tests -----------------------------------------------------------------
@@ -349,7 +352,6 @@ class engine {
   };
   // With the opt-in on: `model` (opened when null) and its database.
   faces_parts open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model = nullptr);
-  void refine_people_pass();  // [control-thread] plan/17 "People refinement"
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends

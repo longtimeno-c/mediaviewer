@@ -7,7 +7,8 @@
 // passes the wording that differs by OS (the open shortcut, the key legend).
 // It is drawn only while there is no picture and no lab sweep, and it costs
 // nothing once a file is open. Below the hints it lists the recent folders the
-// host hands it (welcome_layout.h); the host hit-tests the same geometry.
+// host hands it (welcome_layout.h); the host hit-tests the same geometry. The
+// hovered row shows an x that removes the folder from the list.
 #pragma once
 
 #include <algorithm>
@@ -141,7 +142,8 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
     const float fs_label = 15.0f * scale;
     const float fs_where = 13.0f * scale;
     const float text_x = fx + 26.0f * scale;
-    const float right = g.row_x1 - 10.0f * scale;
+    // The remove button's room is kept on every row, so hovering never shifts the text.
+    const float right = g.row_x1 - kWelcomeRemoveW * scale;
     const float room = right - text_x;
     const char* label = welcome_fit(font, fs_label, recents->label[i], room * 0.6f, false, label_buf);
     const float label_w = measure(label, fs_label).x;
@@ -152,6 +154,15 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       const char* where = welcome_fit(font, fs_where, recents->where[i], where_room, true, where_buf);
       const float where_w = measure(where, fs_where).x;
       bg->AddText(font, fs_where, ImVec2(right - where_w, top + (g.row_h - fs_where) * 0.5f), c_mute, where);
+    }
+    // The hovered row's remove button: an x, ringed while the pointer is on it.
+    if (recents->hover == i) {
+      const ImVec2 c(g.row_x1 - kWelcomeRemoveW * 0.5f * scale, top + g.row_h * 0.5f);
+      if (recents->hover_remove) bg->AddCircleFilled(c, 10.0f * scale, c_edge);
+      const ImU32 c_x = recents->hover_remove ? c_title : c_mute;
+      const float r = 4.0f * scale;
+      bg->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), c_x, 1.5f * scale);
+      bg->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), c_x, 1.5f * scale);
     }
   }
 }

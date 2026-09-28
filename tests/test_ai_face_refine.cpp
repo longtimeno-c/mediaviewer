@@ -84,6 +84,7 @@ struct world {
     return f.id;
   }
   refine_face& at(std::int64_t id) { return faces[static_cast<std::size_t>(id - 1)]; }
+  std::int64_t focus = 0;  // refine_input::focus: judge only this person's faces
   refine_output run(const refine_params& p = {}, bool regroup = true,
                     std::span<const mv::ai::person_proto> fixed = {}) {
     std::sort(named.begin(), named.end());
@@ -94,6 +95,7 @@ struct world {
     in.named = named;
     in.fixed = fixed;
     in.regroup = regroup;
+    in.focus = focus;
     return mv::ai::refine_people(in, p);
   }
   // Applies the moves (new groups get ids from 1000 up), as faces_db would.
@@ -186,6 +188,45 @@ TEST_CASE("refine: an outlier leaves, and a face clearly someone else's moves to
   CHECK(e->why == refine_why::evict);
   CHECK(e->to == 0);  // unassigned, never a wrong name
   CHECK(out.moves.size() == 2);
+}
+
+TEST_CASE("refine: a focused call judges only that person's faces", "[ai][faces][refine]") {
+  world w;
+  const auto anna = w.direction();
+  const auto carl = w.direction();
+  const auto stranger = w.direction();
+  const auto dora = w.direction();
+  for (int i = 0; i < 8; ++i) w.face(anna, 1);
+  for (int i = 0; i < 8; ++i) w.face(carl, 2);
+  const std::int64_t carl_in_anna = w.face(carl, 1);
+  const std::int64_t nobody_in_anna = w.face(stranger, 1);
+  // The same mistakes the other way round, under Carl: left alone.
+  const std::int64_t anna_in_carl = w.face(anna, 2);
+  const std::int64_t nobody_in_carl = w.face(stranger, 2);
+  // Unassigned faces that would regroup (and one Anna would admit): untouched.
+  for (int i = 0; i < 3; ++i) w.face(dora, 0);
+  const std::int64_t loose_anna = w.face(anna, 0);
+
+  w.focus = 1;
+  const refine_output out = w.run();
+  const refine_move* m = move_of(out, carl_in_anna);
+  REQUIRE(m);
+  CHECK(m->to == 2);
+  const refine_move* e = move_of(out, nobody_in_anna);
+  REQUIRE(e);
+  CHECK(e->to == 0);
+  CHECK_FALSE(move_of(out, anna_in_carl));
+  CHECK_FALSE(move_of(out, nobody_in_carl));
+  CHECK_FALSE(move_of(out, loose_anna));
+  CHECK(out.groups == 0);
+  CHECK(out.moves.size() == 2);
+  for (const refine_move& mv : out.moves) CHECK(mv.from == 1);
+
+  // Unfocused, the same library corrects Carl too.
+  w.focus = 0;
+  const refine_output all = w.run();
+  CHECK(move_of(all, anna_in_carl));
+  CHECK(move_of(all, nobody_in_carl));
 }
 
 TEST_CASE("refine: pinned faces are anchors that never move, and define a named person",

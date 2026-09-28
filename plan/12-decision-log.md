@@ -2866,6 +2866,19 @@ re-enumeration of 23,089 assets takes 0.43 s warm, so the scan is the delta.
 | Mac-only source (D9) | "yes this is mac only" | — |
 | Base-app plist key + entitlement | "yes" | The PR 20 "base bundle unchanged with the pack absent" line now excepts these two |
 
+## 2026-09-28 — People refinement runs only on request
+
+Owner: the refinement should run only "when I press a button" in the person's faces view
+under Settings, not on its own.
+
+- **Reversed: the idle refinement pass** (4b4652c, plan/17 "People refinement"). The control
+  thread no longer calls it. "Refine faces" in the person's view calls the new `mv.ai.1` entry
+  `person_refine` (appended), which judges only that person's faces (`refine_input::focus`)
+  against every person, and returns how many left. Online assignment (margin, pairwise scores)
+  and the idle consolidate merge are unchanged; so is everything the pass computes.
+- Why focused rather than a library-wide button: the user is looking at one person and asked
+  for that person's photos to be cleaned; a click there should not rearrange other people.
+
 ## 2026-09-28 — Video Editor: I / O mark a range; J K L shuttle
 
 From the Final Cut Pro assessment (issue #80), the owner chose both calls.
