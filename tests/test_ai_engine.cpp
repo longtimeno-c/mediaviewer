@@ -31,7 +31,7 @@
 
 #include "addon/host.h"
 #include "addons/ai/engine.h"
-#include "addons/fcp/search_session.h"
+#include "nle/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
 

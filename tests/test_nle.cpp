@@ -10,12 +10,14 @@
 
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
-#include "addons/fcp/fcpxml.h"
-#include "addons/fcp/search_wire.h"
-#include "addons/fcp/thumb_reader.h"
+#include "nle/fcpxml.h"
+#include "nle/search_wire.h"
+#include "nle/thumb_reader.h"
 #include "image/thumb.h"
 #include "import_fixture.h"
 #include "io/file_port.h"
@@ -84,6 +86,22 @@ TEST_CASE("the wire carries a reply exactly and rejects any buffer it cannot tru
   auto future = decode(v2);
   REQUIRE_FALSE(future);
   CHECK(future.error() == mv::status::unsupported_format);
+  // A request's fixed half.
+  request q;
+  q.kind = request_kind::similar;
+  q.correlation_id = 9;
+  q.pts_ms = 1234;
+  q.max_results = 999999;
+  auto rq = decode_request(encode(q));
+  REQUIRE(rq);
+  CHECK(rq->kind == request_kind::similar);
+  CHECK(rq->correlation_id == 9);
+  CHECK(rq->pts_ms == 1234);
+  CHECK(rq->max_results == kMaxRows);  // clamped, never trusted
+  auto qb = encode(q);
+  qb[16] = 7;  // no such kind
+  CHECK_FALSE(decode_request(qb));
+  CHECK_FALSE(decode_request(std::span<const std::uint8_t>(qb.data(), qb.size() - 1)));
   // An empty reply with a reason.
   reply none;
   none.code = mv::status::not_found;

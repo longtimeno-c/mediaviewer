@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/fcp/thumb_reader.h"
+#include "nle/thumb_reader.h"
 
 #include <sqlite3.h>
 

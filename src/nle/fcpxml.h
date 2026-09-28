@@ -21,7 +21,7 @@
 #include <string>
 #include <string_view>
 
-#include "addons/fcp/search_wire.h"
+#include "nle/search_wire.h"
 
 namespace mv::nle {
 

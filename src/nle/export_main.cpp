@@ -20,14 +20,15 @@
 
 #include "addon/manifest.h"
 #include "addon/store.h"
-#include "addons/fcp/fcpxml.h"
-#include "addons/fcp/search_session.h"
+#include "nle/fcpxml.h"
+#include "nle/search_session.h"
 #include "core/json.h"
 #include "io/file.h"
 #include "io/paths.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #endif
 

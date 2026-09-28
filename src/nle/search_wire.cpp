@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/fcp/search_wire.h"
+#include "nle/search_wire.h"
 
 #include <algorithm>
 #include <cstring>
@@ -42,11 +42,24 @@ struct wire_moment {
   std::uint32_t reserved;
 };
 
+struct wire_request {
+  std::uint32_t magic;           // 'MVSQ'
+  std::uint32_t version;
+  std::uint64_t correlation_id;
+  std::uint32_t kind;
+  std::uint32_t scope;
+  std::uint32_t kinds;
+  std::uint32_t max_results;
+  std::int64_t pts_ms;
+};
+
+static_assert(std::is_trivially_copyable_v<wire_request> && sizeof(wire_request) == 40);
 static_assert(std::is_trivially_copyable_v<wire_header> && sizeof(wire_header) == 32);
 static_assert(std::is_trivially_copyable_v<wire_row> && sizeof(wire_row) == 56);
 static_assert(std::is_trivially_copyable_v<wire_moment> && sizeof(wire_moment) == 16);
 
-constexpr std::uint32_t kMagic = 0x5253564Du;  // "MVSR"
+constexpr std::uint32_t kMagic = 0x5253564Du;         // "MVSR"
+constexpr std::uint32_t kRequestMagic = 0x5153564Du;  // "MVSQ"
 
 template <typename T>
 void put(std::vector<std::uint8_t>& out, const T& v) {
@@ -105,6 +118,38 @@ std::vector<std::uint8_t> encode(const reply& r) {
   for (const wire_moment& m : moments) put(out, m);
   out.insert(out.end(), blob.begin(), blob.end());
   return out;
+}
+
+std::vector<std::uint8_t> encode(const request& r) {
+  wire_request w{};
+  w.magic = kRequestMagic;
+  w.version = r.version;
+  w.correlation_id = r.correlation_id;
+  w.kind = static_cast<std::uint32_t>(r.kind);
+  w.scope = r.scope;
+  w.kinds = r.kinds;
+  w.max_results = r.max_results;
+  w.pts_ms = r.pts_ms;
+  std::vector<std::uint8_t> out;
+  put(out, w);
+  return out;
+}
+
+result<request> decode_request(std::span<const std::uint8_t> bytes) {
+  if (bytes.size() != sizeof(wire_request)) return err(status::corrupt);
+  const auto w = get<wire_request>(bytes, 0);
+  if (w.magic != kRequestMagic) return err(status::corrupt);
+  if (w.version != kWireVersion) return err(status::unsupported_format);
+  if (w.kind > static_cast<std::uint32_t>(request_kind::similar)) return err(status::corrupt);
+  request r;
+  r.version = w.version;
+  r.kind = static_cast<request_kind>(w.kind);
+  r.correlation_id = w.correlation_id;
+  r.scope = w.scope;
+  r.kinds = w.kinds;
+  r.max_results = std::min(w.max_results, kMaxRows);
+  r.pts_ms = w.pts_ms;
+  return r;
 }
 
 result<reply> decode(std::span<const std::uint8_t> bytes) {

@@ -51,6 +51,10 @@ $allowed = [ordered]@{
     # PR 15: Explorer's host (the thumbnail handler DLL). A sibling of shell,
     # never included by it: it reaches the core through image/ and codec/.
     'shellext' = @('shellext', 'image', 'codec', 'gfx', 'io', 'core')
+    # plan/23: the Local search agent and FCPXML export, a host of the AI pack
+    # (a sibling of shell, never included by it): it loads the pack through
+    # addon/ and reads the viewer's thumbnail cache (image/thumb.h's key).
+    'nle'    = @('nle', 'addon', 'image', 'io', 'core')
 }
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path

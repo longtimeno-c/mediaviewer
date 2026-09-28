@@ -711,6 +711,10 @@ else()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/darwin-app.cmake")
+# plan/23: the Final Cut Pro add-on (agent, extension, container), with the AI pack.
+if(TARGET mv_nle)
+  include("${CMAKE_CURRENT_LIST_DIR}/darwin-fcp.cmake")
+endif()
 
 add_executable(mv_frametime
   tools/frametime/main_mac.cpp

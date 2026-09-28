@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
+  MediaViewerSearch.appex: the Final Cut Pro workflow extension (plan/23).
+  FCP's own ProExtension framework declares the extension point
+  (com.apple.FinalCut.WorkflowExtension); this bundle links no Apple SDK
+  framework and embeds none. Its principal class is our view controller,
+  which FCP shows in a floating window. Phase 0 records whether FCP takes it.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>MediaViewerSearch</string>
+  <key>CFBundleIdentifier</key>
+  <string>@MV_FCP_BUNDLE_ID@.panel</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>MediaViewer Search</string>
+  <key>CFBundleDisplayName</key>
+  <string>MediaViewer Search</string>
+  <key>CFBundlePackageType</key>
+  <string>XPC!</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@MV_FCP_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@MV_FCP_VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.FinalCut.WorkflowExtension</string>
+    <key>NSExtensionPrincipalClass</key>
+    <string>MVSearchViewController</string>
+    <key>NSExtensionAttributes</key>
+    <dict>
+      <key>ProExtensionPrincipalViewControllerClass</key>
+      <string>MVSearchViewController</string>
+    </dict>
+  </dict>
+</dict>
+</plist>

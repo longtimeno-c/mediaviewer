@@ -5,7 +5,7 @@
 # so the Windows root, cmake/darwin.cmake and the headless cmake/portable build
 # all build the portable half.
 #
-#   mv_nle           src/addons/fcp: the search agent's wire format, one search
+#   mv_nle           src/nle: the search agent's wire format, one search
 #                    over mv.ai.1 (search_session), the viewer's thumbnails
 #                    read-only, and FCPXML. Portable C++: the Mac agent uses it
 #                    today, a Windows NLE bridge (Premiere / Resolve) the same.
@@ -23,7 +23,7 @@
 if(NOT DEFINED MV_SOURCE_ROOT)
   set(MV_SOURCE_ROOT "${CMAKE_SOURCE_DIR}")
 endif()
-set(_nle "${MV_SOURCE_ROOT}/src/addons/fcp")
+set(_nle "${MV_SOURCE_ROOT}/src/nle")
 
 add_library(mv_nle STATIC
   ${_nle}/search_wire.cpp

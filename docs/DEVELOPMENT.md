@@ -667,6 +667,36 @@ the parser, names, suggestions and the singular / plural pair with no models; it
 and also compiles on its own (`clang++ -std=c++20 tests/test_ai_query.cpp
 src/addons/ai/query.cpp` with `-Isrc -Itests` and any Catch2).
 
+### Local search from Final Cut Pro (the "fcp" add-on) and FCPXML export
+
+Status and verify lines: [plan/23](../plan/23-nle-search.md) (issue #71). Phase 1 (the search
+agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
+
+- **Both platforms:** `mv_nle` (`cmake/nle.cmake`, included by `cmake/ai.cmake`) and
+  `mv-nle-export`, which runs one search through the installed pack's read-only reader and
+  writes FCPXML (Final Cut Pro, DaVinci Resolve and Premiere Pro import it):
+  `mv-nle-export "birthday cake" --out cake.fcpxml` (`--json` prints the rows; `--videos`,
+  `--photos`, `--scope-dir`, `--max`, `--no-keyword`, `--similar FILE --at MS`). It needs a pack
+  new enough to have `mv_ai_reader_get`; with a dev-key build, point it at a sideloaded pack with
+  `MV_DEV_ADDONS_DIR`.
+- **Tests:** `mv_ai_tests "[search-agent],[nle]"`: the reader's top-K against the app engine's on
+  the same index, the index byte-identical after a reader session, catch-up, the wire format's
+  bounds, the FCPXML, and the thumbnail cache read without a write.
+- **Mac only:** configure with `-DMV_FCP_TEAM_ID=<team>` (prefixes the Mach service and the
+  extension's app group) and `-DMV_FCP_SIGN_IDENTITY="Developer ID Application: …"`, then build
+  `fcp_bundle`: `build/nle/MediaViewer for Final Cut Pro.app` (container, workflow
+  extension, agent). A dev-key build signs the agent with `packaging/macos/fcp/Agent-dev.entitlements`
+  so it can load a locally built pack. To try the agent without installing the app, bootstrap a
+  launchd job whose `Program` is the bundle's `Contents/MacOS/MediaViewerSearchAgent`, whose
+  `MachServices` names `<team>.io.github.longtimeno-c.mediaviewer.fcp.search`, and (dev) whose
+  `EnvironmentVariables` set `MV_DEV_ADDONS_DIR`; then, with `mv-search-client` signed by the same
+  team: `mv-search-client mountain --thumbs`, `mv-search-client --bench 20 mountain beach dog`
+  (agent vs in-process p50/p95, same results) and `mv-search-client --wait-exit 90` (seconds until
+  the idle agent has gone). `launchctl bootout gui/$(id -u)/<label>` removes the job.
+- **In Final Cut Pro:** copy the app to `/Applications`, open it once (it registers the agent
+  with `SMAppService`; allow it under Login Items if asked), then Extensions ▸ MediaViewer Search.
+  The first rows are the Phase 0 test drag (`~/Movies/test/clip1.mov`, `clip2.mov`, `photo.jpg`).
+
 ## Test
 
 ```powershell

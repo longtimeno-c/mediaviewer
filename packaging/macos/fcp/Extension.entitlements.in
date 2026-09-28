@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
+  App extensions must be sandboxed. The app group is the only grant: it lets
+  the panel look up the search agent's Mach service (named under the group).
+  No network, no file access: every result and tile comes from the agent.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>@MV_FCP_APP_GROUP@</string>
+  </array>
+</dict>
+</plist>

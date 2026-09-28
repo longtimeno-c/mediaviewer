@@ -48,6 +48,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
 | `plan/21-video-editor.md` | PRs 30–31: the Video Editor window (base) |
 | `plan/22-editor-addon.md` | PRs 32–47, proposed: the Editor add-on — GPU port, colour management and grading, multi-track editing, audio, delivery, model packs. Read before any add-on GPU, colour or timeline work |
+| `plan/23-nle-search.md` | Issue #71: Local search inside Final Cut Pro (the "fcp" add-on; Mac-only D9 exception) over the pack's read-only reader, and FCPXML export on both platforms |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.
@@ -268,6 +269,7 @@ src/edit     EditStack, GPU ops, export
 src/canvas   pan/zoom/springs; host publishes a POD input snapshot
 src/abi      C ABI surface
 src/shell    Windows host (Win32 window, islands, CLI) and the Mac host (AppKit + Metal, `*_mac.mm`)
+src/nle      Local search from an editing app (plan/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
 src.swift    SwiftUI chrome for the Mac host
 src.managed  C# WinUI 3 chrome
 tests/

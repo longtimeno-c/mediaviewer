@@ -2795,3 +2795,40 @@ Owner: "mountain" found nothing while "mountains" found hundreds, "Trist" found 
   `suggest_json` (appended) for names while typing; Tab completes on both platforms. Quoted
   words search speech transcripts only: the index has no OCR.
 - The search field's placeholder no longer suggests "dog on a beach" (owner).
+
+## 2026-09-28 — Final Cut Pro: a Mac-only add-on (D9 exception), and a read-only reader of Local search (issue #71)
+
+Owner, on issue #71 ("search your library with Local search from inside FCP"): build Phase 0
+and Phase 1, ship the extension **as another add-on that can be installed**, and take a
+**Mac-only exception to D9** rather than pair it with a Premiere UXP panel now. Plan:
+[23-nle-search.md](23-nle-search.md).
+
+- **D9 exception, scoped.** D9 (amended 2026-09-24) makes every PR from 9 dual-track. A Final
+  Cut Pro workflow extension cannot have a Windows twin: FCP is Mac-only. The exception covers
+  the FCP-specific pieces only (the workflow extension, its container app, the XPC agent). What
+  sits under them is shared and built on both platforms: the pack's read-only reader
+  (`mv_ai_reader_get`), the wire format, `search_session`, the read-only thumbnail lookup and
+  the FCPXML writer (`src/nle`, `cmake/nle.cmake`), plus `mv-nle-export`, which writes
+  a search as FCPXML on Windows and macOS (Resolve and Premiere import it). A Premiere UXP or
+  Resolve panel would be the Windows half if the owner later wants one (plan/23 Phase 4).
+- **Delivery: its own add-on ("fcp"), a separate container app.** Embedding the `.appex` in
+  MediaViewer.app would change the base bundle and show an FCP Extensions entry to everyone,
+  breaking plan/18's "absent means absent". "MediaViewer for Final Cut Pro.app" carries the
+  extension and the agent; installing it is opt-in, like Import and Local search.
+- **One search implementation.** The agent is a second, read-only *host* of the installed AI
+  pack: it loads `libmv_ai` through the verified add-on store and calls a new export,
+  `mv_ai_reader_get`, which runs the same engine over the app's data folder with
+  `engine_options::read_only`. No ranking code was copied, so the agent's top-K is the app's
+  by construction; `[search-agent]` checks it. A pack without the export is refused rather than
+  loaded through `mv_addon_get`, which would start a second indexer on the app's files.
+- **`mv.ai.1` gains `result_duration` (appended).** An FCPXML asset needs the clip's length;
+  the index has it. The C# table mirrors the field; Swift reads the header.
+- **No Apple SDK framework linked or embedded.** FCP 12.3 carries `ProExtensionHost`,
+  `ProExtension` and `ProExtensionSupport` in its own bundle, and its `ProExtension` declares
+  the `com.apple.FinalCut.WorkflowExtension` point. The extension's principal class is ours.
+  If FCP accepts that (Phase 0's hands-on step, owed), open question 5 (redistributing the SDK
+  framework in a GPL product) does not arise for Phases 0–2. Phase 3's `FCPXHost` proxies are
+  the case that may still need it.
+- **Idle exit at 50 s, not 60.** The verify line asks for the agent to be gone within 60 s of its
+  last client. At 60 s the measured exit was 62 s (the timer starts at invalidation, plus
+  teardown); at 50 s it was 52 s.

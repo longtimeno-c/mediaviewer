@@ -316,7 +316,7 @@ typedef struct mv_ai_api {
   /* ---- appended 2026-09-28 (plan/23): an NLE hand-off's clip length -------- */
   /* The length of a result's clip in ms, as the index recorded it; 0 for a
    * still or a clip whose length is not known yet. An FCPXML asset needs it
-   * (addons/fcp/fcpxml.h). Check struct_size before calling. [worker-thread] */
+   * (nle/fcpxml.h). Check struct_size before calling. [worker-thread] */
   mv_status(MV_CALL* result_duration)(void* ctx, uint64_t search_id, uint32_t index,
                                       int64_t* out_ms);
 } mv_ai_api;

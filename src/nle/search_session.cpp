@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/fcp/search_session.h"
+#include "nle/search_session.h"
 
 #include <algorithm>
 #include <chrono>
@@ -9,12 +9,12 @@
 
 #include "addon/host.h"
 #include "addon/store.h"
-#include "addons/fcp/thumb_reader.h"
+#include "nle/thumb_reader.h"
 
 namespace mv::nle {
 namespace {
 
-using clock = std::chrono::steady_clock;
+using steady = std::chrono::steady_clock;
 
 // A string out of one of the table's (buf, cap) calls, growing once for a
 // long path.
@@ -77,14 +77,14 @@ std::unique_ptr<search_session> search_session::over(const mv_ai_api* api) {
 
 bool search_session::wait_ready(int ms) const {
   if (!api_) return false;
-  const auto deadline = clock::now() + std::chrono::milliseconds(ms);
+  const auto deadline = steady::now() + std::chrono::milliseconds(ms);
   while (true) {
     mv_ai_status st{};
     st.struct_size = sizeof(st);
     if (api_->status(api_->ctx, &st) != MV_OK) return false;
     if (st.state == MV_AI_STATE_ERROR) return false;
     if (st.state != MV_AI_STATE_LOADING) return true;
-    if (clock::now() >= deadline) return false;
+    if (steady::now() >= deadline) return false;
     std::unique_lock lock(m_);
     cv_.wait_for(lock, std::chrono::milliseconds(20));
   }
@@ -109,7 +109,7 @@ reply search_session::run(const request& r, const std::string& text, const std::
     out.code = status::unsupported_format;
     return out;
   }
-  const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+  const auto deadline = steady::now() + std::chrono::milliseconds(timeout_ms);
   if (!wait_ready(timeout_ms)) {
     mv_ai_status st{};
     st.struct_size = sizeof(st);
@@ -137,7 +137,7 @@ reply search_session::run(const request& r, const std::string& text, const std::
       done_.erase(id);
     }
     finished = api_->result_count(api_->ctx, id, &count) == MV_OK;
-    if (!finished && clock::now() >= deadline) {
+    if (!finished && steady::now() >= deadline) {
       (void)api_->search_release(api_->ctx, id);
       out.code = status::timeout;
       return out;

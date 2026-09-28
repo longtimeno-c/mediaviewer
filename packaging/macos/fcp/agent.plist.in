@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
+  The Local search agent's launchd job (plan/23), registered by the container
+  with SMAppService.agent. launchd starts it when the extension looks up the
+  Mach service (named under the extension's app group, which is what lets a
+  sandboxed client reach it) and nothing keeps it alive: it exits when idle.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@MV_FCP_MACH_SERVICE@</string>
+  <key>BundleProgram</key>
+  <string>Contents/MacOS/MediaViewerSearchAgent</string>
+  <key>MachServices</key>
+  <dict>
+    <key>@MV_FCP_MACH_SERVICE@</key>
+    <true/>
+  </dict>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>@MV_FCP_BUNDLE_ID@</string>
+  </array>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

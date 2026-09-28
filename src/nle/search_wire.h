@@ -72,4 +72,9 @@ struct reply {
 [[nodiscard]] std::vector<std::uint8_t> encode(const reply& r);
 [[nodiscard]] result<reply> decode(std::span<const std::uint8_t> bytes);
 
+// A request's fixed half, the same way (a version a reader does not know is
+// status::unsupported_format; a kind out of range is status::corrupt).
+[[nodiscard]] std::vector<std::uint8_t> encode(const request& r);
+[[nodiscard]] result<request> decode_request(std::span<const std::uint8_t> bytes);
+
 }  // namespace mv::nle

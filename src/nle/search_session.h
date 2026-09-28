@@ -21,7 +21,7 @@
 
 #include <mediaviewer/mediaviewer_ai.h>
 
-#include "addons/fcp/search_wire.h"
+#include "nle/search_wire.h"
 #include "core/result.h"
 
 namespace mv::addon {
