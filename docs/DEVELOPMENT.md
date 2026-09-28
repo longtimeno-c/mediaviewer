@@ -100,7 +100,7 @@ Then the **PR 12 metadata writes** (shared core and the **macOS half**; the Wind
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core), not yet built on either platform: on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is tested on Linux ([tools/portable](../tools/portable/README.md)); what is owed on each platform is in [plan/12](../plan/12-decision-log.md) 2026-09-25.
 
-**PR 15 OS integration** is written on a branch (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). Several windows grouped as tabs come in a later update ([plan/10](../plan/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
+**PR 15 OS integration** is written on a branch (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). Several windows grouped as tabs come in a later update ([plan/10](../plan/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -653,7 +653,8 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
    larger `--quit-after` quits once the pack is idle.
 
 `mv_ai_tests "[refine]"` runs the People refinement (plan/17 "People refinement") on synthetic
-face vectors and a temporary faces.db; it needs no pack.
+face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
+**Refine faces** on a person under Settings → People.
 
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
 `MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`
@@ -678,6 +679,21 @@ without it, and `MV_AI_CALIBRATION_VOCAB=<file>` (with `MV_AI_CALIBRATION_OUT`) 
 file's lines as `vocab-<tower>.f32` for trying a list offline. The engine keeps its tower's label
 embeddings in `labels.f32` in the AI data folder; delete it to re-embed. On a Mac the first Core ML
 open of a tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
+
+Settings → Local search → **Import and export** writes the index of chosen folders to a
+`.mvindex` file (SQLite; paths relative to each folder, optional People and cached thumbnails)
+and merges one back, each folder pointed at where its files are on this machine; the folders are
+then rescanned and anything whose size or date differs is indexed again (plan/17 "Sharing an
+index"). `mv_ai_tests "[transfer]"` runs two engines as two machines over one library copied
+elsewhere: nothing embedded twice, an edited file re-embedded, an empty index adopting the
+file's Quality, a used one skipping another model's vectors, People and thumbnails only when
+ticked, a non-index file refused. Thumbnails cross the host table as bytes (`thumbnail_jpeg`,
+`thumbnail_store_jpeg`, appended to v2; the host decodes what it stores).
+With the real pack, two sideloaded add-on folders are two machines:
+`ai-bench --addons <A> --index <library> --make-thumbs <library> --export <file> --export-flags 2`,
+then `ai-bench --addons <B> --import <file> --import-to <copy elsewhere> --import-flags 2
+--count-thumbs <copy> --query …` (each with its own `MV_DEV_THUMBS_DIR`); `assets_per_s` staying
+0 after the import says nothing was embedded again.
 
 The search field's query language (`Tristan beach`, `Tristan "hello"`, `Tristan or Aaryan`,
 `@tri`, `-beach`, `beach video`, `in:2024`, `before:2025-06`; plan/17 "Query syntax") is parsed

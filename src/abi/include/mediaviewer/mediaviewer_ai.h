@@ -117,6 +117,12 @@ typedef enum mv_ai_scope {
                                           machine for the first time (Core ML's first compile,
                                           minutes; later starts read its cache) */
 
+/* Sharing an index (2026-09-28, plan/17 "Sharing an index"): what an export
+ * carries besides the index rows, and what an import takes from a file. */
+#define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
+                                          then identifies the people in it. Off by default */
+#define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
+
 /* Settings -> Local search -> the Photos library (issue #72; macOS only):
  * PhotoKit's authorization, as the add-on sees it. */
 typedef enum mv_ai_photos_access {
@@ -316,6 +322,55 @@ typedef struct mv_ai_api {
    * is accepted (Tab). [worker-thread] */
   mv_status(MV_CALL* suggest_json)(void* ctx, const char* query_utf8, char* out, uint32_t cap,
                                    uint32_t* needed);
+
+  /* ---- people refinement on request (2026-09-28, plan/17 "People refinement") */
+  /* "Refine": re-checks every face filed under this person against them and
+   * everyone else, in passes, and files the misplaced ones out (to another
+   * person, to nobody, or to a new person when several leave together).
+   * Faces the user placed (split, named cover, merged) are never moved. Runs
+   * only when called; nothing refines People in the background.
+   * `out_removed` (may be NULL): faces that left the person. Posts
+   * MV_ADDON_EVENT_AI_PEOPLE when anything moved. [worker-thread] */
+  mv_status(MV_CALL* person_refine)(void* ctx, uint64_t person_id, uint32_t* out_removed);
+
+  /* ---- sharing an index (2026-09-28, plan/17 "Sharing an index") ---------- */
+  /* Writes the index of `root_ids` (NULL / 0: every root) to `dest_utf8` (a
+   * .mvindex file, through dest.part), with the MV_AI_TRANSFER_* extras in
+   * `flags`. Runs on the pack's own thread while indexing goes on;
+   * MV_ERR_BUSY while another export or import is queued or running. Progress
+   * and the outcome: transfer_json, MV_ADDON_EVENT_AI_STATUS as it moves and
+   * when it ends. [no-block] */
+  mv_status(MV_CALL* export_index)(void* ctx, const char* dest_utf8, const uint64_t* root_ids,
+                                   uint32_t root_count, uint32_t flags, uint64_t* out_job);
+  /* What a file holds, and what an import would do with it here:
+   * {"version":1,"created":unix,"from":"macOS arm64","model":"CLIP ViT-L/14",
+   *  "picture_usable":true,"adopt_quality":0 (1 / 2: an empty index here takes
+   *  the file's Quality), "why_not":"" | "model" (another tower) | "no_models" |
+   *  "loading" (the models are not in yet: import decides again once they are),
+   *  "people":{"faces":N,"people":N,"ready":bool,"match":bool} | null,
+   *  "thumbs":N, "roots":[{"id":1,"name":"2024","path":"/Volumes/photo/2024",
+   *  "recursive":true,"assets":N,"exists":bool}]}
+   * "exists": that path is a folder on this machine. MV_ERR_UNSUPPORTED_FORMAT:
+   * not an index file, or one from a newer pack. [worker-thread] */
+  mv_status(MV_CALL* inspect_export)(void* ctx, const char* file_utf8, char* out, uint32_t cap,
+                                     uint32_t* needed);
+  /* Merges a file into this index. map_json: [{"id":<file root>,"path":"<folder
+   * here>"}]; a root left out is not imported. Rows this machine has finished
+   * stay; the folders are rescanned afterwards, so a file that differs here is
+   * indexed again. Indexing pauses while it runs, and the calls that change
+   * folders (index_folder, root_set_enabled, root_set_media, root_remove),
+   * clear_index and faces_enable answer MV_ERR_BUSY until it ends rather than
+   * wait for it. MV_AI_TRANSFER_PEOPLE turns People on (it needs the ai-faces
+   * piece). [no-block] */
+  mv_status(MV_CALL* import_index)(void* ctx, const char* file_utf8, const char* map_json,
+                                   uint32_t flags, uint64_t* out_job);
+  /* The last export / import: {"id":1,"kind":"export"|"import","running":bool,
+   *  "done":bool,"status":<mv_status>,"fraction":0.4,"outcome":{counts} | null}
+   * [no-block] */
+  mv_status(MV_CALL* transfer_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
+  /* Stops the running export (its .part is removed) or import (what it had
+   * not committed is rolled back). [no-block] */
+  mv_status(MV_CALL* transfer_cancel)(void* ctx);
 
   /* ---- the Photos library (issue #72; macOS) ------------------------------ */
   /* The system Photos library (iCloud Photos included) as one more remembered

@@ -2866,6 +2866,19 @@ re-enumeration of 23,089 assets takes 0.43 s warm, so the scan is the delta.
 | Mac-only source (D9) | "yes this is mac only" | — |
 | Base-app plist key + entitlement | "yes" | The PR 20 "base bundle unchanged with the pack absent" line now excepts these two |
 
+## 2026-09-28 — People refinement runs only on request
+
+Owner: the refinement should run only "when I press a button" in the person's faces view
+under Settings, not on its own.
+
+- **Reversed: the idle refinement pass** (4b4652c, plan/17 "People refinement"). The control
+  thread no longer calls it. "Refine faces" in the person's view calls the new `mv.ai.1` entry
+  `person_refine` (appended), which judges only that person's faces (`refine_input::focus`)
+  against every person, and returns how many left. Online assignment (margin, pairwise scores)
+  and the idle consolidate merge are unchanged; so is everything the pass computes.
+- Why focused rather than a library-wide button: the user is looking at one person and asked
+  for that person's photos to be cleaned; a click there should not rearrange other people.
+
 ## 2026-09-28 — Video Editor: I / O mark a range; J K L shuttle
 
 From the Final Cut Pro assessment (issue #80), the owner chose both calls.
@@ -2904,3 +2917,27 @@ rule had been set on 300-1,000 COCO photos. Re-measured at 1 k-25 k on both towe
   own photo 94-97 % (was 97-98 %).
 - **Not solved:** placeholder and sentence-like gibberish still floods on L/14 (1,400-5,000 rows
   at 25 k, the owner's string included). The Photos library was not re-run. Both stay on #85.
+
+## 2026-09-28 — Local search: an index can be exported and imported (owner)
+
+Owner: an Intel Mac cannot run the pack, and re-indexing a library on every machine is the
+slow part, "especially when it comes to a NAS". Asked for export and import on every platform
+the pack runs on, with toggles for face data and thumbnails.
+
+- **Amended: plan/17 PR 24 "never exported" for face data.** Faces, people and names leave the
+  machine only in the user's own export with "Include People" ticked (off by default, with the
+  warning that the file identifies the people in it). An import with People turns People on and
+  says so. Nothing else about the biometric rule changes: never in telemetry, crash reports or
+  logs; one-click delete.
+- The file carries paths **relative** to each folder and the file's `(mtime, size)`; an import
+  maps each folder to a place here and the ordinary delta scan then re-queues whatever differs.
+  No content hash (plan/17 "Index store" keeps that rule).
+- Vectors stay with their model (PR 23 "never mixed"): an empty index adopts the file's Quality;
+  a used one skips another tower's rows rather than migrate.
+- Host table v2 gains `thumbnail_jpeg` / `thumbnail_store_jpeg` (appended; the pack already
+  requires the table it was built against). The host decodes stored bytes and refuses anything
+  but a JPEG of at most 512 on the long edge: another machine's file is untrusted input, as is
+  the index file itself (opened read-only, defensive, schema untrusted; paths with `..` refused).
+- **Not changed:** Intel Macs still get no pack (ORT ships no x86_64 macOS build). An index
+  from an Apple silicon Mac is of use on another Apple silicon Mac or a Windows PC.
+

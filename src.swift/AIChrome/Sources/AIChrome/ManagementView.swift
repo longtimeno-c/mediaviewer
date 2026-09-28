@@ -99,10 +99,21 @@ final class ManagementModel: ObservableObject {
   private var faceCounts: (UInt64, UInt32) = (0, 0)
   private var noteGeneration = 0
 
+  /// Settings → Import and export (plan/17 "Sharing an index").
+  let transfer: IndexTransferModel
+
   init(table: AITable) {
     self.table = table
     photosSupported = table.hasPhotos
     photosAccess = PhotosLibrary.status
+    transfer = IndexTransferModel(table: table)
+    transfer.changed = { [weak self] in
+      guard let self else { return }
+      self.reloadSettings()
+      self.reloadRoots()
+      self.reloadPeople()
+      self.pollStatus()
+    }
     reloadSettings()
     pollStatus()
   }
@@ -155,6 +166,7 @@ final class ManagementModel: ObservableObject {
     }
     let line = StatusLine(s)
     if line != status { status = line }
+    transfer.poll()
   }
 
   func setPaused(_ paused: Bool) {
@@ -431,6 +443,23 @@ final class ManagementModel: ObservableObject {
     }.value
   }
 
+  /// A pack built before person_refine was appended has no "Refine faces".
+  var canRefine: Bool { table.has(\mv_ai_api.person_refine) }
+
+  /// "Refine faces" (plan/17 "People refinement"): the pack re-checks this
+  /// person's faces and files the misplaced ones out. Only ever on request.
+  /// How many left the person; nil when it could not run.
+  func refine(_ person: UInt64) async -> UInt32? {
+    guard canRefine else { return nil }
+    let t = table
+    let removed: UInt32? = await Task.detached {
+      var n: UInt32 = 0
+      return t.call { t.a.person_refine?(t.ctx, person, &n) } == MV_OK ? n : nil
+    }.value
+    reloadPeople()
+    return removed
+  }
+
   /// "Not this person" for each face, then one reload.
   func reject(_ faces: [UInt64]) {
     guard !faces.isEmpty else { return }
@@ -607,9 +636,15 @@ struct ManagementView: View {
           .pickerStyle(.menu).frame(width: 160)
         }
       }
+      if model.transfer.available {
+        section("Import and export") {
+          IndexTransferSection(model: model.transfer, roots: model.roots,
+                               peopleOn: model.facesOn && model.facesReady)
+        }
+      }
       section("People") {
         row("Find people in your photos",
-            detail: "Face data stays on this computer, is never shared, and can be deleted at any time. Off by default.") {
+            detail: "Face data stays on this computer unless you include People in an index export, and can be deleted at any time. Off by default.") {
           Toggle("Find people in your photos", isOn: Binding(get: { model.facesOn }, set: { model.setFaces($0) }))
             .toggleStyle(.switch)
         }

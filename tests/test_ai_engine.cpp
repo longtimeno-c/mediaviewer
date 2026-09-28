@@ -409,6 +409,7 @@ struct rig {
   std::mutex events_m;
   std::vector<mv_addon_event> events;
   std::map<std::string, std::string> moment_thumbs;
+  std::map<std::string, std::vector<std::uint8_t>> jpegs;  // path#ms -> bytes
   std::mutex thumbs_m;
   std::atomic<bool> busy{false};
   std::atomic<bool> on_battery{false};  // the fake power source
@@ -472,6 +473,19 @@ struct rig {
     };
     svc.piece_dir = [](const std::string&) -> mv::result<std::string> { return mv::err(mv::status::io); };
     svc.open_audio = &open_fake_audio;
+    // The viewer's JPEG-512 cache as bytes (sharing an index).
+    svc.thumbnail_jpeg = [this](const std::string& path, std::int64_t ms) -> mv::result<std::vector<std::uint8_t>> {
+      std::lock_guard lock(thumbs_m);
+      auto it = jpegs.find(path + "#" + std::to_string(ms));
+      if (it == jpegs.end()) return mv::err(mv::status::io);
+      return it->second;
+    };
+    svc.store_thumbnail_jpeg = [this](const std::string& path, std::int64_t ms,
+                                      std::span<const std::uint8_t> jpeg) -> mv::expected {
+      std::lock_guard lock(thumbs_m);
+      jpegs[path + "#" + std::to_string(ms)].assign(jpeg.begin(), jpeg.end());
+      return {};
+    };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
   }
@@ -482,6 +496,7 @@ struct rig {
     d.qualities = [] { return std::vector<std::uint32_t>{1, 2}; };
     d.model_name = [](std::uint32_t q) { return q == 1 ? std::string("Fake fast") : std::string("Fake high"); };
     d.backend_available = [](mv::infer::backend) { return false; };
+    d.clip_spec = [this](std::uint32_t q) { return q == 2 ? high->spec_key() : fast->spec_key(); };
     d.open_clip = [this](std::uint32_t quality, std::uint32_t) -> mv::result<mv::ai::loaded_clip> {
       ++clip_opens;
       mv::ai::loaded_clip c;
@@ -1481,6 +1496,45 @@ bool eventually(const std::function<bool()>& ok, int ms = 10000) {
 
 }  // namespace
 
+// ---- sharing an index (plan/17 "Sharing an index") ---------------------------------------
+
+namespace {
+
+// The last export / import, once it has finished.
+mv::json::value transfer_done(rig& r) {
+  mv::json::value out;
+  REQUIRE(wait_for(
+      [&] {
+        auto t = mv::json::parse(r.eng->transfer_json());
+        if (!t || !t->boolean("done").value_or(false)) return false;
+        out = *t;
+        return true;
+      },
+      15000));
+  return out;
+}
+
+// Machine B's copy of machine A's Photos, under another folder, each file with
+// A's modification time (a NAS seen from two machines, a copied card).
+void copy_library(const rig& from, const fs::path& to) {
+  for (const auto& e : fs::directory_iterator(from.photos())) {
+    fs::create_directories(to);
+    fs::copy_file(e.path(), to / e.path().filename(), fs::copy_options::overwrite_existing);
+    fs::last_write_time(to / e.path().filename(), fs::last_write_time(e.path()));
+  }
+}
+
+std::string map_json(std::int64_t file_root, const fs::path& dir) {
+  mv::json::writer w;
+  w.begin_array().begin_object();
+  w.key("id").integer(file_root);
+  w.key("path").string(utf8(dir));
+  w.end_object().end_array();
+  return w.take();
+}
+
+}  // namespace
+
 TEST_CASE("the Photos library indexes what is on this Mac and counts iCloud-only apart", "[ai][engine][photos]") {
   rig r;
   r.file("clips/rgb_clip.mp4");
@@ -1614,4 +1668,255 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
   REQUIRE(eventually([&] { return r.status().assets_done == 1; }));
   CHECK(r.status().assets_unavailable == 0);
   CHECK(has_row(r.search("blue"), "photos:blue-cloud"));
+}
+
+TEST_CASE("an index exported on one machine answers on another without embedding again",
+          "[ai][engine][transfer]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.file("green_field.jpg");
+  a.file("blue_sea.jpg");
+  a.file("holiday_rgb.mp4");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.idle());
+  const std::string file = utf8(a.dir / "library.mvindex");
+  auto job = a.eng->export_index(file, {}, 0);
+  REQUIRE(job);
+  auto done = transfer_done(a);
+  CHECK(*done.integer("status") == 0);
+  REQUIRE(fs::exists(file));
+  CHECK_FALSE(fs::exists(file + ".part"));
+  CHECK(*done.find("outcome")->integer("assets") == 4);
+  CHECK(*done.find("outcome")->integer("frames") == 3 + 3);
+
+  // Machine B: the same files somewhere else.
+  rig b;
+  const fs::path there = b.dir / "NAS" / "Photos";
+  copy_library(a, there);
+  b.start();
+  REQUIRE(b.idle());
+  auto info = mv::json::parse(*b.eng->inspect_export(file));
+  REQUIRE(info);
+  CHECK(info->boolean("picture_usable") == true);
+  CHECK(*info->str("model") == "Fake fast");
+  REQUIRE(info->find("roots")->a.size() == 1);
+  const auto& root = info->find("roots")->a[0];
+  CHECK(*root.str("path") == utf8(a.photos()));
+  CHECK(*root.integer("assets") == 4);
+  // Both "machines" share this disk, so A's folder is a folder here too.
+  CHECK(root.boolean("exists") == fs::is_directory(a.photos()));
+
+  REQUIRE(b.eng->import_index(file, map_json(*root.integer("id"), there), 0));
+  done = transfer_done(b);
+  CHECK(*done.integer("status") == 0);
+  CHECK(*done.find("outcome")->integer("added") == 4);
+  REQUIRE(b.idle());
+  CHECK(b.fast->images_embedded.load() == 0);  // nothing embedded again
+  CHECK(b.status().assets_done == 4);
+  CHECK(b.status().frames_indexed == 6);
+  const auto red = b.search("red");
+  REQUIRE(red.size() == 2);
+  const auto green = b.search("green");
+  CHECK(std::find(green.begin(), green.end(), std::make_pair(std::string("holiday_rgb.mp4"), std::int64_t{3000})) !=
+        green.end());
+  auto path = b.eng->search_text("blue", utf8(there), MV_AI_SCOPE_FOLDER, MV_AI_KIND_ALL);
+  REQUIRE(b.eng->wait_search(path, 5000));
+  auto p = b.eng->result_path(path, 0);
+  REQUIRE(p);
+  CHECK(fs::path(*p).parent_path() == there);  // B's paths, not A's
+}
+
+TEST_CASE("an imported file that differs here is indexed again; rows done here stay",
+          "[ai][engine][transfer]") {
+  rig a;
+  a.file("red_a.jpg");
+  a.file("red_b.jpg");
+  a.file("blue_c.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.idle());
+  const std::string file = utf8(a.dir / "x.mvindex");
+  REQUIRE(a.eng->export_index(file, {}, 0));
+  REQUIRE(*transfer_done(a).integer("status") == 0);
+
+  rig b;
+  const fs::path there = b.dir / "Photos";
+  copy_library(a, there);
+  // Edited here after the export: another size.
+  write_bytes(there / "red_b.jpg", pattern(64, 9));
+  b.start();
+  const auto root_id = *mv::json::parse(*b.eng->inspect_export(file))->find("roots")->a[0].integer("id");
+  REQUIRE(b.eng->import_index(file, map_json(root_id, there), 0));
+  REQUIRE(*transfer_done(b).integer("status") == 0);
+  REQUIRE(b.idle());
+  CHECK(b.fast->images_embedded.load() == 1);  // only the edited one
+  CHECK(b.status().assets_done == 3);
+  CHECK(b.status().frames_indexed == 3);
+
+  // Importing the same file again changes nothing: every row is done here.
+  REQUIRE(b.eng->import_index(file, map_json(root_id, there), 0));
+  auto again = transfer_done(b);
+  CHECK(*again.find("outcome")->integer("added") == 0);
+  CHECK(*again.find("outcome")->integer("frames") == 0);
+  REQUIRE(b.idle());
+  CHECK(b.status().frames_indexed == 3);
+  CHECK(b.fast->images_embedded.load() == 1);
+}
+
+TEST_CASE("an empty index adopts the file's Quality; a used one keeps its own",
+          "[ai][engine][transfer]") {
+  rig a;
+  a.file("red.jpg");
+  a.file("green.jpg");
+  a.start();
+  REQUIRE(a.eng->set_setting("quality", "2"));
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(wait_for([&] { return a.eng->active_spec() == "fake-high/fp16/pre1"; }, 15000));
+  REQUIRE(a.idle());
+  const std::string file = utf8(a.dir / "high.mvindex");
+  REQUIRE(a.eng->export_index(file, {}, 0));
+  REQUIRE(*transfer_done(a).integer("status") == 0);
+
+  SECTION("empty here: adopted") {
+    rig b;
+    const fs::path there = b.dir / "Photos";
+    copy_library(a, there);
+    b.start();
+    REQUIRE(b.idle());
+    auto info = mv::json::parse(*b.eng->inspect_export(file));
+    CHECK(info->boolean("picture_usable") == true);
+    CHECK(*info->integer("adopt_quality") == 2);
+    REQUIRE(b.eng->import_index(file, map_json(*info->find("roots")->a[0].integer("id"), there), 0));
+    auto done = transfer_done(b);
+    CHECK(*done.find("outcome")->integer("adopted_quality") == 2);
+    REQUIRE(wait_for([&] { return b.eng->active_spec() == "fake-high/fp16/pre1"; }, 15000));
+    REQUIRE(b.idle());
+    CHECK(b.high->images_embedded.load() == 0);
+    CHECK(b.fast->images_embedded.load() == 0);
+    CHECK(b.search("red").front().first == "red.jpg");
+    CHECK(*mv::json::parse(b.eng->settings_json())->integer("quality") == 2);
+  }
+  SECTION("indexed here with another tower: skipped, never mixed") {
+    rig b;
+    b.file("blue.jpg");
+    const fs::path there = b.dir / "Other";
+    copy_library(a, there);
+    b.start();
+    REQUIRE(b.eng->index_folder(utf8(b.photos()), false));
+    REQUIRE(b.idle());
+    auto info = mv::json::parse(*b.eng->inspect_export(file));
+    CHECK(info->boolean("picture_usable") == false);
+    CHECK(*info->str("why_not") == "model");
+    REQUIRE(b.eng->import_index(file, map_json(*info->find("roots")->a[0].integer("id"), there), 0));
+    auto done = transfer_done(b);
+    CHECK(*done.find("outcome")->integer("frames") == 0);
+    CHECK(*done.find("outcome")->integer("skipped_rows") == 2);
+    REQUIRE(b.idle());
+    CHECK(b.eng->active_spec() == "fake-fast/fp16/pre1");
+    CHECK(b.fast->images_embedded.load() == 3);  // its own, plus the two it indexes itself
+    CHECK(b.search("red").front().first == "red.jpg");
+  }
+}
+
+TEST_CASE("People travel only when ticked, and named people join by name", "[ai][engine][transfer][faces]") {
+  rig a;
+  a.file("anna_1.jpg");
+  a.file("anna_2.jpg");
+  a.file("ben_1.jpg");
+  a.file("ben_2.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (a.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, 6000));
+  REQUIRE(a.idle());
+  auto people = mv::json::parse(a.eng->people_json());
+  REQUIRE(people->a.size() == 2);
+  REQUIRE(a.eng->person_rename(*people->a[0].integer("id"), "Anna"));
+
+  const std::string without = utf8(a.dir / "plain.mvindex");
+  REQUIRE(a.eng->export_index(without, {}, 0));
+  auto done = transfer_done(a);
+  CHECK(*done.find("outcome")->integer("faces") == 0);
+  CHECK(done.find("outcome")->boolean("people_included") == false);
+  const std::string with = utf8(a.dir / "people.mvindex");
+  REQUIRE(a.eng->export_index(with, {}, MV_AI_TRANSFER_PEOPLE));
+  done = transfer_done(a);
+  CHECK(*done.find("outcome")->integer("faces") == 4);
+  CHECK(*done.find("outcome")->integer("people") == 2);
+
+  rig b;
+  const fs::path there = b.dir / "Photos";
+  copy_library(a, there);
+  b.start();
+  REQUIRE(b.idle());
+  CHECK(mv::json::parse(*b.eng->inspect_export(without))->find("people")->k == mv::json::kind::null);
+  auto info = mv::json::parse(*b.eng->inspect_export(with));
+  REQUIRE(info->find("people")->k == mv::json::kind::object);
+  CHECK(info->find("people")->boolean("ready") == false);  // People is off here
+  const auto root_id = *info->find("roots")->a[0].integer("id");
+
+  // Without the flag nothing about faces lands, even from a file that has them.
+  REQUIRE(b.eng->import_index(with, map_json(root_id, there), 0));
+  REQUIRE(*transfer_done(b).integer("status") == 0);
+  CHECK_FALSE(fs::exists(b.dir / "data" / "faces.db"));
+
+  REQUIRE(b.eng->import_index(with, map_json(root_id, there), MV_AI_TRANSFER_PEOPLE));
+  done = transfer_done(b);
+  CHECK(*done.find("outcome")->integer("faces") == 4);
+  CHECK(*done.find("outcome")->integer("people_new") == 2);
+  REQUIRE(b.idle());
+  CHECK((b.status().flags & MV_AI_STATUS_FACES_ON) != 0);  // the import turned People on
+  CHECK(b.search("Anna").size() == 2);
+  auto here = mv::json::parse(b.eng->people_json());
+  REQUIRE(here->a.size() == 2);
+}
+
+TEST_CASE("thumbnails travel only when cached, and land only for the same file", "[ai][engine][transfer]") {
+  rig a;
+  a.file("red.jpg");
+  a.file("blue.jpg");
+  a.start();
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.idle());
+  {
+    std::lock_guard lock(a.thumbs_m);
+    a.jpegs[utf8(a.photos() / "red.jpg") + "#-1"] = {0xFF, 0xD8, 1, 2, 3};  // blue was never thumbed
+  }
+  const std::string file = utf8(a.dir / "t.mvindex");
+  REQUIRE(a.eng->export_index(file, {}, MV_AI_TRANSFER_THUMBS));
+  auto done = transfer_done(a);
+  CHECK(*done.find("outcome")->integer("thumbs") == 1);
+  CHECK(*done.find("outcome")->integer("thumbs_missing") == 1);
+
+  rig b;
+  const fs::path there = b.dir / "Photos";
+  copy_library(a, there);
+  b.start();
+  const auto root_id = *mv::json::parse(*b.eng->inspect_export(file))->find("roots")->a[0].integer("id");
+  REQUIRE(b.eng->import_index(file, map_json(root_id, there), MV_AI_TRANSFER_THUMBS));
+  done = transfer_done(b);
+  CHECK(*done.find("outcome")->integer("thumbs") == 1);
+  std::lock_guard lock(b.thumbs_m);
+  const auto it = b.jpegs.find(utf8(there / "red.jpg") + "#-1");
+  REQUIRE(it != b.jpegs.end());
+  CHECK(it->second.size() == 5);
+}
+
+TEST_CASE("an import refuses what is not an index, and one transfer runs at a time", "[ai][engine][transfer]") {
+  rig r;
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const fs::path junk = r.dir / "junk.mvindex";
+  write_bytes(junk, pattern(4096, 3));
+  CHECK(r.eng->inspect_export(utf8(junk)).error() != mv::status::ok);
+  CHECK_FALSE(r.eng->import_index(utf8(junk), "not json", 0));
+  CHECK_FALSE(r.eng->import_index(utf8(junk), "[]", 0));
+  REQUIRE(r.eng->import_index(utf8(junk), map_json(1, r.photos()), 0));
+  CHECK(*transfer_done(r).integer("status") != 0);
+  // The index is untouched by a refused file.
+  REQUIRE(r.idle());
+  CHECK(r.status().frames_indexed == 1);
 }

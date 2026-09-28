@@ -124,13 +124,15 @@ public static partial class IslandHost
     /// under it while downloading, an indeterminate bar after.</summary>
     private sealed class AddonProgressView
     {
-        private readonly ProgressBar _bar;
+        // A JobBar, not a ProgressBar: WinUI's has no default style in this
+        // island app, and entering the tree fail-fasts (IslandHost.Clip.cs).
+        private readonly JobBar _bar;
         private readonly TextBlock _text;
         private readonly TextBlock _percent;
 
         public AddonProgressView(double width)
         {
-            _bar = new ProgressBar { Minimum = 0, Maximum = 1, Height = 4 };
+            _bar = new JobBar();
             _text = Label("");
             _text.FontSize = 12;
             _percent = Label("");
@@ -143,7 +145,7 @@ public static partial class IslandHost
             Grid.SetColumn(_percent, 1);
             lines.Children.Add(_percent);
             Root = new StackPanel { Spacing = 4, Width = width, HorizontalAlignment = HorizontalAlignment.Left };
-            Root.Children.Add(_bar);
+            Root.Children.Add(_bar.Root);
             Root.Children.Add(lines);
         }
 
@@ -152,13 +154,13 @@ public static partial class IslandHost
         public void Show(AddonPhase p)
         {
             double? f = p.Fraction;
-            // Whatever the phase the bar shows activity: indeterminate (the
-            // animated dots) while no fraction is known, during checking and
+            // Whatever the phase the bar shows activity: indeterminate (a
+            // fixed third) while no fraction is known, during checking and
             // installing too (owner report, 2026-09-28). With animations off
             // in Windows it is a still, dimmed full bar instead.
             bool still = f is null && !HostAnimationsEnabled();
             _bar.IsIndeterminate = f is null && !still;
-            _bar.Opacity = still ? 0.45 : 1;
+            _bar.Root.Opacity = still ? 0.45 : 1;
             if (f is double v) _bar.Value = v;
             else if (still) _bar.Value = 1;
             _text.Text = p.Text;

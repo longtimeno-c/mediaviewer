@@ -81,6 +81,16 @@ result<image::thumb_key> moment_key(const std::string& path, std::int64_t pts_ms
   return image::moment_thumb_key(path, pts_ms, st.mtime_unix, st.size);
 }
 
+// A still's own row (the viewer's key) or a moment's, under the file's stamp now.
+result<image::thumb_key> cache_key(const std::string& path, std::int64_t pts_ms) {
+  if (pts_ms >= 0) return moment_key(path, pts_ms);
+  MV_TRY(io::file_stat st, io::stat_path(path));
+  return image::thumb_key{path, st.mtime_unix, st.size};
+}
+
+// A JPEG-512 row is ~20-80 KB; anything far past that is not one.
+constexpr std::size_t kMaxThumbBytes = 2u << 20;
+
 // Straight-alpha RGBA from packed RGB, what the JPEG-512 encoder takes.
 std::vector<std::uint8_t> rgba_of(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h) {
   std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * h * 4);
@@ -205,6 +215,31 @@ result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_m
   }
   MV_TRY(auto jpeg, image::encode_thumb_rgba(rgba, w, h));
   return store.store(key, jpeg);
+}
+
+result<std::vector<std::uint8_t>> thumbnail_jpeg(const std::string& path, std::int64_t pts_ms) {
+  MV_TRY(image::thumb_store* store, thumbs());
+  MV_TRY(image::thumb_key key, cache_key(path, pts_ms));
+  MV_TRY(std::string hit, store->lookup(key));
+  if (hit.empty()) return err(status::io);
+  return io::read_all(hit);
+}
+
+expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
+                              std::span<const std::uint8_t> jpeg) {
+  if (jpeg.size() < 4 || jpeg.size() > kMaxThumbBytes) return err(status::invalid_arg);
+  if (jpeg[0] != 0xFF || jpeg[1] != 0xD8) return err(status::unsupported_format);
+  // Another machine's bytes: our own (fuzzed) decoder says what they are
+  // before the gallery ever does.
+  MV_TRY(image::display_image img, image::decode_bytes(jpeg, nullptr, 1));
+  if (img.format != codec::format_family::jpeg) return err(status::unsupported_format);
+  if (img.width == 0 || img.height == 0 || std::max(img.width, img.height) > image::kThumbLongEdge) {
+    return err(status::invalid_arg);
+  }
+  MV_TRY(image::thumb_store* store, thumbs());
+  MV_TRY(image::thumb_key key, cache_key(path, pts_ms));
+  MV_TRY_VOID(store->store(key, jpeg));
+  return {};
 }
 
 result<std::vector<std::uint8_t>> encode_moment_thumb(const std::string& path, std::int64_t pts_ms,
