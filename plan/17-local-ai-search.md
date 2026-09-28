@@ -987,7 +987,9 @@ stores a thumbnail only when the local file's `(mtime, size)` equals the file's 
 
 **What it is not.** Not a sync: an import is a one-off merge, and nothing watches the file. Not
 a way onto an Intel Mac: the pack still has no x86_64 macOS build (ORT), and a query needs the
-text tower on the machine that searches.
+text tower on the machine that searches. Not for the Photos library root (below): its keys are
+this Mac's PhotoKit identifiers, not paths under a folder another machine could map, so an
+export leaves it out and the chrome's picker does not offer it.
 
 **Rule 6.** The file carries folder and file names, and, if ticked, faces and names. It is the
 user's own export to a place they chose; nothing about it is logged or sent.
@@ -1022,8 +1024,13 @@ nor failed:
 
 - `mv_ai_status.assets_unavailable` counts these assets; Settings says "N only in iCloud".
 - An iCloud-only clip is found by its local poster, stored as one row at 0 ms.
-- They are asked again once per launch, and when access returns. They are not asked on every
-  change notice, which would re-ask for every iCloud-only clip each time a photo is favourited.
+- Once per launch, and when access returns, each is asked whether it is on this Mac now (a
+  PhotoKit lookup per asset; a still that is still in iCloud answers without a decode). Only
+  those that are go back to pending; the rest keep their state and their poster row, so
+  nothing is re-read or re-embedded for an asset that has not changed. They are not asked on
+  every change notice, which would ask about every iCloud-only asset each time a photo is
+  favourited. The People pass treats them the same way: marked scanned while unavailable, and
+  scanned once the original is here.
 
 **Permission.** The pack never raises the system prompt. Settings → Local search → *Photos
 Library* → **Add Photos Library** asks, from that click, and only then calls

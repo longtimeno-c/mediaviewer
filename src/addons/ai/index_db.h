@@ -17,8 +17,9 @@
 // system library's assets, each keyed "photos:<localIdentifier>"
 // (photos_source.h). No schema change: the key scheme is the source. Its
 // progress may be `unavailable` (4): only iCloud has the asset, so there was
-// nothing local to embed; it is neither done nor failed, and it re-queues when
-// the library changes (requeue_unavailable).
+// nothing local to embed; it is neither done nor failed, and it re-queues once
+// the engine finds the original on this Mac (unavailable_assets, then
+// requeue_unavailable for those).
 //
 // Schema 2 (2026-09-27, audio): roots.media says what a folder's videos are
 // indexed for (MV_AI_MEDIA_PICTURES / _SOUND; 0 follows the default), sound
@@ -189,10 +190,13 @@ class index_db {
   // iCloud-only clip's poster), searchable meanwhile.
   [[nodiscard]] expected mark_unavailable(std::int64_t asset, const std::string& spec,
                                           std::span<const frame_in> frames = {}, std::uint32_t dim = 0);
-  // Every unavailable asset of `root` goes back to pending, its stand-in rows
-  // dropped (an original may have been downloaded since). Returns their ids so
-  // the search matrix can drop them too.
-  [[nodiscard]] result<std::vector<std::int64_t>> requeue_unavailable(std::int64_t root);
+  // The assets of `root` that some track found unavailable, for the engine to
+  // ask whether they are on this Mac now.
+  [[nodiscard]] std::vector<asset_row> unavailable_assets(std::int64_t root);
+  // These go back to pending, their stand-in rows (an iCloud-only clip's
+  // poster) dropped: their originals have been downloaded since. The caller
+  // drops them from the search matrix too (engine::forget_vectors).
+  [[nodiscard]] expected requeue_unavailable(std::span<const std::int64_t> ids);
   // A clip's transcript segments, with progress, in one transaction.
   [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
                                        std::span<const speech_in> segments, work_state state,

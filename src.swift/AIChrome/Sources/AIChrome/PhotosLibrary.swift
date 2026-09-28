@@ -202,30 +202,47 @@ enum PhotosLibrary {
     }
   }
 
+  /// Current first (a trimmed or filtered clip as Photos plays it); an edited
+  /// clip's Current can be a composition with no file, so then the original,
+  /// as the pack's video_file does. Both in place, never the network.
   private static func videoURL(_ a: PHAsset) async -> URL? {
-    await withCheckedContinuation { (c: CheckedContinuation<URL?, Never>) in
-      let o = PHVideoRequestOptions()
-      o.isNetworkAccessAllowed = false
-      o.version = .current
-      o.deliveryMode = .highQualityFormat
-      PHImageManager.default().requestAVAsset(forVideo: a, options: o) { av, _, _ in
-        c.resume(returning: (av as? AVURLAsset)?.url)
+    for version: PHVideoRequestOptionsVersion in [.current, .original] {
+      let url: URL? = await withCheckedContinuation { (c: CheckedContinuation<URL?, Never>) in
+        let o = PHVideoRequestOptions()
+        o.isNetworkAccessAllowed = false
+        o.version = version
+        o.deliveryMode = .highQualityFormat
+        PHImageManager.default().requestAVAsset(forVideo: a, options: o) { av, _, _ in
+          c.resume(returning: (av as? AVURLAsset)?.url)
+        }
       }
+      if let url, url.isFileURL { return url }
     }
+    return nil
   }
 
+  /// The largest picture of an asset this Mac has, without the network. A
+  /// synchronous request is answered in full quality or not at all, and the
+  /// full size of an iCloud-only original is not here; so the sizes are asked
+  /// in turn, largest first, and the first one PhotoKit can serve from what it
+  /// keeps locally (Optimize Mac Storage keeps a screen-sized rendition) wins.
+  /// A refused size costs a lookup, not a decode.
   private static func bestLocalImage(_ a: PHAsset) -> CGImage? {
     let o = PHImageRequestOptions()
     o.isSynchronous = true
     o.isNetworkAccessAllowed = false
     o.deliveryMode = .highQualityFormat
+    o.resizeMode = .exact
     o.version = .current
-    var out: CGImage?
-    PHImageManager.default().requestImage(for: a, targetSize: PHImageManagerMaximumSize, contentMode: .default,
-                                          options: o) { image, _ in
-      out = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    let sizes: [CGSize] = [PHImageManagerMaximumSize] + [4096, 2048, 1024, 512].map { CGSize(width: $0, height: $0) }
+    for size in sizes {
+      var out: CGImage?
+      PHImageManager.default().requestImage(for: a, targetSize: size, contentMode: .aspectFit, options: o) { image, _ in
+        out = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+      }
+      if let out { return out }
     }
-    return out
+    return nil
   }
 }
 

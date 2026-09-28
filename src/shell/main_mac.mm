@@ -4148,12 +4148,17 @@ enum MvMenuCmd : NSInteger {
       return YES;
     case kMenuTrash:
     case kMenuMoveTo: {
-      // Photos library files are never trashed or moved (issue #72).
+      // Photos library files are never trashed or moved (issue #72). The
+      // marks themselves, not a copy of their entries: this runs per validation.
       if (![self hasFolder]) return NO;
-      for (const auto& e : [self markedOrCurrentEntries]) {
-        if (mv::shell::write_protected(e.path_utf8)) return NO;
+      if (!_marks.empty()) {
+        for (const std::string& path : _marks) {
+          if (mv::shell::write_protected(path)) return NO;
+        }
+        return YES;
       }
-      return YES;
+      const mv::io::dir_entry* entry = [self currentEntry];
+      return entry == nullptr || !mv::shell::write_protected(entry->path_utf8);
     }
     default:
       return [self hasFolder];

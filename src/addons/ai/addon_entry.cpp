@@ -305,6 +305,29 @@ mv_status MV_CALL t_suggest_json(void* ctx, const char* query, char* out, uint32
   });
 }
 
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::unsupported) == MV_AI_PHOTOS_UNSUPPORTED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::not_determined) == MV_AI_PHOTOS_NOT_DETERMINED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::denied) == MV_AI_PHOTOS_DENIED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::restricted) == MV_AI_PHOTOS_RESTRICTED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::limited) == MV_AI_PHOTOS_LIMITED);
+static_assert(static_cast<uint32_t>(mv::ai::photos_access::full) == MV_AI_PHOTOS_FULL);
+
+mv_status MV_CALL t_index_photos(void* ctx, uint64_t* out_root) {
+  return guard([&] {
+    if (!out_root) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).index_photos_library();
+    if (!r) return to_mv(r.error());
+    *out_root = static_cast<uint64_t>(*r);
+    return MV_OK;
+  });
+}
+mv_status MV_CALL t_photos_access(void* ctx, uint32_t* out) {
+  return guard([&] {
+    if (!out) return MV_ERR_INVALID_ARG;
+    *out = static_cast<uint32_t>(eng(ctx).photos_library_access());
+    return MV_OK;
+  });
+}
 mv_status MV_CALL t_export_index(void* ctx, const char* dest, const uint64_t* roots, uint32_t count,
                                  uint32_t flags, uint64_t* out_job) {
   return guard([&] {
@@ -340,30 +363,6 @@ mv_status MV_CALL t_transfer_json(void* ctx, char* out, uint32_t cap, uint32_t* 
 mv_status MV_CALL t_transfer_cancel(void* ctx) {
   return guard([&] {
     eng(ctx).transfer_cancel();
-    return MV_OK;
-  });
-}
-
-static_assert(static_cast<uint32_t>(mv::ai::photos_access::unsupported) == MV_AI_PHOTOS_UNSUPPORTED);
-static_assert(static_cast<uint32_t>(mv::ai::photos_access::not_determined) == MV_AI_PHOTOS_NOT_DETERMINED);
-static_assert(static_cast<uint32_t>(mv::ai::photos_access::denied) == MV_AI_PHOTOS_DENIED);
-static_assert(static_cast<uint32_t>(mv::ai::photos_access::restricted) == MV_AI_PHOTOS_RESTRICTED);
-static_assert(static_cast<uint32_t>(mv::ai::photos_access::limited) == MV_AI_PHOTOS_LIMITED);
-static_assert(static_cast<uint32_t>(mv::ai::photos_access::full) == MV_AI_PHOTOS_FULL);
-
-mv_status MV_CALL t_index_photos(void* ctx, uint64_t* out_root) {
-  return guard([&] {
-    if (!out_root) return MV_ERR_INVALID_ARG;
-    auto r = eng(ctx).index_photos_library();
-    if (!r) return to_mv(r.error());
-    *out_root = static_cast<uint64_t>(*r);
-    return MV_OK;
-  });
-}
-mv_status MV_CALL t_photos_access(void* ctx, uint32_t* out) {
-  return guard([&] {
-    if (!out) return MV_ERR_INVALID_ARG;
-    *out = static_cast<uint32_t>(eng(ctx).photos_library_access());
     return MV_OK;
   });
 }

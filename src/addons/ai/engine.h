@@ -343,6 +343,8 @@ class engine {
   // A scan's end: removed assets leave every index, changed ones their vectors.
   void end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed);
   void forget_vectors(const std::vector<std::int64_t>& ids);
+  // Whether an unavailable Photos asset is on this Mac now (the launch check).
+  [[nodiscard]] bool photos_local(const asset_row& a) const;
   void scan_all();
   // Pixels and files for an asset path: a file goes to the host, a Photos
   // library key ("photos:...") to the Photos source.
@@ -352,6 +354,9 @@ class engine {
   // A result or face tile: a JPEG in the viewer's cache, or for a Photos
   // library still the "photos:" key itself (the chrome asks PhotoKit).
   [[nodiscard]] result<std::string> tile_of(const std::string& path, std::int64_t pts_ms) const;
+  // The edge the launch check asks a still at: what the picture pass reads
+  // (process_photos, 448 px at the base quality), so "local" means the same.
+  static constexpr std::uint32_t kPhotosProbeEdge = 448;
   // The root the indexer leaves alone: the Photos library while access is off.
   [[nodiscard]] std::int64_t skip_root() const noexcept {
     return photos_readable_ ? 0 : photos_root_.load();

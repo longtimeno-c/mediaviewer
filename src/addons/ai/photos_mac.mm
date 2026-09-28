@@ -23,12 +23,11 @@
 }
 - (void)photoLibraryDidChange:(PHChange*)change {
   (void)change;
-  std::function<void()> f;
-  {
-    std::lock_guard lock(_m);
-    f = _changed;
-  }
-  if (f) f();
+  // Called with the lock held, so once observe(nullptr) has cleared _changed
+  // (under the same lock) no call is still on its way into an engine that is
+  // going away. The callback only sets a flag and wakes a thread.
+  std::lock_guard lock(_m);
+  if (_changed) _changed();
 }
 @end
 

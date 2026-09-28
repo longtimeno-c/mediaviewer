@@ -117,12 +117,6 @@ typedef enum mv_ai_scope {
                                           machine for the first time (Core ML's first compile,
                                           minutes; later starts read its cache) */
 
-/* Sharing an index (2026-09-28, plan/17 "Sharing an index"): what an export
- * carries besides the index rows, and what an import takes from a file. */
-#define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
-                                          then identifies the people in it. Off by default */
-#define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
-
 /* Settings -> Local search -> the Photos library (issue #72; macOS only):
  * PhotoKit's authorization, as the add-on sees it. */
 typedef enum mv_ai_photos_access {
@@ -133,6 +127,12 @@ typedef enum mv_ai_photos_access {
   MV_AI_PHOTOS_LIMITED = 4,
   MV_AI_PHOTOS_FULL = 5
 } mv_ai_photos_access;
+
+/* Sharing an index (2026-09-28, plan/17 "Sharing an index"): what an export
+ * carries besides the index rows, and what an import takes from a file. */
+#define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
+                                          then identifies the people in it. Off by default */
+#define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
 
 /* Polled by the status line (~4 Hz while visible). [no-block] */
 typedef struct mv_ai_status {

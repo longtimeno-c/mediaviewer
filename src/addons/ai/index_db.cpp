@@ -387,16 +387,21 @@ expected index_db::mark_unavailable(std::int64_t asset, const std::string& spec,
   return p.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
 }
 
-result<std::vector<std::int64_t>> index_db::requeue_unavailable(std::int64_t root) {
+std::vector<asset_row> index_db::unavailable_assets(std::int64_t root) {
   std::lock_guard lock(m_);
-  std::vector<std::int64_t> ids;
-  {
-    stmt q(db_, "SELECT DISTINCT p.asset_id FROM progress p JOIN assets a ON a.id = p.asset_id"
-                " WHERE p.state = 4 AND a.root_id = ?1");
-    q.bind(1, root);
-    while (q.step_row()) ids.push_back(q.i64(0));
-  }
-  if (ids.empty()) return ids;
+  std::vector<asset_row> out;
+  const std::string sql = std::string("SELECT ") + kAssetCols +
+      " FROM assets a WHERE a.root_id = ?1 AND EXISTS"
+      " (SELECT 1 FROM progress p WHERE p.asset_id = a.id AND p.state = 4) ORDER BY a.id";
+  stmt q(db_, sql.c_str());
+  q.bind(1, root);
+  while (q.step_row()) out.push_back(asset_from(q, 0));
+  return out;
+}
+
+expected index_db::requeue_unavailable(std::span<const std::int64_t> ids) {
+  if (ids.empty()) return {};
+  std::lock_guard lock(m_);
   if (!exec("BEGIN")) return err(status::io);
   bool ok = true;
   {
@@ -416,8 +421,7 @@ result<std::vector<std::int64_t>> index_db::requeue_unavailable(std::int64_t roo
     exec("ROLLBACK");
     return err(status::io);
   }
-  if (!exec("COMMIT")) return err(status::io);
-  return ids;
+  return exec("COMMIT") ? expected{} : err(status::io);
 }
 
 expected index_db::commit_speech(std::int64_t asset, const std::string& spec,
