@@ -28,6 +28,7 @@ struct FilmstripView: View {
               )
               .id(index)
               .onTapGesture { store.select(index) }
+              .fileDrag { store.dragFiles(from: index) }
             }
           }
         }

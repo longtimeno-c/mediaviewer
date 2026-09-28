@@ -543,6 +543,9 @@ struct SearchRootView: View {
                   }
                   focus = .grid
                 }
+                // Drag the original out (Final Cut Pro, Finder): the file, never
+                // the moment; a clip result carries the whole clip.
+                .fileDrag { [(path: r.path, image: model.slot(for: r).image)] }
             }
           }
           .padding(16)

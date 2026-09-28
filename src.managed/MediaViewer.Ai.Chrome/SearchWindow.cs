@@ -13,6 +13,8 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.UI.Core;
 using DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue;
 using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
@@ -1516,7 +1518,39 @@ internal sealed class SearchWindow : Window, IDisposable
             _sel = tile.Index;
             OpenResults(gallery: Down(VirtualKey.Control));
         };
+        // Drag the original out (Explorer, an editor): the file, never the
+        // moment; a clip result carries the whole clip.
+        root.CanDrag = true;
+        root.DragStarting += (_, e) =>
+        {
+            DragOperationDeferral deferral = e.GetDeferral();
+            _ = StartResultDragAsync(tile.Path, e, deferral);
+        };
         return root;
+    }
+
+    private static async System.Threading.Tasks.Task StartResultDragAsync(
+        string path, DragStartingEventArgs args, DragOperationDeferral deferral)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(path)) { args.Cancel = true; return; }
+            // Resolved off the UI thread by the broker; a result whose file is
+            // gone since indexing throws here and the drag is cancelled.
+            StorageFile file = await StorageFile.GetFileFromPathAsync(path);
+            args.Data.SetStorageItems(new IStorageItem[] { file }, true);
+            args.Data.RequestedOperation = DataPackageOperation.Copy;
+            args.AllowedOperations = DataPackageOperation.Copy;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            args.Cancel = true;
+        }
+        finally
+        {
+            deferral.Complete();
+        }
     }
 
     // Why a tile matched: picture, sound, speech (Segoe Fluent Icons glyphs),
