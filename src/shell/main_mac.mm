@@ -439,10 +439,13 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // The welcome card's recent folders (welcome_layout.h): the row under the
 // pointer at the snapshot's mouse position, or -1 when the card lists none
 // (anything open). -welcomePointerMoved updates the drawn hover and returns
-// whether a row is under the pointer; -openWelcomeRow: opens one.
+// whether a row is under the pointer; -openWelcomeRow: opens one, and
+// -removeWelcomeRow: (the row's x) drops it from the recent folders.
 - (int)welcomeRowAtPointer;
+- (int)welcomeRowAtPointerOnRemove:(BOOL*)onRemove;
 - (BOOL)welcomePointerMoved;
 - (void)openWelcomeRow:(int)row;
+- (void)removeWelcomeRow:(int)row;
 // Settings screen (plan/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
@@ -1520,6 +1523,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
+  BOOL _welcomePressRemove;  // ... and the press was on its remove button
 }
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
@@ -1669,7 +1673,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self trackPointer:event];
-  _welcomePress = self.app ? [self.app welcomeRowAtPointer] + 1 : 0;
+  _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
   self.snap->mouse_down[0] = true;
   ++self.snap->activity_seq;
   [self publish];
@@ -1681,12 +1685,21 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
-  // A click on a recent folder: pressed and released on the same row.
+  // A click on a recent folder (or its x): pressed and released on the same
+  // row and the same part of it.
   const int pressed = _welcomePress - 1;
   _welcomePress = 0;
   if (pressed >= 0 && self.app) {
     [self trackPointer:event];
-    if ([self.app welcomeRowAtPointer] == pressed) [self.app openWelcomeRow:pressed];
+    BOOL onRemove = NO;
+    if ([self.app welcomeRowAtPointerOnRemove:&onRemove] == pressed && onRemove == _welcomePressRemove) {
+      if (onRemove) {
+        [self.app removeWelcomeRow:pressed];
+        [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+      } else {
+        [self.app openWelcomeRow:pressed];
+      }
+    }
   }
 }
 - (void)rightMouseDown:(NSEvent*)event {
@@ -7293,21 +7306,40 @@ static double mv_wall_seconds() {
 }
 
 - (int)welcomeRowAtPointer {
+  return [self welcomeRowAtPointerOnRemove:nullptr];
+}
+
+- (int)welcomeRowAtPointerOnRemove:(BOOL*)onRemove {
+  if (onRemove) *onRemove = NO;
   if (_snap.recents.count == 0 || !_snap.mouse_in_client || ![self welcomeListsRecents]) return -1;
   const float scale = _snap.dpi_scale > 0.0f ? _snap.dpi_scale : 1.0f;
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
                                 static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count);
-  return mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
+  const int row = mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
+  if (row >= 0 && onRemove) *onRemove = mv::shell::welcome_on_remove(g, _snap.mouse_x);
+  return row;
 }
 
 - (BOOL)welcomePointerMoved {
-  const int row = [self welcomeRowAtPointer];
-  if (row != _snap.recents.hover) {
+  BOOL onRemove = NO;
+  const int row = [self welcomeRowAtPointerOnRemove:&onRemove];
+  const bool remove = onRemove == YES;
+  if (row != _snap.recents.hover || remove != _snap.recents.hover_remove) {
     _snap.recents.hover = static_cast<std::int8_t>(row);
+    _snap.recents.hover_remove = remove;
     [self publish];
   }
   return row >= 0;
+}
+
+// The x on a welcome card row: the folder leaves the card, the Dock menu and
+// File > Open Recent. The folder itself is not touched.
+- (void)removeWelcomeRow:(int)row {
+  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
+  _recentFolders.erase(_recentFolders.begin() + row);
+  [self persistRecentFolders];
+  [self refreshWelcomeRecents];
 }
 
 - (void)openWelcomeRow:(int)row {
