@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include <atomic>
+#include <chrono>
 #include <initializer_list>
 #include <iterator>
 #include <map>
@@ -264,6 +265,15 @@ struct app_state {
     std::int64_t last_seek = -1;
     std::int64_t pushed_playhead = -1;
     bool pushed_playing = false;
+    double fps = 0;                         // the clip's rate; 0 unknown
+    std::uint64_t exported_revision = 0;    // the timeline revision last exported
+    mv::shell::editor_shuttle shuttle;      // J K L
+    std::int64_t shuttle_target = 0;        // where the last J was going (program time)
+    bool shuttle_skimmed = false;           // a held J left a keyframe seek to settle
+    bool rate_changed = false;              // L sped the clip up: 1x again on close
+    std::int32_t trim_index = -1;           // the piece whose edge is being dragged
+    bool trim_in = true;
+    bool close_prompt = false;              // the discard question is up
   } editor;
   bool main_active = true;  // the viewer's own WM_ACTIVATE (input.window_active also counts the editor)
   mv::shell::meta_store meta;
@@ -2967,6 +2977,7 @@ constexpr UINT kMsgEditorLoaded = WM_APP + 0x79;  // the probe + strip job finis
 struct editor_load_result {
   std::uint64_t token = 0;
   std::int64_t duration_ns = 0;
+  double fps = 0;
   std::vector<mv::edit::clip::strip_frame> strip;
   std::vector<float> peaks;
 };
@@ -3033,6 +3044,9 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.pieces = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(flat.data()));
     a.name_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(name.data()));
     a.name_len = static_cast<std::int32_t>(name.size());
+    a.frame_rate_milli = static_cast<std::int32_t>(std::lround(ed.fps * 1000.0));
+    a.mark_in_ns = ed.timeline.marked_in();
+    a.mark_out_ns = ed.timeline.marked_out();
     app->chrome.set_editor_view(a);
   } catch (...) {
   }
@@ -3139,9 +3153,19 @@ void editor_seek(app_state* app, std::int64_t timeline_ns) noexcept {
   push_editor_view(app, true);
 }
 
+void editor_set_rate(app_state* app, double rate) noexcept {
+  auto& ed = app->editor;
+  if (!app->session) return;
+  if (rate == 1.0 && !ed.rate_changed) return;
+  (void)mv_video_set_rate(app->session, rate);
+  ed.rate_changed = rate != 1.0;
+}
+
 void editor_toggle_play(app_state* app) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded() || !app->session) return;
+  ed.shuttle.stop();
+  editor_set_rate(app, 1.0);  // Space plays at 1x
   const bool playing = editor_playing(app);
   // At the end, Play starts the program again.
   if (!playing && ed.timeline.next_play_start(clip_position(app), kEditorLeadNs) < 0) {
@@ -3172,8 +3196,9 @@ void editor_follow_playback(app_state* app) noexcept {
   push_editor_view(app, false);
 }
 
-// 1 split at the playhead, 2 delete the selected piece, 3 set in, 4 set out,
-// 5 undo, 6 redo (chrome_editor_action, and the Mac bridge's codes).
+// 1 split at the playhead, 2 delete (the marked range, else the selected
+// piece), 3 set in, 4 set out, 5 undo, 6 redo, 14 mark in, 15 mark out,
+// 16 clear the marks (chrome_editor_action, and the Mac bridge's codes).
 void editor_edit(app_state* app, int what) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded()) return;
@@ -3185,6 +3210,12 @@ void editor_edit(app_state* app, int what) noexcept {
       if (changed) ed.selected = static_cast<std::int32_t>(ed.timeline.piece_at(at));
       break;
     case 2:
+      if (ed.timeline.has_marks()) {  // a marked range first, as in every editor
+        const std::int64_t from = std::max<std::int64_t>(0, ed.timeline.marked_in());
+        changed = ed.timeline.remove_marked();
+        if (changed) editor_seek(app, std::min(from, ed.timeline.length()));
+        break;
+      }
       if (ed.selected < 0) ed.selected = static_cast<std::int32_t>(ed.timeline.piece_at(at));
       changed = ed.timeline.remove(static_cast<std::size_t>(ed.selected));
       if (changed) {
@@ -3199,6 +3230,14 @@ void editor_edit(app_state* app, int what) noexcept {
     case 4: changed = ed.timeline.set_out(at); break;
     case 5: changed = ed.timeline.undo(); break;
     case 6: changed = ed.timeline.redo(); break;
+    // Marks change no piece: they never beep and never count as an edit.
+    case 14: ed.timeline.mark_in(at); push_editor_view(app, true); return;
+    case 15: ed.timeline.mark_out(at); push_editor_view(app, true); return;
+    case 16:
+      if (!ed.timeline.has_marks()) ::MessageBeep(MB_ICONWARNING);
+      ed.timeline.clear_marks();
+      push_editor_view(app, true);
+      return;
     default: break;
   }
   if (!changed) ::MessageBeep(MB_ICONWARNING);
@@ -3222,6 +3261,7 @@ void editor_export(app_state* app, bool exact) noexcept {
   }
   try {
     (void)submit_clip_job(app, ed.timeline.export_request(ed.path, exact));
+    ed.exported_revision = ed.timeline.revision();
   } catch (...) {
     ::MessageBeep(MB_ICONWARNING);
     return;
@@ -3229,6 +3269,118 @@ void editor_export(app_state* app, bool exact) noexcept {
   notice_show(app, exact ? "Exporting the edit (exact) \xE2\x80\x94 see Jobs" : "Exporting the edit \xE2\x80\x94 see Jobs");
   layout_editor(app);  // the Jobs pane took the viewer's right edge: the card steps aside
   push_editor_view(app, true);
+}
+
+// A piece's edge dragged on the timeline. The preview shows the edge's frame:
+// a keyframe seek while it moves, the exact frame on release, as the viewer's
+// scrubber does. The out edge shows the last frame kept.
+std::int64_t editor_edge_frame(const app_state* app, std::int64_t at) noexcept {
+  return app->editor.trim_in ? at : std::max<std::int64_t>(0, at - 1);
+}
+
+void editor_trim_grab(app_state* app, int code) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded()) return;
+  if (code < 0) {  // let go
+    if (!ed.timeline.trimming()) return;
+    ed.timeline.end_trim();
+    const auto& pieces = ed.timeline.pieces();
+    if (ed.trim_index >= 0 && static_cast<std::size_t>(ed.trim_index) < pieces.size()) {
+      const auto& p = pieces[static_cast<std::size_t>(ed.trim_index)];
+      editor_seek_source(app, editor_edge_frame(app, ed.trim_in ? p.in_ns : p.out_ns));
+    }
+    ed.trim_index = -1;
+    push_editor_view(app, true);
+    return;
+  }
+  const int index = code / 2;
+  const bool in = code % 2 == 0;
+  if (!ed.timeline.begin_trim(static_cast<std::size_t>(index),
+                              in ? mv::shell::video_timeline::edge::in : mv::shell::video_timeline::edge::out)) {
+    return;
+  }
+  ed.trim_index = index;
+  ed.trim_in = in;
+  ed.selected = index;
+  if (editor_playing(app)) (void)mv_video_pause(app->session);
+  push_editor_view(app, true);
+}
+
+void editor_trim_to(app_state* app, std::int64_t source_ns) noexcept {
+  auto& ed = app->editor;
+  const std::int64_t at = ed.timeline.trim_to(source_ns);
+  if (at < 0) return;
+  if (app->session) (void)mv_video_seek(app->session, editor_edge_frame(app, at), 0);
+  push_editor_view(app, true);
+}
+
+// J K L (plan/16): L plays at 1x, 2x, 4x on repeated presses; K stops; J
+// skims back further on each quick press. A held J skims keyframes and
+// settles on the exact frame when it is let go.
+void editor_shuttle_key(app_state* app, int key, bool down, bool repeat) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || !app->session) return;
+  switch (key) {
+    case 'J': {
+      if (!down) {
+        if (ed.shuttle_skimmed) editor_seek_source(app, ed.timeline.to_source(ed.shuttle_target));
+        ed.shuttle_skimmed = false;
+        return;
+      }
+      if (editor_playing(app)) (void)mv_video_pause(app->session);
+      editor_set_rate(app, 1.0);
+      const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch()).count();
+      const std::int64_t to = ed.shuttle.back(editor_timeline_position(app), now, repeat);
+      ed.shuttle_target = to;
+      ed.shuttle_skimmed = repeat;
+      ed.last_seek = -1;
+      (void)mv_video_seek(app->session, ed.timeline.to_source(to), repeat ? 0 : 1);
+      ed.selected = static_cast<std::int32_t>(ed.timeline.piece_at(to));
+      push_editor_view(app, true);
+      return;
+    }
+    case 'K':
+      if (!down || repeat) return;
+      ed.shuttle.stop();
+      if (editor_playing(app)) (void)mv_video_pause(app->session);
+      editor_set_rate(app, 1.0);
+      push_editor_view(app, false);
+      return;
+    case 'L': {
+      if (!down || repeat) return;
+      const double rate = ed.shuttle.forward();
+      (void)mv_video_set_rate(app->session, rate);
+      ed.rate_changed = rate != 1.0;
+      if (!editor_playing(app)) {
+        if (ed.timeline.next_play_start(clip_position(app), kEditorLeadNs) < 0) {
+          editor_seek_source(app, ed.timeline.pieces().front().in_ns);
+        }
+        (void)mv_video_play(app->session);
+      }
+      push_editor_view(app, false);
+      return;
+    }
+    default: return;
+  }
+}
+
+// Done, Esc, Ctrl+W, the close box, Enter in the viewer: an edit that has not
+// been exported since it last changed asks first. Closing any other way (the
+// self-test, another clip on the canvas, quitting) does not.
+void editor_request_close(app_state* app) {
+  auto& ed = app->editor;
+  if (!ed.open || ed.close_prompt) return;
+  if (ed.timeline.edited() && ed.timeline.revision() != ed.exported_revision && ed.window) {
+    ed.close_prompt = true;
+    const int answer = ::MessageBoxW(
+        ed.window,
+        L"The edit has not been exported. Closing the Video Editor discards it; the clip itself is never changed.",
+        L"Discard this edit?", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
+    ed.close_prompt = false;
+    if (answer != IDOK || !ed.open) return;
+  }
+  set_editor_open(app, false);
 }
 
 void editor_run_action(app_state* app, int action) {
@@ -3239,7 +3391,10 @@ void editor_run_action(app_state* app, int action) {
     case chrome_editor_action::set_in:
     case chrome_editor_action::set_out:
     case chrome_editor_action::undo:
-    case chrome_editor_action::redo: editor_edit(app, action); break;
+    case chrome_editor_action::redo:
+    case chrome_editor_action::mark_in:
+    case chrome_editor_action::mark_out:
+    case chrome_editor_action::clear_marks: editor_edit(app, action); break;
     case chrome_editor_action::toggle_play: editor_toggle_play(app); break;
     case chrome_editor_action::step_back:
     case chrome_editor_action::step_forward:
@@ -3249,7 +3404,7 @@ void editor_run_action(app_state* app, int action) {
       break;
     case chrome_editor_action::export_keyframe: editor_export(app, false); break;
     case chrome_editor_action::export_exact: editor_export(app, true); break;
-    case chrome_editor_action::close: set_editor_open(app, false); break;
+    case chrome_editor_action::close: editor_request_close(app); break;
     case chrome_editor_action::show:
       if (app->editor.window) ::SetForegroundWindow(app->editor.window);
       break;
@@ -3260,9 +3415,15 @@ void editor_run_action(app_state* app, int action) {
 // here, never to the browse router: A / D must not walk the folder out from
 // under the edit. Tab and Enter fall through to the island (focus, buttons).
 bool editor_key(app_state* app, const MSG& msg) {
+  // J's release settles a skim; every other key acts on its press.
+  if (msg.message == WM_KEYUP && msg.wParam == 'J') {
+    editor_shuttle_key(app, 'J', false, false);
+    return true;
+  }
   if (msg.message != WM_KEYDOWN) return false;
   const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  const bool repeat = (msg.lParam & (1 << 30)) != 0;
   auto& ed = app->editor;
   switch (msg.wParam) {
     case VK_SPACE: editor_toggle_play(app); return true;
@@ -3276,19 +3437,22 @@ bool editor_key(app_state* app, const MSG& msg) {
     case VK_END: editor_seek(app, ed.timeline.length()); return true;
     case VK_DELETE:
     case VK_BACK: editor_edit(app, 2); return true;
-    case VK_ESCAPE: set_editor_open(app, false); return true;
-    case 'J': if (!ctrl) editor_seek(app, editor_timeline_position(app) - 1'000'000'000); return true;
+    case VK_ESCAPE: editor_request_close(app); return true;
+    case 'J':
     case 'K':
-      if (!ctrl && editor_playing(app)) editor_toggle_play(app);
+    case 'L':
+      if (!ctrl) editor_shuttle_key(app, static_cast<int>(msg.wParam), true, repeat);
       return true;
-    case 'L': if (!ctrl) editor_seek(app, editor_timeline_position(app) + 1'000'000'000); return true;
-    case 'I': if (!ctrl) editor_edit(app, 3); return true;
-    case 'O': if (!ctrl) editor_edit(app, 4); return true;
+    case 'I': if (!ctrl) editor_edit(app, 14); return true;
+    case 'O': if (!ctrl) editor_edit(app, 15); return true;
+    case 'X': if (!ctrl) editor_edit(app, 16); return true;
+    case VK_OEM_4: if (!ctrl) editor_edit(app, 3); return true;  // [ trim start
+    case VK_OEM_6: if (!ctrl) editor_edit(app, 4); return true;  // ] trim end
     case 'B': if (ctrl) editor_edit(app, 1); return true;
     case 'Z': if (ctrl) editor_edit(app, shift ? 6 : 5); return true;
     case 'Y': if (ctrl) editor_edit(app, 6); return true;
     case 'E': if (ctrl) editor_export(app, shift); return true;
-    case 'W': if (ctrl) set_editor_open(app, false); return true;
+    case 'W': if (ctrl) editor_request_close(app); return true;
     default: return false;
   }
 }
@@ -3302,6 +3466,7 @@ void editor_load_clip(app_state* app) {
                         if (!r) return mv::status::out_of_memory;
                         r->token = token;
                         r->duration_ns = info ? info->duration_ns : 0;
+                        r->fps = info ? info->frame_rate : 0.0;
                         std::vector<std::int64_t> times;
                         for (int i = 0; i < kEditorThumbs && r->duration_ns > 0; ++i) {
                           times.push_back(r->duration_ns * i / kEditorThumbs);
@@ -3330,6 +3495,8 @@ void on_editor_loaded(app_state* app, std::unique_ptr<editor_load_result> r) {
     return;
   }
   ed.timeline.load(r->duration_ns);
+  ed.fps = r->fps > 0 && r->fps < 1000 ? r->fps : 0;
+  ed.exported_revision = ed.timeline.revision();
   ed.strip = std::move(r->strip);
   ed.peaks = std::move(r->peaks);
   push_editor_strip(app);
@@ -3389,7 +3556,7 @@ LRESULT CALLBACK editor_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
     case WM_ERASEBKGND:
       return 1;  // the swapchain and the island own every pixel
     case WM_CLOSE:
-      set_editor_open(app, false);
+      editor_request_close(app);
       return 0;
     default: break;
   }
@@ -3488,6 +3655,12 @@ void set_editor_open(app_state* app, bool open) {
     ed.timeline.load(0);
     ed.last_seek = -1;
     ed.pushed_playhead = -1;
+    ed.fps = 0;
+    ed.exported_revision = 0;
+    ed.shuttle.stop();
+    ed.shuttle_skimmed = false;
+    ed.rate_changed = false;
+    ed.trim_index = -1;
     ++ed.token;
     // The canvas moves in: the render thread retargets on its next frame.
     app->input.canvas_window = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(hwnd));
@@ -3502,6 +3675,9 @@ void set_editor_open(app_state* app, bool open) {
     push_edit_view(app);  // the command bar's button reads Done
   } else {
     const HWND hwnd = ed.window;
+    editor_set_rate(app, 1.0);  // the viewer gets its clip back at 1x
+    ed.timeline.end_trim();
+    ed.trim_index = -1;
     ed.open = false;
     ed.active = false;
     ed.minimized = false;
@@ -3732,6 +3908,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
       return;
     case mv::shell::chrome_cmd_editor_action:
       editor_run_action(app, static_cast<int>(arg));
+      return;
+    case mv::shell::chrome_cmd_editor_trim_grab:
+      editor_trim_grab(app, static_cast<int>(arg));
+      return;
+    case mv::shell::chrome_cmd_editor_trim_to:
+      editor_trim_to(app, static_cast<std::int64_t>(static_cast<double>(arg) * 1'000'000.0));
       return;
     case static_cast<int>(mv::shell::command_id::crop_aspect_set):
       edit_set_aspect(app, static_cast<int>(arg));
@@ -5248,7 +5430,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
   // PR 30 (plan/21, owner): video is edited in its own window, not a pane.
   if (command == edit_workspace &&
       (app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip)) {
-    set_editor_open(app, !app->editor.open);
+    if (app->editor.open) {
+      editor_request_close(app);
+    } else {
+      set_editor_open(app, true);
+    }
     return true;
   }
   // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
@@ -6009,9 +6195,11 @@ void edit_selftest_key(app_state* app, HWND target, UINT vk, bool ctrl = false, 
   (void)::SetKeyboardState(state);
 }
 
-// Open (Enter), split at 5 s and 10 s (Home, L, Ctrl+B), select the middle
-// piece (J) and delete it (Delete), export both ways (Ctrl+E, Ctrl+Shift+E),
-// close (Esc). One key per step where a seek has to land first.
+// Open (Enter); from the end (End), J back five seconds and mark out (O),
+// J back five more and mark in (I); delete the marked range (Delete); L plays
+// and K stops; export both ways (Ctrl+E, Ctrl+Shift+E); close (Esc, which
+// does not ask: the edit was exported). One key per step where a seek has to
+// land first; the steps are further apart than J's burst, so each J is 1 s.
 bool edit_selftest_keys_tick(app_state* app, int step) {
   const HWND ed = app->editor.window;
   switch (step) {
@@ -6023,20 +6211,21 @@ bool edit_selftest_keys_tick(app_state* app, int step) {
       edit_selftest_key(app, app->window, VK_RETURN);
       break;
     case 2: break;  // the strip is read on a worker
-    case 3: edit_selftest_snap(app, "k1-editor"); edit_selftest_key(app, ed, VK_HOME); break;
-    case 4: case 5: case 6: case 7: case 8: edit_selftest_key(app, ed, 'L'); break;
-    case 9: edit_selftest_key(app, ed, 'B', true); break;
-    case 10: case 11: case 12: case 13: case 14: edit_selftest_key(app, ed, 'L'); break;
-    case 15: edit_selftest_key(app, ed, 'B', true); break;
-    case 16: edit_selftest_key(app, ed, 'J'); break;  // into the middle piece: it is selected
-    case 17: edit_selftest_key(app, ed, VK_DELETE); break;
-    case 18:
+    case 3: edit_selftest_snap(app, "k1-editor"); edit_selftest_key(app, ed, VK_END); break;
+    case 4: case 5: case 6: case 7: case 8: edit_selftest_key(app, ed, 'J'); break;
+    case 9: edit_selftest_key(app, ed, 'O'); break;
+    case 10: case 11: case 12: case 13: case 14: edit_selftest_key(app, ed, 'J'); break;
+    case 15: edit_selftest_key(app, ed, 'I'); break;
+    case 16: edit_selftest_key(app, ed, VK_DELETE); break;  // the marked range
+    case 17: edit_selftest_key(app, ed, 'L'); break;
+    case 18: edit_selftest_key(app, ed, 'K'); break;
+    case 19:
       edit_selftest_snap(app, "k2-cut");
       edit_selftest_key(app, ed, 'E', true);
       edit_selftest_key(app, ed, 'E', true, true);
       break;
-    case 19: case 20: case 21: case 22: break;  // the exports run
-    case 23: edit_selftest_snap(app, "k3-exported"); edit_selftest_key(app, ed, VK_ESCAPE); break;
+    case 20: case 21: case 22: case 23: break;  // the exports run
+    case 24: edit_selftest_snap(app, "k3-exported"); edit_selftest_key(app, ed, VK_ESCAPE); break;
     default: edit_selftest_snap(app, "k4-closed"); return true;
   }
   return false;

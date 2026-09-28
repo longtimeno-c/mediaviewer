@@ -123,6 +123,27 @@ two passed (p99 16.9 ms, max 17.1 and 17.3 ms), and the PR 29 base build passed 
 own window); a pass with a real keyboard and mouse on the interactive desktop (every run here was
 on the tool's own desktop); Narrator; 200 % and a light theme; S1 on NVENC, Quick Sync and AMF.
 
+## After PR 30: the Final Cut pass (issue #80, 2026-09-28)
+
+Both hosts, on the shared cut list (`video_timeline`: marks, `remove_range`, `begin_trim` /
+`trim_to` / `end_trim`, `revision`, and `editor_shuttle`; tests `[editor-polish]`):
+
+- `I` / `O` mark a range and cut nothing; Delete removes it (else the selected piece); `X` clears.
+  *Trim start* / *Trim end* (`[` `]`) are PR 30's cut-before / cut-after ([12](12-decision-log.md)
+  2026-09-28).
+- `J K L` shuttle: `L` 1×, 2×, 4×; `K` stops; `J` skims back further on each quick press.
+- A piece's edge drags (one undo step a drag; the preview shows the edge frame); the playhead
+  snaps to joins and marks; timecode shows frames at the clip's rate.
+- Closing with an edit that was not exported since it last changed asks first.
+- Perf (Mac): the SwiftUI timeline no longer polls after the window closes, and the playhead is
+  its own layer, so the thumbnail canvas stops redrawing 30 times a second while playing. The
+  editor soak (`MV_EDIT_SELFTEST_SOAK`, below the self-test in DEVELOPMENT) measured main-thread
+  CPU while playing at 14.8 / 15.2 % before and 10.9 / 10.8 % after (two valid alternated pairs;
+  paused and closed were inside noise), and no playback tick inside a cut on either build.
+- Windows: the same keys, marks, trim, snapping and close guard in `main.cpp` and the island
+  (ABI of the island: `chrome_editor_view_args` is 104 bytes; `editor_trim_grab` 1025 and
+  `editor_trim_to` 1026). Built in CI only; its self-test and a hands-on pass are owed.
+
 ## Architecture (PRs 31–35; PR 30's pieces are in the table above)
 
 Rules held throughout: nothing that decodes, encodes or reads a file runs on the UI or render

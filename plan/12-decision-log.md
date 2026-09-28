@@ -2795,3 +2795,21 @@ Owner: "mountain" found nothing while "mountains" found hundreds, "Trist" found 
   `suggest_json` (appended) for names while typing; Tab completes on both platforms. Quoted
   words search speech transcripts only: the index has no OCR.
 - The search field's placeholder no longer suggests "dog on a beach" (owner).
+
+## 2026-09-28 — Video Editor: I / O mark a range; J K L shuttle
+
+From the Final Cut Pro assessment (issue #80), the owner chose both calls.
+
+- **I / O mark a range, and cut nothing.** PR 30 bound `I` / `O` to "cut everything before /
+  after the playhead", which is the opposite of what the keys do in Final Cut, Premiere and
+  Resolve: an editor's `I` then `O` cut the clip twice. Now they mark (shaded, with brackets),
+  Delete removes the marked range as one edit (else the selected piece), `X` clears. The old
+  cuts stay as *Trim start* / *Trim end* on `[` `]`, the keys trim mode already uses for its ends.
+- **J K L shuttle, as plan/21 and plan/16 said.** PR 30 bound them to ±1 s jumps. The player
+  plays forward at 0.25–4× and cannot run backwards, so `L` plays at 1×, 2×, 4× on repeated
+  presses, `K` stops, and `J` skims back 1, 2, 4, 8 s within a 600 ms burst (a held key skims
+  keyframes and settles exactly on release, the scrubber's two modes). Real reverse play waits
+  for a reverse-capable player.
+- Also added without a decision (inside plan/21's scope): dragging a piece's edge, snapping,
+  frame timecode, and asking before a close discards an edit that was not exported.
+

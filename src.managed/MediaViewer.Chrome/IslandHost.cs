@@ -138,6 +138,10 @@ public static partial class IslandHost
         // is an EditorActions value (chrome_editor_action).
         public const int EditorSeek = 1023;
         public const int EditorAction = 1024;
+        // A piece's edge dragged: EditorTrimGrab arg is index * 2 + edge (0 in,
+        // 1 out), or -1 to let go; EditorTrimTo arg is the edge's source ms.
+        public const int EditorTrimGrab = 1025;
+        public const int EditorTrimTo = 1026;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -170,7 +174,7 @@ public static partial class IslandHost
                 MetaComment, MetaRevert,
                 ClipTool, ClipIndex,
                 EditTab, EditAction, MetaTags, MetaDate,
-                EditorSeek, EditorAction,
+                EditorSeek, EditorAction, EditorTrimGrab, EditorTrimTo,
             };
             unchecked
             {
