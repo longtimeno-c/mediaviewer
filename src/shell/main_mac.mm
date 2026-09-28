@@ -487,6 +487,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
 - (BOOL)currentItemIsVideo;
+- (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
@@ -600,6 +601,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)liveClipIsShown;
 - (std::string)listTitle;
 - (std::string)currentItemPath;
+- (std::string)itemPathAtIndex:(NSInteger)index;
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms
                 current:(int32_t)current
                 forPath:(const std::string&)path;
@@ -710,6 +712,9 @@ extern "C" int32_t mv_chrome_marked_count(void) {
 }
 extern "C" bool mv_chrome_is_marked(int32_t index) {
   return g_chrome_app && [g_chrome_app isIndexMarked:index] == YES;
+}
+extern "C" bool mv_chrome_item_is_video(int32_t index) {
+  return g_chrome_app && [g_chrome_app itemIsVideoAtIndex:index] == YES;
 }
 // --- Video transport (PR 19). Commands are the same latched counters the keys
 // bump; the render thread consumes them. Status is what the render thread
@@ -922,6 +927,10 @@ extern "C" int32_t mv_chrome_list_title(char* buf, int32_t size) {
 }
 extern "C" int32_t mv_chrome_current_item_path(char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app currentItemPath] : std::string{}, buf, size);
+}
+// A gallery / filmstrip file drag (FileDrag.swift): the original's path, no I/O.
+extern "C" int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app itemPathAtIndex:index] : std::string{}, buf, size);
 }
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
@@ -3493,6 +3502,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_items.empty()) return NO;
   const std::size_t i = _index.current();
   return i < _items.size() && mv::shell::is_video_name(_items[i].name_utf8);
+}
+- (BOOL)itemIsVideoAtIndex:(NSInteger)index {
+  return index >= 0 && static_cast<std::size_t>(index) < _items.size() &&
+         mv::shell::is_video_name(_items[static_cast<std::size_t>(index)].name_utf8);
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
@@ -6803,6 +6816,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 - (std::string)currentItemPath {
   if (_items.empty() || _index.current() >= _items.size()) return {};
   return _items[_index.current()].path_utf8;
+}
+- (std::string)itemPathAtIndex:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return {};
+  return _items[static_cast<std::size_t>(index)].path_utf8;
 }
 
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms

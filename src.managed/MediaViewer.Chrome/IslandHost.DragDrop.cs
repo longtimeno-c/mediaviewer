@@ -14,7 +14,8 @@ namespace MediaViewer.Chrome;
 /// <summary>
 /// File drag out of the gallery / filmstrip, and drop onto those islands.
 /// The native canvas already accepts WM_DROPFILES; islands cover it, so they
-/// have to forward drops. Drag out uses StorageFile so Explorer gets CF_HDROP.
+/// have to forward drops. Drag out uses StorageFile so Explorer gets CF_HDROP;
+/// it needs OLE on the island thread (main.cpp's OleInitialize).
 /// </summary>
 public static partial class IslandHost
 {
@@ -59,8 +60,12 @@ public static partial class IslandHost
             var files = new List<IStorageItem> { await StorageFile.GetFileFromPathAsync(path) };
             if (!string.IsNullOrEmpty(pairPath) && File.Exists(pairPath))
                 files.Add(await StorageFile.GetFileFromPathAsync(pairPath));
-            args.Data.SetStorageItems(files);
+            // The originals themselves (CF_HDROP), read in place by Explorer and
+            // editors such as Premiere or Resolve. Copy only: Explorer on the
+            // same volume would otherwise move an original out of the folder.
+            args.Data.SetStorageItems(files, true);
             args.Data.RequestedOperation = DataPackageOperation.Copy;
+            args.AllowedOperations = DataPackageOperation.Copy;
         }
         catch (Exception ex)
         {

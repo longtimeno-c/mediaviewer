@@ -90,10 +90,13 @@ struct GalleryView: View {
                       index: index, name: store.names[index], size: cell,
                       isCurrent: index == store.currentIndex && store.folderCursor < 0,
                       isMarked: store.markedNames.contains(store.names[index]),
+                      isClip: store.isClip(at: index),
                       slot: store.slot(for: store.names[index])
                     )
                     .id(index)
                     .onTapGesture { store.selectAndCloseGallery(index) }
+                    // Drag out the original (the marks, when this cell is one).
+                    .fileDrag { store.dragFiles(from: index) }
                   }
                 }
               }
@@ -284,6 +287,7 @@ private struct GalleryCell: View {
   let size: CGFloat
   let isCurrent: Bool
   let isMarked: Bool
+  let isClip: Bool
   @ObservedObject var slot: ThumbSlot
 
   var body: some View {
@@ -306,6 +310,7 @@ private struct GalleryCell: View {
           RoundedRectangle(cornerRadius: 6)
             .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
         )
+        .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
       Text(name)
         .font(.caption)
@@ -319,3 +324,4 @@ private struct GalleryCell: View {
     .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }
+

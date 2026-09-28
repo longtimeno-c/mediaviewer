@@ -387,14 +387,40 @@ result<std::vector<face_box>> face_models::detect(const rgb_view& img) const {
   return out;
 }
 
-result<std::vector<float>> face_models::embed(const rgb_view& img, const face_box& face) const {
+result<std::vector<float>> face_models::embed(const rgb_view& img, const face_box& face,
+                                              std::vector<float>* aligned) const {
   tensor_f32 in;
   sface_tensor(img, face.landmarks, in.data);
   in.shape = {1, 3, 112, 112};
   MV_TRY(auto outs, embedder_->run(std::span<const tensor_f32>(&in, 1)));
   if (outs.empty() || outs[0].data.empty()) return err(status::corrupt);
   std::vector<float> v = outs[0].data;
+  // Flip averaging (plan/17 "People refinement"): the ArcFace template is
+  // mirror-symmetric, so the mirrored crop is aligned too; the mean of the
+  // two vectors is steadier on a turned or unevenly lit face. A second run of
+  // a 112 x 112 embedder: ~1 ms on a CPU, small beside the 640 detector.
+  constexpr std::size_t kSide = 112;
+  for (std::size_t ch = 0; ch < 3; ++ch) {
+    for (std::size_t y = 0; y < kSide; ++y) {
+      float* r = in.data.data() + (ch * kSide + y) * kSide;
+      std::reverse(r, r + kSide);
+    }
+  }
+  if (auto mirrored = embedder_->run(std::span<const tensor_f32>(&in, 1));
+      mirrored && !mirrored->empty() && (*mirrored)[0].data.size() == v.size()) {
+    for (std::size_t i = 0; i < v.size(); ++i) v[i] += (*mirrored)[0].data[i];
+  }
   l2_normalise(v);
+  if (aligned) {
+    // The crop, unmirrored, for the caller's quality measure.
+    for (std::size_t ch = 0; ch < 3; ++ch) {
+      for (std::size_t y = 0; y < kSide; ++y) {
+        float* r = in.data.data() + (ch * kSide + y) * kSide;
+        std::reverse(r, r + kSide);
+      }
+    }
+    *aligned = std::move(in.data);
+  }
   return v;
 }
 

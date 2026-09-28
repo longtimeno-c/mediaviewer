@@ -123,6 +123,7 @@ public struct MvFolderItem
 {
     public const uint FlagSelected = 1;
     public const uint FlagPrimaryRaw = 2;
+    public const uint FlagClip = 4;  // ABI 0.15: the primary is a video (by extension)
 
     public uint Index;
     public uint Flags;

@@ -72,6 +72,11 @@ int32_t mv_chrome_current_index(void);
 // `out_buf` untouched if `index` is out of `[0, mv_chrome_item_count())`.
 bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size);
 
+// The full UTF-8 path of the original at `index` (a folder item or a result
+// list's entry), for a file drag out of the gallery / filmstrip. Returns the
+// byte length needed, as the tables; 0 when `index` is out of range.
+int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.
@@ -126,6 +131,11 @@ uint64_t mv_chrome_listing_generation(void);
 uint64_t mv_chrome_marks_generation(void);
 int32_t mv_chrome_marked_count(void);
 bool mv_chrome_is_marked(int32_t index);
+
+// Is the item at `index` a clip (a video, by extension: the same test the host
+// uses to route it to the player)? Drives the gallery's play badge. False for
+// an out-of-range index. [main-thread]
+bool mv_chrome_item_is_video(int32_t index);
 
 // The gallery reports how many cells it currently lays out per row, so the
 // host can move the selection by row for Up/Down/W/S (plan/16 `G` row).
