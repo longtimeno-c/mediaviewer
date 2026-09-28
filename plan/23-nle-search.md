@@ -143,6 +143,11 @@ First run in FCP (owner, 2026-09-28, release 0.1.18):
 - The extension then trapped on FCP's first connection: FCP's extension point needs
   `ProExtension.framework`'s `ProExtensionRemoteContext`. The fix loads the framework from the
   installed FCP before `NSExtensionMain` (plan/12).
+- 0.1.19 loaded and stayed up, but showed an empty black panel ("does not have a panel view
+  controller"). `ProExtensionRequestHandling` reads
+  `infoDictionary[NSExtension][ProExtensionPrincipalViewControllerClass]`, directly under
+  `NSExtension` and not under `NSExtensionAttributes`, then calls
+  `initWithNibName:bundle:`. 0.1.20 moves the key.
 
 Still to see in FCP:
 - the panel opening;

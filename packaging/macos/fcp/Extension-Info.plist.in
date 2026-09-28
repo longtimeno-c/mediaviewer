@@ -41,12 +41,13 @@
     <string>com.apple.FinalCut.WorkflowExtension</string>
     <!-- No NSExtensionPrincipalClass: the extension point's own
          ProExtensionRequestHandling (FCP's ProExtension.framework, loaded
-         by main in extension_mac.mm) makes the view controller below. -->
-    <key>NSExtensionAttributes</key>
-    <dict>
-      <key>ProExtensionPrincipalViewControllerClass</key>
-      <string>MVSearchViewController</string>
-    </dict>
+         by main in extension_mac.mm) makes the view controller below. It
+         reads infoDictionary[NSExtension][ProExtensionPrincipalViewControllerClass]
+         (kProExtensionPrincipalViewControllerClassKey), directly in this
+         dictionary: under NSExtensionAttributes it is not found and FCP
+         shows an empty panel (0.1.19, 2026-09-28). -->
+    <key>ProExtensionPrincipalViewControllerClass</key>
+    <string>MVSearchViewController</string>
   </dict>
 </dict>
 </plist>
