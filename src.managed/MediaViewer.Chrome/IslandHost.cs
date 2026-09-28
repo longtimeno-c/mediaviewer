@@ -145,6 +145,10 @@ public static partial class IslandHost
         public const int DragItems = 1025;
         public const int DragEnded = 1026;
         public const int OpenRecent = 1027;
+        // A piece's edge dragged: EditorTrimGrab arg is index * 2 + edge (0 in,
+        // 1 out), or -1 to let go; EditorTrimTo arg is the edge's source ms.
+        public const int EditorTrimGrab = 1028;
+        public const int EditorTrimTo = 1029;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -179,6 +183,7 @@ public static partial class IslandHost
                 EditTab, EditAction, MetaTags, MetaDate,
                 EditorSeek, EditorAction,
                 DragItems, DragEnded, OpenRecent,
+                EditorTrimGrab, EditorTrimTo,
             };
             unchecked
             {

@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
@@ -20,7 +21,8 @@ namespace MediaViewer.Chrome;
 /// the viewer's own swapchain, moved into the window by native (one canvas,
 /// one present path, rule 2); this island sits under it: transport, the cut
 /// tools, a thumbnail track and a waveform over the edited program, a playhead
-/// you can drag, and Export. A second island on the viewer's window says where
+/// you can drag (it snaps to joins and marks), piece edges you can drag, a
+/// marked range, and Export. A second island on the viewer's window says where
 /// the picture went.
 /// </summary>
 /// <remarks>
@@ -35,7 +37,7 @@ public static partial class IslandHost
     // chrome_host.h chrome_editor_*_args.
     internal const int EditorAttachArgsSize = 16;
     internal const int EditorLayoutArgsSize = 40;
-    internal const int EditorViewArgsSize = 88;
+    internal const int EditorViewArgsSize = 104;
     internal const int EditorStripArgsSize = 24;
     internal const int EditorThumbSize = 24;
 
@@ -55,6 +57,9 @@ public static partial class IslandHost
         public const int ExportExact = 11;
         public const int Close = 12;
         public const int Show = 13;
+        public const int MarkIn = 14;
+        public const int MarkOut = 15;
+        public const int ClearMarks = 16;
     }
 
     private static DesktopWindowXamlSource? _editorTimeline;
@@ -76,11 +81,31 @@ public static partial class IslandHost
     private static (long In, long Out)[] _editorPieces = Array.Empty<(long, long)>();
     private static readonly List<(long ShownNs, WriteableBitmap Image, int Width, int Height)> EditorThumbs = new();
     private static float[] _editorPeaks = Array.Empty<float>();
+    private static double _editorFps;
+    private static long _editorMarkIn = -1;
+    private static long _editorMarkOut = -1;
     // While the playhead is dragged it shows the pointer, not the player.
     private static long? _editorScrubNs;
+    // While a piece's edge is dragged: where it was (source ns), where the
+    // pointer went down, and the scale then (the program re-fits as it moves).
+    private static (long OriginNs, double OriginX, double NsPerDip)? _editorTrim;
+
+    /// The timeline's canvas: a Canvas that can show the resize cursor over a
+    /// piece's edge (ProtectedCursor is only settable from a subclass).
+    private sealed class EditorTrackCanvas : XamlCanvas
+    {
+        private bool _resize;
+
+        public void SetResizeCursor(bool on)
+        {
+            if (on == _resize) return;
+            _resize = on;
+            ProtectedCursor = on ? InputSystemCursor.Create(InputSystemCursorShape.SizeWestEast) : null;
+        }
+    }
 
     private static Grid? _editorRoot;
-    private static Canvas? _editorTrack;
+    private static EditorTrackCanvas? _editorTrack;
     private static Canvas? _editorPlayheadMark;
     private static TextBlock? _editorTimecode;
     private static TextBlock? _editorStatus;
@@ -200,6 +225,9 @@ public static partial class IslandHost
                 _editorCanUndo = Marshal.ReadInt32(arg, 44) != 0;
                 _editorCanRedo = Marshal.ReadInt32(arg, 48) != 0;
                 _editorEdited = Marshal.ReadInt32(arg, 52) != 0;
+                _editorFps = Marshal.ReadInt32(arg, 84) / 1000.0;
+                _editorMarkIn = Marshal.ReadInt64(arg, 88);
+                _editorMarkOut = Marshal.ReadInt64(arg, 96);
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -320,18 +348,42 @@ public static partial class IslandHost
         EditorThumbs.Clear();
         _editorPeaks = Array.Empty<float>();
         _editorScrubNs = null;
+        _editorTrim = null;
+        _editorFps = 0;
+        _editorMarkIn = _editorMarkOut = -1;
     }
 
     private static void SendEditor(int action) => Send(Command.EditorAction, action);
 
+    // "MM:SS:FF" (or "H:MM:SS:FF"), the frame within the second at the clip's
+    // rate; "M:SS.cc" hundredths when the rate is unknown. VideoEditorView.swift's twin.
     private static string EditorTimecode(long ns)
     {
-        long cs = Math.Max(0, ns) / 10_000_000;
-        long s = cs / 100;
+        long t = Math.Max(0, ns);
+        if (_editorFps <= 0)
+        {
+            long cs = t / 10_000_000;
+            long sec = cs / 100;
+            return sec >= 3600
+                ? $"{sec / 3600}:{sec / 60 % 60:00}:{sec % 60:00}.{cs % 100:00}"
+                : $"{sec / 60}:{sec % 60:00}.{cs % 100:00}";
+        }
+        long s = t / 1_000_000_000;
+        int perSecond = Math.Max(1, (int)Math.Ceiling(_editorFps));
+        int frame = Math.Min(perSecond - 1, (int)((t % 1_000_000_000) / 1e9 * _editorFps + 1e-6));
         return s >= 3600
-            ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}.{cs % 100:00}"
-            : $"{s / 60}:{s % 60:00}.{cs % 100:00}";
+            ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}:{frame:00}"
+            : $"{s / 60:00}:{s % 60:00}:{frame:00}";
     }
+
+    // The ruler's labels: whole seconds.
+    private static string EditorRulerLabel(long ns)
+    {
+        long s = Math.Max(0, ns) / 1_000_000_000;
+        return s >= 3600 ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}" : $"{s / 60}:{s % 60:00}";
+    }
+
+    private static bool EditorHasMarks => _editorMarkIn >= 0 || _editorMarkOut >= 0;
 
     private static long EditorShownPlayhead => _editorScrubNs ?? _editorPlayheadNs;
 
@@ -356,7 +408,7 @@ public static partial class IslandHost
         _editorTimecode.VerticalAlignment = VerticalAlignment.Center;
         _editorTimecode.Margin = new Thickness(10, 0, 10, 0);
         _editorDelete = EditButton("Delete", () => SendEditor(EditorActions.Delete),
-                                   tip: "Delete the selected piece  Delete");
+                                   tip: "Delete the marked range, else the selected piece  Delete");
         _editorUndo = EditButton("Undo", () => SendEditor(EditorActions.Undo), tip: "Undo  Ctrl+Z");
         _editorRedo = EditButton("Redo", () => SendEditor(EditorActions.Redo), tip: "Redo  Ctrl+Shift+Z");
         var left = Row(
@@ -367,8 +419,12 @@ public static partial class IslandHost
             EditorDivider(),
             EditButton("Split", () => SendEditor(EditorActions.Split), tip: "Split at the playhead  Ctrl+B"),
             _editorDelete,
-            EditButton("Set in", () => SendEditor(EditorActions.SetIn), tip: "Cut everything before the playhead  I"),
-            EditButton("Set out", () => SendEditor(EditorActions.SetOut), tip: "Cut everything after the playhead  O"),
+            EditorDivider(),
+            EditButton("Mark in", () => SendEditor(EditorActions.MarkIn), tip: "Mark the start of a range to delete  I"),
+            EditButton("Mark out", () => SendEditor(EditorActions.MarkOut), tip: "Mark the end of a range to delete  O"),
+            EditorDivider(),
+            EditButton("Trim start", () => SendEditor(EditorActions.SetIn), tip: "Cut everything before the playhead  ["),
+            EditButton("Trim end", () => SendEditor(EditorActions.SetOut), tip: "Cut everything after the playhead  ]"),
             EditorDivider(),
             _editorUndo,
             _editorRedo);
@@ -393,7 +449,7 @@ public static partial class IslandHost
         _editorStatus.HorizontalAlignment = HorizontalAlignment.Center;
         _editorStatus.VerticalAlignment = VerticalAlignment.Center;
         area.Children.Add(_editorStatus);
-        _editorTrack = new Canvas
+        _editorTrack = new EditorTrackCanvas
         {
             Height = RulerH + TrackGap + VideoH + TrackGap + AudioH + 4,
             VerticalAlignment = VerticalAlignment.Top,
@@ -405,29 +461,68 @@ public static partial class IslandHost
         {
             if (_editorTrack is null) return;
             _editorTrack.CapturePointer(e.Pointer);
-            EditorScrubTo(e.GetCurrentPoint(_editorTrack).Position.X);
+            Point at = e.GetCurrentPoint(_editorTrack).Position;
+            if (at.Y >= RulerH && EditorEdgeAt(at.X) is { } edge && _editorReady && _editorLengthNs > 0)
+            {
+                // Left of a join is the outgoing piece's out, right of it the incoming piece's in.
+                _editorTrim = (edge.SourceNs, at.X, (double)_editorLengthNs / Math.Max(1, _editorTrack.ActualWidth));
+                Send(Command.EditorTrimGrab, edge.Index * 2 + (edge.InEdge ? 0 : 1));
+            }
+            else
+            {
+                EditorScrubTo(at.X);
+            }
             e.Handled = true;
         });
         _editorTrack.PointerMoved += (_, e) => Guard(() =>
         {
-            if (_editorTrack is null || _editorScrubNs is null) return;
-            EditorScrubTo(e.GetCurrentPoint(_editorTrack).Position.X);
+            if (_editorTrack is null) return;
+            Point at = e.GetCurrentPoint(_editorTrack).Position;
+            if (_editorTrim is { } trim)
+            {
+                long to = trim.OriginNs + (long)((at.X - trim.OriginX) * trim.NsPerDip);
+                Send(Command.EditorTrimTo, (float)(Math.Max(0, to) / 1_000_000.0));
+                return;
+            }
+            if (_editorScrubNs is null)
+            {
+                _editorTrack.SetResizeCursor(at.Y >= RulerH && EditorEdgeAt(at.X) is not null);
+                return;
+            }
+            EditorScrubTo(at.X);
         });
         _editorTrack.PointerReleased += (_, e) => Guard(() =>
         {
-            if (_editorTrack is null || _editorScrubNs is null) return;
-            EditorScrubTo(e.GetCurrentPoint(_editorTrack).Position.X);
-            _editorScrubNs = null;
+            if (_editorTrack is null) return;
+            if (_editorTrim is not null)
+            {
+                _editorTrim = null;
+                Send(Command.EditorTrimGrab, -1);
+            }
+            else if (_editorScrubNs is not null)
+            {
+                EditorScrubTo(e.GetCurrentPoint(_editorTrack).Position.X);
+                _editorScrubNs = null;
+            }
             _editorTrack.ReleasePointerCapture(e.Pointer);
         });
-        _editorTrack.PointerCaptureLost += (_, _) => Guard(() => _editorScrubNs = null);
+        _editorTrack.PointerExited += (_, _) => Guard(() => _editorTrack?.SetResizeCursor(false));
+        _editorTrack.PointerCaptureLost += (_, _) => Guard(() =>
+        {
+            _editorScrubNs = null;
+            if (_editorTrim is not null)
+            {
+                _editorTrim = null;
+                Send(Command.EditorTrimGrab, -1);
+            }
+        });
         area.Children.Add(_editorTrack);
         Grid.SetRow(area, 3);
         root.Children.Add(area);
 
         TextBlock hints = Hint(
-            "Space play · Left Right frame · J L second · I O in / out · Ctrl+B split · Delete piece · " +
-            "Ctrl+Z undo · Ctrl+E export · Esc close");
+            "Space play · Left Right frame · J K L shuttle · I O mark · X clear · [ ] trim · Ctrl+B split · " +
+            "Delete · Ctrl+Z undo · Ctrl+E export · Esc close");
         hints.Margin = new Thickness(12, 0, 12, 8);
         Grid.SetRow(hints, 4);
         root.Children.Add(hints);
@@ -453,11 +548,49 @@ public static partial class IslandHost
         }
     }
 
+    // A piece edge under `x` (within a few DIPs): left of a join is the outgoing
+    // piece's out, right of it the incoming piece's in (as in Final Cut).
+    private static (int Index, bool InEdge, long SourceNs)? EditorEdgeAt(double x)
+    {
+        if (_editorTrack is null || _editorLengthNs <= 0) return null;
+        const double slop = 6;
+        double width = Math.Max(1, _editorTrack.ActualWidth);
+        long start = 0;
+        for (int i = 0; i < _editorPieces.Length; i++)
+        {
+            (long pin, long pout) = _editorPieces[i];
+            long len = pout - pin;
+            double x0 = (double)start / _editorLengthNs * width;
+            double x1 = (double)(start + len) / _editorLengthNs * width;
+            if (x >= x0 - 1 && x - x0 <= slop) return (i, true, pin);
+            if (x <= x1 + 1 && x1 - x <= slop) return (i, false, pout);
+            start += len;
+        }
+        return null;
+    }
+
     private static void EditorScrubTo(double x)
     {
         if (_editorTrack is null || !_editorReady || _editorLengthNs <= 0) return;
         double width = Math.Max(1, _editorTrack.ActualWidth);
         long t = (long)(Math.Clamp(x, 0, width) / width * _editorLengthNs);
+        // The playhead snaps to joins and marks within a few DIPs.
+        long slop = (long)(8.0 / width * _editorLengthNs);
+        long best = t;
+        long start = 0;
+        void Consider(long c)
+        {
+            if (c >= 0 && Math.Abs(c - t) <= slop && Math.Abs(c - t) < Math.Abs(best - t)) best = c;
+        }
+        foreach ((long pin, long pout) in _editorPieces)
+        {
+            Consider(start);
+            start += pout - pin;
+        }
+        Consider(start);
+        Consider(_editorMarkIn);
+        Consider(_editorMarkOut);
+        t = best;
         _editorScrubNs = t;
         MoveEditorPlayhead();
         Send(Command.EditorSeek, (float)(t / 1_000_000.0));
@@ -481,7 +614,7 @@ public static partial class IslandHost
             MoveEditorPlayhead();
             return;
         }
-        if (_editorDelete is not null) _editorDelete.IsEnabled = _editorPieces.Length > 1;
+        if (_editorDelete is not null) _editorDelete.IsEnabled = EditorHasMarks || _editorPieces.Length > 1;
         if (_editorUndo is not null) _editorUndo.IsEnabled = _editorCanUndo;
         if (_editorRedo is not null) _editorRedo.IsEnabled = _editorCanRedo;
         if (_editorExport is not null) _editorExport.IsEnabled = _editorEdited;
@@ -515,7 +648,11 @@ public static partial class IslandHost
             DrawEditorWave(track, pin, pout, x0, RulerH + TrackGap + VideoH + TrackGap, w);
             start += len;
         }
-        AutomationProperties_SetName(track, $"Timeline, {_editorPieces.Length} pieces");
+        DrawEditorMarks(track, width, length);
+        AutomationProperties_SetName(track, EditorHasMarks
+            ? $"Timeline, {_editorPieces.Length} pieces, marked {EditorTimecode(Math.Max(0, _editorMarkIn))} to " +
+              $"{EditorTimecode(_editorMarkOut >= 0 ? _editorMarkOut : _editorLengthNs)}"
+            : $"Timeline, {_editorPieces.Length} pieces");
 
         // The playhead, on top; the tick moves it without a redraw.
         var mark = new Canvas { IsHitTestVisible = false };
@@ -560,11 +697,46 @@ public static partial class IslandHost
             XamlCanvas.SetLeft(tick, x);
             XamlCanvas.SetTop(tick, RulerH - 6);
             track.Children.Add(tick);
-            TextBlock label = Text(EditorTimecode((long)(t * 1e9)).Split('.')[0], Body, UiFontSize - 6);
+            TextBlock label = Text(EditorRulerLabel((long)(t * 1e9)), Body, UiFontSize - 6);
             label.TextWrapping = TextWrapping.NoWrap;
             XamlCanvas.SetLeft(label, x + 2);
             XamlCanvas.SetTop(label, -2);
             track.Children.Add(label);
+        }
+    }
+
+    // The marked range: a band over both tracks, and a bracket at each end that
+    // is set (shape, not only colour, says "marked").
+    private static void DrawEditorMarks(Canvas track, double width, long length)
+    {
+        if (!EditorHasMarks) return;
+        double X(long t) => (double)Math.Clamp(t, 0, length) / length * width;
+        double a = X(Math.Max(0, _editorMarkIn));
+        double b = X(_editorMarkOut >= 0 ? _editorMarkOut : length);
+        double top = RulerH + TrackGap;
+        double h = track.Height - top;
+        var band = new Rectangle
+        {
+            Width = Math.Max(1, b - a),
+            Height = h,
+            Fill = Brush(TrimAccent),
+            Opacity = 0.18,
+            IsHitTestVisible = false,
+        };
+        XamlCanvas.SetLeft(band, a);
+        XamlCanvas.SetTop(band, top);
+        track.Children.Add(band);
+        foreach ((long t, bool isIn) in new[] { (_editorMarkIn, true), (_editorMarkOut, false) })
+        {
+            if (t < 0) continue;
+            double x = X(t);
+            double arm = isIn ? 6 : -6;
+            var bracket = new Polyline { Stroke = Brush(TrimAccent), StrokeThickness = 2, IsHitTestVisible = false };
+            bracket.Points.Add(new Point(x + arm, top));
+            bracket.Points.Add(new Point(x, top));
+            bracket.Points.Add(new Point(x, top + h - 2));
+            bracket.Points.Add(new Point(x + arm, top + h - 2));
+            track.Children.Add(bracket);
         }
     }
 
