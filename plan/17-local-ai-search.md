@@ -767,8 +767,44 @@ is the follow-up if the owner keeps this default.
 PhotoKit is not the bottleneck: the image tower is (ViT-L/14 31 img/s, B/32 499 img/s on
 Core ML, above).
 
-Owed: the Mac PR 1 present-loop soak **while indexing the library** in the app, and a library
-with Optimize Mac Storage off. The Windows half is nothing by design (D9 question below).
+**The whole pack over the library** (`photos-bench.sh`, dev-signed sideload, Auto: ViT-L/14,
+on CPU for the first ~30 min while Core ML compiled for a new pack folder, and stopped ~10 min
+for the pacing runs below). At the 1-hour cap:
+
+- **Pictures: every asset handled.** 19,007 were indexed, 4,082 were iCloud-only (their clips
+  searchable by the poster), and 0 failed. There were 26,215 searchable rows, because the local
+  clips were sampled; the 20-clip sample above had missed them.
+- **Audio:** the track had started (347 of 3,826 clips).
+- **Speed:** about 23 assets/s end to end on Core ML.
+- **Queries:** 17–30 ms. The first took 1.7 s: the text tower warming up.
+- **"Nothing found" fails at this size:** `xyzzy plugh qwertyuiop` returned 676 results, and the
+  real queries returned 74–733. This is the L/14 calibration item above, now on a real
+  23 k-asset library. It needs the owner's labelled set to retune, and is not a source
+  problem: owed before the Photos source ships.
+
+**Present loop while the library indexes (worst case, 2026-09-28).** `frametime --seconds 60`
+(Mac PR 1 gate) was run while `photos-bench.sh` indexed the library in **another process that
+never yields**, with ViT-L/14 on CPU (Core ML was still compiling) on every core. It was
+alternated with runs in which the bench process was stopped (SIGSTOP). Runs made while the
+display was off (12:54–13:02, per `pmset -g log`) are void.
+
+| Bench | Runs | Frames | Dropped | p99 | Idle, % of one core |
+|---|---|---|---|---|---|
+| Stopped | 2 | 3,600 / 3,600 | 0 / 0 | 16.85 / 16.85 ms | 1.66 / 0.97 |
+| Indexing | 4 | 3,600 / 3,600 / 3,598 / 3,600 | 0 / 0 / **1** / 0 | 16.9 / 16.9 / 16.95 / 17.1 ms | 1.04 / 0.86 / 0.28 / 0.39 |
+
+What the numbers say:
+
+- **Dropped frames:** one missed refresh (a single 33.3 ms frame) in one of the four indexing
+  runs. This is the same single-miss pattern Windows logged with and without the pack.
+- **Idle CPU:** this used machine is noisy; a stopped-bench run failed the idle limit too. It is
+  not evidence about indexing either way.
+- **Still owed:**
+  - the in-app soak, where the engine yields to the viewer. This bench deliberately does not
+    yield, so it measures the worst case, not the product;
+  - a quiet machine (the D6 item);
+  - a library with Optimize Mac Storage off.
+- **Windows:** the Windows half is nothing by design (D9 question below).
 
 ## Open decisions (owner)
 
