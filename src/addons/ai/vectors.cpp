@@ -3,12 +3,15 @@
 #include "addons/ai/vectors.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <utility>
 
 #include "addons/ai/index_db.h"
+#include "addons/ai/vocabulary.h"
 
 namespace mv::ai {
 
@@ -34,9 +37,26 @@ void vector_store::reset(std::uint32_t dim) {
   pts_.clear();
   generic_.clear();
   scale_.clear();
+  bar_.clear();
+  labels_.clear();
+  label_scale_.clear();
   alive_.clear();
   data_.clear();
   dead_ = 0;
+  ++layout_;
+}
+
+void vector_store::clear() {
+  std::unique_lock lock(m_);
+  asset_.clear();
+  pts_.clear();
+  generic_.clear();
+  scale_.clear();
+  bar_.clear();
+  alive_.clear();
+  data_.clear();
+  dead_ = 0;
+  ++layout_;
 }
 
 std::size_t vector_store::rows() const {
@@ -59,6 +79,7 @@ void vector_store::add(std::int64_t asset, std::int64_t pts_ms, float generic, f
   scale_.push_back(scale);
   alive_.push_back(1);
   data_.insert(data_.end(), q.begin(), q.end());
+  bar_.push_back(label_bar_locked(asset_.size() - 1));
 }
 
 void vector_store::remove_asset(std::int64_t asset) {
@@ -81,6 +102,7 @@ void vector_store::compact_locked() {
       pts_[w] = pts_[r];
       generic_[w] = generic_[r];
       scale_[w] = scale_[r];
+      bar_[w] = bar_[r];
       std::copy_n(data_.begin() + static_cast<std::ptrdiff_t>(r * dim_), dim_,
                   data_.begin() + static_cast<std::ptrdiff_t>(w * dim_));
     }
@@ -91,15 +113,83 @@ void vector_store::compact_locked() {
   pts_.resize(w);
   generic_.resize(w);
   scale_.resize(w);
+  bar_.resize(w);
   alive_.resize(w);
   data_.resize(w * dim_);
   dead_ = 0;
+  ++layout_;
+}
+
+float vector_store::label_bar_locked(std::size_t row) const noexcept {
+  const std::size_t n = label_scale_.size();
+  if (n <= kLabelsAbove) return std::numeric_limits<float>::quiet_NaN();
+  // The (kLabelsAbove + 1)-th best label score: a short insertion list.
+  std::array<float, kLabelsAbove + 1> best;
+  best.fill(-2.0f);
+  const std::int8_t* r = data_.data() + row * dim_;
+  for (std::size_t l = 0; l < n; ++l) {
+    const float s = static_cast<float>(dot_i8(r, labels_.data() + l * dim_, dim_)) * scale_[row] * label_scale_[l];
+    if (s <= best.back()) continue;
+    std::size_t i = best.size() - 1;
+    for (; i > 0 && best[i - 1] < s; --i) best[i] = best[i - 1];
+    best[i] = s;
+  }
+  return best.back();
+}
+
+bool vector_store::has_labels() const {
+  std::shared_lock lock(m_);
+  return !label_scale_.empty();
+}
+
+void vector_store::set_labels(std::span<const float> vocab, std::size_t count) {
+  std::uint64_t layout = 0;
+  std::size_t rows = 0;
+  {
+    std::unique_lock lock(m_);
+    if (dim_ == 0 || vocab.size() != count * dim_) return;
+    labels_.clear();
+    label_scale_.clear();
+    std::vector<std::int8_t> q;
+    for (std::size_t l = 0; l < count; ++l) {
+      float scale = 1;
+      quantise(vocab.subspan(l * dim_, dim_), q, scale);
+      labels_.insert(labels_.end(), q.begin(), q.end());
+      label_scale_.push_back(scale);
+    }
+    std::fill(bar_.begin(), bar_.end(), std::numeric_limits<float>::quiet_NaN());
+    layout = layout_;
+    rows = asset_.size();
+  }
+  // The rows already here, a chunk at a time under the shared lock (searches
+  // go on; the indexer's add waits one chunk at most), each chunk stored under
+  // a brief exclusive one. Rows moved meanwhile (a compaction): start again.
+  constexpr std::size_t kChunk = 512;
+  std::vector<float> bars;
+  for (std::size_t at = 0; at < rows;) {
+    const std::size_t end = std::min(rows, at + kChunk);
+    bars.clear();
+    {
+      std::shared_lock lock(m_);
+      if (layout_ != layout) {
+        rows = asset_.size();
+        layout = layout_;
+        at = 0;
+        continue;
+      }
+      for (std::size_t r = at; r < end; ++r) bars.push_back(label_bar_locked(r));
+    }
+    std::unique_lock lock(m_);
+    if (layout_ != layout) continue;
+    std::copy(bars.begin(), bars.end(), bar_.begin() + static_cast<std::ptrdiff_t>(at));
+    at = end;
+  }
 }
 
 std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
                                                   const std::function<bool(std::int64_t)>& allow,
                                                   std::size_t k, bool use_margin, float min_margin,
-                                                  float min_score, scan_stats* stats) const {
+                                                  float min_score, scan_stats* stats, bool use_labels) const {
   std::vector<hit> out;
   if (stats) *stats = scan_stats{};
   std::shared_lock lock(m_);
@@ -134,6 +224,7 @@ std::vector<vector_store::hit> vector_store::scan(std::span<const float> query,
     }
     if (score < min_score) continue;
     if (use_margin && score - generic_[r] < min_margin) continue;
+    if (use_labels && score < bar_[r]) continue;  // false for NaN: not known yet
     all.push_back(hit{asset_[r], pts_[r], score, generic_[r]});
   }
   if (all.size() > k) {
@@ -236,10 +327,12 @@ precision_scale precision_scale::at(std::uint32_t level) noexcept {
   // dog"), with captions still found >= 88 %. Looser: more rows, and a few
   // more nonsense queries answered.
   switch (level) {
-    case 0: return {1.10f, 0.80f, 0.33f, 0.80f, 0.0f};
-    case 1: return {1.12f, 0.90f, 0.67f, 0.90f, 0.0f};
-    case 3: return {1.23f, 1.125f, 1.5f, 1.2f, 3.0f};
-    case 4: return {1.35f, 1.25f, 2.0f, 1.4f, 2.0f};
+    // Stand-out factors moved up with the calibrated one (1.15 -> 1.18,
+    // issue #85); the rest as calibrated.
+    case 0: return {1.13f, 0.80f, 0.33f, 0.80f, 0.0f};
+    case 1: return {1.15f, 0.90f, 0.67f, 0.90f, 0.0f};
+    case 3: return {1.26f, 1.125f, 1.5f, 1.2f, 3.0f};
+    case 4: return {1.38f, 1.25f, 2.0f, 1.4f, 2.0f};
     default: return {};
   }
 }
@@ -254,7 +347,8 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   // moves only its own thresholds, and every stricter answer is a subset of
   // the calibrated one (every looser one a superset).
   const float row_margin = t.result_margin * p.result_margin;
-  auto hits = store.scan(query, allow, k, true, std::min(t.result_margin, row_margin), -1.0f, &stats);
+  // Rows the query does not beat its labels on are never results (vocabulary.h).
+  auto hits = store.scan(query, allow, k, true, std::min(t.result_margin, row_margin), -1.0f, &stats, true);
   float best = -1;  // the best margin among the ten best calibrated rows
   for (std::size_t i = 0, seen = 0; i < hits.size() && seen < 10; ++i) {
     const float margin = hits[i].score - hits[i].generic;
@@ -288,13 +382,16 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   const float query_z = t.query_z * (p.stand_out / vector_store::scan_stats::kStandOutOverNoise);
   const bool stands_out = z_rule && stats.stands_out(query_z, p.stand_out);
   const float margin_needed = (z_rule ? stats.margin_needed(t.query_margin) : t.query_margin) * p.query_margin;
+  // Standing out is not enough on its own at scale (issue #85): gibberish
+  // stands out at up to 1.35 x noise, so the best margin must show as well.
+  const bool answered = stands_out && best >= stats.stand_out_margin(t.query_margin) * p.query_margin;
   if (stands_out && stats.sd > 0) {
     // A short query clears few rows by the margin; the rows that stand out as
     // far as a match does are results as well (plan/17).
     const float result_z = t.result_z * p.result_z;
     std::set<std::pair<std::int64_t, std::int64_t>> have;
     for (const auto& h : hits) have.insert({h.asset, h.pts_ms});
-    for (const auto& h : store.scan(query, allow, k, false, 0, stats.mean + result_z * stats.sd)) {
+    for (const auto& h : store.scan(query, allow, k, false, 0, stats.mean + result_z * stats.sd, nullptr, true)) {
       if (have.insert({h.asset, h.pts_ms}).second) hits.push_back(h);
     }
     std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
@@ -305,7 +402,7 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   // its best assets stand out from the rest: a one-word subject ("dog") sits
   // close to "a photo." and misses the margin while ranking correctly
   // (2026-09-27, plan/17).
-  if (gate && !stands_out && best < margin_needed) return {};
+  if (gate && !answered && best < margin_needed) return {};
   if (z_rule && p.within > 0 && stats.sd > 0) {
     // Stricter: only what scores close to the best match, so the near-miss
     // category under a real one (the buses under "a truck") drops off.
@@ -314,6 +411,12 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
                hits.end());
   }
   return hits;
+}
+
+float vector_store::scan_stats::log_scale() const noexcept {
+  // Below 1,000 assets too: at 300 COCO photos "a dog" stands out with a best
+  // margin of 0.014. From 100 up (smaller indexes use the margin alone).
+  return static_cast<float>(std::log10(std::max(static_cast<double>(assets), 100.0) / 1000.0));
 }
 
 float vector_store::scan_stats::null_top10_z() const noexcept {

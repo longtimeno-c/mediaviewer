@@ -2883,3 +2883,24 @@ From the Final Cut Pro assessment (issue #80), the owner chose both calls.
 - Also added without a decision (inside plan/21's scope): dragging a piece's edge, snapping,
   frame timecode, and asking before a close discards an edit that was not exported.
 
+
+## 2026-09-28 — Local search: "nothing found" recalibrated at library scale, with a label vocabulary (issue #85)
+
+The owner's 23 k-asset Photos library answered `xyzzy plugh qwertyuiop` with 676 photos. The
+rule had been set on 300-1,000 COCO photos. Re-measured at 1 k-25 k on both towers (plan/17,
+"Amended 2026-09-28 (issue #85)").
+
+- **Reversed: standing out alone answers a query.** Gibberish stands out at up to 1.35 x noise
+  in a real library, so a query that stands out now also needs a best margin of `query_margin`
+  x 0.375 (1 + L), L = log10(assets / 1,000). The margin-only pass moves from `query_margin` (or
+  1.5 x below noise) to `query_margin` x (1.375 + 0.125 L). The stand-out factor moves from 1.15
+  to 1.18 of noise, and each Precision level's with it. The broad-subject path stays.
+- **Added: a label vocabulary** (`src/addons/ai/vocabulary.*`, 705 labels, not COCO's). A row
+  is a result only where the query scores at least like its ninth-best label; the bars are
+  filled at load behind the searches.
+- At 25 k and Precision 2: nonsense answered 63 -> 23 of 85 (L/14) and 26 -> 9 (B/32), their
+  rows 735 -> 221 and 736 -> 196, category precision .60 -> .87 and .55 -> .74, labelled P@5
+  unchanged (>= 0.8). Paid for with recall: category recall -.06 to -.08, and a caption finds its
+  own photo 94-97 % (was 97-98 %).
+- **Not solved:** placeholder and sentence-like gibberish still floods on L/14 (1,400-5,000 rows
+  at 25 k, the owner's string included). The Photos library was not re-run. Both stay on #85.

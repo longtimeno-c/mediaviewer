@@ -660,9 +660,24 @@ Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLI
 make `mv_ai_tests` run its model cases; `"[.bench]"` prints CPU / Core ML timings and
 `"[.calibration]"` the held-out "nothing found" rates and, per Precision level (Settings →
 Local search), what captions, nonsense, "helicopter" and near-miss category queries return
-(plan/17 "Precision scale"). It embeds 1,000 photos per tower on CPU (minutes for L/14); set
-`MV_AI_CALIBRATION_CACHE=<folder>` to keep the embeddings between runs. On a Mac the first Core ML open of a
-tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
+(plan/17 "Precision scale"). By default it indexes 300 and 1,000 photos per tower; for library
+sizes (issue #85) give `MV_AI_CALIBRATION_SIZES=1000,5000,10000,25000` and an eval folder
+with that many labelled photos (COCO 2017 val2017 then train2017 by image id, captions as `labels.json`), and
+`MV_AI_CALIBRATION_TOWERS=clip-b32` (or `clip-l14`) to run one tower. The image tower runs on
+Core ML on a Mac (about 500 img/s B/32 and 25 img/s L/14 on an M-series, CUDA with `MV_AI_CUDA_DIR`, CPU otherwise;
+`MV_AI_CALIBRATION_CPU=1` forces CPU), decoding on several threads. Set
+`MV_AI_CALIBRATION_CACHE=<folder>` to keep the embeddings (and Core ML's compiled towers)
+between runs: the cache is append-only, so a stopped run resumes, and one made for 25,000 photos
+serves every smaller size. `MV_AI_CALIBRATION_OUT=<folder>/{tower}.jsonl` writes one line per
+tower, size, level and query (rows returned, relevance, and the rule's inputs: `top10_z`, its noise
+expectation, `over_margin`, the best margin, `stands_out`, `margin_needed`) and, beside it, every
+query's embedding (`queries-<tower>.f32` / `.json`) for replaying a candidate rule offline; the
+binary formats are described above the test in `tests/test_ai_infer.cpp`. The rule's label vocabulary
+(`src/addons/ai/vocabulary.*`) is on by default; `MV_AI_CALIBRATION_NO_LABELS=1` measures the rule
+without it, and `MV_AI_CALIBRATION_VOCAB=<file>` (with `MV_AI_CALIBRATION_OUT`) only embeds that
+file's lines as `vocab-<tower>.f32` for trying a list offline. The engine keeps its tower's label
+embeddings in `labels.f32` in the AI data folder; delete it to re-embed. On a Mac the first Core ML
+open of a tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
 
 The search field's query language (`Tristan beach`, `Tristan "hello"`, `Tristan or Aaryan`,
 `@tri`, `-beach`, `beach video`, `in:2024`, `before:2025-06`; plan/17 "Query syntax") is parsed

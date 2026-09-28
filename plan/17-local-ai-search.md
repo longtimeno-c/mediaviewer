@@ -513,6 +513,78 @@ in **both numbers and averaged** (`query::number_forms`, one batched run of the 
 ~5 % over one text), so "mountain" and "mountains" are the same query (277 assets either way).
 CLAP and the speech words keep the words as typed.
 
+**Amended 2026-09-28 (issue #85): "nothing found" at scale, and a label vocabulary.** The rule
+above was set on 300-1,000 photos. On the owner's 23 k-asset Photos library (L/14) `xyzzy plugh
+qwertyuiop` returned 676 results. Measured at library sizes with `mv_ai_tests "[.calibration]"`
+(extended for it): COCO 2017 (val2017 then 20,000 of train2017 by id; 24,992 decode), both
+towers on Core ML, 500 held-out captions, 25 tuning and 60 held-out nonsense strings, the
+category and labelled queries, every Precision level at 1 k / 5 k / 10 k / 25 k. What it showed:
+a real library's best scores have a heavier tail than noise, so at 25 k gibberish sits at
+0.9-1.35 x noise's top-ten z and real subjects at 1.15-1.8. Neither z nor the margin separates
+them alone, and both drift up with the library. Then every row above mean + 2 SD is a result, a
+fixed slice of any big library, so a query that passes returns hundreds (median 735 at 25 k).
+Many "nonsense" strings are not nonsense to CLIP: `qwerty uiop` and `xyzzy plugh qwertyuiop` rank
+first of 705 labels on keyboards, and `314159` finds photos with numbers.
+
+Now (`vectors.h`, `vocabulary.h`):
+
+- **The gate needs z and margin together.** A query passes on its best margin alone at
+  `query_margin` x (1.375 + 0.125 L), or when it stands out (z >= max(query_z, 1.18 x noise))
+  with a best margin of `query_margin` x 0.375 (1 + L), where L = log10(assets / 1,000), from 100
+  assets up. The broad-subject path ("mountain", above) is unchanged. Fitted on both towers at
+  once (both ship `query_margin` 0.04), with every category and labelled query kept at every
+  size.
+- **A label vocabulary filters rows.** 705 everyday labels (people, animals, vehicles, places,
+  scenes, objects, food, events, text and screens), deliberately not COCO's, are embedded once
+  per tower and kept in `labels.f32` beside the index. Each row stores the score of its ninth-best
+  label; a row is a result only when the query scores at least that. Gibberish loses to the
+  labels on most of the photos it lands on; "a dog" beats every label but a few near-synonyms
+  ("dog playing") on a dog. This is the vocabulary this plan named after the Precision scale.
+- **Precision levels** keep their factors; their stand-out steps move up with the calibrated one
+  (1.13 / 1.15 / **1.18** / 1.26 / 1.38).
+
+Level 2, before -> after (nonsense: tuning + held-out passing, of 85; its rows: median when it
+passes; category P / R over the nine category queries; "helicopter": rows for "helicopter" /
+"a helicopter", COCO has none):
+
+| Tower, photos | Captions found / own photo (of 500) | Nonsense passing | Nonsense rows | Category P / R | Labelled P@5 | "helicopter" |
+|---|---|---|---|---|---|---|
+| B/32, 1 k | 492 / 486 -> 475 / 460 | 15 -> 5 | 33 -> 10 | .51 / .77 -> .72 / .69 | .89 -> .89 | 33 / 32 -> 8 / 9 |
+| B/32, 5 k | 493 / 485 -> 476 / 459 | 22 -> 8 | 144 -> 59 | .53 / .80 -> .74 / .73 | 1.0 -> 1.0 | 164 / 180 -> 35 / 42 |
+| B/32, 10 k | 495 / 486 -> 482 / 466 | 24 -> 9 | 300 -> 91 | .54 / .79 -> .74 / .73 | .91 -> .91 | 334 / 357 -> 68 / 84 |
+| B/32, 25 k | 497 / 487 -> 489 / 470 | 26 -> 9 | 736 -> 196 | .55 / .80 -> .74 / .72 | .94 -> .94 | 851 / 857 -> 181 / 219 |
+| L/14, 1 k | 491 / 489 -> 478 / 474 | 25 -> 11 | 30 -> 57 | .55 / .77 -> .85 / .71 | .94 -> .97 | 0 / 0 -> 0 / 0 |
+| L/14, 5 k | 496 / 490 -> 486 / 480 | 39 -> 15 | 161 -> 69 | .59 / .82 -> .87 / .75 | 1.0 -> 1.0 | 0 / 0 -> 0 / 0 |
+| L/14, 10 k | 496 / 490 -> 486 / 479 | 52 -> 22 | 314 -> 122 | .59 / .81 -> .87 / .75 | 1.0 -> 1.0 | 282 / 270 -> 7 / 6 |
+| L/14, 25 k | 498 / 490 -> 489 / 483 | 63 -> 23 | 735 -> 221 | .60 / .81 -> .87 / .75 | 1.0 -> 1.0 | 728 / 701 -> 38 / 47 |
+
+The labelled queries keep P@5 >= 0.8 at every size on both towers. The held-out nonsense list
+moves like the tuning one (L/14 at 25 k: 48 -> 17 of 60, 15 -> 6 of 25), so the gate is not
+fitted to the strings it was tuned on. **Target recorded:** at 25 k assets and the default
+Precision, at most 1 in 3 nonsense strings answered on L/14 and 1 in 8 on B/32; the fitted
+rule gives 27 % and 11 %.
+
+What it costs and what is still open:
+
+- **Recall.** A caption finds its own photo 94-97 % of the time (97-98 % before). Category recall
+  falls .05-.08 while precision rises .19-.28. B/32 at 1 k loses the most (486 -> 460 own
+  photos).
+- **Floods remain on L/14.** Placeholder and long-sentence gibberish (`lorem ipsum`, `colorless
+  green ideas sleep furiously`) and `xyzzy plugh qwertyuiop` still answer at 25 k with 1,400-5,000
+  rows. They pass on margin alone, and L/14 ranks them above almost every label on those photos.
+  A stricter label bar (top 2 of 705) still leaves hundreds of rows at half the recall, and
+  text-like labels ("gibberish", "random letters") change nothing. A result cap relative to the
+  query's best rows is the next candidate. The owner's own string drops from 2,048 to 1,445
+  rows on the COCO set; the Photos library was not re-run.
+- **Cost.** The scan is unchanged (100 k x 768 rows: 1.66 ms before, 1.73 ms with the filter, one
+  compare a row). Embedding the labels takes ~4 s (B/32) / ~6 s (L/14) once per tower, cached.
+  The bars take 1.2 s per 100 k rows at load, filled in chunks behind the searches; until then a
+  row passes. +4 bytes a row.
+- The P@5 misses in `"[eval]"` on this set ("a train at the station" B/32, "a dog" L/14) are
+  the raw ranking, the same before and after; that test's labels are the Karpathy set's.
+- The subset check across levels fails only where a looser level hits `find_text`'s 5,000-row
+  cap (9 checks, all L/14 nonsense; 14 before).
+
 **Recall target for PR 22 (recorded here as plan/17 asked):** on the labelled set, the top five
 for each natural-language query hold at least four relevant items (P@5 >= 0.8), "guy on a
 skateboard" included; the COCO-1k proxy R@10 >= 0.88 (Fast) / >= 0.90 (High). The owner's real
@@ -962,7 +1034,8 @@ for the pacing runs below). At the 1-hour cap:
   real queries returned 74–733. This is the L/14 calibration item above, now on a real
   23 k-asset library. It needs the owner's labelled set to retune, and is not a source
   problem: owed before the Photos source ships. Tracked as a follow-up that needs a labelled
-  eval: [#85](https://github.com/longtimeno-c/mediaviewer/issues/85).
+  eval: [#85](https://github.com/longtimeno-c/mediaviewer/issues/85). Recalibrated on COCO at 1 k-25 k (above, "Amended 2026-09-28
+  (issue #85)"); the Photos library itself has not been re-run.
 
 **Present loop while the library indexes (worst case, 2026-09-28).** `frametime --seconds 60`
 (Mac PR 1 gate) was run while `photos-bench.sh` indexed the library in **another process that
