@@ -336,6 +336,13 @@ one on screen and `resume` is 1; a clip selected meanwhile waits for `mv_video_p
 the user's and release keeps it. The rule is `player/playback_hold.h`, which the Mac lab runs
 on its own `media_source` from the snapshot's `video_hold` — one policy on both platforms.
 
+## Gallery play badge — clips read apart from stills (ABI 0.15)
+
+Minor bump, **no layout change**: `mv_folder_item.flags` bit 2 is set when the stop's primary
+is a video, by extension (`io::is_video_name`, the same list the directory scan filters by and
+the hosts route to the player with). The gallery draws a play badge on those tiles. A Live
+Photo stop is its still, so it never carries the bit. Nothing is opened or probed to set it.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

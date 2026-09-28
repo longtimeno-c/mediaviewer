@@ -70,6 +70,7 @@ struct GalleryView: View {
                       index: index, name: store.names[index], size: cell,
                       isCurrent: index == store.currentIndex && store.folderCursor < 0,
                       isMarked: store.markedNames.contains(store.names[index]),
+                      isClip: store.isClip(at: index),
                       slot: store.slot(for: store.names[index])
                     )
                     .id(index)
@@ -260,6 +261,7 @@ private struct GalleryCell: View {
   let size: CGFloat
   let isCurrent: Bool
   let isMarked: Bool
+  let isClip: Bool
   @ObservedObject var slot: ThumbSlot
 
   var body: some View {
@@ -282,6 +284,7 @@ private struct GalleryCell: View {
           RoundedRectangle(cornerRadius: 6)
             .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
         )
+        .overlay { if isClip { PlayBadge() } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
       Text(name)
         .font(.caption)
@@ -293,5 +296,21 @@ private struct GalleryCell: View {
     // Cells are identified by index: a new listing (a result list replacing
     // the folder) reuses them without a fresh onAppear, so ask again.
     .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
+  }
+}
+
+/// Over a clip's tile, so videos read apart from stills without opening them.
+private struct PlayBadge: View {
+  var body: some View {
+    Image(systemName: "play.fill")
+      .font(.system(size: 16, weight: .semibold))
+      .foregroundStyle(.white)
+      .offset(x: 1.5)  // the triangle's optical centre sits left of its box
+      .frame(width: 40, height: 40)
+      .background(Circle().fill(.black.opacity(0.6)))
+      .overlay(Circle().strokeBorder(.white.opacity(0.8), lineWidth: 1.5))
+      .shadow(radius: 1)
+      .allowsHitTesting(false)
+      .accessibilityLabel("Video")
   }
 }

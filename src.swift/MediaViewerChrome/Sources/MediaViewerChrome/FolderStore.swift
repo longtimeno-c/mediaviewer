@@ -72,6 +72,8 @@ final class FolderStore: ObservableObject {
   @Published private(set) var currentIndex: Int = -1
   /// Item names by index; replaced wholesale when the host relists.
   @Published private(set) var names: [String] = []
+  /// Parallel to `names`: which items are clips, for the gallery's play badge.
+  @Published private(set) var clips: [Bool] = []
   /// Names of marked items (plan/16 marks), rebuilt only when the host's marks
   /// generation or listing changes.
   @Published private(set) var markedNames: Set<String> = []
@@ -210,6 +212,7 @@ final class FolderStore: ObservableObject {
       }
       fresh.append(ok ? String(cString: buf) : "")
     }
+    clips = (0..<count).map { mv_chrome_item_is_video(Int32($0)) }
     names = fresh
     if count == 0 {
       slots.removeAll()
@@ -325,6 +328,10 @@ final class FolderStore: ObservableObject {
     }
     if total != markedCount { markedCount = total }
     if fresh != markedNames { markedNames = fresh }
+  }
+
+  func isClip(at index: Int) -> Bool {
+    clips.indices.contains(index) && clips[index]
   }
 
   func name(at index: Int) -> String {

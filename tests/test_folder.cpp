@@ -284,6 +284,7 @@ TEST_CASE("a RAW+JPEG pair and a Live Photo are one stop each over the ABI",
 
   REQUIRE(mv_folder_item_at(session.handle, 2, &item) == MV_OK);
   REQUIRE(item.pair_kind == MV_PAIR_LIVE_PHOTO);
+  REQUIRE((item.flags & 4u) == 0u);  // a Live Photo stop is its still, not a clip
   REQUIRE(item_string(session.handle, 2, &mv_folder_item_name) == "IMG_0003.JPG");
   REQUIRE(base_name(item_string(session.handle, 2, &mv_folder_item_pair_path)) == "IMG_0003.MOV");
 

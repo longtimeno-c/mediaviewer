@@ -220,6 +220,7 @@ public static partial class IslandHost
                 Path = _folderSession.FolderItemPath(i),
                 PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
                 Badge = moment >= 0 ? MomentLabel(moment) : BadgeFor(rec),
+                IsClip = (rec.Flags & MvFolderItem.FlagClip) != 0,
                 ThumbPath = _folderSession.FolderItemThumbPath(i),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
@@ -459,6 +460,9 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     public string PairPath { get; set; } = "";
     // PR 7: "RAW", "LIVE" or "".
     public string Badge { get; set; } = "";
+    // A video: the gallery tile carries a play badge so clips read apart
+    // from stills at a glance. False on a core older than ABI 0.15.
+    public bool IsClip { get; set; }
     public bool Selected
     {
         get => _selected;

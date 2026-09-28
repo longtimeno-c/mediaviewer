@@ -101,6 +101,19 @@ inline std::string key_of(std::string_view name) {
 
 }  // namespace pairing_detail
 
+// A clip (played through player/) rather than a still, by its extension. Same
+// set as dir_win.cpp / dir_mac.cpp's video containers (D5); the player probes
+// the real container when it opens the file. Drives the gallery's play badge
+// and the hosts' clip-vs-still routing, never a decode.
+[[nodiscard]] inline bool is_video_name(std::string_view name) noexcept {
+  static constexpr const char* k[] = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v"};
+  const std::string_view ext = pairing_detail::extension(name);
+  for (const char* e : k) {
+    if (pairing_detail::eq_lower(ext, e)) return true;
+  }
+  return false;
+}
+
 // A RAW by its extension. The listing already filters by extension; this only
 // drives the filmstrip badge, never a decode (decode probes magic bytes).
 [[nodiscard]] inline bool is_raw_name(std::string_view name) noexcept {

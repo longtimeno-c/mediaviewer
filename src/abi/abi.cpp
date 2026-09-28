@@ -198,6 +198,7 @@ struct mv_session {
     std::int64_t mtime_unix = 0;
     mv::io::pair_kind pair = mv::io::pair_kind::none;
     bool primary_raw = false;
+    bool clip = false;  // ABI 0.15: a video, by extension (io::is_video_name)
     std::int64_t moment_ms = -1;  // Milestone H result listing: open paused here
   };
   struct lru_slot {
@@ -1354,6 +1355,7 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     for (auto& e : listed) {
       mv_session::folder_item it;
       it.primary_raw = mv::io::is_raw_name(e.primary.name_utf8);
+      it.clip = mv::io::is_video_name(e.primary.name_utf8);
       it.name = std::move(e.primary.name_utf8);
       it.path = std::move(e.primary.path_utf8);
       it.size = e.primary.size;
@@ -1977,7 +1979,8 @@ mv_status MV_CALL mv_folder_item_at(mv_session_t session, uint32_t index, mv_fol
     const auto& it = session->folder_items[index];
     mv_folder_item item{};
     item.index = index;
-    item.flags = (index == session->folder_selected ? 1u : 0u) | (it.primary_raw ? 2u : 0u);
+    item.flags = (index == session->folder_selected ? 1u : 0u) | (it.primary_raw ? 2u : 0u) |
+                 (it.clip ? 4u : 0u);
     item.size_bytes = it.size;
     item.mtime_unix = it.mtime_unix;
     item.pair_kind = static_cast<uint32_t>(it.pair);
