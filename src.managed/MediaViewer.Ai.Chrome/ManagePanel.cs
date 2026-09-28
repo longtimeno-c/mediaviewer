@@ -22,7 +22,7 @@ namespace MediaViewer.Ai.Chrome;
 /// naming people happens in the people window. Roots and people are read on a
 /// worker ([worker-thread]); settings and status are [no-block].
 /// </remarks>
-internal sealed class ManagePanel
+internal sealed partial class ManagePanel
 {
     private readonly AiChrome _chrome;
     private readonly AiApi _api;
@@ -222,6 +222,8 @@ internal sealed class ManagePanel
 
         _indexRow = new StackPanel { Spacing = 8 };
         Root.Children.Add(_indexRow);
+        // Import and export (plan/17 "Sharing an index"; ManagePanel.Transfer.cs).
+        AddTransferSection();
 
         _batteryBox = Combo();
         foreach (string b in BatteryNames) _batteryBox.Items.Add(b);
@@ -239,7 +241,7 @@ internal sealed class ManagePanel
         _faces.Toggled += (_, _) => OnFacesToggled();
         var facesDetail = new StackPanel { Spacing = 2 };
         facesDetail.Children.Add(_look.Text(
-            "Face data stays on this computer, is never shared, and can be deleted at any time.", 12));
+            "Face data stays on this computer unless you include People in an index export, and can be deleted at any time.", 12));
         Root.Children.Add(Row("Find people in your photos", facesDetail, _faces));
         _people = new StackPanel { Spacing = 8 };
         Root.Children.Add(_people);
@@ -373,6 +375,7 @@ internal sealed class ManagePanel
         RefreshIndexRow(s);
         uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
         if (faces != _facesFlags || s.People != _peopleShown) RefreshPeople();
+        PollTransfer();
     }
 
     // ---- index videos for --------------------------------------------------------------
@@ -511,6 +514,10 @@ internal sealed class ManagePanel
 
     private void ShowRoots(List<RootRow> rows)
     {
+        // Export offers these folders; its button waits for one to exist.
+        bool had = _rootsShown.Count > 0;
+        _rootsShown = rows;
+        if (had != (rows.Count > 0) && !_exportOpen) ShowTransfer();
         _roots.Children.Clear();
         if (rows.Count == 0)
         {

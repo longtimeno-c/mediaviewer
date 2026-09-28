@@ -371,7 +371,8 @@ the minimum UI — a face grouping that cannot be corrected is worse than none.
 **Biometric handling** (stricter than the frame index, because a face embedding identifies a
 person): stored in its own table/file, off by default until a separate opt-in ("Find people in
 your photos"), one-click delete of all face data, never in telemetry, crash reports or minidumps,
-never exported, no names sent anywhere. Face data is never used for anything but local search.
+never exported (amended 2026-09-28: only by the user's own index export with "Include
+People" ticked, off by default; see "Sharing an index"), no names sent anywhere. Face data is never used for anything but local search.
 Some jurisdictions (e.g. Illinois BIPA, EU GDPR biometric rules) treat this as sensitive; the
 purely local, opt-in, deletable design is what keeps it defensible, and licensing/legal review
 is a gate before release.
@@ -854,6 +855,72 @@ passing on 100 random seeds; engine.cpp, pack.cpp and models.cpp were only check
 refinement live, the real SFace pack (so flip averaging's gain and the thresholds are untested on
 real faces), a labelled people set (none exists; it is what should tune join / keep / margin),
 and PR 1's present-loop gate on either platform while a full call runs.
+
+### Sharing an index (2026-09-28, owner)
+
+Owner: indexing a library once and carrying it to another machine is "much easier than
+re-encoding it every time, especially when it comes to a NAS", with toggles for face data and
+thumbnails, export and import on every platform the pack runs on. Shared core
+(`src/addons/ai/transfer.*`), `mv.ai.1` appended, a host-table entry pair, and both chromes.
+
+**The file** (`.mvindex`, SQLite, `info.format = "mediaviewer.index"`, version 1) holds the chosen
+roots with each asset's path **relative to its root** (`/`-separated), its `(mtime, size)`,
+kind and duration, and the rows that describe it: `progress` (done and partial only),
+`frames`, `speech`. Optional: **People** (`people`, `faces` without a path, `rejected`,
+`no_merge`, `face_scanned`) and **thumbnails** (the JPEG-512 cache's bytes for a still and each
+stored moment; only what the cache already holds; an export never decodes a library). The
+roots keep their original absolute path and a display name so an import can offer the same
+place (a NAS mounted at the same path answers itself). Written to `<dest>.part` and renamed.
+The export reads index.db and faces.db on its own read connections: indexing is never paused
+by an export.
+
+**Import** maps each root in the file to a folder on this machine (the chrome shows every root
+with its original path, pre-filled when that folder exists here). Per asset at
+`folder + rel`:
+
+| Here | Does |
+|---|---|
+| no row | the row and its vectors are added (`seen` 0) |
+| same `(mtime, size)`, already done for a spec | this machine's rows for that spec stay |
+| same `(mtime, size)`, not done | replaced by the file's |
+| different `(mtime, size)` | this machine's row stays (it saw the file; the file did not) |
+
+Then the imported roots are **rescanned by the ordinary delta**: a file whose `(mtime, size)`
+differs from the file's row loses its imported vectors and is queued, exactly as an edited file
+is (no content hash, plan/17 "Index store"). A root that is offline keeps its rows until it is
+reachable, as today. Indexing pauses for the import (it runs on the control thread; workers
+wait as for Clear) and the search matrix, sounds, transcripts and People reload after it.
+
+**Models.** Vectors from one tower are never mixed with another's (PR 23). Picture rows are
+imported for a spec this pack is using (the active or the building one). When this machine's
+index is empty and the file's tower is one the pack carries, the import **adopts it**: Quality
+is set to that tower and it becomes the active spec, so nothing is re-embedded (on a CPU-only
+machine an imported High index keeps answering with the High text tower, ~10 ms more a query).
+Otherwise the picture rows are skipped and the chrome says which Quality would use them before
+the import runs (`inspect_export`'s `picture_usable`). Sound and speech rows are imported for
+the spec of the piece loaded here; none loaded, they are skipped and counted.
+
+**People** (biometric; plan/17 PR 24 "never exported" amended): off by default on both sides,
+ticked by the user, with the warning that the file then identifies the people in it. An import
+with People needs the ai-faces piece and turns the People opt-in on (the checkbox says so). A
+named person joins the local person of the same name (case-insensitive), else becomes a new
+one; unnamed clusters come in as new people and the idle merge treats them as any other.
+Assets whose faces this machine has already scanned keep this machine's faces.
+
+**Thumbnails** go through two host-table entries appended to v2, `thumbnail_jpeg` (look up the
+cached JPEG-512 of a still or moment as bytes, never make one) and `thumbnail_store_jpeg` (store
+bytes under this machine's file stamp). The host checks the bytes are a baseline JPEG no larger
+than 512 on the long edge before it stores them (a shared file is untrusted input); the pack
+stores a thumbnail only when the local file's `(mtime, size)` equals the file's row.
+
+**What it is not.** Not a sync: an import is a one-off merge, and nothing watches the file. Not
+a way onto an Intel Mac: the pack still has no x86_64 macOS build (ORT), and a query needs the
+text tower on the machine that searches. Not for the Photos library root (below): its keys are
+this Mac's PhotoKit identifiers, not paths under a folder another machine could map, so an
+export leaves it out and the chrome's picker does not offer it.
+
+**Rule 6.** The file carries folder and file names, and, if ticked, faces and names. It is the
+user's own export to a place they chose; nothing about it is logged or sent.
 
 ## Photos library source (macOS, issue #72, 2026-09-28)
 

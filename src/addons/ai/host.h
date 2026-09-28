@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,14 @@ class host {
   [[nodiscard]] result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
                                                      const rgb_frame* frame) const;
   [[nodiscard]] result<std::string> piece_dir(const std::string& piece) const;
+  // Sharing an index (plan/17): the cached JPEG-512 bytes of a still
+  // (pts_ms < 0) or a moment, never made (status::io on a miss); and bytes
+  // from an export stored under this machine's stamp of the file.
+  [[nodiscard]] bool has_thumbnail_bytes() const noexcept;
+  [[nodiscard]] result<std::vector<std::uint8_t>> thumbnail_jpeg(const std::string& path,
+                                                                 std::int64_t pts_ms) const;
+  [[nodiscard]] expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
+                                              std::span<const std::uint8_t> jpeg) const;
 
   [[nodiscard]] bool should_yield() const noexcept;
   void post(mv_addon_event_kind kind, mv_status status, std::uint64_t id,

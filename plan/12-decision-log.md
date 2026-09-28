@@ -2896,3 +2896,26 @@ From the Final Cut Pro assessment (issue #80), the owner chose both calls.
 - Also added without a decision (inside plan/21's scope): dragging a piece's edge, snapping,
   frame timecode, and asking before a close discards an edit that was not exported.
 
+## 2026-09-28 — Local search: an index can be exported and imported (owner)
+
+Owner: an Intel Mac cannot run the pack, and re-indexing a library on every machine is the
+slow part, "especially when it comes to a NAS". Asked for export and import on every platform
+the pack runs on, with toggles for face data and thumbnails.
+
+- **Amended: plan/17 PR 24 "never exported" for face data.** Faces, people and names leave the
+  machine only in the user's own export with "Include People" ticked (off by default, with the
+  warning that the file identifies the people in it). An import with People turns People on and
+  says so. Nothing else about the biometric rule changes: never in telemetry, crash reports or
+  logs; one-click delete.
+- The file carries paths **relative** to each folder and the file's `(mtime, size)`; an import
+  maps each folder to a place here and the ordinary delta scan then re-queues whatever differs.
+  No content hash (plan/17 "Index store" keeps that rule).
+- Vectors stay with their model (PR 23 "never mixed"): an empty index adopts the file's Quality;
+  a used one skips another tower's rows rather than migrate.
+- Host table v2 gains `thumbnail_jpeg` / `thumbnail_store_jpeg` (appended; the pack already
+  requires the table it was built against). The host decodes stored bytes and refuses anything
+  but a JPEG of at most 512 on the long edge: another machine's file is untrusted input, as is
+  the index file itself (opened read-only, defensive, schema untrusted; paths with `..` refused).
+- **Not changed:** Intel Macs still get no pack (ORT ships no x86_64 macOS build). An index
+  from an Apple silicon Mac is of use on another Apple silicon Mac or a Windows PC.
+

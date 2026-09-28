@@ -171,6 +171,7 @@ Add-ons install from **Settings → Add-ons**. They are signed and verified, nev
   - An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
   - An optional, deletable **People** index finds faces.
   - On a Mac it can also search your **Photos library**, iCloud Photos included. It reads only what is already on the Mac and never changes the library.
+  - Export the index to one file and import it on another computer, or after moving a library to a NAS, so nothing is indexed twice. Thumbnails and People go only if you tick them.
   - `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
 
 ## Coming next

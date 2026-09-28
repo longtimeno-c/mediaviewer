@@ -15,6 +15,7 @@
 
 #include "addons/ai/platform.h"
 #include "addons/ai/query.h"
+#include "addons/ai/transfer.h"
 #include "core/json.h"
 
 namespace mv::ai {
@@ -1016,6 +1017,19 @@ void engine::control_loop() {
     } else if (reload_pieces_.exchange(false)) {
       load_pieces();
     }
+    {
+      // An export / import (plan/17 "Sharing an index"): here, so it never
+      // runs beside a scan or a model load.
+      std::optional<transfer_job> t;
+      {
+        std::lock_guard lock(transfer_m_);
+        if (!transfer_queue_.empty()) {
+          t = std::move(transfer_queue_.front());
+          transfer_queue_.pop_front();
+        }
+      }
+      if (t) run_transfer(std::move(*t));
+    }
     bool all = false;
     std::set<std::int64_t> some;
     const double t = now_s();
@@ -1073,8 +1087,12 @@ void engine::control_loop() {
     }
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this] {
-      return stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
-             !rescan_roots_.empty();
+      if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
+          !rescan_roots_.empty()) {
+        return true;
+      }
+      std::lock_guard tl(transfer_m_);  // control_m_ -> transfer_m_ (a leaf)
+      return !transfer_queue_.empty();
     });
   }
 }
@@ -1375,7 +1393,7 @@ platform::power engine::power_state() const {
 
 bool engine::wait_turn() {
   while (!stopping_) {
-    if (clearing_ || !models_ready_ || loading_ || paused_ || index_full_) {
+    if (clearing_ || transferring_ || !models_ready_ || loading_ || paused_ || index_full_) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(200));
       continue;
@@ -2080,6 +2098,7 @@ std::string engine::roots_json() {
 
 result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive) {
   if (dir.empty() || is_photos_key(dir)) return err(status::invalid_arg);
+  if (importing_elsewhere()) return err(status::busy);
   const std::string key = path_key(dir);
   const std::vector<root_row> roots = db_->roots();
   for (const root_row& r : roots) {
@@ -2117,6 +2136,7 @@ result<std::int64_t> engine::index_photos_library() {
   const photos_access access = photos_library_access();
   if (access == photos_access::unsupported) return err(status::unsupported_format);
   if (!readable(access)) return err(status::permission_denied);
+  if (importing_elsewhere()) return err(status::busy);  // as index_folder: not while an import runs
   MV_TRY(std::int64_t id, db_->add_root(std::string(kPhotosRoot), true));
   photos_root_ = id;
   {
@@ -2129,6 +2149,7 @@ result<std::int64_t> engine::index_photos_library() {
 }
 
 expected engine::root_set_enabled(std::int64_t id, bool enabled) {
+  if (importing_elsewhere()) return err(status::busy);
   MV_TRY_VOID(db_->set_root_enabled(id, enabled));
   {
     std::lock_guard lock(work_m_);
@@ -2146,6 +2167,7 @@ expected engine::root_set_enabled(std::int64_t id, bool enabled) {
 }
 
 expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
+  if (importing_elsewhere()) return err(status::busy);
   if (media > MV_AI_MEDIA_BOTH) return err(status::invalid_arg);
   MV_TRY_VOID(db_->set_root_media(id, media));
   {
@@ -2169,6 +2191,7 @@ expected engine::root_rescan(std::int64_t id) {
 }
 
 expected engine::root_remove(std::int64_t id) {
+  if (importing_elsewhere()) return err(status::busy);
   std::vector<std::int64_t> gone;
   {
     std::lock_guard lock(assets_m_);
@@ -2257,6 +2280,7 @@ void engine::note_folder_opened(const std::string& dir) {
 }
 
 expected engine::clear_index() {
+  if (importing_elsewhere()) return err(status::busy);
   clearing_ = true;
   // Let in-flight work land (or fail) before the rows go.
   for (int i = 0; i < 300; ++i) {
@@ -2306,6 +2330,479 @@ expected engine::clear_index() {
   post(MV_ADDON_EVENT_AI_ROOTS);
   post(MV_ADDON_EVENT_AI_PEOPLE);
   return r;
+}
+
+// ---- sharing an index (plan/17 "Sharing an index") ---------------------------------------
+
+namespace {
+
+std::string machine_label() {
+#if defined(_WIN32)
+  std::string os = "Windows";
+#elif defined(__APPLE__)
+  std::string os = "macOS";
+#else
+  std::string os = "Linux";
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return os + " arm64";
+#else
+  return os + " x64";
+#endif
+}
+
+}  // namespace
+
+result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<std::int64_t> roots,
+                                           std::uint32_t flags) {
+  if (dest.empty()) return err(status::invalid_arg);
+  std::lock_guard lock(transfer_m_);
+  if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
+  transfer_job job;
+  job.id = next_transfer_++;
+  job.file = dest;
+  job.roots = std::move(roots);
+  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS);
+  transfer_ = transfer_view{};
+  transfer_.id = job.id;
+  transfer_.running = true;
+  transfer_queue_.push_back(std::move(job));
+  control_cv_.notify_all();
+  return transfer_.id;
+}
+
+result<std::uint64_t> engine::import_index(const std::string& file, const std::string& map_json,
+                                           std::uint32_t flags) {
+  if (file.empty()) return err(status::invalid_arg);
+  const auto doc = json::parse(map_json, 4);
+  if (!doc || doc->k != json::kind::array) return err(status::invalid_arg);
+  transfer_job job;
+  for (const json::value& v : doc->a) {
+    const auto id = v.integer("id");
+    const std::string* path = v.str("path");
+    if (!id || !path || path->empty()) return err(status::invalid_arg);
+    job.map.emplace_back(*id, *path);
+  }
+  if (job.map.empty()) return err(status::invalid_arg);
+  std::lock_guard lock(transfer_m_);
+  if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
+  job.id = next_transfer_++;
+  job.import = true;
+  job.file = file;
+  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS);
+  transfer_ = transfer_view{};
+  transfer_.id = job.id;
+  transfer_.import = true;
+  transfer_.running = true;
+  transfer_queue_.push_back(std::move(job));
+  control_cv_.notify_all();
+  return transfer_.id;
+}
+
+std::string engine::transfer_json() const {
+  std::lock_guard lock(transfer_m_);
+  json::writer w;
+  w.begin_object();
+  w.key("id").integer(static_cast<std::int64_t>(transfer_.id));
+  w.key("kind").string(transfer_.import ? "import" : "export");
+  w.key("running").boolean(transfer_.running && !transfer_.done);
+  w.key("done").boolean(transfer_.done);
+  w.key("status").integer(transfer_.status);
+  w.key("fraction").number(transfer_.fraction);
+  w.key("outcome");
+  if (transfer_.outcome.empty()) {
+    w.null();
+  } else {
+    w.raw(transfer_.outcome);
+  }
+  w.end_object();
+  return w.take();
+}
+
+void engine::transfer_cancel() noexcept { transfer_cancel_ = true; }
+
+void engine::set_transfer_progress(double f) {
+  {
+    std::lock_guard lock(transfer_m_);
+    // At most every 2 %: the chrome polls status on the event.
+    if (f < 1.0 && f - transfer_.fraction < 0.02) return;
+    transfer_.fraction = std::clamp(f, 0.0, 1.0);
+  }
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
+engine::spec_plan engine::plan_specs(const std::string& file_picture) {
+  spec_plan p;
+  const std::string active = db_->meta("active_spec");
+  const bool fresh = active.empty() || db_->count(active).frames == 0;
+  std::string build, sound, speech;
+  {
+    std::lock_guard lock(models_m_);
+    build = build_.meta.spec_key;
+    sound = sound_.spec_key;
+    speech = speech_.spec_key;
+  }
+  if (!fresh) p.specs.insert(active);
+  if (!build.empty()) p.specs.insert(build);
+  if (!sound.empty()) p.specs.insert(sound);
+  if (!speech.empty()) p.specs.insert(speech);
+  if (file_picture.empty()) return p;
+  if (p.specs.count(file_picture)) {
+    p.picture = file_picture;
+    return p;
+  }
+  // An empty index here takes the file's tower when the pack carries it: the
+  // point of importing is not to embed the library again.
+  if (fresh && deps_.qualities && deps_.clip_spec) {
+    for (std::uint32_t q : deps_.qualities()) {
+      if (deps_.clip_spec(q) == file_picture) {
+        p.adopt = q;
+        p.picture = file_picture;
+        p.specs.insert(file_picture);
+        return p;
+      }
+    }
+  }
+  // Still loading (a Core ML first compile takes minutes): nothing is known
+  // yet, and the import itself runs after the load, where it is decided again.
+  p.why_not = !build.empty() ? "model" : models_failed_ ? "no_models" : "loading";
+  return p;
+}
+
+result<std::string> engine::inspect_export(const std::string& file) {
+  MV_TRY(transfer::file_info f, transfer::inspect(file));
+  const spec_plan plan = plan_specs(f.picture_spec);
+  std::string model;
+  if (deps_.qualities && deps_.clip_spec && deps_.model_name) {
+    for (std::uint32_t q : deps_.qualities()) {
+      if (deps_.clip_spec(q) == f.picture_spec) model = deps_.model_name(q);
+    }
+  }
+  bool people_ready = false, people_match = false;
+  {
+    std::lock_guard lock(models_m_);
+    people_ready = faces_ && faces_model_;
+    people_match = people_ready && faces_model_->spec_key() == f.face_spec;
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("version").integer(f.version);
+  w.key("created").integer(f.created);
+  w.key("from").string(f.from);
+  w.key("model").string(model);
+  w.key("picture_usable").boolean(!plan.picture.empty());
+  w.key("adopt_quality").integer(plan.adopt);
+  w.key("why_not").string(plan.why_not);
+  w.key("people");
+  if (f.faces) {
+    w.begin_object();
+    w.key("faces").integer(static_cast<std::int64_t>(f.face_count));
+    w.key("people").integer(static_cast<std::int64_t>(f.people));
+    w.key("ready").boolean(people_ready);
+    w.key("match").boolean(people_match);
+    w.end_object();
+  } else {
+    w.null();
+  }
+  w.key("thumbs").integer(static_cast<std::int64_t>(f.thumbs ? f.thumb_count : 0));
+  w.key("roots").begin_array();
+  for (const transfer::file_root& r : f.roots) {
+    w.begin_object();
+    w.key("id").integer(r.id);
+    w.key("name").string(r.name);
+    w.key("path").string(r.path);
+    w.key("recursive").boolean(r.recursive);
+    w.key("assets").integer(static_cast<std::int64_t>(r.assets));
+    bool exists = false;
+    if (!r.path.empty()) {
+      const auto st = host_.stat(r.path);
+      exists = st && st->is_directory;
+    }
+    w.key("exists").boolean(exists);
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  return w.take();
+}
+
+void engine::run_transfer(transfer_job job) {
+  transfer_cancel_ = false;
+  mv::status st = mv::status::ok;
+  std::string outcome = job.import ? run_import(job, st) : run_export(job, st);
+  {
+    std::lock_guard lock(transfer_m_);
+    if (transfer_.id == job.id) {
+      transfer_.done = true;
+      transfer_.running = false;
+      transfer_.status = static_cast<std::int32_t>(st);
+      transfer_.fraction = st == status::ok ? 1.0 : transfer_.fraction;
+      transfer_.outcome = std::move(outcome);
+    }
+  }
+  if (job.import) {
+    post(MV_ADDON_EVENT_AI_ROOTS);
+    post(MV_ADDON_EVENT_AI_PEOPLE);
+  }
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
+std::string engine::run_export(const transfer_job& job, mv::status& st) {
+  transfer::export_options o;
+  o.index_db = db_->path();
+  o.faces_db = join(data_dir_, "faces.db");
+  o.roots = job.roots;
+  o.faces = (job.flags & MV_AI_TRANSFER_PEOPLE) != 0;
+  o.thumbs = (job.flags & MV_AI_TRANSFER_THUMBS) != 0;
+  o.from = machine_label();
+  {
+    std::lock_guard lock(models_m_);
+    o.picture_spec = answer_.meta.spec_key;
+    // People's vectors only travel with the model that made them.
+    if (faces_ && faces_model_) o.face_spec = faces_model_->spec_key();
+  }
+  if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
+  if (o.face_spec.empty()) o.faces = false;
+  if (o.thumbs && host_.has_thumbnail_bytes()) {
+    o.thumb = [this](const std::string& path, std::int64_t pts_ms) { return host_.thumbnail_jpeg(path, pts_ms); };
+  }
+  transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
+  auto r = transfer::write(job.file, o, c);
+  if (!r) {
+    st = r.error();
+    return {};
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("roots").integer(static_cast<std::int64_t>(r->roots));
+  w.key("assets").integer(static_cast<std::int64_t>(r->assets));
+  w.key("frames").integer(static_cast<std::int64_t>(r->frames));
+  w.key("speech").integer(static_cast<std::int64_t>(r->speech));
+  w.key("faces").integer(static_cast<std::int64_t>(r->faces));
+  w.key("people").integer(static_cast<std::int64_t>(r->people));
+  w.key("people_included").boolean(o.faces);
+  w.key("thumbs").integer(static_cast<std::int64_t>(r->thumbs));
+  w.key("thumbs_missing").integer(static_cast<std::int64_t>(r->thumbs_missing));
+  w.key("bytes").integer(static_cast<std::int64_t>(r->bytes));
+  w.end_object();
+  return w.take();
+}
+
+std::string engine::run_import(const transfer_job& job, mv::status& st) {
+  auto info = transfer::inspect(job.file);
+  if (!info) {
+    st = info.error();
+    return {};
+  }
+  // Indexing waits, as for Clear: in-flight work lands first, and nothing
+  // claims an asset while its rows change underneath.
+  transferring_ = true;
+  for (int i = 0; i < 300; ++i) {
+    {
+      std::lock_guard lock(work_m_);
+      if (busy_workers_ == 0) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  const spec_plan plan = plan_specs(info->picture_spec);
+  std::vector<transfer::root_target> targets;
+  for (const auto& [file_root, dir] : job.map) {
+    const auto r = std::find_if(info->roots.begin(), info->roots.end(),
+                                [&](const transfer::file_root& x) { return x.id == file_root; });
+    if (r == info->roots.end()) continue;
+    // The folder here joins (or is) a remembered root, like "Index this folder".
+    auto local = index_folder(dir, r->recursive);
+    if (!local) continue;
+    if (r->media != 0) (void)db_->set_root_media(*local, r->media);
+    targets.push_back(transfer::root_target{file_root, dir, *local});
+  }
+  if (targets.empty()) {
+    transferring_ = false;
+    work_cv_.notify_all();
+    st = status::invalid_arg;
+    return {};
+  }
+  transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
+  std::vector<transfer::imported_asset> assets;
+  transfer::import_counts n;
+  expected r = db_->with_connection([&](sqlite3* db) {
+    return transfer::import_index(db, job.file, targets, plan.specs, assets, n, c);
+  });
+  std::string people_why;
+  bool adopted = false;
+  if (r) {
+    if (plan.adopt != 0 && n.frames > 0) {
+      // This index was empty: it takes the file's Quality, and its vectors
+      // answer from now on (no migration, nothing embedded again).
+      {
+        std::lock_guard lock(settings_m_);
+        settings_.quality = plan.adopt;
+      }
+      save_settings();
+      (void)db_->set_meta("active_spec", plan.picture);
+      // Workers wait for the new tower (the next loop's load): the old one
+      // would embed the imported assets again under its own spec.
+      loading_ = true;
+      reload_models_ = true;
+      adopted = true;
+    } else if (!plan.picture.empty() && n.frames > 0) {
+      const std::string active = db_->meta("active_spec");
+      std::string answering;
+      {
+        std::lock_guard lock(models_m_);
+        answering = answer_.meta.spec_key;
+      }
+      // An empty index whose tower is the file's: the file's vectors are it.
+      if (active.empty() || (active != plan.picture && db_->count(active).frames == 0)) {
+        (void)db_->set_meta("active_spec", plan.picture);
+        if (answering != plan.picture) {
+          loading_ = true;
+          reload_models_ = true;
+        }
+      }
+    }
+    if ((job.flags & MV_AI_TRANSFER_PEOPLE) && info->faces) {
+      bool on;
+      {
+        std::lock_guard lock(settings_m_);
+        on = settings_.faces;
+      }
+      bool open;
+      {
+        std::lock_guard lock(models_m_);
+        open = faces_ && faces_model_;
+      }
+      if (!open) {
+        // Importing People turns People on (the checkbox said so).
+        settings s;
+        {
+          std::lock_guard lock(settings_m_);
+          settings_.faces = true;
+          s = settings_;
+        }
+        if (!on) save_settings();
+        faces_parts people = open_faces_parts(s);
+        std::lock_guard lock(models_m_);
+        if (people.model) {
+          faces_model_ = std::move(people.model);
+          faces_ = std::move(people.db);
+          faces_scanned_ = std::move(people.scanned);
+          publish_pieces_locked();
+        }
+      }
+      std::lock_guard lock(models_m_);
+      if (!faces_ || !faces_model_) {
+        people_why = "no_piece";
+      } else if (faces_model_->spec_key() != info->face_spec) {
+        people_why = "model";
+      } else {
+        const std::string spec = faces_model_->spec_key();
+        (void)faces_->import_with([&](sqlite3* fdb) {
+          return transfer::import_faces(fdb, job.file, spec, assets, n, c);
+        });
+        faces_scanned_.clear();
+        for (std::int64_t a : faces_->scanned_assets(spec)) faces_scanned_.insert(a);
+      }
+    }
+    if ((job.flags & MV_AI_TRANSFER_THUMBS) && info->thumbs && host_.has_thumbnail_bytes()) {
+      transfer::thumb_io io;
+      io.stat = [this](const std::string& path, std::int64_t& mtime, std::uint64_t& size) {
+        auto s = host_.stat(path);
+        if (!s || s->is_directory) return false;
+        mtime = s->mtime;
+        size = s->size;
+        return true;
+      };
+      io.store = [this](const std::string& path, std::int64_t pts_ms, std::span<const std::uint8_t> jpeg) {
+        return host_.store_thumbnail_jpeg(path, pts_ms, jpeg);
+      };
+      io.yield = [this] {
+        for (int i = 0; i < 500 && !stopping_ && host_.should_yield(); ++i) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+      };
+      (void)transfer::import_thumbs(job.file, assets, io, n, c);
+    }
+  } else {
+    st = r.error();
+  }
+  // Whatever committed, every in-memory view comes from the rows again, and
+  // the folders are rescanned: a file that differs here is indexed again.
+  reload_from_db();
+  transferring_ = false;
+  work_cv_.notify_all();
+  {
+    std::lock_guard lock(control_m_);
+    for (const transfer::root_target& t : targets) rescan_roots_.insert(t.local_root);
+  }
+  if (!r) return {};
+  json::writer w;
+  w.begin_object();
+  w.key("assets").integer(static_cast<std::int64_t>(n.assets));
+  w.key("added").integer(static_cast<std::int64_t>(n.added));
+  w.key("replaced").integer(static_cast<std::int64_t>(n.replaced));
+  w.key("kept").integer(static_cast<std::int64_t>(n.kept));
+  w.key("frames").integer(static_cast<std::int64_t>(n.frames));
+  w.key("speech").integer(static_cast<std::int64_t>(n.speech));
+  w.key("skipped_rows").integer(static_cast<std::int64_t>(n.skipped_rows));
+  w.key("picture_usable").boolean(!plan.picture.empty());
+  w.key("why_not").string(plan.why_not);
+  w.key("adopted_quality").integer(adopted ? plan.adopt : 0);
+  w.key("faces").integer(static_cast<std::int64_t>(n.faces));
+  w.key("people_new").integer(static_cast<std::int64_t>(n.people_new));
+  w.key("people_joined").integer(static_cast<std::int64_t>(n.people_joined));
+  w.key("people_why").string(people_why);
+  w.key("thumbs").integer(static_cast<std::int64_t>(n.thumbs));
+  w.key("thumbs_skipped").integer(static_cast<std::int64_t>(n.thumbs_skipped));
+  w.end_object();
+  return w.take();
+}
+
+void engine::reload_from_db() {
+  {
+    std::lock_guard lock(assets_m_);
+    assets_.clear();
+    for (asset_row& a : db_->all_assets()) {
+      asset_meta m;
+      m.key = path_key(a.path);
+      m.dir_key = key_parent(m.key);
+      m.path = std::move(a.path);
+      m.kind = a.kind;
+      m.root = a.root_id;
+      m.mtime = a.mtime;
+      assets_.emplace(a.id, std::move(m));
+    }
+  }
+  std::string active, sound_spec, speech_spec;
+  std::uint32_t dim = 0, sound_dim = 0;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+    dim = answer_.meta.dim;
+    if (sound_.model) {
+      sound_spec = sound_.spec_key;
+      sound_dim = sound_.dim;
+    }
+    if (speech_.model) speech_spec = speech_.spec_key;
+  }
+  if (!active.empty()) {
+    begin_answer_swap();
+    load_vectors(active, dim);
+    end_answer_swap();
+  }
+  if (!sound_spec.empty()) {
+    sounds_.reset(sound_dim);
+    (void)db_->each_frame(sound_spec, [&](const frame_out& f) {
+      sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    });
+  }
+  if (!speech_spec.empty()) load_speech(speech_spec);
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  refresh_counts();
 }
 
 // ---- search ---------------------------------------------------------------------------------------
@@ -2998,6 +3495,7 @@ void engine::search_release(std::uint64_t id) {
 // ---- people -----------------------------------------------------------------------------------------
 
 expected engine::faces_enable(bool enable) {
+  if (importing_elsewhere()) return err(status::busy);
   {
     std::lock_guard lock(settings_m_);
     settings_.faces = enable;

@@ -665,6 +665,21 @@ Local search), what captions, nonsense, "helicopter" and near-miss category quer
 `MV_AI_CALIBRATION_CACHE=<folder>` to keep the embeddings between runs. On a Mac the first Core ML open of a
 tower compiles for 1–5 minutes; the app searches on CPU meanwhile.
 
+Settings → Local search → **Import and export** writes the index of chosen folders to a
+`.mvindex` file (SQLite; paths relative to each folder, optional People and cached thumbnails)
+and merges one back, each folder pointed at where its files are on this machine; the folders are
+then rescanned and anything whose size or date differs is indexed again (plan/17 "Sharing an
+index"). `mv_ai_tests "[transfer]"` runs two engines as two machines over one library copied
+elsewhere: nothing embedded twice, an edited file re-embedded, an empty index adopting the
+file's Quality, a used one skipping another model's vectors, People and thumbnails only when
+ticked, a non-index file refused. Thumbnails cross the host table as bytes (`thumbnail_jpeg`,
+`thumbnail_store_jpeg`, appended to v2; the host decodes what it stores).
+With the real pack, two sideloaded add-on folders are two machines:
+`ai-bench --addons <A> --index <library> --make-thumbs <library> --export <file> --export-flags 2`,
+then `ai-bench --addons <B> --import <file> --import-to <copy elsewhere> --import-flags 2
+--count-thumbs <copy> --query …` (each with its own `MV_DEV_THUMBS_DIR`); `assets_per_s` staying
+0 after the import says nothing was embedded again.
+
 The search field's query language (`Tristan beach`, `Tristan "hello"`, `Tristan or Aaryan`,
 `@tri`, `-beach`, `beach video`, `in:2024`, `before:2025-06`; plan/17 "Query syntax") is parsed
 in the pack by `src/addons/ai/query.*`, so both chromes share it. `mv_ai_tests "[query]"` covers
