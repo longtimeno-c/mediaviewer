@@ -576,7 +576,12 @@ struct rig {
     }
     return out;
   }
-  bool idle(int ms = 15000) { return eng->wait_idle(ms); }
+  // An upper bound, not an expectation: a passing run returns in about a
+  // second. Windows runs the workers in THREAD_MODE_BACKGROUND_BEGIN (lowest
+  // CPU and I/O priority), and a Debug build on a CI runner indexing 40 photos
+  // has taken more than 15 s ("clearing the index...", msvc Debug, 2026-09-28,
+  // twice), which says nothing about whether the engine goes idle.
+  bool idle(int ms = 60000) { return eng->wait_idle(ms); }
 };
 
 }  // namespace

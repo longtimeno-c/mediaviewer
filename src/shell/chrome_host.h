@@ -120,6 +120,11 @@ enum chrome_command : int {
   // the list set_recent_folders last pushed. A folder that is gone beeps and
   // leaves the list, as a welcome-card click does.
   chrome_cmd_open_recent = 1027,
+  // A piece's edge dragged on the timeline. trim_grab: arg is index * 2 +
+  // edge (0 in, 1 out), or -1 to let go; trim_to: arg is the edge's new
+  // source time in milliseconds (exact to 4.6 h in a float). One undo a drag.
+  chrome_cmd_editor_trim_grab = 1028,
+  chrome_cmd_editor_trim_to = 1029,
 };
 
 // chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
@@ -136,8 +141,11 @@ enum class chrome_editor_action : std::int32_t {
   step_forward = 9,
   export_keyframe = 10,  // keep_ranges, cut on keyframes (instant)
   export_exact = 11,     // keep_ranges, re-encoded (frame-accurate)
-  close = 12,
+  close = 12,        // asks first when the edit has not been exported
   show = 13,         // the viewer's "Editing in the Video Editor" card: raise the window
+  mark_in = 14,      // I: marks, cuts nothing (the Mac bridge's codes too)
+  mark_out = 15,     // O
+  clear_marks = 16,  // X
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -251,6 +259,7 @@ static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= k
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
 static_assert(chrome_cmd_drag_items >= kCommandCount && chrome_cmd_drag_ended >= kCommandCount);
 static_assert(chrome_cmd_open_recent >= kCommandCount);
+static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -275,7 +284,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_meta_revert, chrome_cmd_clip_tool, chrome_cmd_clip_index,
       chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date,
       chrome_cmd_editor_seek, chrome_cmd_editor_action,
-      chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent};
+      chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
+      chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -459,10 +469,12 @@ struct chrome_editor_view_args {
   std::uint64_t pieces;        // const int64_t*: (in, out) source pairs, program order
   std::uint64_t name_utf8;
   std::int32_t name_len;
-  std::int32_t reserved;
+  std::int32_t frame_rate_milli;  // the clip's rate x 1000 (29970); 0 unknown
+  std::int64_t mark_in_ns;        // the marked range on the program; -1 unset
+  std::int64_t mark_out_ns;
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 88, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 104, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {

@@ -21,6 +21,7 @@
 #endif
 
 #include <dlfcn.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -588,6 +589,11 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)editorEdit:(int32_t)what;
 - (void)editorSelect:(int32_t)index;
 - (void)editorExport:(BOOL)exact;
+- (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge;
+- (int64_t)editorTrimTo:(int64_t)source_ns;
+- (void)editorTrimEnd;
+- (void)editorShuttle:(int32_t)key phase:(int32_t)phase;
+- (void)editorRequestClose;
 - (void)setEditorOpen:(BOOL)open;
 // Milestone H (plan/17): result listings from the AI pack's search panel, and
 // its match markers on the scrub bar. The Mac twin of mv_folder_open_list.
@@ -1224,7 +1230,19 @@ extern "C" void mv_chrome_editor_export(int32_t exact) {
   if (g_chrome_app) [g_chrome_app editorExport:exact != 0];
 }
 extern "C" void mv_chrome_editor_close(void) {
-  if (g_chrome_app) [g_chrome_app setEditorOpen:NO];
+  if (g_chrome_app) [g_chrome_app editorRequestClose];
+}
+extern "C" bool mv_chrome_editor_trim_begin(int32_t index, int32_t edge) {
+  return g_chrome_app != nil && [g_chrome_app editorTrimBegin:index edge:edge];
+}
+extern "C" int64_t mv_chrome_editor_trim_to(int64_t source_ns) {
+  return g_chrome_app ? [g_chrome_app editorTrimTo:source_ns] : -1;
+}
+extern "C" void mv_chrome_editor_trim_end(void) {
+  if (g_chrome_app) [g_chrome_app editorTrimEnd];
+}
+extern "C" void mv_chrome_editor_shuttle(int32_t key, int32_t phase) {
+  if (g_chrome_app) [g_chrome_app editorShuttle:key phase:phase];
 }
 
 // ---- PR 13 / 14 ---------------------------------------------------------------
@@ -2062,6 +2080,21 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::vector<float> _editorPeaks;
   NSTimer* _editorTick;
   std::int64_t _editorLastSeek;
+  // MV_EDIT_SELFTEST_SOAK: ticks that saw the player inside a cut while playing
+  // (a frame of what was cut may be on screen), and the jumps over cuts.
+  std::uint64_t _editorGlimpses;
+  std::uint64_t _editorJumps;
+  double _editorFps;                      // the clip's frame rate; 0 unknown
+  std::uint64_t _editorExportedRevision;  // the timeline revision last exported
+  mv::shell::editor_shuttle _shuttle;
+  double _editorRate;                     // the rate the editor last asked for
+  bool _shuttleSkimmed;                   // a J burst left a keyframe-seek to settle
+  std::int64_t _shuttleTarget;            // where the last J was going (program time)
+  BOOL _editorClosePrompt;                // the discard sheet is up
+  int32_t _editorTrimIndex;               // the piece whose edge is being dragged
+  int32_t _editorTrimEdge;                // 0 in, 1 out
+  double _soakHold, _soakCpu0, _soakWall0, _soakPlayCpu, _soakPlayWall, _soakPausedCpu;
+  double _soakMain0, _soakPlayMain, _soakPausedMain;
   mv::io::sort_order _sort;
   std::string _currentDir;
   // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
@@ -2121,12 +2154,16 @@ static void MvAdoptNewDefaultViewerTypes() {
   MvLabApp* __weak weakApp = self;
   static MvLabApp* __weak g_addon_app = nil;
   g_addon_app = weakApp;
-  MvAddonsStart(
-      [](void*, const char* path) {
-        MvLabApp* app = g_addon_app;
-        if (app && path) (void)[app openEntryPath:path];
-      },
-      nullptr);
+  // The editor soak measures the editor: an add-on indexing in the background
+  // (the AI pack compiles its models) would swamp it.
+  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    MvAddonsStart(
+        [](void*, const char* path) {
+          MvLabApp* app = g_addon_app;
+          if (app && path) (void)[app openEntryPath:path];
+        },
+        nullptr);
+  }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
       initWithContentRect:rect
@@ -4655,7 +4692,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // workspace decides the tab; crop_mode and trim_mode then do their own work.
   // PR 30 (plan/21, owner): video is edited in its own window, not a pane.
   if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
-    [self setEditorOpen:!_editorOpen];
+    if (_editorOpen) {
+      [self editorRequestClose];
+    } else {
+      [self setEditorOpen:YES];
+    }
     return YES;
   }
   if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
@@ -5667,6 +5708,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->source_ns = _timeline.source_duration();
   out->strip_count = static_cast<int32_t>(_editorStrip.size());
   out->peak_count = static_cast<int32_t>(_editorPeaks.size());
+  out->mark_in_ns = _timeline.marked_in();
+  out->mark_out_ns = _timeline.marked_out();
+  out->frame_rate = _editorFps;
 }
 
 - (void)setEditorOpen:(BOOL)open {
@@ -5689,6 +5733,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _editorPath = path;
     _editorOpen = YES;
     _editorSelected = -1;
+    _editorFps = 0;
+    _editorExportedRevision = 0;
+    _editorRate = 1.0;
+    _shuttle.stop();
+    _shuttleSkimmed = false;
     _editorStrip.clear();
     _editorPeaks.clear();
     _timeline.load(0);
@@ -5712,6 +5761,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (void)editorWindowClosed {
   if (!_editorOpen) return;
+  [self editorSetRate:1.0];  // the viewer gets its clip back at the speed it had
+  _timeline.end_trim();
   _editorOpen = NO;
   ++_editorToken;
   [_editorTick invalidate];
@@ -5820,6 +5871,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _jobs.submit_at(mv::background_generation, [path, token, weakSelf](const mv::job_context&) -> mv::status {
     auto info = mv::edit::clip::probe(path);
     std::int64_t duration = info ? info->duration_ns : 0;
+    const double fps = info ? info->frame_rate : 0.0;
     std::vector<std::int64_t> times;
     for (int i = 0; i < kEditorThumbs && duration > 0; ++i) times.push_back(duration * i / kEditorThumbs);
     auto strip = times.empty() ? mv::result<std::vector<mv::edit::clip::strip_frame>>(
@@ -5830,7 +5882,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
         strip ? std::move(*strip) : std::vector<mv::edit::clip::strip_frame>{});
     auto env = std::make_shared<std::vector<float>>(peaks ? std::move(*peaks) : std::vector<float>{});
     dispatch_async(dispatch_get_main_queue(), ^{
-      [weakSelf editorClipLoaded:token duration:duration strip:frames peaks:env];
+      [weakSelf editorClipLoaded:token duration:duration fps:fps strip:frames peaks:env];
     });
     return info ? mv::status::ok : info.error();
   });
@@ -5838,6 +5890,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (void)editorClipLoaded:(std::uint64_t)token
                 duration:(std::int64_t)duration
+                     fps:(double)fps
                    strip:(std::shared_ptr<std::vector<mv::edit::clip::strip_frame>>)strip
                    peaks:(std::shared_ptr<std::vector<float>>)peaks {
   if (token != _editorToken || !_editorOpen) return;  // another clip, or closed
@@ -5848,6 +5901,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     return;
   }
   _timeline.load(duration);
+  _editorFps = fps > 0 && fps < 1000 ? fps : 0;
+  _editorExportedRevision = _timeline.revision();
   _editorStrip = std::move(*strip);
   _editorPeaks = std::move(*peaks);
   ++_editorGeneration;
@@ -5863,6 +5918,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _editorLastSeek = -1;
     return;
   }
+  if (!_timeline.to_timeline(st.position_ns)) ++_editorGlimpses;
   const std::int64_t lead = 20'000'000;  // a frame's worth, so a cut is not glimpsed
   const std::int64_t want = _timeline.next_play_start(st.position_ns, lead);
   if (want < 0) {
@@ -5872,6 +5928,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   if (want != st.position_ns && want != _editorLastSeek) {
     _editorLastSeek = want;
+    ++_editorJumps;
     [self editorSeekSource:want];
   }
 }
@@ -5894,6 +5951,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (void)editorTogglePlay {
   if (!_timeline.loaded()) return;
+  _shuttle.stop();
+  [self editorSetRate:1.0];
   const auto st = _lab.video_status_snapshot();
   // At the end, Play starts the program again.
   if (!st.playing && _timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
@@ -5906,8 +5965,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   mv_chrome_video_step(frames);
 }
 
-// what: 1 split at the playhead, 2 delete the selected piece, 3 set in,
-// 4 set out, 5 undo, 6 redo.
+// what: 1 split at the playhead, 2 delete (the marked range, else the
+// selected piece), 3 set in, 4 set out, 5 undo, 6 redo, 14 mark in, 15 mark
+// out, 16 clear the marks. The numbers are Windows' chrome_editor_action.
 - (void)editorEdit:(int32_t)what {
   if (!_timeline.loaded()) return;
   const std::int64_t at = [self editorTimelinePosition];
@@ -5915,6 +5975,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   switch (what) {
     case 1: changed = _timeline.split(at); if (changed) _editorSelected = static_cast<int32_t>(_timeline.piece_at(at)); break;
     case 2:
+      if (_timeline.has_marks()) {  // a marked range first, as in every editor
+        const std::int64_t from = std::max<std::int64_t>(0, _timeline.marked_in());
+        changed = _timeline.remove_marked();
+        if (changed) [self editorSeek:std::min(from, _timeline.length())];
+        break;
+      }
       if (_editorSelected < 0) _editorSelected = static_cast<int32_t>(_timeline.piece_at(at));
       changed = _timeline.remove(static_cast<std::size_t>(_editorSelected));
       if (changed) {
@@ -5926,6 +5992,14 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case 4: changed = _timeline.set_out(at); break;
     case 5: changed = _timeline.undo(); break;
     case 6: changed = _timeline.redo(); break;
+    // Marks change no piece: they never beep and never count as an edit.
+    case 14: _timeline.mark_in(at); ++_editorGeneration; return;
+    case 15: _timeline.mark_out(at); ++_editorGeneration; return;
+    case 16:
+      if (!_timeline.has_marks()) NSBeep();
+      _timeline.clear_marks();
+      ++_editorGeneration;
+      return;
     default: break;
   }
   if (!changed) NSBeep();
@@ -5938,6 +6012,157 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   ++_editorGeneration;
 }
 
+// A piece's edge dragged on the timeline (edge 0 in, 1 out). The preview shows
+// the frame at the edge: a keyframe seek while it moves, the exact frame on
+// release, as the viewer's scrubber does.
+- (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge {
+  if (!_timeline.loaded() || index < 0) return NO;
+  const auto which = edge == 0 ? mv::shell::video_timeline::edge::in : mv::shell::video_timeline::edge::out;
+  if (!_timeline.begin_trim(static_cast<std::size_t>(index), which)) return NO;
+  _editorTrimEdge = edge;
+  _editorTrimIndex = index;
+  _editorSelected = index;
+  const auto st = _lab.video_status_snapshot();
+  if (st.playing) mv_chrome_video_toggle();
+  ++_editorGeneration;
+  return YES;
+}
+
+- (std::int64_t)editorEdgeFrame:(std::int64_t)at {
+  // The out edge shows the last frame kept, not the first one cut.
+  return _editorTrimEdge == 0 ? at : std::max<std::int64_t>(0, at - 1);
+}
+
+- (int64_t)editorTrimTo:(int64_t)source_ns {
+  const std::int64_t at = _timeline.trim_to(source_ns);
+  if (at < 0) return -1;
+  _snap.video_seek_ns = [self editorEdgeFrame:at];
+  _snap.video_seek_ms = _snap.video_seek_ns / 1'000'000;
+  _snap.video_seek_exact = false;
+  ++_snap.video_seek_seq;
+  [self publish];
+  ++_editorGeneration;
+  return at;
+}
+
+- (void)editorTrimEnd {
+  if (!_timeline.trimming()) return;
+  _timeline.end_trim();
+  const auto& pieces = _timeline.pieces();
+  if (_editorTrimIndex >= 0 && static_cast<std::size_t>(_editorTrimIndex) < pieces.size()) {
+    const auto& p = pieces[static_cast<std::size_t>(_editorTrimIndex)];
+    [self editorSeekSource:[self editorEdgeFrame:_editorTrimEdge == 0 ? p.in_ns : p.out_ns]];
+  }
+  ++_editorGeneration;
+}
+
+// The speed ladder is the viewer's (present_lab_mac.mm kLadder); the editor
+// moves along it by rungs, as the viewer's speed keys do.
+- (void)editorSetRate:(double)rate {
+  static constexpr int kRates[] = {25, 50, 100, 150, 200, 400};
+  auto rung = [](int x100) {
+    int best = 0;
+    for (int i = 0; i < 6; ++i) {
+      if (std::abs(kRates[i] - x100) < std::abs(kRates[best] - x100)) best = i;
+    }
+    return best;
+  };
+  const int want = rung(static_cast<int>(std::lround(rate * 100)));
+  const int have = rung(_lab.video_status_snapshot().rate_x100);
+  _editorRate = rate;
+  if (want == have) return;
+  _snap.video_speed_steps += want - have;
+  [self publish];
+}
+
+// J K L (plan/16): key 0 J, 1 K, 2 L; phase 0 down, 1 auto-repeat, 2 up.
+- (void)editorShuttle:(int32_t)key phase:(int32_t)phase {
+  if (!_timeline.loaded()) return;
+  const auto st = _lab.video_status_snapshot();
+  switch (key) {
+    case 0: {  // J: skim back, further on each quick press
+      if (phase == 2) {
+        // Let go: the keyframe skim settles on the exact frame.
+        if (_shuttleSkimmed) [self editorSeekSource:_timeline.to_source(_shuttleTarget)];
+        _shuttleSkimmed = false;
+        return;
+      }
+      if (st.playing) mv_chrome_video_toggle();
+      [self editorSetRate:1.0];
+      const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch()).count();
+      const std::int64_t to = _shuttle.back([self editorTimelinePosition], now, phase == 1);
+      _shuttleTarget = to;
+      _editorLastSeek = -1;
+      _snap.video_seek_ns = _timeline.to_source(to);
+      _snap.video_seek_ms = _snap.video_seek_ns / 1'000'000;
+      _snap.video_seek_exact = phase == 0;  // a held key skims keyframes; release settles
+      _shuttleSkimmed = phase == 1;
+      ++_snap.video_seek_seq;
+      [self publish];
+      _editorSelected = static_cast<int32_t>(_timeline.piece_at(to));
+      ++_editorGeneration;
+      return;
+    }
+    case 1:  // K: stop
+      if (phase != 0) return;
+      _shuttle.stop();
+      if (st.playing) mv_chrome_video_toggle();
+      [self editorSetRate:1.0];
+      return;
+    case 2: {  // L: play, faster on each press
+      if (phase != 0) return;
+      const double rate = _shuttle.forward();
+      [self editorSetRate:rate];
+      if (!st.playing) {
+        if (_timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
+          [self editorSeekSource:_timeline.pieces().front().in_ns];
+        }
+        mv_chrome_video_toggle();
+      }
+      return;
+    }
+    default: return;
+  }
+}
+
+// Done, Esc, the close button, ⌘W, Enter in the viewer: an edit that has not
+// been exported since it last changed asks first. Closing it any other way
+// (the self-test, another clip on the canvas) does not.
+- (void)editorRequestClose {
+  if (!_editorOpen) return;
+  if (_editorClosePrompt) return;
+  if (!_timeline.edited() || _timeline.revision() == _editorExportedRevision || self.editorWindow == nil) {
+    [self setEditorOpen:NO];
+    return;
+  }
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Discard this edit?";
+  alert.informativeText =
+      @"The edit has not been exported. Closing the Video Editor discards it; the clip itself is never changed.";
+  [alert addButtonWithTitle:@"Keep editing"];
+  NSButton* discard = [alert addButtonWithTitle:@"Discard"];
+  discard.hasDestructiveAction = YES;
+  _editorClosePrompt = YES;
+  __weak MvLabApp* weakSelf = self;
+  [alert beginSheetModalForWindow:self.editorWindow
+                completionHandler:^(NSModalResponse response) {
+                  MvLabApp* me = weakSelf;
+                  if (me == nil) return;
+                  me->_editorClosePrompt = NO;
+                  if (response == NSAlertSecondButtonReturn) [me setEditorOpen:NO];
+                }];
+}
+
+- (BOOL)windowShouldClose:(NSWindow*)sender {
+  if (self.editorWindow != nil && sender == self.editorWindow && _editorOpen && _timeline.edited() &&
+      _timeline.revision() != _editorExportedRevision) {
+    [self editorRequestClose];
+    return NO;
+  }
+  return YES;
+}
+
 - (void)editorExport:(BOOL)exact {
   if (!_timeline.loaded() || _editorPath.empty()) return;
   if (!_timeline.edited()) {
@@ -5946,6 +6171,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     return;
   }
   (void)[self submitClipJob:_timeline.export_request(_editorPath, exact)];
+  _editorExportedRevision = _timeline.revision();
   [self noticeShow:exact ? std::string("Exporting the edit (exact) — see Jobs")
                          : std::string("Exporting the edit — see Jobs")];
   ++_editorGeneration;
@@ -6044,6 +6270,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
 }
 
+- (void)editSelfTestLine:(NSString*)line dir:(NSString*)dir {
+  NSString* log = [dir stringByAppendingPathComponent:@"state.txt"];
+  NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:log];
+  if (fh == nil) {
+    [line writeToFile:log atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    return;
+  }
+  [fh seekToEndOfFile];
+  [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+  [fh closeFile];
+}
+
 - (void)editSelfTestStep:(int)step dir:(NSString*)dir {
   using enum mv::shell::command_id;
   const auto kNoBack = mv::shell::back_target::none;
@@ -6057,13 +6295,65 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       case 1: [self editSelfTestSnap:@"c0-viewer" dir:dir]; [self runCommand:edit_workspace back:kNoBack]; break;
       case 2: break;  // the strip is read on a worker
       case 3: [self editSelfTestSnap:@"c1-editor" dir:dir];
+        if (std::getenv("MV_EDIT_SELFTEST_SOAK") != nullptr) {
+          [self editorSoak:dir];
+          return;
+        }
         [self editorSeek:third];
         break;
-      case 4: [self editorEdit:1]; [self editorSeek:2 * third]; break;
-      case 5: [self editorEdit:1]; [self editorSelect:1]; [self editorEdit:2]; break;  // cut the middle third
-      case 6: [self editSelfTestSnap:@"c2-cut" dir:dir]; [self editorExport:NO]; [self editorExport:YES]; break;
-      case 7: case 8: case 9: case 10: break;  // the exports run (exact re-encodes on the GPU)
-      case 11: [self editSelfTestSnap:@"c3-exported" dir:dir]; [self setEditorOpen:NO]; break;
+      // Cut the middle third as a marked range (I, O, Delete), then drag the
+      // join's incoming edge half a second later: one trim, one undo step.
+      case 4: [self editorEdit:14]; [self editorSeek:2 * third]; break;
+      case 5: {
+        [self editorEdit:15];
+        [self editorEdit:2];
+        const std::int64_t cut_ms = _timeline.length() / 1'000'000;
+        if (_timeline.pieces().size() == 2 && [self editorTrimBegin:1 edge:0]) {
+          (void)[self editorTrimTo:_timeline.pieces()[1].in_ns + 500'000'000];
+          [self editorTrimEnd];
+        }
+        [self editSelfTestLine:[NSString stringWithFormat:@"    polish: marked_cut_length_ms=%lld trimmed_length_ms=%lld pieces=%zu marks=%d\n",
+                                                         static_cast<long long>(cut_ms),
+                                                         static_cast<long long>(_timeline.length() / 1'000'000),
+                                                         _timeline.pieces().size(), _timeline.has_marks() ? 1 : 0]
+                          dir:dir];
+        break;
+      }
+      case 6: [self editSelfTestSnap:@"c2-cut" dir:dir]; [self editorExport:NO]; [self editorExport:YES];
+        [self editorShuttle:2 phase:0];  // L
+        [self editorShuttle:2 phase:0];  // L again: 2x
+        break;
+      case 7:
+        [self editSelfTestLine:[NSString stringWithFormat:@"    polish: shuttle_rate_x100=%d playing=%d\n",
+                                                         _lab.video_status_snapshot().rate_x100,
+                                                         _lab.video_status_snapshot().playing ? 1 : 0]
+                          dir:dir];
+        [self editorShuttle:1 phase:0];  // K
+        break;
+      case 8: case 9: break;  // the exports run (exact re-encodes on the GPU)
+      case 10:
+        // Exported: closing would not ask. An undo makes it unexported again.
+        [self editSelfTestLine:[NSString stringWithFormat:@"    polish: after_k_rate_x100=%d playing=%d\n",
+                                                         _lab.video_status_snapshot().rate_x100,
+                                                         _lab.video_status_snapshot().playing ? 1 : 0]
+                          dir:dir];
+        (void)_timeline.undo();
+        ++_editorGeneration;
+        [self editorRequestClose];
+        break;
+      case 11:
+        [self editSelfTestSnap:@"c3-exported" dir:dir];
+        [self editSelfTestLine:[NSString stringWithFormat:@"    polish: close_asked=%d open=%d\n",
+                                                         self.editorWindow.attachedSheet != nil ? 1 : 0,
+                                                         _editorOpen ? 1 : 0]
+                          dir:dir];
+        // Discard, as the sheet's second button does.
+        if (self.editorWindow.attachedSheet != nil) {
+          [self.editorWindow endSheet:self.editorWindow.attachedSheet returnCode:NSAlertSecondButtonReturn];
+        } else {
+          [self setEditorOpen:NO];
+        }
+        break;
       case 12: [self editSelfTestSnap:@"c4-closed" dir:dir]; done = YES; break;
     }
   } else {
@@ -6097,6 +6387,125 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                  dispatch_get_main_queue(), ^{
                    [weakSelf editSelfTestStep:step + 1 dir:dir];
                  });
+}
+
+// MV_EDIT_SELFTEST_SOAK=<seconds> (clip only): the Video Editor's cost and seams.
+// Cuts the program to three pieces with two joins, plays it through three
+// times, then sits paused, then closes the editor and sits again, and writes
+// the process's CPU for each phase, the ticks that saw a cut, and the jumps,
+// to state.txt as one `soak:` line. Then quits.
+static double mv_cpu_seconds() {
+  rusage u{};
+  getrusage(RUSAGE_SELF, &u);
+  return static_cast<double>(u.ru_utime.tv_sec + u.ru_stime.tv_sec) +
+         static_cast<double>(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6;
+}
+
+// The main thread's own CPU: the chrome (SwiftUI) and the editor's ticks run
+// there; decode and presents do not, so this is the UI cost on its own.
+static double mv_main_cpu_seconds() {
+  thread_basic_info_data_t info{};
+  mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+  const mach_port_t self_thread = mach_thread_self();
+  const kern_return_t kr =
+      thread_info(self_thread, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count);
+  mach_port_deallocate(mach_task_self(), self_thread);
+  if (kr != KERN_SUCCESS) return 0;
+  return static_cast<double>(info.user_time.seconds + info.system_time.seconds) +
+         static_cast<double>(info.user_time.microseconds + info.system_time.microseconds) / 1e6;
+}
+
+static double mv_wall_seconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+- (void)editorSoak:(NSString*)dir {
+  _soakHold = std::max(1.0, std::atof(std::getenv("MV_EDIT_SELFTEST_SOAK")));
+  const std::int64_t sixth = _timeline.length() / 6;
+  for (int k = 1; k <= 5; ++k) (void)_timeline.split(k * sixth);
+  // Keep sixths 0, 2, 4 and 5: two cuts to jump, and the end of the program.
+  for (int k : {3, 1}) (void)_timeline.remove(static_cast<std::size_t>(k));
+  ++_editorGeneration;
+  [self editorSoakPass:0 dir:dir];
+}
+
+- (void)editorSoakAfter:(double)seconds run:(dispatch_block_t)block {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(seconds * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), block);
+}
+
+- (void)editorSoakPass:(int)pass dir:(NSString*)dir {
+  const double program = static_cast<double>(_timeline.length()) / 1e9;
+  __weak MvLabApp* weakSelf = self;
+  // Paused at the start, whatever the viewer's autoplay left running.
+  if (_lab.video_status_snapshot().playing) mv_chrome_video_toggle();
+  [self editorSeek:0];
+  [self editorSoakAfter:0.6 run:^{
+    MvLabApp* me = weakSelf;
+    if (me == nil) return;
+    if (pass == 0) {
+      me->_editorGlimpses = 0;
+      me->_editorJumps = 0;
+      me->_soakCpu0 = mv_cpu_seconds();
+      me->_soakMain0 = mv_main_cpu_seconds();
+      me->_soakWall0 = mv_wall_seconds();
+    }
+    if (!me->_lab.video_status_snapshot().playing) [me editorTogglePlay];
+    [me editorSoakAfter:program + 0.8 run:^{
+      MvLabApp* me2 = weakSelf;
+      if (me2 == nil) return;
+      if (pass + 1 < 3) {
+        [me2 editorSoakPass:pass + 1 dir:dir];
+        return;
+      }
+      me2->_soakPlayCpu = mv_cpu_seconds() - me2->_soakCpu0;
+      me2->_soakPlayWall = mv_wall_seconds() - me2->_soakWall0;
+      me2->_soakPlayMain = mv_main_cpu_seconds() - me2->_soakMain0;
+      me2->_soakCpu0 = mv_cpu_seconds();
+      me2->_soakMain0 = mv_main_cpu_seconds();
+      [me2 editorSoakAfter:me2->_soakHold run:^{
+        MvLabApp* me3 = weakSelf;
+        if (me3 == nil) return;
+        me3->_soakPausedCpu = mv_cpu_seconds() - me3->_soakCpu0;
+        me3->_soakPausedMain = mv_main_cpu_seconds() - me3->_soakMain0;
+        [me3 setEditorOpen:NO];
+        [me3 editorSoakAfter:1.0 run:^{
+          MvLabApp* me4 = weakSelf;
+          if (me4 == nil) return;
+          me4->_soakCpu0 = mv_cpu_seconds();
+          me4->_soakMain0 = mv_main_cpu_seconds();
+          [me4 editorSoakAfter:me4->_soakHold run:^{
+            [weakSelf editorSoakFinish:dir program:program];
+          }];
+        }];
+      }];
+    }];
+  }];
+}
+
+- (void)editorSoakFinish:(NSString*)dir program:(double)program {
+  const double closed = mv_cpu_seconds() - _soakCpu0;
+  const double closed_main = mv_main_cpu_seconds() - _soakMain0;
+  NSString* line = [NSString
+      stringWithFormat:@"soak: program_s=%.2f passes=3 hold_s=%.0f play_cpu_pct=%.1f paused_cpu_pct=%.1f "
+                       @"closed_cpu_pct=%.1f main_play_pct=%.2f main_paused_pct=%.2f main_closed_pct=%.2f "
+                       @"glimpse_ticks=%llu jumps=%llu\n",
+                       program, _soakHold, 100.0 * _soakPlayCpu / std::max(0.001, _soakPlayWall),
+                       100.0 * _soakPausedCpu / _soakHold, 100.0 * closed / _soakHold,
+                       100.0 * _soakPlayMain / std::max(0.001, _soakPlayWall), 100.0 * _soakPausedMain / _soakHold,
+                       100.0 * closed_main / _soakHold,
+                       static_cast<unsigned long long>(_editorGlimpses),
+                       static_cast<unsigned long long>(_editorJumps)];
+  NSString* log = [dir stringByAppendingPathComponent:@"state.txt"];
+  NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:log];
+  if (fh == nil) {
+    [line writeToFile:log atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  } else {
+    [fh seekToEndOfFile];
+    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
+  }
+  [NSApp terminate:nil];
 }
 
 // ---- PR 11: colour adjusts, the adjust pane, the FP16 working image -----------

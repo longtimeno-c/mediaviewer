@@ -14,6 +14,9 @@ void video_timeline::load(time_ns duration_ns) {
   if (duration_ > 0) pieces_.push_back({0, duration_});
   undo_.clear();
   redo_.clear();
+  clear_marks();
+  trim_index_ = kNoTrim;
+  ++revision_;
 }
 
 video_timeline::time_ns video_timeline::length() const noexcept {
@@ -74,6 +77,8 @@ bool video_timeline::replace(std::vector<range> next) {
   if (next.empty() || next == pieces_) return false;
   push_history();
   pieces_ = std::move(next);
+  clear_marks();
+  ++revision_;
   return true;
 }
 
@@ -115,19 +120,109 @@ bool video_timeline::set_out(time_ns timeline_t) {
   return replace(std::move(next));
 }
 
+void video_timeline::mark_in(time_ns timeline_t) {
+  if (pieces_.empty()) return;
+  mark_in_ = std::clamp<time_ns>(timeline_t, 0, length());
+  if (mark_out_ >= 0 && mark_out_ <= mark_in_) mark_out_ = -1;
+}
+
+void video_timeline::mark_out(time_ns timeline_t) {
+  if (pieces_.empty()) return;
+  mark_out_ = std::clamp<time_ns>(timeline_t, 0, length());
+  if (mark_in_ >= 0 && mark_in_ >= mark_out_) mark_in_ = -1;
+}
+
+bool video_timeline::remove_marked() {
+  if (!has_marks()) return false;
+  return remove_range(mark_in_ >= 0 ? mark_in_ : 0, mark_out_ >= 0 ? mark_out_ : length());
+}
+
+bool video_timeline::remove_range(time_ns from, time_ns to) {
+  from = std::clamp<time_ns>(from, 0, length());
+  to = std::clamp<time_ns>(to, 0, length());
+  if (to - from <= 0) return false;
+  std::vector<range> next;
+  time_ns start = 0;
+  for (const range& p : pieces_) {
+    const time_ns len = p.out_ns - p.in_ns;
+    // The part of this piece before the range, and the part after it.
+    const time_ns keep_head = std::clamp<time_ns>(from - start, 0, len);
+    const time_ns keep_tail = std::clamp<time_ns>(start + len - to, 0, len);
+    if (keep_head + keep_tail >= len) {
+      next.push_back(p);  // the range misses this piece
+    } else {
+      if (keep_head >= kMinPiece) next.push_back({p.in_ns, p.in_ns + keep_head});
+      if (keep_tail >= kMinPiece) next.push_back({p.out_ns - keep_tail, p.out_ns});
+    }
+    start += len;
+  }
+  return replace(std::move(next));
+}
+
+bool video_timeline::begin_trim(std::size_t index, edge which) {
+  if (index >= pieces_.size()) return false;
+  trim_index_ = index;
+  trim_edge_ = which;
+  trim_pushed_ = false;
+  return true;
+}
+
+video_timeline::time_ns video_timeline::trim_to(time_ns source_t) {
+  if (trim_index_ >= pieces_.size()) return -1;
+  const std::size_t i = trim_index_;
+  range& p = pieces_[i];
+  time_ns lo = 0;
+  time_ns hi = 0;
+  time_ns* at = nullptr;
+  if (trim_edge_ == edge::in) {
+    lo = i > 0 ? pieces_[i - 1].out_ns : 0;
+    hi = p.out_ns - kMinPiece;
+    at = &p.in_ns;
+  } else {
+    lo = p.in_ns + kMinPiece;
+    hi = i + 1 < pieces_.size() ? pieces_[i + 1].in_ns : duration_;
+    at = &p.out_ns;
+  }
+  if (hi < lo) return *at;
+  const time_ns v = std::clamp(source_t, lo, hi);
+  if (v != *at) {
+    if (!trim_pushed_) {
+      push_history();
+      trim_pushed_ = true;
+    }
+    *at = v;
+    clear_marks();
+    ++revision_;
+  }
+  return v;
+}
+
+void video_timeline::end_trim() {
+  // A drag that came back to where it started is not an edit.
+  if (trim_pushed_ && !undo_.empty() && undo_.back() == pieces_) undo_.pop_back();
+  trim_index_ = kNoTrim;
+  trim_pushed_ = false;
+}
+
 bool video_timeline::undo() {
   if (undo_.empty()) return false;
+  end_trim();
   redo_.push_back(std::move(pieces_));
   pieces_ = std::move(undo_.back());
   undo_.pop_back();
+  clear_marks();
+  ++revision_;
   return true;
 }
 
 bool video_timeline::redo() {
   if (redo_.empty()) return false;
+  end_trim();
   undo_.push_back(std::move(pieces_));
   pieces_ = std::move(redo_.back());
   redo_.pop_back();
+  clear_marks();
+  ++revision_;
   return true;
 }
 
@@ -145,6 +240,31 @@ edit::clip::request video_timeline::export_request(std::string source, bool exac
   // the duration had.
   if (!r.ranges.empty() && r.ranges.back().out_ns >= duration_) r.ranges.back().out_ns = -1;
   return r;
+}
+
+double editor_shuttle::forward() noexcept {
+  level_ = std::min(level_ + 1, 3);
+  last_back_ = -1;
+  return kRates[level_];
+}
+
+void editor_shuttle::stop() noexcept {
+  level_ = 0;
+  last_back_ = -1;
+}
+
+editor_shuttle::time_ns editor_shuttle::back(time_ns playhead, time_ns now, bool repeat) noexcept {
+  level_ = 0;
+  time_ns from = playhead;
+  if (last_back_ >= 0 && now - last_back_ <= kBurst) {
+    if (!repeat) skim_ = std::min(skim_ * 2, kMaxSkim);
+    from = target_;
+  } else {
+    skim_ = kFirstSkim;
+  }
+  target_ = std::max<time_ns>(0, from - skim_);
+  last_back_ = now;
+  return target_;
 }
 
 }  // namespace mv::shell

@@ -597,6 +597,9 @@ typedef struct mv_editor_view {
   int32_t edited;         // anything cut: Export has something to write
   int32_t strip_count;
   int32_t peak_count;
+  int64_t mark_in_ns;     // the marked range on the program; -1 unset
+  int64_t mark_out_ns;
+  double frame_rate;      // the clip's; 0 unknown (timecode falls back to hundredths)
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -613,13 +616,23 @@ int32_t mv_chrome_editor_peaks(float* out, int32_t cap);
 void mv_chrome_editor_seek(int64_t timeline_ns);
 void mv_chrome_editor_toggle_play(void);
 void mv_chrome_editor_step(int32_t frames);
-// 1 split at the playhead, 2 delete the selected piece, 3 set in, 4 set out,
-// 5 undo, 6 redo. A change that changes nothing beeps.
+// 1 split at the playhead, 2 delete (the marked range, else the selected
+// piece), 3 set in (cut everything before), 4 set out (cut everything after),
+// 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks. A change that
+// changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
 void mv_chrome_editor_select(int32_t index);
 // Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
 void mv_chrome_editor_export(int32_t exact);
+// Asks before discarding an edit that has not been exported.
 void mv_chrome_editor_close(void);
+// Dragging a piece's edge (edge 0 in, 1 out): begin, move in source time (the
+// return is where the edge is, clamped; -1 not trimming), end. One undo step.
+bool mv_chrome_editor_trim_begin(int32_t index, int32_t edge);
+int64_t mv_chrome_editor_trim_to(int64_t source_ns);
+void mv_chrome_editor_trim_end(void);
+// J K L: key 0 J, 1 K, 2 L; phase 0 down, 1 auto-repeat, 2 up.
+void mv_chrome_editor_shuttle(int32_t key, int32_t phase);
 
 #ifdef __cplusplus
 }
