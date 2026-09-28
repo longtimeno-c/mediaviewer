@@ -391,6 +391,11 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     auto it = p->towers.find(q);
     return it == p->towers.end() ? std::string() : it->second.name;
   };
+  d.clip_spec = [p](std::uint32_t q) {
+    if (!p->ready) return std::string();
+    auto it = p->towers.find(q);
+    return it == p->towers.end() ? std::string() : it->second.spec_key();
+  };
   d.backend_available = [p](infer::backend b) {
     if (!p->ready) return false;
     return p->rt && p->rt->has_provider(b);

@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <string_view>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -510,6 +511,32 @@ void MV_CALL t_audio_close(void*, void* audio) {
   }
 }
 
+mv_status MV_CALL t_thumbnail_jpeg(void* host, const char* path, int64_t pts_ms, uint8_t* out,
+                                   uint64_t cap, uint64_t* out_size) {
+  return guarded([&] {
+    if (!path || !out_size) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().thumbnail_jpeg;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto r = fn(path, pts_ms);
+    if (!r) return to_mv(r.error());
+    *out_size = r->size();
+    if (!out || cap < r->size()) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, r->data(), r->size());
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_thumbnail_store_jpeg(void* host, const char* path, int64_t pts_ms, const uint8_t* jpeg,
+                                         uint64_t size) {
+  return guarded([&] {
+    if (!path || !jpeg || size == 0) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().store_thumbnail_jpeg;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto r = fn(path, pts_ms, std::span<const std::uint8_t>(jpeg, static_cast<std::size_t>(size)));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -551,6 +578,8 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.audio_open = &t_audio_open;
   api_.audio_read = &t_audio_read;
   api_.audio_close = &t_audio_close;
+  api_.thumbnail_jpeg = &t_thumbnail_jpeg;
+  api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

@@ -256,6 +256,20 @@ void faces_db::load_locked() {
   }
 }
 
+expected faces_db::import_with(const std::function<expected(sqlite3*)>& fn) {
+  std::lock_guard lock(m_);
+  expected r = fn(db_);
+  // Whatever landed, the clusters come from the rows again, and a refinement
+  // snapshot taken before the import can no longer commit (serial).
+  serial_ = ++g_serial;
+  dirty_.clear();
+  loose_.clear();
+  protos_.clear();
+  touched_at_.clear();
+  load_locked();
+  return r;
+}
+
 std::int64_t faces_db::assign_locked(std::span<const float> emb, const std::set<std::int64_t>& rejected) {
   std::int64_t best = 0;
   float best_score = -2.0f, second = -2.0f;

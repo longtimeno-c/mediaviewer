@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,15 @@ namespace media {
 // whose moment the pack has not thumbed). `cancel` is polled when given.
 [[nodiscard]] result<std::vector<std::uint8_t>> encode_moment_thumb(
     const std::string& path, std::int64_t pts_ms, const std::atomic<bool>* cancel = nullptr);
+// Sharing an index (plan/17): the cached JPEG-512 of a still (pts_ms < 0)
+// or a moment as bytes, looked up only (status::io on a miss); and bytes made
+// on another machine stored under this machine's stamp of the file. The bytes
+// are untrusted: they are decoded, and only a JPEG whose long edge is at most
+// 512 is stored.
+[[nodiscard]] result<std::vector<std::uint8_t>> thumbnail_jpeg(const std::string& path,
+                                                               std::int64_t pts_ms);
+[[nodiscard]] expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
+                                            std::span<const std::uint8_t> jpeg);
 [[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
                                                                std::uint32_t sample_rate,
                                                                std::int64_t start_ms);

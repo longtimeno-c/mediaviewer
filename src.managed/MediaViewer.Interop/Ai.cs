@@ -84,6 +84,15 @@ public enum MvAiMedia : uint
     Both = 3,
 }
 
+/// <summary>Mirrors <c>MV_AI_TRANSFER_*</c> (plan/17 "Sharing an index").</summary>
+[Flags]
+public enum MvAiTransfer : uint
+{
+    None = 0,
+    People = 1,   // face vectors, people and names: the file then identifies them
+    Thumbs = 2,   // the viewer's cached JPEG-512 tiles
+}
+
 /// <summary>Mirrors <c>MV_AI_MATCH_*</c>: why a result matched.</summary>
 [Flags]
 public enum MvAiMatch : uint
@@ -223,6 +232,12 @@ public unsafe struct MvAiApi
 
     // appended 2026-09-28 (plan/23): a result clip's length for an NLE hand-off
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, long*, MvStatus> ResultDuration;
+    // sharing an index (2026-09-28, plan/17 "Sharing an index")
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, ulong*, uint, uint, ulong*, MvStatus> ExportIndex;
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> InspectExport;
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, ulong*, MvStatus> ImportIndex;
+    public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, uint*, MvStatus> TransferJson;
+    public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> TransferCancel;
 }
 
 /// <summary>
@@ -483,6 +498,52 @@ public sealed unsafe class AiApi
     /// <summary>"Index anyway": ignore the battery pause until the machine is next on AC
     /// (or the app restarts). Never saved; the threshold setting is unchanged.</summary>
     public void IndexAnyway() => SetSetting("battery_override", "1");
+
+    // ---- sharing an index (plan/17 "Sharing an index") ----
+    /// <summary>
+    /// Queues an export of <paramref name="roots"/> (empty: every root) to
+    /// <paramref name="dest"/>. Runs on the pack's own thread; progress and the
+    /// outcome through <see cref="TransferJson"/>. Throws Busy while another
+    /// export or import runs.
+    /// </summary>
+    public ulong ExportIndex(string dest, IReadOnlyList<ulong> roots, MvAiTransfer flags)
+    {
+        ulong job;
+        ulong[] ids = roots.ToArray();
+        fixed (byte* d = Z(dest))
+        fixed (ulong* r = ids)
+        {
+            Check(_api->ExportIndex(Ctx, d, ids.Length == 0 ? null : r, (uint)ids.Length, (uint)flags, &job));
+        }
+        return job;
+    }
+
+    /// <summary>Worker (reads the file): what it holds and whether it can answer here.</summary>
+    public string InspectExport(string file)
+    {
+        byte[] f = Z(file);
+        return ReadJson((b, c, n) =>
+        {
+            fixed (byte* p = f) return _api->InspectExport(Ctx, p, b, c, n);
+        });
+    }
+
+    /// <summary>Queues an import. <paramref name="mapJson"/>: <c>[{"id":root in the file,"path":"folder here"}]</c>.</summary>
+    public ulong ImportIndex(string file, string mapJson, MvAiTransfer flags)
+    {
+        ulong job;
+        fixed (byte* f = Z(file))
+        fixed (byte* m = Z(mapJson))
+        {
+            Check(_api->ImportIndex(Ctx, f, m, (uint)flags, &job));
+        }
+        return job;
+    }
+
+    /// <summary>No-block: the last export / import, its progress and outcome.</summary>
+    public string TransferJson() => ReadJson((b, c, n) => _api->TransferJson(Ctx, b, c, n));
+
+    public void TransferCancel() => Check(_api->TransferCancel(Ctx));
 
     public ulong SearchThisPerson(string path, long ptsMs)
     {

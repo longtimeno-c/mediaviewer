@@ -137,6 +137,9 @@ struct engine_deps {
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
   // "CLIP ViT-B/32" for a quality, without opening it (Settings).
   std::function<std::string(std::uint32_t quality)> model_name;
+  // The index key of a quality's tower, without opening it (sharing an
+  // index: which Quality a file's vectors belong to). "" when not carried.
+  std::function<std::string(std::uint32_t quality)> clip_spec;
   std::function<std::string()> runtime_version;
   // A vendor piece installed or removed since the runtime loaded: the
   // change needs the app to start again (the runtime cannot be swapped live).
@@ -260,6 +263,19 @@ class engine {
   // refinement"); how many left them. Only ever on request. [worker-thread]
   [[nodiscard]] result<std::uint32_t> person_refine(std::int64_t person);
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
+
+  // ---- sharing an index (plan/17 "Sharing an index") ---------------------------
+  // An export / import runs on the control thread, one at a time (status::busy
+  // while one is queued or running); transfer_json reports it. [no-block]
+  [[nodiscard]] result<std::uint64_t> export_index(const std::string& dest, std::vector<std::int64_t> roots,
+                                                   std::uint32_t flags);
+  // `map_json`: [{"id": file root, "path": folder here}]; roots left out stay out.
+  [[nodiscard]] result<std::uint64_t> import_index(const std::string& file, const std::string& map_json,
+                                                   std::uint32_t flags);
+  // What a file holds and whether its vectors can answer here. [worker-thread]
+  [[nodiscard]] result<std::string> inspect_export(const std::string& file);
+  [[nodiscard]] std::string transfer_json() const;
+  void transfer_cancel() noexcept;
 
   // ---- for tests -----------------------------------------------------------------
   // Blocks until the queue is empty and every worker idle (or `ms` elapses).
@@ -401,6 +417,35 @@ class engine {
                std::uint32_t match, std::string snippet) const;
   static void finish(search_state& st);
   std::vector<float> query_vector(const loaded_clip& answer, const std::string& text);
+  // sharing an index
+  struct transfer_job {
+    std::uint64_t id = 0;
+    bool import = false;
+    std::string file;
+    std::vector<std::int64_t> roots;                         // export
+    std::vector<std::pair<std::int64_t, std::string>> map;   // import: file root -> folder here
+    std::uint32_t flags = 0;
+  };
+  void run_transfer(transfer_job job);  // control thread
+  [[nodiscard]] std::string run_export(const transfer_job& job, mv::status& st);
+  [[nodiscard]] std::string run_import(const transfer_job& job, mv::status& st);
+  // The picture specs a file's rows may land under here, and the Quality to
+  // adopt (0 none) when this index is empty and the file's tower is carried.
+  struct spec_plan {
+    std::set<std::string> specs;
+    std::string picture;       // the file's picture spec when usable here, else ""
+    std::uint32_t adopt = 0;
+    std::string why_not;       // "model" | "no_models" | ""
+  };
+  [[nodiscard]] spec_plan plan_specs(const std::string& file_picture_spec);
+  // Every in-memory view of the index from its rows again (after an import).
+  void reload_from_db();
+  void set_transfer_progress(double f);
+  // An import holds index.db (and People) for its one transaction: a [no-block]
+  // call that would write them answers status::busy rather than wait on it.
+  [[nodiscard]] bool importing_elsewhere() const noexcept {
+    return transferring_.load() && std::this_thread::get_id() != control_.get_id();
+  }
   // settings
   void save_settings() const;
   void load_settings();
@@ -514,6 +559,22 @@ class engine {
   std::map<std::uint64_t, std::shared_ptr<search_state>> searches_;
   std::uint64_t next_search_ = 1;
   std::mutex text_cache_m_;
+
+  // sharing an index
+  mutable std::mutex transfer_m_;
+  std::deque<transfer_job> transfer_queue_;  // at most one
+  std::uint64_t next_transfer_ = 1;
+  struct transfer_view {
+    std::uint64_t id = 0;
+    bool import = false;
+    bool running = false;
+    bool done = false;
+    std::int32_t status = 0;  // mv_status once done
+    double fraction = 0;
+    std::string outcome;      // the finished job's counts, a JSON object
+  } transfer_;
+  std::atomic<bool> transfer_cancel_{false};
+  std::atomic<bool> transferring_{false};  // workers wait (an import)
   std::deque<std::pair<std::string, std::vector<float>>> text_cache_;
 };
 

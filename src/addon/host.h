@@ -15,7 +15,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
+#include <vector>
 
 #include <mediaviewer/mediaviewer_addon.h>
 
@@ -47,6 +49,13 @@ struct host_services {
                                                       std::uint32_t sample_rate,
                                                       std::int64_t start_ms)>
       open_audio;
+  // Sharing an index (plan/17): the cache's JPEG-512 bytes for a still
+  // (pts_ms < 0) or a moment, looked up only; and storing bytes made elsewhere.
+  std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms)>
+      thumbnail_jpeg;
+  std::function<expected(const std::string& path, std::int64_t pts_ms,
+                         std::span<const std::uint8_t> jpeg)>
+      store_thumbnail_jpeg;
   // The verified folder of an installed piece of the add-on's family.
   // loaded_addon::load fills it from the store when left empty.
   std::function<result<std::string>(const std::string& piece_id)> piece_dir;

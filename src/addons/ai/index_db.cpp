@@ -595,6 +595,11 @@ expected index_db::clear() {
   return {};
 }
 
+expected index_db::with_connection(const std::function<expected(sqlite3*)>& fn) {
+  std::lock_guard lock(m_);
+  return fn(db_);
+}
+
 std::uint64_t index_db::bytes() {
   std::lock_guard lock(m_);
   std::uint64_t n = 0;

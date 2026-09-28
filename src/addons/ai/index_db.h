@@ -218,6 +218,9 @@ class index_db {
   [[nodiscard]] expected set_meta(const std::string& key, const std::string& value);
   [[nodiscard]] expected clear();       // every row, then VACUUM: frees the disk
   [[nodiscard]] std::uint64_t bytes();  // the file plus its WAL
+  // Sharing an index (transfer.h): `fn` runs on this file's connection with
+  // its lock held, so no other call interleaves with an import.
+  [[nodiscard]] expected with_connection(const std::function<expected(sqlite3*)>& fn);
 
  private:
   index_db() = default;
