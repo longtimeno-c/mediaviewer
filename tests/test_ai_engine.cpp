@@ -893,6 +893,15 @@ TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leave
 
   auto photos_of = r.search("photos of Anna");
   CHECK(photos_of.size() == 3);
+  // The query language (plan/17 "Query syntax"): a name while it is typed, an
+  // explicit @prefix, leaving a person out, and a kind nobody has.
+  CHECK(r.search("Ann").size() == 3);
+  CHECK(r.search("anna").size() == 3);
+  CHECK(r.search("@an").size() == 3);
+  CHECK(r.search("-Anna").size() == 3);  // everything else: two of Ben, one red
+  CHECK(r.search("Anna video").empty());
+  CHECK(r.search("@zzz").empty());
+  CHECK(r.search("in:1999").empty());    // file dates: these were written today
   // A face thumbnail comes from the viewer's cache, never a crop on disk.
   auto faces = mv::json::parse(r.eng->person_faces_json(anna));
   REQUIRE(faces);
@@ -981,6 +990,22 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
 
   // Photos still answer as pictures alongside.
   CHECK(r.search("red").front().first == "red_photo.jpg");
+
+  // Quoted words must be said, in that order (plan/17 "Query syntax"); the
+  // phrase is the snippet. A kind or a date narrows them like anything else.
+  const std::uint64_t quoted = r.eng->search_text("\"make a wish\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(quoted, 5000));
+  rows = r.rows(quoted);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows.front().first == "party_talk_bark.mp4");
+  CHECK(r.eng->result_at(quoted, 0)->match == MV_AI_MATCH_SPEECH);
+  CHECK(r.eng->result_snippet(quoted, 0)->find("wish") != std::string::npos);
+  CHECK(r.search("\"wish a make\"").empty());
+  CHECK(r.search("said:birthday video").size() == 1);
+  CHECK(r.search("said:birthday photo").empty());
+  CHECK(r.search("\"birthday\" before:2000").empty());
+  CHECK(r.search("red -\"birthday\"").front().first == "red_photo.jpg");
+  CHECK(r.search("\"make a wi").size() == 1);  // a quote still being typed
 }
 
 TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {

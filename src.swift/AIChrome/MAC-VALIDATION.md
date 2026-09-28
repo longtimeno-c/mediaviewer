@@ -269,8 +269,13 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       `MV_ADDON_EVENT_AI_SEARCH_DONE` (Instruments' os_signpost or the lead's log timing) — record
       p50 / p95 over 20 queries.
 - [ ] recall@10 on the labelled eval set meets the target recorded from PR 20.
-- [ ] "Nothing matches “qwxzv”. Try describing what's in the picture: “dog on a beach”." for a
-      nonsense query.
+- [ ] "Nothing matches “qwxzv”. Try fewer words, or describe what's in the picture." (and the
+      syntax hint) for a nonsense query.
+- [ ] **Query syntax (2026-09-28, plan/17):** with a person named, typing the first letters
+      shows their name under the field and their photos first; Tab completes it. `<name>
+      "<words said>"` finds only that person's clips with those words (snippet shown);
+      `<name> <scene>`, `-<name>`, `<scene> video`, `in:<year>` narrow as documented.
+      "mountain" and "mountains" return the same results.
 - [ ] **Enter lands on the moment:** Enter on a clip tile → the viewer shows the result list
       (path row shows the query and "N results"), the clip opens **paused** on the stored
       moment, within one GOP-decode of the PTS (compare against a burned-in timecode clip); the
