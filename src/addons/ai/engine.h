@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -214,6 +215,9 @@ class engine {
       std::uint64_t id, const std::string& path) const;
   void search_release(std::uint64_t id);
   [[nodiscard]] result<std::string> result_snippet(std::uint64_t id, std::uint32_t index) const;
+  // Named people for the word being typed (query.h suggest):
+  // [{"id":1,"name":"Tristan","completion":"Tristan "}]  [worker-thread]
+  [[nodiscard]] std::string suggest_json(const std::string& query);
 
   // ---- people ------------------------------------------------------------------
   [[nodiscard]] expected faces_enable(bool enable);
@@ -240,6 +244,7 @@ class engine {
     std::string dir_key;  // its folder's key
     asset_kind kind = asset_kind::photo;
     std::int64_t root = 0;
+    std::int64_t mtime = 0;  // unix seconds: in: / before: / after: (query.h)
   };
   struct result_row {
     std::int64_t asset = 0;
@@ -337,6 +342,16 @@ class engine {
   std::uint64_t submit(std::function<void(search_state&)> run);
   std::function<bool(std::int64_t)> scope_filter(const std::string& scope_dir, std::uint32_t scope,
                                                  std::uint32_t kinds) const;
+  // The assets in scope, of `kinds`, with a file date in [from_unix, to_unix):
+  // a snapshot, so a scan never takes assets_m_.
+  std::shared_ptr<std::set<std::int64_t>> scope_assets(
+      const std::string& scope_dir, std::uint32_t scope, std::uint32_t kinds,
+      std::int64_t from_unix = std::numeric_limits<std::int64_t>::min(),
+      std::int64_t to_unix = std::numeric_limits<std::int64_t>::max()) const;
+  // The picture tower's rows for a description (find_text), the query and the
+  // matrix read as one pair (answer_gen_). `gate` false: no "nothing found".
+  std::vector<vector_store::hit> picture_hits(const std::string& text, const std::function<bool(std::int64_t)>& allow,
+                                              bool gate, std::uint32_t precision);
   // Merges one model's hits into the result rows (one row per asset, its best
   // moment first). `text`: rank by margin over the generic prompts and apply
   // the "nothing found" rule; else rank by score.

@@ -230,15 +230,25 @@ TEST_CASE("scan stats: the top ten stand out per asset, not per frame", "[ai][in
 namespace {
 
 // The picture search as engine::search_text ran it before the Precision
-// setting (18f7998), kept verbatim to prove level 2 unchanged: the scan, the
-// z rows, then group()'s "nothing found" gate. `person` is a name in the query
-// (no gate).
+// setting (18f7998), kept to prove level 2 unchanged: the scan, the z rows,
+// then group()'s "nothing found" gate. `person` is a name in the query (no
+// gate). One deliberate change since (2026-09-28): a query whose rows clear
+// the margin on several assets is believable at the calibrated margin even
+// when its z is below noise's (scan_stats::over_margin, the owner's
+// "mountain").
 std::vector<mv::ai::vector_store::hit> search_before_precision(const mv::ai::vector_store& store,
                                                                std::span<const float> v, float result_margin,
                                                                float query_margin, float query_z, float result_z,
                                                                bool person) {
   mv::ai::vector_store::scan_stats stats;
   auto hits = store.scan(v, {}, 5000, true, result_margin, -1.0f, &stats);
+  {
+    std::set<std::int64_t> over;
+    for (const auto& h : hits) {
+      if (h.score - h.generic >= query_margin) over.insert(h.asset);
+    }
+    stats.over_margin = std::min(over.size(), stats.broad_assets());
+  }
   const bool stands_out = stats.stands_out(query_z);
   const float margin_needed = stats.margin_needed(query_margin);
   if (stands_out && stats.sd > 0) {
@@ -558,18 +568,22 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
       const std::vector<std::string> captions(all_captions.begin(), all_captions.begin() + static_cast<std::ptrdiff_t>(count));
       INFO(count << " photos");
       // The engine's rule (vector_store::scan_stats) on these photos.
-      const auto accepted = [&](float best_margin, float z) {
-        mv::ai::vector_store::scan_stats st;
-        st.assets = count;
-        st.top10_z = z;
-        return st.stands_out(spec->query_z) || best_margin >= st.margin_needed(spec->query_margin);
-      };
       std::vector<std::vector<float>> generic;
       for (const auto& g : spec->generic_prompts) generic.push_back(*(*model)->embed_text(g));
       const auto margin_of = [&](const std::vector<float>& q, std::size_t i) {
         float best_g = -1;
         for (const auto& g : generic) best_g = std::max(best_g, cosine(embs[i], g));
         return cosine(embs[i], q) - best_g;
+      };
+      const auto accepted = [&](const std::vector<float>& q, float best_margin, float z) {
+        mv::ai::vector_store::scan_stats st;
+        st.assets = count;
+        st.top10_z = z;
+        // The images over the query margin (find_text's over_margin, 2026-09-28).
+        for (std::size_t i = 0; i < embs.size() && st.over_margin < st.broad_assets(); ++i) {
+          if (margin_of(q, i) >= spec->query_margin) ++st.over_margin;
+        }
+        return st.stands_out(spec->query_z) || best_margin >= st.margin_needed(spec->query_margin);
       };
       // The engine's second test (vector_store::scan_stats): the ten best
       // images' mean score, in standard deviations of all the images' scores.
@@ -611,7 +625,7 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
         for (std::size_t r = 0; r < 10 && r < order.size(); ++r) best_margin = std::max(best_margin, margin_of(q, order[r]));
         const float z = top10_z(q);
         INFO("best margin " << best_margin << ", top-ten z " << z);
-        CHECK(accepted(best_margin, z));
+        CHECK(accepted(q, best_margin, z));
       }
       for (const char* text : {"xyzzy plugh qwertyuiop", "asdf", "blorf zxqv"}) {
         const auto nonsense = *(*model)->embed_text(text);
@@ -622,7 +636,7 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
         for (std::size_t r = 0; r < 10 && r < by.size(); ++r) nonsense_margin = std::max(nonsense_margin, margin_of(nonsense, by[r]));
         const float z = top10_z(nonsense);
         INFO(spec->id << " \"" << text << "\" margin " << nonsense_margin << ", top-ten z " << z);
-        CHECK_FALSE(accepted(nonsense_margin, z));
+        CHECK_FALSE(accepted(nonsense, nonsense_margin, z));
       }
     }
   }
@@ -654,6 +668,17 @@ TEST_CASE("what noise scores grows with the index", "[ai][infer][vectors]") {
   CHECK(std::fabs(st.margin_needed(0.04f) - 0.06f) < 1e-6f);
   st.top10_z = 2.3f;
   CHECK(std::fabs(st.margin_needed(0.04f) - 0.04f) < 1e-6f);
+  // ... unless the margin is cleared on several assets: a subject that fills
+  // much of the library scores like noise because it is the mean (the owner's
+  // "mountain", 2026-09-28). One lucky asset is not several.
+  st.top10_z = 2.0f;
+  CHECK(st.broad_assets() == 5);
+  st.over_margin = 1;
+  CHECK(std::fabs(st.margin_needed(0.04f) - 0.06f) < 1e-6f);
+  st.over_margin = 5;
+  CHECK(std::fabs(st.margin_needed(0.04f) - 0.04f) < 1e-6f);
+  st.assets = 10000;
+  CHECK(st.broad_assets() == 100);  // 1 %: nonsense reached 0.6 % of 503 assets
 }
 
 TEST_CASE("a greyscale JPEG decodes to RGB for the index", "[ai][infer][decode]") {

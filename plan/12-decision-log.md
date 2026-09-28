@@ -2760,3 +2760,25 @@ again, as before 2026-09-27. In its place a magnifier icon ends the command bar'
 answer goes only to the model that owns it (Mac), the result-list fixes, and "Index this folder"
 inside the ⌘F panel. The `gallery_search` id was the last appended command, so removing it
 renumbers nothing.
+
+## 2026-09-28 — Local search: broad subjects pass "nothing found"; one query language
+
+Owner: "mountain" found nothing while "mountains" found hundreds, "Trist" found nothing until
+"Tristan" was typed, and he wanted people, words said and a description in one query.
+
+- **Reversed in part: the 2026-09-27 margin penalty.** "Nothing found" asked 1.5 x the margin
+  of any query whose best assets scored no better than noise. A subject in half the library
+  scores like noise because it is the mean: on the owner's 503-asset index "mountain" (z 1.75
+  against noise's 2.40) missed 0.060 with 0.059, "mountains" passed with 0.070. A query whose
+  rows clear the calibrated margin on max(5, 1 %) of the assets is now believable at that
+  margin (`scan_stats::over_margin`). Nonsense there reached 3 of 503; the gap is thin and
+  measured on one library, so the COCO `[.calibration]` re-run is owed (plan/17).
+- **Number pairing.** A picture query's last noun is embedded as the mean of its singular and
+  plural (one batched text-tower run), so the two spellings are one query.
+- **Query language in the pack** (`src/addons/ai/query.*`, plan/17 "Query syntax"): names
+  (whole, first name, `@prefix`, and a lone word that starts a name shows them first), quoted
+  words said, `or`, `-` exclusions, kinds, and file dates. People side by side now mean all of
+  them in one photo ("Tristan and Aaryan" was either); `or` is either. `mv.ai.1` gains
+  `suggest_json` (appended) for names while typing; Tab completes on both platforms. Quoted
+  words search speech transcripts only: the index has no OCR.
+- The search field's placeholder no longer suggests "dog on a beach" (owner).
