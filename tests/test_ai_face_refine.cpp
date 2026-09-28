@@ -48,10 +48,16 @@ struct world {
     n = std::sqrt(n);
     for (float& x : v) x = static_cast<float>(x / n);
   }
+  // Box-Muller on raw mt19937 words: std::normal_distribution's sequence is
+  // implementation-defined, so libc++ and the MSVC STL would test different data.
+  double uniform() { return (static_cast<double>(rng()) + 0.5) / 4294967296.0; }
+  float gauss(float sigma) {
+    const double r = std::sqrt(-2.0 * std::log(uniform()));
+    return static_cast<float>(sigma * r * std::cos(6.283185307179586 * uniform()));
+  }
   std::vector<float> direction() {
-    std::normal_distribution<float> g(0, 1);
     std::vector<float> v(kDim);
-    for (float& x : v) x = g(rng);
+    for (float& x : v) x = gauss(1);
     normalise(v);
     return v;
   }
@@ -64,9 +70,8 @@ struct world {
   }
   std::int64_t face(const std::vector<float>& base, std::int64_t person, float noise = 0.075f,
                     float quality = 0.8f, bool pinned = false) {
-    std::normal_distribution<float> g(0, noise);
     std::vector<float> v = base;
-    for (float& x : v) x += g(rng);
+    for (float& x : v) x += gauss(noise);
     normalise(v);
     refine_face f;
     f.id = next_id++;
