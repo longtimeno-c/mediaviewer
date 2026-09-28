@@ -1521,7 +1521,7 @@ internal sealed class SearchWindow : Window, IDisposable
         // Drag the original out (Explorer, an editor): the file, never the
         // moment; a clip result carries the whole clip.
         root.CanDrag = true;
-        root.DragStarting += (_, e) =>
+        root.DragStarting += (sender, e) =>
         {
             DragOperationDeferral deferral = e.GetDeferral();
             _ = StartResultDragAsync(tile.Path, e, deferral);
