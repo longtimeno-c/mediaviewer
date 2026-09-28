@@ -768,7 +768,7 @@ name it and of both sides when they merge (the faces they were looking at); on u
 of every named person. Covers now prefer pinned faces, so the face shown is the anchor.
 
 **The refinement** (`face_refine.h/.cpp`, pure; `faces_db::refine_begin / refine_commit`;
-`engine::refine_people_pass`). Per person: *refs* = pinned + good-quality members (≤ 256);
+`engine::person_refine`). Per person: *refs* = pinned + good-quality members (≤ 256);
 *anchors* = the pinned faces plus the refs' medoid (for a person with pins, the medoid only if it
 is within 0.40 of a pin, so an impostor majority cannot define a named person); *core* = refs
 within 0.40 of an anchor (one hop, no chain); *exemplars* = pinned then core, ≤ 12. A face's
@@ -812,12 +812,17 @@ R100) would need a licence check first: most public ArcFace/InsightFace weights 
 non-commercial and fail `ai-models.py check`, and it would add ~100-250 MB to the People piece.
 Not proposed until the numbers below say SFace + refinement is not enough.
 
-**When it runs.** Control thread, at most once a minute, only while indexing is idle and the
-viewer is not asking the pack to yield; the snapshot and the commit hold the People lock, the
-compute holds nothing and stops on shutdown. The commit skips any face the user (or a scan)
-changed after the snapshot: the user wins. Incremental: only persons whose faces changed since
-the last call are rebuilt and judged; the rest answer from cached prototypes. A full call runs
-after open, when a quarter of the people are dirty, and after 64 incremental ones.
+**When it runs** (owner, 2026-09-28: plan/12). **Only when the user asks:** "Refine faces" in
+the person's sheet (Mac) or detail pane (Windows) under Settings → People calls `mv.ai.1`'s
+`person_refine` on a worker. Nothing refines in the background; the idle consolidate merge is
+unchanged. The call takes a full snapshot (every person is a candidate, rebuilt from its faces)
+and judges **only that person's faces** (`refine_input::focus`): a face may move to someone
+else, leave to unassigned, or, with others that left together, become a new unnamed person.
+Other people's faces and unassigned faces are never moved, and nothing is admitted into the
+person. The snapshot and the commit hold the People lock, the compute holds nothing and stops
+on shutdown. The commit skips any face the user (or a scan) changed after the snapshot: the
+user wins. The chrome reports how many faces left. The incremental path (cached prototypes,
+`refine_begin(false)`) stays in faces.db and its tests but no caller uses it now.
 
 **Cost** (Apple M5, one thread, `-O2`, synthetic 128-d SFace-like vectors, Zipf-sized people):
 
@@ -835,7 +840,8 @@ whose true person had one face), none stayed wrong, and 6 of ~19 k correct faces
 **Tests.** `tests/test_ai_face_refine.cpp` (`[refine]`, in `mv_ai_tests`, no pack needed):
 chaining (a glued-on person comes back out as one new person), outlier and clear-mistake moves,
 pinned anchors defining a named person against an impostor majority, rejection and weak faces,
-an ambiguous face staying, incremental calls against cached prototypes, convergence (a second
+an ambiguous face staying, a focused call moving only its person's faces, incremental calls
+against cached prototypes, convergence (a second
 call moves nothing), quality measures; and through faces.db: a library clustered with the old
 looseness comes apart with the named person keeping its pinned cover, a user split made between
 snapshot and commit wins, a re-analysis replaces a vector in place.

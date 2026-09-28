@@ -223,6 +223,7 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
     for (std::size_t i = 0; i < nf; ++i) {
       const refine_face& f = in.faces[i];
       if (f.pinned || frozen[i]) continue;
+      if (in.focus != 0 && f.person != in.focus) continue;
       if (pass > 0 && !changed.count(where[i]) && !changed.count(last[i].best_person)) continue;
       if ((i & 1023) == 0 && cancelled()) return refine_output{};
       const float* v = row(i);
@@ -287,6 +288,7 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
     for (std::size_t i = 0; i < nf; ++i) {
       const refine_face& f = in.faces[i];
       if (f.pinned || frozen[i] || where[i] <= 0) continue;
+      if (in.focus != 0 && f.person != in.focus) continue;
       const verdict& vd = last[i];
       if (vd.own == kNoEvidence) continue;
       const bool shaky = vd.own < p.join;
@@ -301,7 +303,9 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
   if (in.regroup) {
     std::vector<std::size_t> pool;
     for (std::size_t i = 0; i < nf; ++i) {
-      if (where[i] == 0 && !in.faces[i].pinned && in.faces[i].quality >= p.weak_quality) pool.push_back(i);
+      if (where[i] != 0 || in.faces[i].pinned || in.faces[i].quality < p.weak_quality) continue;
+      if (in.focus != 0 && in.faces[i].person != in.focus) continue;
+      pool.push_back(i);
     }
     std::sort(pool.begin(), pool.end(), [&](std::size_t a, std::size_t b) {
       const refine_face& fa = in.faces[a];

@@ -301,6 +301,16 @@ typedef struct mv_ai_api {
    * is accepted (Tab). [worker-thread] */
   mv_status(MV_CALL* suggest_json)(void* ctx, const char* query_utf8, char* out, uint32_t cap,
                                    uint32_t* needed);
+
+  /* ---- people refinement on request (2026-09-28, plan/17 "People refinement") */
+  /* "Refine": re-checks every face filed under this person against them and
+   * everyone else, in passes, and files the misplaced ones out (to another
+   * person, to nobody, or to a new person when several leave together).
+   * Faces the user placed (split, named cover, merged) are never moved. Runs
+   * only when called; nothing refines People in the background.
+   * `out_removed` (may be NULL): faces that left the person. Posts
+   * MV_ADDON_EVENT_AI_PEOPLE when anything moved. [worker-thread] */
+  mv_status(MV_CALL* person_refine)(void* ctx, uint64_t person_id, uint32_t* out_removed);
 } mv_ai_api;
 
 #ifdef __cplusplus

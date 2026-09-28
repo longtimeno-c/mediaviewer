@@ -393,6 +393,23 @@ final class ManagementModel: ObservableObject {
     }.value
   }
 
+  /// A pack built before person_refine was appended has no "Refine faces".
+  var canRefine: Bool { table.has(\mv_ai_api.person_refine) }
+
+  /// "Refine faces" (plan/17 "People refinement"): the pack re-checks this
+  /// person's faces and files the misplaced ones out. Only ever on request.
+  /// How many left the person; nil when it could not run.
+  func refine(_ person: UInt64) async -> UInt32? {
+    guard canRefine else { return nil }
+    let t = table
+    let removed: UInt32? = await Task.detached {
+      var n: UInt32 = 0
+      return t.call { t.a.person_refine?(t.ctx, person, &n) } == MV_OK ? n : nil
+    }.value
+    reloadPeople()
+    return removed
+  }
+
   /// "Not this person" for each face, then one reload.
   func reject(_ faces: [UInt64]) {
     guard !faces.isEmpty else { return }
