@@ -653,7 +653,8 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
    larger `--quit-after` quits once the pack is idle.
 
 `mv_ai_tests "[refine]"` runs the People refinement (plan/17 "People refinement") on synthetic
-face vectors and a temporary faces.db; it needs no pack.
+face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
+**Refine faces** on a person under Settings → People.
 
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
 `MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`

@@ -218,6 +218,9 @@ public unsafe struct MvAiApi
     // query language (2026-09-28, plan/17 "Query syntax")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> SuggestJson;
 
+    // people refinement on request (2026-09-28, plan/17 "People refinement")
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint*, MvStatus> PersonRefine;
+
     // appended 2026-09-28 (plan/23): a result clip's length for an NLE hand-off
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, long*, MvStatus> ResultDuration;
 }
@@ -407,6 +410,17 @@ public sealed unsafe class AiApi
     public void PersonRename(ulong person, string name) { fixed (byte* p = Z(name)) Check(_api->PersonRename(Ctx, person, p)); }
     public void PersonMerge(ulong into, ulong from) => Check(_api->PersonMerge(Ctx, into, from));
     public void FaceReject(ulong face) => Check(_api->FaceReject(Ctx, face));
+
+    /// <summary>
+    /// Worker: "Refine faces". Re-checks this person's faces and files the
+    /// misplaced ones out; returns how many left the person. Only on request.
+    /// </summary>
+    public uint PersonRefine(ulong person)
+    {
+        uint removed;
+        Check(_api->PersonRefine(Ctx, person, &removed));
+        return removed;
+    }
 
     public ulong FaceSplit(IReadOnlyList<ulong> faces)
     {

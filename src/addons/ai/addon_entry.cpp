@@ -244,6 +244,14 @@ mv_status MV_CALL t_face_split(void* ctx, const uint64_t* faces, uint32_t count,
     return MV_OK;
   });
 }
+mv_status MV_CALL t_person_refine(void* ctx, uint64_t person, uint32_t* out_removed) {
+  return guard([&] {
+    auto r = eng(ctx).person_refine(static_cast<std::int64_t>(person));
+    if (!r) return to_mv(r.error());
+    if (out_removed) *out_removed = *r;
+    return MV_OK;
+  });
+}
 mv_status MV_CALL t_search_person(void* ctx, uint64_t person, const char* scope_dir, uint32_t scope,
                                   uint64_t* out_id) {
   return guard([&] {
@@ -363,6 +371,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.root_set_media = &t_root_media;
     a.result_snippet = &t_result_snippet;
     a.suggest_json = &t_suggest_json;
+    a.person_refine = &t_person_refine;
     a.result_duration = &t_result_duration;
 
     *out = mv_addon_api{};
