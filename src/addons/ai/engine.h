@@ -313,6 +313,7 @@ class engine {
   };
   // With the opt-in on: `model` (opened when null) and its database.
   faces_parts open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model = nullptr);
+  void refine_people_pass();  // [control-thread] plan/17 "People refinement"
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends

@@ -648,6 +648,9 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
    old wait of up to 5 s, `--quit-hash` re-verifies the pack meanwhile as Settings does, and a
    larger `--quit-after` quits once the pack is idle.
 
+`mv_ai_tests "[refine]"` runs the People refinement (plan/17 "People refinement") on synthetic
+face vectors and a temporary faces.db; it needs no pack.
+
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
 `MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`
 make `mv_ai_tests` run its model cases; `"[.bench]"` prints CPU / Core ML timings and

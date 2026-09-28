@@ -732,6 +732,120 @@ searched. Per keystroke the parse is linear in the query and one `SELECT` of the
 Removed 2026-09-28 at the owner's request; replaced by a search icon in the path bar (it opens
 the `Ctrl+F` / `⌘F` panel; shown while the pack is loaded or starting; plan/12 2026-09-28).
 
+### People refinement (2026-09-28, owner report)
+
+Owner: "a few cases where people are clearly allocated under the wrong person"; asked for a final
+check that re-looks at the face thumbnails, in a few passes. Shared core only (`src/addons/ai`,
+`src/infer`); no ABI or chrome change, so no host half on either platform.
+
+**Why faces landed under the wrong person.** Measured against the code, not guessed:
+
+1. **Wrong units.** `same_person` (0.40, just above SFace's 0.363 verification threshold) is a
+   *pairwise* cosine, but a face was scored against the *normalised* centroid of the cluster.
+   Face · centroid/|centroid| equals the mean pairwise cosine divided by |mean|, which is about
+   √ρ for a person whose faces agree at ρ; for ρ ≈ 0.5 that inflates a stranger ~1.4×. A
+   lookalike at 0.30 pairwise (below verification) read 0.42 and joined.
+2. **Online, first come.** Each face joined the best cluster at arrival, with no second look: no
+   margin over the runner-up, the centroid drifting with every face it took in, the order of
+   indexing deciding.
+3. **The idle merge chained.** `consolidate(0.55)` compared normalised centroids (so ~0.28 mean
+   pairwise across two clusters merged) and grew the survivor as it went, so A took B, then the
+   A+B centroid took C. It could also glue an unnamed cluster onto a named person.
+4. **Every face counted the same.** A blurred, tiny or profile crop (YuNet 0.8, 4 % of the short
+   side) has a noisy vector near "a face in general"; it joined, and pulled the centroid.
+5. **The user's own work was not an anchor.** Naming, merging and splitting changed rows but left
+   nothing that later clustering had to respect, other than `rejected` and `no_merge`.
+
+**What changed in the online path** (`faces.cpp`): scores are mean pairwise cosine
+(sum · v / n) everywhere (assign, "this person", consolidate); a new face with a second person
+within 0.03 of the best waits **unassigned** (`person_id` NULL) rather than guessing;
+consolidate merges at mean pairwise **0.42**, an average that stays an average after a merge (no
+walk). The user's faces are **pinned**: the faces they split out; the cover of a person when they
+name it and of both sides when they merge (the faces they were looking at); on upgrade, the cover
+of every named person. Covers now prefer pinned faces, so the face shown is the anchor.
+
+**The refinement** (`face_refine.h/.cpp`, pure; `faces_db::refine_begin / refine_commit`;
+`engine::refine_people_pass`). Per person: *refs* = pinned + good-quality members (≤ 256);
+*anchors* = the pinned faces plus the refs' medoid (for a person with pins, the medoid only if it
+is within 0.40 of a pin, so an impostor majority cannot define a named person); *core* = refs
+within 0.40 of an anchor (one hop, no chain); *exemplars* = pinned then core, ≤ 12. A face's
+**support** by a person is the mean of its top 3 cosines to that person's exemplars (not itself),
+in pairwise units. Candidates are shortlisted by the core mean (sum · v / n), top 3 re-scored by
+exemplars. Then, for every face that is not pinned:
+
+| Verdict | Rule |
+|---|---|
+| **move** to b | support(b) ≥ join (0.40) and beats both its own person and the runner-up by margin 0.08; never a weak face; never into a person it was rejected from |
+| **evict** to unassigned | support(own) < keep 0.30 (0.34 for a weak face) |
+| **admit** (unassigned) | the same test as move |
+| **regroup** | unassigned good faces within 0.40 of a leader and at 0.40 mean to the group so far (average linkage), ≥ 2, become a new unnamed person |
+
+Passes are Jacobi (a pass judges every face against the same prototypes, so order never
+matters), up to 4, until nothing changes; a face changes at most once per call, and keep < join
+is the hysteresis that stops a face flapping between calls. A pass after the first rebuilds and
+re-judges only the persons the previous one changed. Weak = quality < 0.35, where quality =
+min(size, sharpness, frontal) × (0.6 + 0.4 × detector score): size ramps 40 → 112 px (SFace's
+input), sharpness is the Laplacian variance of the aligned crop's luma on a log ramp 20 → 300,
+frontal is the nose's offset from the eye midline against half the eye distance. Rows from before
+this change have no quality; they get a proxy from score and box size.
+
+**Why these numbers.** join = core = the model's `same_person` (0.40): moving a face should need
+the same evidence that let it join. keep 0.30 sits below SFace's 0.363, so a face is evicted only
+when even its three nearest housemates do not vouch for it; 0.34 for a weak face because its
+vector is noisier and a doubt should cost it more. The margin 0.08 is about the spread of one
+SFace face's cosines to a person's faces; below that, "closer" is noise (the synthetic
+ambiguous case sits at ~0.10 with one noisy face, and at ~0 when truly halfway). All of this is
+defaults in `refine_params`; none has been fitted to a labelled face set yet (see Unverified).
+
+**Re-looking at the thumbnails.** The existing SFace model at higher quality, not a new model:
+**flip averaging** (the ArcFace template is mirror-symmetric, so the mirrored 112 × 112 crop is
+aligned too; the embedding is the normalised mean of both; one more ~1 ms embedder run per
+face). New analyses record it (`tta`); borderline faces of stills from before it (support below
+join, or a rival within the margin) are re-analysed, 16 assets per call and once per asset per
+session, and the new vectors replace the old box by box (IoU ≥ 0.5 keeps the row's id, person
+and pin). The spec key is unchanged: a flip-averaged vector is the same model in the same space,
+and bumping the key would re-detect the whole library. A second face model (e.g. an ArcFace
+R100) would need a licence check first: most public ArcFace/InsightFace weights are
+non-commercial and fail `ai-models.py check`, and it would add ~100-250 MB to the People piece.
+Not proposed until the numbers below say SFace + refinement is not enough.
+
+**When it runs.** Control thread, at most once a minute, only while indexing is idle and the
+viewer is not asking the pack to yield; the snapshot and the commit hold the People lock, the
+compute holds nothing and stops on shutdown. The commit skips any face the user (or a scan)
+changed after the snapshot: the user wins. Incremental: only persons whose faces changed since
+the last call are rebuilt and judged; the rest answer from cached prototypes. A full call runs
+after open, when a quarter of the people are dirty, and after 64 incremental ones.
+
+**Cost** (Apple M5, one thread, `-O2`, synthetic 128-d SFace-like vectors, Zipf-sized people):
+
+| Library | Full call | Incremental (one person + 20 new faces) |
+|---|---|---|
+| 5 k faces / 100 people | 34 ms | 1.1 ms |
+| 20 k / 300 | 135 ms | 4.1 ms |
+| 100 k / 1,500 | 2.7 s | 58 ms |
+
+The full call is O(faces × people × 128) for the shortlist; memory is the snapshot's vectors
+(512 B a face: ~50 MB at 100 k, freed after). On that synthetic set with 5 % of faces misfiled,
+every misfiled face was either moved to the right person (~65 %) or unfiled (~35 %, mostly faces
+whose true person had one face), none stayed wrong, and 6 of ~19 k correct faces were unfiled.
+
+**Tests.** `tests/test_ai_face_refine.cpp` (`[refine]`, in `mv_ai_tests`, no pack needed):
+chaining (a glued-on person comes back out as one new person), outlier and clear-mistake moves,
+pinned anchors defining a named person against an impostor majority, rejection and weak faces,
+an ambiguous face staying, incremental calls against cached prototypes, convergence (a second
+call moves nothing), quality measures; and through faces.db: a library clustered with the old
+looseness comes apart with the named person keeping its pinned cover, a user split made between
+snapshot and commit wins, a re-analysis replaces a vector in place.
+
+**Unverified.** Built with CMake on neither platform (the build trees were wiped): the pure
+logic, faces.cpp and the tests were compiled standalone with Apple clang 21 (`-Wall -Wextra
+-Wconversion -Wshadow`, ASan + UBSan) against the system SQLite and a minimal Catch2 stand-in,
+passing on 100 random seeds; engine.cpp, pack.cpp and models.cpp were only checked with
+`-fsyntax-only`. Not run: `mv_ai_tests` under MSVC `/W4 /WX`, the engine people case with the
+refinement live, the real SFace pack (so flip averaging's gain and the thresholds are untested on
+real faces), a labelled people set (none exists; it is what should tune join / keep / margin),
+and PR 1's present-loop gate on either platform while a full call runs.
+
 ## Open decisions (owner)
 
 1. ~~**D3D12 / DirectML.**~~ **Settled 2026-09-24:** vendor providers (OpenVINO, CUDA/TensorRT)

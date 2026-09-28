@@ -747,6 +747,59 @@ std::uint64_t engine::settled_answer_gen() const {
   return answer_gen_.load();
 }
 
+// People refinement (plan/17): re-checks faces against their person's core,
+// in passes. Control thread, only while indexing is idle. The snapshot and
+// the commit hold the People lock (a full snapshot reads every face vector:
+// ~50 MB at 100 k faces); the compute between them holds nothing, so a worker
+// or a People call never waits on it, and a user correction made meanwhile
+// wins (the commit skips any face that changed).
+void engine::refine_people_pass() {
+  refine_snapshot snap;
+  refine_params params;
+  std::string spec;
+  std::uint32_t dim = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_ || !faces_->refine_due()) return;
+    params.join = faces_model_->same_person();
+    params.core = faces_model_->same_person();
+    spec = faces_model_->spec_key();
+    dim = faces_model_->dim();
+    snap = faces_->refine_begin(false);
+  }
+  refine_input in;
+  in.dim = dim;
+  in.emb = snap.emb;
+  in.faces = snap.faces;
+  in.fixed = snap.fixed;
+  in.named = snap.named;
+  in.regroup = true;
+  in.cancel = &stopping_;
+  const refine_output out = refine_people(in, params);
+  if (stopping_) return;
+  refine_stats st;
+  std::size_t rescanned = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return;  // People was turned off or reopened
+    st = faces_->refine_commit(snap, out);
+    // Borderline stills from before flip averaging: the People pass looks
+    // at them again, and the new vectors replace the old box by box.
+    for (std::int64_t asset : st.recheck_assets) {
+      if (faces_->rescan(asset, spec)) {
+        faces_scanned_.erase(asset);
+        ++rescanned;
+      }
+    }
+  }
+  if (rescanned > 0) {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+    work_cv_.notify_all();
+  }
+  if (st.changed()) post(MV_ADDON_EVENT_AI_PEOPLE);
+}
+
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {
   faces_parts out;
   if (!s.faces) return out;
@@ -973,8 +1026,14 @@ void engine::control_loop() {
         std::lock_guard wl(work_m_);
         idle = queue_exhausted_ && busy_workers_ == 0;
       }
-      std::lock_guard lock(models_m_);
-      if (faces_ && idle && faces_->consolidate(0.55f) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+      {
+        // Mean pairwise cosine now (faces_db::consolidate): 0.42 is just past
+        // same_person's 0.40, where 0.55 to a normalised centroid let two
+        // clusters whose faces averaged ~0.28 merge.
+        std::lock_guard lock(models_m_);
+        if (faces_ && idle && faces_->consolidate(0.42f) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+      }
+      if (idle && !host_.should_yield()) refine_people_pass();
       last_consolidate = t;
     }
     std::uint32_t state;
