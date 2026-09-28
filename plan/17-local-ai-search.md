@@ -780,7 +780,8 @@ for the pacing runs below). At the 1-hour cap:
 - **"Nothing found" fails at this size:** `xyzzy plugh qwertyuiop` returned 676 results, and the
   real queries returned 74–733. This is the L/14 calibration item above, now on a real
   23 k-asset library. It needs the owner's labelled set to retune, and is not a source
-  problem: owed before the Photos source ships.
+  problem: owed before the Photos source ships. Tracked as a follow-up that needs a labelled
+  eval: [#85](https://github.com/longtimeno-c/mediaviewer/issues/85).
 
 **Present loop while the library indexes (worst case, 2026-09-28).** `frametime --seconds 60`
 (Mac PR 1 gate) was run while `photos-bench.sh` indexed the library in **another process that
