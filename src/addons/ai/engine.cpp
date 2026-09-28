@@ -128,7 +128,8 @@ std::string path_key(const std::string& path) {
 
 // ---- lifetime ------------------------------------------------------------------------
 
-engine::engine(const mv_host_api* api, engine_deps deps) : host_(api), deps_(std::move(deps)) {
+engine::engine(const mv_host_api* api, engine_deps deps, engine_options options)
+    : host_(api), deps_(std::move(deps)), options_(options) {
   status_.struct_size = sizeof(mv_ai_status);
   status_.state = MV_AI_STATE_LOADING;
   status_.eta_low_seconds = -1;
@@ -140,27 +141,42 @@ engine::~engine() { stop(); }
 expected engine::start() {
   MV_TRY(std::string dir, host_.data_dir());
   data_dir_ = dir;
-  MV_TRY_VOID(host_.make_directories(data_dir_));
-  load_settings();
-  MV_TRY(auto db, index_db::open(join(data_dir_, "index.db")));
-  db_ = std::move(db);
-  {
-    std::lock_guard lock(assets_m_);
-    for (asset_row& a : db_->all_assets()) {
-      asset_meta m;
-      m.key = path_key(a.path);
-      m.dir_key = key_parent(m.key);
-      m.path = std::move(a.path);
-      m.kind = a.kind;
-      m.root = a.root_id;
-      m.mtime = a.mtime;
-      assets_.emplace(a.id, std::move(m));
-    }
+  if (options_.read_only) {
+    // A reader creates nothing: no folder, no schema, no settings file.
+    load_settings();
+    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db")));
+    db_ = std::move(db);
+  } else {
+    MV_TRY_VOID(host_.make_directories(data_dir_));
+    load_settings();
+    MV_TRY(auto db, index_db::open(join(data_dir_, "index.db")));
+    db_ = std::move(db);
   }
+  load_assets();
   roots_cache_ = db_->roots();
-  control_ = std::thread([this] { control_loop(); });
+  if (options_.read_only) {
+    control_ = std::thread([this] { reader_loop(); });
+  } else {
+    control_ = std::thread([this] { control_loop(); });
+  }
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
+}
+
+void engine::load_assets() {
+  std::unordered_map<std::int64_t, asset_meta> all;
+  for (asset_row& a : db_->all_assets()) {
+    asset_meta m;
+    m.key = path_key(a.path);
+    m.dir_key = key_parent(m.key);
+    m.path = std::move(a.path);
+    m.kind = a.kind;
+    m.root = a.root_id;
+    m.mtime = a.mtime;
+    all.emplace(a.id, std::move(m));
+  }
+  std::lock_guard lock(assets_m_);
+  assets_ = std::move(all);
 }
 
 void engine::stop() noexcept {
@@ -273,6 +289,7 @@ std::string engine::settings_json() const {
 }
 
 expected engine::set_setting(const std::string& key, const std::string& value_json) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   const auto v = json::parse(value_json, 2);
   if (!v || v->k != json::kind::number) return err(status::invalid_arg);
   const double x = v->is_integer ? static_cast<double>(v->i) : v->d;
@@ -330,6 +347,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
 }
 
 void engine::pause(bool paused) {
+  if (options_.read_only) return;
   paused_ = paused;
   work_cv_.notify_all();
   control_cv_.notify_all();
@@ -1051,6 +1069,172 @@ void engine::control_loop() {
              !rescan_roots_.empty();
     });
   }
+}
+
+// ---- a reader (plan/23) ------------------------------------------------------------------
+
+void engine::reader_loop() {
+  loading_ = true;
+  const bool ok = load_reader();
+  loading_ = false;
+  models_ready_ = ok;
+  models_failed_ = !ok;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  double last = now_s();
+  while (!stopping_) {
+    {
+      std::unique_lock lock(control_m_);
+      control_cv_.wait_for(lock, std::chrono::milliseconds(500), [this] { return stopping_.load(); });
+    }
+    if (stopping_) return;
+    const double t = now_s();
+    if (t - last < kReaderCatchUpSeconds) continue;
+    last = t;
+    if (db_->data_version() == reader_version_) continue;
+    if (!models_ready_ || db_->meta("active_spec") != active_spec()) {
+      // A first index, or the app finished a migration: start over.
+      loading_ = true;
+      const bool again = load_reader();
+      loading_ = false;
+      models_ready_ = again;
+      models_failed_ = !again;
+    } else {
+      catch_up_reader();
+    }
+    refresh_counts();
+    post(MV_ADDON_EVENT_AI_STATUS);
+  }
+}
+
+bool engine::load_reader() {
+  if (deps_.prepare) deps_.prepare();
+  reader_version_ = db_->data_version();
+  load_assets();
+  const std::string active = db_->meta("active_spec");
+  if (active.empty() || !deps_.open_clip_text || !deps_.qualities) return false;
+  settings s;
+  {
+    std::lock_guard lock(settings_m_);
+    s = settings_;
+  }
+  // The tower whose vectors are in the index answers; the reader never
+  // changes which (the app decides, and a migration it finishes shows up as
+  // a new active_spec).
+  loaded_clip answer;
+  for (std::uint32_t q : deps_.qualities()) {
+    if (deps_.clip_spec_key && deps_.clip_spec_key(q) != active) continue;
+    auto c = deps_.open_clip_text(q);
+    if (c && c->meta.spec_key == active) {
+      answer = std::move(*c);
+      break;
+    }
+  }
+  if (!answer.model) return false;
+  answer.generic.clear();
+  for (const std::string& p : answer.meta.generic_prompts) {
+    if (auto v = answer.model->embed_text(p)) answer.generic.push_back(std::move(*v));
+  }
+  // People: names and faces only (search, the query language). The reader
+  // clusters nothing, so the threshold and width it is opened with are unused.
+  std::unique_ptr<faces_db> people;
+  if (s.faces) {
+    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) people = std::move(*f);
+  }
+  loaded_sound sound;
+  if (deps_.open_sound_text) {
+    if (auto so = deps_.open_sound_text()) {
+      sound = std::move(*so);
+      sound.generic.clear();
+      for (const std::string& g : sound.generic_prompts) {
+        if (auto v = sound.model->embed_text(g)) sound.generic.push_back(std::move(*v));
+      }
+    }
+  }
+  // Speech needs no model: the transcripts are rows, matched as words.
+  reader_speech_spec_ = deps_.speech_spec_key ? deps_.speech_spec_key(answer.meta.quality) : std::string();
+  loaded_clip old;
+  begin_answer_swap();
+  {
+    std::lock_guard lock(models_m_);
+    old = std::move(answer_);
+    build_ = answer;  // what status reads; a reader builds nothing
+    answer_ = std::move(answer);
+    faces_ = std::move(people);
+    sound_ = std::move(sound);
+    speech_ = {};
+    speech_.spec_key = reader_speech_spec_;
+    publish_pieces_locked();
+  }
+  reader_frame_ = 0;
+  store_.reset(answer_.meta.dim);
+  (void)db_->each_frame(active, [&](const frame_out& f) {
+    store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    reader_frame_ = f.id;
+  });
+  reader_sound_ = 0;
+  sounds_.reset(sound_.model ? sound_.dim : 0);
+  if (sound_.model) {
+    (void)db_->each_frame(sound_.spec_key, [&](const frame_out& f) {
+      sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+      reader_sound_ = f.id;
+    });
+  }
+  if (!reader_speech_spec_.empty()) {
+    load_speech(reader_speech_spec_);
+  } else {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+  }
+  end_answer_swap();
+  old = {};
+  return true;
+}
+
+void engine::catch_up_reader() {
+  reader_version_ = db_->data_version();
+  // Assets that went or changed (mtime, size) lost their frames in the app:
+  // drop them here before appending what was committed since.
+  std::unordered_map<std::int64_t, asset_meta> before;
+  {
+    std::lock_guard lock(assets_m_);
+    before = assets_;
+  }
+  load_assets();
+  std::vector<std::int64_t> gone;
+  {
+    std::lock_guard lock(assets_m_);
+    for (const auto& [id, m] : before) {
+      auto it = assets_.find(id);
+      if (it == assets_.end() || it->second.mtime != m.mtime) gone.push_back(id);
+    }
+  }
+  const std::string active = active_spec();
+  std::string sound_spec;
+  {
+    std::lock_guard lock(models_m_);
+    sound_spec = sound_.model ? sound_.spec_key : std::string();
+    if (faces_) {
+      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) faces_ = std::move(*f);
+    }
+  }
+  begin_answer_swap();
+  for (std::int64_t a : gone) {
+    store_.remove_asset(a);
+    sounds_.remove_asset(a);
+  }
+  (void)db_->each_frame(active, [&](const frame_out& f) {
+    store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    reader_frame_ = f.id;
+  }, reader_frame_);
+  if (!sound_spec.empty()) {
+    (void)db_->each_frame(sound_spec, [&](const frame_out& f) {
+      sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+      reader_sound_ = f.id;
+    }, reader_sound_);
+  }
+  if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
+  end_answer_swap();
 }
 
 void engine::scan_all() {
@@ -1814,6 +1998,7 @@ std::string engine::roots_json() {
 }
 
 result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (dir.empty()) return err(status::invalid_arg);
   const std::string key = path_key(dir);
   const std::vector<root_row> roots = db_->roots();
@@ -1845,6 +2030,7 @@ result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive
 }
 
 expected engine::root_set_enabled(std::int64_t id, bool enabled) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   MV_TRY_VOID(db_->set_root_enabled(id, enabled));
   {
     std::lock_guard lock(work_m_);
@@ -1862,6 +2048,7 @@ expected engine::root_set_enabled(std::int64_t id, bool enabled) {
 }
 
 expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (media > MV_AI_MEDIA_BOTH) return err(status::invalid_arg);
   MV_TRY_VOID(db_->set_root_media(id, media));
   {
@@ -1876,6 +2063,7 @@ expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
 }
 
 expected engine::root_rescan(std::int64_t id) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(id);
@@ -1885,6 +2073,7 @@ expected engine::root_rescan(std::int64_t id) {
 }
 
 expected engine::root_remove(std::int64_t id) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::vector<std::int64_t> gone;
   {
     std::lock_guard lock(assets_m_);
@@ -1945,6 +2134,7 @@ std::uint32_t engine::folder_coverage(const std::string& dir) const {
 }
 
 void engine::note_folder_opened(const std::string& dir) {
+  if (options_.read_only) return;
   const std::string key = path_key(dir);
   std::int64_t root = 0;
   {
@@ -1968,6 +2158,7 @@ void engine::note_folder_opened(const std::string& dir) {
 }
 
 expected engine::clear_index() {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   clearing_ = true;
   // Let in-flight work land (or fail) before the rows go.
   for (int i = 0; i < 300; ++i) {
@@ -2518,6 +2709,9 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
       q.clear();
       bool have = false;
       if (self != 0 && pts_ms < 0) have = store_.vector_of(self, -1, q);
+      // A reader embeds nothing: an indexed moment is its nearest stored
+      // frame's vector (plan/23 "Find similar").
+      if (!have && self != 0 && options_.read_only) have = store_.vector_of(self, pts_ms, q);
       if (!have) {
         if (!model) return;
         if (!img) {
@@ -2624,6 +2818,19 @@ result<std::string> engine::result_snippet(std::uint64_t id, std::uint32_t index
   return it->second->rows[index].snippet;
 }
 
+result<std::int64_t> engine::result_duration(std::uint64_t id, std::uint32_t index) const {
+  std::int64_t asset = 0;
+  {
+    std::lock_guard lock(search_m_);
+    auto it = searches_.find(id);
+    if (it == searches_.end() || index >= it->second->rows.size()) return err(status::invalid_arg);
+    if (it->second->rows[index].kind != MV_AI_KIND_VIDEOS) return std::int64_t{0};
+    asset = it->second->rows[index].asset;
+  }
+  MV_TRY(asset_row a, db_->asset_by_id(asset));
+  return a.duration_ms;
+}
+
 result<std::string> engine::result_path(std::uint64_t id, std::uint32_t index) const {
   std::lock_guard lock(search_m_);
   auto it = searches_.find(id);
@@ -2680,6 +2887,7 @@ void engine::search_release(std::uint64_t id) {
 // ---- people -----------------------------------------------------------------------------------------
 
 expected engine::faces_enable(bool enable) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   {
     std::lock_guard lock(settings_m_);
     settings_.faces = enable;
@@ -2752,6 +2960,7 @@ std::string engine::person_faces_json(std::int64_t person) {
 }
 
 expected engine::person_rename(std::int64_t person, const std::string& name) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY_VOID(faces_->rename(person, name));
@@ -2760,6 +2969,7 @@ expected engine::person_rename(std::int64_t person, const std::string& name) {
 }
 
 expected engine::person_merge(std::int64_t into, std::int64_t from) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY_VOID(faces_->merge(into, from));
@@ -2768,6 +2978,7 @@ expected engine::person_merge(std::int64_t into, std::int64_t from) {
 }
 
 expected engine::face_reject(std::int64_t face) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY_VOID(faces_->reject(face));
@@ -2790,6 +3001,7 @@ result<std::string> engine::face_thumb(std::int64_t face) const {
 }
 
 result<std::int64_t> engine::face_split(const std::vector<std::int64_t>& faces) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY(std::int64_t id, faces_->split(faces));

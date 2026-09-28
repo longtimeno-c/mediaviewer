@@ -153,6 +153,26 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
   return d;
 }
 
+result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& path) {
+  std::unique_ptr<index_db> d(new index_db());
+  d->path_ = path;
+  if (sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) !=
+      SQLITE_OK) {
+    return err(status::unsupported_format);
+  }
+  sqlite3_busy_timeout(d->db_, 5000);
+  // An index this build cannot read as it is (older or newer): the app
+  // migrates it, never a reader.
+  if (d->meta("schema") != std::to_string(kSchemaVersion)) return err(status::unsupported_format);
+  return d;
+}
+
+std::int64_t index_db::data_version() {
+  std::lock_guard lock(m_);
+  stmt s(db_, "PRAGMA data_version");
+  return s.step_row() ? s.i64(0) : 0;
+}
+
 std::vector<root_row> index_db::roots() {
   std::lock_guard lock(m_);
   std::vector<root_row> out;
@@ -478,11 +498,12 @@ std::uint64_t index_db::done_in_root(std::int64_t root, const std::string& spec)
   return f.bind(1, root).bind(2, spec).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 
-expected index_db::each_frame(const std::string& spec, const std::function<void(const frame_out&)>& visit) {
+expected index_db::each_frame(const std::string& spec, const std::function<void(const frame_out&)>& visit,
+                              std::int64_t after_id) {
   std::lock_guard lock(m_);
-  stmt s(db_, "SELECT id, asset_id, pts_ms, generic, scale, emb FROM frames WHERE spec = ?1 ORDER BY id");
+  stmt s(db_, "SELECT id, asset_id, pts_ms, generic, scale, emb FROM frames WHERE spec = ?1 AND id > ?2 ORDER BY id");
   if (!s.ok()) return err(status::io);
-  s.bind(1, spec);
+  s.bind(1, spec).bind(2, after_id);
   while (s.step_row()) {
     frame_out f;
     f.id = s.i64(0);

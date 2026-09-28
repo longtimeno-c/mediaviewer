@@ -95,6 +95,12 @@ class faces_db {
 
   [[nodiscard]] static result<std::unique_ptr<faces_db>> open(const std::string& path_utf8,
                                                               float same_person, std::uint32_t dim);
+  // A reader's view (the search agent, plan/23): SQLITE_OPEN_READONLY, no
+  // schema or migration. Names and faces_of answer; every write fails. A
+  // faces.db from before the refinement columns is status::unsupported_format
+  // until the app has opened it once.
+  [[nodiscard]] static result<std::unique_ptr<faces_db>> open_read_only(const std::string& path_utf8,
+                                                                        float same_person, std::uint32_t dim);
   // Closes and deletes the file and its WAL: every face vector, box and name.
   static void destroy(const std::string& path_utf8);
 

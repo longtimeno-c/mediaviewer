@@ -212,3 +212,6 @@ endif()
 
 set(MV_ORT_LICENSE "${MV_ORT_DIR}/LICENSE")
 set(MV_ORT_NOTICES "${MV_ORT_DIR}/ThirdPartyNotices.txt")
+
+# plan/23: Local search from inside an editing app (portable half).
+include("${CMAKE_CURRENT_LIST_DIR}/nle.cmake")

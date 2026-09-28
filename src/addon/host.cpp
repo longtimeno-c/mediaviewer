@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -602,7 +603,7 @@ const void* loaded_addon::query(const char* interface_id) const noexcept {
 }
 
 result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const std::string& id,
-                                                         host_services services) {
+                                                         host_services services, const char* entry) {
   MV_TRY(installed info, s.find(id));
   if (info.state == install_state::needs_update) return err(status::unsupported_format);
   if (info.state != install_state::ok) return err(status::corrupt);
@@ -626,8 +627,13 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   MV_TRY(shared_library lib,
          shared_library::open(io::join_path(info.dir, io::native_relative(info.m.native))));
   out->lib_ = std::move(lib);
-  auto get = reinterpret_cast<mv_addon_get_fn>(out->lib_.symbol(MV_ADDON_ENTRY_SYMBOL));
-  if (!get) return err(status::corrupt);
+  if (!entry) return err(status::invalid_arg);
+  auto get = reinterpret_cast<mv_addon_get_fn>(out->lib_.symbol(entry));
+  if (!get) {
+    // The one export missing is a broken add-on; another door missing is an
+    // add-on older than the host asking for it.
+    return err(std::string_view(entry) == MV_ADDON_ENTRY_SYMBOL ? status::corrupt : status::unsupported_format);
+  }
   mv_addon_api api{};
   const mv_status st = get(version, out->table_->api(), &api);
   if (st != MV_OK) return err(static_cast<status>(st));

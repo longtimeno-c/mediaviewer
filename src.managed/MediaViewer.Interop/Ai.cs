@@ -217,6 +217,9 @@ public unsafe struct MvAiApi
 
     // query language (2026-09-28, plan/17 "Query syntax")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> SuggestJson;
+
+    // appended 2026-09-28 (plan/23): a result clip's length for an NLE hand-off
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, long*, MvStatus> ResultDuration;
 }
 
 /// <summary>
@@ -428,6 +431,19 @@ public sealed unsafe class AiApi
     /// <summary>Worker: the words that matched, for a speech result; "" otherwise.</summary>
     public string ResultSnippet(ulong search, uint index) =>
         ReadPath((b, c) => _api->ResultSnippet(Ctx, search, index, (byte*)b, c));
+
+    /// <summary>
+    /// Worker: a result clip's length in ms as the index recorded it (0 for a
+    /// still or an unknown length), for an FCPXML hand-off (plan/23). 0 from an
+    /// older pack whose table stops before the field.
+    /// </summary>
+    public long ResultDurationMs(ulong search, uint index)
+    {
+        if (_api->StructSize < (uint)sizeof(MvAiApi) || _api->ResultDuration == null) return 0;
+        long ms = 0;
+        Check(_api->ResultDuration(Ctx, search, index, &ms));
+        return ms;
+    }
 
     /// <summary>
     /// Worker (reads faces.db): named people for the word being typed, as

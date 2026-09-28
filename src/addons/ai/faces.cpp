@@ -175,6 +175,29 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, float 
   return d;
 }
 
+result<std::unique_ptr<faces_db>> faces_db::open_read_only(const std::string& path, float same_person,
+                                                           std::uint32_t dim) {
+  std::unique_ptr<faces_db> d(new faces_db());
+  d->path_ = path;
+  d->serial_ = ++g_serial;
+  d->same_ = same_person;
+  d->dim_ = dim;
+  if (sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) !=
+      SQLITE_OK) {
+    return err(status::unsupported_format);
+  }
+  sqlite3_busy_timeout(d->db_, 5000);
+  std::set<std::string> cols;
+  {
+    stmt s(d->db_, "PRAGMA table_info(faces)");
+    while (s.step_row()) cols.insert(s.text(1));
+  }
+  if (!cols.count("pinned") || !cols.count("quality") || !cols.count("tta")) return err(status::unsupported_format);
+  std::lock_guard lock(d->m_);
+  d->load_locked();
+  return d;
+}
+
 // faces.db from before the refinement (2026-09-28): the columns, and the
 // cover of every named person pinned, since that is the face the user saw
 // when they named it.

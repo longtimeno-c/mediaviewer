@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -30,6 +31,7 @@
 
 #include "addon/host.h"
 #include "addons/ai/engine.h"
+#include "addons/fcp/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
 
@@ -455,6 +457,34 @@ struct rig {
     eng.reset();
     eng = std::make_unique<engine>(table->api(), deps());
     REQUIRE(eng->start());
+  }
+
+  // The search agent's engine (plan/23): the same data folder, read-only,
+  // the towers' text halves only (here the same fakes: the vectors match).
+  mv::ai::engine_deps reader_deps() {
+    mv::ai::engine_deps d = deps();
+    d.open_clip = nullptr;  // a reader never opens a picture tower
+    d.open_faces = nullptr;
+    d.open_sound = nullptr;
+    d.open_speech = nullptr;
+    d.clip_spec_key = [this](std::uint32_t q) { return (q == 2 ? high : fast)->spec_key(); };
+    d.open_clip_text = [this](std::uint32_t q) { return deps().open_clip(q, MV_AI_COMPUTE_CPU_ONLY); };
+    d.open_sound_text = [this]() { return deps().open_sound(MV_AI_COMPUTE_CPU_ONLY); };
+    d.speech_spec_key = [this](std::uint32_t) {
+      return audio_available ? std::string("fake-whisper/fp16/pre1") : std::string();
+    };
+    return d;
+  }
+  std::unique_ptr<engine> start_reader() {
+    auto rd = std::make_unique<engine>(table->api(), reader_deps(), mv::ai::engine_options{.read_only = true});
+    REQUIRE(rd->start());
+    for (int i = 0; i < 500; ++i) {
+      mv_ai_status s{};
+      rd->status(s);
+      if (s.state != MV_AI_STATE_LOADING) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return rd;
   }
 
   fs::path photos() const { return dir / "Photos"; }
@@ -1365,4 +1395,327 @@ TEST_CASE("searches during a migration and across its end use the answering towe
   REQUIRE_FALSE(after.empty());
   CHECK(after.front().first == "red.jpg");
   CHECK(r.status().frames_indexed == 3);  // the old rows went; nothing doubled
+}
+
+// ---- the search agent's reader (plan/23 Phase 1) ---------------------------------------
+
+namespace {
+
+struct scored {
+  std::string name;
+  std::int64_t pts_ms;
+  float score;
+  std::uint32_t more;
+};
+
+std::vector<scored> ranked(engine& e, const std::string& q, std::uint32_t kinds = MV_AI_KIND_ALL) {
+  const std::uint64_t id = e.search_text(q, "", MV_AI_SCOPE_ALL, kinds);
+  REQUIRE(e.wait_search(id, 5000));
+  std::vector<scored> out;
+  auto n = e.result_count(id);
+  REQUIRE(n);
+  for (std::uint32_t i = 0; i < *n; ++i) {
+    auto r = e.result_at(id, i);
+    auto p = e.result_path(id, i);
+    REQUIRE(r);
+    REQUIRE(p);
+    out.push_back({utf8(fs::path(*p).filename()), r->pts_ms, r->score, r->more_in_clip});
+  }
+  e.search_release(id);
+  return out;
+}
+
+std::string bytes_of(const fs::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+}  // namespace
+
+TEST_CASE("the reader answers exactly as the app's engine on the same index", "[ai][search-agent]") {
+  rig r;
+  r.audio_available = true;
+  r.file("red_car.jpg");
+  r.file("red_b.jpg");
+  r.file("green_field.jpg");
+  r.file("blue_sea.jpg");
+  r.file("holiday_rgb.mp4");
+  r.file("party_talk_bark.mp4");
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.file("ben_1.jpg");
+  r.start();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle(30000));
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE_FALSE(people->a.empty());
+  REQUIRE(r.eng->person_rename(*people->a[0].integer("id"), "Anna"));
+
+  // The app keeps running beside it: the reader is a second view, not a
+  // replacement.
+  auto rd = r.start_reader();
+  mv_ai_status s{};
+  rd->status(s);
+  REQUIRE(s.state != MV_AI_STATE_ERROR);
+  CHECK(rd->read_only());
+  CHECK(rd->active_spec() == r.eng->active_spec());
+
+  // plan/17's eval set shape: subjects, a moment in a clip, sounds, words
+  // said, people, exclusions, kinds, dates and nonsense.
+  const char* const queries[] = {"red", "something red", "green", "blue", "a dog barking", "birthday anna",
+                                 "\"make a wish\"", "Anna", "@an", "-Anna", "red video", "red photo",
+                                 "in:1999", "xyzzy plugh", "Ann"};
+  for (const char* q : queries) {
+    INFO(q);
+    const auto app = ranked(*r.eng, q);
+    const auto reader = ranked(*rd, q);
+    REQUIRE(reader.size() == app.size());
+    for (std::size_t i = 0; i < app.size(); ++i) {
+      CHECK(reader[i].name == app[i].name);
+      CHECK(reader[i].pts_ms == app[i].pts_ms);
+      CHECK(std::fabs(reader[i].score - app[i].score) <= 1e-4f);
+      CHECK(reader[i].more == app[i].more);
+    }
+  }
+  // Kinds from the chips as well as the words.
+  CHECK(ranked(*rd, "red", MV_AI_KIND_VIDEOS).size() == ranked(*r.eng, "red", MV_AI_KIND_VIDEOS).size());
+
+  // Find similar on an indexed moment is its stored vector: nothing decoded.
+  const int decoded = r.stills_decoded.load();
+  const std::uint64_t sim = rd->search_similar(utf8(r.photos() / "red_car.jpg"), -1, "", MV_AI_SCOPE_ALL,
+                                               MV_AI_KIND_ALL);
+  REQUIRE(rd->wait_search(sim, 5000));
+  auto n = rd->result_count(sim);
+  REQUIRE(n);
+  REQUIRE(*n >= 1);
+  CHECK(utf8(fs::path(*rd->result_path(sim, 0)).filename()) == "red_b.jpg");
+  const std::uint64_t moment = rd->search_similar(utf8(r.photos() / "holiday_rgb.mp4"), 3100, "",
+                                                  MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(rd->wait_search(moment, 5000));
+  CHECK(r.stills_decoded.load() == decoded);
+}
+
+TEST_CASE("the reader never writes: the index is byte-identical and every change is refused",
+          "[ai][search-agent]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.file("anna_1.jpg");
+  r.start();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.eng.reset();  // the app quits: nothing else writes from here on
+  const fs::path data = r.dir / "data";
+  std::map<std::string, std::string> before;
+  for (const auto& e : fs::directory_iterator(data)) {
+    if (e.is_regular_file()) before[utf8(e.path().filename())] = bytes_of(e.path());
+  }
+  REQUIRE(before.count("index.db"));
+
+  {
+    auto rd = r.start_reader();
+    CHECK(ranked(*rd, "red").size() == 1);
+    CHECK(rd->index_folder(utf8(r.dir / "Elsewhere"), true).error() == mv::status::unsupported_format);
+    CHECK(rd->root_rescan(1).error() == mv::status::unsupported_format);
+    CHECK(rd->root_remove(1).error() == mv::status::unsupported_format);
+    CHECK(rd->root_set_enabled(1, false).error() == mv::status::unsupported_format);
+    CHECK(rd->clear_index().error() == mv::status::unsupported_format);
+    CHECK(rd->set_setting("precision", "4").error() == mv::status::unsupported_format);
+    CHECK(rd->faces_enable(false).error() == mv::status::unsupported_format);
+    CHECK(rd->person_rename(1, "Zed").error() == mv::status::unsupported_format);
+    rd->pause(true);
+    rd->note_folder_opened(utf8(r.photos()));
+  }
+
+  for (const auto& [name, bytes] : before) {
+    INFO(name);
+    // SQLite may add an empty -shm beside a WAL database it reads; the data
+    // files themselves do not change by a byte.
+    if (name.find("-shm") != std::string::npos) continue;
+    CHECK(bytes_of(data / name) == bytes);
+  }
+  CHECK(fs::exists(data / "faces.db"));
+  CHECK_FALSE(fs::exists(data / "settings.json.tmp"));
+
+  // No index at all: the reader refuses to start and creates nothing.
+  scratch_dir empty{"ai-reader-empty"};
+  mv::addon::host_services svc;
+  svc.data_dir = utf8(empty / "data");
+  mv::addon::host_table t(std::move(svc));
+  t.set_negotiated(MV_ADDON_HOST_API);
+  engine none(t.api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
+  CHECK_FALSE(none.start());
+  CHECK_FALSE(fs::exists(empty / "data" / "index.db"));
+}
+
+TEST_CASE("the reader catches up with what the app indexes after it started", "[ai][search-agent]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  auto rd = r.start_reader();
+  CHECK(ranked(*rd, "blue").empty());
+
+  r.file("blue_sea.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  CHECK(ranked(*r.eng, "blue").size() == 1);
+  // Within the catch-up interval (plan/23), appended rather than reloaded.
+  bool found = false;
+  for (int i = 0; i < 200 && !found; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    found = ranked(*rd, "blue").size() == 1;
+  }
+  CHECK(found);
+  CHECK(ranked(*rd, "red").size() == 1);
+
+  // A file removed in the app drops out of the reader too.
+  fs::remove(r.photos() / "red_car.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  bool gone = false;
+  for (int i = 0; i < 200 && !gone; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    gone = ranked(*rd, "red").empty();
+  }
+  CHECK(gone);
+}
+
+// ---- the search agent's session over the pack's table (plan/23 Phase 1) ------------------
+
+namespace {
+
+// mv.ai.1's search calls over an engine, as addon_entry.cpp builds them: what
+// the agent's search_session asks of the pack.
+struct table_over {
+  engine* e = nullptr;
+  mv_ai_api api{};
+  static engine& of(void* ctx) { return *static_cast<table_over*>(ctx)->e; }
+  static mv_status copy(const std::string& s, char* out, std::uint32_t cap) {
+    if (cap < s.size() + 1) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, s.c_str(), s.size() + 1);
+    return MV_OK;
+  }
+  explicit table_over(engine& eng) : e(&eng) {
+    api.struct_size = sizeof(mv_ai_api);
+    api.ctx = this;
+    api.status = [](void* c, mv_ai_status* o) { of(c).status(*o); return MV_OK; };
+    api.search_text = [](void* c, const char* q, const char* d, std::uint32_t s, std::uint32_t k, std::uint64_t* id) {
+      *id = of(c).search_text(q, d ? d : "", s, k);
+      return MV_OK;
+    };
+    api.search_similar = [](void* c, const char* p, std::int64_t ms, const char* d, std::uint32_t s, std::uint32_t k,
+                            std::uint64_t* id) {
+      *id = of(c).search_similar(p, ms, d ? d : "", s, k);
+      return MV_OK;
+    };
+    api.result_count = [](void* c, std::uint64_t id, std::uint32_t* n) {
+      auto r = of(c).result_count(id);
+      if (!r) return static_cast<mv_status>(r.error());
+      *n = *r;
+      return MV_OK;
+    };
+    api.result_at = [](void* c, std::uint64_t id, std::uint32_t i, mv_ai_result* o) {
+      auto r = of(c).result_at(id, i);
+      if (!r) return static_cast<mv_status>(r.error());
+      *o = *r;
+      return MV_OK;
+    };
+    api.result_path = [](void* c, std::uint64_t id, std::uint32_t i, char* o, std::uint32_t cap) {
+      auto r = of(c).result_path(id, i);
+      return r ? copy(*r, o, cap) : static_cast<mv_status>(r.error());
+    };
+    api.result_thumb = [](void* c, std::uint64_t id, std::uint32_t i, char* o, std::uint32_t cap) {
+      auto r = of(c).result_thumb(id, i);
+      return r ? copy(*r, o, cap) : static_cast<mv_status>(r.error());
+    };
+    api.clip_matches = [](void* c, std::uint64_t id, const char* p, std::int64_t* ms, float* sc, std::uint32_t cap,
+                          std::uint32_t* n) {
+      auto r = of(c).clip_matches(id, p);
+      if (!r) return static_cast<mv_status>(r.error());
+      *n = static_cast<std::uint32_t>(r->size());
+      if (!ms) return MV_OK;
+      if (cap < r->size()) return MV_ERR_INVALID_ARG;
+      for (std::size_t i = 0; i < r->size(); ++i) {
+        ms[i] = (*r)[i].first;
+        if (sc) sc[i] = (*r)[i].second;
+      }
+      return MV_OK;
+    };
+    api.search_release = [](void* c, std::uint64_t id) { of(c).search_release(id); return MV_OK; };
+    api.result_duration = [](void* c, std::uint64_t id, std::uint32_t i, std::int64_t* o) {
+      auto r = of(c).result_duration(id, i);
+      if (!r) return static_cast<mv_status>(r.error());
+      *o = *r;
+      return MV_OK;
+    };
+  }
+};
+
+}  // namespace
+
+TEST_CASE("the agent's session returns the in-app top-K through the reader, over the wire", "[ai][search-agent]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("red_b.jpg");
+  r.file("green_field.jpg");
+  r.file("holiday_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  auto rd = r.start_reader();
+  table_over t(*rd);
+  auto session = mv::nle::search_session::over(&t.api);
+  REQUIRE(session->wait_ready(5000));
+
+  for (const char* q : {"red", "green", "blue", "xyzzy plugh", "red video"}) {
+    INFO(q);
+    const auto app = ranked(*r.eng, q);
+    mv::nle::request req;
+    req.correlation_id = 7;
+    const mv::nle::reply rep = session->run(req, q, "", 5000);
+    REQUIRE(rep.code == mv::status::ok);
+    CHECK(rep.correlation_id == 7);
+    // What FCP's extension decodes is what the app's engine answered.
+    auto back = mv::nle::decode(mv::nle::encode(rep));
+    REQUIRE(back);
+    REQUIRE(back->rows.size() == app.size());
+    for (std::size_t i = 0; i < app.size(); ++i) {
+      CHECK(utf8(fs::path(back->rows[i].path).filename()) == app[i].name);
+      CHECK(back->rows[i].pts_ms == app[i].pts_ms);
+      CHECK(std::fabs(back->rows[i].score - app[i].score) <= 1e-4f);
+    }
+  }
+  // A clip carries its length (for the FCPXML asset) and its matches (markers).
+  mv::nle::request req;
+  req.kinds = MV_AI_KIND_VIDEOS;
+  const mv::nle::reply green = session->run(req, "green", "", 5000);
+  REQUIRE(green.rows.size() == 1);
+  CHECK(green.rows[0].kind == MV_AI_KIND_VIDEOS);
+  REQUIRE(green.rows[0].moments.size() == 1);
+  CHECK(green.rows[0].moments[0].pts_ms == 3000);
+  // Find similar on an indexed still, by path.
+  mv::nle::request sim;
+  sim.kind = mv::nle::request_kind::similar;
+  const mv::nle::reply like = session->run(sim, utf8(r.photos() / "red_car.jpg"), "", 5000);
+  const std::uint64_t app_like =
+      r.eng->search_similar(utf8(r.photos() / "red_car.jpg"), -1, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(app_like, 5000));
+  const auto app_rows = r.rows(app_like);
+  REQUIRE(like.rows.size() == app_rows.size());
+  REQUIRE_FALSE(like.rows.empty());
+  for (std::size_t i = 0; i < app_rows.size(); ++i) {
+    CHECK(utf8(fs::path(like.rows[i].path).filename()) == app_rows[i].first);
+  }
+  CHECK(utf8(fs::path(like.rows[0].path).filename()) == "red_b.jpg");
+  // Another wire version is refused rather than guessed at.
+  mv::nle::request old;
+  old.version = 99;
+  CHECK(session->run(old, "red", "", 5000).code == mv::status::unsupported_format);
 }

@@ -116,9 +116,14 @@ class loaded_addon {
   // library and calls mv_addon_get with a fresh host table. A file changed
   // since install is refused: status::corrupt. An add-on built for another
   // host API: status::unsupported_format ("needs an update").
+  // `entry`: the export to call. A second host of an add-on's code (the
+  // search agent, plan/23) names its own door (MV_AI_READER_ENTRY_SYMBOL); an
+  // add-on without that symbol is status::unsupported_format ("needs an
+  // update"), never loaded through mv_addon_get instead.
   [[nodiscard]] static result<std::unique_ptr<loaded_addon>> load(const store& s,
                                                                    const std::string& id,
-                                                                   host_services services);
+                                                                   host_services services,
+                                                                   const char* entry = MV_ADDON_ENTRY_SYMBOL);
 
  private:
   loaded_addon() = default;

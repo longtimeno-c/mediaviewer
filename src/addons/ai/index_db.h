@@ -125,6 +125,15 @@ class index_db {
   index_db& operator=(const index_db&) = delete;
 
   [[nodiscard]] static result<std::unique_ptr<index_db>> open(const std::string& path_utf8);
+  // Another process's view of the app's index (the search agent, plan/23):
+  // SQLITE_OPEN_READONLY, no schema created or migrated, so every write this
+  // connection could try fails (SQLITE_READONLY). WAL gives it a consistent
+  // snapshot while the app goes on indexing. A missing file, or an index of
+  // another schema, is status::unsupported_format.
+  [[nodiscard]] static result<std::unique_ptr<index_db>> open_read_only(const std::string& path_utf8);
+  // PRAGMA data_version: changes when another connection commits. A reader
+  // polls it to learn the app has indexed more.
+  [[nodiscard]] std::int64_t data_version();
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
 
   // ---- roots ------------------------------------------------------------------
@@ -191,9 +200,11 @@ class index_db {
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
-  // Every stored frame of `spec`, streamed.
+  // Every stored frame of `spec` with an id above `after_id`, streamed in id
+  // order (a reader catching up takes only what was committed since).
   [[nodiscard]] expected each_frame(const std::string& spec,
-                                    const std::function<void(const frame_out&)>& visit);
+                                    const std::function<void(const frame_out&)>& visit,
+                                    std::int64_t after_id = 0);
   [[nodiscard]] expected each_frame_of(std::int64_t asset, const std::string& spec,
                                        const std::function<void(const frame_out&)>& visit);
   [[nodiscard]] std::vector<asset_row> all_assets();
