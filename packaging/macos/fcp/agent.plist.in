@@ -3,8 +3,10 @@
 <!--
   Copyright (C) 2026 longtimeno-c
   SPDX-License-Identifier: GPL-3.0-or-later
-  The Local search agent's launchd job (plan/23), registered by the container
-  with SMAppService.agent. launchd starts it when the extension looks up the
+  The Local search agent's launchd job (plan/23), in
+  MediaViewer.app/Contents/Library/LaunchAgents. MediaViewer registers it with
+  SMAppService.agent only while Final Cut Pro is turned on in Settings > Local
+  search, and unregisters it when turned off. launchd starts it when the extension looks up the
   Mach service (named under the extension's app group, which is what lets a
   sandboxed client reach it) and nothing keeps it alive: it exits when idle.
 -->
@@ -13,7 +15,7 @@
   <key>Label</key>
   <string>@MV_FCP_MACH_SERVICE@</string>
   <key>BundleProgram</key>
-  <string>Contents/MacOS/MediaViewerSearchAgent</string>
+  <string>Contents/Helpers/MediaViewerSearchAgent</string>
   <key>MachServices</key>
   <dict>
     <key>@MV_FCP_MACH_SERVICE@</key>
@@ -21,7 +23,7 @@
   </dict>
   <key>AssociatedBundleIdentifiers</key>
   <array>
-    <string>@MV_FCP_BUNDLE_ID@</string>
+    <string>@MV_MAC_BUNDLE_ID@</string>
   </array>
   <key>ProcessType</key>
   <string>Interactive</string>

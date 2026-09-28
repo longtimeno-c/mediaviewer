@@ -1,13 +1,16 @@
-# 23 — Local search inside an editing app (the "fcp" add-on)
+# 23 — Local search inside an editing app (Final Cut Pro search)
 
 Issue #71. Search your footage with Local search ([17](17-local-ai-search.md)) from a panel
 inside Final Cut Pro, then drag the matching moments into an FCP event or timeline. It uses the
 index MediaViewer already built: nothing is re-indexed, and nothing leaves the machine.
 
 **Owner calls (2026-09-28, [12](12-decision-log.md)):** a Mac-only exception to D9 for the FCP
-pieces, with the layer beneath shared and built on both platforms. Delivery as its own
-installable add-on ("MediaViewer for Final Cut Pro.app"), never inside MediaViewer.app
-([18](18-import.md) "absent means absent"). Phases 0 and 1 first.
+pieces, with the layer beneath shared and built on both platforms. Phases 0 and 1 first.
+Delivery, amended the same day: the agent and the extension ship **inside MediaViewer.app**, off
+until the owner turns Final Cut Pro on in Settings > Local search, which is offered once the Local
+search pack (the bulk) is installed. Off, the agent is not registered and the extension is elected
+out of Final Cut Pro, so [18](18-import.md)'s "absent means absent" holds. There is no separate
+app to install.
 
 ## Shape
 
@@ -15,7 +18,8 @@ installable add-on ("MediaViewer for Final Cut Pro.app"), never inside MediaView
 Final Cut Pro (sandboxed) ─ Extensions ▸ "MediaViewer Search"
   MediaViewerSearch.appex  (sandbox + app group; AppKit panel; drag = FCPXML + file URLs)
         │ NSXPCConnection, Mach service "<team>.io.github.longtimeno-c.mediaviewer.fcp.search"
-  MediaViewerSearchAgent   (launchd on demand via SMAppService; hardened runtime)
+  MediaViewerSearchAgent   (launchd on demand via SMAppService, registered by the app when
+                            Final Cut Pro is turned on; hardened runtime)
         │ loaded_addon::load(store, "ai", …, MV_AI_READER_ENTRY_SYMBOL)
   libmv_ai (the installed Local search pack)  engine_options::read_only
         │ SQLITE_OPEN_READONLY
@@ -30,7 +34,20 @@ Final Cut Pro (sandboxed) ─ Extensions ▸ "MediaViewer Search"
 | `loaded_addon::load(…, entry)` | `src/addon` | both |
 | Wire format, `search_session`, `thumb_reader`, FCPXML | `src/nle` (`mv_nle`, `cmake/nle.cmake`) | both |
 | `mv-nle-export` (search → FCPXML file) | `src/nle/export_main.cpp` | both |
-| Agent, client, extension, container | `src/nle/mac`, `cmake/darwin-fcp.cmake`, `packaging/macos/fcp`, `tools/mac/fcp_bundle.py` | Mac (D9 exception) |
+| Agent, client, extension | `src/nle/mac`, `cmake/darwin-fcp.cmake`, `packaging/macos/fcp` | Mac (D9 exception) |
+| In MediaViewer.app, on / off | `tools/mac/macpack.py`, `tools/mac/lipo_merge.py`, `src/shell/fcp_mac.mm`, `LocalSearchView.swift` | Mac |
+
+### In the app, off until turned on
+
+`macpack.py assemble` puts `MediaViewerSearch.appex` in `Contents/PlugIns`, the agent in
+`Contents/Helpers` and its launchd job in `Contents/Library/LaunchAgents`, arm64 only (a universal
+app keeps them as the arm64 build signed them). Settings > Local search shows **Final Cut Pro**
+once Core is installed. Turning it on registers the agent (`SMAppService`) and elects the extension
+in (`pluginkit -e use`); turning it off, or removing Core, reverses both. A fresh install elects
+the extension out once, in a background block 10 s after launch. While it is on, the same block
+re-registers the agent, so an update that changes the launchd job is picked up. An agent already
+running when the app updates keeps the old binary until its idle exit; the wire's version refuses
+a reply either side cannot read.
 
 ### The reader
 
@@ -114,23 +131,26 @@ adds one text-tower run (~10–30 ms).
 
 ### Phase 0: built, hands-on owed
 
-The container, extension and agent build, assemble and sign (`fcp_bundle`): the extension is
+The extension and agent build, and are assembled and signed into MediaViewer.app: the extension is
 sandboxed with the app group, the agent hardened. Whether FCP lists and loads an extension whose
 principal class is our own `NSViewController` (no `ProExtensionHost` linked), and what it does
 with the dragged FCPXML (rational-millisecond times, asset durations, sandbox access to the
 `src` files, external volumes), is the hands-on run in FCP, not yet done. The panel's first rows
-are the spike's hard-coded drag (`~/Movies/test/clip1.mov`, `clip2.mov`, `photo.jpg`).
+are the spike's hard-coded drag (`~/Movies/test/clip1.mov`, `clip2.mov`, `photo.jpg`). The
+same run checks that the `pluginkit` election hides the extension from FCP while it is off, and
+that FCP finds it inside MediaViewer.app.
 
 ### Not in this slice
 
-The SwiftUI grid (Phase 2), crash reporting for the agent (the app's Crashpad and scrubbing
-should be attached before the add-on ships), the add-on's manifest and release packing
-(`addon-pack.py` entry, notarisation), and Sparkle re-registration of the extension and agent.
+The SwiftUI grid (Phase 2), and crash reporting for the agent (the app's Crashpad and scrubbing
+should be attached before it ships). There is no add-on manifest entry or separate packing: the
+pieces are signed and notarised with the app, and a Sparkle update replaces them with it.
 
 ## Open questions (from issue #71)
 
 1. ~~D9~~ — Mac-only exception for the FCP pieces (owner, 2026-09-28).
-2. ~~Delivery~~ — its own add-on, a separate container app (owner, 2026-09-28).
+2. ~~Delivery~~ — inside MediaViewer.app, off until turned on under Local search (owner,
+   2026-09-28; this replaced a separate container app the same day).
 3. Model ownership: the agent loads its own text tower (hundreds of MB briefly for L/14's text
    half), rather than asking a running app.
 4. Does FCP read FCPXML `src` media from a third-party drag without a prompt, including on

@@ -49,6 +49,7 @@
 #include "io/file_port.h"
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
+#include "shell/fcp_mac.h"
 #include "shell/adjust_pane.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
@@ -2176,6 +2177,8 @@ static void MvAdoptNewDefaultViewerTypes() {
           if (app && path) (void)[app openEntryPath:path];
         },
         nullptr);
+    // plan/23: Final Cut Pro search stays as Settings left it (background, later).
+    MvFcpStart();
   }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]

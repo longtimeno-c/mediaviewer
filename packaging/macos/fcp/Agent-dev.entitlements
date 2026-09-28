@@ -5,7 +5,7 @@
   SPDX-License-Identifier: GPL-3.0-or-later
   DEVELOPER BUILDS ONLY (MV_ADDON_DEV_PUBLIC_KEY set): a locally built AI pack
   is not signed by the team, so library validation would refuse it in the
-  agent. tools/mac/fcp_bundle.py uses this only for a dev-key build and a
+  agent. tools/mac/macpack.py assemble uses this only for a dev-key build and a
   release build signs the agent with no entitlements at all (library
   validation on: only the team's own pack loads).
 -->

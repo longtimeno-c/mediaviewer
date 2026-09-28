@@ -672,7 +672,7 @@ the parser, names, suggestions and the singular / plural pair with no models; it
 and also compiles on its own (`clang++ -std=c++20 tests/test_ai_query.cpp
 src/addons/ai/query.cpp` with `-Isrc -Itests` and any Catch2).
 
-### Local search from Final Cut Pro (the "fcp" add-on) and FCPXML export
+### Local search from Final Cut Pro and FCPXML export
 
 Status and verify lines: [plan/23](../plan/23-nle-search.md) (issue #71). Phase 1 (the search
 agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
@@ -687,19 +687,27 @@ agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
 - **Tests:** `mv_ai_tests "[search-agent],[nle]"`: the reader's top-K against the app engine's on
   the same index, the index byte-identical after a reader session, catch-up, the wire format's
   bounds, the FCPXML, and the thumbnail cache read without a write.
-- **Mac only:** configure with `-DMV_FCP_TEAM_ID=<team>` (prefixes the Mach service and the
-  extension's app group) and `-DMV_FCP_SIGN_IDENTITY="Developer ID Application: …"`, then build
-  `fcp_bundle`: `build/nle/MediaViewer for Final Cut Pro.app` (container, workflow
-  extension, agent). A dev-key build signs the agent with `packaging/macos/fcp/Agent-dev.entitlements`
-  so it can load a locally built pack. To try the agent without installing the app, bootstrap a
-  launchd job whose `Program` is the bundle's `Contents/MacOS/MediaViewerSearchAgent`, whose
+- **Mac only, in MediaViewer.app:** on an arm64 build, `mediaviewer_app` puts the workflow
+  extension in `Contents/PlugIns/MediaViewerSearch.appex`, the agent in
+  `Contents/Helpers/MediaViewerSearchAgent` and its launchd job in `Contents/Library/LaunchAgents`.
+  Configure with `-DMV_FCP_TEAM_ID=<team>` (the team the app is signed by; it prefixes the Mach
+  service and the extension's app group). A dev-key build signs the agent with
+  `packaging/macos/fcp/Agent-dev.entitlements` so it can load a locally built pack. `assemble`
+  signs ad hoc, which FCP and the agent's peer check refuse; to try it for real, sign with
+  `python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID
+  Application: …" --skip-notarize --allow-no-updater`, which keeps the extension's entitlements.
+  To try the agent without turning it on, bootstrap a launchd job whose `Program` is the app's
+  `Contents/Helpers/MediaViewerSearchAgent`, whose
   `MachServices` names `<team>.io.github.longtimeno-c.mediaviewer.fcp.search`, and (dev) whose
   `EnvironmentVariables` set `MV_DEV_ADDONS_DIR`; then, with `mv-search-client` signed by the same
   team: `mv-search-client mountain --thumbs`, `mv-search-client --bench 20 mountain beach dog`
   (agent vs in-process p50/p95, same results) and `mv-search-client --wait-exit 90` (seconds until
   the idle agent has gone). `launchctl bootout gui/$(id -u)/<label>` removes the job.
-- **In Final Cut Pro:** copy the app to `/Applications`, open it once (it registers the agent
-  with `SMAppService`; allow it under Login Items if asked), then Extensions ▸ MediaViewer Search.
+- **In Final Cut Pro:** with Local search Core installed, open Settings ▸ Local search ▸ Final
+  Cut Pro ▸ **Turn on** (it registers the agent with `SMAppService` and elects the extension in
+  with `pluginkit`; allow MediaViewer under Login Items if asked), then Extensions ▸ MediaViewer
+  Search. **Turn off** reverses both. `pluginkit -m -i io.github.longtimeno-c.mediaviewer.finalcut`
+  shows the election (`+` in, `-` out); a fresh install elects it out 10 s after first launch.
   The first rows are the Phase 0 test drag (`~/Movies/test/clip1.mov`, `clip2.mov`, `photo.jpg`).
 
 ## Test

@@ -169,7 +169,8 @@ NSString* mmss(std::int64_t ms) {
     dispatch_async(dispatch_get_main_queue(), ^{
       MVSearchViewController* me = weak;
       if (me && me->_generation == generation) {
-        me->_status.stringValue = @"Local search is not available. Open MediaViewer for Final Cut Pro.";
+        me->_status.stringValue = @"Local search is not available. In MediaViewer, open Settings > Local search and turn on "
+                                    @"Final Cut Pro.";
       }
     });
   }];

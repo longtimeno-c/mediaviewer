@@ -13,10 +13,11 @@
 #                    and writes the results as FCPXML ("Export results as
 #                    FCPXML": Final Cut Pro, DaVinci Resolve, Premiere Pro).
 #
-# The Final Cut Pro pieces (the XPC search agent, the workflow extension and
-# its container app) are Mac-only (D9 exception, plan/12 2026-09-28) and live
-# in cmake/darwin-fcp.cmake. None of this is in the app bundle or the base
-# install: it ships as the "fcp" add-on (plan/18 "absent means absent").
+# The Final Cut Pro pieces (the XPC search agent and the workflow extension)
+# are Mac-only (D9 exception, plan/12 2026-09-28) and live in
+# cmake/darwin-fcp.cmake: they ship inside MediaViewer.app, dormant until
+# Final Cut Pro is turned on in Settings > Local search. mv_nle itself is
+# linked by the agent and the tools, never by the app.
 #
 # Expects: mv_addon (cmake/import.cmake), MV_SQLITE_TARGET, mv_project_options.
 

@@ -3,8 +3,10 @@
 <!--
   Copyright (C) 2026 longtimeno-c
   SPDX-License-Identifier: GPL-3.0-or-later
-  MediaViewerSearch.appex: the Final Cut Pro workflow extension (plan/23).
-  FCP's own ProExtension framework declares the extension point
+  MediaViewerSearch.appex: the Final Cut Pro workflow extension (plan/23),
+  in MediaViewer.app/Contents/PlugIns (arm64 only, like Local search). It ships
+  with every app and stays hidden (a PlugInKit "ignore" election) until the
+  owner turns Final Cut Pro on in Settings > Local search. FCP's own ProExtension framework declares the extension point
   (com.apple.FinalCut.WorkflowExtension); this bundle links no Apple SDK
   framework and embeds none. Its principal class is our view controller,
   which FCP shows in a floating window. Phase 0 records whether FCP takes it.
@@ -16,7 +18,7 @@
   <key>CFBundleExecutable</key>
   <string>MediaViewerSearch</string>
   <key>CFBundleIdentifier</key>
-  <string>@MV_FCP_BUNDLE_ID@.panel</string>
+  <string>@MV_MAC_BUNDLE_ID@.finalcut</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -26,9 +28,9 @@
   <key>CFBundlePackageType</key>
   <string>XPC!</string>
   <key>CFBundleShortVersionString</key>
-  <string>@MV_FCP_VERSION@</string>
+  <string>@PROJECT_VERSION@</string>
   <key>CFBundleVersion</key>
-  <string>@MV_FCP_VERSION@</string>
+  <string>@MV_MAC_BUILD_NUMBER@</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSExtension</key>

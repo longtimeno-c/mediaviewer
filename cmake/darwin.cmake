@@ -573,6 +573,8 @@ set(MV_MAC_HOST_SOURCES
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
+  # plan/23: Final Cut Pro on / off (the agent and extension in the bundle).
+  src/shell/fcp_mac.mm
   src/shell/present_busy.h
 )
 set_source_files_properties(
@@ -580,6 +582,7 @@ set_source_files_properties(
   src/shell/crash_reporter_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/addons_mac.mm
+  src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
@@ -611,6 +614,7 @@ function(mv_mac_host target)
     "-framework SystemConfiguration"
     "-framework IOKit"
     "-framework Security"
+    "-framework ServiceManagement"  # plan/23: the FCP search agent (SMAppService)
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
@@ -711,10 +715,6 @@ else()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/darwin-app.cmake")
-# plan/23: the Final Cut Pro add-on (agent, extension, container), with the AI pack.
-if(TARGET mv_nle)
-  include("${CMAKE_CURRENT_LIST_DIR}/darwin-fcp.cmake")
-endif()
 
 add_executable(mv_frametime
   tools/frametime/main_mac.cpp

@@ -2860,6 +2860,39 @@ and Phase 1, ship the extension **as another add-on that can be installed**, and
   last client. At 60 s the measured exit was 62 s (the timer starts at invalidation, plus
   teardown); at 50 s it was 52 s.
 
+## 2026-09-28 — Final Cut Pro search ships inside MediaViewer.app, off until turned on (amends the delivery call above)
+
+Owner, reviewing PR 87: a separate "MediaViewer for Final Cut Pro.app" to install and open is
+annoying. Ship the pieces in the standard app bundle and download only the bulk when the add-on
+is installed. The bulk is already the Local search pack, which the agent hosts; the FCP-specific
+code is small (the agent about 1.9 MB, the extension about 160 KB, both linking the system only).
+
+- **In MediaViewer.app, arm64 only:** `Contents/PlugIns/MediaViewerSearch.appex`,
+  `Contents/Helpers/MediaViewerSearchAgent`, and its launchd job in
+  `Contents/Library/LaunchAgents`. The container app, `fcp_bundle` and `fcp_bundle.py` are gone;
+  `macpack.py` assembles and signs the pieces with the app, and a Sparkle update replaces them with
+  it. `lipo_merge.py` lets these paths be arm64 only (the Intel build has no AI pack).
+- **Off until turned on.** Settings > Local search shows a Final Cut Pro row once Core is installed.
+  **Turn on** registers the agent with `SMAppService` and elects the extension in with `pluginkit`;
+  **Turn off**, or removing Core, unregisters the agent and elects it out. Off, nothing runs and
+  Login Items lists nothing. Nothing is downloaded: the pieces are in the app, and the pack is the
+  bulk the owner already installed.
+- **"Absent means absent" (plan/18), kept by an election rather than by the bundle.** macOS
+  registers every extension in an installed app, so a fresh install would list "MediaViewer
+  Search" in FCP for everyone. The app elects it out once (`pluginkit -e ignore`) in a background
+  block 10 s after launch, and records that in user defaults. Whether FCP honours the election is
+  checked in the Phase 0 hands-on run; if it does not, the panel reads "turn on Final Cut Pro in
+  MediaViewer".
+- **The base bundle changes, at no runtime cost to the viewer.** The app never loads the extension
+  or the agent. Its launch gains one background block (two `stat`s, then at most one service
+  manager call or one `pluginkit`) 10 s after launch; nothing on the launch or render path. The
+  Mac launch → first pixel and PR 1 soak are to be re-run against the base to confirm.
+- **The names follow the app.** The extension is `<app id>.finalcut`, the agent's job is associated
+  with the app's bundle id (so Login Items shows "MediaViewer"), and the app group and Mach service
+  keep their names (`<team>.<app id>.fcp`, `….search`). `MV_FCP_TEAM_ID` is the team the app is
+  signed by. The extension's entitlements are applied when the app is assembled, and
+  `macpack.py release` keeps them.
+
 ## 2026-09-28 — People refinement runs only on request
 
 Owner: the refinement should run only "when I press a button" in the person's faces view
