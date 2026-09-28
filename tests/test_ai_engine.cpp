@@ -1675,7 +1675,13 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   auto n = rd->result_count(sim);
   REQUIRE(n);
   REQUIRE(*n >= 1);
-  CHECK(utf8(fs::path(*rd->result_path(sim, 0)).filename()) == "red_b.jpg");
+  // The nearest is red: red_b.jpg, or the clip's opening red seconds, which
+  // the fake tower embeds identically (a tie either may win).
+  {
+    const std::string top = utf8(fs::path(*rd->result_path(sim, 0)).filename());
+    CHECK((top == "red_b.jpg" || top == "holiday_rgb.mp4"));
+    if (top == "holiday_rgb.mp4") CHECK(rd->result_at(sim, 0)->pts_ms < 3000);
+  }
   const std::uint64_t moment = rd->search_similar(utf8(r.photos() / "holiday_rgb.mp4"), 3100, "",
                                                   MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
   REQUIRE(rd->wait_search(moment, 5000));
@@ -1934,7 +1940,11 @@ TEST_CASE("the agent's session returns the in-app top-K through the reader, over
   for (std::size_t i = 0; i < app_rows.size(); ++i) {
     CHECK(utf8(fs::path(like.rows[i].path).filename()) == app_rows[i].first);
   }
-  CHECK(utf8(fs::path(like.rows[0].path).filename()) == "red_b.jpg");
+  // The nearest is red: red_b.jpg, or the clip's opening red seconds (a tie
+  // under the fake tower; the order is the app's, checked above).
+  const std::string top = utf8(fs::path(like.rows[0].path).filename());
+  CHECK((top == "red_b.jpg" || top == "holiday_rgb.mp4"));
+  if (top == "holiday_rgb.mp4") CHECK(like.rows[0].pts_ms < 3000);
   // Another wire version is refused rather than guessed at.
   mv::nle::request old;
   old.version = 99;
