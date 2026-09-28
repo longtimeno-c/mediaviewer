@@ -132,6 +132,14 @@ final class AITable: @unchecked Sendable {
   /// 2026-09-27 audio entries: root_set_media, result_snippet.
   var hasAudio: Bool { a.result_snippet != nil }
 
+  /// Issue #72: the pack has a Photos library source (its table has the
+  /// entries, and it is not a build without one).
+  var hasPhotos: Bool {
+    guard has(\mv_ai_api.photos_access), let fn = a.photos_access else { return false }
+    var access: UInt32 = 0
+    return guarded { fn(ctx, &access) } == MV_OK && access != MV_AI_PHOTOS_UNSUPPORTED.rawValue
+  }
+
   func setSetting(_ key: String, _ valueJSON: String) {
     call { a.set_setting?(ctx, key, valueJSON) }
   }
@@ -237,7 +245,9 @@ struct StatusLine: Equatable {
     switch state {
     case MV_AI_STATE_INDEXING.rawValue:
       let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
-      text = "Indexing \(countText(s.assets_done)) of \(countText(s.assets_total))" + (eta.isEmpty ? "" : " · \(eta)")
+      // iCloud-only Photos assets are handled too: nothing more to read (issue #72).
+      text = "Indexing \(countText(s.assets_done + s.assets_unavailable)) of \(countText(s.assets_total))"
+        + (eta.isEmpty ? "" : " · \(eta)")
       spinning = true
       indexing = true
       idle = false
@@ -275,7 +285,8 @@ struct StatusLine: Equatable {
       text = s.frames_indexed == 0 ? "Nothing indexed yet"
         : "Up to date · \(countText(s.frames_indexed)) moments"
     }
-    progress = s.assets_total == 0 ? 0 : min(1, Double(s.assets_done) / Double(s.assets_total))
+    progress = s.assets_total == 0 ? 0
+      : min(1, Double(s.assets_done + s.assets_unavailable) / Double(s.assets_total))
     audioReady = s.flags & MV_AI_STATUS_AUDIO_READY != 0
     badge = s.backend == MV_AI_BACKEND_COREML.rawValue ? "Neural Engine" : "CPU"
     var notes: [String] = []  // appended below; the sound line goes first while it runs

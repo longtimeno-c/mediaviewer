@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/transfer.h"
 
+#include "addons/ai/photos_source.h"
+
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -278,6 +280,9 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
       const std::int64_t id = r.i64(0);
       if (!wanted.empty() && !wanted.count(id)) continue;
       const std::string path = r.text(1);
+      // The Photos library (issue #72) is this Mac's: its keys are PhotoKit
+      // identifiers, not paths under a folder another machine could map.
+      if (is_photos_key(path)) continue;
       ins.reset();
       ok = ins.bind(1, id).bind(2, name_of(path)).bind(3, path).bind(4, r.i64(2)).bind(5, r.i64(3)).run();
       roots.emplace_back(id, path);

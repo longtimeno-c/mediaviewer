@@ -74,6 +74,8 @@ final class ImageCache: @unchecked Sendable {
 enum ImageLoad {
   /// A JPEG (the JPEG-512 cache) or a still, box-scaled and oriented.
   static func decode(path: String, maxPixel: Int) -> CGImage? {
+    // A Photos library still: the pack answers its key (issue #72).
+    if PhotosLibrary.isKey(path) { return PhotosLibrary.image(key: path, maxPixel: maxPixel) }
     let url = URL(fileURLWithPath: path) as CFURL
     let options: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,

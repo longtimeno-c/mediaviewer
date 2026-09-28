@@ -91,6 +91,7 @@
 // link error against the Swift side.
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
+#include "shell/write_guard.h"
 
 // Whether two file URLs are on one volume, where a move is a rename. Unknown
 // counts as different, so an unanswerable case takes the verified path.
@@ -384,6 +385,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // Marks, copy/move, Trash (plan/16-commands.md "Marks, copy, move"; folded
 // into PR 18 from Windows PR 6, plan/12 2026-09-17).
 - (void)toggleMarkCurrent;
+- (BOOL)refuseWriteTo:(const std::string&)path;  // issue #72: a Photos library file
 - (void)markAll;
 - (void)unmarkAll;
 - (void)copyMarkedPickDestination:(BOOL)pick;
@@ -3177,6 +3179,23 @@ static void MvAdoptNewDefaultViewerTypes() {
   return out;
 }
 
+// Issue #72: a file from the Photos library (in place, or a preview / on-view
+// download the list registered) is never changed, renamed, moved or trashed,
+// and nothing is saved beside it (shell/write_guard.h). YES: refused, and said.
+- (BOOL)refuseWriteTo:(const std::string&)path {
+  if (!mv::shell::write_protected(path)) return NO;
+  NSBeep();
+  [self noticeShow:std::string(mv::shell::kWriteProtectedNotice)];
+  return YES;
+}
+
+- (BOOL)refuseWriteToEntries:(const std::vector<mv::io::dir_entry>&)entries {
+  for (const auto& e : entries) {
+    if ([self refuseWriteTo:e.path_utf8]) return YES;
+  }
+  return NO;
+}
+
 - (void)toggleMarkCurrent {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string& path = _items[_index.current()].path_utf8;
@@ -3215,6 +3234,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_items.empty()) return;
   const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
   if (entries.empty()) return;
+  if (move && [self refuseWriteToEntries:entries]) return;  // copying out is fine
 
   if (pick || !_lastDestination) {
     NSOpenPanel* panel = [NSOpenPanel openPanel];
@@ -3324,6 +3344,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_items.empty()) return;
   const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
   if (entries.empty()) return;
+  if ([self refuseWriteToEntries:entries]) return;
 
   NSAlert* alert = [[NSAlert alloc] init];
   alert.messageText = entries.size() == 1
@@ -4131,6 +4152,20 @@ enum MvMenuCmd : NSInteger {
     case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
       return YES;
+    case kMenuTrash:
+    case kMenuMoveTo: {
+      // Photos library files are never trashed or moved (issue #72). The
+      // marks themselves, not a copy of their entries: this runs per validation.
+      if (![self hasFolder]) return NO;
+      if (!_marks.empty()) {
+        for (const std::string& path : _marks) {
+          if (mv::shell::write_protected(path)) return NO;
+        }
+        return YES;
+      }
+      const mv::io::dir_entry* entry = [self currentEntry];
+      return entry == nullptr || !mv::shell::write_protected(entry->path_utf8);
+    }
     default:
       return [self hasFolder];
   }
@@ -5052,6 +5087,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     NSBeep();  // no pixels yet: nothing to frame a crop against
     return YES;
   }
+  // A Photos library file: turning it rewrites it and Save copy writes beside
+  // it; neither is allowed (issue #72). Cropping and the adjust sliders only
+  // change the view, and stay.
+  using mv::shell::command_id;
+  if ((command == command_id::rotate_ccw || command == command_id::rotate_cw ||
+       command == command_id::flip_horizontal || command == command_id::flip_vertical ||
+       command == command_id::export_image) &&
+      [self refuseWriteTo:_items[std::min(_index.current(), _items.size() - 1)].path_utf8]) {
+    return YES;
+  }
   [self applyEditEffect:_edits.run(command)];
   return YES;
 }
@@ -5256,6 +5301,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
   const std::optional<mv::shell::rotation_write> w = _edits.take_pending_write();
   if (!w) return;
+  if (mv::shell::write_protected(w->path)) return;  // a turn carried onto a Photos file: never written
   const mv::shell::rotation_write job = *w;
   const std::string path = job.path;
   __weak MvLabApp* weakSelf = self;
@@ -5426,6 +5472,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // pane is where it is cancelled (plan/08: never a modal progress dialog).
 - (BOOL)submitClipJob:(const mv::edit::clip::request&)r {
   if (!_clipJobs || r.source.empty()) return NO;
+  // Trims, splits and exports write beside their source: never inside a
+  // Photos library (issue #72). A retry re-runs a job that got past this.
+  if (r.out_dir.empty() && [self refuseWriteTo:r.source]) return NO;
   mv_clip_request q{};
   q.struct_size = sizeof(q);
   q.op = static_cast<std::uint32_t>(r.kind);
@@ -5634,6 +5683,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 - (void)exportCurrentItem:(const mv::edit::export_options&)options {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
+  if ([self refuseWriteTo:path]) return;  // it would save beside a Photos library file
   const mv::edit::geometry g = _edits.export_geometry();
   const mv::edit::colour c = _edits.colour();
   const mv::edit::export_options opt = options;
@@ -6811,6 +6861,7 @@ static double mv_wall_seconds() {
 - (BOOL)rateCurrentItem:(int)stars {
   const mv::io::dir_entry* entry = [self currentEntry];
   if (!entry || stars < 0 || stars > mv::meta::kMaxRating) return NO;
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;  // the key was ours; the answer is no
   _metaWriter.submit(entry->path_utf8, mv::shell::rating_fields(stars));
   // The keystroke shows at once; the file catches up a moment later.
   [self noticeShow:stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars)];
@@ -6841,11 +6892,14 @@ static double mv_wall_seconds() {
   return _metaRecord ? _metaRecord->s.comment : std::string{};
 }
 
-- (BOOL)metaCanEdit { return [self currentEntry] != nullptr; }
+- (BOOL)metaCanEdit {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  return entry != nullptr && !mv::shell::write_protected(entry->path_utf8);
+}
 
 - (BOOL)metaCanRevert {
   const mv::io::dir_entry* entry = [self currentEntry];
-  return entry && _metaWritten.count(entry->path_utf8) != 0;
+  return entry && _metaWritten.count(entry->path_utf8) != 0 && !mv::shell::write_protected(entry->path_utf8);
 }
 
 - (void)metaSetRating:(int32_t)stars {
@@ -6854,7 +6908,7 @@ static double mv_wall_seconds() {
 
 - (void)metaSetComment:(const char*)utf8 {
   const mv::io::dir_entry* entry = [self currentEntry];
-  if (!entry) return;
+  if (!entry || [self refuseWriteTo:entry->path_utf8]) return;
   const std::string text(utf8);
   if (text.size() > mv::meta::kMaxCommentBytes) {
     NSBeep();
@@ -6870,7 +6924,7 @@ static double mv_wall_seconds() {
 - (void)metaSetTag:(const char*)key value:(const char*)value {
   const mv::io::dir_entry* entry = [self currentEntry];
   const auto rec = [self metaRecord];
-  if (!entry || !rec) return;
+  if (!entry || !rec || [self refuseWriteTo:entry->path_utf8]) return;
   const std::string k(key);
   const mv::meta::tag_access a = mv::meta::access_of(
       k, rec->writes_in_file ? mv::meta::write_target::in_file : mv::meta::write_target::sidecar);
@@ -6889,7 +6943,7 @@ static double mv_wall_seconds() {
 
 - (void)metaSetDate:(const char*)value {
   const mv::io::dir_entry* entry = [self currentEntry];
-  if (!entry) return;
+  if (!entry || [self refuseWriteTo:entry->path_utf8]) return;
   mv::meta::write_fields f;
   if (value != nullptr) {
     std::string exif_form, xmp_form;
@@ -6908,7 +6962,7 @@ static double mv_wall_seconds() {
 
 - (void)metaRevert {
   const mv::io::dir_entry* entry = [self currentEntry];
-  if (!entry || _metaWritten.count(entry->path_utf8) == 0) return;
+  if (!entry || _metaWritten.count(entry->path_utf8) == 0 || [self refuseWriteTo:entry->path_utf8]) return;
   _metaWriter.submit_revert(entry->path_utf8);
   [self noticeShow:std::string("Reverting metadata…")];
   [self scheduleMetaWrite:0.05];

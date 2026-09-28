@@ -241,20 +241,21 @@ public static partial class IslandHost
     // ---- the command-bar pill ---------------------------------------------------------
 
     private static Button? _indexingPill;
-    private static ProgressRing? _indexingRing;
+    // A still accent dot, not a ProgressRing: that control has no default style
+    // in this island host, and this one crashed the app the first time the
+    // pill showed (after a Local search install, when indexing started).
+    private static Microsoft.UI.Xaml.Shapes.Ellipse? _indexingDot;
     private static TextBlock? _indexingText;
 
     private static UIElement BuildIndexingPill()
     {
-        _indexingRing = new ProgressRing
+        _indexingDot = new Microsoft.UI.Xaml.Shapes.Ellipse
         {
-            Width = 14,
-            Height = 14,
-            MinWidth = 14,
-            MinHeight = 14,
-            IsActive = false,
-            Foreground = Brush(ChromeColour.TrimAccent),
+            Width = 8,
+            Height = 8,
+            Fill = Brush(ChromeColour.TrimAccent),
             VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
         };
         _indexingText = new TextBlock
         {
@@ -266,7 +267,7 @@ public static partial class IslandHost
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        row.Children.Add(_indexingRing);
+        row.Children.Add(_indexingDot);
         row.Children.Add(_indexingText);
         _indexingPill = TextButton("", () => SearchChrome?.RunCommand(SearchCommand.Open));
         _indexingPill.Content = new Border
@@ -287,7 +288,7 @@ public static partial class IslandHost
 
     private static void HostSetIndexingPill(string? text, bool busy)
     {
-        if (_indexingPill is null || _indexingText is null || _indexingRing is null) return;
+        if (_indexingPill is null || _indexingText is null || _indexingDot is null) return;
         _indexingPill.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
         if (text != _indexingText.Text)
         {
@@ -298,9 +299,8 @@ public static partial class IslandHost
                 : "Local search is indexing in the background. Click to search (Ctrl+F)");
         }
         _indexingText.Text = text ?? "";
-        // The ring spins only while indexing: a still app shows a still bar.
-        _indexingRing.IsActive = busy && text is not null;
-        _indexingRing.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        // The dot shows only while indexing: a still app shows a still bar.
+        _indexingDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ---- matches over the scrub bar -----------------------------------------------------
@@ -616,7 +616,6 @@ public static partial class IslandHost
             // Removing: said at once, not a greyed Remove (owner report,
             // 2026-09-27); Install comes back when it has gone.
             var removing = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            removing.Children.Add(new ProgressRing { IsActive = true, Width = 16, Height = 16 });
             removing.Children.Add(Small("Removing…"));
             AutomationProperties.SetName(removing, $"Removing {title}");
             action = removing;

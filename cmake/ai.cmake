@@ -88,6 +88,12 @@ else()
   set(MV_INFER_DYLIB ${R}/src/infer/ort_dylib_posix.cpp)
   set(MV_AI_PLATFORM ${R}/src/addons/ai/platform_posix.cpp)
 endif()
+# The Photos library source (issue #72): PhotoKit on the Mac, none elsewhere.
+if(APPLE)
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/photos_mac.mm)
+else()
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/photos_none.cpp)
+endif()
 
 add_library(mv_infer STATIC
   ${R}/src/infer/clip_tokenizer.cpp
@@ -134,6 +140,7 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/pack.cpp
   ${R}/src/addons/ai/pack.h
   ${R}/src/addons/ai/platform.h
+  ${R}/src/addons/ai/photos_source.h
   ${MV_AI_PLATFORM}
   ${R}/src/abi/include/mediaviewer/mediaviewer_ai.h
 )
@@ -142,7 +149,9 @@ target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_project_options PRIVATE ${
 find_package(Threads REQUIRED)
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
 if(APPLE)
-  target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit")
+  target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit"
+                        "-framework Foundation" "-framework AppKit" "-framework Photos"
+                        "-framework AVFoundation")
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

@@ -316,7 +316,7 @@ result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int
 // The assets a track covers (track_filter), as SQL over `a` and `r`.
 constexpr const char* kTrackWhere =
     " AND ((a.kind = 1 AND ?4 != 0) OR (a.kind = 2 AND"
-    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0))";
+    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)) AND a.root_id != ?7";
 
 std::vector<work_item> index_db::pending(const std::string& spec, std::size_t limit,
                                          std::int32_t max_tries, const track_filter& filter) {
@@ -332,7 +332,7 @@ std::vector<work_item> index_db::pending(const std::string& spec, std::size_t li
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
       .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
-      .bind(6, std::int64_t{filter.media_bit});
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
   while (s.step_row()) {
     work_item w;
     w.asset = asset_from(s, 0);
@@ -398,6 +398,52 @@ expected index_db::fail(std::int64_t asset, const std::string& spec) {
   return p.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
 }
 
+expected index_db::mark_unavailable(std::int64_t asset, const std::string& spec,
+                                    std::span<const frame_in> frames, std::uint32_t dim) {
+  if (!frames.empty()) return commit_frames(asset, spec, frames, work_state::unavailable, 0, dim);
+  std::lock_guard lock(m_);
+  stmt p(db_, "INSERT INTO progress(asset_id, spec, state, tries) VALUES(?1, ?2, 4, 0)"
+              " ON CONFLICT(asset_id, spec) DO UPDATE SET state = 4");
+  return p.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
+}
+
+std::vector<asset_row> index_db::unavailable_assets(std::int64_t root) {
+  std::lock_guard lock(m_);
+  std::vector<asset_row> out;
+  const std::string sql = std::string("SELECT ") + kAssetCols +
+      " FROM assets a WHERE a.root_id = ?1 AND EXISTS"
+      " (SELECT 1 FROM progress p WHERE p.asset_id = a.id AND p.state = 4) ORDER BY a.id";
+  stmt q(db_, sql.c_str());
+  q.bind(1, root);
+  while (q.step_row()) out.push_back(asset_from(q, 0));
+  return out;
+}
+
+expected index_db::requeue_unavailable(std::span<const std::int64_t> ids) {
+  if (ids.empty()) return {};
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1 AND spec IN"
+                " (SELECT spec FROM progress WHERE asset_id = ?1 AND state = 4)");
+    stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1 AND state = 4");
+    for (std::int64_t id : ids) {
+      f.reset();
+      p.reset();
+      if (!f.bind(1, id).run() || !p.bind(1, id).run()) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return exec("COMMIT") ? expected{} : err(status::io);
+}
+
 expected index_db::commit_speech(std::int64_t asset, const std::string& spec,
                                  std::span<const speech_in> segments, work_state state,
                                  std::int64_t resume_ms) {
@@ -460,18 +506,20 @@ counts index_db::count(const std::string& spec, const track_filter& filter) {
       " SUM(CASE WHEN p.state = 3 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.kind = 2 AND (p.state IS NULL OR p.state < 2)"
       "     THEN MAX(a.duration_ms - COALESCE(p.resume_ms, 0), 0) ELSE 0 END),"
-      " SUM(CASE WHEN a.kind = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
+      " SUM(CASE WHEN a.kind = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
+      " SUM(CASE WHEN p.state = 4 THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere;
   stmt a(db_, sql.c_str());
   a.bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
-      .bind(6, std::int64_t{filter.media_bit});
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
   if (a.bind(1, spec).step_row()) {
     c.assets = static_cast<std::uint64_t>(a.i64(0));
     c.done = static_cast<std::uint64_t>(a.i64(1));
     c.failed = static_cast<std::uint64_t>(a.i64(2));
     c.pending_video_ms = static_cast<std::uint64_t>(a.i64(3));
     c.pending_photos = static_cast<std::uint64_t>(a.i64(4));
+    c.unavailable = static_cast<std::uint64_t>(a.i64(5));
   }
   stmt f(db_, "SELECT COUNT(*) FROM frames WHERE spec = ?1");
   if (f.bind(1, spec).step_row()) c.frames = static_cast<std::uint64_t>(f.i64(0));
@@ -489,6 +537,13 @@ std::uint64_t index_db::assets_in_root(std::int64_t root) {
   std::lock_guard lock(m_);
   stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1");
   return f.bind(1, root).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
+std::uint64_t index_db::unavailable_in_root(std::int64_t root, const std::string& spec) {
+  std::lock_guard lock(m_);
+  stmt f(db_, "SELECT COUNT(*) FROM assets a JOIN progress p ON p.asset_id = a.id AND p.spec = ?2"
+              " WHERE a.root_id = ?1 AND p.state = 4");
+  return f.bind(1, root).bind(2, spec).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 
 std::uint64_t index_db::done_in_root(std::int64_t root, const std::string& spec) {

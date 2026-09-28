@@ -50,6 +50,10 @@
   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
+  <!-- Local search's Photos library source (issue #72): the system prompt
+       shows this once, from a click in Settings. Read-only, on this Mac only. -->
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>Local search can find photos and videos in your Photos library by what they show. It reads only what is already on this Mac, never changes your library, and sends nothing anywhere.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright (C) 2026 longtimeno-c. Licensed under GPL-3.0-or-later. https://github.com/longtimeno-c/mediaviewer</string>
 

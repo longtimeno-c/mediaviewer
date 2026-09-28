@@ -36,6 +36,7 @@
 #include "addons/ai/faces.h"
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
+#include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
@@ -163,6 +164,12 @@ struct engine_deps {
   // The transcript spec Whisper would write at this quality, without opening
   // it; "" when the ai-audio piece is not installed.
   std::function<std::string(std::uint32_t quality)> speech_spec_key;
+  // The system Photos library (issue #72): null uses make_photos_source()
+  // (PhotoKit on macOS, none elsewhere). The tests pass a fake.
+  std::function<std::unique_ptr<photos_source>()> photos;
+  // At most one change-driven Photos library rescan per this many seconds
+  // (PhotoKit reports an iCloud sync as a burst of changes).
+  double photos_rescan_gap_s = 10;
 };
 
 // How an engine runs. The app's engine indexes and owns the index; a reader
@@ -227,6 +234,13 @@ class engine {
   void note_folder_opened(const std::string& dir);
   [[nodiscard]] expected clear_index();
   [[nodiscard]] expected root_set_media(std::int64_t id, std::uint32_t media);
+
+  // ---- the Photos library (issue #72; macOS) --------------------------------
+  // Remembers the library as a root ("photos:") and scans it. unsupported_format
+  // where there is no Photos library source; permission_denied until the
+  // chrome's own prompt has granted access (this never asks). [no-block]
+  [[nodiscard]] result<std::int64_t> index_photos_library();
+  [[nodiscard]] photos_access photos_library_access() const;
 
   // ---- search ------------------------------------------------------------------
   [[nodiscard]] std::uint64_t search_text(const std::string& query, const std::string& scope_dir,
@@ -351,12 +365,39 @@ class engine {
                    std::uint32_t find, std::uint32_t precision);
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
   void process_video(const work_item& item, const loaded_clip& clip, bool faces_only);
+  // An iCloud-only Photos clip: its local poster as one row at 0 ms, marked
+  // unavailable so the whole clip is indexed once its original is on this Mac.
+  void index_poster(const work_item& item, const loaded_clip& clip, std::uint32_t edge);
   void faces_of(std::int64_t asset, const std::string& path, std::int64_t pts_ms, const rgb_frame& img);
   bool wait_turn();  // false: stopping
   mv_ai_yield yield_reason() const;
   // scans
   void scan_root(const root_row& root);
+  void scan_photos(const root_row& root);
+  // A scan's batch into the index and the asset map; false on a write error.
+  bool see_batch(const root_row& root, std::vector<index_db::seen_file>& batch, std::int64_t gen,
+                 std::vector<std::int64_t>& changed);
+  // A scan's end: removed assets leave every index, changed ones their vectors.
+  void end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed);
+  void forget_vectors(const std::vector<std::int64_t>& ids);
+  // Whether an unavailable Photos asset is on this Mac now (the launch check).
+  [[nodiscard]] bool photos_local(const asset_row& a) const;
   void scan_all();
+  // Pixels and files for an asset path: a file goes to the host, a Photos
+  // library key ("photos:...") to the Photos source.
+  [[nodiscard]] result<rgb_frame> still_of(const std::string& path, std::uint32_t edge) const;
+  [[nodiscard]] result<std::string> file_of(const std::string& path) const;  // a clip's readable file
+  [[nodiscard]] result<rgb_frame> frame_of(const std::string& path, std::int64_t pts_ms, std::uint32_t edge) const;
+  // A result or face tile: a JPEG in the viewer's cache, or for a Photos
+  // library still the "photos:" key itself (the chrome asks PhotoKit).
+  [[nodiscard]] result<std::string> tile_of(const std::string& path, std::int64_t pts_ms) const;
+  // The edge the launch check asks a still at: what the picture pass reads
+  // (process_photos, 448 px at the base quality), so "local" means the same.
+  static constexpr std::uint32_t kPhotosProbeEdge = 448;
+  // The root the indexer leaves alone: the Photos library while access is off.
+  [[nodiscard]] std::int64_t skip_root() const noexcept {
+    return photos_readable_ ? 0 : photos_root_.load();
+  }
   void refresh_counts();
   // models
   void load_models();
@@ -459,6 +500,12 @@ class engine {
   std::int64_t reader_frame_ = 0;  // the last picture frame id taken
   std::int64_t reader_sound_ = 0;  // the last sound frame id taken
   std::string reader_speech_spec_;
+  // The Photos library (issue #72): the source, its root's id (0 none) and
+  // whether it is readable now (read by the control thread each scan).
+  std::unique_ptr<photos_source> photos_;
+  std::atomic<std::int64_t> photos_root_{0};
+  std::atomic<bool> photos_readable_{false};
+  std::atomic<bool> photos_changed_{false};  // PhotoKit said so; the control thread rescans
   std::string data_dir_;
   std::unique_ptr<index_db> db_;
 

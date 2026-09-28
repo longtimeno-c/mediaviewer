@@ -394,6 +394,11 @@ def codesign(path: Path, identity: str, hardened: bool, entitlements: Path | Non
     run(cmd)
 
 
+# The app's own entitlements (hardened runtime): Photos library access for
+# Local search (issue #72). The file says why.
+APP_ENTITLEMENTS = REPO_ROOT / "packaging" / "macos" / "MediaViewer.entitlements"
+
+
 def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
              fcp_appex_entitlements: Path | None = None) -> None:
     """Inside out: every nested binary before the bundle that seals it. No
@@ -429,7 +434,7 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
                  preserve_entitlements=fcp_appex_entitlements is None)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
-    codesign(app, identity, hardened)
+    codesign(app, identity, hardened, entitlements=APP_ENTITLEMENTS)
     run(["codesign", "--verify", "--strict", "--deep", "--verbose=2", str(app)])
 
 

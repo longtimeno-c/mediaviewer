@@ -471,6 +471,9 @@ add_library(mv_shell STATIC
   # PR 12: the write queue behind the rating keys and the comment field.
   src/shell/meta_writer.cpp
   src/shell/meta_writer.h
+  # Issue #72: files the viewer shows but must never change (a Photos library).
+  src/shell/write_guard.cpp
+  src/shell/write_guard.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
@@ -748,6 +751,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_tree.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_write_guard.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (plan/09: no RAW in git).
     tests/test_probe.cpp
@@ -894,7 +898,8 @@ endif()
 
 # ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
 if(TARGET mv_ai)
-  add_executable(ai-bench tools/ai-bench/main.cpp)
+  add_executable(ai-bench tools/ai-bench/main.cpp tools/ai-bench/photos_ask_mac.mm)
+  target_link_libraries(ai-bench PRIVATE "-framework Photos")
   target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
   target_include_directories(ai-bench PRIVATE src src/abi/include)
 endif()
