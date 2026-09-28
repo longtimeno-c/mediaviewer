@@ -167,9 +167,11 @@ Add-ons install from **Settings → Add-ons**. They are signed and verified, nev
   - It sorts into dated folders, keeping RAW+JPEG and Live Photo pairs together.
   - It resumes after an unplug and can back up to a second drive.
 - **Local search.** Type what you are looking for ("guy on a skateboard", "dog barking", "happy birthday") and get the photos and the exact moments in videos. All of it is computed on your computer; nothing is uploaded.
-  - Pictures use OpenAI CLIP in two sizes, picked for your hardware, with NVIDIA acceleration on Windows and Core ML on Apple silicon.
+  - **Pictures and video frames** use OpenAI CLIP: ViT-B/32 (*Fast*) or ViT-L/14 (*High*), picked for your hardware. It runs with NVIDIA acceleration on Windows and Core ML on Apple silicon. Every photo and sampled frame is indexed once in the background, so a search reads the index and never re-scans your files.
   - An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
-  - An optional, deletable **People** index finds faces.
+  - An optional, deletable **People** piece finds faces (YuNet) and groups them (SFace). Name a person once, then search "Anna" or "videos of Anna".
+  - Narrow a search as you type: `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date, and quotes find words that are said.
+  - Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 3 GB in all. On a Mac, Local search needs Apple silicon.
   - Export the index to one file and import it on another computer, or after moving a library to a NAS, so nothing is indexed twice. Thumbnails and People go only if you tick them.
   - `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
 
@@ -177,6 +179,7 @@ Add-ons install from **Settings → Add-ons**. They are signed and verified, nev
 
 | Soon | |
 |---|---|
+| **Search from Final Cut Pro** (Mac) | A MediaViewer Search panel inside Final Cut Pro that uses your Local search index, so you can drag the matching moments straight into an event or the timeline. It is off until you turn it on under Local search ([plan/23](plan/23-nle-search.md)) |
 | **Voice search** (optional add-on) | Speak the query to Local search. Speech runs on-device ([plan/19](plan/19-voice.md)) |
 | **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([plan/21](plan/21-video-editor.md)) |
 | **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([plan/22](plan/22-editor-addon.md)) |
