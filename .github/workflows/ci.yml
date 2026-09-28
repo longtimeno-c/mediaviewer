@@ -54,6 +54,9 @@ jobs:
       - name: Hostable core (D9)
         run: ./tools/check-hostable-core.ps1
 
+      - name: WinUI controls that cannot load in the island host
+        run: ./tools/check-winui-controls.ps1
+
       - name: Licence policy
         run: ./tools/licence-check.ps1
 

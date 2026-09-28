@@ -308,12 +308,12 @@ public static partial class IslandHost
     }
 
     // A job's progress as two plain borders. Not a ProgressBar: WinUI's has no
-    // default template in this island app (no XamlControlsResources), and
-    // laying one out fails inside XAML -- a stowed-exception fail-fast the
-    // first time a job row appeared (found by PR 30's export; again in 0.1.14-
-    // 0.1.18, when the bar's update progress crashed every launch). The status
-    // line under it carries the same percentage as text for screen readers.
-    // Every progress bar in this chrome is one of these: jobs, update, add-ons.
+    // default style in this island app, and it fail-fasts (0xC000027B) the
+    // moment it enters the tree -- found by PR 30's export, and again in
+    // 0.1.14-0.1.18 when the bar's update progress crashed every launch.
+    // tools/check-winui-controls.ps1 keeps that whole family out of src.managed
+    // (shared/FlatBar.cs is this bar for the add-ons). The status line under it
+    // carries the same percentage as text for screen readers.
     private sealed class JobBar
     {
         public readonly Grid Root;

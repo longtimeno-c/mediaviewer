@@ -93,7 +93,9 @@ internal sealed class SearchWindow : Window, IDisposable
     private Border _ring = null!;
     private ContentControl _gridHost = null!;
     private StackPanel _empty = null!;
-    private ProgressRing _footerRing = null!;
+    // A still accent dot, not a ProgressRing: that control has no default style
+    // in this island host and fail-fasts when it enters the tree.
+    private Microsoft.UI.Xaml.Shapes.Ellipse _footerDot = null!;
     private TextBlock _footerText = null!;
     private Border _badge = null!;
     private TextBlock _badgeText = null!;
@@ -423,11 +425,18 @@ internal sealed class SearchWindow : Window, IDisposable
         body.Children.Add(middle);
 
         // The footer: status pill, compute badge, Pause, Manage.
-        _footerRing = new ProgressRing { Width = 14, Height = 14, MinWidth = 14, MinHeight = 14, IsActive = false };
+        _footerDot = new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = 8,
+            Height = 8,
+            Fill = _look[AddonColour.Accent],
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
+        };
         _footerText = _look.Text("", 13, AddonColour.Body, wrap: false);
         _footerText.VerticalAlignment = VerticalAlignment.Center;
         var pillRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        pillRow.Children.Add(_footerRing);
+        pillRow.Children.Add(_footerDot);
         pillRow.Children.Add(_footerText);
         var pill = new Border
         {
@@ -1320,7 +1329,7 @@ internal sealed class SearchWindow : Window, IDisposable
         if (!_chrome.StatusValid)
         {
             _footerText.Text = "Local search is not running.";
-            _footerRing.IsActive = false;
+            _footerDot.Visibility = Visibility.Collapsed;
             _badge.Visibility = Visibility.Collapsed;
             return;
         }
@@ -1332,10 +1341,9 @@ internal sealed class SearchWindow : Window, IDisposable
             _findAudio = audio;
             ShowFind();
         }
-        // The ring spins only while indexing.
+        // The dot shows only while indexing.
         bool busy = Look.Busy(s);
-        _footerRing.IsActive = busy && _visible;
-        _footerRing.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        _footerDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         string? why = Look.FallbackReason(s);
         _badgeText.Text = why is null ? Look.ComputeBadge(s) : $"{Look.ComputeBadge(s)} · {why}";
         _badge.Visibility = Visibility.Visible;

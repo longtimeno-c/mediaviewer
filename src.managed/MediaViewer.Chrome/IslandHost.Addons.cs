@@ -178,13 +178,22 @@ public static partial class IslandHost
         return slot.Progress.Root;
     }
 
-    // UI thread: Progress<T> made here reports on the dispatcher.
-    private static IProgress<AddonPhase> PhaseReporter(AddonSlot slot) => new Progress<AddonPhase>(p =>
+    // Reports land on the UI thread through the dispatcher, whichever thread
+    // made the reporter. Progress<T> depends on the creating thread's
+    // SynchronizationContext; before EnsureApp installed one, it reported on
+    // the thread pool and the bar threw RPC_E_WRONG_THREAD (0.1.19: a crash
+    // while the Local search pack installed).
+    private static IProgress<AddonPhase> PhaseReporter(AddonSlot slot) => new UiProgress<AddonPhase>(p =>
     {
         if (!slot.Busy) return;  // a late report after the install finished
         slot.Phase = p;
         slot.Progress?.Show(p);
     });
+
+    private sealed class UiProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => DispatcherQueueControllerTryEnqueue(() => handler(value));
+    }
 
     private static bool _addonsStarted;
     // The first installed-state read has landed (StartAddons). It verifies
@@ -424,13 +433,22 @@ public static partial class IslandHost
         public string? CurrentFolder => _openedFolder.Length == 0 ? null : _openedFolder;
         public AddonCurrentItem CurrentItem() => HostCurrentItem();
 
+        // The void services touch XAML: from a pack's worker they are posted,
+        // not a wrong-thread crash. On the UI thread (every caller today) they
+        // still run inline, in order. The getters below are UI-thread only.
         public void OpenList(string title, IReadOnlyList<string> paths, IReadOnlyList<long>? momentsMs,
-                             int selectIndex, bool gallery) => HostOpenList(title, paths, momentsMs, selectIndex, gallery);
+                             int selectIndex, bool gallery) => OnUi(() => HostOpenList(title, paths, momentsMs, selectIndex, gallery));
 
-        public void SeekVideo(long ms, bool exact) => HostSeekVideo(ms, exact);
-        public void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex) => HostSetScrubMarkers(ms, currentIndex);
-        public void SetIndexingStatus(string? text, bool busy) => HostSetIndexingPill(text, busy);
-        public void ShowSettings() => HostShowLocalSearchSettings();
+        public void SeekVideo(long ms, bool exact) => OnUi(() => HostSeekVideo(ms, exact));
+        public void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex) => OnUi(() => HostSetScrubMarkers(ms, currentIndex));
+        public void SetIndexingStatus(string? text, bool busy) => OnUi(() => HostSetIndexingPill(text, busy));
+        public void ShowSettings() => OnUi(HostShowLocalSearchSettings);
+
+        private static void OnUi(Action action)
+        {
+            if (_dispatcher?.DispatcherQueue.HasThreadAccess == true) action();
+            else DispatcherQueueControllerTryEnqueue(action);
+        }
         public bool IsPieceInstalled(string pieceId) =>
             Array.Find(AddonSlots, s => s.Id == pieceId && s.Parent is not null)?.Usable ?? false;
         public uint Colour(AddonColour role) => HostColour(role);
@@ -884,6 +902,13 @@ public static partial class IslandHost
                 message = ex is MediaViewerException or InvalidDataException
                     ? "The download did not verify, so nothing was installed."
                     : "Import could not be downloaded. Check the connection and try again.";
+            }
+            catch (Exception ex)
+            {
+                // Anything else still finishes the install, so Busy clears (as the
+                // AI pack's path); before, the row stayed "Downloading" for the session.
+                System.Diagnostics.Debug.WriteLine(ex);
+                message = "Import could not be installed.";
             }
             Dictionary<string, AddonState> states = ReadAddonStates();
             DispatcherQueueControllerTryEnqueue(() =>

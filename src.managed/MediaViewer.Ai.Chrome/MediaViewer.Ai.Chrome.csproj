@@ -39,6 +39,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The add-ons' progress bar (a WinUI ProgressBar fail-fasts in this host). -->
+    <Compile Include="..\Shared\FlatBar.cs" Link="Shared\FlatBar.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\MediaViewer.Interop\MediaViewer.Interop.csproj">
       <Private>false</Private>
       <ExcludeAssets>runtime</ExcludeAssets>

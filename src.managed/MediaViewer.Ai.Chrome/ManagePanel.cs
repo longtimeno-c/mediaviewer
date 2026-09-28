@@ -536,14 +536,12 @@ internal sealed partial class ManagePanel
             labels.Children.Add(path);
             string state = !r.Enabled ? "Paused" : r.Done >= r.Assets ? "Up to date" : $"{r.Done:N0} of {r.Assets:N0}";
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12));
-            var bar = new ProgressBar
+            var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent])
             {
-                Maximum = Math.Max(1, r.Assets),
-                Value = Math.Min(r.Done, Math.Max(1, r.Assets)),
-                Foreground = _look[AddonColour.Accent],
-                Margin = new Thickness(0, 4, 0, 0),
+                Value = r.Assets <= 0 ? 0 : Math.Min(1, (double)r.Done / r.Assets),
             };
-            labels.Children.Add(bar);
+            bar.Root.Margin = new Thickness(0, 4, 0, 0);
+            labels.Children.Add(bar.Root);
             grid.Children.Add(labels);
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
             ulong id = r.Id;
@@ -565,7 +563,9 @@ internal sealed partial class ManagePanel
     private static readonly string[] MediaNames = { "Default", "Pictures", "Sound", "Both" };
 
     // "Videos: Default ▾" — this folder's own choice, or the setting's.
-    private DropDownButton MediaMenu(ulong root, MvAiMedia current)
+    // A Button with a Flyout, not a DropDownButton: that control has no default
+    // style in this island host and fail-fasts when it enters the tree.
+    private Button MediaMenu(ulong root, MvAiMedia current)
     {
         var menu = new MenuFlyout();
         for (int i = 0; i < 4; ++i)
@@ -581,9 +581,9 @@ internal sealed partial class ManagePanel
             item.Click += (_, _) => RootCall(() => _api.RootSetMedia(root, media));
             menu.Items.Add(item);
         }
-        var button = new DropDownButton
+        var button = new Button
         {
-            Content = "Videos: " + MediaNames[(int)current],
+            Content = "Videos: " + MediaNames[(int)current] + "  ▾",
             FontFamily = _look.Font,
             FontSize = _look.FontSize - 2,
             Padding = new Thickness(12, 5, 8, 6),

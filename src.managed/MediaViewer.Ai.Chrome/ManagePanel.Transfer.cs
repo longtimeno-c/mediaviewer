@@ -52,7 +52,7 @@ internal sealed partial class ManagePanel
     }
 
     private StackPanel? _transfer;
-    private ProgressBar? _transferBar;
+    private MediaViewer.Shared.FlatBar? _transferBar;
     private List<RootRow> _rootsShown = new();
     private bool _exportOpen;
     private readonly HashSet<ulong> _exportRoots = new();
@@ -124,8 +124,8 @@ internal sealed partial class ManagePanel
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var labels = new StackPanel { Spacing = 4 };
             labels.Children.Add(_look.Text(_transferIsImport ? "Importing…" : "Exporting…", 12));
-            _transferBar = new ProgressBar { Maximum = 1, Value = 0, Foreground = _look[AddonColour.Accent] };
-            labels.Children.Add(_transferBar);
+            _transferBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
+            labels.Children.Add(_transferBar.Root);
             row.Children.Add(labels);
             Button cancel = _look.Button("Cancel", () =>
             {

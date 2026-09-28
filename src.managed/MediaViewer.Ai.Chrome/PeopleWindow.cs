@@ -55,11 +55,13 @@ internal sealed class PeopleWindow : Window
     private readonly Button _photos;
     private readonly Button _refine;
     private bool _refining;
-    private readonly DropDownButton _merge;
+    // Buttons with a Flyout, not DropDownButtons: that control has no default
+    // style in this island host and fail-fasts when it enters the tree.
+    private readonly Button _merge;
     private readonly Grid _detail;
     private readonly StackPanel _mergeBar;
     private readonly TextBlock _mergeCount;
-    private readonly DropDownButton _mergeSelected;
+    private readonly Button _mergeSelected;
     private readonly TextBlock _hint;
     private readonly TextBlock _note;
     private PersonVm? _person;
@@ -160,7 +162,7 @@ internal sealed class PeopleWindow : Window
             e.Handled = true;
         };
         _name.LostFocus += (_, _) => CommitName();
-        _merge = new DropDownButton { Content = "Merge into…", Flyout = new MenuFlyout() };
+        _merge = new Button { Content = "Merge into…  ▾", Flyout = new MenuFlyout() };
         ToolTipService.SetToolTip(_merge, "This person is someone else in the list: their faces join them");
         ((MenuFlyout)_merge.Flyout).Opening += (_, _) => FillMergeMenu();
         _photos = _look.Button("Show their photos", ShowPhotos);
@@ -203,7 +205,7 @@ internal sealed class PeopleWindow : Window
         // "3 people selected · Merge into… · Cancel": the target keeps its name.
         _mergeCount = _look.Text("", 12, AddonColour.Title, wrap: false);
         _mergeCount.VerticalAlignment = VerticalAlignment.Center;
-        _mergeSelected = new DropDownButton { Content = "Merge into…", Flyout = new MenuFlyout() };
+        _mergeSelected = new Button { Content = "Merge into…  ▾", Flyout = new MenuFlyout() };
         ((MenuFlyout)_mergeSelected.Flyout).Opening += (_, _) => FillMergeSelectedMenu();
         _mergeBar = new StackPanel
         {
