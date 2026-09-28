@@ -388,6 +388,17 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* index_photos_library)(void* ctx, uint64_t* out_root_id);
   /* mv_ai_photos_access. [no-block] */
   mv_status(MV_CALL* photos_access)(void* ctx, uint32_t* out_access);
+
+  /* ---- people in the open folder (2026-09-28, plan/17 "People in the open folder") */
+  /* people_json narrowed to `scope_dir` and `scope` (mv_ai_scope, as
+   * search_text takes them): the people with a face in a photo or clip there.
+   * "faces" counts their faces there and "cover_*" is the clearest of those;
+   * a person with none is left out. Which people qualify at all (the minimum
+   * faces, or a name) is judged over the whole index, so a folder never
+   * shows a cluster Everywhere would not. NULL / MV_AI_SCOPE_ALL is
+   * people_json. [worker-thread] */
+  mv_status(MV_CALL* people_in_json)(void* ctx, const char* scope_dir_utf8, uint32_t scope, char* out,
+                                     uint32_t cap, uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

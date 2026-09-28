@@ -656,6 +656,11 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
 **Refine faces** on a person under Settings → People.
 
+The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
+the viewer has open: **People in · This folder | + Subfolders | Everywhere**, + Subfolders by
+default (plan/17 "People in the open folder"; `people_in_json` in `mediaviewer_ai.h`).
+`mv_ai_tests "[faces]"` covers the scoping with the fake face model.
+
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
 `MV_AI_EVAL_DIR` (a folder of photos plus a COCO-style `labels.json`) and `MV_AI_GREY_JPEG`
 make `mv_ai_tests` run its model cases; `"[.bench]"` prints CPU / Core ML timings and

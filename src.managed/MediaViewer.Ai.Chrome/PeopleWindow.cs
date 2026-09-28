@@ -62,6 +62,19 @@ internal sealed class PeopleWindow : Window
     private readonly DropDownButton _mergeSelected;
     private readonly TextBlock _hint;
     private readonly TextBlock _note;
+    // "People in: This folder ▾" (plan/17 "People in the open folder"): the
+    // grid follows the folder the viewer has open, in it and below by default.
+    private readonly DropDownButton _scopeButton;
+    private readonly TextBlock _scopeFolder;
+    private readonly TextBlock _empty;
+    private MvAiScope _scope = MvAiScope.Tree;
+    private static readonly string[] ScopeNames = { "This folder", "+ Subfolders", "Everywhere" };
+    private static readonly string[] ScopeHelp =
+    {
+        "People with a face in the open folder only",
+        "People with a face in the open folder and the folders inside it",
+        "Every person found, in every indexed folder",
+    };
     private PersonVm? _person;
     private int _loadGeneration;
     // people_json in flight; more AI_PEOPLE events while it runs fold into one
@@ -198,8 +211,46 @@ internal sealed class PeopleWindow : Window
         var leftHead = new StackPanel { Padding = new Thickness(16, 16, 16, 0), Spacing = 6 };
         leftHead.Children.Add(_look.Text("People", 20, AddonColour.Title));
         leftHead.Children.Add(_look.Text("Found on this computer only. Face data is never shared, and can be deleted in Settings.", 12));
+        var scopeMenu = new MenuFlyout();
+        for (int i = 0; i < ScopeNames.Length; ++i)
+        {
+            var scope = (MvAiScope)i;
+            var item = new ToggleMenuFlyoutItem { Text = ScopeNames[i], IsChecked = scope == _scope };
+            ToolTipService.SetToolTip(item, ScopeHelp[i]);
+            item.Click += (_, _) => SetScope(scope);
+            scopeMenu.Items.Add(item);
+        }
+        scopeMenu.Opening += (_, _) =>
+        {
+            foreach (MenuFlyoutItemBase it in scopeMenu.Items)
+            {
+                if (it is ToggleMenuFlyoutItem t) t.IsChecked = t.Text == ScopeNames[(int)_scope];
+            }
+        };
+        _scopeButton = new DropDownButton
+        {
+            FontFamily = _look.Font,
+            FontSize = _look.FontSize - 2,
+            Padding = new Thickness(12, 5, 8, 6),
+            CornerRadius = new CornerRadius(6),
+            Flyout = scopeMenu,
+        };
+        AutomationProperties.SetName(_scopeButton, "People in");
+        _scopeFolder = _look.Text("", 12, AddonColour.Title, wrap: false);
+        _scopeFolder.VerticalAlignment = VerticalAlignment.Center;
+        _scopeFolder.TextTrimming = TextTrimming.CharacterEllipsis;
+        var scopeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var scopeLabel = _look.Text("People in", 12, wrap: false);
+        scopeLabel.VerticalAlignment = VerticalAlignment.Center;
+        scopeRow.Children.Add(scopeLabel);
+        scopeRow.Children.Add(_scopeButton);
+        scopeRow.Children.Add(_scopeFolder);
+        leftHead.Children.Add(scopeRow);
         _hint = _look.Text("Double-click a person to see their photos. The same person twice? Drag one onto the other, or Ctrl-click several and merge them.", 12);
         leftHead.Children.Add(_hint);
+        _empty = _look.Text("", 12);
+        _empty.Visibility = Visibility.Collapsed;
+        leftHead.Children.Add(_empty);
         // "3 people selected · Merge into… · Cancel": the target keeps its name.
         _mergeCount = _look.Text("", 12, AddonColour.Title, wrap: false);
         _mergeCount.VerticalAlignment = VerticalAlignment.Center;
@@ -234,6 +285,63 @@ internal sealed class PeopleWindow : Window
         root.KeyDown += OnKeyDown;
         Content = root;
         UpdateButtons();
+        UpdateScope();
+    }
+
+    // ---- the open folder -------------------------------------------------------------
+
+    /// <summary>The viewer opened another folder: the grid follows it.</summary>
+    internal void OnFolderChanged()
+    {
+        UpdateScope();
+        Refresh();
+    }
+
+    private void SetScope(MvAiScope scope)
+    {
+        if (scope == _scope) return;
+        _scope = scope;
+        UpdateScope();
+        Refresh();
+    }
+
+    /// <summary>The pack's scope for the grid: none when no folder is open or Everywhere is chosen.</summary>
+    private string? ScopeDir => _scope == MvAiScope.All ? null : _chrome.Folder;
+
+    private static string FolderName(string? dir)
+    {
+        if (string.IsNullOrEmpty(dir)) return "";
+        string leaf = System.IO.Path.GetFileName(dir.TrimEnd('\\', '/'));
+        return leaf.Length == 0 ? dir : leaf;
+    }
+
+    private void UpdateScope()
+    {
+        string? folder = _chrome.Folder;
+        bool open = !string.IsNullOrEmpty(folder);
+        _scopeButton.Content = open ? ScopeNames[(int)_scope] : ScopeNames[(int)MvAiScope.All];
+        _scopeButton.IsEnabled = open;
+        ToolTipService.SetToolTip(_scopeButton, open ? ScopeHelp[(int)_scope] : "Open a folder to see the people in it");
+        _scopeFolder.Text = open && _scope != MvAiScope.All ? FolderName(folder) : "";
+        ToolTipService.SetToolTip(_scopeFolder, folder);
+        UpdateEmpty();
+    }
+
+    private void UpdateEmpty()
+    {
+        // Nothing to say before the first read has answered.
+        if (_peopleItems.Count > 0 || _loadGeneration == 0)
+        {
+            _empty.Visibility = Visibility.Collapsed;
+            return;
+        }
+        string? folder = _chrome.Folder;
+        _empty.Text = ScopeDir is null
+            ? "No people yet. Faces are grouped as your folders are indexed."
+            : _scope == MvAiScope.Folder
+                ? $"Nobody in {FolderName(folder)} yet. Faces are grouped as the folder is indexed; Everywhere shows every person found."
+                : $"Nobody in {FolderName(folder)} or its subfolders yet. Faces are grouped as the folder is indexed; Everywhere shows every person found.";
+        _empty.Visibility = Visibility.Visible;
     }
 
     internal void Present()
@@ -261,12 +369,14 @@ internal sealed class PeopleWindow : Window
         _loading = true;
         int generation = ++_loadGeneration;
         AiApi api = _api;
+        string? scopeDir = ScopeDir;
+        MvAiScope scope = _scope;
         _ = Task.Run(() =>
         {
             var people = new List<PersonVm>();
             try
             {
-                using JsonDocument doc = JsonDocument.Parse(api.PeopleJson());
+                using JsonDocument doc = JsonDocument.Parse(api.PeopleJson(scopeDir, scope));
                 foreach (JsonElement p in doc.RootElement.EnumerateArray())
                 {
                     people.Add(new PersonVm(
@@ -327,6 +437,7 @@ internal sealed class PeopleWindow : Window
         {
             if (selected.Contains(p.Id) && !_peopleGrid.SelectedItems.Contains(p)) _peopleGrid.SelectedItems.Add(p);
         }
+        UpdateEmpty();
         PersonVm? again = keep is ulong id ? _peopleItems.FirstOrDefault(p => p.Id == id) : null;
         if (again is null)
         {
@@ -706,8 +817,10 @@ internal sealed class PeopleWindow : Window
     private void ShowPhotos()
     {
         if (_person is null) return;
+        // The grid's own scope: the list is the photos the card counted.
         ulong search;
-        try { search = _api.SearchPerson(_person.Id, null, MvAiScope.All); }
+        string? scopeDir = ScopeDir;
+        try { search = _api.SearchPerson(_person.Id, scopeDir, scopeDir is null ? MvAiScope.All : _scope); }
         catch (MediaViewerException) { return; }
         _chrome.OpenSearchAsList(search, _person.Name.Length > 0 ? $"Photos of {_person.Name}" : "Photos of this person");
     }

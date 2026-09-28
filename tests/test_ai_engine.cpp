@@ -1044,6 +1044,77 @@ TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leave
   CHECK(r.status().frames_indexed == 6);
 }
 
+TEST_CASE("people in the open folder: only those with a face there, counted and covered there",
+          "[ai][engine][faces]") {
+  rig r;
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.file("sub/anna_3.jpg");
+  r.file("sub/ben_1.jpg");
+  r.file("sub/ben_2.jpg");
+  r.file("other/ben_3.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.eng->faces_enable(true));
+  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(r.idle());
+  const auto is_anna = [](const mv::json::value& p) {
+    const std::string* cover = p.str("cover_path");
+    return cover && cover->find("anna") != std::string::npos;
+  };
+
+  auto all = mv::json::parse(r.eng->people_json());
+  REQUIRE(all);
+  REQUIRE(all->a.size() == 2);
+  CHECK(*all->a[0].integer("faces") == 3);
+  CHECK(*all->a[1].integer("faces") == 3);
+  const std::int64_t anna = *all->a[is_anna(all->a[0]) ? 0 : 1].integer("id");
+  const std::int64_t ben = *all->a[is_anna(all->a[0]) ? 1 : 0].integer("id");
+
+  // The top folder alone: Anna's two photos there; Ben is only below it.
+  auto top = mv::json::parse(r.eng->people_json(utf8(r.photos()), MV_AI_SCOPE_FOLDER));
+  REQUIRE(top);
+  REQUIRE(top->a.size() == 1);
+  CHECK(*top->a[0].integer("id") == anna);
+  CHECK(*top->a[0].integer("faces") == 2);
+
+  // Its subfolder: both, Ben first (two faces there to Anna's one), and
+  // Anna's cover is her photo in that folder, not her clearest anywhere.
+  auto sub = mv::json::parse(r.eng->people_json(utf8(r.photos() / "sub"), MV_AI_SCOPE_FOLDER));
+  REQUIRE(sub);
+  REQUIRE(sub->a.size() == 2);
+  CHECK(*sub->a[0].integer("id") == ben);
+  CHECK(*sub->a[0].integer("faces") == 2);
+  CHECK(*sub->a[1].integer("id") == anna);
+  CHECK(*sub->a[1].integer("faces") == 1);
+  REQUIRE(sub->a[1].str("cover_path"));
+  CHECK(sub->a[1].str("cover_path")->find("anna_3") != std::string::npos);
+
+  // The tree from the top is everyone with every face; a deeper tree is
+  // whoever is in it.
+  auto tree = mv::json::parse(r.eng->people_json(utf8(r.photos()), MV_AI_SCOPE_TREE));
+  REQUIRE(tree);
+  REQUIRE(tree->a.size() == 2);
+  CHECK(*tree->a[0].integer("faces") == 3);
+  CHECK(*tree->a[1].integer("faces") == 3);
+  auto other = mv::json::parse(r.eng->people_json(utf8(r.photos() / "other"), MV_AI_SCOPE_TREE));
+  REQUIRE(other);
+  REQUIRE(other->a.size() == 1);
+  CHECK(*other->a[0].integer("id") == ben);
+  CHECK(*other->a[0].integer("faces") == 1);
+
+  // A named person leads in a folder too; Everywhere and no folder are people_json.
+  REQUIRE(r.eng->person_rename(anna, "Anna"));
+  sub = mv::json::parse(r.eng->people_json(utf8(r.photos() / "sub"), MV_AI_SCOPE_FOLDER));
+  REQUIRE(sub);
+  REQUIRE(sub->a.size() == 2);
+  CHECK(*sub->a[0].integer("id") == anna);
+  CHECK(r.eng->people_json("", MV_AI_SCOPE_FOLDER) == r.eng->people_json());
+  CHECK(r.eng->people_json(utf8(r.photos() / "sub"), MV_AI_SCOPE_ALL) == r.eng->people_json());
+}
+
 TEST_CASE("a file the host cannot decode fails without stopping the rest", "[ai][engine]") {
   rig r;
   r.file("broken_red.jpg");

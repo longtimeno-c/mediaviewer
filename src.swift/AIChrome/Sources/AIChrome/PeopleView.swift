@@ -47,9 +47,17 @@ struct PeopleGrid: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
+      if !model.folder.isEmpty {
+        scopeBar
+      }
       if model.people.isEmpty {
-        Text("No people yet. Faces are grouped as your folders are indexed.")
+        Text(model.peopleScopeDir == nil
+             ? "No people yet. Faces are grouped as your folders are indexed."
+             : model.peopleScope == .folder
+               ? "Nobody in \(model.folderName) yet. Faces are grouped as the folder is indexed; Everywhere shows every person found."
+               : "Nobody in \(model.folderName) or its subfolders yet. Faces are grouped as the folder is indexed; Everywhere shows every person found.")
           .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+          .fixedSize(horizontal: false, vertical: true)
       } else {
         if selected.count >= 2 {
           mergeBar
@@ -85,6 +93,35 @@ struct PeopleGrid: View {
 
   /// The selected people, in grid order.
   private var selected: [Person] { model.people.filter { selection.contains($0.id) } }
+
+  private var scopeHelp: String {
+    switch model.peopleScope {
+    case .folder: return "People with a face in the open folder only."
+    case .tree: return "People with a face in the open folder and the folders inside it."
+    case .all, .photos: return "Every person found, in every indexed folder."
+    }
+  }
+
+  /// "People in · This folder | + Subfolders | Everywhere · Photos": the grid
+  /// follows the folder the viewer has open (plan/17 "People in the open
+  /// folder"), the search panel's three scopes with the same words.
+  private var scopeBar: some View {
+    HStack(spacing: 8) {
+      Text("People in").font(AITheme.font(12)).foregroundStyle(AITheme.body)
+      Picker("People in", selection: $model.peopleScope) {
+        ForEach([SearchScope.folder, .tree, .all]) { scope in
+          Text(scope.label).tag(scope)
+        }
+      }
+      .pickerStyle(.segmented).labelsHidden().fixedSize()
+      .help(scopeHelp)
+      if model.peopleScope != .all {
+        Text(model.folderName).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+          .lineLimit(1).truncationMode(.middle)
+          .help(model.folder)
+      }
+    }
+  }
 
   private func tap(_ person: Person) {
     let flags = NSEvent.modifierFlags

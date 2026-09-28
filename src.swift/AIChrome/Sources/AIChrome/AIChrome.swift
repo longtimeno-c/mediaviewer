@@ -58,6 +58,7 @@ public final class MVAIChrome: NSObject {
     guard let table else { return nil }
     let m = ManagementModel(table: table)
     m.chrome = self
+    if !folder.isEmpty { m.folderChanged(folder) }
     manage = m
     return m
   }
@@ -144,6 +145,7 @@ public final class MVAIChrome: NSObject {
         // Before the panel was ever opened: still let a covered root queue its delta.
         _ = table.a.note_folder_opened?(table.ctx, dir)
       }
+      manage?.folderChanged(dir)
     }
   }
 
@@ -256,8 +258,11 @@ public final class MVAIChrome: NSObject {
 
   /// People → a person: their photos in the gallery as a result list; the
   /// host closes Settings as it opens (owner report, 2026-09-27: it used to
-  /// open the search panel over Settings). `done` hears how it went.
-  @MainActor func showPerson(id: UInt64, name: String, done: @escaping (SearchModel.PersonOpen) -> Void) {
+  /// open the search panel over Settings). `scope` over `folder` is the
+  /// grid's own (its "People in"), so the list is the photos the card
+  /// counted. `done` hears how it went.
+  @MainActor func showPerson(id: UInt64, name: String, scope: SearchScope = .all, folder: String = "",
+                             done: @escaping (SearchModel.PersonOpen) -> Void) {
     guard let table else {
       done(.failed)
       return
@@ -270,6 +275,7 @@ public final class MVAIChrome: NSObject {
       m.chrome = self
       personSearch = m
     }
-    m.openPerson(id: id, name: name, done: done)
+    if !folder.isEmpty { m.folderChanged(folder) }
+    m.openPerson(id: id, name: name, scope: folder.isEmpty ? .all : scope, done: done)
   }
 }
