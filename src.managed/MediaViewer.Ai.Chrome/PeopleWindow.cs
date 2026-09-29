@@ -66,7 +66,9 @@ internal sealed class PeopleWindow : Window
     private readonly TextBlock _note;
     // "People in: This folder ▾" (plan/17 "People in the open folder"): the
     // grid follows the folder the viewer has open, in it and below by default.
-    private readonly DropDownButton _scopeButton;
+    // A Button with a Flyout, like _merge: DropDownButton fail-fasts here
+    // (tools/check-winui-controls.ps1).
+    private readonly Button _scopeButton;
     private readonly TextBlock _scopeFolder;
     private readonly TextBlock _empty;
     private MvAiScope _scope = MvAiScope.Tree;
@@ -229,7 +231,7 @@ internal sealed class PeopleWindow : Window
                 if (it is ToggleMenuFlyoutItem t) t.IsChecked = t.Text == ScopeNames[(int)_scope];
             }
         };
-        _scopeButton = new DropDownButton
+        _scopeButton = new Button
         {
             FontFamily = _look.Font,
             FontSize = _look.FontSize - 2,
@@ -321,7 +323,7 @@ internal sealed class PeopleWindow : Window
     {
         string? folder = _chrome.Folder;
         bool open = !string.IsNullOrEmpty(folder);
-        _scopeButton.Content = open ? ScopeNames[(int)_scope] : ScopeNames[(int)MvAiScope.All];
+        _scopeButton.Content = (open ? ScopeNames[(int)_scope] : ScopeNames[(int)MvAiScope.All]) + "  ▾";
         _scopeButton.IsEnabled = open;
         ToolTipService.SetToolTip(_scopeButton, open ? ScopeHelp[(int)_scope] : "Open a folder to see the people in it");
         _scopeFolder.Text = open && _scope != MvAiScope.All ? FolderName(folder) : "";
