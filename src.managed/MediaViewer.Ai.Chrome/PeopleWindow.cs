@@ -66,7 +66,7 @@ internal sealed class PeopleWindow : Window
     private readonly TextBlock _note;
     // "People in: This folder ▾" (plan/17 "People in the open folder"): the
     // grid follows the folder the viewer has open, in it and below by default.
-    // A Button with a Flyout, like Merge: a DropDownButton fail-fasts here
+    // A Button with a Flyout, like _merge: DropDownButton fail-fasts here
     // (tools/check-winui-controls.ps1).
     private readonly Button _scopeButton;
     private readonly TextBlock _scopeFolder;
