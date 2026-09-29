@@ -3081,3 +3081,31 @@ the pack runs on, with toggles for face data and thumbnails.
 - **Not changed:** Intel Macs still get no pack (ORT ships no x86_64 macOS build). An index
   from an Apple silicon Mac is of use on another Apple silicon Mac or a Windows PC.
 
+## 2026-09-29 — D5 amended, Mac only: Apple ProRes plays, and a hardware frame the ring cannot take is no longer dropped
+
+Owner report: exporting from Final Cut Pro opens the file in MediaViewer (the default viewer),
+which then sits on its empty canvas with the transport running. The export was Apple ProRes 422,
+3840 x 2160, 10-bit, with PCM audio: FCP's default. Nothing was wrong with the open. The player
+has no codec allow-list, so it chose VideoToolbox, which decodes ProRes on Apple silicon, but to
+10-bit 4:2:2. `describe_hw_surface` takes only 4:2:0 (the NV12 / P010 shader), so every frame
+was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
+
+- **D5, amended by the owner for the Mac: ProRes 422 and 4444.** Asked with the alternatives
+  (both platforms; only a clear failure), the owner chose the Mac. When the decoder is ProRes on
+  VideoToolbox, `pick_hw_format` gives FFmpeg a frames context with `sw_format = P010`, so
+  VideoToolbox converts to 10-bit 4:2:0 in hardware and the existing P010 path takes it. No
+  shader, ring or bundled decoder changes. Windows keeps D5: ProRes there would be software
+  decode, not measured to hold 4K pacing.
+- **Measured** (M5, `playprobe`, 15 s, alternated HEVC / ProRes / HEVC / ProRes, the same 2.7K
+  59.94 fps GoPro clip converted to ProRes 422 with `avconvert`): frames 57.0 / 58.5 / 56.6 /
+  58.1 per s; late drops 43 / 20 / 49 / 26 (a headless 60 Hz timer against 59.94 fps content);
+  A/V error p99 9.01 / 6.74 / 8.62 / 6.66 ms. The drift slope is worse on ProRes: 1.6 / 114.1 /
+  57.5 / 114.1 ms/min, a 15 s estimate over PCM audio against AAC. It is owed a minute-long run.
+  The owner's 4K ProRes export: 24.3 frames/s of a 25 fps clip over its 3 s, result OK.
+- **Both platforms: a hardware frame in a layout the ring cannot take is copied back and
+  converted in software** (`sw_convert::convert_hw`, `av_hwframe_transfer_data`) instead of
+  dropped, with one warning in the log and the overlay naming the decoder "software" (plan/05
+  "never silently"). This covers 4:2:2 / 4:4:4 hardware output from any codec. Forced through it
+  once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
+  what D5 covers is unchanged on Windows.
+

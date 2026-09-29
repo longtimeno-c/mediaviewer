@@ -114,7 +114,7 @@ numbers say otherwise.
 | **D2** | FFmpeg + D3D11VA on *your* `ID3D11Device`, presented on the same swapchain as photos. Not libmpv. Not MF as the primary path. `IMFMediaEngine` is an escape hatch behind `IVideoSource` if the A/V clock overruns PR 5. |
 | **D3** | Bundle decoders. Never require a Store pack. |
 | **D4** | v1 ships the PR 1–7 viewer in PR 8. Photo editing/export waits for PR 10–11; metadata tools and further Windows integration are future updates. |
-| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2. JPEG XL / EXR / PSD / SVG / DDS wait. |
+| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2; **on the Mac also Apple ProRes** (amended 2026-09-29, hardware decode only). JPEG XL / EXR / PSD / SVG / DDS wait. |
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |

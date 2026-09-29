@@ -106,7 +106,7 @@ Arrow keys or `A`/`D` browse, `Space` advances, `Insert` marks, `F7`/`F8` copy o
 
 ## Video that lives with your photos
 
-FFmpeg decode with D3D11 hardware acceleration on the same swapchain as photos. H.264, HEVC, VP9, AV1 and MPEG-2,
+FFmpeg decode with D3D11 hardware acceleration on the same swapchain as photos. H.264, HEVC, VP9, AV1 and MPEG-2 (and Apple ProRes on the Mac),
 including 10-bit HDR clips mapped to SDR. Audio is the master clock. Seek, frame step (`,` `.`), speed
 0.25x-4x, A-B loop, resume where you left off, and media keys. `;` plays a Live Photo's motion and returns to the still.
 The transport floats over the video and gets out of the way after a moment of playback; any movement brings it back.
