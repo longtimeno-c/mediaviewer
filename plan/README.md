@@ -43,6 +43,7 @@ Read in order:
 | [20-edit-workspace.md](20-edit-workspace.md) | PR 29: one visible way in to every edit (Edit image / Edit video, `Enter`), a docked Edit pane, crop presets, and every metadata tag editable. Video editing goes to its own window. |
 | [21-video-editor.md](21-video-editor.md) | PRs 30–31: the Video Editor window (timeline, thumbnails, waveform, split / delete / in / out, keyframe or exact export). |
 | [22-editor-addon.md](22-editor-addon.md) | PRs 32–47, proposed: the optional Editor add-on — colour-managed grading (wheels, curves, qualifiers, tracked windows, nodes, LUTs, NR, scopes), a multi-track timeline, titles and captions, an audio mixer, delivery, and local model packs. |
+| [24-transfer.md](24-transfer.md) | PRs 49–50: fast copies to and from a network share (several requests and files in flight, still verified), and Transfer, a general copier for any files. |
 
 ## The rules that don't bend
 

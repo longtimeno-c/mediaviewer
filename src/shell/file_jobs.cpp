@@ -6,6 +6,8 @@
 #include <new>
 
 #include "io/file_ops.h"
+#include "io/file_port.h"
+#include "io/in_flight.h"
 
 namespace mv::shell {
 
@@ -44,18 +46,28 @@ bool file_jobs::submit(HWND notify, file_job_kind kind, std::vector<std::string>
 
     const mv::job_id id = pool_.submit_at(
         mv::background_generation, [work, dest, notify](const mv::job_context&) -> mv::status {
-          for (auto& item : work->items) {
-            if (work->kind == file_job_kind::recycle) {
+          if (work->kind == file_job_kind::recycle) {
+            for (auto& item : work->items) {
               auto r = io::recycle_file(item.path);
               if (!r) item.status = r.error();
               else item.refused = r.value() == io::recycle_outcome::refused_no_recycle_bin;
-            } else {
-              const auto how = work->kind == file_job_kind::copy ? io::transfer_kind::copy
-                                                                 : io::transfer_kind::move;
-              auto r = io::transfer_file(item.path, *dest, how);
-              if (!r) item.status = r.error();
-              else item.dest = r.value();
             }
+          } else {
+            const auto how = work->kind == file_job_kind::copy ? io::transfer_kind::copy
+                                                               : io::transfer_kind::move;
+            // To or from a share: several files at once, a move's verified
+            // copy with several requests in flight (plan/12 2026-10-01). A
+            // card or a local disk keeps one file at a time, in order.
+            const io::copy_profile profile = io::batch_copy_profile(
+                io::parent_of(work->items.front().path), *dest);
+            // Each item is written only by the one thread that copies it.
+            io::for_each_in_flight(work->items.size(), profile.files_in_flight,
+                                   [&](std::size_t i) {
+                                     auto& item = work->items[i];
+                                     auto r = io::transfer_file(item.path, *dest, how, profile);
+                                     if (!r) item.status = r.error();
+                                     else item.dest = r.value();
+                                   });
           }
           auto* posted = new (std::nothrow) file_job_result(std::move(*work));
           if (!posted) return mv::status::out_of_memory;

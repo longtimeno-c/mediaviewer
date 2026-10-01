@@ -171,6 +171,26 @@ result<volume_info> volume_of(std::string_view utf8_path) {
   return out;
 }
 
+bool is_network_path(std::string_view utf8_path) noexcept {
+  if (utf8_path.empty()) return false;
+  // A destination file does not exist yet: ask about its folder.
+  std::string path(utf8_path);
+  struct statfs fs{};
+  if (::statfs(path.c_str(), &fs) != 0) {
+    path = std::string(parent_of(utf8_path));
+    if (path.empty() || ::statfs(path.c_str(), &fs) != 0) return false;
+  }
+#if defined(__APPLE__)
+  return (fs.f_flags & MNT_LOCAL) == 0;
+#else
+  // NFS, SMB (old smbfs), CIFS and SMB2 superblock magics.
+  switch (static_cast<unsigned long>(fs.f_type)) {
+    case 0x6969ul: case 0x517Bul: case 0xFF534D42ul: case 0xFE534D42ul: return true;
+    default: return false;
+  }
+#endif
+}
+
 result<std::vector<volume_info>> list_volumes() {
   std::vector<volume_info> out;
 #if defined(__APPLE__)
