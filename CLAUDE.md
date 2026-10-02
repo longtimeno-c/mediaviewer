@@ -48,6 +48,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
 | `plan/21-video-editor.md` | PRs 30–31: the Video Editor window (base) |
 | `plan/22-editor-addon.md` | PRs 32–47, proposed: the Editor add-on — GPU port, colour management and grading, multi-track editing, audio, delivery, model packs. Read before any add-on GPU, colour or timeline work |
+| `plan/23-open-addons.md` | PRs 48–53, proposed (PR 48 built): add-ons from anyone, installed from a file or a link and signed by their publisher; the contribution model (themes first). Read before any third-party add-on, theme or contribution-point work |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.

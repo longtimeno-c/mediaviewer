@@ -237,7 +237,7 @@ public static partial class IslandHost
         var root = new Grid
         {
             Background = Brush(PanelBg),
-            RequestedTheme = ElementTheme.Default,
+            RequestedTheme = IslandTheme,
             // No XY focus navigation: FocusManager.TryMoveFocus fail-fasts in these
             // islands (0xC000027B), so the arrows are handled explicitly per pane.
         };

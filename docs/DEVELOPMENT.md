@@ -25,6 +25,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
 | 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete, marked ranges (`I` `O`, Delete, `X`), Trim start / end (`[` `]`), draggable piece edges, `J K L` shuttle, frame timecode, Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.13 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
+| 48 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([plan/23-open-addons.md](../plan/23-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.16 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; Mac half run in the app (`MV_ADDON_SELFTEST`), launch and pacing measured against the base; Windows half compiles (`dotnet msbuild -t:Compile`), has not run, and its native side has not met MSVC. PRs 49–53 are planned; 50–53 wait on an owner call |
 
 See [plan/10-roadmap.md](../plan/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -753,6 +754,12 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
 ctest --test-dir build -C Release -R import_ --output-on-failure
 
+# plan/23, open add-ons: their C++ cases are part of the suite above
+# ([open-addon]); this is the author's tool, which packs with Python and
+# asks the app's own reader (mv_addon_verify --open) about every package
+ctest --test-dir build -C Release -R addon_sdk --output-on-failure
+python tools/addon-sdk/test_mvaddon.py        # the tool alone, no build needed
+
 # ...and the same engine headless on Linux or any POSIX machine (the
 # portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
@@ -852,6 +859,37 @@ under `ctest -R perf_tools`.
 
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
 its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows.
+
+### Open add-ons self-test (PR 48, macOS)
+
+The Mac app can walk the whole add-on flow by itself and photograph each step: the sheet for a
+package, Install, each of its themes, Default again, a file of the installed add-on changed on
+disk (the chrome must fall back and say so), Remove. It installs under the folder you name and
+keeps the theme choice in memory, so nothing in your profile is touched:
+
+```bash
+python3 tools/addon-sdk/mvaddon.py keygen --out /tmp/mv-addon.key
+```
+
+```bash
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/film-tones --key /tmp/mv-addon.key --out /tmp/mv-addon
+```
+
+```bash
+MV_ADDON_SELFTEST=/tmp/mv-addon/rig caffeinate -d -i build/bin/MediaViewer /tmp/mv-addon/example.film-tones-1.0.0.mvaddon
+```
+
+`rig/state.txt` has one line per step (what is offered, what is installed, which theme is on,
+the viewer's background colour, what Settings says); `a1-sheet.png` … `a9-removed.png` are the
+window. To look at what the app makes of any package without the app:
+
+```bash
+build/bin/mv_addon_verify --open some.mvaddon
+```
+
+Add a folder as a second argument and it installs there, as the app would. Windows has no rig
+yet; its half is checked by compiling (`dotnet msbuild src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj -t:Compile -p:WindowsAppSDKSelfContained=false`
+works on any OS with the .NET 8 SDK) and by CI.
 
 ### Edit workspace self-test (PR 29, macOS and Windows)
 
@@ -1474,6 +1512,9 @@ src/edit        EditStack + geometry (the blit's output -> source map), lossless
                 policy (PR 10)
 src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom
 src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
+src/addon       the add-on host: MediaViewer's own add-ons (signed manifests, store,
+                loader, host function table) and open add-ons from other makers
+                (package reader, manifest schema 2, publisher keys, themes; plan/23)
 src/abi         the flat C ABI — the top of the native graph; animation session
 src/shell       Win32 window, render thread, present lab, hostfxr island host,
                 key router and live command table, marks, slideshow, file jobs,
@@ -1483,7 +1524,9 @@ src.managed/    C# interop and WinUI chrome (hosted as an island, not the app):
                 file drag/drop
 tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI, folder,
                 key router, file ops, slideshow, animation
-tools/          frametime harness, module-graph, hostable-core, and licence gates
+tools/          frametime harness, module-graph, hostable-core, and licence gates;
+                addon-sdk (MIT): the tool people make add-ons with
+examples/       an add-on that packs and installs as it is (MIT)
 plan/           the spec
 ```
 

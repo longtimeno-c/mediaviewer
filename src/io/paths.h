@@ -22,6 +22,14 @@ void set_thumb_cache_dir_override(std::string_view utf8_dir);
 [[nodiscard]] result<std::string> addons_dir();
 void set_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
+// Where add-ons from other makers install (plan/23 "Install, update, remove"):
+// %LocalAppData%\MediaViewer\open-addons on Windows, ~/Library/Application
+// Support/MediaViewer/Open Add-ons on Mac. Beside the folder above, never in
+// it, so neither store lists the other's. NOT created here: with no open
+// add-on installed the folder does not exist, and the first install makes it.
+[[nodiscard]] result<std::string> open_addons_dir();
+void set_open_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
+
 // PR 15: where Ctrl+Alt+C / ⌘⌥C writes the flattened copy it puts on the
 // clipboard (%LocalAppData%\MediaViewer\clipboard, ~/Library/Caches/
 // MediaViewer/Clipboard). Never the browsed folder. Created if missing.

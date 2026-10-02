@@ -161,7 +161,7 @@ private struct TreeRow: View {
       }
       .buttonStyle(.plain)
       .fontWeight(node.path == current ? .semibold : .regular)
-      .foregroundStyle(node.path == current ? Color.accentColor : Color.primary)
+      .foregroundStyle(node.path == current ? MVTheme.accent : Color.primary)
     }
     .id(node.path)
   }

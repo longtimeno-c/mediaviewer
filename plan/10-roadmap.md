@@ -32,6 +32,7 @@ Mac are both at PR 9.** The order from here is:
 | **30** | **Video Editor window, one clip** (issue #40, [21](21-video-editor.md)): timeline, strip, waveform, split / delete / in / out, keyframe or exact export | both | **Both halves written and run** (Mac 2026-09-26, Windows 2026-09-27: self-test rig, keys); both present-loop gates with the editor open owed. Does not merge before 29 |
 | 31 | Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)) | both | Planned |
 | 32–47 | **Editor add-on**, Milestone K ([22](22-editor-addon.md)): GPU port + colour management, grading (primaries, curves, secondaries, tracking, node graph, LUTs, NR), multi-track editing, motion / titles / captions, audio mixer and repair, delivery, proxies, model packs | both | Proposed (2026-09-26); S1 run on the Mac |
+| 48–53 | **Open add-ons**, Milestone L ([23](23-open-addons.md), issue #79): add-ons anyone can make, installed from a file or a link; themes, then settings pages and keymaps, then code, screens, slots and search providers | both | **PR 48 built** (2026-09-29): shared core and SDK tested, Mac half run in the app, Windows half compiles and awaits its first run. 49 planned; 50–53 wait on the owner's call on how third-party code runs |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
@@ -773,6 +774,33 @@ its number. Both present-loop gates hold **while listening and while speaking**.
 
 ---
 
+## Milestone L — Open add-ons (PR 48–53, both platforms, proposed)
+
+**Anyone can make an add-on, and an add-on can change much more of the app** (issue #79, owner
+2026-09-29). One `.mvaddon` file, signed by its publisher, installed from a file or a link with
+a sheet that says what it is, what it can and cannot do, and that MediaViewer has not checked
+it. What it contributes goes through named points both hosts read from one table, so a
+contribution point is written twice once, not once per add-on. MediaViewer's own add-ons
+(Milestones G, H, I, K) keep their key, channel and native code. Full design, trust model,
+contribution points and verify lines: [23-open-addons.md](23-open-addons.md).
+
+- **PR 48 — Open packages and themes.** The package reader, manifest schema 2, publisher keys,
+  the install sheet, install from file and link, check for update, remove, the theme token
+  table on both hosts, the SDK and the author's guide.
+- **PR 49 — Declarative contributions.** Settings pages from a schema, keymap packs, theme
+  shape (radius, density, type scale); the first-party chromes read the host's tokens.
+- **PR 50 — Code.** Needs the owner's call ([23 §9](23-open-addons.md#9-code-how-a-strangers-add-on-runs)):
+  the runtime, one worker per add-on, limits, permissions in the sheet, commands.
+- **PR 51 — Screens.** A view vocabulary both hosts render natively; windows, panes, sheets.
+- **PR 52 — Slots and search providers.** Bar items, context menus, info-pane sections, tile
+  badges; file-name search and Local search as providers (#76).
+- **PR 53 — Files.** New files in a folder the user chose; metadata through PR 12's writer.
+
+Every slice holds both present-loop gates and the launch numbers **with add-ons installed**.
+48 and 49 decide nothing about code and need no owner call; 50–53 do not start without it.
+
+---
+
 ## Further backlog — after the first feature updates
 
 Older specs use **v1.1** for this backlog. It remains deferred beyond its prerequisite
@@ -787,7 +815,7 @@ feature slices; that label does not promise everything in one release.
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, renaming files already in a library (Import's rename-on-import, PR 18, is not this), colour labels, keywords |
-| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim); **theme**: colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
+| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim) (as keymap packs, PR 49, [23](23-open-addons.md)); **theme** (the chrome's colours and font family arrive as add-on themes, PR 48, [23](23-open-addons.md); what follows is what remains): colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Per-machine MSI for enterprise (Store MSIX remains excluded by the licence decision) |
 | Platform | Windows ARM64. **Apple Silicon macOS landed as the Mac halves of PRs 1–8; it is not v1.1.** Intel Macs shipped 2026-09-24 as a universal app (pacing unverified on Intel). |

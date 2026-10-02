@@ -193,6 +193,8 @@ private struct SettingsButtonStyle: ButtonStyle {
 
 struct SettingsView: View {
   @ObservedObject private var store = SettingsStore.shared
+  @ObservedObject private var theme = ThemeStore.shared
+  @ObservedObject private var addons = OpenAddonStore.shared
   @State private var filter = ""
   @State private var keyboard = false
 
@@ -218,6 +220,7 @@ struct SettingsView: View {
   }
 
   private var preferences: some View {
+    ScrollViewReader { scroll in
     ScrollView {
       VStack(alignment: .leading, spacing: 8) {
         section("Filmstrip")
@@ -255,6 +258,24 @@ struct SettingsView: View {
           }
           .pickerStyle(.menu).frame(width: 180)
         }
+        // plan/23: the chrome's colours, from an installed add-on. The
+        // photo is never recoloured.
+        SettingsRow(title: "Theme",
+                    detail: theme.note.isEmpty
+                      ? "Colours of the bars, panes and text. Themes come from add-ons; your photos are never recoloured."
+                      : theme.note) {
+          Picker("Theme", selection: Binding(get: { theme.selection }, set: { theme.choose($0) })) {
+            Text("Default").tag("")
+            ForEach(addons.themes, id: \.key) { Text($0.name).tag($0.key) }
+            // A choice whose add-on is not installed now stays listed, so the
+            // picker shows what is chosen.
+            if !theme.selection.isEmpty, !addons.themes.contains(where: { $0.key == theme.selection }) {
+              Text("Not installed").tag(theme.selection)
+            }
+          }
+          .pickerStyle(.menu).frame(width: 180)
+        }
+        .id(ThemeStore.rowAnchor)
         if store.updateChannel >= 0 {
           section("Updates")
           SettingsRow(title: "Update channel",
@@ -274,6 +295,24 @@ struct SettingsView: View {
       .padding(.horizontal, 24).padding(.bottom, 24)
       .frame(maxWidth: 800)
       .frame(maxWidth: .infinity)
+    }
+    // plan/23: a package handed to the app opens Settings; the question
+    // about it is at the foot of this page, so bring it into view.
+    .onChange(of: addons.offer) { _, offer in
+      guard offer != nil else { return }
+      keyboard = false
+      DispatchQueue.main.async {
+        withAnimation(nil) { scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center) }
+      }
+    }
+    .onAppear {
+      if addons.offer != nil {
+        scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center)
+      } else if theme.takeChosenHere() {
+        // Choosing a theme rebuilds the chrome; stay at the row that did it.
+        scroll.scrollTo(ThemeStore.rowAnchor, anchor: .center)
+      }
+    }
     }
   }
 
@@ -337,7 +376,7 @@ struct SettingsView: View {
       .padding(.horizontal, 24).padding(.vertical, 18)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       Group {
-        if keyboard { shortcuts } else { preferences }
+        if keyboard && addons.offer == nil { shortcuts } else { preferences }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)

@@ -776,6 +776,12 @@ void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
     case mv::shell::open_kind::file:
       open_path(app, request.path);
       return;
+    case mv::shell::open_kind::addon_package:
+      // plan/23: never the viewer. Settings opens and the chrome asks; the
+      // package is read on a worker, by the core.
+      set_settings_open(app, true);
+      if (!app->chrome.offer_addon(utf8_from_wide(request.path))) ::MessageBeep(MB_ICONWARNING);
+      return;
     case mv::shell::open_kind::missing:
       MV_LOG_WARN("open: none of the %zu requested paths exists", raw.size());
       ::MessageBeep(MB_ICONWARNING);

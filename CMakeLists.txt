@@ -1107,6 +1107,7 @@ if(MV_BUILD_TESTS)
     tests/test_content_hash.cpp
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
+    tests/test_open_addons.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp
@@ -1125,6 +1126,19 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
                ENVIRONMENT "TZ=UTC")
+
+  # plan/23: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
+  # says what it makes of each package, so the two cannot drift.
+  add_executable(mv_addon_verify tools/addon-verify/main.cpp)
+  target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io mv_project_options)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_FOUND)
+    add_test(NAME addon_sdk COMMAND Python3::Interpreter
+             "${CMAKE_SOURCE_DIR}/tools/addon-sdk/test_mvaddon.py" -v)
+    set_tests_properties(addon_sdk PROPERTIES
+      ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
+  endif()
+  mv_asan_runtime_beside(mv_addon_verify)
 
   # Milestone H (plan/17): the AI pack's engine over the real host table with
   # deterministic models, and src/infer (tokenizer, preprocessing, ORT). The

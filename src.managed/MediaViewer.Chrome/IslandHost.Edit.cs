@@ -278,7 +278,7 @@ public static partial class IslandHost
         var root = new Grid
         {
             Background = Brush(PanelBg),
-            RequestedTheme = ElementTheme.Default,
+            RequestedTheme = IslandTheme,
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1, 0, 0, 0),
         };
