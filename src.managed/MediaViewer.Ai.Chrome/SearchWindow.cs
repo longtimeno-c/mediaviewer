@@ -78,7 +78,7 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private Grid _root = null!;
     private Border _card = null!;
-    private TextBox _query = null!;
+    private MediaViewer.Shared.FakeInput _query = null!;
     private Border _similarChip = null!;
     private TextBlock _similarText = null!;
     private readonly ToggleButton[] _scopeChips = new ToggleButton[3];
@@ -217,19 +217,15 @@ internal sealed class SearchWindow : Window, IDisposable
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
-        _query = new TextBox
+        // The query card draws the box: a bare field. Not a TextBox, which
+        // fail-fasts in this host (Shared\FakeInput.cs): opening search crashed.
+        _query = new MediaViewer.Shared.FakeInput(_look.Input(22), "Describe a photo or a moment, or name someone", bare: true)
         {
-            FontFamily = _look.Font,
-            FontSize = 22,
-            PlaceholderText = "Describe a photo or a moment, or name someone",
-            BorderThickness = new Thickness(0),
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             Padding = new Thickness(8, 6, 8, 6),
             VerticalAlignment = VerticalAlignment.Center,
-            IsSpellCheckEnabled = false,
         };
         AutomationProperties.SetName(_query, "Search photos and videos");
-        _query.TextChanged += (_, _) => OnQueryChanged();
+        _query.Changed += OnQueryChanged;
         var glyph = _look.Text("⌕", 26, AddonColour.Body, wrap: false);
         glyph.VerticalAlignment = VerticalAlignment.Center;
         var queryRow = new Grid { ColumnSpacing = 8 };
