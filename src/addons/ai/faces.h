@@ -123,6 +123,14 @@ class faces_db {
   [[nodiscard]] result<face_row> face(std::int64_t id);
   [[nodiscard]] expected rename(std::int64_t person, const std::string& name);
   [[nodiscard]] expected merge(std::int64_t into, std::int64_t from);
+  // The duplicate pass (plan/17 "Merge duplicates"): `from` into `into`, as
+  // merge, unless a split kept them apart (no_merge) or a face of one was
+  // rejected from the other. Pins nothing: the user did not say so. False
+  // when the pair is left alone.
+  [[nodiscard]] result<bool> merge_auto(std::int64_t into, std::int64_t from);
+  // Pairs (min, max) never merged automatically: a split kept them apart, or
+  // a face of one was rejected from the other. Sorted.
+  [[nodiscard]] std::vector<std::pair<std::int64_t, std::int64_t>> merge_blocks();
   [[nodiscard]] expected reject(std::int64_t face);
   [[nodiscard]] result<std::int64_t> split(std::span<const std::int64_t> faces);
   // Named people whose name matches (case-insensitive, whole name).
@@ -165,6 +173,7 @@ class faces_db {
   void load_locked();
   std::int64_t assign_locked(std::span<const float> emb, const std::set<std::int64_t>& rejected);
   void recompute_locked(std::int64_t person);
+  expected merge_locked(std::int64_t into, std::int64_t from);
   void pin_cover_locked(std::int64_t person);
   void touch_locked(std::int64_t person);
 

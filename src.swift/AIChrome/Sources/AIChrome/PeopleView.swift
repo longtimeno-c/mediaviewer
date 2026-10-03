@@ -58,6 +58,8 @@ struct PeopleGrid: View {
   let open: (Person) -> Void
   /// ⌘-click (or ⇧-click) picks several people to merge.
   @State private var selection = Set<UInt64>()
+  /// "Merge duplicates" is running in the pack.
+  @State private var deduping = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -78,9 +80,20 @@ struct PeopleGrid: View {
           mergeBar
             .transition(.opacity.combined(with: .move(edge: .top)))
         } else {
-          Text("Click a person to see their photos. The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
-            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-            .fixedSize(horizontal: false, vertical: true)
+          HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("Click a person to see their photos. The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
+              .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if model.canDedupe {
+              if deduping {
+                ProgressView().controlSize(.small)
+              }
+              Button("Merge duplicates") { mergeDuplicates() }
+                .disabled(deduping)
+                .help("Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.")
+            }
+          }
         }
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 132), spacing: 14)], spacing: 16) {
           ForEach(model.people) { person in
@@ -154,6 +167,24 @@ struct PeopleGrid: View {
     } else {
       // A click shows who it is: their photos, in the gallery.
       model.showPhotos(of: person)
+    }
+  }
+
+  /// "Merge duplicates" (plan/17): the whole library, on request; the note
+  /// under the grid says what it did.
+  private func mergeDuplicates() {
+    deduping = true
+    Task {
+      let result = await model.mergeDuplicates()
+      deduping = false
+      switch result {
+      case nil:
+        model.note("Couldn't check for duplicates. Try again.")
+      case (0, 0)?:
+        model.note("No duplicates found, and every face matches.")
+      case let (m, f)?:
+        model.note((m == 1 ? "1 person" : "\(m) people") + " merged, " + (f == 1 ? "1 face" : "\(f) faces") + " moved.")
+      }
     }
   }
 

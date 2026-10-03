@@ -656,7 +656,9 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 
 `mv_ai_tests "[refine]"` runs the People refinement (plan/17 "People refinement") on synthetic
 face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
-**Refine faces** on a person under Settings → People.
+**Refine faces** on a person under Settings → People, and library-wide from **Merge
+duplicates** above the grid (plan/17 "Merge duplicates": the same check for everyone, then people
+who are the same person merged; never two named differently, never a split pair).
 
 The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
 the viewer has open: **People in · This folder | + Subfolders | Everywhere**, + Subfolders by
