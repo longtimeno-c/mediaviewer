@@ -1530,7 +1530,8 @@ void present_lab_mac::render_thread_main() noexcept {
           busy_drop_at_ = elapsed;
         }
         const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
-        mv::shell::g_present_busy.store(decision.live || frame_pressure, std::memory_order_relaxed);
+        mv::shell::g_present_busy.store(gfx::present_busy(decision, frame_pressure),
+                                        std::memory_order_relaxed);
 
         CAMetalDisplayLink* live_link = (__bridge CAMetalDisplayLink*)display_link_;
         if (!decision.wants_frame) {

@@ -100,6 +100,34 @@ TEST_CASE("camera springs keep presenting until they settle", "[gfx][present_pol
   REQUIRE(mv::gfx::decide_present(r).wants_frame);
 }
 
+TEST_CASE("the yield signal is up only while the loop presents", "[gfx][present_policy]") {
+  // A playing clip in the active window: background work yields.
+  mv::gfx::present_request r;
+  r.video_active = true;
+  r.painted_static = true;
+  REQUIRE(mv::gfx::present_busy(mv::gfx::decide_present(r), false));
+
+  // The window goes inactive (another window, or the Local search window, takes
+  // focus): the loop stops presenting and its last video_active is stale. The
+  // indexer must not stay parked on "Paused while a video plays".
+  r.window_active = false;
+  REQUIRE_FALSE(mv::gfx::present_busy(mv::gfx::decide_present(r), false));
+  REQUIRE_FALSE(mv::gfx::present_busy(mv::gfx::decide_present(r), true));
+
+  // A drop just before the loop went idle on a still does not hold it up
+  // either; while it presents, the drop's two seconds do.
+  mv::gfx::present_request still;
+  still.has_still = true;
+  still.painted_static = true;
+  REQUIRE_FALSE(mv::gfx::present_busy(mv::gfx::decide_present(still), true));
+  still.camera_moving = true;
+  REQUIRE(mv::gfx::present_busy(mv::gfx::decide_present(still), false));
+  still.camera_moving = false;
+  still.redraw = true;
+  REQUIRE(mv::gfx::present_busy(mv::gfx::decide_present(still), true));
+  REQUIRE_FALSE(mv::gfx::present_busy(mv::gfx::decide_present(still), false));
+}
+
 TEST_CASE("constants match plan/03", "[gfx][present_policy]") {
   REQUIRE(mv::gfx::k_input_tail_seconds == 0.5);
   REQUIRE(mv::gfx::k_warmup_seconds == 1.0);

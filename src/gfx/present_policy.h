@@ -58,4 +58,15 @@ struct present_decision {
   return d;
 }
 
+// The yield signal background work reads (mv_present_set_busy / should_yield:
+// plan/17 "Yield policy", plan/18 "Priority"). It protects frames the loop is
+// about to present, so it is up only while the loop presents. An idle loop
+// (the window inactive, hidden or occluded) waits without a timeout and never
+// stores again until it wakes, so a value it left up stayed up: the indexer sat
+// on "Paused while a video plays" behind a frozen clip, or behind a drop from
+// the last frame before going idle.
+[[nodiscard]] inline bool present_busy(const present_decision& d, bool frame_pressure) noexcept {
+  return d.wants_frame && (d.live || frame_pressure);
+}
+
 }  // namespace mv::gfx
