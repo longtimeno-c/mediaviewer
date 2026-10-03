@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.22
+  VERSION 0.1.23
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -793,6 +793,7 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Addons.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Panels.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Edit.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/Shared/FakeInput.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/Addons.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"

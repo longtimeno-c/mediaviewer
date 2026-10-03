@@ -48,7 +48,7 @@ internal sealed class PeopleWindow : Window
     private readonly ObservableCollection<FaceVm> _faceItems = new();
     private readonly GridView _peopleGrid;
     private readonly GridView _faceGrid;
-    private readonly TextBox _name;
+    private readonly MediaViewer.Shared.FakeInput _name;
     private readonly TextBlock _detailTitle;
     private readonly Button _reject;
     private readonly Button _split;
@@ -167,14 +167,13 @@ internal sealed class PeopleWindow : Window
         _faceGrid.SelectionChanged += (_, _) => UpdateButtons();
 
         _detailTitle = _look.Text("", 18, AddonColour.Title, wrap: false);
-        _name = new TextBox { PlaceholderText = "Add a name", FontFamily = _look.Font, FontSize = 16, MinWidth = 240 };
+        // Not a TextBox, which fail-fasts in this host (Shared\FakeInput.cs).
+        _name = new MediaViewer.Shared.FakeInput(_look.Input(16), "Add a name") { MinWidth = 240 };
         AutomationProperties.SetName(_name, "Name");
-        _name.KeyDown += (_, e) =>
+        _name.Submitted += () =>
         {
-            if (e.Key != VirtualKey.Enter) return;
             CommitName();
             _faceGrid.Focus(FocusState.Keyboard);
-            e.Handled = true;
         };
         _name.LostFocus += (_, _) => CommitName();
         _merge = new Button { Content = "Merge into…  ▾", Flyout = new MenuFlyout() };
@@ -472,7 +471,7 @@ internal sealed class PeopleWindow : Window
         _person = p;
         _detail.Visibility = Visibility.Visible;
         _detailTitle.Text = p.Faces == 1 ? $"{p.Label} · 1 photo" : $"{p.Label} · {p.Faces:N0} photos";
-        _name.Text = p.Name;
+        _name.SetText(p.Name);
         _faceItems.Clear();
         UpdateButtons();
         ulong id = p.Id;
@@ -832,7 +831,7 @@ internal sealed class PeopleWindow : Window
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
         object? focused = FocusManager.GetFocusedElement(Content.XamlRoot);
-        if (focused is TextBox) return;
+        if (focused is MediaViewer.Shared.FakeInput) return;
         bool inFaces = focused is GridViewItem item && ReferenceEquals(ItemsControl.ItemsControlFromItemContainer(item), _faceGrid);
         switch (e.Key)
         {
