@@ -55,6 +55,15 @@ bool same_char(char a, char b) {
   return a == b;
 }
 
+// The same file named two ways: either separator, and on Windows either case.
+bool same_path(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!same_char(a[i], b[i])) return false;
+  }
+  return true;
+}
+
 // Whether `path` is `dir` or inside it.
 bool under(const std::string& dir, const std::string& path) {
   const std::string d = normalize_root(dir);
@@ -1935,23 +1944,26 @@ expected engine::trash_duplicate(std::uint64_t id, const std::string& path) {
     if (stopping_) return err(status::cancelled);
     if (!j->finished) return err(status::invalid_arg);  // still scanning
   }
+  std::string found;
   {
     std::lock_guard lock(j->m);
     dup_file* hit = nullptr;
     for (dup_group& g : j->dups.groups) {
       for (dup_file& f : g.files) {
-        if (f.path == path) hit = &f;
+        if (same_path(f.path, path)) hit = &f;
       }
     }
     if (!hit) return err(status::invalid_arg);
     if (std::strcmp(hit->state, "queued") == 0 || std::strcmp(hit->state, "trashed") == 0) return {};
     hit->state = "queued";
     hit->reason = "";
+    // The scan's own spelling from here on: trash_one matches it exactly.
+    found = hit->path;
     j->summary = dup_json(j->id, j->dups, j->prog.elapsed_ms, true);
   }
   std::lock_guard lock(mutex_);
   if (stopping_) return err(status::cancelled);
-  j->trash_queue.push_back(path);
+  j->trash_queue.push_back(std::move(found));
   if (!j->trash_busy) {
     j->trash_busy = true;
     // The scan's thread, or the last drain's, has finished: it takes no lock

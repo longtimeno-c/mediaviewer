@@ -725,7 +725,7 @@ std::vector<std::string> group_names(const mv::json::value& g) {
 const mv::json::value* file_in(const mv::json::value& s, const fs::path& p) {
   for (const auto& g : s.find("groups")->a) {
     for (const auto& f : g.find("files")->a) {
-      if (*f.str("path") == utf8(p)) return &f;
+      if (from_utf8(*f.str("path")) == p) return &f;  // either separator
     }
   }
   return nullptr;
