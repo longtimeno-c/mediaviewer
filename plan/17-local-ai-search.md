@@ -992,6 +992,12 @@ folder / subfolders I'm on?" Both halves, one shared core change.
   counted. Everywhere is exactly what the grid showed before.
 - **Not persisted:** the choice is per window / per Settings session; reopening starts at
   + Subfolders. The status bar's people count (`mv_ai_status.people`) stays the whole index's.
+- **Amended 2026-10-03 (owner):** "Everywhere" is no longer a choice while a folder is open.
+  The control is "This folder | + Subfolders"; a folder shows its own people, and everyone
+  shows only when no folder is open (the control is then absent on the Mac, disabled and
+  reading "Everywhere" on Windows). A scope of Everywhere left from before reads as
+  + Subfolders when a folder opens. "Show photos" and the empty-grid wording follow.
+  plan/12, 2026-10-03.
 - A pack from before the entry (its `struct_size` stops short) shows everyone, as before.
 
 ### Sharing an index (2026-09-28, owner)

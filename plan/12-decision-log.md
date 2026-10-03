@@ -3357,3 +3357,18 @@ of a file leaves the button off, a pick of the 5 extras moves exactly those 5 an
 each; the Import window shows the app icon. One earlier run never received the scan's done event
 (window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
 compile (CI), the Mac live run, both present-loop gates while a scan runs.
+
+## 2026-10-03 — People: a folder shows only its own people; everyone only when no folder is open
+
+Owner: "people should just show the currently opened folder … it should only show all when I'm
+on the home page with no open folder." The 2026-09-28 control (plan/17 "People in the open
+folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the default.
+
+- **Reversed: "Everywhere" as a choice while a folder is open.** The control is
+  "This folder | + Subfolders"; everyone shows only when no folder is open, as the viewer's home
+  (no scope control then). A scope of Everywhere left from before reads as + Subfolders when a
+  folder opens. Both chromes; no core or ABI change (`people_in_json` already takes the scope).
+- Why: a folder open is the user saying what they are looking at. Everyone-from-everywhere in a
+  folder reads as a leak (the owner saw their whole iCloud library's people while in one folder
+  and took it for a bug), and the home page already shows everyone.
+- The search panel keeps its three scopes: a search is a question, a folder is a place.
