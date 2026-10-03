@@ -922,7 +922,12 @@ suite itself (every chart reproduces byte-for-byte from the committed reports) a
 under `ctest -R perf_tools`.
 
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
-its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows.
+its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows. Its `preview` row is
+the canvas's first pixel (`decode_first_pixel`). libheif's example is one small image, so for
+camera-sized HEIC run `python tools/testmedia/make-grid-heic.py` (after `fetch-heif.ps1`; needs
+an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/heif/grid-12mp.heic`,
+an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
+`MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
 
 ### Copy throughput: `copybench` (PR 49)
 

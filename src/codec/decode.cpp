@@ -35,7 +35,7 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
       if (looks_like_raw(bytes)) return decode_raw(bytes, ctx, raw_thread_limit);
       return decode_tiff(bytes, ctx);
     case format_family::ico:  return decode_ico(bytes, ctx);
-    case format_family::heic: return decode_heic(bytes, ctx);
+    case format_family::heic: return decode_heic(bytes, ctx, raw_thread_limit);
     case format_family::avif: return decode_avif(bytes, ctx);
     case format_family::raw:  return decode_raw(bytes, ctx, raw_thread_limit);
     case format_family::unknown:

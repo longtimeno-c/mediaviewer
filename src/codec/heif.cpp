@@ -13,7 +13,9 @@
 // here (libheif's own down-conversion truncates).
 //
 // Threading: one heif_context per call / per animation source. libheif's
-// plugin registry is initialised once, below, and not touched afterwards.
+// plugin registry is initialised once, below, and not touched afterwards. A
+// grid's tiles decode on up to the caller's thread limit (the foreground
+// image gets raw_foreground_threads(); prefetch and thumbnails get 1).
 #include "codec/decode.h"
 
 #include <libheif/heif.h>
@@ -102,7 +104,7 @@ bool dims_ok(std::uint64_t w, std::uint64_t h) noexcept {
 
 // A context over `bytes` (not copied: the caller keeps them alive) with our
 // limits. Nothing is decoded yet.
-result<context_ptr> open_context(std::span<const std::uint8_t> bytes) {
+result<context_ptr> open_context(std::span<const std::uint8_t> bytes, unsigned threads = 1) {
   context_ptr ctx(heif_context_alloc());
   if (!ctx) return err(status::out_of_memory);
   if (const heif_security_limits* current = heif_context_get_security_limits(ctx.get())) {
@@ -113,8 +115,8 @@ result<context_ptr> open_context(std::span<const std::uint8_t> bytes) {
     }
     (void)heif_context_set_security_limits(ctx.get(), &limits);
   }
-  // Already on a pool worker: decode grid tiles on this thread.
-  heif_context_set_max_decoding_threads(ctx.get(), 0);
+  // Already on a pool worker: one thread means decode the tiles on it.
+  heif_context_set_max_decoding_threads(ctx.get(), threads > 1 ? static_cast<int>(threads) : 0);
   const heif_error e =
       heif_context_read_from_memory_without_copy(ctx.get(), bytes.data(), bytes.size(), nullptr);
   if (e.code != heif_error_Ok) return err(map_error(e) == status::ok ? status::corrupt : map_error(e));
@@ -242,7 +244,10 @@ result<raster> to_raster(const heif_image* img, const colour_info& colour, bool 
   return out;
 }
 
-result<raster> decode_handle(heif_image_handle* handle, const job_context* job) {
+// `inherited`: the colour to use when the handle has no colr of its own (a
+// thumbnail item takes its primary's; D6, never assume sRGB).
+result<raster> decode_handle(heif_image_handle* handle, const job_context* job,
+                             const colour_info* inherited = nullptr) {
   const std::uint64_t iw = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_ispe_width(handle)));
   const std::uint64_t ih = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_ispe_height(handle)));
   const std::uint64_t dw = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_width(handle)));
@@ -252,6 +257,7 @@ result<raster> decode_handle(heif_image_handle* handle, const job_context* job) 
 
   auto colour = handle_colour(handle);
   if (!colour) return err(colour.error());
+  if (inherited && colour.value().icc.empty() && !colour.value().have_nclx) colour.value() = *inherited;
   const bool high_bit = heif_image_handle_get_luma_bits_per_pixel(handle) > 8 ||
                         (colour.value().have_nclx && cicp::is_hdr(colour.value().transfer));
 
@@ -399,14 +405,15 @@ class heic_source final : public animation_source {
 
 }  // namespace
 
-result<raster> decode_heic(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+result<raster> decode_heic(std::span<const std::uint8_t> bytes, const job_context* ctx,
+                           unsigned thread_limit) {
   if (probe(bytes) != format_family::heic) return err(status::unsupported_format);
   if (ctx && ctx->cancelled()) return err(status::cancelled);
   // libde265 must be the HEVC decoder in the build; without one there is no
   // bundled HEIC at all (a packaging error, not a file error).
   if (!ensure_heif_init()) return err(status::unsupported_format);
   try {
-    auto opened = open_context(bytes);
+    auto opened = open_context(bytes, thread_limit);
     if (!opened) return err(opened.error());
     heif_context* hctx = opened.value().get();
 
@@ -435,6 +442,59 @@ result<raster> decode_heic(std::span<const std::uint8_t> bytes, const job_contex
     }
     const status s = map_error(e);
     return err(s == status::ok ? status::corrupt : s);
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
+}
+
+result<raster> decode_heic_thumbnail(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+  if (probe(bytes) != format_family::heic) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  if (!ensure_heif_init()) return err(status::unsupported_format);
+  try {
+    auto opened = open_context(bytes);
+    if (!opened) return err(opened.error());
+    heif_image_handle* raw = nullptr;
+    if (heif_context_get_primary_image_handle(opened.value().get(), &raw).code != heif_error_Ok ||
+        !raw) {
+      return err(status::unsupported_format);
+    }
+    handle_ptr primary(raw);
+    const int count = heif_image_handle_get_number_of_thumbnails(primary.get());
+    if (count <= 0) return err(status::unsupported_format);
+    std::vector<heif_item_id> ids(static_cast<std::size_t>(count));
+    const int listed = heif_image_handle_get_list_of_thumbnail_IDs(primary.get(), ids.data(), count);
+
+    handle_ptr best;
+    std::uint64_t best_w = 0, best_h = 0;
+    for (int i = 0; i < listed; ++i) {
+      heif_image_handle* t = nullptr;
+      if (heif_image_handle_get_thumbnail(primary.get(), ids[static_cast<std::size_t>(i)], &t).code !=
+              heif_error_Ok ||
+          !t) {
+        continue;
+      }
+      handle_ptr thumb(t);
+      const auto w = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_width(t)));
+      const auto h = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_height(t)));
+      if (w * h > best_w * best_h) {
+        best = std::move(thumb);
+        best_w = w;
+        best_h = h;
+      }
+    }
+    const auto pw = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_width(primary.get())));
+    const auto ph = static_cast<std::uint64_t>(std::max(0, heif_image_handle_get_height(primary.get())));
+    if (!best || pw == 0 || ph == 0) return err(status::unsupported_format);
+    if (best_w >= pw && best_h >= ph) return err(status::unsupported_format);  // nothing saved
+    // The image's shape, to 2 %: a thumbnail without the primary's irot (or
+    // cropped differently) would jump when the full decode replaces it.
+    const std::uint64_t a = best_w * ph, b = best_h * pw;
+    if ((a > b ? a - b : b - a) * 50 > (a > b ? a : b)) return err(status::unsupported_format);
+
+    auto primary_colour = handle_colour(primary.get());
+    if (!primary_colour) return err(primary_colour.error());
+    return decode_handle(best.get(), ctx, &primary_colour.value());
   } catch (const std::bad_alloc&) {
     return err(status::out_of_memory);
   }
