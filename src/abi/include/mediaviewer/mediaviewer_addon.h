@@ -370,12 +370,15 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
  * ------------------------------------------------------------------------- */
 
 /* [{"id","name","version","dir","size","state":"ok|needs_update|invalid",
- *   "why","loaded"}] for every add-on folder present. Empty array when none. */
+ *   "why","loaded","description","hint_on","hint_text","commands":[...]}] for
+ * every add-on folder present (the last four from plan/25's contributions;
+ * empty for an older manifest). Empty array when none. */
 MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32_t* needed);
 
 /* Checks a downloaded manifest and its signature against the pinned key
  * before anything else is fetched: {"ok","why","id","name","version",
- * "installed_size","archive":{"path","sha256","size"}}. [any-thread] */
+ * "installed_size","description","hint_on","hint_text",
+ * "archive":{"path","sha256","size"}}. [any-thread] */
 MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t manifest_len,
                                                  const void* signature, uint32_t signature_len,
                                                  char* out, uint32_t cap, uint32_t* needed);
@@ -411,6 +414,13 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
 MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap);
+
+/* plan/25 (2026-10-03): the commands the LOADED add-ons' manifests
+ * contribute, for the host's command table:
+ *   [{"addon","id","name","windows","mac","modes","payload"}]
+ * "[]" when none is loaded or none declares any. [any-thread] (no file is
+ * read: the manifests were verified at load). */
+MV_API mv_status MV_CALL mv_addon_commands_json(char* out, uint32_t cap, uint32_t* needed);
 
 /* Shuts the add-on down (its jobs stop, resumable) and unloads it. [ui-thread] */
 MV_API mv_status MV_CALL mv_addon_unload(const char* id);

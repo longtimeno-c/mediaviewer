@@ -27,11 +27,12 @@ struct AddonChannel: Sendable {
   private var url: String { Self.base + name }
 
   enum Probe: Equatable, Sendable {
-    case available(archiveBytes: Int, installedBytes: Int, version: String)
+    case available(archiveBytes: Int, installedBytes: Int, version: String, description: String = "",
+                   hintText: String = "")
     case notPublished, needsNewerApp, unreachable
 
     var version: String? {
-      if case .available(_, _, let v) = self { return v }
+      if case .available(_, _, let v, _, _) = self { return v }
       return nil
     }
   }
@@ -127,7 +128,9 @@ struct AddonChannel: Sendable {
       if obj["ok"] as? Bool == true,
          let archive = obj["archive"] as? [String: Any], let size = archive["size"] as? Int {
         return .available(archiveBytes: size, installedBytes: obj["installed_size"] as? Int ?? 0,
-                          version: obj["version"] as? String ?? "")
+                          version: obj["version"] as? String ?? "",
+                          description: obj["description"] as? String ?? "",
+                          hintText: obj["hint_text"] as? String ?? "")
       }
       // A signed add-on for a newer host API; anything else that does not
       // verify is, to this build, nothing to offer.
@@ -209,6 +212,10 @@ final class AddonStore: ObservableObject {
   @Published private(set) var stateKnown = false
   @Published private(set) var version = ""
   @Published private(set) var state = ""
+  /// plan/25: Settings' line and the card hint, from the installed manifest
+  /// or the channel's; empty for one from before it said any.
+  @Published private(set) var description = ""
+  @Published private(set) var hintText = ""
   @Published private(set) var loaded = false
   @Published private(set) var busy = false
   /// The install in progress, for the bar under the button.
@@ -278,6 +285,8 @@ final class AddonStore: ObservableObject {
         self.installed = obj["installed"] as? Bool ?? false
         self.version = obj["version"] as? String ?? ""
         self.state = obj["state"] as? String ?? ""
+        if let text = obj["description"] as? String, !text.isEmpty { self.description = text }
+        if let text = obj["hint_text"] as? String, !text.isEmpty { self.hintText = text }
         self.loaded = mv_addons_loaded()
         self.stateKnown = true
       }
@@ -310,9 +319,11 @@ final class AddonStore: ObservableObject {
       await MainActor.run {
         self.probing = false
         switch result {
-        case .available(let archiveBytes, _, let v):
+        case .available(let archiveBytes, _, let v, let description, let hintText):
           self.offer = .available(archiveBytes: archiveBytes)
           self.published = v
+          if self.description.isEmpty, !description.isEmpty { self.description = description }
+          if self.hintText.isEmpty, !hintText.isEmpty { self.hintText = hintText }
         case .notPublished: self.offer = .notPublished
         case .needsNewerApp: self.offer = .needsNewerApp
         case .unreachable: self.offer = .unreachable
@@ -381,7 +392,11 @@ struct AddonsSection: View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Add-ons").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
       Text("Import").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-      Text("Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.")
+      // plan/25: the manifest's line; the built-in one for a manifest from
+      // before it carried any.
+      Text(store.description.isEmpty
+           ? "Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card."
+           : store.description)
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
       if !store.stateKnown {
@@ -453,10 +468,13 @@ struct AddonBarItems: View {
   @ObservedObject var store = AddonStore.shared
 
   private var hintText: String {
+    // plan/25: the manifest's own words, with the size.
+    let base = store.hintText.isEmpty ? "Card inserted — install Import?" : store.hintText
     if case .available(let bytes) = store.offer {
-      return "Card inserted — install Import (\(AddonStore.sizeText(bytes)))?"
+      let size = "(\(AddonStore.sizeText(bytes)))"
+      return base.hasSuffix("?") ? "\(base.dropLast()) \(size)?" : "\(base) \(size)"
     }
-    return "Card inserted — install Import?"
+    return base
   }
 
   var body: some View {

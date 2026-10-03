@@ -73,6 +73,12 @@
 - (void)importNow:(NSString*)pathsJson;
 - (void)deliverEvent:(uint32_t)kind status:(uint32_t)status identifier:(uint64_t)ident payload:(int64_t)payload;
 - (void)shutdown;
+@optional
+// plan/25 (2026-10-03): a command the add-on's manifest contributed, by its
+// own id ("open", "import_now"), with the payload its row asked for as JSON.
+// Checked with -respondsToSelector:; an Import 1.0.0 bundle has only the two
+// selectors above and is driven through them.
+- (BOOL)runCommand:(NSString*)name payload:(NSString*)json;
 @end
 
 // Milestone H: what AI.bundle's principal class (MVAIChrome in
@@ -102,7 +108,13 @@
 @interface MvAddonHostMac : NSObject
 @end
 
+// main_mac.mm: the command table changed; rebuild the router and let
+// Settings and `?` re-read it. Main thread.
+void MvAppCommandsChanged();
+
 namespace {
+
+void refresh_contributed_commands();
 
 // One loaded add-on with a chrome.
 struct addon_slot {
@@ -271,6 +283,37 @@ void unload_import() {
   // until quit, inert (plan/18: removal completes at next start).
   s.bundle = nil;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::import, false);
+  refresh_contributed_commands();
+}
+
+// plan/25: the rows the loaded add-ons' manifests contribute, into the
+// command table (shell/commands.h set_addon_commands). An add-on with rows of
+// its own supersedes the rows the table has built in for it; one without
+// (an older Import) keeps them. Then the router and Settings re-read the
+// table (main_mac.mm MvAppCommandsChanged).
+void refresh_contributed_commands() {
+  std::vector<mv::shell::addon_command_row> rows;
+  const auto add = [&rows](const mv::addon::loaded_addon* addon) {
+    if (!addon) return;
+    const mv::addon::manifest& m = addon->info().m;
+    for (const mv::addon::manifest_command& c : m.commands) {
+      mv::shell::addon_command_row r;
+      r.addon = m.id;
+      r.id = c.id;
+      r.name = c.name;
+      if (!c.mac.empty() && !mv::shell::parse_key_label(c.mac, r.k, r.mods)) {
+        r.k = mv::shell::key::none;  // listed, Settings may give it a key
+        r.mods = 0;
+      }
+      r.modes = mv::shell::parse_modes(c.modes);
+      r.payload = c.payload;
+      rows.push_back(std::move(r));
+    }
+  };
+  const mac_addons& s = state();
+  add(s.import.get());
+  mv::shell::set_addon_commands(rows);
+  MvAppCommandsChanged();
 }
 
 bool load_import() {
@@ -330,6 +373,7 @@ bool load_import() {
   s.bundle = bundle;
   s.chrome = chrome;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::import, true);
+  refresh_contributed_commands();
   return true;
 }
 
@@ -751,6 +795,40 @@ void MvAddonsWaitStopped(double seconds) {
   if (!queue_idle || !stopped) g_exit_fast.store(true, std::memory_order_release);
 }
 
+bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& command,
+                                   const std::string& payload_json) {
+  mac_addons& s = state();
+  if (addon != "import" || !s.chrome) return false;
+  NSString* name = [NSString stringWithUTF8String:command.c_str()];
+  NSString* json = [NSString stringWithUTF8String:payload_json.c_str()];
+  if (!name || !json) return false;
+  @try {
+    if ([s.chrome respondsToSelector:@selector(runCommand:payload:)]) {
+      return [(id)s.chrome runCommand:name payload:json] == YES;
+    }
+    // Import 1.0.0: the frozen selectors, fed what its manifest-less rows got.
+    if (command == "open") {
+      NSArray* marks = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding]
+                                                       options:0
+                                                         error:nil];
+      NSMutableArray<NSString*>* list = [NSMutableArray array];
+      for (NSObject* item in [marks isKindOfClass:[NSArray class]] ? marks : @[]) {
+        if ([item isKindOfClass:[NSString class]]) [list addObject:(NSString*)item];
+      }
+      [s.chrome openWithSource:@"" marks:list];
+      return true;
+    }
+    if (command == "import_now") {
+      if ([json isEqualToString:@"[]"]) return false;
+      [s.chrome importNow:json];
+      return true;
+    }
+  } @catch (NSException*) {
+    return false;
+  }
+  return false;
+}
+
 bool MvAddonsRunCommand(const char* name) {
   id<MVAIChrome> chrome = ai_chrome();
   if (!name || !chrome || ![chrome respondsToSelector:@selector(runCommand:)]) return false;
@@ -791,6 +869,10 @@ extern "C" int32_t mv_addons_state_json(char* buf, int32_t size) {
       w.key("version").string(found->version);
       w.key("size").integer(static_cast<std::int64_t>(found->size));
       w.key("state").string(state_name(found->state));
+      // plan/25: Settings' line and the card hint, from the manifest.
+      w.key("description").string(found->m.description);
+      w.key("hint_on").string(found->m.hint_on);
+      w.key("hint_text").string(found->m.hint_text);
     }
   }
   w.key("installed").boolean(installed);
@@ -821,6 +903,11 @@ extern "C" int32_t mv_addons_check_manifest(const uint8_t* manifest, int32_t man
     w.key("sha256").string(d.m.archive.sha256);
     w.key("size").integer(static_cast<std::int64_t>(d.m.archive.size));
     w.end_object();
+    // plan/25: what the channel's add-on says about itself.
+    w.key("name").string(d.m.name);
+    w.key("description").string(d.m.description);
+    w.key("hint_on").string(d.m.hint_on);
+    w.key("hint_text").string(d.m.hint_text);
   }
   w.end_object();
   return copy_out(w.str(), buf, size);
