@@ -23,6 +23,7 @@
 #include "abi/native.h"
 #include "codec/format.h"
 #include "core/trace.h"
+#include "gfx/present_policy.h"
 
 namespace mv::shell {
 
@@ -1090,7 +1091,6 @@ void present_lab::render_thread_main() noexcept {
       busy_drop_at_ = elapsed;
     }
     const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
-    mv_present_set_busy(live || frame_pressure ? 1u : 0u);
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || options_.present_when_inactive ||
                           snapshot.window_active);
@@ -1103,6 +1103,10 @@ void present_lab::render_thread_main() noexcept {
         wants_frame = !painted_static_ || redraw || paint_once;
       }
     }
+    // Only while presenting (gfx::present_busy): idle waits with no timeout, so
+    // a busy left up here stuck — and video_active_ is only refreshed by a
+    // presented frame, so an inactive window kept "a video plays" forever.
+    mv_present_set_busy(gfx::present_busy({.wants_frame = wants_frame, .live = live}, frame_pressure) ? 1u : 0u);
 
     if (!wants_frame) {
       if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
