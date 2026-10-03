@@ -371,6 +371,27 @@ int preview_scale(std::uint32_t w, std::uint32_t h, std::uint32_t min_long_side)
   return scale;
 }
 
+// An embedded preview's declared size, before LibRaw is asked to unpack it:
+// LibRaw allocates what the header claims (up to max_raw_memory_mb, 2 GB),
+// and bitmap_thumb then makes an RGBA copy. A 2.7 KB fuzz input declared a
+// 32272 x 8193 "layer" bitmap: ~800 MB in LibRaw plus 1 GB here (fuzz smoke,
+// 2026-09-28; tests/data/broken/raw_thumb_32272x8193_layer.tif). So: the
+// stills' 256 MP cap, and a non-JPEG preview must fit the file at better than
+// 16 pixels a byte. Uncompressed bitmaps need at least a byte a pixel; the
+// compressed kinds (Kodak, X3F, DNG YCbCr) come nowhere near 16:1. A rejected
+// preview is not a bad RAW: the full decode still runs.
+constexpr std::uint64_t kMaxPreviewPixels = 256ull * 1000ull * 1000ull;
+constexpr std::uint64_t kMaxPreviewPixelsPerByte = 16;
+
+// A size not known yet (0 before unpacking, for some makes) is not refused:
+// nothing large is allocated for it, and bitmap_thumb checks what arrives.
+bool plausible_preview(std::uint64_t w, std::uint64_t h, bool jpeg, std::size_t file_bytes) noexcept {
+  if (w == 0 || h == 0) return true;
+  const std::uint64_t pixels = w * h;
+  if (pixels > kMaxPreviewPixels) return false;
+  return jpeg || pixels <= static_cast<std::uint64_t>(file_bytes) * kMaxPreviewPixelsPerByte;
+}
+
 result<raster> bitmap_thumb(const libraw_thumbnail_t& t) {
   const bool wide = t.tformat == LIBRAW_THUMBNAIL_BITMAP16;
   const std::uint32_t w = t.twidth;
@@ -433,6 +454,7 @@ result<raster> preview_impl(std::span<const std::uint8_t> bytes, const job_conte
       const auto& item = list.thumblist[i];
       const std::uint64_t area = static_cast<std::uint64_t>(item.twidth) * item.theight;
       const bool jpeg = item.tformat == LIBRAW_INTERNAL_THUMBNAIL_JPEG;
+      if (!plausible_preview(item.twidth, item.theight, jpeg, bytes.size())) continue;
       if (best < 0 || area > best_area || (area == best_area && jpeg && !best_jpeg)) {
         best = i;
         best_area = area;
@@ -444,6 +466,12 @@ result<raster> preview_impl(std::span<const std::uint8_t> bytes, const job_conte
 #endif
   if (ec != LIBRAW_SUCCESS && ec != LIBRAW_CANCELLED_BY_CALLBACK &&
       !LIBRAW_FATAL_ERROR(ec)) {
+    // LibRaw's own pick, held to the same rule; its format is not known
+    // until it is unpacked, so the JPEG allowance does not apply.
+    const libraw_thumbnail_t& pick = lr.imgdata.thumbnail;
+    if (!plausible_preview(pick.twidth, pick.theight, false, bytes.size())) {
+      return err(status::unsupported_format);
+    }
     ec = lr.unpack_thumb();
   }
   if (ec != LIBRAW_SUCCESS) return err(map_libraw(ec));

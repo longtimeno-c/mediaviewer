@@ -1,7 +1,8 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# PR 20: MediaViewer.app, its Quick Look thumbnail extension, and Sparkle 2.
+# PR 20: MediaViewer.app, its Quick Look thumbnail extension, and Sparkle 2
+# (plan/23 adds the Final Cut Pro agent and extension: cmake/darwin-fcp.cmake).
 # Included from cmake/darwin.cmake after the host sources are defined.
 #
 #   cmake --build build --target mediaviewer_app   ->  build/MediaViewer.app
@@ -96,6 +97,10 @@ if(MV_SPARKLE_PUBLIC_ED_KEY)
   target_link_libraries(MediaViewer PRIVATE "-framework Sparkle")
 endif()
 
+# --- plan/23: the Final Cut Pro search agent and workflow extension ----------
+# In the bundle, dormant until turned on in Settings > Local search.
+include("${CMAKE_CURRENT_LIST_DIR}/darwin-fcp.cmake")
+
 # --- MediaViewerThumbnails: the Quick Look thumbnail extension -----------------
 # An app extension's entry point is NSExtensionMain; the principal class is
 # MVThumbnailProvider (packaging/macos/QuickLook-Info.plist.in).
@@ -155,8 +160,10 @@ list(APPEND MV_ASSEMBLE_ARGS --clipjob "$<TARGET_FILE:MediaViewerClipJob>")
 list(APPEND MV_ASSEMBLE_ARGS
   --mdimporter-exe "$<TARGET_FILE:MediaViewerSpotlight>"
   --mdimporter-plist "${CMAKE_BINARY_DIR}/packaging/MediaViewerSpotlight-Info.plist")
+# plan/23: the FCP agent and extension (arm64 builds; cmake/darwin-fcp.cmake).
+list(APPEND MV_ASSEMBLE_ARGS ${MV_FCP_ASSEMBLE_ARGS})
 add_custom_target(mediaviewer_app
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/mac/macpack.py" ${MV_ASSEMBLE_ARGS}
-  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob MediaViewerSpotlight
+  DEPENDS MediaViewer MediaViewerThumbnails MediaViewerClipJob MediaViewerSpotlight ${MV_FCP_ASSEMBLE_DEPENDS}
   COMMENT "Assemble MediaViewer.app (PR 20)"
   VERBATIM)

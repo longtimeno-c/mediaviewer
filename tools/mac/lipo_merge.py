@@ -27,6 +27,18 @@ from pathlib import Path
 from typing import Callable
 
 REQUIRED = frozenset({"arm64", "x86_64"})
+# plan/23: Final Cut Pro search needs the AI pack, which is arm64 only (ONNX
+# Runtime ships no x86_64 macOS build), so an Intel build has none of these.
+# They stay arm64 in the universal app, copied as the arm64 build signed them;
+# on an Intel Mac the app never turns them on.
+ARM64_ONLY = (
+    "Contents/Library/LaunchAgents/",
+    "Contents/PlugIns/MediaViewerSearch.appex/",
+)
+
+
+def arm64_only(rel: str) -> bool:
+    return any(rel == p or (p.endswith("/") and rel.startswith(p)) for p in ARM64_ONLY)
 MACHO_MAGIC = (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")
 
 
@@ -67,8 +79,9 @@ def merge_trees(
     Raises SystemExit if the trees do not have the same files, or if a Mach-O
     pair does not end up with both architectures."""
     a, b = payload_files(arm), payload_files(x64)
-    if set(a) != set(b):
-        only_a, only_b = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+    a_shared = {rel for rel in a if not (arm64_only(rel) and rel not in b)}
+    if a_shared != set(b):
+        only_a, only_b = sorted(a_shared - set(b)), sorted(set(b) - a_shared)
         raise SystemExit("lipo_merge: the two apps differ in layout; "
                          f"only in arm64: {only_a[:8]}, only in x86_64: {only_b[:8]}")
 
@@ -78,6 +91,8 @@ def merge_trees(
 
     warnings: list[str] = []
     for rel, arm_file in a.items():
+        if rel not in a_shared:
+            continue  # arm64 only (ARM64_ONLY): copied above, as signed
         target = out / rel
         x64_file = b[rel]
         if macho(arm_file) != macho(x64_file):

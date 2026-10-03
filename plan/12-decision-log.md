@@ -2823,6 +2823,146 @@ Owner: "mountain" found nothing while "mountains" found hundreds, "Trist" found 
   words search speech transcripts only: the index has no OCR.
 - The search field's placeholder no longer suggests "dog on a beach" (owner).
 
+## 2026-09-28 — Final Cut Pro: a Mac-only add-on (D9 exception), and a read-only reader of Local search (issue #71)
+
+Owner, on issue #71 ("search your library with Local search from inside FCP"): build Phase 0
+and Phase 1, ship the extension **as another add-on that can be installed**, and take a
+**Mac-only exception to D9** rather than pair it with a Premiere UXP panel now. Plan:
+[23-nle-search.md](23-nle-search.md).
+
+- **D9 exception, scoped.** D9 (amended 2026-09-24) makes every PR from 9 dual-track. A Final
+  Cut Pro workflow extension cannot have a Windows twin: FCP is Mac-only. The exception covers
+  the FCP-specific pieces only (the workflow extension, its container app, the XPC agent). What
+  sits under them is shared and built on both platforms: the pack's read-only reader
+  (`mv_ai_reader_get`), the wire format, `search_session`, the read-only thumbnail lookup and
+  the FCPXML writer (`src/nle`, `cmake/nle.cmake`), plus `mv-nle-export`, which writes
+  a search as FCPXML on Windows and macOS (Resolve and Premiere import it). A Premiere UXP or
+  Resolve panel would be the Windows half if the owner later wants one (plan/23 Phase 4).
+- **Delivery: its own add-on ("fcp"), a separate container app.** Embedding the `.appex` in
+  MediaViewer.app would change the base bundle and show an FCP Extensions entry to everyone,
+  breaking plan/18's "absent means absent". "MediaViewer for Final Cut Pro.app" carries the
+  extension and the agent; installing it is opt-in, like Import and Local search.
+- **One search implementation.** The agent is a second, read-only *host* of the installed AI
+  pack: it loads `libmv_ai` through the verified add-on store and calls a new export,
+  `mv_ai_reader_get`, which runs the same engine over the app's data folder with
+  `engine_options::read_only`. No ranking code was copied, so the agent's top-K is the app's
+  by construction; `[search-agent]` checks it. A pack without the export is refused rather than
+  loaded through `mv_addon_get`, which would start a second indexer on the app's files.
+- **`mv.ai.1` gains `result_duration` (appended).** An FCPXML asset needs the clip's length;
+  the index has it. The C# table mirrors the field; Swift reads the header.
+- **No Apple SDK framework linked or embedded.** FCP 12.3 carries `ProExtensionHost`,
+  `ProExtension` and `ProExtensionSupport` in its own bundle, and its `ProExtension` declares
+  the `com.apple.FinalCut.WorkflowExtension` point. The extension's principal class is ours.
+  If FCP accepts that (Phase 0's hands-on step, owed), open question 5 (redistributing the SDK
+  framework in a GPL product) does not arise for Phases 0–2. Phase 3's `FCPXHost` proxies are
+  the case that may still need it.
+- **Idle exit at 50 s, not 60.** The verify line asks for the agent to be gone within 60 s of its
+  last client. At 60 s the measured exit was 62 s (the timer starts at invalidation, plus
+  teardown); at 50 s it was 52 s.
+
+## 2026-09-28 — Final Cut Pro search ships inside MediaViewer.app, off until turned on (amends the delivery call above)
+
+Owner, reviewing PR 87: a separate "MediaViewer for Final Cut Pro.app" to install and open is
+annoying. Ship the pieces in the standard app bundle and download only the bulk when the add-on
+is installed. The bulk is already the Local search pack, which the agent hosts. The FCP-specific
+code is small: the extension is about 180 KB and links the system only.
+
+- **In MediaViewer.app, arm64 only:** `Contents/PlugIns/MediaViewerSearch.appex` and the agent's
+  launchd job in `Contents/Library/LaunchAgents`. The container app, `fcp_bundle` and
+  `fcp_bundle.py` are gone. `macpack.py` assembles and signs the pieces with the app, and a
+  Sparkle update replaces them with it. `lipo_merge.py` lets these paths be arm64 only (the Intel
+  build has no AI pack).
+- **The agent is MediaViewer's own executable** (owner, the same review: "9/10 users won't have
+  Final Cut Pro"). A separate agent binary was 1.8 MB, mostly copies of the add-on store, the
+  verifier and SQLite that the app already links. The job runs
+  `Contents/MacOS/MediaViewer --search-agent`, and `main()` hands over before anything of the viewer
+  starts (no window, no crash reporter, no add-ons). The executable grew 49 KB (12.56 → 12.61 MB)
+  and the bundle shrank 54 → 52 MB. Measured against the standalone agent, same pack and index
+  (504 assets), alternated new/old/new/old: cold first query 4.69 / 4.71 s vs 4.46 / 5.55 s; RSS
+  914 MB vs 916 / 921 MB; warm p95 3.69 / 3.58 ms vs 4.10 / 3.02 ms (20 runs × 5 queries), with
+  identical rows; idle exit 52 s. The agent now shares the app's signature and entitlements.
+  `shell` may include `nle` (`check-module-graph.ps1`).
+- **Off until turned on.** Settings > Local search shows a Final Cut Pro row once Core is installed.
+  **Turn on** registers the agent with `SMAppService` and elects the extension in with `pluginkit`.
+  **Turn off**, or removing Core, unregisters the agent and elects it out. Off, nothing runs and
+  Login Items lists nothing. Nothing is downloaded: the pieces are in the app, and the pack is the
+  bulk the owner already installed.
+- **"Absent means absent" (plan/18), kept by an election rather than by the bundle.** macOS
+  registers every extension in an installed app, so a fresh install would list "MediaViewer
+  Search" in FCP for everyone. The app elects it out once (`pluginkit -e ignore`) in a background
+  block 10 s after launch, and records that in user defaults. Whether FCP honours the election is
+  checked in the Phase 0 hands-on run; if it does not, the panel reads "turn on Final Cut Pro in
+  MediaViewer".
+- **The base bundle changes, at no runtime cost to the viewer.** The viewer never loads the
+  extension or runs agent code. Its launch gains one argument compare in `main()` and one
+  background block 10 s after launch (two `stat`s, then at most one service manager call or one
+  `pluginkit`); nothing on the launch or render path. The Mac launch → first pixel and PR 1 soak
+  are still to be re-run against the base to confirm.
+- **The names follow the app.** The extension is `<app id>.finalcut`, the agent's job is associated
+  with the app's bundle id (so Login Items shows "MediaViewer"), and the app group and Mach service
+  keep their names (`<team>.<app id>.fcp`, `….search`). `MV_FCP_TEAM_ID` is the team the app is
+  signed by. The extension's entitlements are applied when the app is assembled, and
+  `macpack.py release` keeps them.
+
+## 2026-09-28 — Final Cut Pro: the extension loads FCP's own ProExtension.framework (Phase 0 finding)
+
+Phase 0's hands-on run (owner, FCP on macOS 26, the 0.1.18 release) answered open question 5.
+FCP **does not** accept a workflow extension without Apple's framework. Its
+`ProExtension.framework` declares the extension point (`NSExtensionSDK`) with
+`ProExtensionRemoteContext` as every extension's context class and `ProExtensionRequestHandling`
+as its principal class. ExtensionFoundation looks the context class up when FCP connects and
+traps if it is absent. That was the spinning puzzle piece and four `MediaViewerSearch` crash
+reports.
+
+- **Load FCP's copy at runtime; ship nothing of Apple's** (owner chose this over embedding the
+  Workflow Extensions SDK framework, and over a stand-in class). The extension's own `main`
+  finds Final Cut Pro by bundle id (`com.apple.FinalCut`, then the trial, then `/Applications`),
+  `dlopen`s `Contents/Frameworks/ProExtension.framework`, and only then calls
+  `NSExtensionMain`. If the framework or the class is missing, it logs a fault and exits rather
+  than trap. The framework always matches the running FCP, and nothing is redistributed.
+- **The Info.plist no longer names a principal class.** The point's `ProExtensionRequestHandling`
+  applies, and it makes our view controller from `ProExtensionPrincipalViewControllerClass`.
+- **`com.apple.security.cs.disable-library-validation` on the extension only.** Apple
+  (`PTN9T2S29T`) signs the framework, not our team. The sandbox is unchanged: the app group is
+  still the only grant, and reading and mapping `/Applications` is within it. Checked with a
+  Developer ID-signed build: `main` loads the framework and resolves the class in the sandbox.
+  FCP's own run of the fix is the next hands-on step.
+- **Licence.** Loading a proprietary Apple framework into GPL-3.0-or-later code at run time is
+  the owner's call as copyright holder: no Apple code is distributed, and the extension is
+  useless without Final Cut Pro, which carries the framework. See `plan/11`.
+- **Risk.** An FCP update that moves or renames the framework or the classes stops the panel. It
+  fails safe: an exit with a logged fault, never a hang. Apple's SDK framework is the fallback.
+
+## 2026-09-28 — Final Cut Pro panel, Phase 2: library scope, playback with sound, an AppKit grid (plan/23)
+
+Owner, once the 0.1.20 panel showed: a better UI, better search options, a better preview of
+clips, and search linked to the Final Cut Pro project rather than the whole index. Three calls,
+all the owner's (asked, 2026-09-28):
+
+- **Scope: the open library's folder by default.** The panel reads the open library from FCP's
+  own host objects (`ProExtensionHost.framework`, loaded like `ProExtension`: `FCPXHostSingleton`
+  > `timeline.activeSequence` > `container` ... > `FCPXLibrary.url`). It searches that folder
+  and everything below it (`MV_AI_SCOPE_TREE`). A picker switches to any indexed folder or the
+  whole index, and the choice is remembered per library. "Media the project uses" was offered
+  and not chosen: FCP does not expose it, and reading the library's database would break on
+  updates. The host objects travel as Apple Events to FCP, so the extension gains
+  `com.apple.security.automation.apple-events` and a `temporary-exception.apple-events` for
+  `com.apple.FinalCut` / `com.apple.FinalCutTrial`, and `NSAppleEventsUsageDescription`.
+- **Playback with sound: the sandbox widens to read-only files.** The owner chose full playback
+  over silent frames from the agent. The extension gains
+  `com.apple.security.temporary-exception.files.absolute-path.read-only` for `/`: it can read
+  any file the user can, and write none. That is a Developer ID-only entitlement; the Mac App
+  Store is not a channel (plan/11). Hover-scrub decodes frames in the panel from the same
+  access. Results and tiles still come from the agent. Checked in a sandboxed harness with the
+  extension's entitlements and the owner's installed 0.1.20 agent: a search answers, a result's
+  clip opens and plays, and a write is refused.
+- **An AppKit grid, not SwiftUI** (plan/23 named a SwiftUI grid for Phase 2). The extension is
+  one Objective-C++ file built by CMake with `-fapplication-extension`. SwiftUI would add a
+  second Swift package build to the `.appex`, for no difference the owner sees. The grid is an
+  `NSCollectionView` with an `AVPlayerView` above it.
+- **The agent answers two more read-only questions:** the indexed folders (`roots_json`) and
+  names as they are typed (`suggest_json`). `[search-agent]` checks both against the app's engine.
+
 ## 2026-09-28 — The Mac's Photos library as a Local search source (issue #72): built, with its owner calls left open
 
 Issue #72 asked whether Local search can index the Photos library (iCloud Photos on a Mac)
@@ -2940,4 +3080,32 @@ the pack runs on, with toggles for face data and thumbnails.
   the index file itself (opened read-only, defensive, schema untrusted; paths with `..` refused).
 - **Not changed:** Intel Macs still get no pack (ORT ships no x86_64 macOS build). An index
   from an Apple silicon Mac is of use on another Apple silicon Mac or a Windows PC.
+
+## 2026-09-29 — D5 amended, Mac only: Apple ProRes plays, and a hardware frame the ring cannot take is no longer dropped
+
+Owner report: exporting from Final Cut Pro opens the file in MediaViewer (the default viewer),
+which then sits on its empty canvas with the transport running. The export was Apple ProRes 422,
+3840 x 2160, 10-bit, with PCM audio: FCP's default. Nothing was wrong with the open. The player
+has no codec allow-list, so it chose VideoToolbox, which decodes ProRes on Apple silicon, but to
+10-bit 4:2:2. `describe_hw_surface` takes only 4:2:0 (the NV12 / P010 shader), so every frame
+was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
+
+- **D5, amended by the owner for the Mac: ProRes 422 and 4444.** Asked with the alternatives
+  (both platforms; only a clear failure), the owner chose the Mac. When the decoder is ProRes on
+  VideoToolbox, `pick_hw_format` gives FFmpeg a frames context with `sw_format = P010`, so
+  VideoToolbox converts to 10-bit 4:2:0 in hardware and the existing P010 path takes it. No
+  shader, ring or bundled decoder changes. Windows keeps D5: ProRes there would be software
+  decode, not measured to hold 4K pacing.
+- **Measured** (M5, `playprobe`, 15 s, alternated HEVC / ProRes / HEVC / ProRes, the same 2.7K
+  59.94 fps GoPro clip converted to ProRes 422 with `avconvert`): frames 57.0 / 58.5 / 56.6 /
+  58.1 per s; late drops 43 / 20 / 49 / 26 (a headless 60 Hz timer against 59.94 fps content);
+  A/V error p99 9.01 / 6.74 / 8.62 / 6.66 ms. The drift slope is worse on ProRes: 1.6 / 114.1 /
+  57.5 / 114.1 ms/min, a 15 s estimate over PCM audio against AAC. It is owed a minute-long run.
+  The owner's 4K ProRes export: 24.3 frames/s of a 25 fps clip over its 3 s, result OK.
+- **Both platforms: a hardware frame in a layout the ring cannot take is copied back and
+  converted in software** (`sw_convert::convert_hw`, `av_hwframe_transfer_data`) instead of
+  dropped, with one warning in the log and the overlay naming the decoder "software" (plan/05
+  "never silently"). This covers 4:2:2 / 4:4:4 hardware output from any codec. Forced through it
+  once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
+  what D5 covers is unchanged on Windows.
 
