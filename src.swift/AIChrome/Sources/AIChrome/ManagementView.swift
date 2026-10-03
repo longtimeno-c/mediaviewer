@@ -403,7 +403,7 @@ final class ManagementModel: ObservableObject {
                coverBox: ($0["cover_box"] as? [NSNumber] ?? []).map { $0.doubleValue })
       }
       await MainActor.run {
-        if list != self.people { self.people = list }
+        self.applyPeople(list)
         guard self.peopleAgain else {
           self.peopleLoading = false
           return
@@ -417,6 +417,12 @@ final class ManagementModel: ObservableObject {
         }
       }
     }
+  }
+
+  /// The grid's list, as a read of the index returned it (the bench seeds
+  /// 200 people through this too).
+  func applyPeople(_ list: [Person]) {
+    if list != people { people = list }
   }
 
   /// A line under People that clears itself after a few seconds.
