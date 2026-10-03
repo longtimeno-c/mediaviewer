@@ -78,6 +78,15 @@ class face_analyzer {
   [[nodiscard]] virtual const std::string& spec_key() const noexcept = 0;
   [[nodiscard]] virtual float same_person() const noexcept = 0;
   [[nodiscard]] virtual std::uint32_t dim() const noexcept = 0;
+  // The embedder's thresholds (model.json; plan/17 "People model"). The
+  // default is SFace's with this model's same_person.
+  [[nodiscard]] virtual face_tuning tuning() const noexcept {
+    face_tuning t;
+    t.same_person = same_person();
+    return t;
+  }
+  // "AdaFace IR-50": for the status line and Settings.
+  [[nodiscard]] virtual std::string name() const { return spec_key(); }
 };
 
 // Audio (plan/17 "Audio", 2026-09-27): what a clip sounds like, in the same
@@ -133,7 +142,8 @@ struct engine_deps {
   // provider against CPU and falls back (plan/17 "Runtime").
   std::function<result<loaded_clip>(std::uint32_t quality, std::uint32_t compute)> open_clip;
   // Null when the ai-faces piece is not installed.
-  std::function<result<std::unique_ptr<face_analyzer>>()> open_faces;
+  // The embedder on a compute choice (mv_ai_compute), self-tested against CPU.
+  std::function<result<std::unique_ptr<face_analyzer>>(std::uint32_t compute)> open_faces;
   // Audio: an error when the ai-audio piece is not installed.
   std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
@@ -288,6 +298,10 @@ class engine {
     std::uint32_t moved = 0;   // faces that moved, left, joined or regrouped
   };
   [[nodiscard]] result<dedupe_result> people_dedupe();
+
+  // "Re-analyse faces" (plan/17 "People model"): every asset through the
+  // People pass again, then one settle. [no-block]
+  [[nodiscard]] expected people_reanalyse();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
   // ---- sharing an index (plan/17 "Sharing an index") ---------------------------
@@ -422,6 +436,11 @@ class engine {
   };
   // With the opt-in on: `model` (opened when null) and its database.
   faces_parts open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model = nullptr);
+  // The end of a re-run: every asset analysed with this model, so the faces
+  // are filed into the people (a full refinement, no focus), then merged.
+  // The control thread, when indexing is idle.
+  void settle_people();
+  std::atomic<bool> settling_{false};
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends

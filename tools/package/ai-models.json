@@ -1,5 +1,5 @@
 {
-  "comment": "The AI pack's model files (plan/17 'Model choice'), pinned by revision and SHA-256. Chosen by the PR 20 spike (plan/17 'PR 20 spike results'). Every file names its licence; tools/package/ai-models.py refuses one outside ALLOWED_LICENCES (the weights-licence gate).",
+  "comment": "The AI pack's model files (plan/17 'Model choice'), pinned by revision and SHA-256. Chosen by the PR 20 spike (plan/17 'PR 20 spike results'); the People embedder by plan/17 'People model' (2026-10-03). Every file names its licence; tools/package/ai-models.py refuses one outside ALLOWED_LICENCES (the weights-licence gate). An entry with 'export' pins its source (size, sha256) and is built by face-export.py; 'installed_size' is what the pack carries.",
   "pieces": {
     "ai": {
       "folders": {
@@ -119,17 +119,23 @@
       "folders": {
         "models/faces": {
           "model": {
-            "detector": "yunet.onnx", "embedder": "sface.onnx", "detector_side": 640,
-            "min_confidence": 0.8, "nms_iou": 0.3, "min_face_fraction": 0.04, "same_person": 0.40,
-            "spec": "yunet-2023mar+sface-2021dec/pre1"
+            "detector": "yunet.onnx", "embedder": "adaface.onnx", "detector_side": 640,
+            "min_confidence": 0.8, "nms_iou": 0.3, "min_face_fraction": 0.04,
+            "name": "AdaFace IR-50", "dim": 512, "embed_order": "rgb", "embed_mean": 127.5, "embed_scale": 0.00784313725,
+            "same_person": 0.30, "keep": 0.20, "keep_weak": 0.24, "margin": 0.10, "ambiguous": 0.04, "merge_at": 0.32,
+            "spec": "yunet-2023mar+adaface-ir50-webface4m/1"
           },
           "files": [
             {"repo": "opencv/face_detection_yunet", "revision": "3cc26e7f1014a5ee5d74a42acee58bafc9d0a310",
              "file": "face_detection_yunet_2023mar.onnx", "as": "yunet.onnx", "size": 232589,
              "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4", "licence": "MIT"},
-            {"repo": "opencv/face_recognition_sface", "revision": "3d7082438a6e4551e840c9b2bb60b71e8da4b524",
-             "file": "face_recognition_sface_2021dec.onnx", "as": "sface.onnx", "size": 38696353,
-             "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79", "licence": "Apache-2.0"}
+            {"repo": "minchul/cvlface_adaface_ir50_webface4m", "revision": "60a65befbcf7e19284c4f3ac730f56867ed29594",
+             "file": "model.safetensors", "as": "adaface.onnx", "size": 174544600,
+             "sha256": "da82e6e1dbe98ce23afb78283b858ad65e32484a2bac82e9adae298d04ff845d", "licence": "MIT",
+             "licence_source": "https://github.com/mk-minchul/CVLface/blob/main/LICENSE (the HF repo carries no licence tag)",
+             "export": {"tool": "face-export.py", "arch": "ir50", "fp16": true, "installed_size": 87222050,
+                        "golden": [-0.06237, -0.01544, -0.06484, -0.05883, -0.04871, 0.00009, -0.01493, -0.02809,
+                                   -0.00921, -0.05873, 0.07099, -0.11402, 0.04012, 0.09040, -0.01556, -0.01783, 7.4238]}}
           ]
         }
       }
