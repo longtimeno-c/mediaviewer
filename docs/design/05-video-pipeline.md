@@ -23,6 +23,25 @@ MP4 / QuickTime (ISO-BMFF), Matroska, WebM (EBML DocType), AVI (RIFF), MPEG-TS (
 (hardware decode only). `mv_probe_is_video` exposes the probe so the host routes image vs video
 without opening anything.
 
+### Audio files
+
+MP3 (an ID3v2 tag, or two consecutive MPEG audio frame headers) and iTunes audio (ISO-BMFF with
+major brand `M4A `, `M4B ` or `M4P `) probe as `container::mp3` / `container::m4a`. They go the
+clip's way everywhere (`is_video`, `io::is_video_name`, the folder's clip flag and play badge) and
+`io::is_audio_name` tells them apart where it matters (no edit workspace).
+
+With no moving video stream the pipeline runs in **audio-only mode** (`video_pipeline::audio_only`):
+the audio stream is the seek stream and the time base, the audio is the master clock as usual, and
+`run_still_thread` takes the video decode thread's place. The picture is the cover art (the
+attached-picture stream decoded once to RGBA, at most 2048 px) or the music card
+(`player/audio_card.h`), republished into the ring at each seek's target so the seek's preview
+shows it at once. Position, pause and the resume point follow the clock, not the still's PTS.
+`,` `.` move by `kAudioStepNs` (5 s). `media_info::audio_only` tells the host.
+
+FairPlay (`drms`/`drmi`/`drac` or CENC `enca` sample entries, `is_protected_audio`) opens with
+`drm_protected`: the padlock card, no audio thread, no duration, so play ends at once. Nothing
+decrypts it. Posters follow the same rules (`poster_frame`: the art, or the card at tile size).
+
 ## Architecture
 
 ```

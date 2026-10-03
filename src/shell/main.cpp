@@ -2426,6 +2426,8 @@ constexpr int kEditStripDip = 140;
 
 mv::shell::edit_subject edit_subject_of(app_state* app) noexcept {
   if (!app || app->mode == open_mode::none || app->edit_path.empty()) return mv::shell::edit_subject::none;
+  // An audio file plays through the video path but has nothing to edit.
+  if (mv::shell::is_audio_name(app->edit_path)) return mv::shell::edit_subject::none;
   // A Live Photo's motion plays through the video path but the stop is a still.
   if (mv::shell::is_video_name(app->edit_path) || (video_mode(app) && !app->motion_playing)) {
     return mv::shell::edit_subject::clip;

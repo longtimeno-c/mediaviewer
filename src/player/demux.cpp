@@ -39,7 +39,7 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
       const auto next_generation = pipe.generation.load();
       const auto target = av_rescale_q(want + pipe.start_time_ns,
                                       AVRational{1, 1'000'000'000}, pipe.time_base);
-      if (av_seek_frame(pipe.format.get(), pipe.video_stream, target, AVSEEK_FLAG_BACKWARD) < 0)
+      if (av_seek_frame(pipe.format.get(), pipe.seek_stream, target, AVSEEK_FLAG_BACKWARD) < 0)
         pipe.decode_errors.fetch_add(1);
       pipe.video_packets.flush();
       pipe.audio_packets.flush();
@@ -57,7 +57,7 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
       if (rc == AVERROR(EAGAIN)) continue;
       if (rc != AVERROR_EOF) pipe.decode_errors.fetch_add(1);
       packet_ptr end_video, end_audio;
-      if (!enqueue(pipe.video_packets, end_video)) continue;
+      if (pipe.video_stream >= 0 && !enqueue(pipe.video_packets, end_video)) continue;
       if (pipe.audio_stream >= 0 && !enqueue(pipe.audio_packets, end_audio)) continue;
       pipe.eof.store(true);
       drained = true;

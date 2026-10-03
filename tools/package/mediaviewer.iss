@@ -258,6 +258,15 @@ Root: HKCU; Subkey: "Software\Classes\.ts\OpenWithProgids"; ValueType: string; V
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ts"; ValueData: "MediaViewer.Video"
 Root: HKCU; Subkey: "Software\Classes\.m4v\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".m4v"; ValueData: "MediaViewer.Video"
+; Audio (docs/plans/audio-and-documents.md §3): "Open with" only. No
+; Capabilities\FileAssociations line, so MediaViewer is not even a candidate
+; for these in Default apps — it is never made their default (owner, 2026-10-03).
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Audio"; ValueType: string; ValueData: "MediaViewer Audio"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Audio\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Audio\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.mp3\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Audio"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.m4a\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Audio"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.m4p\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Audio"; ValueData: ""; Flags: uninsdeletevalue
 
 [UninstallDelete]
 ; The whole Velopack layout. Inno removes what it installed by itself, and it

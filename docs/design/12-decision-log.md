@@ -187,6 +187,15 @@ PR 1 soak dropped two frames. The provider self-test's CPU half is kept between 
 
 ## Image pipeline and formats
 
+**Audio and documents join D5 (2026-10-03, owner).** MP3, M4A, M4P, PDF and DOCX open alongside the
+camera-dump set (`docs/plans/audio-and-documents.md`). Audio reuses the clip path rather than a second
+player: the pipeline gains an audio-only mode (demux and seek on the audio stream, the cover art or a
+card republished as a still at each seek), because an attached picture used as the "video" stream
+cannot seek — measured: a seek on a cover-art MP3 left the position stuck at the target. M4P is
+FairPlay; it is shown with a padlock and never played (nothing decrypts it). The new types are Open With
+only on both platforms: not in Windows' Default apps capabilities, and skipped by the Mac's
+make-default and adopt-new-types paths — the owner asked that they never be made the default.
+
 **Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.2` (was `.1`; bumped
 2026-09-24 when JPEG orientation was applied), keyed in SQLite by `(path, mtime, size, spec)`. The
 ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross the ABI. On-disk
