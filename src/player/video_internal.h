@@ -332,7 +332,7 @@ struct video_pipeline {
 
   // An audio-only file (MP3, M4A, M4P — docs/plans/audio-and-documents.md
   // §2.2): no video stream, so demux and seek follow the audio and the picture
-  // is `still` — the cover art, or an audio_card — republished by
+  // is `still` — the cover art, or a codec::card — republished by
   // run_still_thread at every seek's target so the presenter always has one.
   // `drm_protected`: FairPlay. Nothing is decoded; the still is the padlock.
   bool            audio_only = false;

@@ -1,11 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "player/audio_card.h"
+#include "codec/card.h"
 
 #include <algorithm>
 #include <cmath>
 
-namespace mv::player {
+namespace mv::codec {
 namespace {
 
 constexpr std::uint8_t kBackground[3] = {30, 30, 32};
@@ -71,8 +71,8 @@ float padlock(float x, float y) noexcept {
 
 }  // namespace
 
-audio_card make_audio_card(audio_card_kind kind, std::uint32_t width, std::uint32_t height) {
-  audio_card out;
+card make_card(card_kind kind, std::uint32_t width, std::uint32_t height) {
+  card out;
   out.width = std::max<std::uint32_t>(2, width & ~1u);
   out.height = std::max<std::uint32_t>(2, height & ~1u);
   out.rgba.resize(static_cast<std::size_t>(out.width) * out.height * 4u);
@@ -88,7 +88,7 @@ audio_card make_audio_card(audio_card_kind kind, std::uint32_t width, std::uint3
       const float x = (static_cast<float>(col) + 0.5f - half_w) / unit;
       float cover = 0.0f;
       if (std::fabs(x) < 0.3f && std::fabs(y) < 0.3f) {
-        const float d = kind == audio_card_kind::music ? music(x, y) : padlock(x, y);
+        const float d = kind == card_kind::music ? music(x, y) : padlock(x, y);
         cover = std::clamp(0.5f - d / px, 0.0f, 1.0f);
       }
       for (int c = 0; c < 3; ++c) {
@@ -101,4 +101,4 @@ audio_card make_audio_card(audio_card_kind kind, std::uint32_t width, std::uint3
   return out;
 }
 
-}  // namespace mv::player
+}  // namespace mv::codec

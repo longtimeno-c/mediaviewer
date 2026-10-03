@@ -31,6 +31,10 @@ result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const 
              codec::looks_like_raw(bytes)) {
     // Embedded JPEG inside a RAW — first pixel in preview time (docs/design/04, PR 7).
     raster = codec::decode_raw_preview(bytes, ctx);
+  } else if (family == codec::format_family::pdf) {
+    // Page 1 at a third of its full size: first pixel and thumbnails
+    // (docs/plans/audio-and-documents.md §2.4); the full render refines it.
+    raster = codec::decode_pdf(bytes, 0, ctx, codec::kPdfPreviewEdge);
   } else {
     return err(status::unsupported_format);
   }

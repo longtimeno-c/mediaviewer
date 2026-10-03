@@ -21,8 +21,17 @@ filters by extension only to decide what is a candidate; decode always probes.
 | HEIF / HEIC | HEVC-coded stills, grids, sequences | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
 | AVIF | still + animated | **libavif** + **dav1d** |
 | RAW | CR2/CR3, NEF, ARW, ORF, RAF, RW2, DNG, … | **LibRaw** (OpenMP) |
+| PDF | every page, `/Rotate` applied, on white | the OS: **CoreGraphics** (`codec/pdf_mac.cpp`), **Windows.Data.Pdf** (`codec/pdf_win.cpp`) |
 
-That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO and RAW.
+That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW and PDF.
+
+**PDF** (`%PDF-` in the first 1 KiB) renders through the OS, so no PDF library ships. A page is
+`kPdfLongEdge` (3200) px on its long edge in sRGB on white; the first pixel and the thumbnails
+ask for `kPdfPreviewEdge` (1024) through `decode_preview`, and the full page refines it. A file
+that needs a password is the locked card (`codec/card.h`), one page; one locked only by an owner
+password renders. Windows renders each page to an in-memory BMP that the bundled BMP reader
+takes, waiting on the WinRT operation from the worker with a 30 s ceiling. Zoom past the render
+size is a resample of the 3200 px page, not a re-render.
 TIFF-container RAWs probe as `tiff` and are reclassified by `looks_like_raw`.
 
 The registry is `codec::decode` in [`src/codec/decode.cpp`](../../src/codec/decode.cpp): one

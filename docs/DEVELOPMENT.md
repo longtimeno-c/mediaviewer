@@ -1237,6 +1237,13 @@ the cover art or a music card is the picture, the transport and keys are the cli
 "[audio]"`, `playprobe` on MP3/M4A with and without art: seek, pause, play-out). The Windows half
 (dir scan, installer, `main.cpp`) is compiled by CI only, and has not been run.
 
+**Pages (slice 2) and PDF (slice 3):** `Ctrl+PageUp` / `Ctrl+PageDown` turn the pages of a TIFF or
+PDF on both platforms ("Page n of m" in the notice line). PDF renders through the OS — CoreGraphics
+on the Mac, Windows.Data.Pdf on Windows — at 3200 px, with a 1024 px first pixel and thumbnail; a
+PDF that needs a password shows the locked card. Measured on the Mac (`mv_tests "[pdf],[pages]"`,
+the full suite: 597 cases, 8 skipped for the absent RAW corpus). `pdf_win.cpp`,
+`mv_folder_select_page` and the Windows page keys are compiled by CI only.
+
 ### Performance pass (2026-09-26)
 
 Open and navigation latency, measured on an Apple M5 (60 Hz) with the macOS lab and the

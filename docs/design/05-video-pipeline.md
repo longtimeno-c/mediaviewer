@@ -34,7 +34,7 @@ With no moving video stream the pipeline runs in **audio-only mode** (`video_pip
 the audio stream is the seek stream and the time base, the audio is the master clock as usual, and
 `run_still_thread` takes the video decode thread's place. The picture is the cover art (the
 attached-picture stream decoded once to RGBA, at most 2048 px) or the music card
-(`player/audio_card.h`), republished into the ring at each seek's target so the seek's preview
+(`codec/card.h`), republished into the ring at each seek's target so the seek's preview
 shows it at once. Position, pause and the resume point follow the clock, not the still's PTS.
 `,` `.` move by `kAudioStepNs` (5 s). `media_info::audio_only` tells the host.
 
