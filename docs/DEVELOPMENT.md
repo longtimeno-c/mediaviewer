@@ -702,7 +702,9 @@ index"). `mv_ai_tests "[transfer]"` runs two engines as two machines over one li
 elsewhere: nothing embedded twice, an edited file re-embedded, an empty index adopting the
 file's Quality, a used one skipping another model's vectors, People and thumbnails only when
 ticked, a non-index file refused. Thumbnails cross the host table as bytes (`thumbnail_jpeg`,
-`thumbnail_store_jpeg`, appended to v2; the host decodes what it stores).
+`thumbnail_store_jpeg`, appended to v2; the host decodes what it stores). An export with
+thumbnails makes any the viewer's cache does not hold yet, so it can take a while on a library
+that was never browsed.
 With the real pack, two sideloaded add-on folders are two machines:
 `ai-bench --addons <A> --index <library> --make-thumbs <library> --export <file> --export-flags 2`,
 then `ai-bench --addons <B> --import <file> --import-to <copy elsewhere> --import-flags 2
