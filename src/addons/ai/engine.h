@@ -38,6 +38,7 @@
 #include "addons/ai/index_db.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
+#include "addons/ai/transfer.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
 #include "infer/audio_models.h"
@@ -481,6 +482,8 @@ class engine {
   };
   void run_transfer(transfer_job job);  // control thread
   [[nodiscard]] std::string run_export(const transfer_job& job, mv::status& st);
+  // An export's thumbnail: the viewer's cached one, else made now.
+  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w);
   [[nodiscard]] std::string run_import(const transfer_job& job, mv::status& st);
   // The picture specs a file's rows may land under here, and the Quality to
   // adopt (0 none) when this index is empty and the file's tower is carried.

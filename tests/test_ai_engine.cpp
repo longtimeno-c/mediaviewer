@@ -444,7 +444,17 @@ struct rig {
     };
     svc.should_yield = [this] { return busy.load(); };
     svc.data_dir = utf8(dir / "data");
-    svc.thumbnail = [](const std::string& path) -> mv::result<std::string> { return path + ".thumb.jpg"; };
+    // One cache, as the host's: a still's thumbnail and a stored moment are
+    // what thumbnail_jpeg then finds.
+    svc.thumbnail = [this](const std::string& path) -> mv::result<std::string> {
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
+      std::lock_guard lock(thumbs_m);
+      std::vector<std::uint8_t>& jpeg = jpegs[path + "#-1"];
+      if (jpeg.empty()) jpeg = {0xFF, 0xD8, 9};
+      std::string out = path + ".thumb.jpg";
+      return out;
+    };
     svc.still_rgb = [this](const std::string& path, std::uint32_t) -> mv::result<mv::addon::rgb_image> {
       ++stills_decoded;
       const std::string name = utf8(fs::path(path).filename());
@@ -470,6 +480,7 @@ struct rig {
       const std::string key = path + "#" + std::to_string(ms);
       if (img) {
         moment_thumbs[key] = key + ".jpg";
+        jpegs[key] = {0xFF, 0xD8, 7};
         return moment_thumbs[key];
       }
       auto it = moment_thumbs.find(key);
@@ -2442,22 +2453,34 @@ TEST_CASE("merge duplicates: wired through the engine, a split stays apart, a se
   CHECK(d->moved == 0);
 }
 
-TEST_CASE("thumbnails travel only when cached, and land only for the same file", "[ai][engine][transfer]") {
+TEST_CASE("an export carries every thumbnail, making the ones never made, and they land only for the same file",
+          "[ai][engine][transfer]") {
   rig a;
   a.file("red.jpg");
   a.file("blue.jpg");
+  a.file("broken_green.jpg");
+  a.file("holiday_rgb.mp4");
   a.start();
   REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
   REQUIRE(a.idle());
   {
     std::lock_guard lock(a.thumbs_m);
-    a.jpegs[utf8(a.photos() / "red.jpg") + "#-1"] = {0xFF, 0xD8, 1, 2, 3};  // blue was never thumbed
+    a.jpegs.clear();
+    a.moment_thumbs.clear();
+    a.jpegs[utf8(a.photos() / "red.jpg") + "#-1"] = {0xFF, 0xD8, 1, 2, 3};  // nothing else was ever thumbed
   }
   const std::string file = utf8(a.dir / "t.mvindex");
   REQUIRE(a.eng->export_index(file, {}, MV_AI_TRANSFER_THUMBS));
   auto done = transfer_done(a);
-  CHECK(*done.find("outcome")->integer("thumbs") == 1);
+  // red (cached), blue (made), the clip's three moments (made) and its own
+  // tile; broken_green cannot be made.
+  CHECK(*done.find("outcome")->integer("thumbs") == 6);
   CHECK(*done.find("outcome")->integer("thumbs_missing") == 1);
+  {
+    std::lock_guard lock(a.thumbs_m);
+    // The clip's tile is a moment row; the viewer's poster row is not written.
+    CHECK(a.jpegs.count(utf8(a.photos() / "holiday_rgb.mp4") + "#-1") == 0);
+  }
 
   rig b;
   const fs::path there = b.dir / "Photos";
@@ -2466,11 +2489,13 @@ TEST_CASE("thumbnails travel only when cached, and land only for the same file",
   const auto root_id = *mv::json::parse(*b.eng->inspect_export(file))->find("roots")->a[0].integer("id");
   REQUIRE(b.eng->import_index(file, map_json(root_id, there), MV_AI_TRANSFER_THUMBS));
   done = transfer_done(b);
-  CHECK(*done.find("outcome")->integer("thumbs") == 1);
+  CHECK(*done.find("outcome")->integer("thumbs") == 6);
   std::lock_guard lock(b.thumbs_m);
   const auto it = b.jpegs.find(utf8(there / "red.jpg") + "#-1");
   REQUIRE(it != b.jpegs.end());
   CHECK(it->second.size() == 5);
+  CHECK(b.jpegs.count(utf8(there / "blue.jpg") + "#-1") == 1);
+  CHECK(b.jpegs.count(utf8(there / "holiday_rgb.mp4") + "#-1") == 1);
 }
 
 TEST_CASE("an import refuses what is not an index, and one transfer runs at a time", "[ai][engine][transfer]") {
