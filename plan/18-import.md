@@ -378,22 +378,16 @@ they sit and whatever they are called.
   reads: this is a comparison, not verify-a-folder's check for rot.
 - **What you see:** groups, largest waste first, with the space that could be freed. Each file can
   be **opened in the viewer**, **shown in Explorer / the Finder**, or **moved to the Recycle Bin /
-  Trash** (owner: "the options to delete one"). Several copies can be picked at once (Ctrl / Shift
-  or ⌘ / ⇧ click, as in Explorer and the Finder) and moved in one go, with the count and the space
-  they free shown beside the button (owner, 2026-10-03). A local report lists every group.
+  Trash** (owner: "the options to delete one"). A local report lists every group.
 - **Deleting is safe by construction:**
   - only ever to the Recycle Bin / Trash; where a location has none (a network share, some
     removable drives), nothing is removed and the file says so. There is no permanent delete;
   - **a group is never emptied**: before the move, the engine checks the file is unchanged since
     it was hashed, and reads another copy in the group again to be sure the same bytes are still
     there. If none is, the request is refused ("the last copy is always kept");
-  - only the files the person picked: one, or several in one batch (owner, 2026-10-03; it was one
-    at a time). A pick that takes **every** copy of some file is not sent at all, and says so,
-    so which copy survives is never down to the order the requests ran in. Still no "delete all
-    duplicates" and no keep rules: nothing is picked for the person.
-- **Keys** (keyboard-complete, plan/16): arrows move through files (`Shift`+arrows / `Ctrl+Space`,
-  `⇧`-arrows on the Mac, pick several), `Enter` opens one in the viewer, `Delete` / `⌘⌫` moves the
-  picked copies to the bin, `Ctrl+E` / `⌘R` shows it in Explorer / the Finder, `Esc`
+  - one file at a time, picked by the person. No "delete all duplicates", no keep rules.
+- **Keys** (keyboard-complete, plan/16): arrows move through files, `Enter` opens one in the viewer,
+  `Delete` / `⌘⌫` moves it to the bin, `Ctrl+E` / `⌘R` shows it in Explorer / the Finder, `Esc`
   closes (a running scan carries on, with a line in the command bar).
 - **Privacy:** paths and hashes stay in `import.db` and the local report (rule 6).
 
@@ -401,9 +395,7 @@ they sit and whatever they are called.
 - A tree with copies under other names and folders: every group is found, a same-size file with
   other bytes is not in one, and the scan changes nothing on disk.
 - A second scan of an unchanged folder reads zero file bytes; one edited file is the only one read.
-- Asking for every copy in a group: all but the last go to the bin, the last is refused (the
-  engine's guard). Picking every copy of a file in the window sends nothing; picking several copies
-  across groups, leaving one of each, moves exactly those. A copy
+- Asking for every copy in a group: all but the last go to the bin, the last is refused. A copy
   edited since the scan, or a group whose other copy has rotted, is refused. On a location with no
   bin, nothing is deleted.
 - **Both present-loop gates hold while a scan runs.**
