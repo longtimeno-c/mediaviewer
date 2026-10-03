@@ -3,11 +3,14 @@
 // Find duplicates (PR 54), the Mac twin of DuplicatesWindow.cs: pick a folder,
 // the engine walks it and every folder under it and groups files with
 // identical bytes (size, then BLAKE3; never the name). Each file can be
-// opened in the viewer, shown in the Finder, or moved to the Trash. The
-// engine refuses to trash the last copy in a group, and re-reads the copy it
-// keeps before it moves anything.
-// Keyboard-complete: arrows move through the files, Return opens one in the
-// viewer, ⌘⌫ moves it to the Trash, ⌘R shows it in the Finder, Esc closes.
+// opened in the viewer or shown in the Finder, and the copies the person
+// picks (one, or several with ⌘ / ⇧) are moved to the Trash in one go. A pick
+// that would take every copy of a file is refused here, and the engine still
+// refuses to trash the last copy in a group and re-reads the copy it keeps
+// before it moves anything.
+// Keyboard-complete: arrows move through the files (⇧-arrows pick several),
+// Return opens one in the viewer, ⌘⌫ moves the picked copies to the Trash,
+// ⌘R shows one in the Finder, Esc closes.
 import AppKit
 import CImportApi
 import SwiftUI
@@ -45,7 +48,8 @@ final class DuplicatesModel: ObservableObject {
   @Published var unreadable: [String] = []
   @Published var canTrash = false
   @Published var reportPath = ""
-  @Published var selection: String?
+  /// The picked files, by path (⌘-click adds or removes one, ⇧-click a run).
+  @Published var selection: Set<String> = []
   private(set) var job: UInt64 = 0
 
   init(table: ImportTable) { self.table = table }
@@ -71,6 +75,7 @@ final class DuplicatesModel: ObservableObject {
     running = true
     groups = []
     unreadable = []
+    selection = []
     headline = ""
     progressLine = "Looking through \(dir)…"
     fraction = nil
@@ -121,6 +126,8 @@ final class DuplicatesModel: ObservableObject {
       headline = "This folder could not be read."
     } else if groups.isEmpty {
       headline = "No duplicates among \(files) files."
+    } else if dupes == 0 {
+      headline = "Every extra copy is in the Trash. One copy of each file is kept."
     } else {
       headline = "\(dupes) duplicate \(dupes == 1 ? "file" : "files") in \(groups.count) " +
         "\(groups.count == 1 ? "group" : "groups") · " +
@@ -141,9 +148,55 @@ final class DuplicatesModel: ObservableObject {
     canTrash && f.state != "trashed" && f.state != "queued" && g.alive > 1
   }
 
+  /// The picked file Return and ⌘R act on: the first picked, in list order.
+  var focused: String? {
+    for g in groups { if let f = g.files.first(where: { selection.contains($0.path) }) { return f.path } }
+    return nil
+  }
+
+  /// The picked copies that can go to the Trash, and whether the pick would
+  /// take every copy of some file: then nothing is sent, so which copy
+  /// survives is never down to the order the engine ran the requests in.
+  func batch() -> (files: [DuplicateFile], takesEveryCopy: Bool) {
+    var files: [DuplicateFile] = []
+    var every = false
+    for g in groups {
+      let picked = g.files.filter { selection.contains($0.path) && canTrash($0, in: g) }
+      if picked.isEmpty { continue }
+      let onDisk = g.files.filter { $0.state != "trashed" && $0.state != "queued" }.count
+      if onDisk - picked.count < 1 { every = true }
+      files += picked
+    }
+    return (files, every)
+  }
+
+  /// Bytes the picked copies would free.
+  func batchBytes() -> Int64 {
+    var bytes: Int64 = 0
+    for g in groups {
+      bytes += g.size * Int64(g.files.filter { selection.contains($0.path) && canTrash($0, in: g) }.count)
+    }
+    return bytes
+  }
+
+  /// One copy (a row's own button), or the whole pick.
   func trash(_ path: String) {
     guard let (g, f) = file(path), canTrash(f, in: g) else { return }
     if path.withCString({ api.trash_duplicate!(table.ctx, job, $0) }) == MV_OK { refresh(job) }
+  }
+
+  /// No-block: every call only queues; the engine checks and moves the copies
+  /// one at a time on its own thread, and a refusal shows on that file's row.
+  func trashSelection() {
+    let (files, every) = batch()
+    guard !running, !files.isEmpty, !every else { return }
+    var queued = false
+    for f in files {
+      guard f.path.withCString({ api.trash_duplicate!(table.ctx, job, $0) }) == MV_OK else { continue }
+      selection.remove(f.path)
+      queued = true
+    }
+    if queued { refresh(job) }
   }
 
   func open(_ path: String) { chrome?.openInViewer(path) }
@@ -189,16 +242,17 @@ struct DuplicatesView: View {
         }
       }
       .onKeyPress(.return) {
-        guard let p = model.selection else { return .ignored }
+        guard let p = model.focused else { return .ignored }
         model.open(p)
         return .handled
       }
       .onKeyPress(characters: ["r"]) { press in
-        guard press.modifiers.contains(.command), let p = model.selection else { return .ignored }
+        guard press.modifiers.contains(.command), let p = model.focused else { return .ignored }
         model.reveal(p)
         return .handled
       }
-      .onDeleteCommand { if let p = model.selection { model.trash(p) } }
+      .onDeleteCommand { model.trashSelection() }
+      selectionBar
       HStack {
         Text("Originals stay put. Move to Trash can be undone from the Trash; the last copy of a file is always kept.")
           .font(.caption).foregroundStyle(.secondary)
@@ -214,6 +268,34 @@ struct DuplicatesView: View {
     }
     .padding()
     .frame(minWidth: 820, minHeight: 560)
+  }
+
+  /// How much is picked, and the batch move.
+  @ViewBuilder private var selectionBar: some View {
+    if !model.groups.isEmpty {
+      let pick = model.batch()
+      HStack {
+        Text(selectionLine(every: pick.takesEveryCopy)).font(.caption).foregroundStyle(.secondary)
+        Spacer()
+        if model.selection.count > 1 {
+          Button("Deselect All") { model.selection = [] }
+        }
+        Button(pick.files.count > 1 ? "Move \(pick.files.count) to Trash" : "Move to Trash") { model.trashSelection() }
+          .disabled(model.running || pick.files.isEmpty || pick.takesEveryCopy)
+          .help(pick.takesEveryCopy ? "Every copy of a file is picked. Leave one unpicked to keep it."
+                                    : "⌘⌫. Each copy goes only while another identical copy stays.")
+      }
+    }
+  }
+
+  private func selectionLine(every: Bool) -> String {
+    let n = model.selection.count
+    if every { return "\(n) picked, including every copy of a file. Leave one copy of each file unpicked." }
+    if n > 1 {
+      let bytes = ByteCountFormatter.string(fromByteCount: model.batchBytes(), countStyle: .file)
+      return "\(n) picked · \(bytes) to free"
+    }
+    return "⌘-click or ⇧-click to pick several copies, then move them to the Trash together."
   }
 
   private func row(_ f: DuplicateFile, in g: DuplicateGroup) -> some View {
