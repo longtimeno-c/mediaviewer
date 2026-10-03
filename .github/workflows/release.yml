@@ -338,6 +338,9 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       MODE: ${{ inputs.mode }}
       TRIPLET: ${{ matrix.triplet }}
+      # plan/23: the Final Cut Pro agent's Mach service and the extension's app
+      # group are named under the team that signs the app.
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -401,6 +404,10 @@ jobs:
                 -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
           if [ "$MODE" != "artifacts" ]; then
             args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
+          fi
+          # Both legs: the app compiles the agent's name on both architectures.
+          if [ -n "${APPLE_TEAM_ID:-}" ]; then
+            args+=(-DMV_FCP_TEAM_ID="$APPLE_TEAM_ID")
           fi
           cmake -S . -B build "${args[@]}"
 

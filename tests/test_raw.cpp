@@ -421,6 +421,25 @@ constexpr const char* kSamples[] = {
 // Detection
 // ===========================================================================
 
+// Fuzz smoke, 2026-09-28: a 2.7 KB TIFF declaring a 32272 x 8193 "layer"
+// bitmap preview (576 bytes of data). LibRaw allocated ~800 MB for it and
+// bitmap_thumb another 1 GB of RGBA. A preview must be plausible for the file
+// before LibRaw unpacks it (raw.cpp plausible_preview).
+TEST_CASE("an embedded preview far bigger than its file is refused before it is unpacked", "[codec][raw]") {
+  // Beside this source file, wherever the tests run from.
+  const std::filesystem::path file =
+      std::filesystem::path(__FILE__).parent_path() / "data" / "broken" / "raw_thumb_32272x8193_layer.tif";
+  REQUIRE(std::filesystem::exists(file));
+  std::ifstream in(file, std::ios::binary);
+  const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  REQUIRE(bytes.size() == 2758);
+  const auto t0 = std::chrono::steady_clock::now();
+  auto preview = mv::codec::decode_raw_preview(bytes);
+  const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  CHECK_FALSE(preview);  // no 264 MP raster
+  CHECK(ms < 1000);      // refused, not unpacked (the unpack alone took seconds)
+}
+
 TEST_CASE("looks_like_raw: camera TIFF-container RAWs yes, plain TIFFs no", "[codec][raw]") {
   tiff_builder t;  // only for entry helpers
 
