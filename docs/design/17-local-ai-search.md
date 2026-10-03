@@ -571,11 +571,14 @@ there and the cover is the clearest of those, so a card's count and face are the
 qualifies at all* (minimum faces, or a name) is still judged over the whole index.
 `faces_db::people(min, assets)` does one indexed pass per person against the scope's asset set.
 
-Chrome: a "People in · This folder | + Subfolders | Everywhere · <folder>" control at the top of
-the People grid (Settings → People on the Mac, the People window on Windows). Default
-**+ Subfolders**; it follows the folder the viewer opens; no folder open reads as Everywhere.
-"Show photos" on a card searches the same scope. The choice is not persisted. The status bar's
-people count stays the whole index's. A pack without the entry shows everyone.
+Chrome: a "People in · This folder | + Subfolders · <folder>" control at the top of the People
+grid (Settings → People on the Mac, the People window on Windows). Default **+ Subfolders**; it
+follows the folder the viewer opens. Everyone shows only when no folder is open (the viewer's
+home): the control is then absent on the Mac, and disabled reading "Everywhere" on Windows. A scope
+of Everywhere left from before reads as + Subfolders when a folder opens. "Show photos" on a card
+and the empty-grid wording search the same scope. The choice is not persisted. The status bar's
+people count stays the whole index's. A pack without the entry shows everyone. The search panel
+keeps all three scopes.
 
 ## Sharing an index
 

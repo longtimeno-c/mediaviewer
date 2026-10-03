@@ -775,6 +775,11 @@ on request ("Refine faces" for one person; "Re-analyse faces" or a new face mode
 library-wide settle). Vectors are tagged with their embedder, and re-found faces keep their person,
 name, pin and rejections.
 
+**People follow the open folder (2026-10-03).** While a folder is open the People grid offers
+"This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
+user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A
+search is a question rather than a place, so the search panel keeps "Everywhere".
+
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file
 or listed preview. Indexing never downloads; an iCloud original is fetched only when its preview is
