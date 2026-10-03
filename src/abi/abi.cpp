@@ -902,6 +902,14 @@ void submit_animation_open(mv_session* session, std::string path, mv::generation
       });
 }
 
+// A first pixel that is the file's own embedded image (a RAW's JPEG, a HEIC's
+// thumbnail item), not a DCT-scaled JPEG: the full decode then goes up once,
+// with mips, instead of staging a mip-less copy over it.
+bool embedded_preview(const mv::image::display_image& preview) noexcept {
+  return preview.format == mv::codec::format_family::raw ||
+         preview.format == mv::codec::format_family::heic;
+}
+
 // The user landed on a path whose prefetch decode is running and was handed
 // this navigation (claim_decode). That decode skipped the first-pixel preview,
 // which is only made for the image on screen, and rule 3 still owes one: this
@@ -918,7 +926,7 @@ void submit_handoff_preview(mv_session* session, std::string path, mv::generatio
         auto bytes = mv::io::read_all(path);
         if (!bytes) return status::ok;  // the decode it stands in for reports failures
         if (ctx.cancelled() || ticket->shown.load(std::memory_order_relaxed)) return status::ok;
-        auto preview = mv::image::decode_preview(bytes.value(), &ctx);
+        auto preview = mv::image::decode_first_pixel(bytes.value(), &ctx);
         if (!preview) return status::ok;  // no cheap first pixel for this format
         auto dev = session->copy_device();
         if (!dev) return status::ok;
@@ -976,9 +984,9 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
 
         // First pixel is the DCT 1/4 preview, and only for the image actually
         // on screen — a prefetched neighbour has nothing to show it on.
-        bool raw_preview_ready = false;
+        bool embedded_preview_ready = false;
         if (path_is_selected(session, path)) {
-          if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
+          if (auto preview = mv::image::decode_first_pixel(bytes.value(), &ctx)) {
             if (ctx.cancelled()) return status::cancelled;
             if (auto dev = session->copy_device()) {
               auto uploaded = mv::image::upload(dev.Get(), preview.value(), ctx.gen(), &ctx, 1);
@@ -988,7 +996,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
                 if (path_is_selected(session, path)) {
                   publish_ready(session, key_for(path), info_from(preview.value()), nullptr,
                                 std::move(gpu));
-                  raw_preview_ready = preview->format == mv::codec::format_family::raw;
+                  embedded_preview_ready = embedded_preview(*preview);
                   push_image_opened(session, correlation, ctx.gen(), status::ok);
                 }
               } else if (uploaded.error() == status::cancelled) {
@@ -1048,9 +1056,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         // such stage: its overview is small and its tiles come on demand.
         const bool large = !tiled &&
             static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
-        // A RAW already has a usable preview. Publish its full texture once,
-        // with mips, avoiding a second large upload during the cross-fade.
-        if (large && !raw_preview_ready && path_is_selected(session, path)) {
+        // A RAW (or a HEIC's thumbnail) already has a usable preview. Publish
+        // its full texture once, with mips, avoiding a second large upload
+        // during the cross-fade.
+        if (large && !embedded_preview_ready && path_is_selected(session, path)) {
           const status first = upload_and_publish(1);
           if (first != status::ok) return first;
           if (ctx.cancelled()) return status::cancelled;
@@ -1638,8 +1647,8 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
 
           // First pixel: JPEG DCT 1/4. Fit-to-window of the preview fills the
           // same rect as the full image; 100 % during load is briefly small.
-          bool raw_preview_ready = false;
-          if (auto preview = mv::image::decode_preview(bytes.value(), &ctx)) {
+          bool embedded_preview_ready = false;
+          if (auto preview = mv::image::decode_first_pixel(bytes.value(), &ctx)) {
             if (ctx.cancelled()) return status::cancelled;
             std::unique_ptr<mv::image::gpu_image> gpu;
             if (auto dev = session->copy_device()) {
@@ -1652,9 +1661,9 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
               }
             }
             if (gpu) {
-              raw_preview_ready = publish_view(session, ctx, key_for(path),
+              embedded_preview_ready = publish_view(session, ctx, key_for(path),
                   info_from(preview.value()), nullptr, std::move(gpu)) &&
-                  preview->format == mv::codec::format_family::raw;
+                  embedded_preview(*preview);
             }
           } else if (preview.error() == status::cancelled) {
             return status::cancelled;
@@ -1689,7 +1698,7 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
             return status::ok;
           };
 
-          if (large && !raw_preview_ready) {
+          if (large && !embedded_preview_ready) {
             const status first = upload_and_publish(1);
             if (first != status::ok) return first;
             if (ctx.cancelled()) return status::cancelled;
