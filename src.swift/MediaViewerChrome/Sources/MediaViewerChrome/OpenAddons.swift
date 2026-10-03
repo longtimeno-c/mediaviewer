@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Add-ons → From others (plan/23): add-ons from other makers, one
+// Settings → Add-ons → From others (plan/25): add-ons from other makers, one
 // `.mvaddon` file each, installed from a file or a link. The Mac twin of
 // IslandHost.OpenAddons.cs.
 //
@@ -487,7 +487,7 @@ struct OpenAddonsSection: View {
   }
 }
 
-/// What a package is, and the question (plan/23 "Identity and trust"). Every
+/// What a package is, and the question (plan/25 "Identity and trust"). Every
 /// line but the description comes from the core. Cancel is the default
 /// button: Return does not install.
 struct OpenAddonSheet: View {

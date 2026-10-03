@@ -345,7 +345,7 @@ int32_t mv_addons_status(char* buf, int32_t size);
 bool mv_addons_hint_pending(void);
 void mv_addons_hint_done(bool never_again);
 
-// Open add-ons (plan/23): add-ons from other makers, one `.mvaddon` file each,
+// Open add-ons (plan/25): add-ons from other makers, one `.mvaddon` file each,
 // signed by its publisher; data only (themes). Also addons_mac.mm, over
 // src/addon/open_json.h, so the sheet is fed the same JSON as on Windows.
 // Every one reads and hashes files: [worker], never the main actor. Call each

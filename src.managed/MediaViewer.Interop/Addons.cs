@@ -323,7 +323,7 @@ public static unsafe partial class AddonNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_volume_watch(IntPtr session, uint enable);
 
-    // ---- open add-ons (plan/23): add-ons from other makers, data only ----------
+    // ---- open add-ons (plan/25): add-ons from other makers, data only ----------
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

@@ -2,11 +2,11 @@
 
 Anyone can make an add-on, and anyone can install one from a file or a link. This page is for
 the person making one. The design and its reasons are in
-[plan/23-open-addons.md](../plan/23-open-addons.md).
+[plan/25-open-addons.md](../plan/25-open-addons.md).
 
 **What an add-on can hold today: themes.** Colours and a typeface for MediaViewer's bars, panes
 and text. Settings pages, keymaps, commands and whole screens are planned
-([plan/23](../plan/23-open-addons.md#7-the-contribution-model)); an add-on that names code is
+([plan/25](../plan/25-open-addons.md#7-the-contribution-model)); an add-on that names code is
 refused until MediaViewer can run it safely.
 
 ## In five minutes

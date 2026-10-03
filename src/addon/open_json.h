@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Open add-ons as the chromes see them (plan/23): one JSON shape for both
+// Open add-ons as the chromes see them (plan/25): one JSON shape for both
 // hosts, so the WinUI and SwiftUI consent sheets are fed the same fields and
 // cannot drift (D9). The Windows ABI (abi/addon_abi.cpp) and the Mac host
 // (shell/addons_mac.mm) are thin wrappers over these.

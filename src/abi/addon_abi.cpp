@@ -222,7 +222,7 @@ MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t 
   }));
 }
 
-// ---- open add-ons (plan/23) ---------------------------------------------------
+// ---- open add-ons (plan/25) ---------------------------------------------------
 
 MV_API mv_status MV_CALL mv_open_addon_inspect(const char* package_utf8, char* out, uint32_t cap,
                                                uint32_t* needed) {

@@ -258,7 +258,7 @@ struct SettingsView: View {
           }
           .pickerStyle(.menu).frame(width: 180)
         }
-        // plan/23: the chrome's colours, from an installed add-on. The
+        // plan/25: the chrome's colours, from an installed add-on. The
         // photo is never recoloured.
         SettingsRow(title: "Theme",
                     detail: theme.note.isEmpty
@@ -296,7 +296,7 @@ struct SettingsView: View {
       .frame(maxWidth: 800)
       .frame(maxWidth: .infinity)
     }
-    // plan/23: a package handed to the app opens Settings; the question
+    // plan/25: a package handed to the app opens Settings; the question
     // about it is at the foot of this page, so bring it into view.
     .onChange(of: addons.offer) { _, offer in
       guard offer != nil else { return }

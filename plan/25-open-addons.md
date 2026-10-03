@@ -1,4 +1,4 @@
-# 23 — Open add-ons: anyone can make one, and what one can change
+# 25 — Open add-ons: anyone can make one, and what one can change
 
 **Status: proposed 2026-09-29, from issue #79 and the owner's call the same day ("add-ons can be
 made and installed by anyone, not just our repo… if people have a compatible file / URL they can

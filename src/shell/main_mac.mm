@@ -660,7 +660,7 @@ extern "C" void mv_chrome_menu(int32_t cmd) {
 extern "C" bool mv_chrome_settings_visible(void) {
   return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
 }
-// plan/23: a theme's canvas colour stands in for the window's where the
+// plan/25: a theme's canvas colour stands in for the window's where the
 // viewer draws its own "System" background (the welcome screen, the letterbox).
 extern "C" void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
                                            bool has_light, uint32_t light_rgb) {
@@ -1987,7 +1987,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // rows of the live table that differ from the defaults.
   mv::shell::key_router _router;
   BOOL _settingsVisible;
-  // plan/23: the theme's canvas colours, when a theme is on.
+  // plan/25: the theme's canvas colours, when a theme is on.
   BOOL _themeCanvasActive;
   BOOL _themeHasDark;
   BOOL _themeHasLight;
@@ -2799,7 +2799,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 
 - (BOOL)openEntryPath:(const char*)utf8_path {
-  // plan/23: an add-on package handed to the app (a drop, Open With, the
+  // plan/25: an add-on package handed to the app (a drop, Open With, the
   // command line) goes to Settings' install sheet, never to the viewer.
   // Nothing is read here; the chrome inspects it on a worker.
   if (utf8_path && *utf8_path) {
@@ -6301,7 +6301,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   ++_editorGeneration;
 }
 
-// ---- plan/23: the open add-ons' verify rig ---------------------------------------
+// ---- plan/25: the open add-ons' verify rig ---------------------------------------
 
 // MV_ADDON_SELFTEST=<folder>, launched with a .mvaddon as the path to open.
 // Inert unless set. It walks what a person would: the sheet for the package,

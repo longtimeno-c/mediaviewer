@@ -40,7 +40,7 @@ add_library(mv_addon STATIC
   ${R}/src/addon/manifest.h
   ${R}/src/addon/store.cpp
   ${R}/src/addon/store.h
-  # Open add-ons (plan/23): packages from other makers, signed by their
+  # Open add-ons (plan/25): packages from other makers, signed by their
   # publisher. Data only; none of this loads code.
   ${R}/src/addon/package.cpp
   ${R}/src/addon/package.h

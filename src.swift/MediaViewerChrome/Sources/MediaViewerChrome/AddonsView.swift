@@ -433,7 +433,7 @@ struct AddonsSection: View {
       // The second add-on: install-only until Core is loaded, then the pack's
       // own management view (LocalSearchView.swift).
       LocalSearchSection().padding(.top, 16)
-      // plan/23: add-ons from other makers, under their own heading.
+      // plan/25: add-ons from other makers, under their own heading.
       OpenAddonsSection().padding(.top, 16)
     }
     // Opening Settings asks the channel, whatever the automatic-check switch

@@ -20,7 +20,7 @@ public final class MVChromeHost: NSObject {
   // 2026-09-19). Empty options = the hosting view takes whatever frame it is
   // given.
   private static func host<V: View>(_ root: V) -> NSView {
-    // plan/23: every root is rebuilt when the theme changes.
+    // plan/25: every root is rebuilt when the theme changes.
     let hosting = NSHostingView(rootView: ThemedRoot(content: root))
     hosting.sizingOptions = []
     hosting.translatesAutoresizingMaskIntoConstraints = false
@@ -60,7 +60,7 @@ public final class MVChromeHost: NSObject {
     host(SettingsView())
   }
 
-  /// plan/23: an add-on package handed to the app (a drop, Open With, the
+  /// plan/25: an add-on package handed to the app (a drop, Open With, the
   /// command line). The host has opened Settings; this shows what the package
   /// is and asks. Nothing is installed without that answer.
   @MainActor @objc public static func offerAddonPackage(_ path: String) {

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Packages for the open add-on tests (plan/23): a publisher's key, a schema 2
+// Packages for the open add-on tests (plan/25): a publisher's key, a schema 2
 // manifest, and the strict ZIP a `.mvaddon` is, written field by field so a
 // test can break exactly one of them.
 #pragma once

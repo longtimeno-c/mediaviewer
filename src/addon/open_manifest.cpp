@@ -93,7 +93,7 @@ constexpr std::array<std::string_view, 12> kTopLevelKeys{
     "update_url", "api", "installed_size", "files", "contributes"};
 constexpr std::array<std::string_view, 1> kContributesKeys{"themes"};
 // Code, by any name the plan gives it: never loaded from a schema 2 add-on by
-// a host that runs none (plan/23 "Code").
+// a host that runs none (plan/25 "Code").
 constexpr std::array<std::string_view, 4> kCodeKeys{"native", "chrome", "scripts", "main"};
 
 template <std::size_t N>

@@ -420,7 +420,7 @@ MV_API mv_status MV_CALL mv_addon_quit(void);
 MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* ---------------------------------------------------------------------------
- * Open add-ons (plan/23): add-ons from other makers, one `.mvaddon` file
+ * Open add-ons (plan/25): add-ons from other makers, one `.mvaddon` file
  * each, signed by its publisher. Data only under contribution API 1 (themes):
  * nothing here loads code. They live beside the add-ons above, under their
  * own folder, and neither set of calls sees the other's.

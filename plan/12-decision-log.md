@@ -2945,7 +2945,7 @@ the pack runs on, with toggles for face data and thumbnails.
 
 Owner, on issue #79: "add-ons can be made and installed by anyone, not just our repo… if people
 have a compatible file / URL they can install their add-on… add-ons can do a wide range of
-things like add new screens". Planned in [23](23-open-addons.md) as Milestone L (PRs 48–53); PR 48
+things like add new screens". Planned in [25](25-open-addons.md) as Milestone L (PRs 48–53); PR 48
 is built on both hosts. Not a D-decision, and none is reversed.
 
 - **Amended: plan/18 "Signed, verified, then loaded"** said every add-on is signed with the
@@ -2967,7 +2967,7 @@ is built on both hosts. Not a D-decision, and none is reversed.
   scripts is kilobytes. No new dependency.
 - **Contribution API 1 is data only: themes.** A manifest that names code (`native`, `chrome`,
   `scripts`, `main`) is refused whatever API range it claims. **How a stranger's code runs is
-  left to the owner** ([23 §9](23-open-addons.md#9-code-how-a-strangers-add-on-runs)): the plan
+  left to the owner** ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)): the plan
   recommends a sandboxed script with declarative screens over third-party native code, because
   native code in process cannot be held to rules 1 and 6 and on the Mac needs library validation
   switched off for the whole app. PRs 50–53 wait on that call.
@@ -2993,7 +2993,7 @@ is built on both hosts. Not a D-decision, and none is reversed.
   Additive.
 
 **Measured (Mac, arm64, Release, 2026-09-29; base in its own worktree and build directory, runs
-alternated, warm cache):** in [23 "Implementation notes"](23-open-addons.md#implementation-notes-pr-48-2026-09-29).
+alternated, warm cache):** in [25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-48-2026-09-29).
 
 **Not verified, owed:** in the same notes. In short: the Windows half compiles but has not run;
-the owner calls in [23 §17](23-open-addons.md#17-open-decisions-owner) are open.
+the owner calls in [25 §17](25-open-addons.md#17-open-decisions-owner) are open.

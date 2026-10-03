@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The chrome's colours and face, and the theme an open add-on may put in
-// their place (plan/23 "Themes"; the Windows twin is IslandHost.Theme.cs).
+// their place (plan/25 "Themes"; the Windows twin is IslandHost.Theme.cs).
 //
 // With no theme the tokens are AppKit's semantic colours, which follow light,
 // dark and increased contrast by themselves. A theme is seven colours per

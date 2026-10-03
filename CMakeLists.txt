@@ -1127,7 +1127,7 @@ if(MV_BUILD_TESTS)
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
                ENVIRONMENT "TZ=UTC")
 
-  # plan/23: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
+  # plan/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
   add_executable(mv_addon_verify tools/addon-verify/main.cpp)
   target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io mv_project_options)

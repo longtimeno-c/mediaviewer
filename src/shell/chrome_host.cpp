@@ -288,7 +288,7 @@ expected chrome_host::load() noexcept {
   share_files_ = get_entry(L"ShareFiles");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
-  // Optional (plan/23): without it a dropped add-on package is not offered.
+  // Optional (plan/25): without it a dropped add-on package is not offered.
   offer_addon_ = get_entry(L"OfferAddon");
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");

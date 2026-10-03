@@ -182,7 +182,7 @@ The design follows the AI pack's delivery rules:
   - **Mac chrome:** `Import.bundle` loaded with `NSBundle`, whose principal class returns the
     SwiftUI root view for an `NSHostingView` window.
 - **Add-ons from other makers** are a second kind, with their own package, key, folder and
-  store: [23-open-addons.md](23-open-addons.md) (2026-09-29). Nothing in this section changes
+  store: [25-open-addons.md](25-open-addons.md) (2026-09-29). Nothing in this section changes
   for MediaViewer's own add-ons, and neither kind loads through the other's path.
 - **Absent means absent.** With no add-on installed, the base install tree is
   **byte-identical** to one built without the add-on system's payloads. No Import command,

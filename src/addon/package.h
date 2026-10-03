@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Open add-on packages (plan/23 "The package"): one `.mvaddon` file anyone
+// Open add-on packages (plan/25 "The package"): one `.mvaddon` file anyone
 // can make, share, or host at a link.
 //
 // A package is a ZIP holding manifest.json, manifest.json.sig and the files
@@ -28,7 +28,7 @@
 namespace mv::addon {
 
 // A package is themes, settings and scripts, not models: 64 MB until a slice
-// needs more (plan/23). The first-party packs keep their own channel.
+// needs more (plan/25). The first-party packs keep their own channel.
 inline constexpr std::uint64_t kPackageMaxBytes = 64ull << 20;
 inline constexpr std::size_t kPackageMaxEntries = 2048;
 inline constexpr std::string_view kPackageExtension = ".mvaddon";
