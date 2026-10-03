@@ -161,6 +161,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
     // PR 15
     case copy_path: case copy_flattened: case share:
+    // Pages (docs/plans/audio-and-documents.md §2.3)
+    case next_page: case prev_page:
     // PR 29
     case edit_workspace: case crop_aspect_cycle: case crop_aspect_swap: case show_original:
     case show_original_release:
@@ -382,6 +384,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)navigateFirst;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
+- (void)turnPage:(int)delta;
 
 // Marks, copy/move, Trash (docs/design/16-commands.md "Marks, copy, move"; folded
 // into PR 18 from Windows PR 6, docs/design/12 2026-09-17).
@@ -1962,6 +1965,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::int64_t _shownMtime;
   std::uint64_t _shownSize;
   std::uint64_t _shownItem;
+  // The page of a multi-page still on screen (docs/plans/audio-and-documents.md
+  // §2.3): 0 for the file itself; a new stop starts at 0.
+  std::uint32_t _shownPage;
+  std::uint32_t _shownPageCount;  // last count the lab reported for this stop; 0 unknown
   // Milestone H: the moment the shown clip was opened at (-1 none). The same
   // result selected again keeps the clip where it is; another moment of it
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
@@ -2894,6 +2901,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // -selectIndex: adopts this load when the listing selects the same path.
   if (!select_path.empty()) {
     _shownItem = _lab.open_item(select_path);
+    _shownPage = 0;
+    _shownPageCount = 0;
     _shownPath = select_path;
     _shownMtime = kShownStampUnknown;
     _shownSize = 0;
@@ -3078,7 +3087,11 @@ static void MvAdoptNewDefaultViewerTypes() {
                       moment == _shownMoment &&
                       (_shownMtime == kShownStampUnknown ||
                        (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
-    if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+    if (!same) {
+      _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+      _shownPage = 0;
+      _shownPageCount = 0;
+    }
     _shownMoment = moment;
     _shownPath = entry.path_utf8;
     _shownMtime = entry.mtime_unix;
@@ -4822,6 +4835,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case last: [self navigateLast]; return YES;
     case skip_back: [self navigateSkip:-10]; return YES;
     case skip_forward: [self navigateSkip:10]; return YES;
+    case next_page: [self turnPage:1]; return YES;
+    case prev_page: [self turnPage:-1]; return YES;
     case back:
       switch (target) {
         case mv::shell::back_target::popup: [self setHelpVisible:NO]; break;
@@ -7849,6 +7864,30 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (_items.empty()) return;
   [self selectIndex:_index.last()];
 }
+// Ctrl/Cmd+PageDown / PageUp: the next or previous page of the multi-page
+// still on screen (docs/plans/audio-and-documents.md §2.3). The lab learns
+// the page count when the file decodes; until then, and on a single-page
+// file or a clip, the keys do nothing.
+- (void)turnPage:(int)delta {
+  if (_shownItem == 0 || _shownPath.empty() || [self currentItemIsVideo]) return;
+  // The page just asked for may still be decoding: keep the count it reported.
+  if (const std::uint32_t known = _lab.page_count(_shownItem)) _shownPageCount = known;
+  const std::uint32_t count = _shownPageCount;
+  if (count <= 1) return;
+  const std::int64_t want = std::clamp<std::int64_t>(static_cast<std::int64_t>(_shownPage) + delta, 0,
+                                                     static_cast<std::int64_t>(count) - 1);
+  if (want == static_cast<std::int64_t>(_shownPage)) return;
+  _shownPage = static_cast<std::uint32_t>(want);
+  const std::int64_t mtime =
+      _shownMtime == kShownStampUnknown ? mv::shell::present_lab_mac::kNoStamp : _shownMtime;
+  _shownItem = _lab.open_item(_shownPath, mtime, _shownSize, -1, _shownPage);
+  if (!_items.empty() && _index.current() < _items.size()) {
+    [self editItemOpened:_items[_index.current()] item:_shownItem];
+  }
+  [self noticeShow:"Page " + std::to_string(_shownPage + 1) + " of " + std::to_string(count)];
+  [self pokeSnapshot];
+}
+
 - (void)navigateSkip:(std::ptrdiff_t)delta {
   if (_items.empty()) return;
   [self selectIndex:_index.skip(delta)];

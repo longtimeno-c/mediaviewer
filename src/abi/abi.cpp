@@ -369,6 +369,7 @@ mv_image_info info_from(const mv::image::display_image& cpu) noexcept {
   info.format = static_cast<uint32_t>(cpu.format);
   info.icc_tagged = cpu.icc_tagged ? 1u : 0u;
   info.transfer_intent = static_cast<uint32_t>(cpu.intent);
+  info.page_count = cpu.page_count;
   return info;
 }
 
@@ -2071,6 +2072,73 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
     if (out_job_id) *out_job_id = 0;
     submit_decode_to_lru(session, std::move(path), gen);
     submit_prefetch(session, index, gen);
+    return status::ok;
+  }));
+}
+
+// 0.16: one page of the selected stop (docs/plans/audio-and-documents.md §2.3).
+// No LRU, no hand-off, no prefetch: a page turn decodes the page asked for at
+// the generation the turn set, and publishes it under the page's own key so
+// the render thread treats it as navigation (fit, not a refinement).
+mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t page, uint64_t* out_job_id) {
+  return static_cast<mv_status>(guard("mv_folder_select_page", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    if (page == 0) {
+      std::uint32_t index = 0;
+      {
+        std::lock_guard lock(session->folder_mutex);
+        MV_REQUIRE(session->folder_selected < session->folder_items.size(), "nothing selected");
+        index = session->folder_selected;
+      }
+      return static_cast<status>(mv_folder_select(session, index, out_job_id));
+    }
+    std::string path;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      MV_REQUIRE(session->folder_selected < session->folder_items.size(), "nothing selected");
+      path = session->folder_items[session->folder_selected].path;
+    }
+    MV_REQUIRE(!video_path(path), "a clip has no pages");
+    const mv::generation gen = session->jobs.bump_generation();
+    const auto correlation = mv::abi::current_correlation_id();
+    const std::uint32_t folder_gen = session->folder_generation.load(std::memory_order_relaxed);
+    if (out_job_id) *out_job_id = 0;
+    (void)session->jobs.submit_at(
+        gen,
+        [session, path, page, folder_gen, correlation](const mv::job_context& ctx) -> status {
+          const mv::crash_context::correlation_scope crash_cid(correlation);
+          if (ctx.cancelled()) return status::cancelled;
+          if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
+            return status::cancelled;
+          }
+          auto bytes = mv::io::read_all(path);
+          if (!bytes) return bytes.error();
+          auto decoded = mv::image::decode_bytes(bytes.value(), &ctx,
+                                                 mv::codec::raw_foreground_threads(), page);
+          if (!decoded) {
+            // A page past the end (a turn raced the file's own decode) leaves
+            // the page on screen as it is; anything else is a failed open.
+            if (decoded.error() != status::cancelled && decoded.error() != status::invalid_arg &&
+                path_is_selected(session, path)) {
+              push_image_opened(session, correlation, ctx.gen(), decoded.error());
+            }
+            return decoded.error();
+          }
+          if (ctx.cancelled()) return status::cancelled;
+          auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
+          const mv_image_info info = info_from(*cpu);
+          // The page's own identity, so the canvas fits it like a new stop.
+          const std::uint64_t key = key_for(path + "\x1Fpage" + std::to_string(page));
+          std::unique_ptr<mv::image::gpu_image> gpu;
+          if (auto dev = session->copy_device()) {
+            const status up = upload_still(session, dev.Get(), cpu, ctx, 0, gpu);
+            if (up != status::ok) return up;
+          }
+          if (ctx.cancelled() || !path_is_selected(session, path)) return status::cancelled;
+          publish_ready(session, key, info, cpu, std::move(gpu));
+          push_image_opened(session, correlation, ctx.gen(), status::ok);
+          return status::ok;
+        });
     return status::ok;
   }));
 }

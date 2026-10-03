@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.15**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.16**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -204,10 +204,12 @@ typedef struct mv_image_info {   /* 24 bytes */
   uint32_t format;               /* codec::format_family */
   uint32_t icc_tagged;           /* an ICC profile (or sRGB chunk) was used */
   uint32_t transfer_intent;      /* 0 = display-referred */
-  uint32_t reserved;
+  uint32_t page_count;           /* 0.16: pages in the file; 1 for a single-page still */
 } mv_image_info;
 
 mv_status mv_image_open(mv_session_t, const char* utf8_path, uint64_t* out_job_id);
+/* 0.16: page `page` of the selected stop; IMAGE_OPENED follows. Page 0 = mv_folder_select. */
+mv_status mv_folder_select_page(mv_session_t, uint32_t page, uint64_t* out_job_id);
 mv_status mv_session_image_info(mv_session_t, mv_image_info* out);   /* last opened */
 ```
 
@@ -479,6 +481,7 @@ nothing of the core and reaches it only through the host function table.
 | 0.13 | `MV_CLIP_KEEP_RANGES`, `ranges_ns` |
 | 0.14 | Result listings (`mv_folder_open_list`, `_list_title`, `_item_moment`) |
 | 0.15 | `mv_folder_item.flags` bit 2 (video) |
+| 0.16 | `mv_image_info.page_count` (was `reserved`), `mv_folder_select_page` — pages of a multi-page still |
 
 ## Not built
 

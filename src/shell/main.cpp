@@ -290,6 +290,12 @@ struct app_state {
   bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
   std::wstring notice;
   ULONGLONG notice_until = 0;
+  // Pages of the selected stop (docs/plans/audio-and-documents.md §2.3): the page
+  // on screen, the folder index it belongs to (another stop starts at page 0)
+  // and the last page count the core reported for it (0 unknown).
+  std::uint32_t page = 0;
+  std::uint32_t page_of = UINT32_MAX;
+  std::uint32_t page_count = 0;
   mv_session_t session = nullptr;
   bool tracking_mouse = false;
   bool chrome_enabled = true;
@@ -2075,6 +2081,36 @@ void folder_select(app_state* app, std::uint32_t index) {
     ++app->input.activity_seq;
     publish(app);
   }
+}
+
+// Ctrl+PageDown / PageUp: the next or previous page of the multi-page still
+// on screen (docs/plans/audio-and-documents.md §2.3). The count is what the
+// core reported for the image on screen; until it has, and on a single-page
+// still or a clip, the keys do nothing.
+bool turn_page(app_state* app, int delta) {
+  if (!app || !app->session || video_mode(app)) return false;
+  std::uint32_t index = 0;
+  if (mv_folder_selected(app->session, &index) != MV_OK) return false;
+  if (app->page_of != index) {
+    app->page_of = index;
+    app->page = 0;
+    app->page_count = 0;
+  }
+  mv_image_info info{};
+  if (mv_session_image_info(app->session, &info) == MV_OK && info.page_count > 0) {
+    app->page_count = info.page_count;
+  }
+  if (app->page_count <= 1) return false;
+  const std::int64_t want = std::clamp<std::int64_t>(static_cast<std::int64_t>(app->page) + delta, 0,
+                                                     static_cast<std::int64_t>(app->page_count) - 1);
+  if (want == static_cast<std::int64_t>(app->page)) return true;
+  std::uint64_t job = 0;
+  if (mv_folder_select_page(app->session, static_cast<std::uint32_t>(want), &job) != MV_OK) return false;
+  app->page = static_cast<std::uint32_t>(want);
+  notice_show(app, "Page " + std::to_string(app->page + 1) + " of " + std::to_string(app->page_count));
+  ++app->input.activity_seq;
+  publish(app);
+  return true;
 }
 
 void folder_step(app_state* app, int delta) {
@@ -5692,6 +5728,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case last: folder_jump(app, 1LL << 32); return true;
     case skip_back: folder_jump(app, -10); return true;
     case skip_forward: folder_jump(app, 10); return true;
+    case next_page: return turn_page(app, 1);
+    case prev_page: return turn_page(app, -1);
     case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
     case gallery_open_selected:
       if (!app->gallery_visible) return false;

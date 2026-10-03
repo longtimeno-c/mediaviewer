@@ -777,6 +777,7 @@ if(MV_BUILD_TESTS)
     tests/test_transport.cpp
     tests/test_container_probe.cpp
     tests/test_audio_files.cpp
+    tests/test_pages.cpp
     # Issue #43: Space at natural EOF restarts, on the real Metal player.
     tests/test_video_eof_mac.mm
     tests/test_audio_only_mac.mm

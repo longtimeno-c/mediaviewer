@@ -9,7 +9,19 @@
 namespace mv::codec {
 
 result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ctx,
-                      unsigned raw_thread_limit) {
+                      unsigned raw_thread_limit, std::uint32_t page) {
+  // Pages (docs/plans/audio-and-documents.md §2.3): only the paged formats
+  // have any but page 0. A camera TIFF-RAW is never paged.
+  if (page != 0) {
+    const decode_crash_scope crash_scope(bytes, ctx);
+    switch (probe(bytes)) {
+      case format_family::tiff:
+        if (looks_like_raw(bytes)) return err(status::invalid_arg);
+        return decode_tiff_page(bytes, page, ctx);
+      default:
+        return err(status::invalid_arg);
+    }
+  }
   // D3 (policy in codec/os_decode.h): the OS codec is offered HEIC stills only —
   // the one camera-dump format where the OS path can be hardware-backed and
   // still match the bundled colour and orientation. Every other format goes

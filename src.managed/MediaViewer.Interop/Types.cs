@@ -92,7 +92,8 @@ public struct MvImageInfo
     public uint Format;
     public uint IccTagged;
     public uint TransferIntent;
-    public uint Reserved;
+    /// <summary>ABI 0.16: pages in the file; 1 for a single-page still.</summary>
+    public uint PageCount;
 }
 
 /// <summary>Mirrors <c>mv_pair_kind</c> (ABI 0.5).</summary>

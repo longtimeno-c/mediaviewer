@@ -18,9 +18,14 @@ namespace mv::codec {
 // `ctx` may be null (tests). When present, cancelled() is checked between
 // scanline blocks so a generation bump abandons a large decode.
 // `raw_thread_limit` also caps a HEIC grid's tile threads (the bundled path).
+// `page` picks a page of a multi-page file (TIFF, PDF, DOCX); the raster says
+// which page it is and how many there are. `invalid_arg` for a page past the
+// end, or any page but 0 of a single-page format
+// (docs/plans/audio-and-documents.md §2.3).
 [[nodiscard]] result<raster> decode(std::span<const std::uint8_t> bytes,
                                     const job_context* ctx = nullptr,
-                                    unsigned raw_thread_limit = 4);
+                                    unsigned raw_thread_limit = 4,
+                                    std::uint32_t page = 0);
 
 // `scale_denom` is libjpeg-turbo's DCT scale: 1, 2, 4, or 8. Other values
 // decode at 1:1. Preview uploads use 4; the full decode is always 1.
@@ -48,6 +53,12 @@ struct jpeg_size {
                                          const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_tiff(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
+// One page of a multi-page TIFF. Pages are the full-resolution images in file
+// order; reduced-resolution subfiles (a scanner's thumbnail IFD) are skipped.
+// The raster carries page and page_count.
+[[nodiscard]] result<raster> decode_tiff_page(std::span<const std::uint8_t> bytes,
+                                              std::uint32_t page,
+                                              const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_ico(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
 // `thread_limit` > 1 decodes a grid's tiles in parallel (an iPhone still is
