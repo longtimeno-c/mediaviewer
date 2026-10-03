@@ -44,6 +44,8 @@ no-x265 rule is about what MediaViewer links.)
 | `heif/p3_nclx.heic` | saturated red, nclx primaries 12 / transfer 13, no ICC |
 | `heif/pq_10bit.heic` | BT.2020 PQ: 203-nit white left, 1000-nit white right |
 | `heif/iphone_like.heic` | lossy 4:2:0, Display P3 ICC, `irot` — the shape the OS (WIC) path may take |
+| `heif/grid_thumb.heic` | an iPhone's layout in small: 120x90 `grid` of 2x2 64x64 HEVC tiles, a 32x24 `thmb` item, Display P3 ICC. ffmpeg `testsrc2` + x265 via `python tools/testmedia/make-grid-heic.py --fixture` |
+| `heif/grid_thumb_square.heic` | the same with a 24x24 thumbnail: not the image's shape, so never a first pixel |
 | `avif/srgb_8bit.avif` | the pattern, CICP 1/13/1 full range, lossless |
 | `avif/gradient_10bit.avif` | the pattern at 10 bits |
 | `avif/irot.avif`, `avif/irot_imir.avif` | EXIF orientation 6 and 5 → `irot` / `irot`+`imir` |

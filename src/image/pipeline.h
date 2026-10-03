@@ -22,4 +22,10 @@ namespace mv::image {
 [[nodiscard]] result<display_image> decode_preview(std::span<const std::uint8_t> bytes,
                                                    const job_context* ctx = nullptr);
 
+// First pixel for the image on the canvas: decode_preview, and for a HEIC its
+// thumbnail item (plan/04 rule 3). Only the canvas: a 320 px HEIC thumbnail is
+// below what the thumbnailers and search draw, so they keep decode_preview.
+[[nodiscard]] result<display_image> decode_first_pixel(std::span<const std::uint8_t> bytes,
+                                                       const job_context* ctx = nullptr);
+
 }  // namespace mv::image
