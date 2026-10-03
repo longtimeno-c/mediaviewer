@@ -1003,7 +1003,8 @@ roots with each asset's path **relative to its root** (`/`-separated), its `(mti
 kind and duration, and the rows that describe it: `progress` (done and partial only),
 `frames`, `speech`. Optional: **People** (`people`, `faces` without a path, `rejected`,
 `no_merge`, `face_scanned`) and **thumbnails** (the JPEG-512 cache's bytes for a still and each
-stored moment; only what the cache already holds; an export never decodes a library). The
+stored moment, a clip's own as the frame its poster lands near; one the cache does not hold yet
+is made then, between the viewer's busy spells, amended 2026-10-03). The
 roots keep their original absolute path and a display name so an import can offer the same
 place (a NAS mounted at the same path answers itself). Written to `<dest>.part` and renamed.
 The export reads index.db and faces.db on its own read connections: indexing is never paused
