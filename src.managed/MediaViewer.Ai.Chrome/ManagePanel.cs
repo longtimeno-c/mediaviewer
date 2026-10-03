@@ -216,8 +216,8 @@ internal sealed partial class ManagePanel
         _roots = new StackPanel { Spacing = 6 };
         Root.Children.Add(_roots);
         var add = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        add.Children.Add(_look.Button("Add a folder…", () => _ = AddFolder(false)));
-        add.Children.Add(_look.Button("Add a folder and its subfolders…", () => _ = AddFolder(true)));
+        // A folder is always indexed with its subfolders (owner 2026-10-03).
+        add.Children.Add(_look.Button("Add a folder…", () => _ = AddFolder()));
         Root.Children.Add(add);
 
         _indexRow = new StackPanel { Spacing = 8 };
@@ -612,7 +612,7 @@ internal sealed partial class ManagePanel
         _chrome.ReadStatus();
     }
 
-    private async Task AddFolder(bool recursive)
+    private async Task AddFolder()
     {
         var picker = new FolderPicker();
         picker.FileTypeFilter.Add("*");
@@ -624,7 +624,7 @@ internal sealed partial class ManagePanel
             return;
         }
         if (folder is null) return;
-        RootCall(() => _api.IndexFolder(folder.Path, recursive));
+        RootCall(() => _api.IndexFolder(folder.Path, recursive: true));
     }
 
     // ---- people -----------------------------------------------------------------------
