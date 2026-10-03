@@ -277,6 +277,9 @@ jobs:
           $notices = Get-ChildItem build/_ort -Recurse -Filter ThirdPartyNotices.txt | Select-Object -First 1
           if (-not $notices) { throw 'ONNX Runtime ThirdPartyNotices.txt not found' }
           Copy-Item $notices.FullName build/addons/ai
+          # Staging ai-faces re-exports the People embedder (face-export.py, torch).
+          python -m pip install --disable-pip-version-check -r tools/package/requirements-export.txt
+          if ($LASTEXITCODE) { throw 'pip install (model export) failed' }
           # Pinned revisions, SHA-256 and licence checked (docs/design/17 licence gate).
           foreach ($piece in 'ai', 'ai-audio', 'ai-faces') {
             python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece"
@@ -559,12 +562,15 @@ jobs:
 
       # A job-local venv: the runner's Homebrew Python owns packages such as
       # cryptography that pip cannot uninstall, so pinned versions go here.
+      # requirements-export.txt: staging ai-faces re-exports the People embedder
+      # (face-export.py, torch); the stable add-on step needs it.
       - name: Python tools (dmgbuild, add-on packer)
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/pyenv"
-          "$RUNNER_TEMP/pyenv/bin/python" -m pip install --disable-pip-version-check \
-            -r tools/mac/requirements.txt -r tools/package/requirements.txt
+          reqs=(-r tools/mac/requirements.txt -r tools/package/requirements.txt)
+          if [ "$MODE" = "stable" ]; then reqs+=(-r tools/package/requirements-export.txt); fi
+          "$RUNNER_TEMP/pyenv/bin/python" -m pip install --disable-pip-version-check "${reqs[@]}"
           echo "$RUNNER_TEMP/pyenv/bin" >> "$GITHUB_PATH"
 
       - name: Disk image

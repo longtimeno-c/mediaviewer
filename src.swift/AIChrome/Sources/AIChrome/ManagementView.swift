@@ -79,8 +79,9 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var photosAdding = false
   @Published private(set) var people: [Person] = []
   /// Which people the grid shows (docs/design/17 "People in the open folder"): those
-  /// with a face in the open folder, in it and below (the default), or
-  /// everyone. `.photos` is never chosen here.
+  /// with a face in the open folder, or in it and below (the default).
+  /// Everyone shows only when no folder is open (owner, 2026-10-03: not a
+  /// choice while one is). `.all` and `.photos` are never chosen here.
   @Published var peopleScope: SearchScope = .tree {
     didSet { if peopleScope != oldValue { reloadPeople() } }
   }
@@ -379,11 +380,13 @@ final class ManagementModel: ObservableObject {
   func folderChanged(_ dir: String) {
     guard dir != folder else { return }
     folder = dir
+    // A folder is open: its people, never everyone (a scope from before this
+    // rule, or a stray .all, reads as + Subfolders).
+    if !dir.isEmpty, peopleScope == .all { peopleScope = .tree }
     if visible > 0 { reloadPeople() }
   }
 
-  /// The grid's scope as the pack takes it: nil / ALL when no folder is open
-  /// or Everywhere is chosen.
+  /// The grid's scope as the pack takes it: nil / ALL when no folder is open.
   var peopleScopeDir: String? { folder.isEmpty || peopleScope == .all ? nil : folder }
   var peopleScopeValue: UInt32 { peopleScopeDir == nil ? SearchScope.all.rawValue : peopleScope.rawValue }
   /// "Photos" (the open folder's name) for the scope control.
