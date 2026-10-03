@@ -131,10 +131,13 @@ ADDONS = {
             "win-x64": {"include": ["onnxruntime.dll", "onnxruntime_providers_shared.dll",
                                     "onnxruntime_providers_cuda.dll"]},
         },
-        "licences": [("onnxruntime", "MIT")],
+        # LICENSES/LICENSE is ONNX Runtime's own (MIT), shipped beside its notices.
+        "licences": [("onnxruntime", "MIT"), ("LICENSES/LICENSE", "MIT")],
         "notice": ("NVIDIA acceleration for MediaViewer's Local search: ONNX Runtime's CUDA build\n"
                    "(MIT, Microsoft). The CUDA runtime and cuDNN are NOT included: they are\n"
-                   "NVIDIA's, installed by the user; without them Local search runs on the CPU.\n"),
+                   "NVIDIA's, installed by the user (CUDA 13 and cuDNN 9, on PATH); without them\n"
+                   "Local search runs on the CPU.\n"),
+        "ship_notices": ["LICENSE", "ThirdPartyNotices.txt"],
     },
 }
 

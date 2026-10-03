@@ -254,7 +254,7 @@ internal sealed class Look
     {
         0 => null,
         1 => "GPU acceleration is not in this install — using CPU",
-        2 => "CUDA runtime not found — using CPU",
+        2 => "CUDA 13 or cuDNN 9 not found — using CPU",
         3 => "The GPU provider failed — using CPU",
         4 => "GPU results did not match the CPU's — using CPU",
         5 => "The GPU was slower than the CPU here — using CPU",

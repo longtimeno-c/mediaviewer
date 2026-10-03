@@ -232,7 +232,7 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
     def ai_assets(self, addons=release.AI_ADDONS):
         os.environ['MV_RELEASE_AI'] = '1'
         for addon in addons:
-            for platform in release.ADDON_PLATFORMS:
+            for platform in release.addon_platforms(addon):
                 base = f'mediaviewer-addon-{addon}-{platform}'
                 (self.folder / (base + '.zip')).write_bytes(b'models')
                 (self.folder / (base + '.json')).write_text(json.dumps({
@@ -246,13 +246,24 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
         self.ai_assets()
         names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
         for addon in release.AI_ADDONS:
-            for platform in release.ADDON_PLATFORMS:
+            for platform in release.addon_platforms(addon):
                 for name in release.addon_asset_names(platform, addon):
                     self.assertIn(name, names)
+        # NVIDIA acceleration is a Windows piece: the Mac never carries one.
+        self.assertIn('mediaviewer-addon-ai-cuda-win-x64.zip', names)
+        self.assertNotIn('mediaviewer-addon-ai-cuda-macos.zip', names)
+
+    def test_stable_needs_the_nvidia_piece_on_windows(self):
+        self.stable_assets()
+        self.ai_assets(addons=('ai', 'ai-audio', 'ai-faces'))
+        with patch.object(release, 'gh') as cli:
+            with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-ai-cuda-win-x64'):
+                release.publish(self.folder)
+            cli.assert_not_called()
 
     def test_stable_needs_every_ai_piece_once_the_workflow_packs_them(self):
         self.stable_assets()
-        self.ai_assets(addons=('ai', 'ai-faces'))
+        self.ai_assets(addons=('ai', 'ai-faces', 'ai-cuda'))
         with patch.object(release, 'gh') as cli:
             with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-ai-audio-'):
                 release.publish(self.folder)

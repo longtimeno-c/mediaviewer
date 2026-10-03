@@ -3254,6 +3254,32 @@ iPhone's 48 grid tiles on one thread (`heif_context_set_max_decoding_threads(ctx
   D3 says to prefer the OS codec *when hardware-backed*; whether WIC here is, and whether
   routing should change, is the owner's call.
 
+## 2026-10-03 — NVIDIA acceleration (`ai-cuda`) is published, CUDA and cuDNN user-supplied (owner)
+
+**Was:** RELEASING.md held the `ai-cuda` piece back "until its licence review is done" (log
+2026-09-26, plan/17 "Sizes").
+
+**Now:** every stable Windows release packs and publishes it. That review asked whether NVIDIA's
+CUDA runtime and cuDNN, under NVIDIA's EULA, can be *redistributed* inside a GPL-3.0-or-later
+app's download. The piece as built redistributes neither: it is ONNX Runtime's CUDA 13 build
+(three Microsoft-signed DLLs, MIT) and ORT's own LICENSE and notices. The person installs CUDA 13
+and cuDNN 9 from NVIDIA themselves; ORT, not our code, loads them at run time, and without them the
+Auto self-test falls back to the CPU and says "CUDA 13 or cuDNN 9 not found — using CPU". So the
+review gates **bundling** NVIDIA's files, not publishing this piece. It stays open for that.
+
+- `release.yml` configures stable runs with `-DMV_AI_CUDA_PIECE=ON` and packs `ai-cuda` for
+  `win-x64` only; `github-release.py` requires it on Windows with `MV_RELEASE_AI=1` and never on
+  the Mac (Core ML there; `addons_mac.mm` already never offers it). The family ceiling check
+  includes it.
+- The piece row says it needs CUDA 13 and cuDNN 9 installed separately, before anyone downloads
+  ~150 MB that will not help them without those.
+- Never installed unasked: offered only on a machine with an NVIDIA adapter, and not part of
+  "Install all" (plan/17), unchanged.
+
+**Owed on hardware:** an install from a real stable release on an NVIDIA machine, both with and
+without CUDA/cuDNN on PATH (GPU used / CPU with the reason), and the PR 1 present-loop gate
+while it indexes on the GPU.
+
 ## 2026-10-03 — People: a folder shows only its own people; everyone only when no folder is open
 
 Owner: "people should just show the currently opened folder … it should only show all when I'm
