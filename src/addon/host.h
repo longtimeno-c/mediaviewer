@@ -56,6 +56,11 @@ struct host_services {
   std::function<expected(const std::string& path, std::int64_t pts_ms,
                          std::span<const std::uint8_t> jpeg)>
       store_thumbnail_jpeg;
+  // The Recycle Bin / Trash for one file (PR 54, find duplicates): true when
+  // it went to the bin, false when the location has none and nothing was
+  // removed. Never a permanent delete. Empty leaves the table's recycle_file
+  // NULL, and an add-on offers no delete.
+  std::function<result<bool>(const std::string& path)> recycle;
   // The verified folder of an installed piece of the add-on's family.
   // loaded_addon::load fills it from the store when left empty.
   std::function<result<std::string>(const std::string& piece_id)> piece_dir;

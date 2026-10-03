@@ -416,6 +416,18 @@ typedef struct mv_ai_api {
    * people_json. [worker-thread] */
   mv_status(MV_CALL* people_in_json)(void* ctx, const char* scope_dir_utf8, uint32_t scope, char* out,
                                      uint32_t cap, uint32_t* needed);
+
+  /* ---- merge duplicates on request (2026-10-03, plan/17 "Merge duplicates") */
+  /* "Merge duplicates": person_refine's check for everyone at once (misfiled
+   * faces move, unassigned faces join or regroup), then people whose faces
+   * vouch for each other become one: an unnamed person into a named one, two
+   * unnamed into the larger, two with the same name into the larger. Two
+   * people named differently are never merged; nor a pair a split kept
+   * apart, nor one whose face was rejected from the other. Pins nothing.
+   * Runs only when called. `out_merged` / `out_moved` (may be NULL): people
+   * merged away, faces that moved. Posts MV_ADDON_EVENT_AI_PEOPLE when
+   * anything changed. [worker-thread] */
+  mv_status(MV_CALL* people_dedupe)(void* ctx, uint32_t* out_merged, uint32_t* out_moved);
 } mv_ai_api;
 
 #ifdef __cplusplus

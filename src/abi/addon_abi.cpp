@@ -25,6 +25,7 @@
 #include "core/json.h"
 #include "image/thumb.h"
 #include "io/file.h"
+#include "io/file_ops.h"
 #include "io/file_port.h"
 #include "io/paths.h"
 #include "io/volume.h"
@@ -358,6 +359,12 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
       svc.open_audio = &mv::addon::media::open_audio;
       svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
       svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
+      // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
+      svc.recycle = [](const std::string& path) -> mv::result<bool> {
+        auto r = mv::io::recycle_file(path);
+        if (!r) return mv::err(r.error());
+        return *r == mv::io::recycle_outcome::recycled;
+      };
       auto loaded = mv::addon::loaded_addon::load(*s, id, std::move(svc));
       if (!loaded) return loaded.error();
       (void)mv_session_retain(session);

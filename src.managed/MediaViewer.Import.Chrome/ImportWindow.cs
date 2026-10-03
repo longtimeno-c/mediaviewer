@@ -180,6 +180,14 @@ internal sealed class ImportWindow : Window
         ToolTipService.SetToolTip(verify, "Re-hash imported files against the library index to find silent corruption.");
         verify.Click += async (_, _) => await VerifyFolder();
         left.Children.Add(verify);
+        if (_chrome.HasDuplicates)
+        {
+            var dups = new Button { Content = "Find duplicates…" };
+            ToolTipService.SetToolTip(dups,
+                "Compare every file in a folder and its subfolders by content, and move extra copies to the Recycle Bin.");
+            dups.Click += async (_, _) => await _chrome.OpenDuplicates();
+            left.Children.Add(dups);
+        }
         var help = new Button { Content = "? About Import" };
         help.Click += (_, _) => _ = ShowExplainer();
         left.Children.Add(help);

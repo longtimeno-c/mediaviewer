@@ -280,6 +280,14 @@ class engine {
   // "Refine": files this person's misplaced faces out (plan/17 "People
   // refinement"); how many left them. Only ever on request. [worker-thread]
   [[nodiscard]] result<std::uint32_t> person_refine(std::int64_t person);
+  // "Merge duplicates" (plan/17 "Merge duplicates"): person_refine's check
+  // over every face at once, then people whose faces vouch for each other
+  // become one. Only ever on request. [worker-thread]
+  struct dedupe_result {
+    std::uint32_t merged = 0;  // people merged away
+    std::uint32_t moved = 0;   // faces that moved, left, joined or regrouped
+  };
+  [[nodiscard]] result<dedupe_result> people_dedupe();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
   // ---- sharing an index (plan/17 "Sharing an index") ---------------------------
