@@ -3240,9 +3240,15 @@ iPhone's 48 grid tiles on one thread (`heif_context_set_max_decoding_threads(ctx
   with `MV_OS_CODEC=0` (3 runs) first pixel 693-696 → 29-32 ms, full 794-797 → 360-365 ms. 0
   dropped frames in every lab run. The PR 1 `frametime` gate failed for base and new alike on
   this machine today (3-4 vs 0-2 drops, idle 4.8 % of a core for both: other sessions,
-  Steam and Stream Deck running); not a quiet-machine result. Not measured on the Mac (it
-  uses the same libheif path, so the threading should help there too) or on a real iPhone
+  Steam and Stream Deck running); not a quiet-machine result. Not measured on a real iPhone
   file (none licensed for the corpus; plan/09).
+- **Mac** (Apple M5, Release, same generated file, base `main` and new built in separate trees,
+  runs alternated; the Mac always takes libheif): bench (3 runs) first pixel none → 5.3-5.6 ms,
+  full 506-553 → 177-187 ms, every other row unchanged. Lab `--soak 6 --static`, after one
+  warm-up, 4 runs each: first pixel 548-559 → 15-17 ms, full 548-559 → 231-246 ms, 0 dropped
+  frames. Mac PR 1 `frametime --seconds 60`: 3,600 frames, 0 dropped, p99 16.95 ms, 0 idle
+  presents for base and new alike; both failed only on idle CPU (28 / 27 % of a core, a
+  Simulator from another session running), so not a quiet-machine result either.
 - **Open, D3, not decided here:** with tiles in parallel the bundled path (360 ms) now opens a
   12 MP HEIC faster than the WIC/HEVC-extension path D3 prefers (~600 ms) on this machine.
   D3 says to prefer the OS codec *when hardware-backed*; whether WIC here is, and whether
