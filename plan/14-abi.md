@@ -343,11 +343,11 @@ is a video, by extension (`io::is_video_name`, the same list the directory scan 
 the hosts route to the player with). The gallery and filmstrip draw a play badge on those tiles. A Live
 Photo stop is its still, so it never carries the bit. Nothing is opened or probed to set it.
 
-## PR 48 — open add-ons (ABI 0.16)
+## PR 55 — open add-ons (ABI 0.16)
 
 Minor bump, additive, in `mediaviewer_addon.h`: `mv_open_addon_inspect`, `mv_open_addon_install`,
 `mv_open_addon_list_json`, `mv_open_addon_remove`, `mv_open_addon_theme_json`
-([23](23-open-addons.md)). All **[worker-thread]** (they read and hash files), all JSON out with
+([25](25-open-addons.md)). All **[worker-thread]** (they read and hash files), all JSON out with
 the `cap` / `needed` buffer rule. `inspect` answers `MV_OK` whenever it wrote its JSON, whatever
 the JSON says: a refused package is an answer, not an error. `install` takes the SHA-256 that
 `inspect` returned, so what is installed is what the person was shown; it is never called twice

@@ -345,7 +345,7 @@ int32_t mv_addons_status(char* buf, int32_t size);
 bool mv_addons_hint_pending(void);
 void mv_addons_hint_done(bool never_again);
 
-// Open add-ons (plan/23): add-ons from other makers, one `.mvaddon` file each,
+// Open add-ons (plan/25): add-ons from other makers, one `.mvaddon` file each,
 // signed by its publisher; data only (themes). Also addons_mac.mm, over
 // src/addon/open_json.h, so the sheet is fed the same JSON as on Windows.
 // Every one reads and hashes files: [worker], never the main actor. Call each
@@ -387,6 +387,14 @@ bool mv_addon2_load(const char* id);
 bool mv_addon2_reload(const char* id);                                     // [main-thread]
 // Removing "ai" also removes its pieces; keep_data keeps the search index.
 bool mv_addon2_remove(const char* id, bool keep_data);                     // [main-thread]
+// plan/23: Final Cut Pro search, in the bundle and dormant until turned on
+// (src/shell/fcp_mac.mm). States: 0 absent (not in this build, or an Intel
+// Mac), 1 off, 2 on, 3 on but waiting for Login Items approval.
+int32_t mv_fcp_state(void);                                                 // [worker]
+// Registers (on) or unregisters (off) the search agent with launchd and shows
+// or hides the extension in Final Cut Pro. Returns the state after.
+int32_t mv_fcp_set_enabled(bool on);                                        // [worker]
+void mv_fcp_open_login_items(void);                                         // [main-thread]
 // A family's installed bytes and ceiling (0 = none); "ai" has 3 GB.
 bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling);  // [worker]
 // The loaded chrome's Settings view (an NSView*, owned by the chrome), or NULL.

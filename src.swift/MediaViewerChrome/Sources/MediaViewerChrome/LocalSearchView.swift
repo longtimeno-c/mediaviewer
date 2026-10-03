@@ -94,6 +94,11 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var removing: Set<String> = []
   /// Moves whenever the chrome is (re)attached, so the embedded view is rebuilt.
   @Published private(set) var chromeGeneration = 0
+  /// plan/23: Final Cut Pro search (mv_fcp_state): 0 not in this app or Mac,
+  /// 1 off, 2 on, 3 on once allowed in Login Items. The agent and extension
+  /// ship in MediaViewer.app; turning this on only registers them.
+  @Published private(set) var finalCut: Int32 = 0
+  @Published private(set) var finalCutBusy = false
 
   // The command bar pill (mv.ai.1 status, no-block).
   @Published private(set) var pillVisible = false
@@ -125,6 +130,8 @@ final class LocalSearchStore: ObservableObject {
 
   private func poll() {
     ticks += 1
+    // Waiting on Login Items approval: notice it being given while Settings is open.
+    if finalCut == 3, !finalCutBusy, SettingsStore.shared.visible, ticks % 8 == 0 { refreshFinalCut() }
     if !removing.isEmpty, ticks % 2 == 0 { checkRemovals() }
     // Nothing loaded and nothing loading: every 2 s is enough, unless
     // Settings is open or a piece is being installed (it shows the change).
@@ -216,8 +223,10 @@ final class LocalSearchStore: ObservableObject {
       }
       var u: UInt64 = 0, c: UInt64 = 0
       let room = mv_addon2_family_usage("ai", &u, &c)
+      let fcp = mv_fcp_state()
       let states = read, used = u, ceiling = c
       await MainActor.run {
+        if !self.finalCutBusy { self.finalCut = fcp }
         for i in self.pieces.indices {
           // A queued removal is not undone by a read that raced it.
           if self.removing.contains(self.pieces[i].id) { continue }
@@ -233,6 +242,29 @@ final class LocalSearchStore: ObservableObject {
         }
         self.stateKnown = true
         then?()
+      }
+    }
+  }
+
+  /// Final Cut Pro's state alone (an XPC call to the service manager).
+  func refreshFinalCut() {
+    Task.detached {
+      let fcp = mv_fcp_state()
+      await MainActor.run { if !self.finalCutBusy { self.finalCut = fcp } }
+    }
+  }
+
+  /// Registers or unregisters the search agent and shows or hides the
+  /// extension in Final Cut Pro. Nothing is downloaded: the pieces are in the
+  /// app, and the bulk (Core) is already installed.
+  func setFinalCut(_ on: Bool) {
+    guard !finalCutBusy else { return }
+    finalCutBusy = true
+    Task.detached {
+      let after = mv_fcp_set_enabled(on)
+      await MainActor.run {
+        self.finalCutBusy = false
+        self.finalCut = after
       }
     }
   }
@@ -323,6 +355,29 @@ final class LocalSearchStore: ObservableObject {
     for id in installAllIDs { install(id) }
   }
 
+  /// What "Update all" fetches: every installed piece the channel has a newer
+  /// version of (Core first, as the queue orders it). Owner, 2026-10-03: the
+  /// pieces had been updated one by one and the 1 GB Core left behind, so the
+  /// People grid ran a chrome whose fix shipped in the Core it did not have.
+  var updateAllIDs: [String] {
+    pieces.filter { $0.updateVersion != nil && !removing.contains($0.id) && !isPending($0.id) }.map(\.id)
+  }
+
+  /// The version "Update all" goes to, when every piece agrees; "" otherwise.
+  var updateAllVersion: String {
+    let versions = Set(pieces.filter { updateAllIDs.contains($0.id) }.compactMap(\.updateVersion))
+    return versions.count == 1 ? versions.first! : ""
+  }
+
+  /// Core is behind the channel and not yet on its way: a piece update or
+  /// install queues it first, so the pieces never run ahead of the engine
+  /// they were built with.
+  var coreBehind: Bool { core.updateVersion != nil && !isPending("ai") && !removing.contains("ai") }
+
+  func updateAll() {
+    for id in updateAllIDs { install(id) }
+  }
+
   /// Queues the piece and returns at once; the queue runs one install at a
   /// time, Core first. A piece clicked before Core is installed waits for
   /// Core, and is dropped with a note if Core does not install.
@@ -339,6 +394,9 @@ final class LocalSearchStore: ObservableObject {
       return
     }
     if !anyPending { batchNotes = [] }
+    // A piece behind a Core that is itself behind: Core first (its 3 GB check
+    // runs when its turn comes, like every queued piece's).
+    if !piece.required && coreBehind { queued.insert("ai", at: 0) }
     if piece.required { queued.insert(id, at: 0) } else { queued.append(id) }
     startNext()
   }
@@ -455,6 +513,8 @@ final class LocalSearchStore: ObservableObject {
     confirmingRemove = nil
     let title = pieces.first(where: { $0.id == id })?.title ?? id
     if id == "ai" { openWhenLoaded = false }
+    // Final Cut Pro search hosts Core: without it, the agent and panel go too.
+    if id == "ai", finalCut == 2 || finalCut == 3 { setFinalCut(false) }
     if id == "ai" && loaded {
       // The embedded management view stops using the table now, not at the
       // next poll: the pack is unloaded by the call below.
@@ -535,12 +595,17 @@ struct LocalSearchSection: View {
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.pieces)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.queued)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.busyPiece)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.finalCut)
   }
 
   @ViewBuilder
   private var installed: some View {
     if !store.coreInstalled {
       introCard
+    }
+    if store.coreInstalled, !store.anyPending, store.updateAllIDs.count > 1 {
+      updateAllRow
+        .transition(.opacity)
     }
     VStack(spacing: 0) {
       ForEach(store.pieces) { piece in
@@ -552,6 +617,13 @@ struct LocalSearchSection: View {
     }
     .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    // plan/23: offered once Core is installed, on a Mac that carries the pieces.
+    if store.coreInstalled, !store.removing.contains("ai"), store.finalCut != 0 {
+      finalCutRow
+        .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+        .transition(.opacity)
+    }
     if let id = store.confirmingRemove {
       removeConfirm(id)
         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -580,6 +652,63 @@ struct LocalSearchSection: View {
         .id(store.chromeGeneration)
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
+    }
+  }
+
+  /// Final Cut Pro search on or off (plan/23). Off, nothing of it runs and
+  /// Final Cut Pro lists no MediaViewer extension.
+  private var finalCutRow: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 16) {
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 6) {
+          Text("Final Cut Pro").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+          Text(store.finalCut == 2 ? "On" : store.finalCut == 3 ? "Waiting for approval" : "Off")
+            .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        }
+        Text(finalCutDetail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if store.finalCutBusy {
+        ProgressView().controlSize(.small)
+      } else if store.finalCut == 1 {
+        Button("Turn on") { store.setFinalCut(true) }
+      } else {
+        if store.finalCut == 3 {
+          Button("Open Login Items…") { mv_fcp_open_login_items() }
+        }
+        Button("Turn off") { store.setFinalCut(false) }
+      }
+    }
+    .padding(12)
+  }
+
+  private var finalCutDetail: String {
+    switch store.finalCut {
+    case 2:
+      return "In Final Cut Pro, click the Extensions button in the browser and choose MediaViewer Search. "
+        + "Drag results onto the timeline."
+    case 3:
+      return "Allow MediaViewer in System Settings → General → Login Items so Final Cut Pro can reach Local search."
+    default:
+      return "Search your footage from a panel inside Final Cut Pro, using this index. Nothing is downloaded."
+    }
+  }
+
+  /// Every piece with a newer version, in one click, Core first.
+  private var updateAllRow: some View {
+    let all = store.pieces.filter { store.updateAllIDs.contains($0.id) }
+    let archive = all.compactMap { $0.offeredBytes?.archive }.reduce(0, +)
+    let v = store.updateAllVersion
+    return HStack(alignment: .firstTextBaseline, spacing: 12) {
+      Button {
+        store.updateAll()
+      } label: {
+        Text((v.isEmpty ? "Update all" : "Update all to \(v)")
+             + " (\(all.map(\.title).joined(separator: ", "))) — downloads ~\(LocalSearchStore.sizeText(archive))")
+      }
+      .help("Core first, then the others, one after another.")
+      Spacer()
     }
   }
 
@@ -683,7 +812,7 @@ struct LocalSearchSection: View {
         if let v = piece.updateVersion {
           Button("Update to \(v)") { store.install(piece.id) }
             .disabled(store.refusal(for: piece) != nil)
-            .help(store.refusal(for: piece) ?? "")
+            .help(store.refusal(for: piece) ?? (!piece.required && store.coreBehind ? "Core updates first." : ""))
         }
         if piece.state != "ok" {
           Button("Reinstall") { store.install(piece.id) }

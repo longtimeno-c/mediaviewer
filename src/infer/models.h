@@ -82,9 +82,16 @@ class clip_model final : public embedder {
                                                                 const clip_spec& spec,
                                                                 const session_options& options,
                                                                 provider_fault* fault = nullptr);
+  // The text tower and tokenizer only, on CPU: a reader that answers
+  // descriptions against stored vectors (the search agent, plan/23) and never
+  // embeds a picture. embed_images is status::unsupported_format. The vector
+  // is the same as open()'s, whose text tower runs on CPU too.
+  [[nodiscard]] static result<std::unique_ptr<clip_model>> open_text_only(const runtime& rt,
+                                                                          const clip_spec& spec,
+                                                                          const session_options& options);
   [[nodiscard]] std::uint32_t dim() const noexcept override { return spec_.dim; }
   [[nodiscard]] const std::string& spec_key() const noexcept override { return key_; }
-  [[nodiscard]] backend on() const noexcept override { return image_->on(); }
+  [[nodiscard]] backend on() const noexcept override { return image_ ? image_->on() : backend::cpu; }
   [[nodiscard]] expected embed_images(std::span<const rgb_view> images, std::vector<float>& out) override;
   [[nodiscard]] result<std::vector<float>> embed_text(std::string_view utf8) override;
   [[nodiscard]] result<std::vector<float>> embed_text_mean(std::span<const std::string> texts) override;

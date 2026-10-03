@@ -138,7 +138,7 @@ if(Python3_FOUND)
            "${MV_ROOT}/tools/package/test_addon_pack.py" -v)
   set_tests_properties(addon_pack PROPERTIES
     ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
-  # plan/23: the add-on SDK's packages, read by the app's own reader.
+  # plan/25: the add-on SDK's packages, read by the app's own reader.
   add_test(NAME addon_sdk COMMAND Python3::Interpreter
            "${MV_ROOT}/tools/addon-sdk/test_mvaddon.py" -v)
   set_tests_properties(addon_sdk PROPERTIES

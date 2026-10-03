@@ -100,7 +100,7 @@ std::string counted(std::size_t n, const char* one, const char* many) {
 }
 
 // The sheet's "Adds / Can / Cannot" lines, from what the manifest holds and
-// never from what its maker wrote about it (plan/23 "Identity and trust").
+// never from what its maker wrote about it (plan/25 "Identity and trust").
 void write_abilities(json::writer& w, const open_manifest& m) {
   w.key("adds").string(m.themes.empty() ? std::string("Nothing this MediaViewer uses")
                                         : counted(m.themes.size(), "theme", "themes"));

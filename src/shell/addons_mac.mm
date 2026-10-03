@@ -291,6 +291,25 @@ bool load_import() {
     });
   };
   if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
+  // Find duplicates (PR 54): the Trash, never a permanent delete. Called on
+  // the add-on's I/O thread. A volume with no Trash (a network share, some
+  // removable drives) answers NSFeatureUnsupportedError and keeps the file.
+  svc.recycle = [](const std::string& path) -> mv::result<bool> {
+    @autoreleasepool {
+      NSString* ns = [NSString stringWithUTF8String:path.c_str()];
+      if (!ns) return mv::err(mv::status::invalid_arg);
+      NSURL* url = [NSURL fileURLWithPath:ns];
+      NSError* error = nil;
+      if ([[[NSFileManager alloc] init] trashItemAtURL:url resultingItemURL:nil error:&error]) {
+        return true;
+      }
+      if (error && [error.domain isEqualToString:NSCocoaErrorDomain] &&
+          error.code == NSFeatureUnsupportedError) {
+        return false;
+      }
+      return mv::err(mv::status::io);
+    }
+  };
   auto loaded = mv::addon::loaded_addon::load(*s.store, "import", std::move(svc));
   if (!loaded) return false;
   const auto* table = (*loaded)->query(MV_IMPORT_INTERFACE);
@@ -807,7 +826,7 @@ extern "C" int32_t mv_addons_check_manifest(const uint8_t* manifest, int32_t man
   return copy_out(w.str(), buf, size);
 }
 
-// ---- open add-ons (plan/23) ---------------------------------------------------
+// ---- open add-ons (plan/25) ---------------------------------------------------
 // Data only: nothing below loads code, so none of it touches the loaded
 // add-ons above. One writer at a time; reads need no lock (the store keeps no
 // state beyond its root).

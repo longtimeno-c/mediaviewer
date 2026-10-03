@@ -777,7 +777,7 @@ void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
       open_path(app, request.path);
       return;
     case mv::shell::open_kind::addon_package:
-      // plan/23: never the viewer. Settings opens and the chrome asks; the
+      // plan/25: never the viewer. Settings opens and the chrome asks; the
       // package is read on a worker, by the core.
       set_settings_open(app, true);
       if (!app->chrome.offer_addon(utf8_from_wide(request.path))) ::MessageBeep(MB_ICONWARNING);

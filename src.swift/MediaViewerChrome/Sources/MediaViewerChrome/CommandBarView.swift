@@ -9,7 +9,7 @@ import AppKit
 import SwiftUI
 import MVChromeBridge
 
-// MVTheme, the chrome's colours and face, is in Theme.swift (plan/23).
+// MVTheme, the chrome's colours and face, is in Theme.swift (plan/25).
 
 /// The chrome's one button look: CozetteVector text, no border, a faint wash
 /// on hover. `selected` keeps the pressed wash (a chosen tab or preset);

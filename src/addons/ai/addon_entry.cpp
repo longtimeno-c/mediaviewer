@@ -267,6 +267,15 @@ mv_status MV_CALL t_person_refine(void* ctx, uint64_t person, uint32_t* out_remo
     return MV_OK;
   });
 }
+mv_status MV_CALL t_people_dedupe(void* ctx, uint32_t* out_merged, uint32_t* out_moved) {
+  return guard([&] {
+    auto r = eng(ctx).people_dedupe();
+    if (!r) return to_mv(r.error());
+    if (out_merged) *out_merged = r->merged;
+    if (out_moved) *out_moved = r->moved;
+    return MV_OK;
+  });
+}
 mv_status MV_CALL t_search_person(void* ctx, uint64_t person, const char* scope_dir, uint32_t scope,
                                   uint64_t* out_id) {
   return guard([&] {
@@ -300,6 +309,15 @@ mv_status MV_CALL t_result_snippet(void* ctx, uint64_t id, uint32_t index, char*
   return guard([&] {
     auto r = eng(ctx).result_snippet(id, index);
     return r ? write_out(*r, out, cap, nullptr) : to_mv(r.error());
+  });
+}
+mv_status MV_CALL t_result_duration(void* ctx, uint64_t id, uint32_t index, int64_t* out) {
+  return guard([&] {
+    if (!out) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).result_duration(id, index);
+    if (!r) return to_mv(r.error());
+    *out = *r;
+    return MV_OK;
   });
 }
 mv_status MV_CALL t_suggest_json(void* ctx, const char* query, char* out, uint32_t cap, uint32_t* needed) {
@@ -385,10 +403,7 @@ const void* MV_CALL query(void* addon, const char* interface_id) {
   return &static_cast<addon_state*>(addon)->api;
 }
 
-}  // namespace
-
-extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, const mv_host_api* host,
-                                                          mv_addon_api* out) {
+mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bool read_only) {
   return guard([&] {
     if (!host || !out) return MV_ERR_INVALID_ARG;
     // Outside the range: the host says "Local search needs an update".
@@ -402,7 +417,8 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     auto data = state->h->data_dir();
     if (!data) return to_mv(data.error());
     state->eng = std::make_unique<engine>(
-        &state->host, mv::ai::pack_deps(*state->h, mv::ai::platform::self_dir(), *data));
+        &state->host, mv::ai::pack_deps(*state->h, mv::ai::platform::self_dir(), *data),
+        mv::ai::engine_options{.read_only = read_only});
     if (auto started = state->eng->start(); !started) return to_mv(started.error());
 
     mv_ai_api& a = state->api;
@@ -442,6 +458,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.result_snippet = &t_result_snippet;
     a.suggest_json = &t_suggest_json;
     a.person_refine = &t_person_refine;
+    a.result_duration = &t_result_duration;
     a.export_index = &t_export_index;
     a.inspect_export = &t_inspect_export;
     a.import_index = &t_import_index;
@@ -450,6 +467,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     a.index_photos_library = &t_index_photos;
     a.photos_access = &t_photos_access;
     a.people_in_json = &t_people_in_json;
+    a.people_dedupe = &t_people_dedupe;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);
@@ -460,4 +478,20 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     out->query = &query;
     return MV_OK;
   });
+}
+
+}  // namespace
+
+extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, const mv_host_api* host,
+                                                          mv_addon_api* out) {
+  return make(host_api, host, out, false);
+}
+
+// The search agent's door (plan/23): the same engine, read-only. A pack
+// without this export predates the reader, and the agent says "Local search
+// needs an update" rather than loading it through mv_addon_get, which would
+// start a second indexer on the app's files.
+extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_ai_reader_get(uint32_t host_api, const mv_host_api* host,
+                                                              mv_addon_api* out) {
+  return make(host_api, host, out, true);
 }

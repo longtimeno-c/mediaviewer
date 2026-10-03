@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Manifest schema 2: an add-on from anyone (plan/23 "The manifest").
+// Manifest schema 2: an add-on from anyone (plan/25 "The manifest").
 //
 // Schema 1 (manifest.h) is MediaViewer's own add-ons, signed with the pinned
 // release key. Schema 2 is signed by its PUBLISHER, whose public key is a
@@ -29,7 +29,7 @@ namespace mv::addon {
 
 inline constexpr int kOpenManifestSchema = 2;
 
-// The contribution API this host serves (plan/23 "Contribution API").
+// The contribution API this host serves (plan/25 "Contribution API").
 //   1  themes.
 inline constexpr std::uint32_t kContributionApi = 1;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

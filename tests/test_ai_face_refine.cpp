@@ -479,3 +479,172 @@ TEST_CASE("refine through faces.db: a re-analysis replaces a face's vector in pl
   CHECK((*db)->face_count() == 3);
   CHECK((*db)->faces_of(before[0].id).size() == 3);
 }
+
+// ---- duplicates (plan/17 "Merge duplicates") ----------------------------------------
+
+namespace {
+
+using mv::ai::dedupe_input;
+using mv::ai::dedupe_person;
+using mv::ai::find_duplicates;
+using groups_t = std::vector<std::vector<std::int64_t>>;
+
+groups_t duplicates(const refine_output& out, std::span<const dedupe_person> people = {},
+                    std::vector<std::pair<std::int64_t, std::int64_t>> apart = {}) {
+  std::sort(apart.begin(), apart.end());
+  dedupe_input in;
+  in.dim = kDim;
+  in.protos = out.protos;
+  in.people = people;
+  in.apart = apart;
+  return find_duplicates(in, {});
+}
+
+bool together(const groups_t& g, std::int64_t a, std::int64_t b) {
+  for (const auto& members : g) {
+    if (std::find(members.begin(), members.end(), a) != members.end() &&
+        std::find(members.begin(), members.end(), b) != members.end()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Mean pairwise cosine across two persons' faces: what the idle consolidate
+// compares (and merges at 0.42).
+float across(world& w, std::int64_t a, std::int64_t b) {
+  double sum = 0;
+  std::size_t n = 0;
+  for (const refine_face& x : w.faces) {
+    if (x.person != a) continue;
+    for (const refine_face& y : w.faces) {
+      if (y.person != b) continue;
+      const float* vx = w.emb.data() + std::size_t{x.row} * kDim;
+      const float* vy = w.emb.data() + std::size_t{y.row} * kDim;
+      double d = 0;
+      for (std::uint32_t i = 0; i < kDim; ++i) d += static_cast<double>(vx[i]) * vy[i];
+      sum += d;
+      ++n;
+    }
+  }
+  return n ? static_cast<float>(sum / static_cast<double>(n)) : 0.0f;
+}
+
+}  // namespace
+
+TEST_CASE("dedupe: a duplicate the cluster average misses is found; a stranger is not",
+          "[ai][faces][refine][dedupe]") {
+  world w;
+  const auto sam = w.direction();
+  const auto zoe = w.direction();
+  // Person 1: Sam, six clear faces and twelve weak ones (blurred, small,
+  // turned) that drag the cluster's average down. Person 2: Sam again, six
+  // clear faces. Person 3: Zoe.
+  for (int i = 0; i < 6; ++i) w.face(sam, 1);
+  for (int i = 0; i < 12; ++i) w.face(sam, 1, 0.2f, 0.2f);
+  for (int i = 0; i < 6; ++i) w.face(sam, 2);
+  for (int i = 0; i < 6; ++i) w.face(zoe, 3);
+  // The idle consolidate's view: below its 0.42, so it never merged them.
+  CHECK(across(w, 1, 2) < 0.42f);
+  const refine_output out = w.run();
+  const groups_t g = duplicates(out);
+  REQUIRE(g.size() == 1);
+  CHECK(together(g, 1, 2));
+  CHECK_FALSE(together(g, 1, 3));
+  CHECK_FALSE(together(g, 2, 3));
+  // Survivor first: the one with more faces (both unnamed).
+  const std::vector<dedupe_person> people{{1, "", 18}, {2, "", 6}, {3, "", 6}};
+  CHECK(duplicates(out, people).front().front() == 1);
+}
+
+TEST_CASE("dedupe: names and the user's splits rule who merges and who survives",
+          "[ai][faces][refine][dedupe]") {
+  world w;
+  const auto sam = w.direction();
+  for (int i = 0; i < 8; ++i) w.face(sam, 1);
+  for (int i = 0; i < 4; ++i) w.face(sam, 2);
+  for (int i = 0; i < 3; ++i) w.face(sam, 4);
+  const refine_output out = w.run();
+
+  // Unnamed: one group, the largest survives.
+  std::vector<dedupe_person> people{{1, "", 8}, {2, "", 4}, {4, "", 3}};
+  groups_t g = duplicates(out, people);
+  REQUIRE(g.size() == 1);
+  CHECK(g[0] == std::vector<std::int64_t>{1, 2, 4});
+  // A named person survives over a larger unnamed one.
+  people[1].name = "Sam";
+  g = duplicates(out, people);
+  REQUIRE(g.size() == 1);
+  CHECK(g[0].front() == 2);
+  // The same name twice is one person: the larger named one survives.
+  people[0].name = "Sam";
+  g = duplicates(out, people);
+  REQUIRE(g.size() == 1);
+  CHECK(g[0].front() == 1);
+  // Named differently: never together, whatever the faces say.
+  people[1].name = "Sasha";
+  g = duplicates(out, people);
+  CHECK_FALSE(together(g, 1, 2));
+  // A split kept apart: never together.
+  people[1].name.clear();
+  people[0].name.clear();
+  g = duplicates(out, people, {{1, 2}});
+  CHECK_FALSE(together(g, 1, 2));
+  CHECK((together(g, 1, 4) || together(g, 2, 4)));
+}
+
+TEST_CASE("dedupe: a lookalike chain does not walk", "[ai][faces][refine][dedupe]") {
+  world w;
+  const auto a = w.direction();
+  const auto c = w.direction();
+  const auto b = world::mix(a, c, 0.5f);  // like each, the ends unlike each other
+  for (int i = 0; i < 6; ++i) w.face(a, 1);
+  for (int i = 0; i < 6; ++i) w.face(b, 2);
+  for (int i = 0; i < 6; ++i) w.face(c, 3);
+  const groups_t g = duplicates(w.run());
+  CHECK_FALSE(together(g, 1, 3));
+  for (const auto& members : g) CHECK(members.size() <= 2);
+}
+
+TEST_CASE("dedupe through faces.db: merge_auto pins nothing and leaves a split pair alone",
+          "[ai][faces][refine][dedupe]") {
+  const std::string path = temp_db("dedupe.db");
+  world w;
+  const auto anna = w.direction();
+  const auto beth = w.direction();
+  auto db = mv::ai::faces_db::open(path, 0.40f, kDim);
+  REQUIRE(db);
+  for (int i = 0; i < 4; ++i) {
+    const mv::ai::face_in f = face_in_of(w, anna, 0.95f, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  for (int i = 0; i < 4; ++i) {
+    const mv::ai::face_in f = face_in_of(w, beth, 0.95f, 0.1f);
+    REQUIRE((*db)->add(200 + i, "b", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  const std::int64_t first = people[0].id, second = people[1].id;
+  // merge_auto merges what it is told (the engine decides who) and pins nothing.
+  auto merged = (*db)->merge_auto(first, second);
+  REQUIRE(merged);
+  CHECK(merged.value());
+  people = (*db)->people(1);
+  REQUIRE(people.size() == 1);
+  CHECK(people[0].faces == 8);
+  for (const auto& f : (*db)->faces_of(first)) CHECK_FALSE(f.pinned);
+  CHECK((*db)->merge_blocks().empty());
+  // A split keeps the two apart: listed, and refused.
+  const auto faces = (*db)->faces_of(first);
+  const std::vector<std::int64_t> pick{faces[0].id};
+  auto fresh = (*db)->split(pick);
+  REQUIRE(fresh);
+  const auto blocks = (*db)->merge_blocks();
+  REQUIRE(blocks.size() == 1);
+  CHECK(blocks[0] == std::make_pair(std::min(first, *fresh), std::max(first, *fresh)));
+  merged = (*db)->merge_auto(first, *fresh);
+  REQUIRE(merged);
+  CHECK_FALSE(merged.value());
+  CHECK((*db)->people(1).size() == 2);
+}
+

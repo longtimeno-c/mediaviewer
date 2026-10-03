@@ -69,6 +69,7 @@ All permissive; all need attribution in an About dialog and in a bundled `THIRD-
 | resvg | MPL-2.0 | File-level copyleft; dynamic-link or keep unmodified |
 | DirectXTex | MIT | — |
 | .NET / WinUI 3 / Windows App SDK | MIT | Shell only (D1); no constraint on the core |
+| Final Cut Pro's `ProExtension.framework` | Apple, proprietary | **Not shipped.** The Mac FCP extension (plan/23) `dlopen`s the copy inside the user's installed Final Cut Pro at run time, because FCP's extension point requires its classes. Nothing of Apple's is in our bundle. The owner, as copyright holder, accepts loading it into the GPL extension (plan/12 2026-09-28) |
 
 ### The Exiv2 problem, specifically
 

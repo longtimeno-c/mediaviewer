@@ -32,7 +32,8 @@ Mac are both at PR 9.** The order from here is:
 | **30** | **Video Editor window, one clip** (issue #40, [21](21-video-editor.md)): timeline, strip, waveform, split / delete / in / out, keyframe or exact export | both | **Both halves written and run** (Mac 2026-09-26, Windows 2026-09-27: self-test rig, keys); both present-loop gates with the editor open owed. Does not merge before 29 |
 | 31 | Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)) | both | Planned |
 | 32–47 | **Editor add-on**, Milestone K ([22](22-editor-addon.md)): GPU port + colour management, grading (primaries, curves, secondaries, tracking, node graph, LUTs, NR), multi-track editing, motion / titles / captions, audio mixer and repair, delivery, proxies, model packs | both | Proposed (2026-09-26); S1 run on the Mac |
-| 48–53 | **Open add-ons**, Milestone L ([23](23-open-addons.md), issue #79): add-ons anyone can make, installed from a file or a link; themes, then settings pages and keymaps, then code, screens, slots and search providers | both | **PR 48 built** (2026-09-29): shared core and SDK tested, Mac half run in the app, Windows half compiles and awaits its first run. 49 planned; 50–53 wait on the owner's call on how third-party code runs |
+| 54 | **Find duplicates** in the Import add-on ([18](18-import.md#find-duplicates-pr-54)): a folder tree compared by content (size, then BLAKE3), each copy opened, shown, or moved to the Recycle Bin / Trash, never the last | both | **Written** (2026-10-03): engine tested on the Mac (Release and TSan); Mac chrome and the Windows C# compile; the Windows native build, both live UIs and both gates while scanning are owed |
+| 55–60 | **Open add-ons**, Milestone L ([25](25-open-addons.md), issue #79): add-ons anyone can make, installed from a file or a link; themes, then settings pages and keymaps, then code, screens, slots and search providers | both | **PR 55 built** (2026-09-29): shared core and SDK tested, Mac half run in the app, Windows half compiles and awaits its first run. 56 planned; 57–60 wait on the owner's call on how third-party code runs |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
@@ -660,6 +661,11 @@ slice is dual-track, with a verify line on each platform, and both present-loop 
 - **PR 19 — Library tools.** Library-wide duplicate scope, import history, and
   verify-a-folder (silent-corruption check).
 
+- **PR 54 — Find duplicates** (added 2026-10-03, owner). A folder and every folder under it,
+  every file type, grouped by identical bytes; open, show, or move one copy to the Recycle Bin /
+  Trash, never the last. Its own number: 49–50 are network copies, and the open add-ons branch is 55–60 ([25](25-open-addons.md)). Verify line:
+  [18 "Find duplicates"](18-import.md#find-duplicates-pr-54).
+
 The add-on mechanism built in PR 16 is the one the AI pack (PR 20) and the Voice add-on (PR 27) install through.
 
 **State (2026-09-24): built ahead on a branch** off PR 10's branch, as the dual-track rule allows
@@ -751,6 +757,36 @@ still holds.
 
 ---
 
+## Standalone PRs 49–50 — Fast network transfer and Transfer (both platforms)
+
+Owner, 2026-10-01 ([12](12-decision-log.md)): copies to and from a NAS run at a fraction of
+the link. Full design: [24-transfer.md](24-transfer.md).
+
+### PR 49 — Network-speed copy engine
+Positional I/O in the file port; a deep path in `io::verified_copy` (several requests in
+flight per file, hashed in order, read-back the same) and several files at once, both only
+when an end is a network share; F8 and Import use it; `copybench` measures it. Cards and local
+disks keep the sequential path.
+
+**Verify (both platforms):** on a 10 GbE SMB share, `copybench --mode auto` with verify (big
+and RAW-sized sets) is >= 2x `--mode seq` on the same files, runs alternated; unverified auto
+is >= 90 % of `robocopy /MT:16 /J` (Windows) / `ditto` (Mac); local `seq` within noise of the
+base build; `mv_import_tests "[io]"` passes (the deep cases under ThreadSanitizer too); both
+present-loop gates hold while an F8 move to the share runs.
+
+### PR 50 — Transfer and the link check
+A general copier for any files and folders (copy/move, keep the tree, keep-both or skip
+identical, never overwrite, full verify by default, pause/resume/cancel with a journal), on
+`mv_transfer_*` ABI calls, with a Transfer window in WinUI and SwiftUI; and a read-only check
+that names SMB signing, encryption or a single channel when it caps the link.
+
+**Verify (both platforms):** a 50 GB mixed tree local -> share -> local with full verify is
+byte-identical; MB/s within 10 % of PR 49's auto; a kill mid-job resumes with no duplicates
+or temporaries; a move never removes an unverified source; both present-loop gates hold
+during the job.
+
+---
+
 ## Milestone I — Voice query add-on (PR 27–28, both platforms)
 
 An **optional add-on installed from Settings**, separate from the AI pack. Hold a key and say
@@ -774,7 +810,7 @@ its number. Both present-loop gates hold **while listening and while speaking**.
 
 ---
 
-## Milestone L — Open add-ons (PR 48–53, both platforms, proposed)
+## Milestone L — Open add-ons (PR 55–60, both platforms, proposed)
 
 **Anyone can make an add-on, and an add-on can change much more of the app** (issue #79, owner
 2026-09-29). One `.mvaddon` file, signed by its publisher, installed from a file or a link with
@@ -782,22 +818,22 @@ a sheet that says what it is, what it can and cannot do, and that MediaViewer ha
 it. What it contributes goes through named points both hosts read from one table, so a
 contribution point is written twice once, not once per add-on. MediaViewer's own add-ons
 (Milestones G, H, I, K) keep their key, channel and native code. Full design, trust model,
-contribution points and verify lines: [23-open-addons.md](23-open-addons.md).
+contribution points and verify lines: [25-open-addons.md](25-open-addons.md).
 
-- **PR 48 — Open packages and themes.** The package reader, manifest schema 2, publisher keys,
+- **PR 55 — Open packages and themes.** The package reader, manifest schema 2, publisher keys,
   the install sheet, install from file and link, check for update, remove, the theme token
   table on both hosts, the SDK and the author's guide.
-- **PR 49 — Declarative contributions.** Settings pages from a schema, keymap packs, theme
+- **PR 56 — Declarative contributions.** Settings pages from a schema, keymap packs, theme
   shape (radius, density, type scale); the first-party chromes read the host's tokens.
-- **PR 50 — Code.** Needs the owner's call ([23 §9](23-open-addons.md#9-code-how-a-strangers-add-on-runs)):
+- **PR 57 — Code.** Needs the owner's call ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
   the runtime, one worker per add-on, limits, permissions in the sheet, commands.
-- **PR 51 — Screens.** A view vocabulary both hosts render natively; windows, panes, sheets.
-- **PR 52 — Slots and search providers.** Bar items, context menus, info-pane sections, tile
+- **PR 58 — Screens.** A view vocabulary both hosts render natively; windows, panes, sheets.
+- **PR 59 — Slots and search providers.** Bar items, context menus, info-pane sections, tile
   badges; file-name search and Local search as providers (#76).
-- **PR 53 — Files.** New files in a folder the user chose; metadata through PR 12's writer.
+- **PR 60 — Files.** New files in a folder the user chose; metadata through PR 12's writer.
 
 Every slice holds both present-loop gates and the launch numbers **with add-ons installed**.
-48 and 49 decide nothing about code and need no owner call; 50–53 do not start without it.
+55 and 56 decide nothing about code and need no owner call; 57–60 do not start without it.
 
 ---
 
@@ -815,7 +851,7 @@ feature slices; that label does not promise everything in one release.
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, renaming files already in a library (Import's rename-on-import, PR 18, is not this), colour labels, keywords |
-| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim) (as keymap packs, PR 49, [23](23-open-addons.md)); **theme** (the chrome's colours and font family arrive as add-on themes, PR 48, [23](23-open-addons.md); what follows is what remains): colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
+| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim) (as keymap packs, PR 56, [25](25-open-addons.md)); **theme** (the chrome's colours and font family arrive as add-on themes, PR 55, [25](25-open-addons.md); what follows is what remains): colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Per-machine MSI for enterprise (Store MSIX remains excluded by the licence decision) |
 | Platform | Windows ARM64. **Apple Silicon macOS landed as the Mac halves of PRs 1–8; it is not v1.1.** Intel Macs shipped 2026-09-24 as a universal app (pacing unverified on Intel). |

@@ -3,8 +3,8 @@
 **Status: proposed 2026-09-29, from issue #79 and the owner's call the same day ("add-ons can be
 made and installed by anyone, not just our repo… if people have a compatible file / URL they can
 install their add-on… add-ons can do a wide range of things like add new screens"). Post-v1,
-Windows and macOS together (D9). Milestone L, PRs 48–53. Not a D-decision. PR 48 is built
-([Implementation notes](#implementation-notes-pr-48-2026-09-29)); PRs 49–53 wait on the owner
+Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 55 is built
+([Implementation notes](#implementation-notes-pr-55-2026-09-29)); PRs 56–60 wait on the owner
 calls in [Open decisions](#open-decisions-owner), above all how a stranger's code runs.**
 
 ## 1. What this is
@@ -29,11 +29,11 @@ first-party add-on never loads through this one.
 
 | Rule / decision | How it holds |
 |---|---|
-| 1 — nothing blocking on UI / render | Contributions are **resolved at load into plain tables** the chrome reads; nothing an add-on supplies is looked up per frame, per tile or per key. Add-on code (PR 50) runs on its own worker and is never called synchronously from the UI or render thread |
+| 1 — nothing blocking on UI / render | Contributions are **resolved at load into plain tables** the chrome reads; nothing an add-on supplies is looked up per frame, per tile or per key. Add-on code (PR 57) runs on its own worker and is never called synchronously from the UI or render thread |
 | 2 — the canvas is C++'s | A theme colours the chrome. It never touches a photo's pixels, the swapchain, or the colour pipeline (D6) |
 | "The view comes first" | No add-on is read before first pixel. The chrome paints with the theme tokens it **cached** at the last run and verifies the add-on behind it afterwards |
-| 5 — never modify an original | No contribution point writes to a user's file. When add-on code gets file writes (PR 53) they are new files in a folder the user picked, and metadata goes through PR 12's checked writer |
-| 6 — nothing about a user's files leaves the machine | API 1–2 add-ons are data: they cannot read a file or open a connection. Code (PR 50) gets **no network and no file access by default**; each is a named permission shown before install. The app itself contacts a third party's server only when the user clicks (install from link, check for update), with a plain GET: no cookies, no identifier, nothing about files |
+| 5 — never modify an original | No contribution point writes to a user's file. When add-on code gets file writes (PR 60) they are new files in a folder the user picked, and metadata goes through PR 12's checked writer |
+| 6 — nothing about a user's files leaves the machine | API 1–2 add-ons are data: they cannot read a file or open a connection. Code (PR 57) gets **no network and no file access by default**; each is a named permission shown before install. The app itself contacts a third party's server only when the user clicks (install from link, check for update), with a plain GET: no cookies, no identifier, nothing about files |
 | D1 / D9 | Every contribution point exists on both hosts in the PR that adds it. An add-on is written once; WinUI and SwiftUI each render it natively. No HTML, no web view, no Electron |
 | Absent means absent | With no open add-on installed nothing is listed, nothing is read at start, no folder is created. The base install is byte-identical whatever is installed (add-ons live in the user's profile) |
 | Signed, verified, then loaded | Still true, with the publisher's key in place of ours: signature over the manifest, SHA-256 per file, nothing extra in the folder, checked at install **and at every load** |
@@ -127,7 +127,7 @@ review, and no store, and says so where it matters:
 - **Key fingerprint:** the first 8 bytes of SHA-256(key), four groups of four hex digits. A
   publisher prints it where they publish; a careful person compares.
 - **The "Can / Cannot" lines are computed from the manifest**, not written by the publisher.
-  Under API 1–2 "Cannot" is always the line above. From PR 50 each permission the add-on asks
+  Under API 1–2 "Cannot" is always the line above. From PR 57 each permission the add-on asks
   for is a "Can" line in plain words.
 - **The key is pinned per add-on at first install** (`publisher.json`, written by the app beside
   the versions). A later package with the same id and another key is **refused**
@@ -159,17 +159,17 @@ introduced it, exists on both hosts, and has a default the base app provides.
 
 | Point | API | PR | What the add-on supplies | Base default | Performance rule |
 |---|---|---|---|---|---|
-| **Theme** | 1 | 48 | Colour tokens (dark and / or light), a font family | The system-following palette, CozetteVector | Tokens cached by the chrome; read before the add-on is verified, corrected after |
-| **Theme, shape** | 2 | 49 | Corner radius scale, density, type scale | Today's literals | Same table |
-| **Settings page** | 2 | 49 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
-| **Keymap** | 2 | 49 | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md)) |
-| **Command** | 3 | 50 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
-| **Screen** | 4 | 51 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
-| **Chrome slot** | 5 | 52 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
-| **Search provider** | 5 | 52 | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
-| **Export / files** | 6 | 53 | Writes new files into a folder the user chose; metadata through PR 12's writer | — | Jobs on the job system, generation-tagged |
+| **Theme** | 1 | 55 | Colour tokens (dark and / or light), a font family | The system-following palette, CozetteVector | Tokens cached by the chrome; read before the add-on is verified, corrected after |
+| **Theme, shape** | 2 | 56 | Corner radius scale, density, type scale | Today's literals | Same table |
+| **Settings page** | 2 | 56 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
+| **Keymap** | 2 | 56 | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md)) |
+| **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
+| **Screen** | 4 | 58 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
+| **Chrome slot** | 5 | 59 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
+| **Search provider** | 5 | 59 | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
+| **Export / files** | 6 | 60 | Writes new files into a folder the user chose; metadata through PR 12's writer | — | Jobs on the job system, generation-tagged |
 
-Local search becomes a search provider in PR 52 instead of owning the path-bar button (#76); it
+Local search becomes a search provider in PR 59 instead of owning the path-bar button (#76); it
 keeps its native pack and its own channel.
 
 ## 8. Themes (API 1)
@@ -212,7 +212,7 @@ A theme file, one per theme the add-on lists:
 - **Not themed:** photo and video pixels, the canvas's colour pipeline, the F3 overlay (ImGui,
   a lab tool), the histogram's channel colours (they carry meaning), the hover washes (they
   follow the appearance, not a token), and the first-party add-ons' own windows until they read
-  the host's tokens (PR 49).
+  the host's tokens (PR 56).
 - **Choosing one:** Settings → Appearance → **Theme**: Default, then every theme of every
   installed add-on. Installing does not switch.
 - **Start-up:** the chrome stores the resolved tokens of the theme in use in its own settings
@@ -223,7 +223,7 @@ A theme file, one per theme the add-on lists:
 
 Themes, settings and keymaps are data. Commands, screens, providers and exports need code.
 Three ways to run it, and this plan's recommendation. **This is the owner's call
-([Open decisions](#open-decisions-owner) 1); PR 50 does not start without it.**
+([Open decisions](#open-decisions-owner) 1); PR 57 does not start without it.**
 
 | | A. Sandboxed script (recommended) | B. Native, in process (what Import is) | C. Native, in a helper process |
 |---|---|---|---|
@@ -263,7 +263,7 @@ B stays what it is: MediaViewer's own add-ons, under our key and Team ID. C is n
 small vocabulary both hosts render with their own controls.
 
 - **Places:** a window of its own (like Import's), a docked pane, a sheet over the viewer.
-- **Vocabulary (PR 51):** stack, grid, scroll, split, text, image, thumbnail (a file's, from
+- **Vocabulary (PR 58):** stack, grid, scroll, split, text, image, thumbnail (a file's, from
   the viewer's cache), thumbnail grid (virtualised by the host), list, table, button, toggle,
   choice, slider, number, text field, progress, separator, and `surface` (pixels the add-on
   drew, for what the vocabulary lacks).
@@ -280,7 +280,7 @@ small vocabulary both hosts render with their own controls.
 
 - **Launch:** zero add-on work before first pixel. No open add-on is listed, verified or parsed
   until the chrome is up, and then on a worker. The launch → first pixel and launch → full
-  resolution numbers must not move with add-ons installed; PR 48's verify measures it.
+  resolution numbers must not move with add-ons installed; PR 55's verify measures it.
 - **Steady state:** contributions are tables. The theme is brushes recoloured once. A keymap is
   the binding table. A command is a row. Nothing is resolved by name per frame, tile or key.
 - **Idle:** an add-on with nothing to do costs nothing: no timer, no poll. 0 presents and ~0 %
@@ -296,7 +296,7 @@ small vocabulary both hosts render with their own controls.
 - The SDK (`tools/addon-sdk`) and the examples are **MIT**, so an add-on author takes on no
   GPL obligation by using them. (The app stays GPL-3.0-or-later.)
 - What licence a script that calls the host API must carry is a question for the owner, and
-  perhaps a lawyer, before PR 50 ([Open decisions](#open-decisions-owner) 4).
+  perhaps a lawyer, before PR 57 ([Open decisions](#open-decisions-owner) 4).
 
 ## 13. For people who make add-ons
 
@@ -316,15 +316,15 @@ installed.
 
 | PR | Slice | Verify (both platforms) |
 |---|---|---|
-| **48** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
-| 49 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
-| 50 | **Code** (after owner call 1). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
-| 51 | **Screens.** The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
-| 52 | **Slots and search providers.** Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
-| 53 | **Files.** `files.write`, exports, `metadata.write`; `network` if approved | An add-on export never overwrites and never touches an original (rule 5, tested by hash); a `network` add-on reaches only the hosts its sheet named |
+| **55** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
+| 56 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
+| 57 | **Code** (after owner call 1). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
+| 58 | **Screens.** The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
+| 59 | **Slots and search providers.** Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
+| 60 | **Files.** `files.write`, exports, `metadata.write`; `network` if approved | An add-on export never overwrites and never touches an original (rule 5, tested by hash); a `network` add-on reaches only the hosts its sheet named |
 
-**Sequencing:** 48 is useful alone and decides nothing about code. 49 needs no owner call.
-50 → 51 → 52 → 53 are the spine of "add new screens" and start only after call 1.
+**Sequencing:** 55 is useful alone and decides nothing about code. 56 needs no owner call.
+57 → 58 → 59 → 60 are the spine of "add new screens" and start only after call 1.
 
 ## 15. Not in this plan
 
@@ -341,7 +341,7 @@ canvas, the colour pipeline or the present path; add-ons that change an original
 | People trust a name | The sheet says the add-on is unchecked, shows the fingerprint, and lists what it can and cannot do from the manifest, not from the publisher's words |
 | An add-on's update is hijacked | Key pinned at first install; another key is refused |
 | A theme makes the app unusable | Contrast floor at install; high contrast overrides; Default is one click, and one key (`Reset`, Settings) |
-| Add-ons erode launch time one by one | Nothing before first pixel; cached tokens; PR 48's launch verify is inherited by every slice |
+| Add-ons erode launch time one by one | Nothing before first pixel; cached tokens; PR 55's launch verify is inherited by every slice |
 | Rule 6 weakened by other people's code | No network or file access without a named permission in the sheet; none at all under API 1–2 |
 | Dual-track doubles every contribution point | The model exists so a point is written twice **once**, not once per add-on |
 
@@ -355,12 +355,12 @@ canvas, the colour pipeline or the present path; add-ons that change an original
    upload, sync or call a service; with it, one bad add-on can send a user's photos away with
    their one-time consent.
 3. **Opening `.mvaddon` by double-click:** registering the type with the OS (installer ProgId,
-   `CFBundleDocumentTypes`) is in PR 48's scope but changes the installer and the plist policy
+   `CFBundleDocumentTypes`) is in PR 55's scope but changes the installer and the plist policy
    check; drop and Open With work without it.
 4. **The licence of scripts** that call the host API, and whether the SDK being MIT is right.
 5. **A word for them in the UI.** This plan uses "From others" under Add-ons.
 
-## Implementation notes (PR 48, 2026-09-29)
+## Implementation notes (PR 55, 2026-09-29)
 
 Where it lives:
 
@@ -398,7 +398,7 @@ Calls made while building it (none reverses a D-decision; logged in [12](12-deci
 - **`disabled` is parsed and checked but not read on Windows yet**; nothing there draws
   disabled text in a colour of its own.
 - **The first-party add-ons' windows do not follow a theme yet** (Import's and Local search's
-  chromes carry their own copies of the default colours); PR 49.
+  chromes carry their own copies of the default colours); PR 56.
 
 Measured on the Mac (arm64, Release, 2026-09-29, the owner's machine while in use). Base is
 `b9c65c3` built in its own worktree and build directory; "theme" is the new build with the
@@ -429,7 +429,7 @@ this change. The cause was not found here (the lab loads the installed first-par
 and the machine was in use); it is filed as its own task. Until the base passes, "both
 present-loop gates hold" is not shown for this PR.
 
-PR 48's verify line, where each part stands:
+PR 55's verify line, where each part stands:
 
 | Verify | State |
 |---|---|

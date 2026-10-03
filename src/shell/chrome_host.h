@@ -767,7 +767,7 @@ class chrome_host {
   // when there is no such entry, no add-on, or nothing to do.
   [[nodiscard]] bool show_addon(std::int32_t family, std::int32_t kind,
                                 const std::string& json) noexcept;
-  // plan/23: an add-on package (*.mvaddon) handed to the app. The chrome
+  // plan/25: an add-on package (*.mvaddon) handed to the app. The chrome
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
   [[nodiscard]] bool offer_addon(const std::string& path_utf8) noexcept;
@@ -853,7 +853,7 @@ class chrome_host {
   chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn share_files_ = nullptr;
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
-  chrome_entry_fn offer_addon_ = nullptr;  // plan/23, optional
+  chrome_entry_fn offer_addon_ = nullptr;  // plan/25, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn show_popup_ = nullptr;

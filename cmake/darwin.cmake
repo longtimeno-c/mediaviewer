@@ -576,6 +576,8 @@ set(MV_MAC_HOST_SOURCES
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
+  # plan/23: Final Cut Pro on / off (the agent and extension in the bundle).
+  src/shell/fcp_mac.mm
   src/shell/present_busy.h
 )
 set_source_files_properties(
@@ -583,6 +585,7 @@ set_source_files_properties(
   src/shell/crash_reporter_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/addons_mac.mm
+  src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
@@ -614,6 +617,7 @@ function(mv_mac_host target)
     "-framework SystemConfiguration"
     "-framework IOKit"
     "-framework Security"
+    "-framework ServiceManagement"  # plan/23: the FCP search agent (SMAppService)
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
@@ -870,7 +874,7 @@ if(MV_BUILD_TESTS)
   add_dependencies(mv_import_tests mv_import)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
 
-  # plan/23: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
+  # plan/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
   add_executable(mv_addon_verify tools/addon-verify/main.cpp)
   target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io mv_project_options)
@@ -892,8 +896,9 @@ if(MV_BUILD_TESTS)
       tests/test_ai_infer.cpp
       tests/test_ai_audio.cpp
       tests/test_ai_query.cpp
+      tests/test_nle.cpp
     )
-    target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_io
+    target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
       Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE
@@ -903,6 +908,11 @@ if(MV_BUILD_TESTS)
       PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   endif()
 endif()
+
+# copybench: the copy engine headless, base vs new (plan/12 2026-10-01).
+add_executable(copybench tools/copybench/main.cpp)
+target_link_libraries(copybench PRIVATE mv_io mv_core mv_project_options)
+target_include_directories(copybench PRIVATE src)
 
 # ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
 if(TARGET mv_ai)

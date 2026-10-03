@@ -77,8 +77,9 @@ public static partial class IslandHost
         // Being removed (the AI family's rows say "Removing…"); Busy alone is
         // also a load in flight.
         public bool Removing { get; set; }
-        // The install in progress (null: none) and its bar, kept and updated in
-        // place: a rebuilt row would drop keyboard focus at every 1 %.
+        // The install in progress (null: none) and the bar of the row on screen,
+        // updated in place: rebuilding the row would drop keyboard focus at
+        // every 1 %. A row rebuilt for a state change makes a new bar.
         public AddonPhase? Phase { get; set; }
         public AddonProgressView? Progress { get; set; }
         public IAddonChrome? Chrome { get; set; }
@@ -169,11 +170,15 @@ public static partial class IslandHost
         }
     }
 
-    // The slot's bar, moved into the row being built.
+    // A new bar for the row being built, showing the slot's current phase;
+    // progress reports then update it in place (slot.Progress). Not the old
+    // bar moved across: detaching it by its Parent missed, and appending it
+    // to the new row threw "Element is already the child of another element"
+    // out of the Install click -- a fail-fast the moment a second piece was
+    // queued behind Core (measured, 0.1.20).
     private static FrameworkElement ProgressFor(AddonSlot slot, double width)
     {
-        slot.Progress ??= new AddonProgressView(width);
-        if (slot.Progress.Root.Parent is Panel old) old.Children.Remove(slot.Progress.Root);
+        slot.Progress = new AddonProgressView(width);
         slot.Progress.Show(slot.Phase ?? new AddonPhase(AddonPhaseKind.Downloading));
         return slot.Progress.Root;
     }

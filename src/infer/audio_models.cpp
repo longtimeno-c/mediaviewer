@@ -130,8 +130,24 @@ result<std::unique_ptr<clap_model>> clap_model::open(const runtime& rt, const cl
   return m;
 }
 
+result<std::unique_ptr<clap_model>> clap_model::open_text_only(const runtime& rt, const clap_spec& spec,
+                                                               const session_options& options) {
+  std::unique_ptr<clap_model> m(new clap_model());
+  m->spec_ = spec;
+  MV_TRY(std::string vocab, read_text(spec.vocab_file));
+  MV_TRY(std::string merges, read_text(spec.merges_file));
+  MV_TRY(gpt2_tokenizer tok, gpt2_tokenizer::load(vocab, merges));
+  m->tok_ = std::move(tok);
+  session_options text = options;
+  text.on = backend::cpu;
+  MV_TRY(auto t, session::open(rt, spec.text_file, text, nullptr));
+  m->text_ = std::move(t);
+  return m;
+}
+
 expected clap_model::embed_audio(std::span<const std::span<const float>> windows, std::vector<float>& out) {
   out.clear();
+  if (!audio_) return err(status::unsupported_format);
   if (windows.empty()) return {};
   tensor_f32 in;
   const auto n = static_cast<std::int64_t>(windows.size());

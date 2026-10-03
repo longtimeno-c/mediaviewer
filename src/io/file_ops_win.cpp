@@ -92,7 +92,8 @@ attempt copy_to(const std::wstring& src, const std::wstring& dest) noexcept {
   return attempt::failed;
 }
 
-attempt move_to(const std::wstring& src, const std::wstring& dest) noexcept {
+attempt move_to(const std::wstring& src, const std::wstring& dest,
+                const copy_profile& profile) noexcept {
   // Same volume: a rename, and never MOVEFILE_REPLACE_EXISTING.
   if (::MoveFileExW(src.c_str(), dest.c_str(), 0)) return attempt::done;
   const DWORD e = ::GetLastError();
@@ -104,7 +105,9 @@ attempt move_to(const std::wstring& src, const std::wstring& dest) noexcept {
   // (plan/18: F8 never removes an unverified source). Any failure leaves the
   // source where it was and no partial copy behind.
   const std::string targets[] = {utf8_from_wide(dest)};
-  const auto copied = verified_copy(utf8_from_wide(src), targets, copy_options{});
+  copy_options options;
+  profile.apply(options);
+  const auto copied = verified_copy(utf8_from_wide(src), targets, options);
   if (!copied) return attempt::failed;
   switch (copied->targets[0].outcome) {
     case copy_target_outcome::verified: break;
@@ -192,7 +195,7 @@ std::int32_t probe_recycle_sink(std::uint32_t transfer_flags, bool& refused) noe
 }  // namespace detail
 
 result<std::string> transfer_file(std::string_view src_utf8, std::string_view dest_dir_utf8,
-                                  transfer_kind kind) noexcept {
+                                  transfer_kind kind, const copy_profile& profile) noexcept {
   try {
     const std::wstring src = wide_from_utf8(src_utf8);
     std::wstring dir = wide_from_utf8(dest_dir_utf8);
@@ -223,7 +226,8 @@ result<std::string> transfer_file(std::string_view src_utf8, std::string_view de
       const std::wstring dest = dir + wide_from_utf8(candidate);
       if (dest.size() == dir.size()) return err(status::internal);
       if (path_taken(dest)) continue;
-      const attempt a = kind == transfer_kind::copy ? copy_to(src, dest) : move_to(src, dest);
+      const attempt a =
+          kind == transfer_kind::copy ? copy_to(src, dest) : move_to(src, dest, profile);
       if (a == attempt::done) return utf8_from_wide(dest);
       if (a == attempt::failed) return err(status::io);
     }

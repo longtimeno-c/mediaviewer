@@ -133,6 +133,9 @@ public unsafe struct MvImportApi
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> PreviewNamesJson;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, uint*, MvStatus> HistoryJson;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, ulong*, MvStatus> VerifyFolder;
+    // Not appended here: PR 54's find_duplicates / trash_duplicate follow, and
+    // the Import chrome reads them itself (DuplicatesApi.cs), so this struct's
+    // size stays what every installed Import chrome was built against.
 }
 
 /// <summary>
@@ -323,7 +326,7 @@ public static unsafe partial class AddonNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_volume_watch(IntPtr session, uint enable);
 
-    // ---- open add-ons (plan/23): add-ons from other makers, data only ----------
+    // ---- open add-ons (plan/25): add-ons from other makers, data only ----------
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

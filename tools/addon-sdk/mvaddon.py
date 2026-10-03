@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: MIT
-"""Make a MediaViewer add-on (plan/23, docs/ADDONS.md).
+"""Make a MediaViewer add-on (plan/25, docs/ADDONS.md).
 
     mvaddon.py keygen --out publisher.key
     mvaddon.py init my-addon --id you.my-addon --name "My Add-on" --publisher "You"

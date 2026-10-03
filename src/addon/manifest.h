@@ -74,7 +74,7 @@ enum class rejection : std::uint8_t {
   unexpected_file,   // a file in the folder the manifest does not list
   needs_update,      // host API outside the add-on's range
   over_ceiling,      // the family would exceed its installed-size ceiling (plan/17: 3 GB)
-  // Open add-ons (plan/23; package.h, open_manifest.h, open_store.h). Appended.
+  // Open add-ons (plan/25; package.h, open_manifest.h, open_store.h). Appended.
   too_large,         // the package or its entry count is over the cap
   bad_package,       // not the strict ZIP a package is
   code_not_allowed,  // names code, which this host runs from no third party
@@ -137,7 +137,7 @@ struct decision {
 // Hashed once per process per folder; a concurrent call for the same folder
 // waits for the one hashing it and takes its answer.
 [[nodiscard]] rejection verify_files(const std::string& dir, const manifest& m);
-// The same check for any signed list of files (an open add-on's, plan/23).
+// The same check for any signed list of files (an open add-on's, plan/25).
 [[nodiscard]] rejection verify_files(const std::string& dir, std::span<const manifest_file> files);
 // Verified `from_dir` was renamed to `to_dir`: carry the verification over,
 // so an install does not hash the same bytes a second time.

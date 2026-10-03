@@ -10,7 +10,7 @@
 //
 // mv_addon_verify --open <package.mvaddon> [<store-folder>]
 //
-// The same for an open add-on (plan/23): the app's own reading of a package
+// The same for an open add-on (plan/25): the app's own reading of a package
 // tools/addon-sdk/mvaddon.py made. Prints what the consent sheet is fed (the
 // inspect JSON); with a store folder it then installs there and prints the
 // install's JSON. Exit 0 only when every step said ok.

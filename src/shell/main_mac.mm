@@ -48,8 +48,13 @@
 #include "io/replace.h"
 #include "io/dir.h"
 #include "io/file_port.h"
+#include "io/in_flight.h"
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
+#include "shell/fcp_mac.h"
+#if defined(MV_WITH_SEARCH_AGENT)
+#include "nle/mac/agent_mac.h"
+#endif
 #include "shell/adjust_pane.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
@@ -660,7 +665,7 @@ extern "C" void mv_chrome_menu(int32_t cmd) {
 extern "C" bool mv_chrome_settings_visible(void) {
   return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
 }
-// plan/23: a theme's canvas colour stands in for the window's where the
+// plan/25: a theme's canvas colour stands in for the window's where the
 // viewer draws its own "System" background (the welcome screen, the letterbox).
 extern "C" void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
                                            bool has_light, uint32_t light_rgb) {
@@ -1987,7 +1992,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // rows of the live table that differ from the defaults.
   mv::shell::key_router _router;
   BOOL _settingsVisible;
-  // plan/23: the theme's canvas colours, when a theme is on.
+  // plan/25: the theme's canvas colours, when a theme is on.
   BOOL _themeCanvasActive;
   BOOL _themeHasDark;
   BOOL _themeHasLight;
@@ -2201,6 +2206,8 @@ static void MvAdoptNewDefaultViewerTypes() {
           if (app && path) (void)[app openEntryPath:path];
         },
         nullptr);
+    // plan/23: Final Cut Pro search stays as Settings left it (background, later).
+    MvFcpStart();
   }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
@@ -2799,7 +2806,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 
 - (BOOL)openEntryPath:(const char*)utf8_path {
-  // plan/23: an add-on package handed to the app (a drop, Open With, the
+  // plan/25: an add-on package handed to the app (a drop, Open With, the
   // command line) goes to Settings' install sheet, never to the viewer.
   // Nothing is read here; the chrome inspects it on a worker.
   if (utf8_path && *utf8_path) {
@@ -3323,53 +3330,64 @@ static void MvAdoptNewDefaultViewerTypes() {
       [src_paths, src_names, destDir, move, weakSelf](const mv::job_context&) -> mv::status {
         NSFileManager* fm = [NSFileManager defaultManager];
         NSString* destPath = destDir.path;
+        // To or from a share: several files at once, and each verified copy
+        // with several requests in flight (io/verified_copy.h, plan/12
+        // 2026-10-01). A card or a local disk keeps one file at a time.
+        const mv::io::copy_profile profile = mv::io::batch_copy_profile(
+            std::string(mv::io::parent_of(src_paths.front())), destPath.UTF8String);
+        // One slot per file, each written by the one thread that copies it.
+        std::vector<char> done(src_paths.size(), 0);
+
+        mv::io::for_each_in_flight(src_paths.size(), profile.files_in_flight, [&](std::size_t i) {
+          @autoreleasepool {
+            // unique_name's `exists` callback is a plain fileExistsAtPath check
+            // against the destination directory -- cheap, and exactly the
+            // "never overwrite" rule collision_name.h was written for.
+            const std::string chosen = mv::io::unique_name(
+                src_names[i].c_str(), [&](std::string_view candidate) {
+                  NSString* candidateName =
+                      [[NSString alloc] initWithBytes:candidate.data()
+                                                length:candidate.size()
+                                              encoding:NSUTF8StringEncoding];
+                  NSString* candidatePath = [destPath stringByAppendingPathComponent:candidateName];
+                  return [fm fileExistsAtPath:candidatePath];
+                });
+            if (chosen.empty()) return;  // every "(n).ext" up to the cap is taken
+            NSString* chosenName = [NSString stringWithUTF8String:chosen.c_str()];
+            NSURL* srcURL =
+                [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_paths[i].c_str()]];
+            NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
+
+            NSError* error = nil;
+            BOOL ok = NO;
+            if (move && !MvSameVolume(srcURL, destDir)) {
+              // plan/18: F8 across volumes deletes the source only after the
+              // copy is verified (hashed while read, F_FULLFSYNC, read back
+              // with F_NOCACHE, compared). -moveItemAtURL: would copy and
+              // delete with no check in between.
+              const std::string targets[] = {std::string(dstURL.path.UTF8String)};
+              mv::io::copy_options options;
+              profile.apply(options);
+              const auto copied = mv::io::verified_copy(src_paths[i], targets, options);
+              ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
+                   [fm removeItemAtURL:srcURL error:&error];
+              if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
+                // The source would not go: a move that leaves two copies is not
+                // a move. Take the verified copy back and report it.
+                (void)mv::io::remove_file(targets[0]);
+              }
+            } else {
+              ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
+                        : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+            }
+            done[i] = ok ? 1 : 0;
+          }
+        });
+
         std::vector<std::string> succeeded;
         NSUInteger failures = 0;
-        succeeded.reserve(src_paths.size());
-
         for (std::size_t i = 0; i < src_paths.size(); ++i) {
-          // unique_name's `exists` callback is a plain fileExistsAtPath check
-          // against the destination directory -- cheap, and exactly the
-          // "never overwrite" rule collision_name.h was written for.
-          const std::string chosen = mv::io::unique_name(
-              src_names[i].c_str(), [&](std::string_view candidate) {
-                NSString* candidateName =
-                    [[NSString alloc] initWithBytes:candidate.data()
-                                              length:candidate.size()
-                                            encoding:NSUTF8StringEncoding];
-                NSString* candidatePath = [destPath stringByAppendingPathComponent:candidateName];
-                return [fm fileExistsAtPath:candidatePath];
-              });
-          if (chosen.empty()) {
-            ++failures;  // every "(n).ext" up to the cap is taken
-            continue;
-          }
-          NSString* chosenName = [NSString stringWithUTF8String:chosen.c_str()];
-          NSURL* srcURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_paths[i].c_str()]];
-          NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
-
-          NSError* error = nil;
-          BOOL ok = NO;
-          if (move && !MvSameVolume(srcURL, destDir)) {
-            // plan/18: F8 across volumes deletes the source only after the
-            // copy is verified (hashed while read, F_FULLFSYNC, read back
-            // with F_NOCACHE, compared). -moveItemAtURL: would copy and
-            // delete with no check in between.
-            const std::string targets[] = {std::string(dstURL.path.UTF8String)};
-            const auto copied =
-                mv::io::verified_copy(src_paths[i], targets, mv::io::copy_options{});
-            ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
-                 [fm removeItemAtURL:srcURL error:&error];
-            if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
-              // The source would not go: a move that leaves two copies is not
-              // a move. Take the verified copy back and report it.
-              (void)mv::io::remove_file(targets[0]);
-            }
-          } else {
-            ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
-                      : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
-          }
-          if (ok) {
+          if (done[i]) {
             succeeded.push_back(src_paths[i]);
           } else {
             ++failures;
@@ -6301,7 +6319,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   ++_editorGeneration;
 }
 
-// ---- plan/23: the open add-ons' verify rig ---------------------------------------
+// ---- plan/25: the open add-ons' verify rig ---------------------------------------
 
 // MV_ADDON_SELFTEST=<folder>, launched with a .mvaddon as the path to open.
 // Inert unless set. It walks what a person would: the sheet for the package,
@@ -8232,6 +8250,12 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(MV_WITH_SEARCH_AGENT)
+  // plan/23: launchd runs this executable as Final Cut Pro's search agent
+  // (Contents/Library/LaunchAgents). Before anything of the viewer: no window,
+  // no crash reporter, no add-ons.
+  if (argc == 2 && std::strcmp(argv[1], "--search-agent") == 0) return MvSearchAgentMain();
+#endif
   mv::trace::provider_register();
   mv::shell::mac_lab_options options;
   for (int i = 1; i < argc; ++i) {
