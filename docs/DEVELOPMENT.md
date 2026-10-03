@@ -1244,6 +1244,13 @@ PDF that needs a password shows the locked card. Measured on the Mac (`mv_tests 
 the full suite: 597 cases, 8 skipped for the absent RAW corpus). `pdf_win.cpp`,
 `mv_folder_select_page` and the Windows page keys are compiled by CI only.
 
+**DOCX (slices 4–5):** pages laid out and drawn by `codec/docx.cpp` over HarfBuzz and FreeType
+(new vcpkg ports), with fonts found through CoreText / DirectWrite. Text, styles, lists, tables,
+pictures and breaks; not headers, footers, footnotes, text boxes or columns (docs/design/04).
+Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
+`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
+lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
+
 ### Performance pass (2026-09-26)
 
 Open and navigation latency, measured on an Apple M5 (60 Hz) with the macOS lab and the

@@ -5,6 +5,17 @@ MediaViewer opens photos and video. This plan adds four file types the owner ask
 and macOS together. It is a forward plan, not a description of the product; when a slice lands,
 move what it built into the matching `docs/design/` doc and strike the slice here.
 
+## Status (2026-10-04)
+
+All slices are built and on review branches, stacked in order: docs and the plan (#118), audio
+(#121), pages (#122), PDF (#123), DOCX (this branch). Owner calls taken: D5 amended (2026-10-03);
+the new types are Open With only and never made the default (owner, 2026-10-03); PDF uses the
+OS renderers (§2.4, recommended); DOCX is drawn by our own layout (§2.5 option C), because B
+(LibreOffice) is a 300 MB download and A breaks the single-canvas rule. Slice 4 (preview only)
+is folded into slice 5: the thumbnail is page 1 of the real layout. What is measured and what is
+owed is in `docs/DEVELOPMENT.md`, "Where this actually is". When these land, fold §2 into
+`docs/design/` (04, 05) and retire this file.
+
 ## 0. Before any code: the scope change
 
 Today the format set is fixed by **D5** in `CLAUDE.md` (camera-dump formats only, "not a movie

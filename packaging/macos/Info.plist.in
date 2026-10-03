@@ -126,6 +126,7 @@
       <key>LSItemContentTypes</key>
       <array>
         <string>com.adobe.pdf</string>
+        <string>org.openxmlformats.wordprocessingml.document</string>
       </array>
     </dict>
   </array>
