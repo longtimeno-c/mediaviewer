@@ -178,8 +178,14 @@ The panel (`extension_mac.mm`, AppKit; plan/12 says why not SwiftUI):
 - **Options:** the clip handles a drag uses (1 s, 2/3 s, 5 s, 10 s, or the whole clip), whether
   the search becomes a keyword collection (open question 8), and the Phase 0 test drag.
 
-Owed in FCP: the library scope (the host objects over Apple Events, and the Automation prompt),
-the panel's size in FCP's window, and the drag with each handle setting.
+Owed in FCP: the library scope (the host objects over Apple Events, and the Automation prompt)
+and the drag with each handle setting.
+
+Panel size (owner, 2026-10-03, 0.1.23): FCP opens the panel at half the screen (855 × 497 pt
+on a 1710-wide display), not at the view's 560 × 720. The preview's required 16:9 at full width
+made the layout 757 pt tall, so the search field, kind and scope were clipped off the top and
+only an empty player showed. The preview now takes no space until a result is selected, and
+then gives way (16:9 when there is room, at most 40 % of the panel, the grid keeps 140 pt).
 
 ### Not in this slice
 

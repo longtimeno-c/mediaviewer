@@ -329,6 +329,7 @@ NSURL* active_library_url() {
   NSStackView* _people;
   AVPlayerView* _player;
   NSImageView* _still;
+  NSLayoutConstraint* _previewCollapsed;  // active while nothing is selected
   NSTextField* _caption;
   MVGrid* _grid;
   NSTextField* _status;
@@ -449,7 +450,6 @@ NSURL* active_library_url() {
     [_player.topAnchor constraintEqualToAnchor:_people.bottomAnchor constant:6],
     [_player.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:m],
     [_player.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-m],
-    [_player.heightAnchor constraintEqualToAnchor:_player.widthAnchor multiplier:9.0 / 16.0],
     [_still.topAnchor constraintEqualToAnchor:_player.topAnchor],
     [_still.bottomAnchor constraintEqualToAnchor:_player.bottomAnchor],
     [_still.leadingAnchor constraintEqualToAnchor:_player.leadingAnchor],
@@ -466,6 +466,19 @@ NSURL* active_library_url() {
     [_status.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-m],
     [_status.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-8],
   ]];
+  // FCP picks the window size (855 x 497 pt on a 1710-wide display), so the
+  // preview gives way: 16:9 when there is room, at most 40 % of the panel, and
+  // the search controls and at least 140 pt of grid always fit. While nothing is
+  // selected it takes no space at all.
+  NSLayoutConstraint* aspect = [_player.heightAnchor constraintEqualToAnchor:_player.widthAnchor
+                                                                  multiplier:9.0 / 16.0];
+  aspect.priority = NSLayoutPriorityDefaultLow;
+  NSLayoutConstraint* cap = [_player.heightAnchor constraintLessThanOrEqualToAnchor:root.heightAnchor
+                                                                        multiplier:0.4];
+  cap.priority = NSLayoutPriorityDefaultHigh;
+  _previewCollapsed = [_player.heightAnchor constraintEqualToConstant:0];
+  [NSLayoutConstraint activateConstraints:@[ aspect, cap, _previewCollapsed ]];
+  _player.hidden = YES;
   self.view = root;
 
   _tiles = [[NSCache alloc] init];
@@ -1085,10 +1098,12 @@ NSURL* active_library_url() {
   if (index < 0 || static_cast<std::size_t>(index) >= _rows.size()) {
     _player.player = nil;
     _still.hidden = YES;
-    _player.hidden = NO;
+    _player.hidden = YES;
+    _previewCollapsed.active = YES;
     _caption.stringValue = @"";
     return;
   }
+  _previewCollapsed.active = NO;
   const mv::nle::row& x = _rows[static_cast<std::size_t>(index)];
   NSURL* url = [NSURL fileURLWithPath:ns(x.path)];
   if (is_video(x)) {
