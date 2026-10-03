@@ -22,8 +22,9 @@ filters by extension only to decide what is a candidate; decode always probes.
 | AVIF | still + animated | **libavif** + **dav1d** |
 | RAW | CR2/CR3, NEF, ARW, ORF, RAF, RW2, DNG, … | **LibRaw** (OpenMP) |
 | PDF | every page, `/Rotate` applied, on white | the OS: **CoreGraphics** (`codec/pdf_mac.cpp`), **Windows.Data.Pdf** (`codec/pdf_win.cpp`) |
+| DOCX | every page; text, styles, lists, tables, pictures (below) | own layout (`codec/docx.cpp`) over **HarfBuzz** + **FreeType** (`codec/text.cpp`), fonts found by CoreText / DirectWrite (`codec/fonts_*.cpp`) |
 
-That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW and PDF.
+That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW, PDF and DOCX.
 
 **PDF** (`%PDF-` in the first 1 KiB) renders through the OS, so no PDF library ships. A page is
 `kPdfLongEdge` (3200) px on its long edge in sRGB on white; the first pixel and the thumbnails
@@ -32,6 +33,20 @@ that needs a password is the locked card (`codec/card.h`), one page; one locked 
 password renders. Windows renders each page to an in-memory BMP that the bundled BMP reader
 takes, waiting on the WinRT operation from the worker with a 30 s ceiling. Zoom past the render
 size is a resample of the 3200 px page, not a re-render.
+
+**DOCX** (a zip whose first parts are an Office package's; `word/document.xml` must exist) is laid
+out by `codec/docx.cpp`: readable pages, not a Word replica. It reads the styles (docDefaults,
+`basedOn` chains, theme fonts), numbering and relationships, then the body: paragraphs and runs
+(font, size, bold, italic, underline, strike, colour, caps, super/subscript), alignment incl.
+justify, indents, spacing, line spacing, numbered and bulleted lists, tabs, line / page / section
+breaks, inline and anchored pictures (at their extent, as inline), and tables (grid widths, spans,
+borders). Not drawn: headers and footers, footnotes, comments, text boxes and shapes, columns,
+floating placement, right-to-left reordering. Text is shaped by HarfBuzz in unhinted font units, so
+layout is in points and the page count does not depend on the drawing size; FreeType draws it. Fonts
+are found by family through the OS (`codec/fonts.h`), with metric-compatible substitutes (Calibri →
+Carlito → Helvetica Neue / Arial …) and a per-platform fallback list for missing characters (CJK,
+Greek …). Every page before the one asked for is laid out; only that page is drawn. The zip reader
+caps every entry at 64 MiB and the XML reader refuses a DOCTYPE, so neither can be made to explode.
 TIFF-container RAWs probe as `tiff` and are reclassified by `looks_like_raw`.
 
 The registry is `codec::decode` in [`src/codec/decode.cpp`](../../src/codec/decode.cpp): one

@@ -273,6 +273,10 @@ find_package(WebP CONFIG REQUIRED)
 # hard dependency of the port, so HEIC decode does not pull a software HEVC
 # encoder. LibRaw uses the thread-safe raw_r target — decode is on the pool.
 find_package(TIFF REQUIRED)
+# DOCX text (codec/text.cpp): FreeType (FTL) draws, HarfBuzz (MIT) shapes.
+find_package(Freetype REQUIRED)
+find_package(harfbuzz CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(libheif CONFIG REQUIRED)
 if(TARGET libheif::heif)
   set(MV_HEIF_TARGET libheif::heif)
@@ -328,6 +332,15 @@ add_library(mv_codec STATIC
   src/codec/orientation.h
   src/codec/os_decode_win.cpp
   src/codec/pdf_win.cpp
+  src/codec/zip.cpp
+  src/codec/zip.h
+  src/codec/xml.cpp
+  src/codec/xml.h
+  src/codec/text.cpp
+  src/codec/text.h
+  src/codec/fonts.h
+  src/codec/docx.cpp
+  src/codec/fonts_win.cpp
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
   src/codec/os_decode.h
@@ -342,7 +355,10 @@ target_link_libraries(mv_codec
           windowscodecs ole32
           # Windows.Data.Pdf (codec/pdf_win.cpp): WinRT activation and the
           # IStream <-> IRandomAccessStream bridges.
-          runtimeobject shcore shlwapi)
+          runtimeobject shcore shlwapi
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_win.cpp finds files
+          # through DirectWrite and reads them through io/).
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB dwrite mv_io)
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
@@ -944,6 +960,7 @@ if(MV_BUILD_TESTS)
     tests/test_audio_files.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
+    tests/test_docx.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp

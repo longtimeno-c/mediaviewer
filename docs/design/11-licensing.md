@@ -61,6 +61,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | libwebp, libsharpyuv | BSD-3 | DLL / static |
 | libavif, dav1d, libyuv | BSD-2 / BSD-3 | DLL / static |
 | libtiff, liblzma | libtiff (BSD-like), 0BSD | DLL / static |
+| FreeType, HarfBuzz | FTL (of the FTL / GPL-2.0+ dual licence; combines with GPL-3.0), MIT | DLL / static. DOCX text; no optional features |
 | **libheif** | **LGPL-3** | **Always dynamic.** vcpkg default features off: the port's `hevc` feature is the x265 encoder |
 | **libde265** | **LGPL-3** | **Always dynamic.** HEVC decode for libheif; a hard dependency, not a feature, so HEIC decode does not pull x265 |
 | **LibRaw** | **LGPL-2.1** (of the LGPL / CDDL dual licence) | **Always dynamic.** No `LibRaw-demosaic-pack-GPL2/3` |

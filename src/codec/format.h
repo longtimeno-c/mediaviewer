@@ -22,6 +22,7 @@ enum class format_family : std::uint32_t {
   avif = 9,  // ISO BMFF ftyp avif/avis (libavif + dav1d)
   raw = 10,  // CR3/RAF/ORF/RW2 magics; CR2/NEF/ARW/DNG via LibRaw on TIFF
   pdf = 11,  // %PDF- in the first 1 KiB; rendered by the OS (codec/pdf.h), paged
+  docx = 12, // a zip with word/ parts; laid out by codec/docx.cpp, paged
 };
 
 // First bytes only. A short or empty span is unknown, not corrupt.
@@ -40,6 +41,7 @@ enum class format_family : std::uint32_t {
     case format_family::avif: return "AVIF";
     case format_family::raw:  return "RAW";
     case format_family::pdf:  return "PDF";
+    case format_family::docx: return "DOCX";
     case format_family::unknown: return "unknown";
   }
   return "unknown";
