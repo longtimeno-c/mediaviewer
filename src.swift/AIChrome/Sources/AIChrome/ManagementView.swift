@@ -494,6 +494,23 @@ final class ManagementModel: ObservableObject {
     return removed
   }
 
+  /// A pack built before people_dedupe was appended has no "Merge duplicates".
+  var canDedupe: Bool { table.has(\mv_ai_api.people_dedupe) }
+
+  /// "Merge duplicates" (plan/17 "Merge duplicates"): the pack re-checks
+  /// every face, then merges people who are the same person. Only ever on
+  /// request. People merged away and faces moved; nil when it could not run.
+  func mergeDuplicates() async -> (merged: UInt32, moved: UInt32)? {
+    guard canDedupe else { return nil }
+    let t = table
+    let result: (UInt32, UInt32)? = await Task.detached {
+      var merged: UInt32 = 0, moved: UInt32 = 0
+      return t.call { t.a.people_dedupe?(t.ctx, &merged, &moved) } == MV_OK ? (merged, moved) : nil
+    }.value
+    reloadPeople()
+    return result.map { (merged: $0.0, moved: $0.1) }
+  }
+
   /// "Not this person" for each face, then one reload.
   func reject(_ faces: [UInt64]) {
     guard !faces.isEmpty else { return }

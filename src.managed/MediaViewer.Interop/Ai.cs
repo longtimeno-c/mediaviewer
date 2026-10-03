@@ -246,6 +246,9 @@ public unsafe struct MvAiApi
 
     // people in the open folder (2026-09-28, plan/17 "People in the open folder")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, byte*, uint, uint*, MvStatus> PeopleInJson;
+
+    // merge duplicates on request (2026-10-03, plan/17 "Merge duplicates")
+    public delegate* unmanaged[Cdecl]<IntPtr, uint*, uint*, MvStatus> PeopleDedupe;
 }
 
 /// <summary>
@@ -457,6 +460,17 @@ public sealed unsafe class AiApi
         uint removed;
         Check(_api->PersonRefine(Ctx, person, &removed));
         return removed;
+    }
+
+    /// <summary>
+    /// "Merge duplicates": every face re-checked, then people who are the same
+    /// person merged. People merged away, and faces that moved. Worker.
+    /// </summary>
+    public (uint Merged, uint Moved) PeopleDedupe()
+    {
+        uint merged, moved;
+        Check(_api->PeopleDedupe(Ctx, &merged, &moved));
+        return (merged, moved);
     }
 
     public ulong FaceSplit(IReadOnlyList<ulong> faces)

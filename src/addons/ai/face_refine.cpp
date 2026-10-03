@@ -7,6 +7,8 @@
 #include <map>
 #include <numeric>
 #include <set>
+#include <string>
+#include <tuple>
 
 namespace mv::ai {
 namespace {
@@ -365,6 +367,109 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       built[person] = build_proto(in, p, person, std::move(m), is_named(person));
     }
     for (auto& [person, pr] : built) out.protos.push_back(std::move(pr));
+  }
+  return out;
+}
+
+namespace {
+
+// How well b's exemplars vouch for a's: each of a's exemplars takes its
+// support by b, and those are averaged. kNoEvidence when either has none.
+float vouch(const person_proto& a, const person_proto& b, std::uint32_t dim, std::uint32_t top_k) {
+  const std::size_t na = a.exemplar_ids.size();
+  if (na == 0 || b.exemplar_ids.empty()) return kNoEvidence;
+  float total = 0;
+  for (std::size_t i = 0; i < na; ++i) {
+    // `self` = 0 skips nothing: a and b are different people.
+    total += support(a.exemplars.data() + i * dim, b, dim, 0, top_k);
+  }
+  return total / static_cast<float>(na);
+}
+
+}  // namespace
+
+std::vector<std::vector<std::int64_t>> find_duplicates(const dedupe_input& in, const refine_params& p) {
+  const std::uint32_t dim = in.dim;
+  std::vector<const person_proto*> ps;
+  for (const person_proto& pr : in.protos) {
+    if (pr.person > 0 && !pr.exemplar_ids.empty() && pr.core_mean.size() == dim) ps.push_back(&pr);
+  }
+  std::map<std::int64_t, const dedupe_person*> who;
+  for (const dedupe_person& d : in.people) who[d.id] = &d;
+  const auto name_of = [&](std::int64_t id) -> const std::string& {
+    static const std::string none;
+    const auto it = who.find(id);
+    return it == who.end() ? none : it->second->name;
+  };
+  const auto apart = [&](std::int64_t a, std::int64_t b) {
+    return std::binary_search(in.apart.begin(), in.apart.end(), std::make_pair(std::min(a, b), std::max(a, b)));
+  };
+  // A core far from another's is not the same person: skip the exemplar work.
+  const float prefilter = p.join - 2 * p.margin;
+
+  struct link {
+    std::size_t a, b;
+    float support;
+  };
+  std::vector<link> links;
+  std::set<std::pair<std::size_t, std::size_t>> linked;
+  for (std::size_t i = 0; i < ps.size(); ++i) {
+    if (in.cancel && in.cancel->load(std::memory_order_relaxed)) return {};
+    for (std::size_t j = i + 1; j < ps.size(); ++j) {
+      const std::int64_t ia = ps[i]->person, ib = ps[j]->person;
+      const std::string& na = name_of(ia);
+      const std::string& nb = name_of(ib);
+      if (!na.empty() && !nb.empty() && na != nb) continue;
+      if (apart(ia, ib)) continue;
+      // core_mean is unnormalised: a . b = mean pairwise cosine across the cores.
+      if (dot(ps[i]->core_mean.data(), ps[j]->core_mean.data(), dim) < prefilter) continue;
+      const float s = std::min(vouch(*ps[i], *ps[j], dim, p.top_k), vouch(*ps[j], *ps[i], dim, p.top_k));
+      if (s < p.join) continue;
+      links.push_back({i, j, s});
+      linked.insert({i, j});
+    }
+  }
+  std::stable_sort(links.begin(), links.end(), [](const link& x, const link& y) { return x.support > y.support; });
+
+  std::vector<std::size_t> group(ps.size());
+  std::iota(group.begin(), group.end(), std::size_t{0});
+  std::map<std::size_t, std::vector<std::size_t>> members;
+  for (std::size_t i = 0; i < ps.size(); ++i) members[i] = {i};
+  for (const link& l : links) {
+    const std::size_t ga = group[l.a], gb = group[l.b];
+    if (ga == gb) continue;
+    bool every = true;
+    std::set<std::string> names;
+    for (std::size_t x : members[ga]) {
+      if (const std::string& n = name_of(ps[x]->person); !n.empty()) names.insert(n);
+      for (std::size_t y : members[gb]) {
+        if (!linked.count({std::min(x, y), std::max(x, y)})) every = false;
+      }
+    }
+    for (std::size_t y : members[gb]) {
+      if (const std::string& n = name_of(ps[y]->person); !n.empty()) names.insert(n);
+    }
+    if (!every || names.size() > 1) continue;
+    for (std::size_t y : members[gb]) {
+      group[y] = ga;
+      members[ga].push_back(y);
+    }
+    members.erase(gb);
+  }
+
+  std::vector<std::vector<std::int64_t>> out;
+  for (auto& [g, xs] : members) {
+    if (xs.size() < 2) continue;
+    std::vector<std::int64_t> ids;
+    for (std::size_t x : xs) ids.push_back(ps[x]->person);
+    const auto rank = [&](std::int64_t id) {
+      const auto it = who.find(id);
+      const bool named = it != who.end() && !it->second->name.empty();
+      const std::uint32_t n = it == who.end() ? 0 : it->second->faces;
+      return std::make_tuple(named ? 1 : 0, n, -id);
+    };
+    std::sort(ids.begin(), ids.end(), [&](std::int64_t x, std::int64_t y) { return rank(x) > rank(y); });
+    out.push_back(std::move(ids));
   }
   return out;
 }

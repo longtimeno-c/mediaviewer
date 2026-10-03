@@ -55,6 +55,9 @@ internal sealed class PeopleWindow : Window
     private readonly Button _photos;
     private readonly Button _refine;
     private bool _refining;
+    // "Merge duplicates" (plan/17): the whole library, on request.
+    private readonly Button _dedupe;
+    private bool _deduping;
     // Buttons with a Flyout, not DropDownButtons: that control has no default
     // style in this island host and fail-fasts when it enters the tree.
     private readonly Button _merge;
@@ -186,6 +189,10 @@ internal sealed class PeopleWindow : Window
         _split = _look.Button("Split into new person", SplitSelected);
         _refine = _look.Button("Refine faces", RefinePerson);
         ToolTipService.SetToolTip(_refine, "Check every face against this person and move out the ones that don't match");
+        _dedupe = _look.Button("Merge duplicates", MergeDuplicates);
+        ToolTipService.SetToolTip(_dedupe,
+            "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.");
+        AutomationProperties.SetName(_dedupe, "Merge duplicate people");
 
         var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         head.Children.Add(_name);
@@ -250,6 +257,9 @@ internal sealed class PeopleWindow : Window
         scopeRow.Children.Add(_scopeButton);
         scopeRow.Children.Add(_scopeFolder);
         leftHead.Children.Add(scopeRow);
+        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        tools.Children.Add(_dedupe);
+        leftHead.Children.Add(tools);
         _hint = _look.Text("Double-click a person to see their photos. The same person twice? Drag one onto the other, or Ctrl-click several and merge them.", 12);
         leftHead.Children.Add(_hint);
         _empty = _look.Text("", 12);
@@ -719,6 +729,37 @@ internal sealed class PeopleWindow : Window
                 if (_person?.Id == p.Id) ShowPerson(_person, focusFaces: false);
                 else UpdateButtons();
                 Refresh();
+            });
+        });
+    }
+
+    /// <summary>
+    /// "Merge duplicates": the pack re-checks every face and merges people who
+    /// are the same person (plan/17 "Merge duplicates"). Only ever on request.
+    /// </summary>
+    private void MergeDuplicates()
+    {
+        if (_deduping) return;
+        _deduping = true;
+        _dedupe.IsEnabled = false;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            (uint Merged, uint Moved)? result = null;
+            try { result = api.PeopleDedupe(); }
+            catch (MediaViewerException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _deduping = false;
+                _dedupe.IsEnabled = true;
+                ShowNote(result switch
+                {
+                    null => "Couldn't check for duplicates. Try again.",
+                    (0, 0) => "No duplicates found, and every face matches.",
+                    var (m, f) => (m == 1 ? "1 person" : $"{m} people") + " merged, " + (f == 1 ? "1 face" : $"{f} faces") + " moved.",
+                });
+                Refresh();
+                if (_person is not null) ShowPerson(_person, focusFaces: false);
             });
         });
     }
