@@ -50,7 +50,7 @@ public static partial class IslandHost
     // ---- listing state the AI chrome reads (IslandHost.Filmstrip.cs sets it) ----
 
     // The last directory the viewer listed; kept while a result list is open,
-    // so "This folder" still means the folder the search started from.
+    // so "Folder & subfolders" still means the folder the search started from.
     private static string _openedFolder = "";
     private static bool _listOpen;
     // Enter (viewer) or Ctrl+Enter (gallery) from the search panel: applied
