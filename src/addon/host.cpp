@@ -132,6 +132,9 @@ mv_status MV_CALL t_copy(void* host, const mv_addon_copy_request* req, mv_addon_
     }
     std::atomic<bool> cancel{false};
     io::copy_options o;
+    // Deep writes to a share, deep reads only from one: a card is still read
+    // one request at a time (plan/18 "Throughput"; plan/12 2026-10-01).
+    io::copy_profile_for(req->source_utf8, targets.front()).apply(o);
     o.read_back = req->read_back != 0;
     o.retries = static_cast<int>(std::min<uint32_t>(req->retries, 3));
     o.cancel = &cancel;

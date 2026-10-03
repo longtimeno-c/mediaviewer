@@ -431,6 +431,17 @@ public static partial class IslandHost
     /// Native checks GetFocus() itself for the canvas, so a stale island value
     /// after focus returns to the swapchain is harmless.
     /// </summary>
+    // Shared\FakeInput.cs, whichever assembly compiled it: each add-on links
+    // its own copy, so it is found by name, not by `is`.
+    private static bool IsTypeInField(object? element)
+    {
+        for (Type? t = element?.GetType(); t is not null; t = t.BaseType)
+        {
+            if (t.FullName == "MediaViewer.Shared.FakeInput") return true;
+        }
+        return false;
+    }
+
     private static void OnXamlGotFocus(object? sender,
                                        Microsoft.UI.Xaml.Input.FocusManagerGotFocusEventArgs e)
     {
@@ -439,8 +450,7 @@ public static partial class IslandHost
         try
         {
             int kind = FocusKind.CommandBar;
-            if (_popupTakesText ||
-                e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or FakeInput)
+            if (_popupTakesText || IsTypeInField(e.NewFocusedElement))
             {
                 kind = FocusKind.Text;
             }
@@ -893,8 +903,17 @@ public static partial class IslandHost
         };
         ControlTemplate? template = FlatButtonTemplate();
         if (template is not null) button.Template = template;
-        button.Click += (_, _) => click();
+        button.Click += (_, _) => Guarded(click);
         return button;
+    }
+
+    // Every chrome click runs through here. An exception escaping a XAML event
+    // handler is a fail-fast (0xC000027B) with no managed report, so a bug in
+    // one button must not take the viewer down with it.
+    private static void Guarded(Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
     }
 
     private static Style FlyoutPresenterStyle()
@@ -1011,7 +1030,7 @@ public static partial class IslandHost
         // Same as TextButton: a focused menu item parks keys on the island
         // until the window is deactivated and reactivated.
         item.AllowFocusOnInteraction = false;
-        item.Click += (_, _) => action();
+        item.Click += (_, _) => Guarded(action);
         return item;
     }
 

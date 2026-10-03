@@ -662,7 +662,7 @@ slice is dual-track, with a verify line on each platform, and both present-loop 
 
 - **PR 54 — Find duplicates** (added 2026-10-03, owner). A folder and every folder under it,
   every file type, grouped by identical bytes; open, show, or move one copy to the Recycle Bin /
-  Trash, never the last. Its own number after Milestone L's 48–53. Verify line:
+  Trash, never the last. Its own number: 48–53 are taken by the open add-ons branch, 49–50 by network copies. Verify line:
   [18 "Find duplicates"](18-import.md#find-duplicates-pr-54).
 
 The add-on mechanism built in PR 16 is the one the AI pack (PR 20) and the Voice add-on (PR 27) install through.
@@ -753,6 +753,36 @@ breadcrumb and `Ctrl/Cmd+Up` walk back; a mixed folder shows tiles above images 
 crosses between them in the same column; keyboard-only (`Ctrl/Cmd+Up`, arrows, `Enter`, `Esc`)
 reaches every folder; `test_dir_tree` and `test_browse_path` pass; PR 1's present-loop verify
 still holds.
+
+---
+
+## Standalone PRs 49–50 — Fast network transfer and Transfer (both platforms)
+
+Owner, 2026-10-01 ([12](12-decision-log.md)): copies to and from a NAS run at a fraction of
+the link. Full design: [24-transfer.md](24-transfer.md).
+
+### PR 49 — Network-speed copy engine
+Positional I/O in the file port; a deep path in `io::verified_copy` (several requests in
+flight per file, hashed in order, read-back the same) and several files at once, both only
+when an end is a network share; F8 and Import use it; `copybench` measures it. Cards and local
+disks keep the sequential path.
+
+**Verify (both platforms):** on a 10 GbE SMB share, `copybench --mode auto` with verify (big
+and RAW-sized sets) is >= 2x `--mode seq` on the same files, runs alternated; unverified auto
+is >= 90 % of `robocopy /MT:16 /J` (Windows) / `ditto` (Mac); local `seq` within noise of the
+base build; `mv_import_tests "[io]"` passes (the deep cases under ThreadSanitizer too); both
+present-loop gates hold while an F8 move to the share runs.
+
+### PR 50 — Transfer and the link check
+A general copier for any files and folders (copy/move, keep the tree, keep-both or skip
+identical, never overwrite, full verify by default, pause/resume/cancel with a journal), on
+`mv_transfer_*` ABI calls, with a Transfer window in WinUI and SwiftUI; and a read-only check
+that names SMB signing, encryption or a single channel when it caps the link.
+
+**Verify (both platforms):** a 50 GB mixed tree local -> share -> local with full verify is
+byte-identical; MB/s within 10 % of PR 49's auto; a kill mid-job resumes with no duplicates
+or temporaries; a move never removes an unverified source; both present-loop gates hold
+during the job.
 
 ---
 

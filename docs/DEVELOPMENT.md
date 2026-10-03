@@ -26,6 +26,8 @@ and a verify line on each platform (D9, amended). The order is:
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
 | 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete, marked ranges (`I` `O`, Delete, `X`), Trim start / end (`[` `]`), draggable piece edges, `J K L` shuttle, frame timecode, Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.13 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
+| 49 | **Fast network copies**: F8 and Import to or from a share keep several requests and files in flight, still verified; `copybench` measures it ([plan/24-transfer.md](../plan/24-transfer.md)) | Engine and Mac F8 built; `mv_import_tests "[io]"` passes, TSan-clean; Windows half compiled by CI only; the 10 GbE share run and the present-loop gates owed |
+| 50 | **Transfer**: a general copier (copy/move any files and folders, verified, resumable) and an SMB link check | Planned |
 
 See [plan/10-roadmap.md](../plan/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -819,8 +821,9 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only
 .\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
-.\tools\check-winui-controls.ps1   # no ProgressBar / ProgressRing / DropDownButton / InfoBar...: they
-                                   # fail-fast in the island host (use JobBar, Shared\FlatBar.cs, a Button + Flyout)
+.\tools\check-winui-controls.ps1   # no ProgressBar / ProgressRing / DropDownButton / InfoBar / TextBox...: they
+                                   # fail-fast in the island host (use JobBar, Shared\FlatBar.cs, a Button + Flyout,
+                                   # Shared\FakeInput.cs)
 .\tools\licence-check.ps1          # no GPL FFmpeg, no software HEVC/AAC encoder
 
 # PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
@@ -901,6 +904,28 @@ under `ctest -R perf_tools`.
 
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
 its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows.
+
+### Copy throughput: `copybench` (PR 49)
+
+`copybench` runs the copy engine (`io/verified_copy`, what F8 and Import use) over a folder
+with no app, and prints one JSON line: files, bytes, seconds, MB/s, files/s. It copies into a
+fresh `copybench-<n>` folder under the destination and removes it afterwards (`--keep` leaves it).
+
+```bash
+build/bin/copybench --make-fixture ~/scratch/raw   --count 100  --size-kib 16384
+build/bin/copybench --make-fixture ~/scratch/small --count 2000 --size-kib 200
+# alternate the runs: seq is the pre-PR-49 path, auto is what the app picks
+build/bin/copybench ~/scratch/raw /Volumes/nas/scratch --mode seq
+build/bin/copybench ~/scratch/raw /Volumes/nas/scratch --mode auto
+build/bin/copybench ~/scratch/raw /Volumes/nas/scratch --mode auto --no-verify   # vs ditto / robocopy
+```
+
+`--mode deep --depth N --files N --chunk-kib N` sets the shape by hand; `--rtt-us N` makes
+every file request wait N µs first, a stand-in for a share's round trip on a local disk (not
+a substitute for one: PR 49's verify line wants a real 10 GbE share). The fixtures are
+incompressible, so a share that compresses on the wire shows no flattering number. On
+Windows the reference is `robocopy <src> <dst> /E /MT:16 /J`; on the Mac,
+`ditto <src> <dst>`. Delete the fixtures from the share afterwards.
 
 ### Edit workspace self-test (PR 29, macOS and Windows)
 
