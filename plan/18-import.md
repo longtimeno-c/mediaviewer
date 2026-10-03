@@ -124,11 +124,15 @@ destination file, or any upload.
 - **Verify:** hash while reading the source (one pass over the card). Write to `name.tmp`,
   flush (`FlushFileBuffers` / `F_FULLFSYNC`), read back uncached (`FILE_FLAG_NO_BUFFERING`
   / `F_NOCACHE`), compare, then rename into place. On mismatch: delete the temp file, retry
-  once, then fail that file.
+  once, then fail that file. On a share, an uncached read-back proves the bytes the server
+  holds and returns; that may come from the NAS's RAM, not its disks.
 - **Throughput:** one reader thread per physical source, one writer per physical destination,
   and 2–4 large buffers in flight between them. Reads and writes overlap. **No parallel reads
   of one card** (it slows a card down). Two sources on different devices run concurrently.
-  Measured MB/s drives the ETA.
+  Measured MB/s drives the ETA. **A network destination** (2026-10-01, [24](24-transfer.md)):
+  the copy keeps several writes in flight at their offsets (depth 8, 2 MiB chunks) and its
+  read-back several reads; each request on a share is a round trip. The card side is unchanged:
+  one request at a time.
 - **Units:** RAW+JPEG and Live Photo pairs (PR 7 pairing) and camera sidecars are one unit,
   copied, verified, skipped and sorted together, never split across dated folders.
 - **Resume and cancel:** the job journal lives in `import.db`. After a crash or unplug, verified

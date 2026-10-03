@@ -896,6 +896,11 @@ if(MV_BUILD_TESTS)
   endif()
 endif()
 
+# copybench: the copy engine headless, base vs new (plan/12 2026-10-01).
+add_executable(copybench tools/copybench/main.cpp)
+target_link_libraries(copybench PRIVATE mv_io mv_core mv_project_options)
+target_include_directories(copybench PRIVATE src)
+
 # ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
 if(TARGET mv_ai)
   add_executable(ai-bench tools/ai-bench/main.cpp tools/ai-bench/photos_ask_mac.mm)

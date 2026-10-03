@@ -750,6 +750,36 @@ still holds.
 
 ---
 
+## Standalone PRs 49–50 — Fast network transfer and Transfer (both platforms)
+
+Owner, 2026-10-01 ([12](12-decision-log.md)): copies to and from a NAS run at a fraction of
+the link. Full design: [24-transfer.md](24-transfer.md).
+
+### PR 49 — Network-speed copy engine
+Positional I/O in the file port; a deep path in `io::verified_copy` (several requests in
+flight per file, hashed in order, read-back the same) and several files at once, both only
+when an end is a network share; F8 and Import use it; `copybench` measures it. Cards and local
+disks keep the sequential path.
+
+**Verify (both platforms):** on a 10 GbE SMB share, `copybench --mode auto` with verify (big
+and RAW-sized sets) is >= 2x `--mode seq` on the same files, runs alternated; unverified auto
+is >= 90 % of `robocopy /MT:16 /J` (Windows) / `ditto` (Mac); local `seq` within noise of the
+base build; `mv_import_tests "[io]"` passes (the deep cases under ThreadSanitizer too); both
+present-loop gates hold while an F8 move to the share runs.
+
+### PR 50 — Transfer and the link check
+A general copier for any files and folders (copy/move, keep the tree, keep-both or skip
+identical, never overwrite, full verify by default, pause/resume/cancel with a journal), on
+`mv_transfer_*` ABI calls, with a Transfer window in WinUI and SwiftUI; and a read-only check
+that names SMB signing, encryption or a single channel when it caps the link.
+
+**Verify (both platforms):** a 50 GB mixed tree local -> share -> local with full verify is
+byte-identical; MB/s within 10 % of PR 49's auto; a kill mid-job resumes with no duplicates
+or temporaries; a move never removes an unverified source; both present-loop gates hold
+during the job.
+
+---
+
 ## Milestone I — Voice query add-on (PR 27–28, both platforms)
 
 An **optional add-on installed from Settings**, separate from the AI pack. Hold a key and say

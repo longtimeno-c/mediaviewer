@@ -582,6 +582,11 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # app) and its WinUI chrome. cmake/ai.cmake.
 include("${CMAKE_SOURCE_DIR}/cmake/ai.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/ai-chrome-win.cmake" OPTIONAL)
+# copybench: the copy engine headless, base vs new (plan/12 2026-10-01).
+add_executable(copybench tools/copybench/main.cpp)
+target_link_libraries(copybench PRIVATE mv_io mv_core mv_project_options)
+target_include_directories(copybench PRIVATE src)
+
 # ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
 add_executable(ai-bench tools/ai-bench/main.cpp)
 target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
