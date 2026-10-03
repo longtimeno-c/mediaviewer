@@ -48,10 +48,12 @@ final class SearchStatus: ObservableObject {
 
 enum SearchScope: UInt32, CaseIterable, Identifiable {
   /// `photos` is the chrome's own: the pack's FOLDER scope over "photos:".
+  /// `folder` is People's only: search always takes in the open folder's
+  /// subfolders (owner 2026-10-03), so the panel never offers it.
   case folder = 0, tree = 1, all = 2, photos = 3
   var id: UInt32 { rawValue }
-  /// Short, so the three sit as one control: the group's caption ("Look in")
-  /// and the tooltip say the rest.
+  /// Short, so they sit as one control: the group's caption ("Look in") and
+  /// the tooltip say the rest.
   var label: String {
     switch self {
     case .folder: return "This folder"
@@ -60,10 +62,13 @@ enum SearchScope: UInt32, CaseIterable, Identifiable {
     case .photos: return "Photos"
     }
   }
+  /// The search panel's words: with no "This folder" beside it, "+ Subfolders"
+  /// says the folder itself too.
+  var panelLabel: String { self == .tree ? "Folder & subfolders" : label }
   var help: String {
     switch self {
     case .folder: return "Search the open folder only."
-    case .tree: return "Search the open folder and the folders inside it."
+    case .tree: return "Search the open folder and every folder inside it."
     case .all: return "Search every folder in the index, and your Photos library if it is indexed."
     case .photos: return "Search your Photos library only."
     }
@@ -96,7 +101,7 @@ final class SearchModel: ObservableObject {
 
   // The field and the chips.
   @Published var query = ""
-  @Published var scope: SearchScope = .folder
+  @Published var scope: SearchScope = .tree
   @Published var kinds: SearchKinds = .all
   /// What to find (2026-09-27): Pictures · Sounds · Speech. Empty = all three.
   @Published var finds: Set<Find> = []
@@ -264,6 +269,12 @@ final class SearchModel: ObservableObject {
   /// re-run while indexing so results grow with the index.
   func appeared() {
     visible = true
+    // People's "This folder" (openPerson) is not a panel scope: the panel
+    // shows the folder with its subfolders.
+    if scope == .folder {
+      scope = .tree
+      chipsChanged()
+    }
     refreshCoverage()
     pollStatus()
     updateTimer()
@@ -277,7 +288,7 @@ final class SearchModel: ObservableObject {
 
   func disappeared() {
     visible = false
-    startedIndexing = nil
+    startedIndexing = false
     updateTimer()
   }
 
@@ -378,7 +389,7 @@ final class SearchModel: ObservableObject {
   /// Typing: ~200 ms debounce, then search.
   func queryChanged() {
     if reference != nil { return }
-    if startedIndexing != nil { startedIndexing = nil }
+    if startedIndexing { startedIndexing = false }
     openWhenReady = nil
     focusResultsWhenReady = false
     refreshSuggestions()
@@ -610,20 +621,21 @@ final class SearchModel: ObservableObject {
   /// Set when the offer's Index was chosen in this showing of the panel: the
   /// empty state then says indexing carries on in the background and offers
   /// to close. Cleared by typing, a result, or the panel closing.
-  @Published private(set) var startedIndexing: Bool?  // recursive
+  @Published private(set) var startedIndexing = false
 
   var folderName: String {
     let leaf = (folder as NSString).lastPathComponent
     return leaf.isEmpty ? folder : leaf
   }
 
-  func indexFolder(recursive: Bool) {
+  /// Always with its subfolders (owner 2026-10-03).
+  func indexFolder() {
     guard !folder.isEmpty else { return }
     var root: UInt64 = 0
-    let st = table.a.index_folder?(table.ctx, folder, recursive ? 1 : 0, &root)
+    let st = table.a.index_folder?(table.ctx, folder, 1, &root)
     refreshCoverage()
     pollStatus()
-    if st == MV_OK { startedIndexing = recursive }
+    if st == MV_OK { startedIndexing = true }
     // Results for words already typed grow as the index commits.
     if reference != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty { run(keepSelection: false) }
   }
