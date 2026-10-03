@@ -40,10 +40,10 @@ final class PhotosBackupStore: ObservableObject {
     if dest != destination { destination = dest }
     var p = mv_chrome_photos_backup()
     mv_chrome_photos_backup_progress(&p)
-    if p != run { run = p }
+    if !sameBackup(p, run) { run = p }
     var l = mv_chrome_photos_backup()
     if mv_chrome_photos_backup_last(&l) {
-      if last == nil || last! != l { last = l }
+      if last == nil || !sameBackup(last!, l) { last = l }
     } else if last != nil {
       last = nil
     }
@@ -85,14 +85,14 @@ final class PhotosBackupStore: ObservableObject {
   }
 }
 
-extension mv_chrome_photos_backup: @retroactive Equatable {
-  public static func == (a: mv_chrome_photos_backup, b: mv_chrome_photos_backup) -> Bool {
-    a.state == b.state && a.total == b.total && a.done == b.done && a.skipped == b.skipped
-      && a.failed == b.failed && a.fetched == b.fetched && a.bytes == b.bytes
-      && a.started_unix == b.started_unix && a.finished_unix == b.finished_unix
-      && withUnsafeBytes(of: a.current) { Array($0) } == withUnsafeBytes(of: b.current) { Array($0) }
-      && withUnsafeBytes(of: a.error) { Array($0) } == withUnsafeBytes(of: b.error) { Array($0) }
-  }
+/// Field-by-field, since a C struct with fixed-size char arrays gets no
+/// synthesized Equatable (and the CI runner's Swift predates `@retroactive`).
+private func sameBackup(_ a: mv_chrome_photos_backup, _ b: mv_chrome_photos_backup) -> Bool {
+  a.state == b.state && a.total == b.total && a.done == b.done && a.skipped == b.skipped
+    && a.failed == b.failed && a.fetched == b.fetched && a.bytes == b.bytes
+    && a.started_unix == b.started_unix && a.finished_unix == b.finished_unix
+    && withUnsafeBytes(of: a.current) { Array($0) } == withUnsafeBytes(of: b.current) { Array($0) }
+    && withUnsafeBytes(of: a.error) { Array($0) } == withUnsafeBytes(of: b.error) { Array($0) }
 }
 
 private func cString<T>(_ tuple: T) -> String {
