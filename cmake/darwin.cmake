@@ -151,6 +151,8 @@ add_library(mv_codec STATIC
   src/codec/jpeg.cpp
   src/codec/png.cpp
   src/codec/bmp.cpp
+  src/codec/dib.cpp
+  src/codec/dib.h
   src/codec/anim.cpp
   src/codec/anim.h
   src/codec/apng.cpp
@@ -757,6 +759,7 @@ if(MV_BUILD_TESTS)
     tests/test_probe.cpp
     tests/test_decode.cpp
     tests/test_tiff_ico.cpp
+    tests/test_decode_variants.cpp
     tests/test_gif_webp.cpp
     tests/test_heif_avif.cpp
     tests/test_raw.cpp

@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.23
+  VERSION 0.1.24
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -306,6 +306,8 @@ add_library(mv_codec STATIC
   src/codec/jpeg.cpp
   src/codec/png.cpp
   src/codec/bmp.cpp
+  src/codec/dib.cpp
+  src/codec/dib.h
   src/codec/anim.cpp
   src/codec/anim.h
   src/codec/apng.cpp
@@ -1002,6 +1004,7 @@ if(MV_BUILD_TESTS)
     tests/test_dino_game.cpp
     src/shell/minidump_scrub.cpp
     tests/test_tiff_ico.cpp
+    tests/test_decode_variants.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp

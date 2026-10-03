@@ -3356,6 +3356,68 @@ shouldnt be an option for just this folder for indexing or search."
   FOLDER). People keeps its own "This folder" choice: it is not the search panel. The base app's
   file search without Local search still filters the listing in memory (plan/16 "File search").
 
+## 2026-10-03 — People: AdaFace IR-50 replaces SFace, and a re-run that keeps the user's people
+
+Owner: "can we improve / select a better people model … add a re-run that redoes the photos and
+it should also take a look at already separated people and assign". Numbers and design: plan/17
+"People model".
+
+- **Reversed: SFace as the People embedder** (PR 24; the 2026-09-28 refinement notes said a second
+  model waited for numbers). AdaFace IR-50 WebFace4M (MIT weights, fp16, 87 MB): through our own
+  pipeline on LFW, TAR@1e-4 99.00 -> 99.93 % at full size and 94.33 -> 99.81 % on ~24 px faces;
+  through faces.db, BCubed precision 0.9938 -> 0.9994 and recall 0.9938 -> 0.9982. The pack builds
+  its ONNX from the pinned safetensors (`tools/package/face-export.py`, verified by output).
+- **Changed: the face embedder runs on the towers' compute choice** (Core ML / CUDA when it agrees
+  with CPU at cosine 0.99, else CPU). It was CPU only. IR-50 is ~6x SFace on one CPU thread and
+  ~3x faster than SFace on Core ML; Windows without the CUDA piece pays the CPU cost in background
+  indexing.
+- **Thresholds per model** (`model.json`): IR-50 same_person 0.30, keep 0.20 / 0.24, margin 0.10,
+  ambiguous 0.04, merge 0.32, set stricter than an equal-FAR mapping of SFace's because a face
+  under the wrong person is the complaint being fixed.
+- **Amended: refinement only on request** (2026-09-28). "Re-analyse faces" (and a pack update with
+  a new face model) ends with one library-wide refinement, the settle. It is still only ever the
+  user's request or the model change they installed, never an idle pass; the per-person "Refine
+  faces" stays focused. faces.db tags every vector with its embedder so a re-run never compares
+  two models' vectors; re-found faces keep their person, name, pin and rejections.
+- **3 GB ceiling unchanged**: fp16 IR-50 fits (~2.93 GB worst case). The owner allowed exceeding it
+  for a dramatic gain; IR-101 (+86 MB, 2x compute) gained ~0.1 point here, so it was not needed.
+- **Open, owner:** WebFace4M's non-commercial research terms (the weights are MIT). SFace and YuNet
+  carry the same kind of caveat. plan/17 *Open decisions* 7.
+
+## 2026-10-03 — Find duplicates: several copies to the bin in one go; the Import windows get the app mark
+
+**Reverses** PR 54's "one file at a time, picked by the person" (plan/18 "Find duplicates"), at
+the owner's request: "select more than one of the found duplicates and delete the duplicates in
+batch". What stays: only what the person picked goes, only to the Recycle Bin / Trash, and the
+engine's checks per file (unchanged since the scan, another identical copy re-read) are untouched.
+Still no "delete all duplicates" and no keep rules.
+
+- **Picking** is the platform's own: Ctrl / Shift-click and Shift+arrows in Explorer's
+  `ListView` Extended mode on Windows, ⌘ / ⇧ in a SwiftUI `List` with a `Set` selection on the
+  Mac. No check boxes and no new keys: `Delete` / `⌘⌫` now act on the pick.
+- **A pick that takes every copy of a file sends nothing.** The engine would still keep one (the
+  last request in the group is refused), but which one would depend on queue order, which the
+  person cannot see. The window says to leave one copy of each file unpicked instead.
+- **No engine or ABI change.** `trash_duplicate` already queues; the chrome calls it once per
+  picked file and the add-on's thread drains them in order.
+- **No confirm for a batch**, as for one file (PR 54's reasoning: every move is checked to leave
+  an identical copy and is recoverable from the bin). The button names the count, and the line
+  beside it the space it frees.
+- **Windows look:** the Duplicates window takes Mica, Windows 11 style cards and Segoe Fluent
+  glyphs, built only from controls that load in this island host (`tools/check-winui-controls.ps1`).
+  The Fluent brushes (`TextFillColor*`, `CardBackgroundFillColor*`) do **not** resolve here (no
+  XamlControlsResources; a XAML reference to one throws "undeclared prefix" and, from a click, fail-
+  fasts the app; seen in the first live run): secondary text is opacity and cards a neutral tint. Both Import windows load the exe's own icon (resource 1, as
+  the main window) instead of WinUI's generic one (`src.managed/Shared/AppIcon.cs`). The Mac
+  windows already carry the app's icon.
+
+**Verified (Windows, 2026-10-03):** a dev-key Release build of this tree with this Import
+sideloaded, on a tree of 10 files in 4 groups, five runs: the window opens, a pick of every copy
+of a file leaves the button off, a pick of the 5 extras moves exactly those 5 and keeps one of
+each; the Import window shows the app icon. One earlier run never received the scan's done event
+(window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
+compile (CI), the Mac live run, both present-loop gates while a scan runs.
+
 ## 2026-10-03 — Open add-ons: the owner's calls (plan/25 §17)
 
 On pull request #98 the owner answered the five calls plan/25 left open on 2026-09-29.

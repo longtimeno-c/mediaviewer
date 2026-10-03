@@ -666,6 +666,19 @@ face vectors and a temporary faces.db; it needs no pack. In the app it runs only
 duplicates** above the grid (plan/17 "Merge duplicates": the same check for everyone, then people
 who are the same person merged; never two named differently, never a split pair).
 
+The People embedder is AdaFace IR-50 (plan/17 "People model"). It has no upstream ONNX: staging
+`ai-faces` runs `tools/package/face-export.py` on the pinned safetensors, so the pack builder needs
+`pip install -r tools/package/requirements-export.txt` (torch, onnx); `ai-models.py check` does
+not. **Re-analyse faces** (Settings → People on the Mac, the People window on Windows;
+`people_reanalyse`) runs every photo through the People pass again and keeps the user's people;
+a pack with a new face model does the same by itself. Tests: `mv_ai_tests "[rerun]"` (no pack);
+`"[people]"` with `MV_AI_PACK_DIR` (the ORT folder), `MV_AI_FACES_DIR` (a staged ai-faces) and
+`MV_AI_FACE_SET` (a `<person>/<photo>` folder such as LFW, kept out of git); and
+`"[.people-bench]"` with `MV_FACE_EVAL` (a vector file: uint32 n, uint32 dim, n int32 labels,
+n x dim float32) and optionally `MV_FACE_TUNING="same keep keep_weak margin ambiguous merge"`,
+which runs real vectors through faces.db's online clustering and the re-run's settle and prints
+BCubed precision and recall.
+
 The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
 the viewer has open: **People in · This folder | + Subfolders | Everywhere**, + Subfolders by
 default (plan/17 "People in the open folder"; `people_in_json` in `mediaviewer_ai.h`).
@@ -1203,8 +1216,25 @@ installer set the default itself: leave the Finish-page box checked to open Defa
 MediaViewer and confirm there, or untick it to skip. It does **not** ask about telemetry, which is a first-run
 screen inside the app.
 
-Uninstall is from Apps & features, and removes the shortcuts, the registry entry and the
-whole install directory.
+Uninstall is from Apps & features, and removes the shortcuts, the registry entry, the
+whole install directory, the thumbnail cache and the add-ons (`addons\<id>\<version>`, the
+Local search models included). It then asks, defaulting to No, whether to also delete each
+add-on's `data\` (the Local search index, Import's history); a silent uninstall keeps it.
+
+Running Setup over an existing install keeps `addons\`, `thumbs\`, `metadata-snapshots\`,
+`Crashes\`, `clipboard\`, `telemetry\`, `settings.ini` and `import-hint.dismissed`. Velopack's
+`--installto` clears the directory, so the wizard moves those into a sibling
+`MediaViewer.keepN` first and puts them back afterwards. If one cannot be moved, MediaViewer
+is still running and Setup stops before anything is deleted.
+
+The chrome registers its UI font session-wide, so DirectWrite can see it. On an installed
+build it registers the copy in `<root>\fonts\`, never the file in `current\`. Windows keeps a
+registered font open until sign-out if the process dies before `Detach` (a crash, a kill, or
+the `TerminateProcess` exit under a running add-on). Registered from `current\`, that open
+file made every in-app update fail on Velopack's rename of `current\`, and made Setup exit
+with "failed with code 1". Setup and uninstall both unregister any copy left in `current\` or
+`fonts\` before they delete anything. Apps & features shows the payload plus the retained
+package (`UninstallDisplaySize`, passed in by `build-release.ps1`); add-ons are not counted.
 
 ```powershell
 # unattended, e.g. on a test VM

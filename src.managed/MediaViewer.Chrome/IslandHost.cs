@@ -781,10 +781,56 @@ public static partial class IslandHost
         if (_gdiFontPath is not null) return;
         string? path = FindUiFontPath();
         if (path is null) return;
+        path = SessionFontCopy(path) ?? path;
         // fl=0 so DirectWrite can see it. FR_PRIVATE is GDI-only and WinUI
         // silently falls back to Segoe. Session-wide until UnregisterUiFont.
         if (AddFontResourceExW(path, 0, IntPtr.Zero) != 0)
             _gdiFontPath = path;
+    }
+
+    // A session-wide font outlives a process that never reaches Detach (a
+    // crash, a kill, the TerminateProcess exit under a running add-on), and
+    // until sign-out Windows holds the file open. Registered from current\,
+    // that lock made Update.exe's rename of current\ fail ("Access is denied"
+    // x10, update never applies) and Setup's --installto exit 1. So an
+    // installed app registers a copy in <root>\fonts, which neither touches.
+    // The name carries the source's size and mtime: an existing copy is used
+    // as is (one stat), and a new version never overwrites a held one.
+    // Returns null on a dev build or any failure: register in place.
+    private static string? SessionFontCopy(string source)
+    {
+        try
+        {
+            string? current = Path.GetDirectoryName(source);
+            string? root = current is null ? null : Path.GetDirectoryName(current);
+            if (root is null || !File.Exists(Path.Combine(root, "Update.exe")) ||
+                !File.Exists(Path.Combine(current!, "sq.version")))
+                return null;
+            var info = new FileInfo(source);
+            string dir = Path.Combine(root, "fonts");
+            string name = $"{Path.GetFileNameWithoutExtension(UiFontFile)}-{info.Length}-{info.LastWriteTimeUtc.Ticks:x}.ttf";
+            string copy = Path.Combine(dir, name);
+            if (!File.Exists(copy))
+            {
+                Directory.CreateDirectory(dir);
+                string part = copy + ".part";
+                File.Copy(source, part, overwrite: true);
+                File.Move(part, copy);
+                // Older copies go once nothing holds them; one still registered
+                // by a leaked session stays until a later start.
+                foreach (string old in Directory.EnumerateFiles(dir))
+                {
+                    if (string.Equals(old, copy, StringComparison.OrdinalIgnoreCase)) continue;
+                    try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
+            }
+            return copy;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return null;
+        }
     }
 
     private static void UnregisterUiFont()
