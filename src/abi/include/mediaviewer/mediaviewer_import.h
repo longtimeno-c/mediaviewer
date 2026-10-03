@@ -17,7 +17,9 @@
  * I/O threads and report through the host completion queue
  * (MV_COMPLETION_ADDON, mediaviewer_addon.h). Nothing here deletes from a
  * source, formats a card, overwrites a destination, or uploads (plan/18
- * "Never offered at any setting").
+ * "Never offered at any setting"). The one removal is trash_duplicate: one
+ * file the user picked, to the Recycle Bin / Trash, only while an identical
+ * copy is still there.
  */
 #ifndef MEDIAVIEWER_IMPORT_H
 #define MEDIAVIEWER_IMPORT_H
@@ -153,6 +155,31 @@ typedef struct mv_import_api {
   /* Re-hash every indexed file under `dir` (uncached) against import.db.
    * MV_ADDON_EVENT_VERIFY_DONE; result via summary_json(job). */
   mv_status(MV_CALL* verify_folder)(void* ctx, const char* dir_utf8, uint64_t* out_job_id);
+
+  /* ---- find duplicates (PR 54) ------------------------------------------ */
+  /* [ui-thread][no-block] Walks `dir` and every folder under it (hidden and
+   * system entries skipped) and groups files with identical bytes: size
+   * first, then BLAKE3-256 only where a size repeats; never by name. Hashes
+   * are remembered in import.db by path, size and mtime, so a second run
+   * re-reads only what changed. Every file type, not only media; empty files
+   * are not compared. Progress through progress(job);
+   * MV_ADDON_EVENT_DUPLICATES_DONE. summary_json(job):
+   * {"kind":"duplicates","folder","files","bytes","compared","hashed",
+   *  "groups":[{"size","files":[{"path","mtime","state","reason"}]}],
+   *  "duplicate_files","wasted_bytes","unreadable":[path],"cancelled",
+   *  "can_trash"}, groups largest waste first. A file's state is "kept",
+   * "queued", "trashed" or "refused" (reason: "last_copy", "changed",
+   * "no_bin", "failed"). */
+  mv_status(MV_CALL* find_duplicates)(void* ctx, const char* dir_utf8, uint64_t* out_job_id);
+  /* [ui-thread][no-block] Moves one file of a finished find-duplicates job to
+   * the Recycle Bin / Trash, never a permanent delete. On an I/O thread it
+   * first checks that the file is unchanged since it was hashed and that
+   * another file in its group still exists and still hashes the same. With
+   * no such copy, the request is refused ("last_copy"): a group is never
+   * emptied. MV_ADDON_EVENT_DUPLICATE_TRASHED per request.
+   * MV_ERR_INVALID_ARG when the path is not in the job's groups;
+   * MV_ERR_UNSUPPORTED_FORMAT when the host has no bin (can_trash false). */
+  mv_status(MV_CALL* trash_duplicate)(void* ctx, uint64_t job_id, const char* path_utf8);
 } mv_import_api;
 
 #ifdef __cplusplus

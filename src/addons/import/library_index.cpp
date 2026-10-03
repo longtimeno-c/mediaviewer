@@ -149,6 +149,8 @@ result<std::unique_ptr<library_index>> library_index::open(const std::string& db
       "CREATE TABLE IF NOT EXISTS card_presets(volume_id TEXT PRIMARY KEY, preset TEXT NOT NULL,"
       "  auto_import INTEGER NOT NULL);"
       "CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY);"
+      "CREATE TABLE IF NOT EXISTS seen_hashes(path TEXT PRIMARY KEY, size INTEGER NOT NULL,"
+      "  mtime INTEGER NOT NULL, hash BLOB NOT NULL);"
       "CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,"
       "  created INTEGER NOT NULL, finished INTEGER NOT NULL DEFAULT 0,"
       "  state INTEGER NOT NULL, source_root TEXT NOT NULL, volume_id TEXT NOT NULL,"
@@ -209,6 +211,44 @@ std::vector<library_row> library_index::all_rows() {
   stmt s(db_, "SELECT root, rel, size, mtime, hash FROM library ORDER BY root, rel");
   while (s.step_row()) out.push_back(library_from(s));
   return out;
+}
+
+// Byte-wise prefixes: substr on TEXT counts characters, the length is bytes.
+std::vector<seen_row> library_index::seen_under(const std::string& prefix) {
+  std::lock_guard lock(mutex_);
+  std::vector<seen_row> out;
+  stmt s(db_, "SELECT path, size, mtime, hash FROM seen_hashes WHERE substr(CAST(path AS BLOB), 1, ?2) = CAST(?1 AS BLOB)");
+  s.bind(1, prefix).bind(2, static_cast<std::int64_t>(prefix.size()));
+  while (s.step_row()) {
+    seen_row r;
+    r.path = s.text(0);
+    r.size = static_cast<std::uint64_t>(s.i64(1));
+    r.mtime = s.i64(2);
+    r.hash = s.hash(3);
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+
+void library_index::seen_store(const std::vector<seen_row>& rows, const std::string* replace_under) {
+  std::lock_guard lock(mutex_);
+  (void)exec("BEGIN IMMEDIATE");
+  if (replace_under) {
+    stmt d(db_, "DELETE FROM seen_hashes WHERE substr(CAST(path AS BLOB), 1, ?2) = CAST(?1 AS BLOB)");
+    d.bind(1, *replace_under).bind(2, static_cast<std::int64_t>(replace_under->size())).run();
+  }
+  {
+    stmt s(db_,
+           "INSERT INTO seen_hashes(path, size, mtime, hash) VALUES(?1, ?2, ?3, ?4) "
+           "ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, "
+           "hash = excluded.hash");
+    for (const seen_row& r : rows) {
+      s.reset();
+      s.bind(1, r.path).bind(2, static_cast<std::int64_t>(r.size)).bind(3, r.mtime).bind(4, r.hash);
+      s.run();
+    }
+  }
+  (void)exec("COMMIT");
 }
 
 std::optional<card_row> library_index::card_lookup(const std::string& volume_id,
