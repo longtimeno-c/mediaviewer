@@ -631,7 +631,10 @@ offered Local search.
   previous matching moment; listed only while the pack is loaded.
 - **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
   status pill, scrub-bar match dots, Settings -> Local search with per-piece install (clicks
-  queue, Core first; "Install all"), compute / precision (the model stays on Auto), roots, People.
+  queue, Core first; "Install all"; from 2026-10-03 "Update all" when more than one installed
+  piece has a newer version, and a piece's Install or Update queues a Core that is itself
+  behind first, so no piece runs ahead of the engine it was built with), compute / precision
+  (the model stays on Auto), roots, People.
 
 ### Audio (added 2026-09-27, owner)
 
