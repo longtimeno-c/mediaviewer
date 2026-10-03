@@ -547,7 +547,7 @@ public static partial class IslandHost
             "Sounds and speech in videos — find “dog barking” or what someone said. Optional."));
         if (_nvidiaPresent == true || CudaSlot.State.Installed)
         {
-            pieces.Children.Add(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics."));
+            pieces.Children.Add(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
         }
         _localSearchPanel.Children.Add(pieces);
 
