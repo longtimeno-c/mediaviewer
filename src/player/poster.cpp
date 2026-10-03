@@ -18,6 +18,33 @@ constexpr time_ns kPosterOffsetCapNs = 3'000'000'000;
   return ctx != nullptr && ctx->cancelled();
 }
 
+// Turns a packed RGBA image by `turns` quarter turns clockwise, in a new
+// buffer (a 512-px poster: well under a millisecond).
+void rotate_rgba(poster_image& img, unsigned turns) {
+  turns &= 3u;
+  if (turns == 0 || img.width == 0 || img.height == 0) return;
+  const std::uint32_t w = img.width, h = img.height;
+  const std::uint32_t ow = (turns & 1u) ? h : w;
+  const std::uint32_t oh = (turns & 1u) ? w : h;
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(ow) * oh * 4u);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* src = img.rgba.data() + static_cast<std::size_t>(y) * w * 4u;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      std::uint32_t dx = 0, dy = 0;
+      switch (turns) {
+        case 1: dx = h - 1 - y; dy = x; break;          // 90 clockwise
+        case 2: dx = w - 1 - x; dy = h - 1 - y; break;  // 180
+        default: dx = y; dy = w - 1 - x; break;         // 270 clockwise
+      }
+      std::uint8_t* dst = out.data() + (static_cast<std::size_t>(dy) * ow + dx) * 4u;
+      dst[0] = src[x * 4u]; dst[1] = src[x * 4u + 1]; dst[2] = src[x * 4u + 2]; dst[3] = src[x * 4u + 3];
+    }
+  }
+  img.width = ow;
+  img.height = oh;
+  img.rgba.swap(out);
+}
+
 }  // namespace
 
 result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_edge,
@@ -149,6 +176,10 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
     return err(status::corrupt);
   }
   if (cancelled(ctx)) return err(status::cancelled);
+  // A portrait phone clip is coded landscape with a 90 degree display matrix:
+  // its tile is turned the way the player shows it (and the way Photos does).
+  const int rotation = stream_rotation_degrees(stream);
+  if (rotation != 0) rotate_rgba(out, static_cast<unsigned>(rotation / 90));
   return out;
 }
 

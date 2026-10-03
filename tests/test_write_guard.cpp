@@ -20,6 +20,22 @@ TEST_CASE("anything inside a Photos library bundle is write-protected", "[shell]
   CHECK_FALSE(write_protected(""));
 }
 
+TEST_CASE("a Photos item key and the Photos cache folder are write-protected", "[shell][write_guard]") {
+  // plan/26: the item itself has no file; its previews and on-view downloads
+  // live under one folder the host registers.
+  CHECK(write_protected("photos:0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9/L0/001"));
+  CHECK_FALSE(write_protected("photos:"));  // the root alone is not an item
+  CHECK_FALSE(write_protected("/Users/a/photos:odd/IMG_1.jpg"));
+  mv::shell::set_read_only_prefix("/Users/a/Library/Caches/MediaViewer/Photos Library");
+  CHECK(write_protected("/Users/a/Library/Caches/MediaViewer/Photos Library/preview/x-1/IMG_2 (preview).jpg"));
+  CHECK(write_protected("/Users/a/Library/Caches/MediaViewer/Photos Library/icloud/x-1/IMG_2.MOV"));
+  CHECK_FALSE(write_protected("/Users/a/Library/Caches/MediaViewer/Photos Library"));  // the folder itself
+  CHECK_FALSE(write_protected("/Users/a/Library/Caches/MediaViewer/Photos Libraryx/IMG_2.jpg"));
+  CHECK_FALSE(write_protected("/Users/a/Pictures/IMG_2.jpg"));
+  mv::shell::set_read_only_prefix("");
+  CHECK_FALSE(write_protected("/Users/a/Library/Caches/MediaViewer/Photos Library/icloud/x-1/IMG_2.MOV"));
+}
+
 TEST_CASE("a list opener's read-only files are protected until replaced", "[shell][write_guard]") {
   const std::vector<std::string> previews{"/c/Photos Library/x/IMG_2 (preview).jpg"};
   mv::shell::set_read_only_paths(previews);

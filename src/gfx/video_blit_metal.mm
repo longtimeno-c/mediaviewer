@@ -41,7 +41,7 @@ struct VideoCamera {
   float2 texture_size;  // the allocation, possibly padded
   float2 origin;
   uint4  colour_a;      // x matrix, y transfer, z range, w bit_depth
-  uint4  colour_b;      // x primaries
+  uint4  colour_b;      // x primaries, y quarter turns clockwise
 };
 
 struct VSOut { float4 pos [[position]]; };
@@ -117,12 +117,21 @@ fragment float4 ps_video(VSOut vin [[stage_in]],
   uint range_id  = cam.colour_a.z;
   uint depth     = cam.colour_a.w;
   uint primaries = cam.colour_b.x;
+  uint turns     = cam.colour_b.y & 3;
 
+  // The camera frames the DISPLAYED picture: the coded frame turned by the
+  // container's matrix (a portrait phone clip is coded landscape).
+  float2 shown_size = ((turns & 1) != 0) ? cam.image_size.yx : cam.image_size;
   float2 image_px = cam.pan + (vin.pos.xy - (cam.origin + cam.window_size * 0.5)) / cam.zoom;
-  float2 uv = image_px / cam.image_size;
+  float2 uv = image_px / shown_size;
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(0.016, 0.018, 0.024, 1.0);
   }
+  // Back from the displayed picture to the coded frame: the inverse of a
+  // clockwise turn. 90: shown (x, y) came from coded (y, 1 - x).
+  if (turns == 1)      uv = float2(uv.y, 1.0 - uv.x);
+  else if (turns == 2) uv = float2(1.0 - uv.x, 1.0 - uv.y);
+  else if (turns == 3) uv = float2(1.0 - uv.y, uv.x);
   // Sample the VISIBLE rect, not the allocation.
   float2 uv_tex = uv * (cam.image_size / cam.texture_size);
 
@@ -198,7 +207,7 @@ struct alignas(16) video_camera_cb {
   float texture_w, texture_h;
   float origin_x, origin_y;
   std::uint32_t matrix, transfer, range, bit_depth;
-  std::uint32_t primaries, pad1, pad2, pad3;
+  std::uint32_t primaries, turns, pad2, pad3;
 };
 static_assert(sizeof(video_camera_cb) == 80, "keep in sync with the MSL VideoCamera struct");
 
@@ -274,6 +283,7 @@ void video_blitter_mac::draw(void* encoder_ptr, void* luma, void* chroma,
   cb.range = static_cast<std::uint32_t>(colour.range);
   cb.bit_depth = colour.bit_depth;
   cb.primaries = static_cast<std::uint32_t>(colour.primaries);
+  cb.turns = p.rotation & 3u;
 
   [encoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)pipeline_];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];
