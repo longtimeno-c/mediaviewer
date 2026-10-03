@@ -54,9 +54,39 @@ FILETIME filetime_from_unix(std::int64_t s) noexcept {
 
 bool exists_error(DWORD e) noexcept { return e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS; }
 
+// One positional request of at most 1 GiB. On an overlapped handle it waits
+// on an event of its own, so several threads can each have one in flight on
+// the same handle; that is what lets a network share pipeline them. End of
+// file reads as 0 bytes.
+result<DWORD> positional(HANDLE h, bool overlapped, bool write, std::uint64_t offset, void* data,
+                         DWORD len) {
+  OVERLAPPED ov{};
+  ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFu);
+  ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+  if (overlapped) {
+    ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return err(status::io);
+  }
+  DWORD n = 0;
+  BOOL ok = write ? ::WriteFile(h, data, len, overlapped ? nullptr : &n, &ov)
+                  : ::ReadFile(h, data, len, overlapped ? nullptr : &n, &ov);
+  DWORD e = ok ? ERROR_SUCCESS : ::GetLastError();
+  if (overlapped && (ok || e == ERROR_IO_PENDING)) {
+    ok = ::GetOverlappedResult(h, &ov, &n, TRUE);
+    e = ok ? ERROR_SUCCESS : ::GetLastError();
+  }
+  if (ov.hEvent) ::CloseHandle(ov.hEvent);
+  if (!ok) {
+    if (!write && e == ERROR_HANDLE_EOF) return DWORD{0};
+    return err(status::io);
+  }
+  return n;
+}
+
 }  // namespace
 
 result<file_stat> stat_path(std::string_view utf8_path) {
+  detail::simulated_round_trip();
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
   WIN32_FILE_ATTRIBUTE_DATA data{};
@@ -134,6 +164,7 @@ expected remove_tree(std::string_view utf8_dir) {
 }
 
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {
+  detail::simulated_round_trip();
   const std::wstring from = wide(from_utf8);
   const std::wstring to = wide(to_utf8);
   if (from.empty() || to.empty()) return err(status::invalid_arg);
@@ -153,6 +184,8 @@ struct file_reader::impl {
   HANDLE h = INVALID_HANDLE_VALUE;
   std::uint64_t size = 0;
   bool eof = false;
+  bool overlapped = false;
+  std::uint64_t pos = 0;  // read()'s cursor on an overlapped handle
   ~impl() {
     if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
   }
@@ -163,14 +196,15 @@ file_reader::~file_reader() = default;
 file_reader::file_reader(file_reader&&) noexcept = default;
 file_reader& file_reader::operator=(file_reader&&) noexcept = default;
 
-expected file_reader::open(std::string_view utf8_path, read_mode mode) {
+expected file_reader::open(std::string_view utf8_path, read_mode mode, bool concurrent) {
+  detail::simulated_round_trip();
   close();
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
   // FILE_FLAG_NO_BUFFERING: the read-back comes from the device, not from the
   // pages the writer just filled (plan/18 "read back uncached").
-  const DWORD flags = mode == read_mode::uncached ? FILE_FLAG_NO_BUFFERING
-                                                  : FILE_FLAG_SEQUENTIAL_SCAN;
+  DWORD flags = mode == read_mode::uncached ? FILE_FLAG_NO_BUFFERING : FILE_FLAG_SEQUENTIAL_SCAN;
+  if (concurrent) flags |= FILE_FLAG_OVERLAPPED;
   HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            flags, nullptr);
   if (h == INVALID_HANDLE_VALUE) return err(status::io);
@@ -182,11 +216,21 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode) {
   impl_ = std::make_unique<impl>();
   impl_->h = h;
   impl_->size = static_cast<std::uint64_t>(size.QuadPart);
+  impl_->overlapped = concurrent;
   return {};
 }
 
 result<std::size_t> file_reader::read(std::span<std::uint8_t> into) {
   if (!impl_) return err(status::invalid_arg);
+  if (impl_->overlapped) {
+    // An overlapped handle has no file pointer: keep one here.
+    if (impl_->eof) return std::size_t{0};
+    MV_TRY(const std::size_t got, read_at(impl_->pos, into));
+    impl_->pos += got;
+    if (got < into.size()) impl_->eof = true;
+    return got;
+  }
+  detail::simulated_round_trip();
   std::size_t filled = 0;
   // With NO_BUFFERING a short read means end of file, and the file pointer is
   // then unaligned: another ReadFile would fail, so stop asking.
@@ -200,12 +244,28 @@ result<std::size_t> file_reader::read(std::span<std::uint8_t> into) {
   return filled;
 }
 
+result<std::size_t> file_reader::read_at(std::uint64_t offset, std::span<std::uint8_t> into) {
+  detail::simulated_round_trip();
+  if (!impl_) return err(status::invalid_arg);
+  std::size_t filled = 0;
+  while (filled < into.size()) {
+    const DWORD want = static_cast<DWORD>(std::min<std::size_t>(into.size() - filled, 1u << 30));
+    MV_TRY(const DWORD got, positional(impl_->h, impl_->overlapped, false, offset + filled,
+                                       into.data() + filled, want));
+    filled += got;
+    if (got < want) break;  // end of file (and, uncached, an unaligned offset from here)
+  }
+  return filled;
+}
+
 std::uint64_t file_reader::size() const noexcept { return impl_ ? impl_->size : 0; }
 void file_reader::close() noexcept { impl_.reset(); }
 
 // ---------------------------------------------------------------------------
 struct file_writer::impl {
   HANDLE h = INVALID_HANDLE_VALUE;
+  bool overlapped = false;
+  std::uint64_t pos = 0;  // write()'s cursor on an overlapped handle
   ~impl() {
     if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
   }
@@ -216,23 +276,32 @@ file_writer::~file_writer() = default;
 file_writer::file_writer(file_writer&&) noexcept = default;
 file_writer& file_writer::operator=(file_writer&&) noexcept = default;
 
-result<rename_outcome> file_writer::create_new(std::string_view utf8_path) {
+result<rename_outcome> file_writer::create_new(std::string_view utf8_path, bool concurrent) {
+  detail::simulated_round_trip();
   impl_.reset();
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
-  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  DWORD flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN;
+  if (concurrent) flags |= FILE_FLAG_OVERLAPPED;
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, flags, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     if (exists_error(::GetLastError())) return rename_outcome::name_taken;
     return err(status::io);
   }
   impl_ = std::make_unique<impl>();
   impl_->h = h;
+  impl_->overlapped = concurrent;
   return rename_outcome::renamed;
 }
 
 expected file_writer::write(std::span<const std::uint8_t> bytes) {
   if (!impl_) return err(status::invalid_arg);
+  if (impl_->overlapped) {
+    MV_TRY_VOID(write_at(impl_->pos, bytes));
+    impl_->pos += bytes.size();
+    return {};
+  }
+  detail::simulated_round_trip();
   std::size_t done = 0;
   while (done < bytes.size()) {
     const DWORD want = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - done, 1u << 30));
@@ -245,18 +314,46 @@ expected file_writer::write(std::span<const std::uint8_t> bytes) {
   return {};
 }
 
+expected file_writer::write_at(std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+  detail::simulated_round_trip();
+  if (!impl_) return err(status::invalid_arg);
+  std::size_t done = 0;
+  while (done < bytes.size()) {
+    const DWORD want = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - done, 1u << 30));
+    MV_TRY(const DWORD wrote,
+           positional(impl_->h, impl_->overlapped, true, offset + done,
+                      const_cast<std::uint8_t*>(bytes.data() + done), want));
+    if (wrote == 0) return err(status::io);
+    done += wrote;
+  }
+  return {};
+}
+
+expected file_writer::set_size(std::uint64_t bytes) {
+  detail::simulated_round_trip();
+  if (!impl_) return err(status::invalid_arg);
+  FILE_END_OF_FILE_INFO eof{};
+  eof.EndOfFile.QuadPart = static_cast<LONGLONG>(bytes);
+  return ::SetFileInformationByHandle(impl_->h, FileEndOfFileInfo, &eof, sizeof(eof))
+             ? expected{}
+             : err(status::io);
+}
+
 expected file_writer::flush_durable() {
+  detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
   return ::FlushFileBuffers(impl_->h) ? expected{} : err(status::io);
 }
 
 expected file_writer::set_mtime(std::int64_t mtime_unix) {
+  detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
   const FILETIME ft = filetime_from_unix(mtime_unix);
   return ::SetFileTime(impl_->h, nullptr, nullptr, &ft) ? expected{} : err(status::io);
 }
 
 expected file_writer::close() {
+  detail::simulated_round_trip();
   if (!impl_) return {};
   HANDLE h = impl_->h;
   impl_->h = INVALID_HANDLE_VALUE;

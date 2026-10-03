@@ -125,6 +125,23 @@ DEVINST disk_devinst(DWORD number) {
 
 }  // namespace
 
+bool is_network_path(std::string_view utf8_path) noexcept {
+  const std::wstring path = wide(utf8_path);
+  if (path.size() < 2) return false;
+  const auto sep = [](wchar_t c) { return c == L'\\' || c == L'/'; };
+  if (sep(path[0]) && sep(path[1])) {
+    // \\server\share is a share; \\?\C:\ and \\.\ are local unless \\?\UNC\.
+    if (path.size() >= 4 && (path[2] == L'?' || path[2] == L'.') && sep(path[3])) {
+      return path.size() >= 8 && ::_wcsnicmp(path.c_str() + 4, L"UNC", 3) == 0 && sep(path[7]);
+    }
+    return true;
+  }
+  // A drive letter: a mapped share reports DRIVE_REMOTE.
+  if (path[1] != L':') return false;
+  const wchar_t root[] = {path[0], L':', L'\\', L'\0'};
+  return ::GetDriveTypeW(root) == DRIVE_REMOTE;
+}
+
 result<volume_info> volume_of(std::string_view utf8_path) {
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);

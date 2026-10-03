@@ -3109,6 +3109,37 @@ was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
   once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
   what D5 covers is unchanged on Windows.
 
+## 2026-10-01 — Fast network copies, and a general copier (owner; PRs 49–50, plan/24)
+
+Owner: a NAS on 10 GbE copies at about 300 MB/s. Asked to "massively improve file transfer
+with a NAS", to and from it, F8 included; then chose **full read-back verify stays the default
+on a share** and **MediaViewer gets a general copier**, not only media. New product scope, so
+it is written down here and in [24](24-transfer.md); not a D-decision (no D1–D9 call is
+touched: no new present path, no format, nothing leaves the machine).
+
+- **Why ours was slow:** `verified_copy` had one blocking request in flight per file and
+  copied one file at a time, so on a share every chunk, create, flush, read-back and rename
+  waited a round trip. Fixed by a deep path (several positional requests per file, hashed in
+  order) and several files at once, **only when an end is a network share**.
+- **New budget** (CLAUDE.md "Budgets are budgets"): network profile depth 8, 2 MiB chunks,
+  4 files in flight = 80 MiB of copy buffers, capped at 128 MiB (`kCopyBufferBudget`).
+  Measured with `copybench` on this Mac's SSD with a 300 us simulated round trip: deep vs
+  sequential, verify on, runs alternated — 200 KB files 69-75 → 123-131 files/s, 16 MB files
+  484-488 → 916-941 MB/s, 512 MB files 745-758 → 1,620-1,899 MB/s. A real share is owed
+  (PR 49 verify).
+- **Unchanged on purpose:** a card is never read deep or by two files at once (plan/18
+  "Throughput"); local disks and cards keep the sequential path (base vs new within noise,
+  alternated runs). Local SSD → SSD would also gain about 2x from the deep path in the same
+  bench; not turned on, because it is unmeasured on Windows and on cards.
+- **F8 copy keeps the OS copier** (`CopyFileExW` / `copyItemAtURL`), unverified as before:
+  making it verified would add a read-back to every local copy, a regression the owner did not
+  ask for. It does get several files at once to a share. F8 move across volumes stays verified,
+  now deep.
+- **Not changed:** plan/18's read-back stays; on SMB an uncached read-back proves the bytes
+  the server holds and returns, which may come from the NAS's RAM rather than its disks.
+- **Out of the app's hands:** SMB signing, channel count and MTU. PR 50 detects and explains;
+  it never changes an OS or NAS setting.
+
 ## 2026-10-03 — People: a folder shows only its own people; everyone only when no folder is open
 
 Owner: "people should just show the currently opened folder … it should only show all when I'm
@@ -3123,4 +3154,3 @@ folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the
   folder reads as a leak (the owner saw their whole iCloud library's people while in one folder
   and took it for a bug), and the home page already shows everyone.
 - The search panel keeps its three scopes: a search is a question, a folder is a place.
-

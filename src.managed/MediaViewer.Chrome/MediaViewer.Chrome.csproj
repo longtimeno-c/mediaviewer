@@ -57,6 +57,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The type-in field (a WinUI TextBox fail-fasts in this host), shared with the add-ons. -->
+    <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\MediaViewer.Interop\MediaViewer.Interop.csproj" />
     <ProjectReference Include="..\MediaViewer.Updater\MediaViewer.Updater.csproj" />
   </ItemGroup>

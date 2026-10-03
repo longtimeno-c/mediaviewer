@@ -727,7 +727,8 @@ internal sealed class ImportWindow : Window
         _presetPanel.Children.Add(Text("WHERE FILES GO", 12));
         _presetPanel.Children.Add(_whereFilesGo);
 
-        var name = new TextBox { PlaceholderText = "Preset name", Text = P("name", "Default") };
+        var name = new MediaViewer.Shared.FakeInput(Banner.InputLook, "Preset name");
+        name.SetText(P("name", "Default"));
         var save = new Button { Content = "Save preset" };
         save.Click += async (_, _) =>
         {
@@ -807,9 +808,15 @@ internal sealed class ImportWindow : Window
 
     private UIElement TextField(string label, string key)
     {
-        var box = new TextBox { Header = label, Text = P(key) };
+        // Not a TextBox, which fail-fasts in this host (Shared\FakeInput.cs).
+        var box = new MediaViewer.Shared.FakeInput(Banner.InputLook, "");
+        box.SetText(P(key));
         box.LostFocus += (_, _) => { if (box.Text != P(key)) Set(key, box.Text); };
-        return box;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, label);
+        var field = new StackPanel { Spacing = 4 };
+        field.Children.Add(new TextBlock { Text = label });
+        field.Children.Add(box);
+        return field;
     }
 
     private UIElement TypeFilter()
@@ -1092,6 +1099,26 @@ internal sealed class ImportWindow : Window
         internal static readonly SolidColorBrush Neutral = new(ColorHelper.FromArgb(0x33, 0x80, 0x80, 0x80));
         internal static readonly SolidColorBrush Accent = new(
             new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent));
+        private static readonly SolidColorBrush Ink = new(
+            new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Foreground));
+        private static readonly SolidColorBrush Muted = new(ColorHelper.FromArgb(0x99, 0x80, 0x80, 0x80));
+        private static readonly SolidColorBrush Clear = new(Microsoft.UI.Colors.Transparent);
+        private static readonly SolidColorBrush Highlight = new(ColorHelper.FromArgb(0x60, Accent.Color.R, Accent.Color.G, Accent.Color.B));
+        private static readonly FontFamily InputFont = new("Segoe UI");
+
+        // The window's type-in fields (Shared\FakeInput.cs): system text and
+        // accent colours, as the rest of this window's default controls.
+        internal static readonly MediaViewer.Shared.FakeInputLook InputLook = new()
+        {
+            Font = () => InputFont,
+            FontSize = () => 14,
+            Title = () => Ink,
+            Body = () => Muted,
+            Canvas = () => Clear,
+            Hairline = () => Neutral,
+            Selection = () => Highlight,
+            SelectionInk = () => Ink,
+        };
 
         public readonly Border Root;
         private readonly TextBlock _title = new() { FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
@@ -1147,7 +1174,7 @@ internal sealed class ImportWindow : Window
         bool shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift)
             .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
         object? focused = FocusManager.GetFocusedElement(Content.XamlRoot);
-        if (focused is TextBox) return;
+        if (focused is MediaViewer.Shared.FakeInput) return;
         TileVm? tile = (focused as GridViewItem)?.Content as TileVm;
         switch (e.Key)
         {

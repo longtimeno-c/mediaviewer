@@ -45,6 +45,11 @@ struct volume_info {
 // The volume `utf8_path` lives on.
 [[nodiscard]] result<volume_info> volume_of(std::string_view utf8_path);
 
+// True when `utf8_path` is on a network filesystem (SMB, NFS, AFP, a mapped
+// drive or a UNC path). Cheaper than volume_of(): no device query, so a copy
+// can ask it per file to choose its I/O shape (io/verified_copy.h).
+[[nodiscard]] bool is_network_path(std::string_view utf8_path) noexcept;
+
 // Mounted, user-visible volumes, removable first.
 [[nodiscard]] result<std::vector<volume_info>> list_volumes();
 

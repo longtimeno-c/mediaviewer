@@ -47,6 +47,7 @@
 #include "io/replace.h"
 #include "io/dir.h"
 #include "io/file_port.h"
+#include "io/in_flight.h"
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
@@ -3268,53 +3269,64 @@ static void MvAdoptNewDefaultViewerTypes() {
       [src_paths, src_names, destDir, move, weakSelf](const mv::job_context&) -> mv::status {
         NSFileManager* fm = [NSFileManager defaultManager];
         NSString* destPath = destDir.path;
+        // To or from a share: several files at once, and each verified copy
+        // with several requests in flight (io/verified_copy.h, plan/12
+        // 2026-10-01). A card or a local disk keeps one file at a time.
+        const mv::io::copy_profile profile = mv::io::batch_copy_profile(
+            std::string(mv::io::parent_of(src_paths.front())), destPath.UTF8String);
+        // One slot per file, each written by the one thread that copies it.
+        std::vector<char> done(src_paths.size(), 0);
+
+        mv::io::for_each_in_flight(src_paths.size(), profile.files_in_flight, [&](std::size_t i) {
+          @autoreleasepool {
+            // unique_name's `exists` callback is a plain fileExistsAtPath check
+            // against the destination directory -- cheap, and exactly the
+            // "never overwrite" rule collision_name.h was written for.
+            const std::string chosen = mv::io::unique_name(
+                src_names[i].c_str(), [&](std::string_view candidate) {
+                  NSString* candidateName =
+                      [[NSString alloc] initWithBytes:candidate.data()
+                                                length:candidate.size()
+                                              encoding:NSUTF8StringEncoding];
+                  NSString* candidatePath = [destPath stringByAppendingPathComponent:candidateName];
+                  return [fm fileExistsAtPath:candidatePath];
+                });
+            if (chosen.empty()) return;  // every "(n).ext" up to the cap is taken
+            NSString* chosenName = [NSString stringWithUTF8String:chosen.c_str()];
+            NSURL* srcURL =
+                [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_paths[i].c_str()]];
+            NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
+
+            NSError* error = nil;
+            BOOL ok = NO;
+            if (move && !MvSameVolume(srcURL, destDir)) {
+              // plan/18: F8 across volumes deletes the source only after the
+              // copy is verified (hashed while read, F_FULLFSYNC, read back
+              // with F_NOCACHE, compared). -moveItemAtURL: would copy and
+              // delete with no check in between.
+              const std::string targets[] = {std::string(dstURL.path.UTF8String)};
+              mv::io::copy_options options;
+              profile.apply(options);
+              const auto copied = mv::io::verified_copy(src_paths[i], targets, options);
+              ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
+                   [fm removeItemAtURL:srcURL error:&error];
+              if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
+                // The source would not go: a move that leaves two copies is not
+                // a move. Take the verified copy back and report it.
+                (void)mv::io::remove_file(targets[0]);
+              }
+            } else {
+              ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
+                        : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
+            }
+            done[i] = ok ? 1 : 0;
+          }
+        });
+
         std::vector<std::string> succeeded;
         NSUInteger failures = 0;
-        succeeded.reserve(src_paths.size());
-
         for (std::size_t i = 0; i < src_paths.size(); ++i) {
-          // unique_name's `exists` callback is a plain fileExistsAtPath check
-          // against the destination directory -- cheap, and exactly the
-          // "never overwrite" rule collision_name.h was written for.
-          const std::string chosen = mv::io::unique_name(
-              src_names[i].c_str(), [&](std::string_view candidate) {
-                NSString* candidateName =
-                    [[NSString alloc] initWithBytes:candidate.data()
-                                              length:candidate.size()
-                                            encoding:NSUTF8StringEncoding];
-                NSString* candidatePath = [destPath stringByAppendingPathComponent:candidateName];
-                return [fm fileExistsAtPath:candidatePath];
-              });
-          if (chosen.empty()) {
-            ++failures;  // every "(n).ext" up to the cap is taken
-            continue;
-          }
-          NSString* chosenName = [NSString stringWithUTF8String:chosen.c_str()];
-          NSURL* srcURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_paths[i].c_str()]];
-          NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
-
-          NSError* error = nil;
-          BOOL ok = NO;
-          if (move && !MvSameVolume(srcURL, destDir)) {
-            // plan/18: F8 across volumes deletes the source only after the
-            // copy is verified (hashed while read, F_FULLFSYNC, read back
-            // with F_NOCACHE, compared). -moveItemAtURL: would copy and
-            // delete with no check in between.
-            const std::string targets[] = {std::string(dstURL.path.UTF8String)};
-            const auto copied =
-                mv::io::verified_copy(src_paths[i], targets, mv::io::copy_options{});
-            ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
-                 [fm removeItemAtURL:srcURL error:&error];
-            if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
-              // The source would not go: a move that leaves two copies is not
-              // a move. Take the verified copy back and report it.
-              (void)mv::io::remove_file(targets[0]);
-            }
-          } else {
-            ok = move ? [fm moveItemAtURL:srcURL toURL:dstURL error:&error]
-                      : [fm copyItemAtURL:srcURL toURL:dstURL error:&error];
-          }
-          if (ok) {
+          if (done[i]) {
             succeeded.push_back(src_paths[i]);
           } else {
             ++failures;
