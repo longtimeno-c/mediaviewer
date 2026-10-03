@@ -192,8 +192,8 @@ roots(id, path, scope, enabled, last_scan_at)                        -- remember
 meta(model_id, dim, spec, ...)
 ```
 
-- **Folder roots persist.** Choosing "this folder" or "this folder and below" writes a `roots`
-  row. Reopening the app or that folder does not rebuild it: a watcher plus a startup delta scan
+- **Folder roots persist.** Indexing a folder (always with its subfolders, 2026-10-03) writes a
+  `roots` row. Reopening the app or that folder does not rebuild it: a watcher plus a startup delta scan
   queues only new, changed or removed assets. The user can pause, rescan or remove each root.
 - Keyed like the thumbnail cache: change `(path, mtime, size)` or the model `spec` and the row is
   stale and re-queued. No content hashing pass over a camera dump.
@@ -214,7 +214,8 @@ meta(model_id, dim, spec, ...)
   problem that may not exist at camera-dump scale.
 - **Ranking:** top-K frames, then **group per clip** with the best moment first and "N more in
   this clip" — otherwise one 40-minute video with a dog in it fills the whole page.
-- **Scope:** current folder (default) · this folder and below · all indexed folders. Kind filter
+- **Scope:** the open folder and its subfolders (default) · all indexed folders. There is no
+  folder-only scope in the search panel (owner 2026-10-03; plan/12). Kind filter
   (photos / video). Min-score cutoff so a nonsense query returns "nothing found", not the
   least-bad ten.
 - **Find similar:** the current still or the paused frame's embedding as the query. For a paused
@@ -234,8 +235,9 @@ Reuse, do not grow a router or a second present path ([16-commands.md](16-comman
   `search.prev_match` (within a clip). Key assignment is done then, against the live table, so
   it cannot collide. Everything reachable without the mouse, per 16's verify.
 - When an unindexed folder is open and the Core pack is installed, Local search offers
-  **Index this folder** and **Index this folder and subfolders**. The recursive action is also
-  available from the folder toolbar/menu. It adds a remembered root, starts background work,
+  **Index this folder and subfolders**, the one way to index it (owner 2026-10-03: no
+  folder-only choice here or in Settings → Add a folder). It is also available from the folder
+  toolbar/menu. It adds a remembered root, starts background work,
   and makes that scope searchable as results commit; the user does not have to wait for the
   entire tree before trying a query.
 - A visible **indexing status** (progress, pause/resume, "paused — playing video"). Never a modal.

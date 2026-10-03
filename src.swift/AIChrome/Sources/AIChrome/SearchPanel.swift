@@ -430,12 +430,13 @@ struct SearchRootView: View {
   private func scopeGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Look in" : nil) {
       SegmentTrack {
-        // "Photos" only once the Photos library is indexed (Settings).
-        ForEach(SearchScope.allCases.filter { $0 != .photos || model.photosIndexed }) { s in
-          let needsFolder = (s == .folder || s == .tree) && model.folder.isEmpty
-          FilterButton(label: s.label, on: model.scope == s, style: .segment,
+        // "Photos" only once the Photos library is indexed (Settings). No
+        // folder-only scope: the open folder always takes in its subfolders.
+        ForEach(SearchScope.allCases.filter { $0 != .folder && ($0 != .photos || model.photosIndexed) }) { s in
+          let needsFolder = s == .tree && model.folder.isEmpty
+          FilterButton(label: s.panelLabel, on: model.scope == s, style: .segment,
                        available: !needsFolder,
-                       help: needsFolder ? "Open a folder to search just that folder." : s.help) {
+                       help: needsFolder ? "Open a folder to search it and its subfolders." : s.help) {
             model.scope = s
             model.refreshCoverage()
             model.chipsChanged()
@@ -514,12 +515,11 @@ struct SearchRootView: View {
   private var emptyState: some View {
     VStack(spacing: 12) {
       Spacer(minLength: 0)
-      if let recursive = model.startedIndexing, !model.searching {
+      if model.startedIndexing, !model.searching {
         // Just asked to index: say plainly that it carries on without the
         // panel, and offer the way out.
         Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 30)).foregroundStyle(AITheme.body)
-        Text(recursive ? "Indexing “\(model.folderName)” and its subfolders in the background"
-                       : "Indexing “\(model.folderName)” in the background")
+        Text("Indexing “\(model.folderName)” and its subfolders in the background")
           .font(AITheme.font(17)).foregroundStyle(AITheme.title)
           .multilineTextAlignment(.center).frame(maxWidth: 480)
         Text("You can close this and carry on: indexing continues on its own, at low priority, and "
@@ -547,9 +547,8 @@ struct SearchRootView: View {
           .multilineTextAlignment(.center).frame(maxWidth: 440)
           .fixedSize(horizontal: false, vertical: true)
         HStack(spacing: 10) {
-          Button("Index this folder") { model.indexFolder(recursive: false) }
+          Button("Index this folder and subfolders") { model.indexFolder() }
             .keyboardShortcut(.defaultAction)
-          Button("Index this folder and subfolders") { model.indexFolder(recursive: true) }
         }
         .controlSize(.large)
         .padding(.top, 4)
