@@ -3217,8 +3217,17 @@ Still no "delete all duplicates" and no keep rules.
 - **No confirm for a batch**, as for one file (PR 54's reasoning: every move is checked to leave
   an identical copy and is recoverable from the bin). The button names the count, and the line
   beside it the space it frees.
-- **Windows look:** the Duplicates window takes Mica, Windows 11 cards and Segoe Fluent glyphs,
-  built only from controls and theme brushes that already load in this island host
-  (`tools/check-winui-controls.ps1`). Both Import windows load the exe's own icon (resource 1, as
+- **Windows look:** the Duplicates window takes Mica, Windows 11 style cards and Segoe Fluent
+  glyphs, built only from controls that load in this island host (`tools/check-winui-controls.ps1`).
+  The Fluent brushes (`TextFillColor*`, `CardBackgroundFillColor*`) do **not** resolve here (no
+  XamlControlsResources; a XAML reference to one throws "undeclared prefix" and, from a click, fail-
+  fasts the app; seen in the first live run): secondary text is opacity and cards a neutral tint. Both Import windows load the exe's own icon (resource 1, as
   the main window) instead of WinUI's generic one (`src.managed/Shared/AppIcon.cs`). The Mac
   windows already carry the app's icon.
+
+**Verified (Windows, 2026-10-03):** a dev-key Release build of this tree with this Import
+sideloaded, on a tree of 10 files in 4 groups, five runs: the window opens, a pick of every copy
+of a file leaves the button off, a pick of the 5 extras moves exactly those 5 and keeps one of
+each; the Import window shows the app icon. One earlier run never received the scan's done event
+(window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
+compile (CI), the Mac live run, both present-loop gates while a scan runs.

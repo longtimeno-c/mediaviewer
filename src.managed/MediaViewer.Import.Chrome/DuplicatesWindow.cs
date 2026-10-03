@@ -188,18 +188,13 @@ internal sealed class DuplicatesWindow : Window
     internal ulong Job => _job;
     internal string Headline => _headline.Text;
 
-    /// <summary>Secondary text, its colour a live ThemeResource so it follows light / dark.</summary>
-    private static TextBlock Secondary(string s, double size)
-    {
-        var t = (TextBlock)XamlReader.Load(
-            """
-            <TextBlock xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                       TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-            """);
-        t.Text = s;
-        t.FontSize = size;
-        return t;
-    }
+    /// <summary>
+    /// Secondary text by opacity, so it follows light / dark with the text colour.
+    /// Not the Fluent TextFillColor* brushes: they come with XamlControlsResources,
+    /// which this island host does not have, and a XAML reference to one fails to load.
+    /// </summary>
+    private static TextBlock Secondary(string s, double size) =>
+        new() { Text = s, FontSize = size, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
 
     private static Button IconButton(string glyph, string label)
     {
@@ -226,20 +221,17 @@ internal sealed class DuplicatesWindow : Window
     private static DataTemplate Template(string body) => (DataTemplate)XamlReader.Load(
         "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\">" + body + "</DataTemplate>");
 
-    /// <summary>A Windows 11 card: the card fill with its hairline stroke.</summary>
-    private static Border Card(UIElement child, Thickness padding)
+    /// <summary>A Windows 11 style card in the neutral tints (the Fluent card brushes
+    /// are not in this host; see <see cref="Secondary"/>), legible in light and dark.</summary>
+    private static Border Card(UIElement child, Thickness padding) => new()
     {
-        var b = (Border)XamlReader.Load(
-            """
-            <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="8"/>
-            """);
-        b.Child = child;
-        b.Padding = padding;
-        return b;
-    }
+        Background = Banner.CardFill,
+        BorderBrush = Banner.CardStroke,
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(8),
+        Padding = padding,
+        Child = child,
+    };
 
     private UIElement BuildLayout(bool mica)
     {
@@ -346,14 +338,14 @@ internal sealed class DuplicatesWindow : Window
                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
               <TextBlock Text="{Binding Glyph}" FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="20"
-                         VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                         VerticalAlignment="Center" Opacity="0.7"/>
               <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
                 <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
                 <TextBlock Text="{Binding Folder}" FontSize="12" TextTrimming="CharacterEllipsis"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                           Opacity="0.7"/>
               </StackPanel>
               <TextBlock Grid.Column="2" Text="{Binding Detail}" FontSize="12" MaxWidth="320" TextWrapping="Wrap"
-                         TextAlignment="Right" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                         TextAlignment="Right" VerticalAlignment="Center" Opacity="0.7"/>
             </Grid>
             """);
         _list.GroupStyle.Add(new GroupStyle
@@ -363,10 +355,13 @@ internal sealed class DuplicatesWindow : Window
                 <StackPanel Orientation="Horizontal" Spacing="10">
                   <TextBlock Text="{Binding Header}" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
                   <TextBlock Text="{Binding Sub}" FontSize="12" VerticalAlignment="Center"
-                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                             Opacity="0.7"/>
                 </StackPanel>
                 """),
         });
+        // Rows span the list, so the status sits at the right edge.
+        _list.ContainerContentChanging += (_, e) =>
+            e.ItemContainer.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         _list.SelectionChanged += (_, e) =>
         {
             if (e.AddedItems.Count > 0 && e.AddedItems[^1] is DupFileVm added) _focused = added;
@@ -433,6 +428,7 @@ internal sealed class DuplicatesWindow : Window
         _folder.Text = dir;
         _headline.Text = "Looking for duplicates…";
         _progressText.Text = "Looking through " + dir + "…";
+        _progressText.Visibility = Visibility.Visible;
         _bar.IsIndeterminate = true;
         _bar.Root.Visibility = Visibility.Visible;
         UpdateButtons();
@@ -485,16 +481,18 @@ internal sealed class DuplicatesWindow : Window
         _headline.Text =
             failed ? "This folder could not be read." :
             groups == 0 ? $"No duplicates among {files} files." :
+            dupes == 0 ? "Every extra copy is in the Recycle Bin. One copy of each file is kept." :
             $"{dupes} duplicate {(dupes == 1 ? "file" : "files")} in {groups} {(groups == 1 ? "group" : "groups")} · " +
             $"{Format.Bytes(wasted)} could be freed";
         var notes = new List<string>();
         if (s.GetProperty("cancelled").GetBoolean()) notes.Add("Stopped early: not every file was compared.");
         if (!_canTrash && groups > 0) notes.Add("Moving to the Recycle Bin needs a newer MediaViewer.");
-        if (!failed && groups > 0 && notes.Count == 0)
+        if (!failed && dupes > 0 && notes.Count == 0)
         {
             notes.Add($"Compared {files} files by content. Pick the copies you don't need, then move them to the Recycle Bin.");
         }
         _progressText.Text = string.Join(" ", notes);
+        _progressText.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         try { _reportPath = await Task.Run(() => _api.ReportPath(job)); }
         catch (MediaViewerException) { _reportPath = ""; }
         UpdateButtons();
@@ -513,7 +511,7 @@ internal sealed class DuplicatesWindow : Window
             var group = new DupGroupVm
             {
                 Header = $"{n} identical files",
-                Sub = $"{Format.Bytes(size)} each · {Format.Bytes(size * (n - 1))} could be freed",
+                Sub = $"{Format.Bytes(size)} each",
                 Size = size,
             };
             foreach (JsonElement f in members.EnumerateArray())
@@ -602,7 +600,7 @@ internal sealed class DuplicatesWindow : Window
         _selectionText.Text =
             _groups.Count == 0 ? "" :
             every ? $"{picked.Count} picked, including every copy of a file. Leave one copy of each file unpicked." :
-            picked.Count > 1 ? $"{picked.Count} picked · {Format.Bytes(bytes)} to free. Ctrl+click adds or removes one, Shift+click picks a run." :
+            picked.Count > 1 ? $"{picked.Count} picked · {Format.Bytes(bytes)} to free" :
             "Ctrl+click or Shift+click to pick several copies, then move them to the Recycle Bin together.";
 
         _stop.Visibility = _running ? Visibility.Visible : Visibility.Collapsed;
@@ -674,6 +672,10 @@ internal sealed class DuplicatesWindow : Window
     {
         internal static readonly SolidColorBrush Neutral =
             new(Microsoft.UI.ColorHelper.FromArgb(0x33, 0x80, 0x80, 0x80));
+        internal static readonly SolidColorBrush CardFill =
+            new(Microsoft.UI.ColorHelper.FromArgb(0x14, 0x80, 0x80, 0x80));
+        internal static readonly SolidColorBrush CardStroke =
+            new(Microsoft.UI.ColorHelper.FromArgb(0x29, 0x80, 0x80, 0x80));
         internal static readonly SolidColorBrush Accent = new(
             new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent));
     }

@@ -126,6 +126,8 @@ final class DuplicatesModel: ObservableObject {
       headline = "This folder could not be read."
     } else if groups.isEmpty {
       headline = "No duplicates among \(files) files."
+    } else if dupes == 0 {
+      headline = "Every extra copy is in the Trash. One copy of each file is kept."
     } else {
       headline = "\(dupes) duplicate \(dupes == 1 ? "file" : "files") in \(groups.count) " +
         "\(groups.count == 1 ? "group" : "groups") · " +
