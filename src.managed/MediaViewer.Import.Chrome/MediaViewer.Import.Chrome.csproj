@@ -43,6 +43,8 @@
          TextBox fail-fasts in this host). -->
     <Compile Include="..\Shared\FlatBar.cs" Link="Shared\FlatBar.cs" />
     <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
+    <!-- The app mark on the add-on's own windows. -->
+    <Compile Include="..\Shared\AppIcon.cs" Link="Shared\AppIcon.cs" />
   </ItemGroup>
 
   <ItemGroup>
