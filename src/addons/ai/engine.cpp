@@ -177,6 +177,7 @@ expected engine::start() {
 
 void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
+  transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
@@ -2629,7 +2630,7 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
   if (o.thumbs && host_.has_thumbnail_bytes()) {
-    o.thumb = [this](const std::string& path, std::int64_t pts_ms) { return host_.thumbnail_jpeg(path, pts_ms); };
+    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w); };
   }
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   auto r = transfer::write(job.file, o, c);
@@ -2651,6 +2652,31 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   w.key("bytes").integer(static_cast<std::int64_t>(r->bytes));
   w.end_object();
   return w.take();
+}
+
+result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w) {
+  if (auto hit = host_.thumbnail_jpeg(w.path, w.pts_ms)) return hit;
+  // Never made here (the file or moment was never on screen): made now, as
+  // the viewer and a result tile would, between the viewer's busy spells.
+  for (int i = 0; i < 500 && !stopping_ && !transfer_cancel_ && host_.should_yield(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (stopping_ || transfer_cancel_) return err(status::cancelled);
+  if (w.pts_ms < 0 && !w.video) {
+    if (auto made = host_.thumbnail(w.path); !made) return err(made.error());
+    return host_.thumbnail_jpeg(w.path, -1);
+  }
+  // A clip's own tile is its poster: the frame the viewer's poster lands near
+  // (10 % in, at most 3 s), kept as a moment row. The viewer's poster row is
+  // the viewer's to make.
+  const std::int64_t ms =
+      w.pts_ms >= 0 ? w.pts_ms : std::min<std::int64_t>(std::max<std::int64_t>(w.duration_ms, 0) / 10, 3000);
+  if (w.pts_ms < 0) {
+    if (auto hit = host_.thumbnail_jpeg(w.path, ms)) return hit;
+  }
+  MV_TRY(rgb_frame f, host_.video_frame(w.path, ms, 512));
+  if (auto made = host_.moment_thumbnail(w.path, ms, &f); !made) return err(made.error());
+  return host_.thumbnail_jpeg(w.path, ms);
 }
 
 std::string engine::run_import(const transfer_job& job, mv::status& st) {
