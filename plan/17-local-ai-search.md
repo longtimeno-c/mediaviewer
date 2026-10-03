@@ -98,7 +98,7 @@ src/infer   IEmbedder { load(pack), embed_image(span<u8 rgb>, w, h), embed_text(
   their hardware uses: **OpenVINO** (Intel iGPU/NPU, Apache-2.0), **CUDA/TensorRT** (NVIDIA;
   redistribution is under NVIDIA's EULA, not an OSI licence — legal check against the app's
   GPL-3.0-or-later status before shipping it, and if it fails the gate it is user-supplied
-  instead). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
+  instead; it ships user-supplied, plan/12 2026-10-03). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
   until a provider exists. That is a known gap, not a hidden one. Adding DirectML later as one
   more provider would need the CLAUDE.md D3D12 rule reworded and is not planned.
 - ORT owns whatever device the provider creates. It never shares our render `ID3D11Device` (or `MTLDevice` on Mac),
@@ -600,7 +600,8 @@ the pack (tested).
 
 **Sizes:** Core ~1.18 GB installed (both towers, tokenizer, ORT CPU, mv_ai, chrome), People
 piece 39 MB, NVIDIA piece ~205 MB (ORT's CUDA 13 build only: the CUDA runtime and cuDNN are
-**user-supplied**, NVIDIA's EULA review against GPL-3.0-or-later not done). Worst supported
+**user-supplied**, NVIDIA's EULA review against GPL-3.0-or-later not done, so they are not
+bundled; the piece itself is published on stable Windows releases from 2026-10-03, plan/12). Worst supported
 combination ~1.4-1.85 GB of 3 GB. OpenVINO has a code path but no piece yet (no Intel dev box).
 **macOS: arm64 only** - Microsoft ships no x86_64 macOS build of ORT 1.30; Intel Macs are not
 offered Local search.
