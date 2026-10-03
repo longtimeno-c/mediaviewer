@@ -21,7 +21,7 @@ public sealed record UpdateStatus(UpdatePhase Phase, string? Version, UpdateUrge
     int? Percent = null);
 
 /// <summary>
-/// plan/13 Part 1 behaviour on top of Velopack. One background thread at
+/// docs/design/13 Part 1 behaviour on top of Velopack. One background thread at
 /// below-normal priority does every network and disk operation; the chrome
 /// only reads <see cref="Status"/> and calls the two apply methods.
 /// </summary>
@@ -134,7 +134,7 @@ public sealed class UpdateService
 
         // Hooks (--veloapp-*) never reach here: the native host exits on them
         // before loading .NET. Empty args so Run() only sets up the locator;
-        // no auto-apply-and-restart at startup (plan/13: never interrupt).
+        // no auto-apply-and-restart at startup (docs/design/13: never interrupt).
         VelopackApp.Build().SetArgs(Array.Empty<string>()).SetAutoApplyOnStartup(false).Run();
 
         _root = root;

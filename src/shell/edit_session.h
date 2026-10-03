@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 10 — the host's edit state, shared by both hosts (plan/16 "Crop" mode,
-// `[` `]` from the viewer; plan/07 EditStack).
+// PR 10 — the host's edit state, shared by both hosts (docs/design/16 "Crop" mode,
+// `[` `]` from the viewer; docs/design/07 EditStack).
 //
 // Pure and UI-thread only: commands in, an effect out; no I/O, no decode, no
 // GPU. The host turns effects into work — a redraw, a debounced lossless
@@ -9,7 +9,7 @@
 //
 //   * One EditStack per (path, size, mtime), kept for the session, so walking
 //     away and back keeps the edits. Not persisted: the XMP sidecar that is
-//     "truth" for a stack (plan/07) lands with the PR 12 writer.
+//     "truth" for a stack (docs/design/07) lands with the PR 12 writer.
 //   * `[` `]` `H` `V` on a JPEG whose stack holds only rotate/flip ask for a
 //     lossless in-place write (edit::rotate_in_viewer + io::replace_atomic).
 //     The preview turns at once; the write follows after the host's debounce,
@@ -52,7 +52,7 @@ enum class edit_effect : std::uint8_t {
   export_image,    // run an export of `export_geometry()` for the current item
 };
 
-// PR 29 (plan/20): the Crop pane's aspect presets. `original` is the frame's
+// PR 29 (docs/design/20): the Crop pane's aspect presets. `original` is the frame's
 // own ratio (after the stack's turns). Values are stable: the chromes send them.
 enum class crop_aspect : std::uint8_t {
   free = 0,
@@ -104,7 +104,7 @@ class edit_session {
   [[nodiscard]] edit::rect crop_overlay() const noexcept { return draft_rect_; }
   [[nodiscard]] float crop_angle() const noexcept { return draft_angle_; }
 
-  // PR 29 (plan/20). The aspect preset is kept for the session, like an
+  // PR 29 (docs/design/20). The aspect preset is kept for the session, like an
   // app's last-used ratio. Outside crop mode setting it starts cropping
   // (refused while a lossless rotation is still being written). A locked
   // preset fits the largest rect of that ratio, centred on the draft; a
@@ -204,7 +204,7 @@ class edit_session {
   void land(std::uint64_t old_key, codec::d4 applied);
 };
 
-// ---- The export dialog's answer (plan/10 PR 10: WinUI dialog, SwiftUI sheet) --
+// ---- The export dialog's answer (docs/design/10 PR 10: WinUI dialog, SwiftUI sheet) --
 
 // Both chromes post the choice back as one small integer (the island's
 // command callback carries a float; every value here is exact in one):
@@ -230,7 +230,7 @@ inline constexpr int kExportLongEdgeCount =
                                              const edit::export_options& opt,
                                              const edit::colour& c = {});
 
-// PR 15, Ctrl+Alt+C / ⌘⌥C (plan/16 View): the still with its stack baked, as a
+// PR 15, Ctrl+Alt+C / ⌘⌥C (docs/design/16 View): the still with its stack baked, as a
 // PNG, for the clipboard. Written to a folder of its own under
 // io::clipboard_dir() — never beside the original — as "<name>-edit.png".
 // Only the newest kKeptFlattenedCopies folders are kept, so a copy another

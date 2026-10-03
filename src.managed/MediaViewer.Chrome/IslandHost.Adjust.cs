@@ -25,10 +25,10 @@ namespace MediaViewer.Chrome;
 /// canvas redraws from the new uniforms on the render thread, and the
 /// histogram is a reduction a worker ran. The sliders stay disabled until the
 /// FP16 working image is built — for a RAW, LibRaw's full linear develop
-/// (plan/07: never the embedded preview). Keyboard-complete: Shift+A shows the
+/// (docs/design/07: never the embedded preview). Keyboard-complete: Shift+A shows the
 /// pane focused on its first slider (ShowPanel's focus flag), Tab walks the
 /// sliders, arrows step, Esc returns to the canvas — a focused pane owns its
-/// keys (FocusKind.Pane, plan/16 "Pane").
+/// keys (FocusKind.Pane, docs/design/16 "Pane").
 /// </remarks>
 public static partial class IslandHost
 {

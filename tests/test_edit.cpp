@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 10 verify (plan/10): crop + export a JPEG — on-disk dimensions and EXIF
+// PR 10 verify (docs/design/10): crop + export a JPEG — on-disk dimensions and EXIF
 // orientation match; reset returns the original pixels exactly; lossless
 // rotate produces a file with no recompression; keyboard-only rotate of a
 // JPEG in the viewer writes that file (the core half: rotate_in_viewer +
@@ -748,7 +748,7 @@ TEST_CASE("the export dialog's long edge sizes the output", "[edit][export]") {
 }
 
 TEST_CASE("an export is deterministic: same source and stack, same bytes", "[edit][export]") {
-  // plan/10 PR 10 (both platforms): the same crop on the same JPEG exports
+  // docs/design/10 PR 10 (both platforms): the same crop on the same JPEG exports
   // byte-identical on Windows and Mac. The op graph and the encoders are shared;
   // this pins the half a single machine can prove. Nothing time-, thread- or
   // address-dependent may reach the bytes.

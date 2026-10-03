@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Volumes: what a path lives on, card arrival, eject (plan/18-import.md "Ports").
+// Volumes: what a path lives on, card arrival, eject (docs/design/18-import.md "Ports").
 //
 // Portable header. io/volume_win.cpp: GetVolumePathNameW / serial number,
 // IOCTL_STORAGE_GET_DEVICE_NUMBER for the physical device, WM_DEVICECHANGE on
@@ -9,7 +9,7 @@
 // DiskArbitration (volume UUID, whole-disk BSD name, the mount callbacks, and
 // DADiskUnmount + DADiskEject); the Linux test build answers from statfs only.
 //
-// Nothing here formats, erases or deletes (plan/18 "Never offered"). Volume
+// Nothing here formats, erases or deletes (docs/design/18 "Never offered"). Volume
 // ids and labels stay on the machine (rule 6). Worker or watch threads only.
 #pragma once
 
@@ -33,7 +33,7 @@ struct volume_info {
   std::string root_utf8;
   std::string label_utf8;
   // One key per physical device, so two cards in one reader share a reader
-  // thread and two readers do not (plan/18 "Throughput").
+  // thread and two readers do not (docs/design/18 "Throughput").
   std::string device_key;
   std::uint64_t total_bytes = 0;
   std::uint64_t free_bytes = 0;

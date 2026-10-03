@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The D3D11 device, and the adapter-selection rules that go with it.
 //
-// plan/03-rendering.md: pick the adapter that drives the *output the window is
+// docs/design/03-rendering.md: pick the adapter that drives the *output the window is
 // on* — not adapter 0, not highest VRAM — and rebuild when the window moves to
 // another GPU or the device is removed. The hybrid-GPU case was used to reject
 // libmpv (D2), which makes it our problem on the path we chose.
@@ -60,7 +60,7 @@ class device {
   [[nodiscard]] HRESULT removed_reason() const noexcept;
 
   // Current VRAM budget from IDXGIAdapter3::QueryVideoMemoryInfo. The 60/25/15
-  // split in plan/02 is applied by the caches that spend it, not here.
+  // split in docs/design/02 is applied by the caches that spend it, not here.
   [[nodiscard]] std::uint64_t video_memory_budget() const noexcept;
 
  private:

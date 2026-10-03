@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 15 (plan/09 "Windows integration", plan/10 PR 15): the portable half of
+// PR 15 (docs/design/09 "Windows integration", docs/design/10 PR 15): the portable half of
 // the Explorer thumbnail handler. Bytes in, BGRA pixels out, with the limits
-// plan/09 asks of anything a shell process runs: a hard cap on what it reads,
+// docs/design/09 asks of anything a shell process runs: a hard cap on what it reads,
 // a deadline after which it answers "no thumbnail", and nothing shared with
 // the app (no cache, no decoder instance, no state between requests).
 //

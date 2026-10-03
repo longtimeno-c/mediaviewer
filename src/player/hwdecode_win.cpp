@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 5a - D3D11VA hardware decode. Windows port (D9 / plan/15-platforms.md).
+// PR 5a - D3D11VA hardware decode. Windows port (D9 / docs/design/15-platforms.md).
 //
 // OWNER: mediaviewer-48 (5a). This is the ONLY file in player/ permitted to
 // include <d3d11.h>: tools/check-hostable-core.ps1 exempts *_win.cpp by name,
@@ -43,7 +43,7 @@ result<AVBufferRef*> create_hw_device_ctx(ID3D11Device* device) noexcept {
   auto* hw = reinterpret_cast<AVHWDeviceContext*>(ref->data);
   auto* d3d = static_cast<AVD3D11VADeviceContext*>(hw->hwctx);
 
-  // plan/05: build the hardware device context from OUR ID3D11Device, not one
+  // docs/design/05: build the hardware device context from OUR ID3D11Device, not one
   // FFmpeg makes, so the decoded surface is usable without a cross-device copy.
   // src/gfx/device.cpp already created it with D3D11_CREATE_DEVICE_VIDEO_SUPPORT
   // and ID3D10Multithread::SetMultithreadProtected(TRUE).
@@ -150,7 +150,7 @@ status create_texture_from_planes(ID3D11Device* device, std::uint32_t width,
   // DEFAULT with initial data, not IMMUTABLE: the video formats are less well
   // travelled than R8G8B8A8 and IMMUTABLE has driver corner cases here. Both
   // create without touching a device context, which is the property that
-  // matters — this is plan/02's worker-thread pattern, and the software path
+  // matters — this is docs/design/02's worker-thread pattern, and the software path
   // deliberately does not extend the immediate-context exception that
   // copy_hw_surface needs.
   desc.Usage = D3D11_USAGE_DEFAULT;

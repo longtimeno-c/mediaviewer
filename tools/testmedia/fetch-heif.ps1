@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Downloads the real-world HEIC samples listed in heif-manifest.json into
-# tools/testmedia/ (gitignored; plan/09: media is not committed) and verifies
+# tools/testmedia/ (gitignored; docs/design/09: media is not committed) and verifies
 # each SHA-256. A mismatch deletes the file and fails — a sample that changed
 # upstream is not the sample the tests were written against.
 #

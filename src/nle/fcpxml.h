@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Search results as FCPXML (plan/23 "Hand-off"): what the workflow extension
+// Search results as FCPXML (docs/design/23 "Hand-off"): what the workflow extension
 // puts on the pasteboard when tiles are dragged into Final Cut Pro, and what
 // "Export results as FCPXML" writes on either platform (DaVinci Resolve and
 // Premiere Pro import FCPXML too, which makes this the Windows half's
@@ -11,7 +11,7 @@
 // event: a video moment as a range around the match (before_ms / after_ms,
 // clamped to the clip) with a marker at the match, and a still at still_ms.
 // The query becomes a keyword over each clip, so FCP files the drop into a
-// keyword collection ("MV: birthday cake"); that is optional (plan/23 open
+// keyword collection ("MV: birthday cake"); that is optional (docs/design/23 open
 // question 8). Times are rational milliseconds ("8000/1000s"); FCP conforms a
 // time that is not on a frame boundary of the clip, which Phase 0 measures.
 #pragma once

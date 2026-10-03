@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The snapshot the UI thread publishes and the render thread consumes.
 //
-// plan/02-architecture.md: "The UI thread publishes a state snapshot; the
+// docs/design/02-architecture.md: "The UI thread publishes a state snapshot; the
 // render thread consumes one. They never share a mutable object. UI logic
 // running long can never stall a frame."
 //
@@ -24,7 +24,7 @@ enum class mouse_button : std::uint32_t { left = 0, right = 1, middle = 2, count
 // PR 9: what the info overlay and the AF quads need from the property model,
 // formatted by the UI thread when the selection's metadata arrives. The render
 // thread only draws these bytes — it never sees a `metadata`, a path or a file,
-// which is what makes toggling the overlays free of I/O (plan/16).
+// which is what makes toggling the overlays free of I/O (docs/design/16).
 struct meta_overlay {
   static constexpr int kMaxAf = 16;
   char camera_line[160] = {};    // "Canon EOS R5  |  RF85mm F1.2 L USM"
@@ -68,10 +68,10 @@ struct input_snapshot {
   std::uint32_t height = 0;
   std::uint32_t chrome_height_px = 0;  // command-bar strip; overlay sits below it
   std::uint32_t chrome_bottom_px = 0;  // filmstrip strip; canvas sits above it
-  // Folder tree strip (plan/16: a left island, hidden by default). 0 until the
+  // Folder tree strip (docs/design/16: a left island, hidden by default). 0 until the
   // tree lands (PR 8); the canvas maths already takes it.
   std::uint32_t chrome_left_px = 0;
-  // PR 29 (plan/20): a docked right pane (the Edit workspace on Mac). The
+  // PR 29 (docs/design/20): a docked right pane (the Edit workspace on Mac). The
   // canvas frames the picture in the rect left of it, so the pane never
   // covers the image. 0 = nothing docked.
   std::uint32_t chrome_right_px = 0;
@@ -101,11 +101,11 @@ struct input_snapshot {
   float zoom_preset = 1.0f;               // applied when zoom_preset_seq bumps
   std::uint32_t fill_seq = 0;             // 4
   // Keyboard pan, in steps. Cumulative like the wheel, so coalesced key-repeat
-  // publications lose none (plan/16: ↑ ↓ when zoomed, Shift+arrows).
+  // publications lose none (docs/design/16: ↑ ↓ when zoomed, Shift+arrows).
   std::int64_t pan_steps_x = 0;
   std::int64_t pan_steps_y = 0;
 
-  // plan/16 view state. Levels, not edges: the render thread draws what these
+  // docs/design/16 view state. Levels, not edges: the render thread draws what these
   // say, and redraws once when any of them changes.
   std::uint8_t background = 0;  // B: 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
   // OS chrome colour, 0xRRGGBB. Only the empty welcome/game view uses it;
@@ -138,7 +138,7 @@ struct input_snapshot {
   std::uint32_t item_index = 0;
   std::uint32_t item_count = 0;
   char item_name[260] = {};     // UTF-8, NUL-terminated
-  // Marks (plan/16): whether the current item is marked, and how many are.
+  // Marks (docs/design/16): whether the current item is marked, and how many are.
   bool item_marked = false;
   std::uint32_t marked_count = 0;
   // Slideshow `.`: the canvas goes black and idles; nothing is drawn over it.
@@ -146,7 +146,7 @@ struct input_snapshot {
   // An animated item: Space toggles play / pause, `,` `.` step (cumulative).
   std::uint32_t anim_toggle_seq = 0;
   std::int64_t anim_steps = 0;
-  // Clip transport beyond play/pause and frame step (plan/16 "Video"): skips in
+  // Clip transport beyond play/pause and frame step (docs/design/16 "Video"): skips in
   // milliseconds (cumulative, so coalesced key-repeat loses none), speed-ladder
   // rungs (cumulative), and a mute edge. Space and `,` `.` reuse the two fields
   // above, exactly as an animation does.
@@ -155,7 +155,7 @@ struct input_snapshot {
   std::uint32_t video_mute_seq = 0;
   // Volume in 10 % steps (cumulative, like the speed rungs): Up / Down on a clip.
   std::int32_t video_volume_steps = 0;
-  // Absolute volume from the transport strip's slider (plan/16 "More" panel).
+  // Absolute volume from the transport strip's slider (docs/design/16 "More" panel).
   // Edge-triggered like the seek pair: seq bumps, value is read alongside it.
   std::uint32_t video_volume_set_seq = 0;
   float video_volume_set_value = 1.0f;
@@ -168,7 +168,7 @@ struct input_snapshot {
   // instead of video_seek_ms when >= 0. A keyframe at 433.333 ms sought as
   // 433 ms would show the frame before it.
   std::int64_t video_seek_ns = -1;
-  // PR 13: the A-B loop trim previews with (plan/08 "Preview the cut").
+  // PR 13: the A-B loop trim previews with (docs/design/08 "Preview the cut").
   // Edge-triggered like the seek pair; b < 0 clears it.
   std::uint32_t video_loop_seq = 0;
   std::int64_t video_loop_a_ns = 0;
@@ -189,7 +189,7 @@ struct input_snapshot {
   // change, or the window moving to a monitor on a different adapter.
   std::uint32_t resize_seq = 0;
   std::uint32_t display_change_seq = 0;
-  // PR 30 (plan/21): the window the canvas presents into, as an opaque host
+  // PR 30 (docs/design/21): the window the canvas presents into, as an opaque host
   // handle (an HWND on Windows); 0 = the viewer's own window. The Video Editor
   // sets it to its preview window, and the render thread moves the one
   // swapchain there. The Mac host moves its view instead and leaves this 0.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // macOS half of the volume port (io/volume.h): statfs + DiskArbitration.
 //
-// plan/18 names NSWorkspace mount notifications for arrival. DiskArbitration's
+// docs/design/18 names NSWorkspace mount notifications for arrival. DiskArbitration's
 // description-changed callback on kDADiskDescriptionVolumePathKey is the same
 // event from the C API that NSWorkspace sits on, and keeps io/ free of
 // Objective-C. The Linux core test build answers volume_of() from statfs and

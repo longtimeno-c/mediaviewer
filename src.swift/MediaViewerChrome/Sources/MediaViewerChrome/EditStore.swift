@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 29 (plan/20): the state the Edit workspace's strip and panes read. It
+// PR 29 (docs/design/20): the state the Edit workspace's strip and panes read. It
 // mirrors the host's shell::edit_workspace and the crop draft, re-read only
 // when the host's edit generation moves -- the AdjustStore shape.
 import AppKit

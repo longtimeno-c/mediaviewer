@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// PR 8 telemetry (plan/13 Part 3). Default off, opt-in once, honestly.
+// PR 8 telemetry (docs/design/13 Part 3). Default off, opt-in once, honestly.
 //
 // This app is pointed at people's private photos, so the design here starts
 // from rule 6 and works backwards: nothing about a user's files leaves the
@@ -19,7 +19,7 @@
 //     no id is generated, no file is opened, no buffer grows.
 //
 // There is no upload endpoint in PR 8, exactly as there is none for crash
-// reports (plan/13 Part 2 "no URL"). Consented events are appended to a local
+// reports (docs/design/13 Part 2 "no URL"). Consented events are appended to a local
 // spool so the schema is exercised and reviewable on a real machine; the
 // sender is a later change, and it reads this spool.
 //
@@ -40,7 +40,7 @@ inline constexpr std::int32_t kChromeFlagTelemetry = 1 << 9;
 // opt-in screen exactly while this is clear; it is never a "consent" value.
 inline constexpr std::int32_t kChromeFlagTelemetryAsked = 1 << 10;
 
-// The whole vocabulary. plan/13 "What is genuinely worth collecting" - and
+// The whole vocabulary. docs/design/13 "What is genuinely worth collecting" - and
 // nothing else. Adding a row is a deliberate change with a schema-check run,
 // not an afterthought at a call site.
 enum class event : std::int32_t {
@@ -90,10 +90,10 @@ inline constexpr std::size_t kMaxTagLength = 32;
 
 // The user's answer from the first-run screen, or a later Settings change.
 // Turning it OFF also drops the install id and deletes the spool: "a setting
-// that turns it off later and actually does" (plan/13).
+// that turns it off later and actually does" (docs/design/13).
 void set_enabled(bool on) noexcept;
 
-// A random, rotatable, non-reversible install id (plan/13): 128 bits of
+// A random, rotatable, non-reversible install id (docs/design/13): 128 bits of
 // system randomness, hex. Never a machine id, MAC, SID, or anything derived
 // from the user. Generated lazily on the first consented event, so a machine
 // that never opts in never has one. Empty while consent is off.

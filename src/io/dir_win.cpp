@@ -124,7 +124,7 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
           (fd.cFileName[1] == L'\0' || (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
         continue;
       }
-      // Companion hiding (plan/04, slipped to PR 7): hidden/system, AppleDouble,
+      // Companion hiding (docs/design/04, slipped to PR 7): hidden/system, AppleDouble,
       // Explorer junk. .xmp/.thm/.aae/.wav never match still_extension.
       if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
       if (fd.cFileName[0] == L'.' && fd.cFileName[1] == L'_') continue;

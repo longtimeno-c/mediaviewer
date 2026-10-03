@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Slideshow as a mode (plan/16 "Slideshow"). No transition pass: "next" is the
+// Slideshow as a mode (docs/design/16 "Slideshow"). No transition pass: "next" is the
 // same navigation command as browse, on a timer, so prefetch and the
 // generation counter stay in play. This is the pure part — order, interval,
 // and when to advance — tested without a window or a clock.
@@ -95,7 +95,7 @@ class slideshow {
     none,      // a still, or an animation that loops forever: interval only
     opening,   // a clip is open but has not started (async open, first frame)
     playing,   // a clip, or a finite animation, still going
-    paused,    // plan/16: a paused clip goes on the interval
+    paused,    // docs/design/16: a paused clip goes on the interval
     finished,  // ended, or a finite animation reached its loop count
   };
 
@@ -105,7 +105,7 @@ class slideshow {
     return m != media::opening && m != media::playing;
   }
 
-  // plan/16: a clip (or a finite animation) advances at whichever is later —
+  // docs/design/16: a clip (or a finite animation) advances at whichever is later —
   // the interval, or the end of the media. A still, or an animation that
   // loops forever, advances on the interval alone. Paused never advances.
   [[nodiscard]] bool should_advance(std::uint64_t elapsed_ms, bool media_finished) const noexcept {

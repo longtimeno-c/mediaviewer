@@ -11,7 +11,7 @@ using Windows.Storage.Pickers;
 namespace MediaViewer.Ai.Chrome;
 
 /// <summary>
-/// Settings → Local search once the pack is loaded (plan/17 PR 23, PR 24):
+/// Settings → Local search once the pack is loaded (docs/design/17 PR 23, PR 24):
 /// status and Pause, Compute, Precision (the one quality scale; the model
 /// stays on Auto), the indexed folders, the index
 /// size and Clear, the battery threshold, and the separate people opt-in.
@@ -134,7 +134,7 @@ internal sealed partial class ManagePanel
         _legacyQualityRow.Visibility = Visibility.Collapsed;
         Root.Children.Add(_legacyQualityRow);
 
-        // Precision (plan/17 "Precision scale"): five steps, the middle the
+        // Precision (docs/design/17 "Precision scale"): five steps, the middle the
         // calibrated rule. Each search reads it as it starts: no re-index.
         _precision = new Slider
         {
@@ -222,7 +222,7 @@ internal sealed partial class ManagePanel
 
         _indexRow = new StackPanel { Spacing = 8 };
         Root.Children.Add(_indexRow);
-        // Import and export (plan/17 "Sharing an index"; ManagePanel.Transfer.cs).
+        // Import and export (docs/design/17 "Sharing an index"; ManagePanel.Transfer.cs).
         AddTransferSection();
 
         _batteryBox = Combo();

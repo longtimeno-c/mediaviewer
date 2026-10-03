@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// A small strict JSON reader and writer (plan/18: add-on manifests, Import
+// A small strict JSON reader and writer (docs/design/18: add-on manifests, Import
 // presets, reports). Header-only, so an add-on can carry it without linking
-// the core (plan/18 "does not link the core statically").
+// the core (docs/design/18 "does not link the core statically").
 //
 // Strict on purpose, because it reads signed manifests: RFC 8259 grammar only,
 // UTF-8 in, no comments, no trailing commas, a nesting limit, and a duplicate

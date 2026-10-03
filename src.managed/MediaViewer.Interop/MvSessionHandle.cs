@@ -10,7 +10,7 @@ namespace MediaViewer.Interop;
 /// </summary>
 /// <remarks>
 /// <para>
-/// plan/14-abi.md calls this non-negotiable, and the reason is worth restating
+/// docs/design/14-abi.md calls this non-negotiable, and the reason is worth restating
 /// where the code is: an <see cref="IntPtr"/> that the GC loses is a leaked
 /// decoded image — tens or hundreds of MB of VRAM per occurrence, invisible
 /// until the app falls over on a long browsing session. A SafeHandle also

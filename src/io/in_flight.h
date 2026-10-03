@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Several files at once for a batch copy to or from a network share
-// (io/verified_copy.h batch_copy_profile, plan/12 2026-10-01).
+// (io/verified_copy.h batch_copy_profile, docs/design/12 2026-10-01).
 //
 // A share answers each create, flush, read-back and rename with a round trip;
 // copying one file at a time leaves the link idle through all of them. This

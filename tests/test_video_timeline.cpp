@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// shell/video_timeline.h: the Video Editor's cut list (PR 30, plan/21).
+// shell/video_timeline.h: the Video Editor's cut list (PR 30, docs/design/21).
 #include "catch_compat.h"
 
 #include "shell/video_timeline.h"

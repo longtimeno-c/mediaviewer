@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Lossless JPEG rotate / flip / MCU-aligned crop (plan/07 "Export",
-// plan/10 PR 10): the DCT coefficients are rearranged, never decoded to
+// Lossless JPEG rotate / flip / MCU-aligned crop (docs/design/07 "Export",
+// docs/design/10 PR 10): the DCT coefficients are rearranged, never decoded to
 // pixels, so there is no generation loss. jpegtran's transform, on the plain
 // libjpeg coefficient API the decoder already links (no transupp, no
 // TurboJPEG transform API, so it builds on the vcpkg and system ports alike).
@@ -57,7 +57,7 @@ struct lossless_request {
 [[nodiscard]] result<std::vector<std::uint8_t>> transform(std::span<const std::uint8_t> jpeg,
                                                           const lossless_request& req);
 
-// The viewer's `[` `]` `H` `V` (plan/16): rotate/flip what is displayed by
+// The viewer's `[` `]` `H` `V` (docs/design/16): rotate/flip what is displayed by
 // `op`, losslessly, returning the new file's bytes. Tries the coefficient
 // transform (baking the old orientation, tag → 1); when the frame is not
 // MCU-aligned, falls back to rewriting only the Orientation tag (in place in

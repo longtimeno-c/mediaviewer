@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// mv-search-client: the search agent's test client (plan/23 Phase 1).
+// mv-search-client: the search agent's test client (docs/design/23 Phase 1).
 //
 //   mv-search-client QUERY [--json] [--thumbs]         one search over XPC
 //   mv-search-client --bench N QUERY...                 p50 / p95 over XPC and

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Final Cut Pro search on / off (plan/23; plan/12 2026-09-28, amended the same
+// Final Cut Pro search on / off (docs/design/23; docs/design/12 2026-09-28, amended the same
 // day). MediaViewer.app carries the pieces, arm64 only (cmake/darwin-fcp.cmake):
 //
 //   Contents/PlugIns/MediaViewerSearch.appex         the workflow extension
@@ -13,7 +13,7 @@
 // pack is the bulk, downloaded like any add-on, and the agent hosts it
 // read-only. Off, the agent is not registered with launchd (nothing runs,
 // nothing is listed in Login Items) and the extension is hidden from Final Cut
-// Pro by a PlugInKit "ignore" election, so plan/18's "absent means absent"
+// Pro by a PlugInKit "ignore" election, so docs/design/18's "absent means absent"
 // holds for everyone who has not asked for it. On, SMAppService registers the
 // agent (launchd starts it when the panel asks and it exits when idle) and
 // the election becomes "use".

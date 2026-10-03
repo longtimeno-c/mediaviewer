@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // MediaViewer present lab — the Win32 entry point.
 //
-// This is the top-level window described in plan/02-architecture.md's shell/
+// This is the top-level window described in docs/design/02-architecture.md's shell/
 // module. It owns the HWND and the window procedure, publishes an input
 // snapshot, and does nothing else: no file I/O, no decode, no GPU waits, and no
 // blocking on the core. The render thread lives in present_lab.
@@ -104,11 +104,11 @@ constexpr wchar_t kWindowTitle[] = L"MediaViewer";
 // What the user asked for, which is not the same as what is on screen. A
 // folder open is "browse this folder"; an image open is "show me this file",
 // and the folder behind it is still listed so arrows and the gallery work
-// (plan/10 PR 4 — one folder navigation model) without the strip taking a
+// (docs/design/10 PR 4 — one folder navigation model) without the strip taking a
 // slice of the canvas the user did not ask to give up.
 enum class open_mode { none, folder, image };
 
-// plan/16 §Focus: in fullscreen, ↓ at fit (or the bottom hot-edge) shows the
+// docs/design/16 §Focus: in fullscreen, ↓ at fit (or the bottom hot-edge) shows the
 // strips until navigation settles — this long after the last navigation.
 constexpr UINT_PTR kMetaTimerId = 0x7501;   // PR 9: pause before a metadata read
 constexpr UINT kMetaDebounceMs = 90;
@@ -122,7 +122,7 @@ constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Le
 constexpr UINT_PTR kHistogramTimerId = 0x7701;
 constexpr UINT kHistogramDebounceMs = 120;
 constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
-// PR 15 (plan/10 "OS integration").
+// PR 15 (docs/design/10 "OS integration").
 constexpr UINT kMsgFlattenDone = WM_APP + 0x76;     // Ctrl+Alt+C's bake finished (any thread posts)
 constexpr UINT kMsgJumpListPruned = WM_APP + 0x77;  // folders the user removed from the jump list
 constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed over its paths
@@ -152,12 +152,12 @@ constexpr UINT_PTR kTransportTimerId = 0x6B02;
 // would read the old fit. Zoom commands open this window so the first ↓ after
 // them pans instead of falling through.
 constexpr ULONGLONG kZoomIntentMs = 250;
-// plan/16 slideshow: a UI-thread tick that only decides whether to advance. It
+// docs/design/16 slideshow: a UI-thread tick that only decides whether to advance. It
 // wakes the UI thread, never the render thread, so a still between advances is
 // zero presents.
 constexpr UINT_PTR kSlideshowTimerId = 0x6D01;
 constexpr UINT kSlideshowTickMs = 100;
-// plan/16 status line in the title bar. The tick only compares strings; the
+// docs/design/16 status line in the title bar. The tick only compares strings; the
 // window text is written when it changes.
 constexpr UINT_PTR kTitleTimerId = 0x6F01;
 constexpr UINT kTitleTickMs = 250;
@@ -215,7 +215,7 @@ struct app_state {
   ULONGLONG folder_find_tick = 0;
   std::string folder_query;
   mv::job_system jobs;
-  // PR 10 (plan/07, plan/16). `edits` owns every item's edit stack and crop
+  // PR 10 (docs/design/07, docs/design/16). `edits` owns every item's edit stack and crop
   // mode; the render thread gets the geometry through input.edit, tagged with
   // the item's path key and the view generation of the select that showed it.
   mv::shell::edit_session edits;
@@ -226,7 +226,7 @@ struct app_state {
   std::int64_t edit_mtime = 0;
   // The export dialog's last answer, preselected next time (pack_export).
   std::int32_t export_choice = mv::shell::pack_export(mv::edit::export_options{});
-  // PR 11 (plan/07, plan/16): the adjust pane's state and the preview-sized
+  // PR 11 (docs/design/07, docs/design/16): the adjust pane's state and the preview-sized
   // FP16 working image the histogram reduces (the render thread holds its
   // own GPU copy). `adjust_generation` cancels a build for an item the user
   // has left (the job's job_context watches it), so a RAW develop never
@@ -234,20 +234,20 @@ struct app_state {
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
   std::atomic<mv::generation> adjust_generation{1};
-  // PR 13 / 14 (plan/08): trim mode on the current clip, the keyframe-index
+  // PR 13 / 14 (docs/design/08): trim mode on the current clip, the keyframe-index
   // request in flight for it, and the Jobs pane's wish. The jobs themselves
   // are the session's clip queue (mediaviewer_clip.h); the pane polls it.
   mv::shell::trim_state trim;
   std::uint64_t trim_index_request = 0;
   bool jobs_pane_visible = false;
   bool focus_jobs_next = false;
-  // PR 29 (plan/20): the Edit workspace (shell/edit_workspace.h, shared with
+  // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h, shared with
   // the Mac host) and Show original. `ws_shown` is what the panes were last
   // synced to, so closing the workspace closes only the panes it opened.
   mv::shell::edit_workspace ws;
   bool ws_shown = false;
   bool show_original = false;
-  // PR 30 (plan/21): the Video Editor window. While it is open it owns the
+  // PR 30 (docs/design/21): the Video Editor window. While it is open it owns the
   // canvas (input.canvas_window) and the keys aimed at it. `token` bumps on
   // open and close, so a strip job that lands for an older clip is dropped;
   // `retired` is a closed window waiting for the swapchain to leave it.
@@ -281,7 +281,7 @@ struct app_state {
   bool main_active = true;  // the viewer's own WM_ACTIVATE (input.window_active also counts the editor)
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
-  // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
+  // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on `jobs`: a plain JPEG in place, everything else
   // in an XMP sidecar. `meta_written` is the paths written this session, the
   // ones Revert has a snapshot for. The notice rides the title's status line.
@@ -345,7 +345,7 @@ struct app_state {
   // Which island last reported focus (chrome_cmd_focus_changed). Only read
   // when GetFocus() is not the canvas window, so it cannot go stale there.
   mv::shell::focus_kind island_focus = mv::shell::focus_kind::command_bar;
-  // plan/16 `F`: borderless on the window's monitor, chrome hidden. The
+  // docs/design/16 `F`: borderless on the window's monitor, chrome hidden. The
   // windowed placement and style come back exactly on the way out.
   bool fullscreen = false;
   // `length` is refreshed immediately before GetWindowPlacement. Value-
@@ -365,7 +365,7 @@ struct app_state {
   std::wstring last_title;       // the status line last written to the title bar
   bool fullscreen_reveal = false;  // strips shown over a fullscreen canvas for a while
   ULONGLONG zoom_intent_tick = 0;  // GetTickCount64 of the last zoom-in style command
-  // plan/16 marks, copy, move. Marks are UI-thread state keyed by path; the
+  // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
   mv::shell::file_jobs files;
@@ -392,7 +392,7 @@ struct app_state {
   // PR 15: the single instance. A second start hands its paths over here.
   mv::shell::instance_listener instance;
   std::uint64_t folder_token = 0;         // bumped per folder open
-  // plan/16 slideshow, a mode: order and interval in `show`, advancing through
+  // docs/design/16 slideshow, a mode: order and interval in `show`, advancing through
   // the same folder_select as browse.
   mv::shell::slideshow show;
   ULONGLONG show_last_advance = 0;
@@ -421,7 +421,7 @@ struct pending_restore {
   bool fullscreen = false;
   bool gallery = false;
 } g_restore;
-// PR 15: `--new-instance` runs a second, independent window (plan/09
+// PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
 
@@ -572,7 +572,7 @@ std::int32_t chrome_flags(const app_state* app) noexcept {
   if (mv::shell::app_settings().get("update", "channel") == "preview")
     flags |= mv::shell::update::kChromeFlagUpdatePreview;
   // Default off, and the island shows the first-run screen exactly while
-  // `asked` is clear (plan/13 Part 3).
+  // `asked` is clear (docs/design/13 Part 3).
   if (mv::shell::telemetry::enabled()) flags |= mv::shell::telemetry::kChromeFlagTelemetry;
   if (mv::shell::telemetry::asked()) flags |= mv::shell::telemetry::kChromeFlagTelemetryAsked;
   return flags;
@@ -624,7 +624,7 @@ void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
 void stop_motion(app_state* app) noexcept;
-// PR 29 (plan/20): the Edit workspace.
+// PR 29 (docs/design/20): the Edit workspace.
 void push_edit_view(app_state* app) noexcept;
 void workspace_item_changed(app_state* app) noexcept;
 void set_editor_open(app_state* app, bool open);  // PR 30
@@ -717,7 +717,7 @@ void open_path(app_state* app, std::wstring_view wide_path, bool navigation = fa
   open_folder(app, parent, wide_path);
 }
 
-// argv and drag-and-drop (plan/16): the first entry that exists wins — a folder
+// argv and drag-and-drop (docs/design/16): the first entry that exists wins — a folder
 // opens, a file opens its folder with that file selected (open_request.h).
 // The attribute probe is the same one-stat-per-path open_path already makes.
 mv::shell::open_request resolve_paths(const std::vector<std::wstring>& raw) {
@@ -932,7 +932,7 @@ std::vector<std::string> expand_pair_targets(app_state* app, std::vector<std::st
   return out;
 }
 
-// plan/16 Ctrl+E: open the containing folder with this file selected, so a
+// docs/design/16 Ctrl+E: open the containing folder with this file selected, so a
 // culling pass can jump to Explorer without copying the path.
 void reveal_current_in_explorer(app_state* app) noexcept {
   if (!app) return;
@@ -1190,7 +1190,7 @@ void set_meta_pane(app_state* app, bool on) noexcept {
   if (!app || app->meta_pane_visible == on) return;
   if (on) app->jobs_pane_visible = false;  // one right-edge pane at a time
   app->meta_pane_visible = on;
-  app->focus_meta_next = on;  // `I` focuses the pane (plan/16); Esc returns to the canvas
+  app->focus_meta_next = on;  // `I` focuses the pane (docs/design/16); Esc returns to the canvas
   apply_view_state(app);
   if (on) {
     request_metadata_now(app);
@@ -1203,7 +1203,7 @@ void set_meta_pane(app_state* app, bool on) noexcept {
 void set_folder_tree(app_state* app, bool on) noexcept {
   if (!app || app->tree_visible == on) return;
   app->tree_visible = on;
-  app->focus_tree_next = on;  // Ctrl+Shift+E shows and focuses (plan/16)
+  app->focus_tree_next = on;  // Ctrl+Shift+E shows and focuses (docs/design/16)
   push_tree_root(app);
   apply_view_state(app);
   if (!on && app->window) focus_canvas(app);
@@ -1536,7 +1536,7 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
   app->chrome.apply_settings(chrome_flags(app), packed);
 }
 
-// Ctrl+C (plan/16): the eyedropper's readout when it is on and a pixel is under
+// Ctrl+C (docs/design/16): the eyedropper's readout when it is on and a pixel is under
 // the cursor; otherwise the marked files, else the current item (the selected
 // cell while the gallery is up) as CF_HDROP, pasteable in Explorer, Mail, chat.
 // A pair copies both halves, as F7 does. Never asks the user anything.
@@ -1882,7 +1882,7 @@ void push_adjust_pane(app_state* app) noexcept {
   app->chrome.set_adjust_view(app->adjust.view(app->edits.colour()));
 }
 
-// Read, develop (for a RAW: LibRaw's linear 16-bit develop — plan/07 waits for
+// Read, develop (for a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for
 // this, never the embedded preview), downscale to the preview edge, upload as
 // an immutable FP16 texture — all on the pool. Seconds for a 45 MP RAW; the
 // pane says "Preparing" meanwhile and the UI thread never waits (rule 1).
@@ -2021,7 +2021,7 @@ void set_adjust_pane(app_state* app, bool on) {
     app->lab.drop_working();
     app->adjust.working_dropped();
   }
-  app->focus_adjust_next = on;  // plan/16 "Pane": opening focuses it; Esc returns to the canvas
+  app->focus_adjust_next = on;  // docs/design/16 "Pane": opening focuses it; Esc returns to the canvas
   apply_view_state(app);
   push_adjust_pane(app);
   if (on) {
@@ -2083,7 +2083,7 @@ void folder_step(app_state* app, int delta) {
   uint32_t selected = 0;
   if (mv_folder_count(app->session, &count) != MV_OK || count == 0) return;
   if (mv_folder_selected(app->session, &selected) != MV_OK) return;
-  // plan/16: wrap at the ends when the setting is on (the default).
+  // docs/design/16: wrap at the ends when the setting is on (the default).
   const auto next = mv::shell::step_index(selected, delta, count, app->settings.wrap);
   if (!next) return;
   folder_select(app, *next);
@@ -2092,10 +2092,10 @@ void folder_step(app_state* app, int delta) {
 // Skim, not transport: J/L are the +/-10 s jumps, Q/E are the shuttle you hold
 // down to find a moment. 2 s per repeat lands about where a scrubber drag does.
 constexpr std::int64_t kSkimStepNs = 2'000'000'000;
-// plan/16: J / L are the +/-10 s transport jumps.
+// docs/design/16: J / L are the +/-10 s transport jumps.
 constexpr std::int64_t kTransportStepNs = 10'000'000'000;
 
-// plan/16's Video mode: "current item is a clip, playing or paused". Stopped
+// docs/design/16's Video mode: "current item is a clip, playing or paused". Stopped
 // means no clip, so Q/E do nothing and the key goes to the island.
 // How long a skim burst stays "the same burst". Longer than key-repeat's
 // ~30 ms cadence, short enough that a second press a beat later starts from
@@ -2116,7 +2116,7 @@ bool video_mode(app_state* app) noexcept {
   return state != MV_PLAY_STOPPED;
 }
 
-// ---- PR 13 / 14: trim mode, the clip tools and the Jobs pane (plan/08) --------
+// ---- PR 13 / 14: trim mode, the clip tools and the Jobs pane (docs/design/08) --------
 // Trim is host state over the clip on screen (shell/trim_state.h, shared with
 // the Mac host); the keyframe index and every job run in the core behind
 // mediaviewer_clip.h. Nothing here reads the file or waits on a job (rule 1).
@@ -2150,7 +2150,7 @@ std::int64_t clip_position(app_state* app) noexcept {
   return std::max<std::int64_t>(0, position);
 }
 
-// P: the A-B loop over exactly what Path 1 will write (plan/08 "Preview the
+// P: the A-B loop over exactly what Path 1 will write (docs/design/08 "Preview the
 // cut"); off clears the loop.
 void apply_trim_preview(app_state* app) noexcept {
   if (!app || !app->session) return;
@@ -2238,7 +2238,7 @@ mv_clip_request abi_request(const mv::edit::clip::request& r) noexcept {
 }
 
 // Queues a job and shows the Jobs pane (without taking the keyboard) so the
-// progress is visible; the pane is where it is cancelled (plan/08: never a
+// progress is visible; the pane is where it is cancelled (docs/design/08: never a
 // modal progress dialog).
 bool submit_clip_job(app_state* app, const mv::edit::clip::request& r) noexcept {
   if (!app || !app->session || r.source.empty()) return false;
@@ -2269,7 +2269,7 @@ bool submit_clip_job(app_state* app, const mv::edit::clip::request& r) noexcept 
   return true;
 }
 
-// plan/13: an update restart waits for queued and running clip jobs.
+// docs/design/13: an update restart waits for queued and running clip jobs.
 bool clip_jobs_busy(app_state* app) noexcept {
   if (!app || !app->session) return false;
   std::uint32_t count = 0;
@@ -2413,7 +2413,7 @@ void run_clip_tool(app_state* app, std::int32_t packed) noexcept {
   (void)submit_clip_job(app, r);
 }
 
-// ---- PR 29: the Edit workspace (plan/20) -----------------------------------------
+// ---- PR 29: the Edit workspace (docs/design/20) -----------------------------------------
 // One visible door (the bar's Edit image / Edit video, Enter) to what PRs 10-14
 // built. shell/edit_workspace decides which tab a command lands on; the host
 // shows that tab's pane and runs the command's own work exactly as before. The
@@ -2995,7 +2995,7 @@ void toggle_filmstrip_setting(app_state* app) {
   apply_view_state(app);
 }
 
-// ---- PR 30: the Video Editor window (plan/21, owner 2026-09-26) ----------------
+// ---- PR 30: the Video Editor window (docs/design/21, owner 2026-09-26) ----------------
 //
 // Enter (or Edit video) on a clip opens a window of its own: the preview on top
 // -- the viewer's canvas, moved in, so there is still one swapchain and one
@@ -3367,7 +3367,7 @@ void editor_trim_to(app_state* app, std::int64_t source_ns) noexcept {
   push_editor_view(app, true);
 }
 
-// J K L (plan/16): L plays at 1x, 2x, 4x on repeated presses; K stops; J
+// J K L (docs/design/16): L plays at 1x, 2x, 4x on repeated presses; K stops; J
 // skims back further on each quick press. A held J skims keyframes and
 // settles on the exact frame when it is let go.
 void editor_shuttle_key(app_state* app, int key, bool down, bool repeat) noexcept {
@@ -3835,7 +3835,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
           (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdatePreview) != 0 ? "preview" : "stable");
       // Telemetry only ever changes through an explicit answer: the first-run
       // screen, or the Settings row. Both arrive here with the Asked bit set,
-      // and a word without it leaves consent exactly as it was (plan/13).
+      // and a word without it leaves consent exactly as it was (docs/design/13).
       if ((static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetryAsked) != 0) {
         mv::shell::telemetry::set_enabled(
             (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
@@ -3980,7 +3980,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_clip_index:
       trim_index_arrived(app, static_cast<std::uint64_t>(arg));
       return;
-    // PR 29 (plan/20): the Edit workspace's strip, and the Crop pane's presets
+    // PR 29 (docs/design/20): the Edit workspace's strip, and the Crop pane's presets
     // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
     case mv::shell::chrome_cmd_edit_tab:
       edit_select_tab(app, static_cast<int>(arg));
@@ -4040,7 +4040,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       revert_current_metadata(app);
       return;
     case mv::shell::chrome_cmd_folder_ready: {
-      // The island owns the completion drain (plan/12 2026-09-07), so this is
+      // The island owns the completion drain (docs/design/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
       // Milestone H: a result list, or a directory again. The item that was
       // open before the first list is where Up returns.
@@ -4125,7 +4125,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
         if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
         return;
       }
-      // plan/13: never restart under a playing clip (no export/trim jobs in v1).
+      // docs/design/13: never restart under a playing clip (no export/trim jobs in v1).
       std::uint32_t state = MV_PLAY_STOPPED;
       if (app->session) (void)mv_video_state(app->session, &state);
       const bool playing = (app->session && mv::abi::video_open(app->session) &&
@@ -4174,7 +4174,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
   publish(app);
 }
 
-// plan/16: one router. Symbol keys are resolved through the active layout so
+// docs/design/16: one router. Symbol keys are resolved through the active layout so
 // `?`, `+`, `[` and `\` mean the character, not a US key position. Letters and
 // digits keep their virtual key (Windows already maps letters by layout).
 // AltGr-only symbols do not resolve; that is a v1.1 remap concern.
@@ -4214,7 +4214,7 @@ mv::shell::key_event translate_key(const MSG& msg, bool is_up) noexcept {
       } else if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
         k = mv::shell::char_key(static_cast<char>(vk));
       } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
-        // PR 12 (plan/16 Rate): the keypad's digits are their own keys, apart
+        // PR 12 (docs/design/16 Rate): the keypad's digits are their own keys, apart
         // from the number row's, which stay zoom. With NumLock off Windows
         // sends Insert / End / arrows instead, and those keep their meaning.
         k = static_cast<key>(static_cast<int>(key::numpad0) + static_cast<int>(vk - VK_NUMPAD0));
@@ -4270,7 +4270,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.popup_open = app->popup_open;
   s.settings_open = app->settings_open;
   s.motion_playing = app->motion_playing;
-  // A shown pane is a level for Esc to walk out of (plan/16: crop, pane, gallery, ...).
+  // A shown pane is a level for Esc to walk out of (docs/design/16: crop, pane, gallery, ...).
   s.pane_open = app->chrome.meta_pane_visible() || app->chrome.folder_tree_visible();
   s.crop = app->edits.crop_active();
   s.trim = app->trim.armed() && s.item == mv::shell::item_kind::clip;
@@ -4332,7 +4332,7 @@ void publish_slideshow(app_state* app) noexcept {
   publish(app);
 }
 
-// F5 (plan/16). Fullscreen unless it already is; leaving puts it back.
+// F5 (docs/design/16). Fullscreen unless it already is; leaving puts it back.
 void start_slideshow(app_state* app) noexcept {
   if (!app || !app->window || app->show.active()) return;
   const std::uint32_t count = folder_count(app);
@@ -4357,7 +4357,7 @@ void stop_slideshow(app_state* app) noexcept {
 }
 
 // One tick: advance when the interval is up and a playing clip has ended —
-// whichever is later (plan/16). A still, or a paused clip, goes on the
+// whichever is later (docs/design/16). A still, or a paused clip, goes on the
 // interval. The advance is the ordinary folder_select, so prefetch and the
 // generation counter behave exactly as they do for an arrow key.
 void slideshow_tick(app_state* app) noexcept {
@@ -4409,7 +4409,7 @@ void slideshow_tick(app_state* app) noexcept {
     return;
   }
   app->show.set_count(count, selected);
-  const auto next = app->show.next(selected, app->settings.wrap);  // plan/16 wrap setting
+  const auto next = app->show.next(selected, app->settings.wrap);  // docs/design/16 wrap setting
   app->show_last_advance = now;
   if (!next) {
     stop_slideshow(app);
@@ -4882,7 +4882,7 @@ void folder_jump(app_state* app, long long delta) {
   folder_select(app, static_cast<std::uint32_t>(next));
 }
 
-// plan/16 "Status / title": name — i/N — W×H — zoom %. From the folder model
+// docs/design/16 "Status / title": name — i/N — W×H — zoom %. From the folder model
 // and the render thread's published numbers; no decode, no I/O. Ratings (★)
 // arrive with PR 11.
 void update_title(app_state* app) noexcept {
@@ -4956,7 +4956,7 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
     if (dest.empty()) return true;
   }
   // Saved only when it changes. The save is in memory; the settings store's
-  // worker writes the file (plan/12 "Settings writes on the UI thread", PR 8).
+  // worker writes the file (docs/design/12 "Settings writes on the UI thread", PR 8).
   if (app->destinations.empty() || app->destinations.front() != dest) {
     app->destinations = mv::shell::push_destination(std::move(app->destinations), dest);
     mv::shell::save_destinations(app->destinations);
@@ -4968,7 +4968,7 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
   return true;
 }
 
-// Delete: always the Recycle Bin, always asked first (plan/16). A location
+// Delete: always the Recycle Bin, always asked first (docs/design/16). A location
 // with no bin is refused on the worker, never deleted permanently.
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
@@ -5066,7 +5066,7 @@ void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result
   app->report.showing = false;
 }
 
-// PR 7 `;` (plan/16 View, plan/04 Live Photos): play the selected Live Photo's
+// PR 7 `;` (docs/design/16 View, docs/design/04 Live Photos): play the selected Live Photo's
 // motion once on the same swapchain, through the PR 5 clip path. The still
 // stays on screen until the first video frame; the end of the clip, Esc, `;`
 // again or any navigation gives the still back. `false` on a stop that is not
@@ -5128,7 +5128,7 @@ void motion_tick(app_state* app) noexcept {
   }
 }
 
-// ---- PR 15: OS integration (plan/10 "OS integration", plan/16 View) ---------
+// ---- PR 15: OS integration (docs/design/10 "OS integration", docs/design/16 View) ---------
 
 // Ctrl+Shift+C: the marked (else current) path(s) as text, one per line. A
 // pair gives both halves, as Ctrl+C does.
@@ -5177,7 +5177,7 @@ bool start_flatten(app_state* app, bool for_drag = false) {
 // browser) in one clipboard open.
 void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   if (!r) return;
-  // Ctrl+Alt+drag (plan/09 "drag an edited copy directly into another app"):
+  // Ctrl+Alt+drag (docs/design/09 "drag an edited copy directly into another app"):
   // the bake ran on the pool while the button was held; the drag starts
   // now, of the baked file, if it still is. Let go early and nothing happens.
   // The file is dragged as CF_HDROP rather than a CFSTR_FILECONTENTS stream,
@@ -5546,7 +5546,7 @@ void release_taskbar(app_state* app) noexcept {
   }
 }
 
-// Command effects. A switch over a dense enum is the jump table plan/16 asks
+// Command effects. A switch over a dense enum is the jump table docs/design/16 asks
 // for. Returning false means "not applicable here" and sends the key on to the
 // island — Q/E on a still, or a command whose slice has not landed yet.
 bool run_command(app_state* app, mv::shell::command_id command) noexcept {
@@ -5557,7 +5557,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     publish(app);
     return true;
   };
-  // PR 30 (plan/21, owner): video is edited in its own window, not a pane.
+  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
   if (command == edit_workspace &&
       (app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip)) {
     if (app->editor.open) {
@@ -5567,7 +5567,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     }
     return true;
   }
-  // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
+  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
   // workspace decides the tab; crop_mode and trim_mode then do their own work.
   if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
       command == trim_mode || command == metadata_pane || command == jobs_pane) {
@@ -5597,11 +5597,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       set_settings_open(app, !app->settings_open);
       return true;
     // Milestone G: Import's commands exist only while it is installed; with
-    // it absent the key falls through as if unbound (plan/18).
+    // it absent the key falls through as if unbound (docs/design/18).
     case open_import: {
       if (!mv::shell::addon_commands_available()) return false;
       // The viewer's marks ride along for the window's "Marked in viewer"
-      // selection (plan/18 "Selection"). None marked: an empty list.
+      // selection (docs/design/18 "Selection"). None marked: an empty list.
       mv::json::writer w;
       w.begin_array();
       if (!app->marks.empty()) {
@@ -5623,7 +5623,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->chrome.show_import(1, w.str());
       return true;
     }
-    // Milestone H (plan/17 "UI and commands"): the AI pack's commands exist
+    // Milestone H (docs/design/17 "UI and commands"): the AI pack's commands exist
     // only while it is loaded; its chrome does the work. What is on screen
     // rides along (the chrome can also read it from the session).
     case search_open:
@@ -5631,7 +5631,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case search_next_match:
     case search_prev_match: {
       if (!mv::shell::addon_command_available(command)) {
-        // Ctrl+F without the pack (plan/16 "File search", 2026-09-28): the
+        // Ctrl+F without the pack (docs/design/16 "File search", 2026-09-28): the
         // island opens Local search's panel once a starting pack attaches,
         // or file search, which may need the gallery shown first.
         if (command != search_open) return false;
@@ -5742,7 +5742,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case reset_stats: return bump(app->input.reset_stats_seq);
 
     case play_pause: {
-      // plan/16: on an animation Space plays and pauses it, like a clip.
+      // docs/design/16: on an animation Space plays and pauses it, like a clip.
       if (app->lab.animation() != mv::shell::animation_state::none) {
         ++app->input.anim_toggle_seq;
         return set_level(app);
@@ -5759,7 +5759,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->muted = !app->muted;
       (void)mv_video_set_muted(app->session, app->muted ? 1 : 0);
       return true;
-    // plan/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
+    // docs/design/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
     case jump_back:
     case jump_forward:
       app->skim_tick_ms = 0;
@@ -5774,7 +5774,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       (void)mv_video_step(app->session, command == frame_forward ? 1 : -1);
       return true;
     // Speed ladder: the command-bar dropdown is the owner. Q/E used to step
-    // it on tap; they skip instead (plan/12 2026-09-13).
+    // it on tap; they skip instead (docs/design/12 2026-09-13).
     case rate_down:
     case rate_up:
       if (!video_mode(app)) return false;
@@ -5782,7 +5782,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     // Q/E: tap is one exact ±2 s skip; hold shuttles on the non-exact seek
     // (nearest keyframe) so a held key cannot queue a decode-forward per
-    // repeat (plan/16 speed rule 1). A new burst re-reads the position.
+    // repeat (docs/design/16 speed rule 1). A new burst re-reads the position.
     case skim_back:
     case skim_forward: {
       if (!video_mode(app)) return false;
@@ -5807,11 +5807,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case fill:
       app->zoom_intent_tick = ::GetTickCount64();
       return bump(app->input.fill_seq);
-    // plan/16: Ctrl+0 resets pan/zoom, which is the opening view — fit.
+    // docs/design/16: Ctrl+0 resets pan/zoom, which is the opening view — fit.
     case reset_view:
       app->zoom_intent_tick = 0;
       return bump(app->input.fit_seq);
-    // plan/16: pan only when zoomed. At fit the view is locked, so the key is
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
     // not ours and falls through to whatever else wants it.
     case pan_up:
     case pan_down:
@@ -5820,7 +5820,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       const bool zooming = app->zoom_intent_tick != 0 &&
                            ::GetTickCount64() - app->zoom_intent_tick < kZoomIntentMs;
       if (app->lab.view_fitted() && !zooming) {
-        // plan/16 §Focus: fullscreen hides the strips, and ↓ at fit is how a
+        // docs/design/16 §Focus: fullscreen hides the strips, and ↓ at fit is how a
         // keyboard user gets them (and a clip's transport) back.
         if (command == pan_down && app->fullscreen) {
           set_fullscreen_reveal(app, true);
@@ -5889,14 +5889,14 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     case copy_clipboard:
       return copy_to_clipboard(app);
-    // PR 15 (plan/16 View): the keyboard twins of drag-out.
+    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
     case copy_path:
       return copy_paths_to_clipboard(app);
     case copy_flattened:
       return start_flatten(app);
     case share:
       return share_targets(app);
-    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
@@ -5912,7 +5912,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     case crop_aspect_set: case crop_straighten_set:
       return false;  // island-only: they carry a value (chrome_on_command)
-    // Marks (plan/16): a set separate from the selection, keyed by path.
+    // Marks (docs/design/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
       if (current.empty()) return false;
@@ -5943,7 +5943,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case delete_to_recycle_bin:
       return start_recycle(app);
 
-    // Slideshow (plan/16): a mode, no transition pass.
+    // Slideshow (docs/design/16): a mode, no transition pass.
     case slideshow_start:
       start_slideshow(app);
       return app->show.active();
@@ -5971,7 +5971,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     }
 
-    // plan/16 `?`, Ctrl+G go-to and `/` find: XAML flyouts on the command bar.
+    // docs/design/16 `?`, Ctrl+G go-to and `/` find: XAML flyouts on the command bar.
     case help:
     case go_to:
     case typeahead: {
@@ -6013,7 +6013,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       // while it is up (command-bar focus is not island mode).
       return true;
     }
-    // plan/12 2026-09-13: the tree island lands in PR 8. Its command, key and
+    // docs/design/12 2026-09-13: the tree island lands in PR 8. Its command, key and
     // chrome_left_px layout are here so the island maths is not retrofitted.
     case folder_tree:
       set_folder_tree(app, !app->tree_visible);
@@ -6028,7 +6028,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       if (!app->meta_pane_visible && app->adjust.visible()) set_adjust_pane(app, false);
       set_meta_pane(app, !app->meta_pane_visible);
       return true;
-    // PR 11 (plan/16 Pane): Shift+A shows the adjust pane and focuses its
+    // PR 11 (docs/design/16 Pane): Shift+A shows the adjust pane and focuses its
     // first slider; again (or its close button) hides it.
     case adjust_pane:
       set_adjust_pane(app, !app->adjust.visible());
@@ -6036,20 +6036,20 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case adjust_exposure: case adjust_contrast: case adjust_saturation:
     case adjust_temperature: case adjust_tint: case adjust_reset:
       return false;  // island-only: they carry a value (chrome_on_command)
-    // PR 12 (plan/16 Rate): 0-5 write the rating of the item on screen. The
+    // PR 12 (docs/design/16 Rate): 0-5 write the rating of the item on screen. The
     // pane's stars post the same ids.
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5:
       return rate_current_item(app, mv::shell::rating_of_command(command));
     case edit_comment:
       return focus_comment_field(app);
-    // PR 13 / 14 (plan/08, plan/16 "Video and trim").
+    // PR 13 / 14 (docs/design/08, docs/design/16 "Video and trim").
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
       return run_clip_command(app, command);
 
-    // Host-side and cheap (plan/16): photographers park the viewer on a
+    // Host-side and cheap (docs/design/16): photographers park the viewer on a
     // second monitor.
     case always_on_top:
       if (!app->window) return false;
@@ -6061,7 +6061,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     // PR 7 pairs.
     case play_motion:
       return start_motion(app);
-    // plan/04: the other half of a RAW+JPEG stop is never trapped. Open RAW
+    // docs/design/04: the other half of a RAW+JPEG stop is never trapped. Open RAW
     // shows the RAW file on the canvas (same stop, same marks); Open JPEG goes
     // back to the primary, from the LRU. Not a RAW+JPEG stop: not ours.
     case open_raw:
@@ -6189,7 +6189,7 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
 
 // ---- PR 29: the Edit workspace's verify rig ----------------------------------------
 //
-// MV_EDIT_SELFTEST=<folder> (plan/20 verify; the Mac twin is main_mac.mm's).
+// MV_EDIT_SELFTEST=<folder> (docs/design/20 verify; the Mac twin is main_mac.mm's).
 // Inert unless set. After launch it walks the workspace through the commands its
 // buttons and keys run -- open, a 3:2 crop, apply, the Colour and Info tabs (a
 // tag and the date set), Show original, Save copy, Esc, Revert -- or, on a clip,
@@ -6465,8 +6465,8 @@ int right_pane_px(int client_width, std::uint32_t dpi) noexcept {
 // PR 9. The panes float over the canvas: the metadata pane on the right, the tree
 // on the left, both between the command bar and the bottom strips. Native owns the
 // maths (the island only moves), and none of it touches the canvas rectangle, so
-// opening one never refits the photo or the present path (plan/12 2026-09-24).
-// PR 29 (plan/20, plan/12 2026-09-26): the Edit workspace is the exception. It
+// opening one never refits the photo or the present path (docs/design/12 2026-09-24).
+// PR 29 (docs/design/20, docs/design/12 2026-09-26): the Edit workspace is the exception. It
 // docks: its strip heads the right column, the tab's pane hangs under it, and
 // the canvas frames the picture beside them (update_client_metrics sets
 // chrome_right_px). Still one swapchain, refitted, never resized.
@@ -6568,7 +6568,7 @@ bool attach_chrome(app_state* app) {
   (void)app->chrome.attach_panels(app->window, app, &chrome_on_command, app->session,
                                   rc.right - rc.left, height, dpi);
   app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
-  // `?` and the palette read the same static table as the router (plan/16).
+  // `?` and the palette read the same static table as the router (docs/design/16).
   publish_command_table(app);
   push_recent_folders(app);
   app->chrome.refresh_island_windows();
@@ -6592,7 +6592,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
           ? static_cast<std::uint32_t>(chrome_bar_px(app, dpi))
           : 0;
   // The filmstrip reserves canvas. The transport floats over the video and
-  // auto-hides (issue #38, plan/12 2026-09-26), so showing, parking or hiding
+  // auto-hides (issue #38, docs/design/12 2026-09-26), so showing, parking or hiding
   // it never refits the canvas.
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
@@ -6619,7 +6619,7 @@ void apply_view_state(app_state* app) noexcept {
   if (app->mode == open_mode::none) app->gallery_visible = false;
   sync_video_hold(app);
 
-  // Fullscreen hides chrome (plan/16) unless ↓ or the hot-edge revealed it.
+  // Fullscreen hides chrome (docs/design/16) unless ↓ or the hot-edge revealed it.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool settings = app->settings_open;
   // PR 30: the Video Editor has the canvas; the viewer's strip and transport
@@ -6768,7 +6768,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_DPICHANGED: {
       // PerMonitorV2: take the suggested rectangle, then let the render thread
       // resize the swapchain. The image itself is resampled on the GPU, so a
-      // DPI change costs nothing but a resize (plan/03).
+      // DPI change costs nothing but a resize (docs/design/03).
       const auto* suggested = reinterpret_cast<const RECT*>(lparam);
       ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
                      suggested->right - suggested->left, suggested->bottom - suggested->top,
@@ -6965,7 +6965,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case WM_DROPFILES: {
       // Every dropped entry, at any path length; open_paths picks the first
-      // that exists (plan/16).
+      // that exists (docs/design/16).
       auto drop = reinterpret_cast<HDROP>(wparam);
       // Our own drag let go over our own canvas: refused, not a reopen of the
       // folder it came from (the Mac's in-app drags carry no operation).
@@ -7004,7 +7004,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case kMsgOpenForwarded: {
-      // A second start's paths (plan/09): opened here, as a drop would be, and
+      // A second start's paths (docs/design/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
       std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
       if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
@@ -7187,7 +7187,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 void enable_dark_titlebar(HWND hwnd) noexcept {
   const BOOL dark = TRUE;
   // Ignored on builds that predate it; a viewer with a white title bar around a
-  // dark canvas looks broken, so it is worth the two lines (plan/09).
+  // dark canvas looks broken, so it is worth the two lines (docs/design/09).
   (void)::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
@@ -7260,7 +7260,7 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       g_restore.gallery = true;
     } else if (!arg.empty() && arg[0] != L'-') {
       // Every positional path: Explorer's "Open" with several files passes
-      // them all. open_paths decides (plan/16).
+      // them all. open_paths decides (docs/design/16).
       open_paths.emplace_back(arg);
     } else {
       error = L"unrecognised argument: " + std::wstring(arg);
@@ -7359,7 +7359,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   mv::trace::provider_register();
 
-  // PR 7 crash reporting (plan/13 Part 2): Crashpad out-of-process, armed
+  // PR 7 crash reporting (docs/design/13 Part 2): Crashpad out-of-process, armed
   // before the session and its decoders exist. Asynchronous; never blocks.
   (void)mv::shell::crash::start();
 
@@ -7404,7 +7404,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // PR 9: the saved folder sort applies to every open from here on.
   (void)mv_folder_set_sort(app.session, app.settings.sort);
   // PR 13 / 14: every clip job that opens a decoder or an encoder runs in
-  // MediaViewerClipJob.exe beside this exe, never in the viewer (plan/12
+  // MediaViewerClipJob.exe beside this exe, never in the viewer (docs/design/12
   // 2026-09-25). Set even if the file is missing: those jobs then fail
   // rather than run here.
   {
@@ -7496,7 +7496,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
   if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
-  // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (plan/20 verify).
+  // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (docs/design/20 verify).
   if (wchar_t dir[MAX_PATH]{}; ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", dir, MAX_PATH) > 0) {
     g_edit_selftest_dir = dir;
     g_edit_selftest_keys = ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST_KEYS", nullptr, 0) > 0;
@@ -7520,7 +7520,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ::DispatchMessageW(&msg);
 
     // When the island is attached it borrows the session and drains. Two
-    // drainers race (plan/12 PR 4). --no-chrome keeps the native drain.
+    // drainers race (docs/design/12 PR 4). --no-chrome keeps the native drain.
     if (!app.chrome.filmstrip_attached()) {
       mv_completion completions[64];
       while (const uint32_t n = mv_completion_drain(app.session, completions, 64)) {

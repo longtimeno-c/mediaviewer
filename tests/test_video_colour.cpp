@@ -4,11 +4,11 @@
 //
 // What this proves: the colour description that reaches the shader is the
 // STREAM'S, end to end — container VUI -> FFmpeg AVCOL_* -> colour_from_stream
-// -> resolve_unspecified -> video_frame::colour. plan/05 calls a wrong matrix
+// -> resolve_unspecified -> video_frame::colour. docs/design/05 calls a wrong matrix
 // or range "the classic 'why is my video washed out' bug", and the only way to
 // catch it is to read back what a real decode actually produced.
 //
-// The corpus lives in tools/testmedia/ and is GITIGNORED (plan/09: the corpus
+// The corpus lives in tools/testmedia/ and is GITIGNORED (docs/design/09: the corpus
 // does not go in git), so these tests SKIP rather than fail where it is absent.
 // A skip is reported; it is not a pass.
 #include <catch2/catch_test_macros.hpp>
@@ -156,7 +156,7 @@ TEST_CASE("A full-range clip is not reported as limited", "[video][colour]") {
 
   auto* frame = first_frame(guard.source);
   REQUIRE(frame != nullptr);
-  // plan/05: "Do not assume BT.709 limited range." An explicit full-range tag
+  // docs/design/05: "Do not assume BT.709 limited range." An explicit full-range tag
   // has to beat the limited default, or PC-range video comes out crushed.
   CHECK(frame->colour.range == mv::gfx::colour_range::full);
   guard.source->release_frame(frame);

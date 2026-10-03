@@ -15,7 +15,7 @@
 namespace mv::io {
 namespace {
 
-// Same decodable set as dir_win.cpp (D9 parity) — plan/04, folded-in PR 7
+// Same decodable set as dir_win.cpp (D9 parity) — docs/design/04, folded-in PR 7
 // formats and PR 5 video containers included.
 bool still_extension(std::string_view name) noexcept {
   const auto dot = name.find_last_of('.');
@@ -95,7 +95,7 @@ result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
   while (dirent* ent = ::readdir(d)) {
     const std::string_view name(ent->d_name);
     if (name == "." || name == "..") continue;
-    // Companion hiding (plan/04): dotfiles cover .DS_Store, AppleDouble
+    // Companion hiding (docs/design/04): dotfiles cover .DS_Store, AppleDouble
     // "._foo", and ordinary Unix hidden files in one check.
     if (!name.empty() && name.front() == '.') continue;
     if (iequals_ascii(name, "Thumbs.db") || iequals_ascii(name, "desktop.ini")) continue;

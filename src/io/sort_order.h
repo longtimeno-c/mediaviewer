@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Folder sort orders (plan/16 "Status, sort, filter, typeahead"): name, mtime,
+// Folder sort orders (docs/design/16 "Status, sort, filter, typeahead"): name, mtime,
 // size, type — and, from PR 9, EXIF date taken, which PR 4 could not offer
 // without parsing every file.
 //

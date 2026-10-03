@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The search panel's model over mv.ai.1 (plan/17 "Search", "UI and commands"):
+// The search panel's model over mv.ai.1 (docs/design/17 "Search", "UI and commands"):
 // the query, scope and kind chips, the debounced search, result tiles and their
 // thumbnails, the empty states, find-similar, the status footer, opening the
 // results as a gallery listing, and the matching moments of the clip on screen
@@ -337,7 +337,7 @@ final class SearchModel: ObservableObject {
     run(keepSelection: true)
   }
 
-  // MARK: people while typing (plan/17 "Query syntax")
+  // MARK: people while typing (docs/design/17 "Query syntax")
 
   /// A named person the word being typed could be ("Trist" → Tristan). Tab
   /// takes the first; `completion` is the whole field with the word replaced.

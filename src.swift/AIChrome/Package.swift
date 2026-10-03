@@ -2,7 +2,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Milestone H (plan/17): the AI pack's Mac chrome. Built as a dynamic library
+// Milestone H (docs/design/17): the AI pack's Mac chrome. Built as a dynamic library
 // that cmake/darwin.cmake wraps into AI.bundle (principal class MVAIChrome),
 // shipped in the signed AI pack beside libmv_ai.dylib and ONNX Runtime, never
 // in MediaViewer.app. The host (src/shell/addons_mac.mm) loads it with NSBundle

@@ -194,7 +194,7 @@ jobs:
         if: inputs.mode != 'artifacts'
         run: dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release -- verify-release dist/releases
 
-      # The Import add-on (plan/18): built beside the app, never in it, and
+      # The Import add-on (docs/design/18): built beside the app, never in it, and
       # published as its own signed download on the same release. The apps
       # fetch it from releases/latest, so every stable release carries it.
       - name: Find the Import add-on build
@@ -234,7 +234,7 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'add-on packing failed' }
 
-      # Local search (plan/17): the Core pack and its Sound and People pieces,
+      # Local search (docs/design/17): the Core pack and its Sound and People pieces,
       # each its own signed download on the same release, like Import. Only our
       # own two DLLs are signed; ONNX Runtime's carry Microsoft's signature.
       - name: Collect the Local search binaries to sign
@@ -277,7 +277,7 @@ jobs:
           $notices = Get-ChildItem build/_ort -Recurse -Filter ThirdPartyNotices.txt | Select-Object -First 1
           if (-not $notices) { throw 'ONNX Runtime ThirdPartyNotices.txt not found' }
           Copy-Item $notices.FullName build/addons/ai
-          # Pinned revisions, SHA-256 and licence checked (plan/17 licence gate).
+          # Pinned revisions, SHA-256 and licence checked (docs/design/17 licence gate).
           foreach ($piece in 'ai', 'ai-audio', 'ai-faces') {
             python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece"
             if ($LASTEXITCODE) { throw "staging $piece models failed" }
@@ -305,7 +305,7 @@ jobs:
             Copy-Item dist/releases/RELEASES, dist/releases/releases.win.json, dist/releases/assets.win.json upload
             Copy-Item dist/releases/mediaviewer-manifest.json, dist/releases/mediaviewer-manifest.json.sig upload
           }
-          # Add-ons stay on the stable feed (plan/18): previews carry none.
+          # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
             foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
@@ -349,7 +349,7 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       MODE: ${{ inputs.mode }}
       TRIPLET: ${{ matrix.triplet }}
-      # plan/23: the Final Cut Pro agent's Mach service and the extension's app
+      # docs/design/23: the Final Cut Pro agent's Mach service and the extension's app
       # group are named under the team that signs the app.
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
@@ -501,7 +501,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          # The add-on manifest's Ed25519 key (the update key, plan/18).
+          # The add-on manifest's Ed25519 key (the update key, docs/design/18).
           printf '%s' "$MANIFEST_KEY" > "$RUNNER_TEMP/release.key"
           kc="$RUNNER_TEMP/mv-signing.keychain-db"
           kcpw="$(openssl rand -hex 16)"

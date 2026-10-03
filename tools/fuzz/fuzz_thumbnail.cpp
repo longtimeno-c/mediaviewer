@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // libFuzzer harness: the Explorer thumbnail handler's entry point (PR 15,
-// plan/09: "Fuzz the handler entry points specifically, not just the
+// docs/design/09: "Fuzz the handler entry points specifically, not just the
 // decoders behind them"). shellext::render_thumbnail is everything
 // IThumbnailProvider::GetThumbnail does with the bytes Explorer hands it,
 // minus the deadline thread (a fuzzer wants the work on its own thread).

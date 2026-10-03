@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // mv_ai's one export, mv_addon_get, and the mv.ai.1 table behind it
 // (mediaviewer_ai.h). Every thunk is the ABI boundary: no exception crosses
-// it (plan/14), a short output buffer reports the size it needs, and nothing
+// it (docs/design/14), a short output buffer reports the size it needs, and nothing
 // here logs a path, a query or a name (rule 6).
 #include <mediaviewer/mediaviewer_ai.h>
 
@@ -495,7 +495,7 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
   return make(host_api, host, out, false);
 }
 
-// The search agent's door (plan/23): the same engine, read-only. A pack
+// The search agent's door (docs/design/23): the same engine, read-only. A pack
 // without this export predates the reader, and the agent says "Local search
 // needs an update" rather than loading it through mv_addon_get, which would
 // start a second indexer on the app's files.

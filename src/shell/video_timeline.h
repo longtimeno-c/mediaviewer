@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 30 — the Video Editor's timeline (plan/21), shared by both hosts.
+// PR 30 — the Video Editor's timeline (docs/design/21), shared by both hosts.
 //
 // One clip, cut into pieces: the timeline is the kept ranges of the source,
 // in source order, played back to back. Split, delete, set in / out, a marked
@@ -114,7 +114,7 @@ class video_timeline {
   std::vector<std::vector<edit::clip::range>> redo_;
 };
 
-// J K L (plan/16, plan/21): L plays forward, faster on each press (1x, 2x,
+// J K L (docs/design/16, docs/design/21): L plays forward, faster on each press (1x, 2x,
 // 4x: the player cannot run backwards); K stops; J skims back, each press in
 // a quick burst going further than the last (1, 2, 4, 8 s). Pure: the host
 // owns the clock and the player.

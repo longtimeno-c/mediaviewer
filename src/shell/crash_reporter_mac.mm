@@ -195,7 +195,7 @@ void background_pass(std::string db_dir) {
     MV_LOG_WARN("crash: report database unavailable; reports will not be kept");
     return;
   }
-  // No endpoint exists (plan/13): uploads stay off, and no consent prompt.
+  // No endpoint exists (docs/design/13): uploads stay off, and no consent prompt.
   if (auto* settings = database->GetSettings()) (void)settings->SetUploadsEnabled(false);
   std::size_t pending = 0;
   std::vector<crashpad::CrashReportDatabase::Report> reports;
@@ -295,7 +295,7 @@ void swizzled_report_exception(id self, SEL cmd, NSException* exception) {
 }
 
 void install_chrome_capture() {
-  // Without this, AppKit logs the exception and carries on (plan/13).
+  // Without this, AppKit logs the exception and carries on (docs/design/13).
   // registerDefaults before NSApplication is created; AppKit reads it then.
   [[NSUserDefaults standardUserDefaults]
       registerDefaults:@{@"NSApplicationCrashOnExceptions" : @YES}];
@@ -401,7 +401,7 @@ start_result start() noexcept {
       MV_LOG_WARN("crash: crashpad_handler not found; native crash reporting is off");
     } else {
       auto* info = crashpad::CrashpadInfo::GetCrashpadInfo();
-      // plan/13: stacks, contexts, modules — no heap walk, no extra ranges,
+      // docs/design/13: stacks, contexts, modules — no heap walk, no extra ranges,
       // and no hand-off to ReportCrash (which would keep an unscrubbed copy).
       info->set_gather_indirectly_referenced_memory(crashpad::TriState::kDisabled, 0);
       info->set_system_crash_reporter_forwarding(crashpad::TriState::kDisabled);

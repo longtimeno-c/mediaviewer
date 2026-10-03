@@ -275,7 +275,7 @@ expected chrome_host::load() noexcept {
   // PR 29, optional the same way: without it there is no Edit workspace.
   show_edit_pane_ = get_entry(L"ShowEditPane");
   set_edit_view_ = get_entry(L"SetEditView");
-  // PR 30 (plan/21): the Video Editor window. Optional, like the panes.
+  // PR 30 (docs/design/21): the Video Editor window. Optional, like the panes.
   attach_editor_ = get_entry(L"AttachVideoEditor");
   layout_editor_ = get_entry(L"LayoutVideoEditor");
   set_editor_view_ = get_entry(L"SetVideoEditorView");

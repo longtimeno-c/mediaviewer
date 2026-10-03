@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// copybench: the copy engine without the app (io/verified_copy.h; plan/12
+// copybench: the copy engine without the app (io/verified_copy.h; docs/design/12
 // 2026-10-01, fast network copies). Copies every file under a folder into a
 // fresh folder of its own under the destination, the way F8 and Import do,
 // and prints one JSON object: files, bytes, seconds, MB/s, files/s.

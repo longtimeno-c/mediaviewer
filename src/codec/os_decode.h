@@ -4,7 +4,7 @@
 // what the Windows TU needs from the portable decoders to decide whether the
 // OS codec may take a file at all. Do not include windows.h here (D9).
 //
-// POLICY (plan/12 row pending, PR 7):
+// POLICY (docs/design/12 row pending, PR 7):
 //   * Only HEIC stills are offered to the OS codec. JPEG/PNG/BMP/GIF/WebP/TIFF/
 //     ICO/AVIF/RAW always use the bundled decoder: their colour handling is
 //     pinned by the D6 tests, and WIC gains nothing for them.

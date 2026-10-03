@@ -5,14 +5,14 @@
   SPDX-License-Identifier: GPL-3.0-or-later
   App extensions must be sandboxed. The app group lets the panel look up the
   search agent's Mach service (named under the group). No network.
-  Files, read-only (owner, 2026-09-28, plan/12): the panel plays a result with
+  Files, read-only (owner, 2026-09-28, docs/design/12): the panel plays a result with
   its sound and scrubs clips on hover, from the files themselves. It can read,
   never write. Results and tiles still come from the agent.
   Apple Events to Final Cut Pro: its ProExtensionHost objects (the open
   library, for the panel's scope) are fetched that way.
   Library validation off: the extension loads ProExtension.framework from the
   installed Final Cut Pro (Apple-signed, not our team), which FCP's extension
-  point requires (extension_mac.mm main; plan/12 2026-09-28).
+  point requires (extension_mac.mm main; docs/design/12 2026-09-28).
 -->
 <plist version="1.0">
 <dict>

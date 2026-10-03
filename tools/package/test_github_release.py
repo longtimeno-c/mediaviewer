@@ -128,7 +128,7 @@ class ReleaseTests(unittest.TestCase):
     def test_preview_publishes_signed_feeds_without_latest(self):
         self.stable_assets()
         os.environ['MODE'] = 'preview'
-        # Add-ons stay on the stable feed (plan/18): a preview carries none.
+        # Add-ons stay on the stable feed (docs/design/18): a preview carries none.
         for platform in release.ADDON_PLATFORMS:
             for name in release.addon_asset_names(platform):
                 (self.folder / name).unlink()

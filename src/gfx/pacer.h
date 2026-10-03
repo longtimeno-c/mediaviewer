@@ -3,7 +3,7 @@
 // Frame pacing measurement — PR 1's verify line, made falsifiable.
 //
 //   "Verify: presents at exactly display refresh, 0 dropped frames over 60 s,
-//    ~0 % CPU idle."  (plan/10-roadmap.md, PR 1)
+//    ~0 % CPU idle."  (docs/design/10-roadmap.md, PR 1)
 //
 // QPC measures application cadence; PresentCount/PresentRefreshCount measure
 // displayed progress. Missing display statistics invalidate the whole window.
@@ -118,7 +118,7 @@ struct idle_stats {
 class pacer {
  public:
   // `refresh_seconds` comes from the host monitor's active display path and is
-  // re-supplied whenever the window moves monitors (plan/03).
+  // re-supplied whenever the window moves monitors (docs/design/03).
   void begin_session(double refresh_seconds) noexcept;
   void set_refresh(double refresh_seconds) noexcept;
 

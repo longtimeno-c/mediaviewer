@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The present lab: PR 1's instrument, and the app's actual render thread.
 //
-// plan/10-roadmap.md, PR 1: "Win32 + DComp + Dear ImGui host, D3D11 device,
+// docs/design/10-roadmap.md, PR 1: "Win32 + DComp + Dear ImGui host, D3D11 device,
 // flip-model waitable swapchain, per-monitor-v2 DPI, clear to a colour, F3
 // frame-time overlay reading real present-to-present intervals."
 //
@@ -133,7 +133,7 @@ class present_lab {
   // PR 11: the FP16 working texture (image/linear.h, D6) of the still being
   // adjusted. [worker thread] Creates an immutable R16G16B16A16_FLOAT texture
   // from `img` on the render thread's device (free-threaded, created with
-  // D3D11_SUBRESOURCE_DATA — plan/02) and queues it for the edit_view slot
+  // D3D11_SUBRESOURCE_DATA — docs/design/02) and queues it for the edit_view slot
   // (`item`, `generation`). False when there is no device or the create
   // failed. The render thread picks it up with a try_lock: it never waits.
   [[nodiscard]] bool upload_working(const image::linear_image& img, std::uint64_t item,
@@ -212,7 +212,7 @@ class present_lab {
   float seen_eye_y_ = -1.0f;
 
   HWND window_ = nullptr;
-  // PR 30 (plan/21): the window the swapchain is in now (render thread only):
+  // PR 30 (docs/design/21): the window the swapchain is in now (render thread only):
   // window_, or the Video Editor's preview while it borrows the canvas.
   HWND canvas_host_ = nullptr;
   bool resize_pending_ = false;
@@ -316,7 +316,7 @@ class present_lab {
   std::atomic<std::uint32_t> shown_h_{0};
   canvas::camera camera_;
   mv::abi::gpu_image_ptr current_image_;
-  // plan/04 step 4, preview → full: the texture a refinement replaced, drawn
+  // docs/design/04 step 4, preview → full: the texture a refinement replaced, drawn
   // under the incoming one while `fade_` runs, then released.
   mv::abi::gpu_image_ptr fade_from_;
   canvas::crossfade fade_;
@@ -359,11 +359,11 @@ class present_lab {
   double full_seconds_ = -1.0;
   double tiles_complete_seconds_ = -1.0;
   double scripted_pan_start_ = -1.0;
-  // The last different still that was on screen, for hold `\` (plan/16). Kept
+  // The last different still that was on screen, for hold `\` (docs/design/16). Kept
   // here, so showing it is a draw of a texture already in VRAM — never a
   // second session or an mv_image_open.
   mv::abi::gpu_image_ptr previous_image_;
-  // Animation (plan/04): the current frame in its own slot, like current_video_
+  // Animation (docs/design/04): the current frame in its own slot, like current_video_
   // — never current_image_, so hold-previous and the camera are not touched per
   // frame. Frame 0 arrived as the still and fitted the camera once.
   mv::abi::gpu_image_ptr anim_frame_;
@@ -420,7 +420,7 @@ class present_lab {
   bool was_presenting_ = false;
   bool painted_static_ = false;
   bool live_presenting_ = false;  // this frame: sweep, springs, or input tail
-  // plan/17 "Yield policy": the last dropped frame, which holds the busy
+  // docs/design/17 "Yield policy": the last dropped frame, which holds the busy
   // signal for background add-on work for two seconds.
   std::uint64_t busy_drops_seen_ = 0;
   double busy_drop_at_ = -1.0e9;

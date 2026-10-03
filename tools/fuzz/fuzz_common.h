@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Shared helpers for the libFuzzer harnesses (PR 7, plan/09). Every harness is
+// Shared helpers for the libFuzzer harnesses (PR 7, docs/design/09). Every harness is
 // one decoder entry point; a successful result must be self-consistent, or the
 // harness aborts so libFuzzer records the input as a crash — a decoder that
 // returns ok with the wrong byte count is a heap overflow one stage later.

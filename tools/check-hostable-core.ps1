@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# D9 / plan/15-platforms.md: from PR 4, new native code above gfx/ does not
+# D9 / docs/design/15-platforms.md: from PR 4, new native code above gfx/ does not
 # include Windows-only headers a Metal host cannot replace.
 #
 # Direct #include of d3d11.h, dxgi.h, windows.h, atlbase.h, the WASAPI/COM
@@ -80,7 +80,7 @@ if ($violations.Count -eq 0) {
 
 Write-Host ''
 Write-Host 'HOSTABLE-CORE VIOLATIONS — HWND / D3D11 / wchar paths stay in shell/ and *_win.cpp.' -ForegroundColor Red
-Write-Host 'plan/15-platforms.md (D9).'
+Write-Host 'docs/design/15-platforms.md (D9).'
 Write-Host ''
 foreach ($v in $violations) {
     Write-Host ("  {0}:{1}" -f $v.File, $v.Line) -ForegroundColor Red

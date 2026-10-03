@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // One open clip: demux + video decode + audio + clock + transport.
 //
-// This is the type the ABI and the shell talk to. plan/05 keeps everything
+// This is the type the ABI and the shell talk to. docs/design/05 keeps everything
 // behind it so the two rejected options (libmpv, Media Foundation) stay
 // droppable — specifically, D2's escape hatch is implementing this interface
 // with IMFMediaEngine if PR 5b's clock overruns.
@@ -41,7 +41,7 @@ class media_source {
   virtual void play()  noexcept = 0;
   virtual void pause() noexcept = 0;
 
-  // plan/05 two-mode seek. exact=false -> nearest keyframe, AVSEEK_FLAG_BACKWARD,
+  // docs/design/05 two-mode seek. exact=false -> nearest keyframe, AVSEEK_FLAG_BACKWARD,
   // no full decode: what the scrubber drags on. exact=true -> decode forward from
   // that keyframe to the frame asked for: what a release or a step lands on.
   // Both flush the decoders and bump the generation so in-flight pre-seek frames

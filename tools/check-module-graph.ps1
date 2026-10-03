@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Enforces the module dependency direction from plan/02-architecture.md:
+# Enforces the module dependency direction from docs/design/02-architecture.md:
 #
 #   shell -> abi -> {canvas, edit, player, image, meta} -> {codec, gfx, io} -> core
 #
@@ -40,19 +40,19 @@ $allowed = [ordered]@{
     'player' = @('player', 'codec', 'gfx', 'io', 'core')
     'edit'   = @('edit', 'image', 'codec', 'gfx', 'io', 'core')
     'canvas' = @('canvas', 'image', 'gfx', 'io', 'core')
-    # Milestone G (plan/18). addon: the add-on host in the base app, beside
+    # Milestone G (docs/design/18). addon: the add-on host in the base app, beside
     # meta/image. addons: the add-ons themselves, which reach the core only
     # through the host function table and may include only core's
     # header-only pieces (result.h, status.h, json.h) and themselves.
     'addon'  = @('addon', 'io', 'core')
     'addons' = @('addons', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
-    # plan/23: the Mac app's main() hands `--search-agent` to nle's agent.
+    # docs/design/23: the Mac app's main() hands `--search-agent` to nle's agent.
     'shell'  = @('shell', 'abi', 'addon', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # PR 15: Explorer's host (the thumbnail handler DLL). A sibling of shell,
     # never included by it: it reaches the core through image/ and codec/.
     'shellext' = @('shellext', 'image', 'codec', 'gfx', 'io', 'core')
-    # plan/23: the Local search agent and FCPXML export, a host of the AI pack:
+    # docs/design/23: the Local search agent and FCPXML export, a host of the AI pack:
     # it loads the pack through addon/ and reads the viewer's thumbnail cache
     # (image/thumb.h's key). Below shell (the Mac app's executable is also the
     # agent, entered from main()); it never includes shell.
@@ -99,7 +99,7 @@ if ($violations.Count -eq 0) {
 
 Write-Host ''
 Write-Host 'MODULE GRAPH VIOLATIONS — dependencies must point downward only.' -ForegroundColor Red
-Write-Host 'plan/02-architecture.md: shell -> abi -> {canvas,edit,player,image,meta} -> {codec,gfx,io} -> core'
+Write-Host 'docs/design/02-architecture.md: shell -> abi -> {canvas,edit,player,image,meta} -> {codec,gfx,io} -> core'
 Write-Host ''
 foreach ($v in $violations) {
     Write-Host ("  {0}:{1}" -f $v.File, $v.Line) -ForegroundColor Red

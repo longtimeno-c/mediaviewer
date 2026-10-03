@@ -147,7 +147,7 @@ TEST_CASE("a camera roll as an iPhone writes it comes out as the right stops",
   const auto heic = read_bytes(data / "heif" / "iphone_like.heic");
   REQUIRE(heic.size() > 16);
   // Real HEIC bytes for the stills; the motion halves only have to exist for
-  // pairing, which is by name (plan/04). The playable-motion half is the next
+  // pairing, which is by name (docs/design/04). The playable-motion half is the next
   // test.
   const std::vector<std::uint8_t> stub(64, 0);
 
@@ -220,7 +220,7 @@ TEST_CASE("a camera roll as an iPhone writes it comes out as the right stops",
 TEST_CASE("a hidden motion half is not silently attached to a still",
           "[io][pairing][livephoto]") {
   // iCloud placeholders and some import tools leave the MOV hidden. A hidden
-  // file is not listed (plan/04 companion hiding), so the still must stand on
+  // file is not listed (docs/design/04 companion hiding), so the still must stand on
   // its own rather than pairing with a file the user cannot see.
   const auto dir = live_temp_dir();
   const auto data = test_data_dir();

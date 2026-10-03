@@ -1,12 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 19 -- the Metal half of the presentation ring (plan/05 "Surface
-// ownership", plan/15 D9). frame_ring.cpp holds the lock-free index rings and is
+// PR 19 -- the Metal half of the presentation ring (docs/design/05 "Surface
+// ownership", docs/design/15 D9). frame_ring.cpp holds the lock-free index rings and is
 // shared with Windows; only the slot's textures are host-specific.
 //
 // Metal has no planar NV12/P010 texture to take two views of, so a slot is two
 // textures we own: luma (R8Unorm / R16Unorm) and chroma at half size (RG8Unorm /
-// RG16Unorm). They are the same "R8 + R8G8 / R16 + R16G16" pair plan/05 spells
+// RG16Unorm). They are the same "R8 + R8G8 / R16 + R16G16" pair docs/design/05 spells
 // out for D3D11, just not views of one resource.
 //
 // Shared storage: on Apple Silicon that is unified memory (no copy), and it lets

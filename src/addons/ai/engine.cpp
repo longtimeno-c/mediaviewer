@@ -49,7 +49,7 @@ std::string extension_of(const std::string& name) {
   return lower_ascii(name.substr(dot + 1));
 }
 
-// Folders nothing should index (plan/10 PR 26's housekeeping list).
+// Folders nothing should index (docs/design/10 PR 26's housekeeping list).
 bool housekeeping(const std::string& key) {
   for (const char* part : {"/@eadir/", "/#recycle/", "/$recycle.bin/", "/system volume information/",
                            "/.trashes/", "/.spotlight-v100/"}) {
@@ -341,7 +341,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       if (x < 0 || x > 3) return err(status::invalid_arg);
       settings_.video_index = static_cast<std::uint32_t>(x);
     } else if (key == "precision") {
-      // Read by each search as it starts: no reload, no re-index (plan/17
+      // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
       settings_.precision = static_cast<std::uint32_t>(std::clamp(std::round(x), 0.0, static_cast<double>(kPrecisionLevels - 1)));
     } else {
@@ -483,7 +483,7 @@ void engine::refresh_counts() {
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
-  // (plan/17: "based on completed work, not a hard-coded claim").
+  // (docs/design/17: "based on completed work, not a hard-coded claim").
   const double t = now_s();
   while (!ticks_.empty() && t - ticks_.front().t > 60.0) ticks_.pop_front();
   ticks_.push_back(tick{t, units_done_, frames_done_});
@@ -539,7 +539,7 @@ std::uint32_t engine::effective_quality(infer::backend on) const {
   const std::vector<std::uint32_t> have = deps_.qualities ? deps_.qualities() : std::vector<std::uint32_t>{};
   const auto has = [&](std::uint32_t x) { return std::find(have.begin(), have.end(), x) != have.end(); };
   if (q == MV_AI_QUALITY_AUTO) {
-    // plan/17 PR 20 spike: the large tower where a GPU / Neural Engine runs
+    // docs/design/17 PR 20 spike: the large tower where a GPU / Neural Engine runs
     // it, the small one on CPU only (it is ~12x faster there).
     q = on != infer::backend::cpu ? MV_AI_QUALITY_HIGH : MV_AI_QUALITY_FAST;
   }
@@ -804,7 +804,7 @@ std::uint64_t engine::settled_answer_gen() const {
   return answer_gen_.load();
 }
 
-// People refinement (plan/17): re-checks one person's faces against the core
+// People refinement (docs/design/17): re-checks one person's faces against the core
 // of that person and of everyone else, in passes. Only when the user asks
 // ("Refine" on the person in People); the caller's worker thread. The
 // snapshot and the commit hold the People lock (a full snapshot reads every
@@ -938,7 +938,7 @@ result<engine::dedupe_result> engine::people_dedupe() {
   return r;
 }
 
-// "Re-analyse faces" (plan/17 "People model"): forget what the People pass
+// "Re-analyse faces" (docs/design/17 "People model"): forget what the People pass
 // has scanned, so the workers analyse every asset again. faces_db::add then
 // replaces each face in place (box by box, keeping person, pin, rejections)
 // and holds new faces back until settle_people files them.
@@ -1278,7 +1278,7 @@ void engine::control_loop() {
       load_pieces();
     }
     {
-      // An export / import (plan/17 "Sharing an index"): here, so it never
+      // An export / import (docs/design/17 "Sharing an index"): here, so it never
       // runs beside a scan or a model load.
       std::optional<transfer_job> t;
       {
@@ -1367,7 +1367,7 @@ void engine::control_loop() {
   }
 }
 
-// ---- a reader (plan/23) ------------------------------------------------------------------
+// ---- a reader (docs/design/23) ------------------------------------------------------------------
 
 void engine::reader_loop() {
   loading_ = true;
@@ -1580,7 +1580,7 @@ void engine::scan_root(const root_row& root) {
   const auto flush = [&] {
     if (!see_batch(root, batch, gen, changed)) failed = true;
   };
-  // Live Photo / RAW+JPEG: one row per pair, on the still (plan/17 step 6).
+  // Live Photo / RAW+JPEG: one row per pair, on the still (docs/design/17 step 6).
   // The host's own pairing decides, per directory.
   std::map<std::string, std::vector<host::entry>> by_dir;
   const expected walked = host_.walk(root.path, root.recursive ? 64 : 0, [&](const host::entry& e) {
@@ -1903,7 +1903,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       queue_exhausted_ = true;
       return false;
     }
-    // The folder on screen first (plan/17: searchable as results commit).
+    // The folder on screen first (docs/design/17: searchable as results commit).
     if (!prefer_dir_key_.empty()) {
       std::lock_guard al(assets_m_);
       std::stable_partition(queue_.begin(), queue_.end(), [&](const job& j) {
@@ -2391,7 +2391,7 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
         continue;
       }
       const std::span<const float> e(embs.data() + i * clip.meta.dim, clip.meta.dim);
-      // plan/17 step 3: a static shot collapses to a few rows.
+      // docs/design/17 step 3: a static shot collapses to a few rows.
       if (!last_kept.empty() && infer::dot(e, last_kept) >= clip.meta.dedupe) continue;
       last_kept.assign(e.begin(), e.end());
       frame_in f;
@@ -2777,7 +2777,7 @@ expected engine::clear_index() {
   return r;
 }
 
-// ---- sharing an index (plan/17 "Sharing an index") ---------------------------------------
+// ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------------------
 
 namespace {
 
@@ -3395,7 +3395,7 @@ void engine::group(search_state& st, const std::vector<vector_store::hit>& hits,
     // the generic prompts by `query_margin` describes nothing in the index,
     // unless its best assets stand out from the rest (`stands_out`): a
     // one-word subject ("dog") sits close to "a photo." and misses the margin
-    // while ranking correctly (2026-09-27, plan/17).
+    // while ranking correctly (2026-09-27, docs/design/17).
     float best = -1;
     for (std::size_t i = 0; i < hits.size() && i < 10; ++i) {
       best = std::max(best, hits[i].score - hits[i].generic);
@@ -3511,7 +3511,7 @@ std::vector<float> engine::query_vector(const loaded_clip& answer, const std::st
   if (!answer.model) return {};
   // The last noun in both numbers, averaged (query::number_forms): "mountain"
   // and "mountains" are one query, so one of them cannot fall through the
-  // "nothing found" rule while the other answers (2026-09-28, plan/17).
+  // "nothing found" rule while the other answers (2026-09-28, docs/design/17).
   const std::vector<std::string> forms = query::number_forms(text);
   std::string key = answer.meta.spec_key;
   for (const std::string& f : forms) key += "\x1f" + f;
@@ -3552,7 +3552,7 @@ std::vector<vector_store::hit> engine::picture_hits(const std::string& text,
       t.query_z = answer.meta.query_z;
       t.result_z = answer.meta.result_z;
       // The rule, its noise scaling and the Precision setting: find_text
-      // (vectors.h), the same function the calibration runs (plan/17).
+      // (vectors.h), the same function the calibration runs (docs/design/17).
       hits = find_text(store_, v, allow, t, precision_scale::at(precision), gate);
     }
     if (answer_gen_.load() != gen) continue;
@@ -3570,7 +3570,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       std::lock_guard lock(settings_m_);
       precision = settings_.precision;
     }
-    // The query language (query.h, plan/17 "Query syntax"): people, what the
+    // The query language (query.h, docs/design/17 "Query syntax"): people, what the
     // picture shows, words said, kinds and file dates, each narrowing the
     // others. Names come from faces.db (PR 24) when people are on.
     const query::parsed parsed = query::parse(query_text);
@@ -3604,7 +3604,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       k = (kinds & ~MV_AI_KIND_ALL) | both;
     }
     auto allowed = scope_assets(scope_dir, scope, k, plan.from_unix, plan.to_unix);
-    // file: / -file: (plan/17 "Query syntax"): the name, one pass over the
+    // file: / -file: (docs/design/17 "Query syntax"): the name, one pass over the
     // assets the scope, kind and dates left.
     if (plan.has_files()) {
       std::lock_guard lock(assets_m_);
@@ -3775,7 +3775,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
       }
     }
     // An indexed still or sampled moment is its own query; a paused frame
-    // that was never sampled is embedded now (plan/17 "Find similar"). The
+    // that was never sampled is embedded now (docs/design/17 "Find similar"). The
     // query and the matrix it scans come from one model (answer_gen_).
     std::vector<vector_store::hit> hits;
     std::optional<rgb_frame> img;  // decoded once, embedded again after a swap
@@ -3792,7 +3792,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
       bool have = false;
       if (self != 0 && pts_ms < 0) have = store_.vector_of(self, -1, q);
       // A reader embeds nothing: an indexed moment is its nearest stored
-      // frame's vector (plan/23 "Find similar").
+      // frame's vector (docs/design/23 "Find similar").
       if (!have && self != 0 && options_.read_only) have = store_.vector_of(self, pts_ms, q);
       if (!have) {
         if (!model) return;
@@ -3875,7 +3875,7 @@ result<std::string> engine::tile_of(const std::string& path, std::int64_t ms) co
   if (is_photos_key(path)) {
     // A Photos still, or a clip Photos only has in iCloud: the chrome draws the
     // tile from PhotoKit's own thumbnail cache (no second cache of ours;
-    // plan/17 "do not build a second thumbnail path"), so it gets the key.
+    // docs/design/17 "do not build a second thumbnail path"), so it gets the key.
     if (ms < 0) return path;
     auto file = file_of(path);
     if (!file) return path;

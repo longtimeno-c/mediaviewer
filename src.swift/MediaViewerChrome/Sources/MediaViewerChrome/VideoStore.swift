@@ -11,7 +11,7 @@ import MVChromeBridge
 final class VideoStore: ObservableObject {
   static let shared = VideoStore()
 
-  /// The 0.25 ... 4x ladder plan/16 defines; rates are x100 to stay integral.
+  /// The 0.25 ... 4x ladder docs/design/16 defines; rates are x100 to stay integral.
   static let speeds: [Int32] = [25, 50, 100, 150, 200, 400]
 
   @Published private(set) var active = false
@@ -41,7 +41,7 @@ final class VideoStore: ObservableObject {
   @Published private(set) var trimLabel = ""
   private var trimGeneration: UInt64 = .max
 
-  // Milestone H (plan/17): the other matching moments of this clip in the
+  // Milestone H (docs/design/17): the other matching moments of this clip in the
   // active search, drawn above the scrub bar; N / Shift+N walk them. Set by
   // the AI chrome through the host; empty for a clip not in the search.
   @Published private(set) var matchMs: [Int64] = []

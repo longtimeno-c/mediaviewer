@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The few OS facts the AI pack needs that the host table does not carry:
 // where its own library lives (the Core pack's folder: ORT and the models sit
-// beside it), whether the machine is on battery (plan/17 "Yield policy"), and
-// the lowest scheduling class for its workers (plan/17 "inference workers,
+// beside it), whether the machine is on battery (docs/design/17 "Yield policy"), and
+// the lowest scheduling class for its workers (docs/design/17 "inference workers,
 // lowest priority, THREAD_MODE_BACKGROUND_BEGIN for I/O as well"). One TU per
 // OS (D9): platform_win.cpp, platform_posix.cpp.
 #pragma once

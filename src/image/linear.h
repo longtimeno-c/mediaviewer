@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 — the edit working space (D6: linear FP16, non-negotiable; plan/07).
+// PR 11 — the edit working space (D6: linear FP16, non-negotiable; docs/design/07).
 //
 // A linear_image is linear-light Rec.709 / sRGB primaries, stored as IEEE
 // half floats (image/half.h), RGBA with straight (not premultiplied) alpha.
@@ -9,7 +9,7 @@
 // be a property of one data type rather than two code paths agreeing.
 //
 //   RAW  → codec::decode_raw_linear (LibRaw, 16-bit linear) → FP16. The real
-//          linear data, never the embedded preview (plan/07).
+//          linear data, never the embedded preview (docs/design/07).
 //   else → the viewer's own display path (codec::decode + to_display: ICC →
 //          sRGB) → sRGB decode → FP16. With every slider at zero the working
 //          image is exactly what the viewer already shows.
@@ -61,7 +61,7 @@ struct linear_image {
                                                  const job_context* ctx = nullptr);
 
 // Box-filtered, alpha-weighted downscale so the long edge is at most
-// `max_edge` (plan/07: evaluate the interactive preview at viewport
+// `max_edge` (docs/design/07: evaluate the interactive preview at viewport
 // resolution, ~3000 x 2000, and the full-resolution chain once, on export).
 // Returns a copy when the image already fits.
 [[nodiscard]] result<linear_image> downsample(const linear_image& src, std::uint32_t max_edge,

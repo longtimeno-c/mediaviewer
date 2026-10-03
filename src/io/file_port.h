@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The file port under verified copies and Import (plan/18-import.md "Ports").
+// The file port under verified copies and Import (docs/design/18-import.md "Ports").
 //
 // Portable header; io/file_port_win.cpp (CreateFileW, FlushFileBuffers,
 // FILE_FLAG_NO_BUFFERING, MoveFileExW without REPLACE_EXISTING) and

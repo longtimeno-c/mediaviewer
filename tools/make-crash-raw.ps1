@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Makes the "deliberately-corrupted RAW" for PR 7's crash-report verify
-# (plan/10: "a deliberately-corrupted RAW produces a minidump containing no
+# (docs/design/10: "a deliberately-corrupted RAW produces a minidump containing no
 # path, filename, or pixel data").
 #
 # Writes a COPY — never touches the original (rule 5) — named so a leak is

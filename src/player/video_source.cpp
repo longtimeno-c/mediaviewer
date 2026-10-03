@@ -142,7 +142,7 @@ class ffmpeg_video_source final : public video_source {
     pipe_.clock.stop();
     // Only now is it safe to tear the ring down: both producers are joined, and
     // the render thread is the caller. Doing it in the other order is the
-    // use-after-free plan/05 warns about at shutdown.
+    // use-after-free docs/design/05 warns about at shutdown.
     pipe_.ring.destroy();
     pipe_.video_packets.clear();
   }

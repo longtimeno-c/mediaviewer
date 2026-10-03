@@ -4,9 +4,9 @@
 //
 // ETW is how the frame-time harness (tools/frametime) and PresentMon see inside
 // the app without a debugger attached, and it is why the D6 gate can be measured
-// in CI rather than eyeballed (plan/09-build-and-test.md).
+// in CI rather than eyeballed (docs/design/09-build-and-test.md).
 //
-// PRIVACY (rule 6, plan/13): tracepoints carry NO path, filename, or pixel data.
+// PRIVACY (rule 6, docs/design/13): tracepoints carry NO path, filename, or pixel data.
 // Everything emitted here is a number, an enum, or a compile-time literal. Do
 // not add a `const char* path` field to an event, however convenient.
 #pragma once

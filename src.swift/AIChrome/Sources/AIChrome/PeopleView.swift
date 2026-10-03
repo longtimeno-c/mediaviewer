@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// People (plan/17 PR 24; the chrome brief's management panel): circular covers
+// People (docs/design/17 PR 24; the chrome brief's management panel): circular covers
 // cut from the cover picture with cover_box in memory (never written to disk);
 // a click opens their photos in the gallery (Settings steps aside); editable
 // names, merging (drag a person onto another, ⌘-click
@@ -138,7 +138,7 @@ struct PeopleGrid: View {
   }
 
   /// "People in · This folder | + Subfolders | Everywhere · Photos": the grid
-  /// follows the folder the viewer has open (plan/17 "People in the open
+  /// follows the folder the viewer has open (docs/design/17 "People in the open
   /// folder"), the search panel's three scopes with the same words.
   private var scopeBar: some View {
     HStack(spacing: 8) {
@@ -170,7 +170,7 @@ struct PeopleGrid: View {
     }
   }
 
-  /// "Merge duplicates" (plan/17): the whole library, on request; the note
+  /// "Merge duplicates" (docs/design/17): the whole library, on request; the note
   /// under the grid says what it did.
   private func mergeDuplicates() {
     deduping = true

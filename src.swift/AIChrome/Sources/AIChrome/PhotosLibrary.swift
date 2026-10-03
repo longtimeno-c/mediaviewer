@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Photos library in the chrome (issue #72, plan/17 "Photos library
+// The Photos library in the chrome (issue #72, docs/design/17 "Photos library
 // source"): asking for access (only ever from a click), result tiles from
 // PhotoKit's own thumbnail cache, and opening a result in the viewer.
 //

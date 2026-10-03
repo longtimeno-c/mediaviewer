@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Scans a minidump (or any file) for things that must never leave the machine
-# (rule 6, plan/13 Part 2): paths, filenames, folder names, the username, and
+# (rule 6, docs/design/13 Part 2): paths, filenames, folder names, the username, and
 # pixel byte runs.
 #
 #   tools/minidump-scan.ps1 -Dump x.dmp `

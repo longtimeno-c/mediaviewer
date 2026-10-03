@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Settings → Local search, once Core is loaded (the chrome brief, "Management
-// panel"; plan/17 PRs 20, 21, 23, 24): status, Compute (Auto / Core ML / CPU
+// panel"; docs/design/17 PRs 20, 21, 23, 24): status, Compute (Auto / Core ML / CPU
 // only), Precision (the one quality scale; the model stays on Auto), the indexed folders, the index size and Clear, the
 // battery rule, and People. The base app embeds this view (MVAIChrome
 // -settingsView) under its install / remove rows.
@@ -78,7 +78,7 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var photosAccess: PHAuthorizationStatus = .notDetermined
   @Published private(set) var photosAdding = false
   @Published private(set) var people: [Person] = []
-  /// Which people the grid shows (plan/17 "People in the open folder"): those
+  /// Which people the grid shows (docs/design/17 "People in the open folder"): those
   /// with a face in the open folder, in it and below (the default), or
   /// everyone. `.photos` is never chosen here.
   @Published var peopleScope: SearchScope = .tree {
@@ -91,7 +91,7 @@ final class ManagementModel: ObservableObject {
   /// What the last People action did ("Merged 2 people into Sam."), shown in
   /// the People section itself: the top line is out of sight down there.
   @Published private(set) var peopleNote = ""
-  /// "Re-analyse faces" (plan/17 "People model"): the face model in use, and
+  /// "Re-analyse faces" (docs/design/17 "People model"): the face model in use, and
   /// while a re-run goes, how far it is (assets analysed of all) and whether
   /// it is filing the faces into people at the end.
   @Published private(set) var peopleModel = ""
@@ -113,7 +113,7 @@ final class ManagementModel: ObservableObject {
   private var faceCounts: (UInt64, UInt32) = (0, 0)
   private var noteGeneration = 0
 
-  /// Settings → Import and export (plan/17 "Sharing an index").
+  /// Settings → Import and export (docs/design/17 "Sharing an index").
   let transfer: IndexTransferModel
 
   init(table: AITable) {
@@ -502,7 +502,7 @@ final class ManagementModel: ObservableObject {
   /// A pack built before person_refine was appended has no "Refine faces".
   var canRefine: Bool { table.has(\mv_ai_api.person_refine) }
 
-  /// "Refine faces" (plan/17 "People refinement"): the pack re-checks this
+  /// "Refine faces" (docs/design/17 "People refinement"): the pack re-checks this
   /// person's faces and files the misplaced ones out. Only ever on request.
   /// How many left the person; nil when it could not run.
   func refine(_ person: UInt64) async -> UInt32? {
@@ -519,7 +519,7 @@ final class ManagementModel: ObservableObject {
   /// A pack built before people_dedupe was appended has no "Merge duplicates".
   var canDedupe: Bool { table.has(\mv_ai_api.people_dedupe) }
 
-  /// "Merge duplicates" (plan/17 "Merge duplicates"): the pack re-checks
+  /// "Merge duplicates" (docs/design/17 "Merge duplicates"): the pack re-checks
   /// every face, then merges people who are the same person. Only ever on
   /// request. People merged away and faces moved; nil when it could not run.
   func mergeDuplicates() async -> (merged: UInt32, moved: UInt32)? {

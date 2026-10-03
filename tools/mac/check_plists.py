@@ -8,7 +8,7 @@ here needs a Mac.
     are the same list, and it covers every still format_family the codec
     probes (src/codec/format.h), the D5 still set.
   - Every document type is LSHandlerRank Alternate: listed in Open With,
-    never a silent default-app hijack (plan/15 PR 20).
+    never a silent default-app hijack (docs/design/15 PR 20).
   - The extension is sandboxed and asks for nothing else.
   - The Sparkle keys cmake/darwin-app.cmake injects require a signed feed and
     a verified archive, use HTTPS, and never send a system profile (rule 6).
@@ -115,7 +115,7 @@ def main() -> int:
 
     for name, plist in (("app", app), ("extension", appex)):
         if plist.get("LSMinimumSystemVersion") != "14.0":
-            problems.append(f"{name}: LSMinimumSystemVersion must be 14.0 (plan/15 floor)")
+            problems.append(f"{name}: LSMinimumSystemVersion must be 14.0 (docs/design/15 floor)")
     if appex.get("CFBundleIdentifier") != app.get("CFBundleIdentifier") + ".thumbnails":
         problems.append("extension bundle id must be <app id>.thumbnails")
 

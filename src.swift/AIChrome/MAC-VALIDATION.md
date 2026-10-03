@@ -1,10 +1,10 @@
 # Milestone H (PRs 20–24) — Mac validation checklist
 
 For the Mac agent that builds and verifies the Mac half of Local AI search
-([plan/17](../../plan/17-local-ai-search.md)). The Mac half was **written on a Windows machine and
+([docs/design/17](../../docs/design/17-local-ai-search.md)). The Mac half was **written on a Windows machine and
 has never been compiled**: not the Objective-C++ host, not either Swift package. Treat every
 step below as unproven until it has been run on an Apple silicon Mac, and record the numbers
-the steps ask for in plan/17 or the PR description, not in memory.
+the steps ask for in docs/design/17 or the PR description, not in memory.
 
 Run everything on **Apple silicon** (the AI pack is arm64 only). One step (§9) also needs an
 Intel Mac or an x86_64 build to prove the section is absent there.
@@ -13,7 +13,7 @@ Record for each step: pass / fail, the machine (chip, RAM, macOS), and the numbe
 
 ## Results, first Mac run (2026-09-27, Apple M5, 24 GB, macOS 26.6)
 
-Numbers and fixes are in plan/17 "Verified on macOS". In short:
+Numbers and fixes are in docs/design/17 "Verified on macOS". In short:
 
 - **§1 Build:** passes after two compile fixes; all three Swift packages build with no warnings.
   `mv_ai_tests` and `ai-bench` now exist on Darwin; AI targets are arm64 only (Intel defines none).
@@ -25,7 +25,7 @@ Numbers and fixes are in plan/17 "Verified on macOS". In short:
   cached, so the pack answers on CPU and swaps Core ML in when it is ready. CLAP and Whisper
   cannot use Core ML (one fails to compile, the other aborts the process): CPU on the Mac.
 - **§13:** reviewed; fixed a store race at launch, main-thread Remove, list/folder races, stale
-  search results, unload safety and the thumbnail pipeline (plan/17 lists them).
+  search results, unload safety and the thumbnail pipeline (docs/design/17 lists them).
 
 ---
 
@@ -147,7 +147,7 @@ use the app's Settings → Compute = Core ML and compare search results with CPU
 A release build (no `MV_ADDON_DEV_PUBLIC_KEY`) must REFUSE the same dev-signed pack as
 `invalid` / `bad_signature` — that refusal is itself a check (§5).
 
-Sideload (offline install, plan/17 "Offline / sideload"):
+Sideload (offline install, docs/design/17 "Offline / sideload"):
 
 - [ ] Unzip the pack into `~/Library/Application Support/MediaViewer/Add-ons/AI/<version>/`
       with `manifest.json` + `manifest.json.sig` beside the files, and `AI Faces/<version>/`
@@ -239,7 +239,7 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       assets/s and frames/s from the footer, and whether sampling ran through VideoToolbox or
       software (F3 is the viewer's decoder; for the sampler, the lead's log line / counters).
       Record the **software-sampling** time as well (force it, e.g. a build flag or an env var the
-      lead provides) — plan/17 asks for both paths.
+      lead provides) — docs/design/17 asks for both paths.
 - [ ] **Kill / resume.** `kill -9` the app mid-clip; relaunch: indexing resumes at the last
       committed frame (frames_indexed never goes backwards, no committed frame re-embedded —
       the lead's counter or log shows the resume point).
@@ -272,7 +272,7 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
 - [ ] recall@10 on the labelled eval set meets the target recorded from PR 20.
 - [ ] "Nothing matches “qwxzv”. Try fewer words, or describe what's in the picture." (and the
       syntax hint) for a nonsense query.
-- [ ] **Query syntax (2026-09-28, plan/17):** with a person named, typing the first letters
+- [ ] **Query syntax (2026-09-28, docs/design/17):** with a person named, typing the first letters
       shows their name under the field and their photos first; Tab completes it. `<name>
       "<words said>"` finds only that person's clips with those words (snippet shown);
       `<name> <scene>`, `-<name>`, `<scene> video`, `in:<year>` narrow as documented.

@@ -1,11 +1,11 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Milestone H (plan/17 "The AI pack"): the AI pack's Windows chrome. Included
+# Milestone H (docs/design/17 "The AI pack"): the AI pack's Windows chrome. Included
 # from the root CMakeLists.txt after cmake/ai.cmake (which defines mv_ai).
 # Like mv_import_chrome, the chrome is published into the add-on's own folder
 # (build/addons/ai, beside mv_ai.dll), never beside the app, so the base
-# install tree stays byte-identical with the pack absent (plan/17 PR 20
+# install tree stays byte-identical with the pack absent (docs/design/17 PR 20
 # verify). tools/package/addon-pack.py packs that folder, signed.
 #
 # The work is deferred to the end of the top directory: this file is included

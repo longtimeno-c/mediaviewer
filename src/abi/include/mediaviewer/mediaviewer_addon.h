@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * MediaViewer add-ons — the host function table and the add-on entry point
- * (plan/18-import.md "What an add-on is, technically"; plan/14-abi.md rules).
+ * (docs/design/18-import.md "What an add-on is, technically"; docs/design/14-abi.md rules).
  *
  * An add-on is one shared library (mv_import.dll / libmv_import.dylib) that
  * exports exactly one symbol, `mv_addon_get`. The host passes a FUNCTION
@@ -48,7 +48,7 @@ extern "C" {
  *
  *   1  Milestone G: io, folder model, pairing, thumbnails, scheduling.
  *   2  Milestone H: stills and video frames as pixels, moment thumbnails,
- *      family pieces (plan/17 "The AI pack"). */
+ *      family pieces (docs/design/17 "The AI pack"). */
 #define MV_ADDON_HOST_API 2
 #define MV_ADDON_HOST_API_OLDEST 1
 
@@ -71,7 +71,7 @@ typedef enum mv_addon_event_kind {
   MV_ADDON_EVENT_DUPLICATES_DONE = 8,
   MV_ADDON_EVENT_DUPLICATE_TRASHED = 9,
 
-  /* The AI pack (plan/17), 20 and up so a chrome can route by kind alone. */
+  /* The AI pack (docs/design/17), 20 and up so a chrome can route by kind alone. */
   MV_ADDON_EVENT_AI_STATUS = 20,     /* indexing progress / state; poll mv.ai.1 status */
   MV_ADDON_EVENT_AI_SEARCH_DONE = 21,/* id = search id; payload = result count */
   MV_ADDON_EVENT_AI_ROOTS = 22,      /* the remembered roots changed */
@@ -81,7 +81,7 @@ typedef enum mv_addon_event_kind {
 
 /* ---- v2: pixels for the AI pack ------------------------------------------ */
 
-/* Frames from a video, sampled for an index (plan/17 "Frame sampling"): a
+/* Frames from a video, sampled for an index (docs/design/17 "Frame sampling"): a
  * decoder instance of its own, never the playback decoder. */
 typedef struct mv_addon_sampler_options {
   uint32_t struct_size;
@@ -139,8 +139,8 @@ typedef struct mv_addon_volume {
 } mv_addon_volume;
 
 /* What a file says about when and on what it was taken (the host's metadata
- * read; plan/06). has_date = 0 means the file carried no capture time and the
- * caller falls back to the file time, labelled as such (plan/18 "Date source"). */
+ * read; docs/design/06). has_date = 0 means the file carried no capture time and the
+ * caller falls back to the file time, labelled as such (docs/design/18 "Date source"). */
 typedef struct mv_addon_capture {
   int64_t taken_unix;       /* local wall-clock time as if it were UTC */
   uint32_t has_date;
@@ -167,7 +167,7 @@ typedef struct mv_addon_copy_request {
   const char* const* targets_utf8;
   uint32_t target_count;          /* 1 .. MV_ADDON_COPY_MAX_TARGETS */
   uint32_t read_back;             /* 1 = full uncached read-back; 0 = hash-on-read only */
-  uint32_t retries;               /* plan/18: 1 */
+  uint32_t retries;               /* docs/design/18: 1 */
   uint32_t reserved;
   /* Polled between buffers; non-zero cancels and leaves no temporary. */
   int32_t(MV_CALL* is_cancelled)(void* user);
@@ -248,7 +248,7 @@ typedef struct mv_host_api {
 
   /* ---- scheduling ------------------------------------------------------- */
   /* Non-zero while the present loop is busy (panning, playing, loading): a
-   * background import waits between buffers (plan/18 "Priority"). */
+   * background import waits between buffers (docs/design/18 "Priority"). */
   int32_t(MV_CALL* should_yield)(void* host);
   /* Posts to the host's completion queue; the host's chrome drains it. Any
    * thread; never blocks. */
@@ -270,13 +270,13 @@ typedef struct mv_host_api {
    * MV_ERR_INVALID_ARG with the size written, so the caller can grow it. -- */
 
   /* A still at first-pixel quality: the embedded RAW preview or a DCT-scaled
-   * JPEG, never a full RAW develop (plan/17 step 6). Colour-managed to sRGB,
+   * JPEG, never a full RAW develop (docs/design/17 step 6). Colour-managed to sRGB,
    * EXIF-oriented, long edge <= max_long_edge. */
   mv_status(MV_CALL* decode_still_rgb)(void* host, const char* path_utf8, uint32_t max_long_edge,
                                        uint8_t* out_rgb, uint64_t cap, uint32_t* out_width,
                                        uint32_t* out_height);
   /* The sampler: keyframes, min/max gaps, rotation, the SDR tone-map for
-   * PQ/HLG (plan/17 steps 1, 2 and 4). `out_sampler` is closed with
+   * PQ/HLG (docs/design/17 steps 1, 2 and 4). `out_sampler` is closed with
    * sampler_close on the thread that uses it. */
   mv_status(MV_CALL* sampler_open)(void* host, const char* path_utf8,
                                    const mv_addon_sampler_options* options,
@@ -298,13 +298,13 @@ typedef struct mv_host_api {
                                        const uint8_t* rgb, uint32_t width, uint32_t height,
                                        char* out_utf8, uint32_t capacity);
   /* The version folder of an installed, verified piece of this add-on's
-   * family ("ai-faces", "ai-cuda"; plan/17 per-piece Install/Remove).
+   * family ("ai-faces", "ai-cuda"; docs/design/17 per-piece Install/Remove).
    * MV_ERR_IO when the piece is not installed; MV_ERR_CORRUPT when it fails
    * verification (its files are never handed out). */
   mv_status(MV_CALL* piece_dir)(void* host, const char* piece_id, char* out_utf8,
                                 uint32_t capacity);
 
-  /* A clip's soundtrack for the audio index (sounds and speech, plan/17
+  /* A clip's soundtrack for the audio index (sounds and speech, docs/design/17
    * "Audio", 2026-09-27): mono float PCM at `sample_rate`, from `start_ms`,
    * its own decoder (never the player's). MV_ERR_UNSUPPORTED_FORMAT: the file
    * has no audio. `out_duration_ms` may be NULL. */
@@ -316,7 +316,7 @@ typedef struct mv_host_api {
                                  uint32_t* out_count, int64_t* out_start_ms);
   void(MV_CALL* audio_close)(void* host, void* audio);
 
-  /* ---- sharing an index (2026-09-28, plan/17 "Sharing an index") ---------- */
+  /* ---- sharing an index (2026-09-28, docs/design/17 "Sharing an index") ---------- */
   /* The JPEG-512 the viewer's cache already holds for a file (pts_ms < 0) or
    * for one of its moments, as bytes. Never makes one: MV_ERR_IO on a miss.
    * A short buffer returns MV_ERR_INVALID_ARG with *out_size set. */
@@ -393,7 +393,7 @@ MV_API mv_status MV_CALL mv_addon_install(const char* staged_dir_utf8);
 
 /* Milestone H: a family's installed bytes and its ceiling (0 = none), for
  * "Install local search, downloads ~N GB, uses ~N GB" and the 3 GB rule
- * (plan/17): the chrome refuses before downloading a piece that would not
+ * (docs/design/17): the chrome refuses before downloading a piece that would not
  * fit, and mv_addon_install refuses it again (MV_ERR_UNSUPPORTED_FORMAT).
  * `family` is the parent's id ("ai"). [worker-thread] */
 MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out_used,
@@ -432,14 +432,14 @@ MV_API mv_status MV_CALL mv_addon_quit(void);
 MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* The base app's own card watch, for the one-time "Install Import?" hint
- * when a card appears and Import is not installed (plan/18). Posts
+ * when a card appears and Import is not installed (docs/design/18). Posts
  * MV_ADDON_EVENT_VOLUME_ARRIVED (payload 1 for removable media, 0 otherwise)
  * to `session`. enable = 0 stops it. Reads nothing on the card. */
 MV_API mv_status MV_CALL mv_volume_watch(mv_session_t session, uint32_t enable);
 
 /* The render loop says whether it is presenting frames (panning, zooming,
  * playing, loading). Background add-on work waits between buffers while it
- * is (plan/18 "Priority"). [any-thread][no-block] */
+ * is (docs/design/18 "Priority"). [any-thread][no-block] */
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy);
 
 #ifdef __cplusplus

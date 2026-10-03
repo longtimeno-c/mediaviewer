@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // MediaViewerClipJob: runs one clip job for the viewer's queue, out of
-// process (plan/08 "Execution & UX"; protocol in src/edit/clip_wire.h).
+// process (docs/design/08 "Execution & UX"; protocol in src/edit/clip_wire.h).
 //
 //   MediaViewerClipJob --job     request on stdin, progress and verdict on stdout
 //

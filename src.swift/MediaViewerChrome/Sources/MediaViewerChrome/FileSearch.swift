@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// File search (plan/16 "File search", 2026-09-28): a find-by-name field over
+// File search (docs/design/16 "File search", 2026-09-28): a find-by-name field over
 // the `G` grid, part of the base app. No add-on and no index: it filters the
 // folder already listed by the names the tiles show (FoldedNames), folder
 // tiles too. The path bar's search icon and ⌘F open it whenever Local search

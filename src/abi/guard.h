@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // mv_guard — the exception boundary.
 //
-// plan/14-abi.md: "No exception may cross the boundary. An exception escaping
+// docs/design/14-abi.md: "No exception may cross the boundary. An exception escaping
 // into managed code through P/Invoke is undefined behaviour, and it will not
 // look like the bug it is. The mv_guard wrapper is not optional politeness —
 // it is the boundary."
@@ -50,7 +50,7 @@ template <typename Fn>
 status guard(const char* function_literal, Fn&& fn) noexcept {
   const std::uint64_t correlation = next_correlation_id();
   begin_call(correlation);
-  crash_context::note_call(correlation);  // plan/13: last in-flight call id
+  crash_context::note_call(correlation);  // docs/design/13: last in-flight call id
   trace::abi_call(function_literal, correlation);
 
   status result = status::internal;

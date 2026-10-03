@@ -14,7 +14,7 @@ namespace mv::image {
 
 // CPU Mitchell mip chain, then an immutable MTLTexture (replaceRegion at
 // creation time only, matching the D3D11 IMMUTABLE upload rule in CLAUDE.md
-// and plan/02). `device` is an id<MTLDevice>, passed as void* so this header
+// and docs/design/02). `device` is an id<MTLDevice>, passed as void* so this header
 // stays includable from plain .cpp translation units; the implementation
 // (upload_mac.mm) is the only place that bridges it back to Objective-C.
 // Safe to call from a decode worker: MTLDevice is safe to use from any thread

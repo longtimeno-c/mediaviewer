@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// First-install helper for the macOS disk image (plan/13 "macOS first install").
+// First-install helper for the macOS disk image (docs/design/13 "macOS first install").
 #pragma once
 
 #include <string>
@@ -14,7 +14,7 @@ namespace mv::shell {
 // Call on the main thread after NSApplication exists, before any window.
 bool offer_install_from_disk_image() noexcept;
 
-// What the first-launch setup sheet can tidy up after a drag install (plan/13):
+// What the first-launch setup sheet can tidy up after a drag install (docs/design/13):
 // our installer disk still mounted, and/or the .dmg it came from. Local paths,
 // shown in the sheet and never logged (rule 6).
 struct installer_leftover {

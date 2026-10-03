@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// What crosses between the search agent and its clients (plan/23): the
+// What crosses between the search agent and its clients (docs/design/23): the
 // workflow extension inside Final Cut Pro, the agent's test client, and on
-// Windows any NLE bridge that asks the same questions. plan/14's rules for a
+// Windows any NLE bridge that asks the same questions. docs/design/14's rules for a
 // process line: flat POD, a version, a correlation id, a status, bounds on
 // every length. One reply is one byte buffer (an NSData over XPC):
 //

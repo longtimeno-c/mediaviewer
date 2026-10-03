@@ -10,7 +10,7 @@ bench could not see grid decode or thumbnail-first at camera size.
 
 The bench picture is libheif's example.heic (fetch-heif.ps1 first), upscaled
 with noise so the tiles cost what a photo costs (~2.8 MB, like a 12 MP iPhone
-file). Generated, never committed (tools/testmedia/ is gitignored, plan/09).
+file). Generated, never committed (tools/testmedia/ is gitignored, docs/design/09).
 
 --fixture writes the same layout at 120x90 (2x2 tiles of 64, a 32x24
 thumbnail) from ffmpeg's testsrc2, so it is licence-clean and lives in git:
@@ -19,7 +19,7 @@ image's shape (first pixel must refuse it).
 
 Requirements (dev tool only, never shipped): an ffmpeg on PATH with libx265.
 Making test bytes with x265 on a developer box is fine; it never enters
-vcpkg.json or the product (plan/11, as make-seeds.py).
+vcpkg.json or the product (docs/design/11, as make-seeds.py).
 """
 import os
 import struct

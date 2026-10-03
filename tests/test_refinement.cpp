@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Preview → full without a visible pop (plan/04 step 4): the pure parts.
+// Preview → full without a visible pop (docs/design/04 step 4): the pure parts.
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 

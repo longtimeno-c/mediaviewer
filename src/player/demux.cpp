@@ -14,7 +14,7 @@ time_ns pts_to_ns(std::int64_t pts, AVRational time_base, time_ns start_time_ns,
                   time_ns fallback) noexcept {
   if (pts == AV_NOPTS_VALUE || time_base.den == 0) return fallback;
   const AVRational ns{1, 1'000'000'000};
-  // plan/05 / the PR 5 contract: PTS is stream-relative. A container start_time
+  // docs/design/05 / the PR 5 contract: PTS is stream-relative. A container start_time
   // that is not subtracted here reads downstream as a constant A/V offset and
   // gets blamed on the clock, which is a long way from where the bug is.
   return static_cast<time_ns>(av_rescale_q(pts, time_base, ns)) - start_time_ns;

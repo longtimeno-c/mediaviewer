@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Sharing an index (plan/17 "Sharing an index", 2026-09-28): one file that
+// Sharing an index (docs/design/17 "Sharing an index", 2026-09-28): one file that
 // carries what an index knows about some roots, so another machine (or this
 // one, pointed at the same NAS through another path) need not embed the
 // library again.

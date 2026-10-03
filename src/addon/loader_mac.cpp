@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // dlopen half of the add-on loader. On macOS the app runs with the hardened
 // runtime and library validation, so only a library signed by the same Team
-// ID loads (plan/18); the Linux core test build uses the same call.
+// ID loads (docs/design/18); the Linux core test build uses the same call.
 #include <dlfcn.h>
 
 #include "addon/host.h"
