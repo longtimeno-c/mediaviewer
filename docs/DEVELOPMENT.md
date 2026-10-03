@@ -709,6 +709,14 @@ the parser, names, suggestions and the singular / plural pair with no models; it
 and also compiles on its own (`clang++ -std=c++20 tests/test_ai_query.cpp
 src/addons/ai/query.cpp` with `-Isrc -Itests` and any Catch2).
 
+**The Mac AI chrome's own measurements** (`src.swift/AIChrome/Tests`, not part of the cmake
+build): `cd src.swift/AIChrome && swift test -c release -Xswiftc -enable-testing --filter
+PeopleGridBench` lays the Settings People grid out at 200 people with an empty table (no pack)
+and reports CPU time for the grid at rest, one layout pass, a status-line publish, and a people
+update with and without a re-sort. Compare runs of the same build alternated with the base;
+the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a people update
+500 → 46 ms of CPU).
+
 **The Photos library source (Mac, issue #72; plan/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
 tools each wrap themselves in a throwaway `.app`, because PhotoKit's permission prompt needs

@@ -31,8 +31,23 @@ private struct FaceImage: View {
     .clipShape(Circle())
     .task(id: faceID) {
       guard faceID != 0 else { return }
+      // A cover seen before (Settings reopened, the grid re-sorted): no task.
+      if let hit = ImageCache.shared.get(ImageLoad.faceKey(faceID, box: box)) {
+        image = hit
+        return
+      }
+      // A few decodes at once (ThumbGate), not one per card: 200 people are
+      // 200 face_thumb calls into the pack, each possibly a decode, and
+      // unbounded they fill the cooperative pool and stall every other task.
       let t = table, f = faceID, b = box
-      let cut = await Task.detached(priority: .utility) { ImageLoad.face(t, faceID: f, box: b) }.value
+      let work = Task.detached(priority: .utility) { () -> CGImage? in
+        await ThumbGate.shared.acquire()
+        let cut = Task.isCancelled ? nil : ImageLoad.face(t, faceID: f, box: b)
+        await ThumbGate.shared.release()
+        return cut
+      }
+      let cut = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+      guard let cut, !Task.isCancelled else { return }
       withAnimation(.easeOut(duration: 0.2)) { image = cut }
     }
   }
@@ -70,7 +85,9 @@ struct PeopleGrid: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 132), spacing: 14)], spacing: 16) {
           ForEach(model.people) { person in
             PersonCard(model: model, person: person, selected: selection.contains(person.id),
+                       opening: model.opening == person.id,
                        tap: { tap(person) }, open: { open(person) })
+              .equatable()
           }
         }
       }
@@ -80,7 +97,12 @@ struct PeopleGrid: View {
       }
     }
     .padding(12)
-    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: model.people)
+    // The spring when a person comes or goes (a merge, a split, a new face
+    // group), not for every count or re-sort while faces stream in: an
+    // animation on the container re-lays the whole grid out per frame, up to
+    // 500 ms of CPU per update at 200 people (PeopleGridBench); the counts and
+    // the order change twice a second while indexing.
+    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: Set(model.people.map(\.id)))
     .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: selection)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: model.peopleNote)
     // A merged or regrouped person leaves the selection with the grid.
@@ -157,97 +179,44 @@ struct PeopleGrid: View {
   }
 }
 
-private struct PersonCard: View {
-  @ObservedObject var model: ManagementModel
+/// One person. Not an observer of the model: at 200 people every publish
+/// (the status line at 4 Hz while indexing, a note, an opening spinner) ran
+/// 200 bodies, about 50 ms of CPU each tick (PeopleGridBench). The card takes what it
+/// shows as values, compares them (Equatable, `.equatable()` in the grid) and
+/// reads the model only in an action. The cover, with its drag, drop, hover
+/// and menus, is its own Equatable view: a face count moving while faces
+/// stream in re-renders the count, not the cover.
+///
+/// @MainActor is spelled out on these three: with no @ObservedObject left to
+/// infer it, Swift 5.10's SwiftUI (Xcode 15, the CI runner) leaves a View
+/// nonisolated, and an action calling the model would not compile there.
+/// Their `==` reads only Sendable lets, so it stays nonisolated as Equatable
+/// requires.
+@MainActor
+private struct PersonCard: View, Equatable {
+  let model: ManagementModel
   let person: Person
   let selected: Bool
+  /// Their photos are being opened (the spinner).
+  let opening: Bool
   let tap: () -> Void
   let open: () -> Void
-  @State private var name = ""
-  @State private var hover = false
-  @State private var dropTarget = false
-  @FocusState private var editing: Bool
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// What a dragged person carries: its id, tagged so no other text merges.
-  private static let dragPrefix = "mediaviewer-person:"
+  nonisolated static func == (a: PersonCard, b: PersonCard) -> Bool {
+    a.person == b.person && a.selected == b.selected && a.opening == b.opening
+  }
 
   var body: some View {
     VStack(spacing: 6) {
-      FaceImage(table: model.table, faceID: person.coverFace, box: person.coverBox,
-                monogram: String(person.name.prefix(1)).uppercased())
-        .frame(width: 84, height: 84)
-        .overlay(Circle().stroke(ring, lineWidth: selected || hover || dropTarget ? 2.5 : 1))
-        .overlay {
-          if model.opening == person.id {
-            ZStack {
-              Circle().fill(.black.opacity(0.35))
-              ProgressView().controlSize(.small).tint(.white)
-            }
-            .transition(.opacity)
-          }
-        }
-        .overlay(alignment: .topTrailing) {
-          // Correcting a person's faces: here on hover, and in the context menu.
-          if hover && !selected {
-            Button(action: open) {
-              Image(systemName: "ellipsis.circle.fill")
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .black.opacity(0.6))
-                .font(.system(size: 20))
-            }
-            .buttonStyle(.plain)
-            .help("Faces… — rename, merge, or remove faces that are someone else")
-            .accessibilityLabel("Faces")
-            .transition(.opacity)
-          }
-        }
-        .overlay(alignment: .bottomTrailing) {
-          if selected {
-            Image(systemName: "checkmark.circle.fill")
-              .symbolRenderingMode(.palette)
-              .foregroundStyle(.white, Color.accentColor)
-              .font(.system(size: 20))
-              .transition(.scale.combined(with: .opacity))
-          }
-        }
-        .scaleEffect((hover || dropTarget) && !reduceMotion ? 1.06 : 1)
-        .animation(.easeOut(duration: 0.15), value: hover)
-        .animation(.easeOut(duration: 0.15), value: dropTarget)
-        .onHover { hover = $0 }
-        .onTapGesture { tap() }
-        .draggable(Self.dragPrefix + String(person.id)) {
-          FaceImage(table: model.table, faceID: person.coverFace, box: person.coverBox,
-                    monogram: String(person.name.prefix(1)).uppercased())
-            .frame(width: 60, height: 60)
-        }
-        .dropDestination(for: String.self) { items, _ in
-          let ids = items.compactMap { item -> UInt64? in
-            guard item.hasPrefix(Self.dragPrefix) else { return nil }
-            return UInt64(item.dropFirst(Self.dragPrefix.count))
-          }.filter { $0 != person.id }
-          guard !ids.isEmpty else { return false }
-          model.merge(into: person.id, from: ids)
-          return true
-        } isTargeted: { dropTarget = $0 }
-        .help("Click to see this person's photos. Drag onto another person to merge them.")
-        .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Shows their photos in the gallery")
-        .accessibilityAction(named: "Faces") { open() }
-      TextField("Add a name", text: $name)
-        .textFieldStyle(.plain)
-        .multilineTextAlignment(.center)
-        .font(AITheme.font(12))
-        .focused($editing)
-        .onSubmit { commit() }
-        .onChange(of: editing) { _, now in if !now { commit() } }
+      PersonCover(model: model, person: person, selected: selected, opening: opening, tap: tap, open: open)
+        .equatable()
+      PersonName(model: model, person: person)
+        .equatable()
       Text(person.faces == 1 ? "1 photo" : "\(person.faces) photos")
         .font(AITheme.font(11)).foregroundStyle(AITheme.body)
-        .contentTransition(.numericText())
+        .lineLimit(1)
     }
-    .onAppear { name = person.name }
-    .onChange(of: person.name) { _, n in if !editing { name = n } }
+    .frame(maxWidth: .infinity)
     .contextMenu {
       Button("Show photos") { model.showPhotos(of: person) }
       Button("Faces…") { open() }
@@ -258,14 +227,155 @@ private struct PersonCard: View {
       }
     }
   }
+}
+
+/// The circular cover: click, hover (the Faces… button), drag out, drop onto
+/// (merge), selection and the opening spinner.
+@MainActor
+private struct PersonCover: View, Equatable {
+  let model: ManagementModel
+  let person: Person
+  let selected: Bool
+  let opening: Bool
+  let tap: () -> Void
+  let open: () -> Void
+  @State private var hover = false
+  @State private var dropTarget = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  nonisolated static func == (a: PersonCover, b: PersonCover) -> Bool {
+    a.person.id == b.person.id && a.person.name == b.person.name && a.person.coverFace == b.person.coverFace
+      && a.person.coverBox == b.person.coverBox && a.selected == b.selected && a.opening == b.opening
+  }
+
+  /// What a dragged person carries: its id, tagged so no other text merges.
+  private static let dragPrefix = "mediaviewer-person:"
+
+  var body: some View {
+    FaceImage(table: model.table, faceID: person.coverFace, box: person.coverBox,
+              monogram: String(person.name.prefix(1)).uppercased())
+      .frame(width: 84, height: 84)
+      .overlay(Circle().stroke(ring, lineWidth: selected || hover || dropTarget ? 2.5 : 1))
+      .overlay {
+        if opening {
+          ZStack {
+            Circle().fill(.black.opacity(0.35))
+            ProgressView().controlSize(.small).tint(.white)
+          }
+          .transition(.opacity)
+        }
+      }
+      .overlay(alignment: .topTrailing) {
+        // Correcting a person's faces: here on hover, and in the context menu.
+        if hover && !selected {
+          Button(action: open) {
+            Image(systemName: "ellipsis.circle.fill")
+              .symbolRenderingMode(.palette)
+              .foregroundStyle(.white, .black.opacity(0.6))
+              .font(.system(size: 20))
+          }
+          .buttonStyle(.plain)
+          .help("Faces… — rename, merge, or remove faces that are someone else")
+          .accessibilityLabel("Faces")
+          .transition(.opacity)
+        }
+      }
+      .overlay(alignment: .bottomTrailing) {
+        if selected {
+          Image(systemName: "checkmark.circle.fill")
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, Color.accentColor)
+            .font(.system(size: 20))
+            .transition(.scale.combined(with: .opacity))
+        }
+      }
+      .scaleEffect((hover || dropTarget) && !reduceMotion ? 1.06 : 1)
+      .animation(.easeOut(duration: 0.15), value: hover)
+      .animation(.easeOut(duration: 0.15), value: dropTarget)
+      .onHover { hover = $0 }
+      .onTapGesture { tap() }
+      .draggable(Self.dragPrefix + String(person.id)) {
+        FaceImage(table: model.table, faceID: person.coverFace, box: person.coverBox,
+                  monogram: String(person.name.prefix(1)).uppercased())
+          .frame(width: 60, height: 60)
+      }
+      .dropDestination(for: String.self) { items, _ in
+        let ids = items.compactMap { item -> UInt64? in
+          guard item.hasPrefix(Self.dragPrefix) else { return nil }
+          return UInt64(item.dropFirst(Self.dragPrefix.count))
+        }.filter { $0 != person.id }
+        guard !ids.isEmpty else { return false }
+        model.merge(into: person.id, from: ids)
+        return true
+      } isTargeted: { dropTarget = $0 }
+      .help("Click to see this person's photos. Drag onto another person to merge them.")
+      .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
+      .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+      .accessibilityHint("Shows their photos in the gallery")
+      .accessibilityAction(named: "Faces") { open() }
+  }
 
   private var ring: Color {
     selected || dropTarget ? .accentColor : hover ? Color.accentColor.opacity(0.7) : AITheme.hairline
   }
+}
 
+/// The name: a label until clicked (or Return on it), then a text field that
+/// saves on Return or when focus leaves. 200 live NSTextFields were most of
+/// the grid's layout and event cost.
+@MainActor
+private struct PersonName: View, Equatable {
+  let model: ManagementModel
+  let person: Person
+  @State private var name = ""
+  @State private var editingName = false
+  @FocusState private var editing: Bool
+
+  nonisolated static func == (a: PersonName, b: PersonName) -> Bool {
+    a.person.id == b.person.id && a.person.name == b.person.name
+  }
+
+  var body: some View {
+    if editingName {
+      TextField("Add a name", text: $name)
+        .textFieldStyle(.plain)
+        .multilineTextAlignment(.center)
+        .font(AITheme.font(12))
+        .focused($editing)
+        .onSubmit { commit() }
+        .onChange(of: editing) { _, now in if !now { commit() } }
+        .onAppear { editing = true }
+    } else {
+      Text(person.name.isEmpty ? "Add a name" : person.name)
+        .font(AITheme.font(12))
+        .foregroundStyle(person.name.isEmpty ? AITheme.body : AITheme.title)
+        .lineLimit(1).truncationMode(.tail)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { beginEditing() }
+        .focusable()
+        .onKeyPress(.return) {
+          beginEditing()
+          return .handled
+        }
+        .help(person.name.isEmpty ? "Click to name this person" : "Click to rename")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(person.name.isEmpty ? "Add a name" : "Name, \(person.name)")
+        .accessibilityHint("Edits the name")
+    }
+  }
+
+  private func beginEditing() {
+    name = person.name
+    editingName = true
+  }
+
+  /// The edit ends (Return, or focus left): save a change, show the label.
   private func commit() {
+    guard editingName else { return }
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed != person.name { model.rename(person.id, trimmed) }
+    editingName = false
   }
 }
 

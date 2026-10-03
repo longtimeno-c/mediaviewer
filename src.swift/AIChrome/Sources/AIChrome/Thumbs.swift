@@ -117,8 +117,12 @@ enum ImageLoad {
   /// A face, cropped from the picture it was found in (face_thumb, made on a
   /// miss by the pack for every format the viewer decodes: RAW, HEIC, clips).
   /// [worker-thread]: face_thumb may decode.
+  static func faceKey(_ faceID: UInt64, box: [Double]) -> String {
+    "face|\(faceID)|\(box.map { String(format: "%.4f", $0) }.joined(separator: ","))"
+  }
+
   static func face(_ t: AITable, faceID: UInt64, box: [Double]) -> CGImage? {
-    let key = "face|\(faceID)|\(box.map { String(format: "%.4f", $0) }.joined(separator: ","))"
+    let key = faceKey(faceID, box: box)
     if let hit = ImageCache.shared.get(key) { return hit }
     guard t.hasFaceThumb,
           let jpeg = t.path({ t.a.face_thumb?(t.ctx, faceID, $0, $1) ?? MV_ERR_INVALID_ARG }),
