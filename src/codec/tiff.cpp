@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // TIFF via libtiff, decoded from memory. Page 0 is the still; pages are
-// Ctrl+PageUp/PageDown (plan/04), not extra filmstrip stops — decode_page()
+// Ctrl+PageUp/PageDown (docs/design/04), not extra filmstrip stops — decode_page()
 // already takes a page index so that feature does not need a rewrite.
 //
 // What the raster holds (RGBA8, source-encoded, stored pixel order):
@@ -19,7 +19,7 @@
 //  - YCbCr without JPEG, OJPEG, CIELab, LogLuv: libtiff's TIFFRGBAImage.
 //  - ICC is attached only when it is an RGB profile over RGB-like pixels. Grey
 //    and CMYK profiles are dropped: the display stage builds RGBA transforms.
-//  - The Orientation tag is NOT applied (plan/04: orientation belongs on the
+//  - The Orientation tag is NOT applied (docs/design/04: orientation belongs on the
 //    display path, which does not exist yet).
 // The original bytes are read through a const span; the handle is opened "rm"
 // (read, no mapping) and its write proc refuses.

@@ -1,12 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Pixels for add-ons (host table v2, Milestone H / plan/17 "Frame sampling").
+// Pixels for add-ons (host table v2, Milestone H / docs/design/17 "Frame sampling").
 //
 // The types are portable and header-only so src/addon (the host table) knows
 // them without linking a decoder. The functions that fill them are the host's:
 // abi/addon_media.h (mv_addon_media), over the viewer's own still pipeline and
 // the clip core's FFmpeg pieces; each host installs them into its
-// host_services. addon/ may not include image/ or edit/ (plan/02).
+// host_services. addon/ may not include image/ or edit/ (docs/design/02).
 #pragma once
 
 #include <cstdint>

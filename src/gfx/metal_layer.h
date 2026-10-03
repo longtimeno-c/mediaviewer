@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // CAMetalLayer hosted in an AppKit view. maxDrawables = 1, 8-bit sRGB (D6).
 // The display link is created against this layer; the lab waits on it before
-// encode (plan/15 PR 16).
+// encode (docs/design/15 PR 16).
 #pragma once
 
 #include <cstdint>

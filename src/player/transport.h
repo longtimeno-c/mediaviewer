@@ -15,7 +15,7 @@
 
 namespace mv::player {
 
-// plan/05: "Dragging the scrubber -> seek to the nearest keyframe
+// docs/design/05: "Dragging the scrubber -> seek to the nearest keyframe
 // (AVSEEK_FLAG_BACKWARD, no full decode) - instant. On release, or when
 // stepping -> decode forward from that keyframe to the exact frame.
 // Fast-then-accurate reads to users as responsiveness."
@@ -28,7 +28,7 @@ struct seek_request {
   time_ns   target_ns = 0;
   seek_mode mode      = seek_mode::keyframe;
   // Bumped by the caller so in-flight pre-seek frames are discarded
-  // (avcodec_flush_buffers plus the generation counter, plan/05).
+  // (avcodec_flush_buffers plus the generation counter, docs/design/05).
   std::uint32_t generation = 0;
 };
 
@@ -45,7 +45,7 @@ inline constexpr double max_rate = 4.0;
 
 [[nodiscard]] double clamp_rate(double rate) noexcept;
 
-// plan/05: "atempo accepts 0.5-2.0 per instance, so the extremes need a chain
+// docs/design/05: "atempo accepts 0.5-2.0 per instance, so the extremes need a chain
 // (atempo=0.5,atempo=0.5 for 0.25x); build the chain from the ratio rather than
 // assuming one filter."
 //
@@ -87,7 +87,7 @@ struct ab_loop {
 // Resume
 // ---------------------------------------------------------------------------
 
-// plan/05: per-file resume position. Near the start there is nothing worth
+// docs/design/05: per-file resume position. Near the start there is nothing worth
 // resuming; near the end the user has finished watching, and reopening two
 // seconds before the credits is worse than starting over.
 inline constexpr time_ns resume_min_position_ns = 15'000'000'000;  // 15 s in

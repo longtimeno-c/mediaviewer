@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 15 (plan/09 "Single-instance ... named pipe hands the path to the running
-// instance, overridable"; plan/12 2026-09-25): a second MediaViewer started
+// PR 15 (docs/design/09 "Single-instance ... named pipe hands the path to the running
+// instance, overridable"; docs/design/12 2026-09-25): a second MediaViewer started
 // by the same user (Explorer, the jump list, a shortcut) hands its paths to
 // the one already running, which opens them in its window, and exits.
 // Multi-window (tabs) is its own later PR; this is the single instance.

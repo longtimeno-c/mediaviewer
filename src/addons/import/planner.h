@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Planning an import: every decision is made before the copy starts, so it
-// never stops halfway to ask (plan/18 "What it is, honestly").
+// never stops halfway to ask (docs/design/18 "What it is, honestly").
 //
 // The duplicate test is size first, then BLAKE3 only when a size matches,
 // never by name. The card memory answers most hashes without reading the

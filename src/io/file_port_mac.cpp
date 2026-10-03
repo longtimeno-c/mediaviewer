@@ -167,7 +167,7 @@ result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string
   // network shares). A hard link is exclusive where links exist; otherwise
   // check then rename. That last path has a window in which another process
   // could create `to`: nothing in this app writes that name meanwhile, and the
-  // destination's writer is serialised per device (plan/18 "one writer per
+  // destination's writer is serialised per device (docs/design/18 "one writer per
   // physical destination").
   if (::link(from.c_str(), to.c_str()) == 0) {
     ::unlink(from.c_str());

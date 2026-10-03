@@ -6,7 +6,7 @@
     face-export.py --arch ir50 --weights model.safetensors --out embedder.onnx [--golden]
                    [--expect "v0 v1 ... v15 norm"]
 
-The AdaFace checkpoints (CVLface, MIT; plan/17 "People model, 2026-10-03") ship as
+The AdaFace checkpoints (CVLface, MIT; docs/design/17 "People model, 2026-10-03") ship as
 safetensors with the authors' PyTorch code, not as ONNX. Loading them through that
 code means running the repository's Python (`trust_remote_code`); this file instead
 re-declares the IResNet ("IR") backbone the checkpoint was trained with and loads

@@ -105,7 +105,7 @@ TEST_CASE("update guard: restart arguments carry the view", "[update]") {
   CHECK(blob == std::wstring(L"a\0bc\0", 5));
 }
 
-// plan/10 PR 8 verify: "Uninstall from Apps & features removes the shortcuts
+// docs/design/10 PR 8 verify: "Uninstall from Apps & features removes the shortcuts
 // and install directory." Velopack writes a second entry that would remove the
 // directory WITHOUT the wizard's shortcuts (and, from PR 15, without the
 // ProgId registrations), so the host deletes it after every update. It must

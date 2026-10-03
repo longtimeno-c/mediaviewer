@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// shell/edit_workspace.h and the PR 29 rows of the command table (plan/20).
+// shell/edit_workspace.h and the PR 29 rows of the command table (docs/design/20).
 #include "catch_compat.h"
 
 #include <string>

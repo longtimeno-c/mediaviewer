@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The one key router (plan/16-commands.md). Runs on the UI thread, before the
+// The one key router (docs/design/16-commands.md). Runs on the UI thread, before the
 // island's pre-translate. Pure: no Win32, no allocation, no I/O on keydown.
 #pragma once
 
@@ -18,7 +18,7 @@ enum class focus_kind : std::uint8_t {
   gallery = 3,
   transport = 4,
   text = 5,  // a XAML text control: keys belong to it; Esc blurs back
-  // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane" mode).
+  // PR 9: the metadata pane or the folder tree holds focus (docs/design/16 "Pane" mode).
   // In-pane traversal belongs to XAML; Esc walks back out to the canvas.
   pane = 6,
 };
@@ -43,13 +43,13 @@ struct view_state {
   bool trim = false;       // PR 13: trim armed on the current clip
   bool game = false;       // the empty-window runner is up (Space on an empty view)
   // Milestone H: a search result list ("Search: ...") is open in place of a
-  // folder and there is somewhere to go back to (plan/16 `Esc`).
+  // folder and there is somewhere to go back to (docs/design/16 `Esc`).
   bool list_open = false;
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
 
-// plan/16: Esc walks out — crop, pane, fullscreen / slideshow, canvas. It never
+// docs/design/16: Esc walks out — crop, pane, fullscreen / slideshow, canvas. It never
 // quits: `none` means there is nothing left to leave.
 enum class back_target : std::uint8_t {
   none,

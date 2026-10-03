@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The audio index's front end (plan/17 "Audio", 2026-09-27): log-mel features
+// The audio index's front end (docs/design/17 "Audio", 2026-09-27): log-mel features
 // against transformers' numpy reference, and, with the ai-audio piece staged,
 // the CLAP tokenizer and towers against ORT-Python and Whisper on a clip whose
 // words are known.
@@ -284,7 +284,7 @@ std::string transcribe_all(mv::infer::whisper_model& model, const std::vector<fl
 }  // namespace
 #endif
 
-// Timings for plan/17 (hidden): CLAP 10 s windows/s and Whisper x real time,
+// Timings for docs/design/17 (hidden): CLAP 10 s windows/s and Whisper x real time,
 // on CPU (the only provider the Mac gives audio).
 TEST_CASE("bench: CLAP and Whisper on CPU", "[.bench][ai][audio]") {
   const std::string core = env("MV_AI_PACK_DIR");

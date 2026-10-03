@@ -55,7 +55,7 @@ struct pack_state {
   void ensure() {
     std::call_once(once, [this] {
       // A vendor piece carries its own ORT build (CUDA builds run CPU too);
-      // with none installed, the Core pack's CPU build (plan/17 "Runtime").
+      // with none installed, the Core pack's CPU build (docs/design/17 "Runtime").
       std::string ort_dir = core_dir;
       if (auto cuda = h->piece_dir("ai-cuda")) ort_dir = *cuda;
       auto loaded = infer::runtime::load(ort_dir);
@@ -97,7 +97,7 @@ std::filesystem::path fs_path(const std::string& utf8) {
   return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
 }
 
-// The CPU half of the provider self-test (plan/17), kept so a later start
+// The CPU half of the provider self-test (docs/design/17), kept so a later start
 // skips opening a CPU session and timing it: about 15 s of a 40 s ViT-L load
 // on a GPU. The provider itself still runs every start and is checked against
 // this reference embedding and time; a new runtime, provider, piece or model
@@ -192,7 +192,7 @@ std::string coreml_cache(pack_state& p) {
   return dir;
 }
 
-// The provider self-test (plan/17): the provider must agree with CPU, and
+// The provider self-test (docs/design/17): the provider must agree with CPU, and
 // under Auto it must also beat CPU, else CPU runs it and the status says why.
 // The CPU side comes from the kept reference when there is one.
 infer::provider_fault self_test(pack_state& p, const infer::clip_spec& spec, infer::embedder& fast,
@@ -349,7 +349,7 @@ class ort_faces final : public face_analyzer {
       auto e = m_->embed(view, b, &crop);
       if (!e) continue;
       face_in f;
-      // How far the refinement may trust this face (plan/17 "People refinement").
+      // How far the refinement may trust this face (docs/design/17 "People refinement").
       f.quality = face_quality(b.score, std::min(b.w, b.h), crop_sharpness(crop, 112),
                                landmark_frontalness(std::span<const float, 10>(b.landmarks)));
       f.tta = true;
@@ -595,7 +595,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     }
     return true;
   };
-  // A reader (engine_options::read_only, plan/23): text towers only, on CPU.
+  // A reader (engine_options::read_only, docs/design/23): text towers only, on CPU.
   d.clip_spec_key = [p](std::uint32_t quality) {
     p->ensure();
     auto it = p->towers.find(quality);

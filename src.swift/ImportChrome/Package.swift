@@ -2,7 +2,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Milestone G (plan/18): the Import add-on's Mac chrome. Built as a dynamic
+// Milestone G (docs/design/18): the Import add-on's Mac chrome. Built as a dynamic
 // library that cmake/darwin.cmake wraps into Import.bundle (principal class
 // MVImportChrome), shipped in the signed add-on archive beside
 // libmv_import.dylib, never in MediaViewer.app. The host loads it with

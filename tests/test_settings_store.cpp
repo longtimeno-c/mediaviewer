@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 8: settings.ini writes are off the UI thread (plan/12 "Settings writes on
+// PR 8: settings.ini writes are off the UI thread (docs/design/12 "Settings writes on
 // the UI thread"). The store coalesces, writes atomically on its worker, and
 // flushes on the exit path.
 #include <catch2/catch_test_macros.hpp>

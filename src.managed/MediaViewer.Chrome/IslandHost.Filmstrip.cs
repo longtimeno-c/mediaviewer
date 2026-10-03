@@ -282,7 +282,7 @@ public static partial class IslandHost
         return s >= 3600 ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}" : $"{s / 60}:{s % 60:00}";
     }
 
-    // PR 7 (plan/04): "LIVE" on a Live Photo stop, "RAW" on a RAW+JPEG stop and
+    // PR 7 (docs/design/04): "LIVE" on a Live Photo stop, "RAW" on a RAW+JPEG stop and
     // on a RAW with no JPEG beside it. Decided at scan time; nothing is read.
     private static string BadgeFor(MvFolderItem rec) => rec.PairKind switch
     {
@@ -376,7 +376,7 @@ public static partial class IslandHost
             VerticalScrollMode = ScrollMode.Disabled,
         };
         var scroll = _filmstripScroll;
-        scroll.CharacterReceived += OnTypeahead;  // plan/16 typeahead
+        scroll.CharacterReceived += OnTypeahead;  // docs/design/16 typeahead
         scroll.KeyDown += (_, e) =>
         {
             if (e.Key == Windows.System.VirtualKey.Left) { Send(Command.Prev); e.Handled = true; }

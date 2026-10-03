@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // A C++ face on the host function table (mediaviewer_addon.h, v2) for the AI
 // pack. Every file the add-on reads, it reads through here: it links no part
-// of the core (plan/18 "does not link the core statically").
+// of the core (docs/design/18 "does not link the core statically").
 #pragma once
 
 #include <cstdint>
@@ -84,7 +84,7 @@ class host {
   [[nodiscard]] result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,
                                                      const rgb_frame* frame) const;
   [[nodiscard]] result<std::string> piece_dir(const std::string& piece) const;
-  // Sharing an index (plan/17): the cached JPEG-512 bytes of a still
+  // Sharing an index (docs/design/17): the cached JPEG-512 bytes of a still
   // (pts_ms < 0) or a moment, never made (status::io on a miss); and bytes
   // from an export stored under this machine's stamp of the file.
   [[nodiscard]] bool has_thumbnail_bytes() const noexcept;

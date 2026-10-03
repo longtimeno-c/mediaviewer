@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The add-on mechanism (plan/18 "Add-ons"; PR 16 verify: "a tampered add-on
+// The add-on mechanism (docs/design/18 "Add-ons"; PR 16 verify: "a tampered add-on
 // file or manifest is refused").
 #include "catch_compat.h"
 

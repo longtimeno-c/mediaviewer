@@ -3,7 +3,7 @@
 //
 // The PR 1 ABI deliverable, exercised: "a header, an mv_guard, one call, a
 // SafeHandle, and a completion drain — proving the shape end to end before
-// anything is built on it" (plan/14-abi.md).
+// anything is built on it" (docs/design/14-abi.md).
 //
 // The SafeHandle half lives in src.managed/MediaViewer.AbiSmokeTest, because a
 // SafeHandle is a C# construct. This file proves the native half and the
@@ -158,7 +158,7 @@ TEST_CASE("echo round-trips through a worker and a completion drain", "[abi][com
 
 TEST_CASE("completions batch rather than arriving one marshalling hop at a time",
           "[abi][completion]") {
-  // plan/14: "a folder scan finishing 400 thumbnails is one drain, not 400
+  // docs/design/14: "a folder scan finishing 400 thumbnails is one drain, not 400
   // marshalling hops."
   session_guard session(4);
   constexpr int count = 400;
@@ -225,7 +225,7 @@ TEST_CASE("a partial drain leaves the event signalled", "[abi][completion]") {
 }
 
 TEST_CASE("the core never retains the caller's string", "[abi][ownership]") {
-  // plan/14 ownership table: managed to core, strings — "Caller owns; core
+  // docs/design/14 ownership table: managed to core, strings — "Caller owns; core
   // copies before returning."
   session_guard session;
 
@@ -304,7 +304,7 @@ TEST_CASE("status names are stable and never null", "[abi]") {
 
 // MV_COMPLETION_VIDEO_STATE and _VIDEO_ENDED were declared at ABI 0.4 and never
 // pushed by anything, so the chrome polled play state on a 150 ms timer and had
-// no way at all to learn about a transition the core makes on its own. plan/14:
+// no way at all to learn about a transition the core makes on its own. docs/design/14:
 // the ABI is designed, not retrofitted — declared surface nothing sends is not
 // a design, it is a promise the header is making on the core's behalf.
 //

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// What to open from a command line or a drop (plan/16, PR 6 "drag-and-drop in,
+// What to open from a command line or a drop (docs/design/16, PR 6 "drag-and-drop in,
 // argv handling"). Pure: the caller probes the paths, this decides.
 //
 // Rule: the first entry that exists wins. A folder opens that folder; a file

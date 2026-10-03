@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 12 — the host side of metadata writes, shared by both hosts (plan/06
-// "Writing", plan/16 "Rate").
+// PR 12 — the host side of metadata writes, shared by both hosts (docs/design/06
+// "Writing", docs/design/16 "Rate").
 //
 // The keys `0`–`5` and the pane's comment field are UI-thread events; the write
 // is a whole-file rewrite on the I/O pool (rule 1). This is the small state
@@ -15,7 +15,7 @@
 //     the file catches up, so the pane and the toast never lag the keystroke.
 //
 // The host owns the debounce timer, the job submission and the marshalling of
-// the completion back to the UI thread (plan/14: no dispatcher in here).
+// the completion back to the UI thread (docs/design/14: no dispatcher in here).
 #pragma once
 
 #include <deque>

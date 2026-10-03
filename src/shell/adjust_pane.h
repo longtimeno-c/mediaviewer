@@ -4,9 +4,9 @@
 // Windows, SwiftUI pane on macOS). Pure and UI-thread only, like
 // edit_session: events in, requests out; the host runs the jobs.
 //
-//   * The pane is for stills. It opens with Shift+A (plan/16: `E` is the
+//   * The pane is for stills. It opens with Shift+A (docs/design/16: `E` is the
 //     clip transport, so PR 11 does not take it) and focuses its first slider.
-//   * plan/07: the sliders stay disabled — "Preparing…" — until the FP16
+//   * docs/design/07: the sliders stay disabled — "Preparing…" — until the FP16
 //     working image (image/linear.h) has been built from the real data. For a
 //     RAW that is LibRaw's full linear develop, never the embedded preview.
 //   * The working image is wanted while the pane is open *or* the item on the

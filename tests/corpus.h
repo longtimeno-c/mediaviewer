@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Locating the PR 5 video corpus, and being honest when it is not there.
 //
-// The clips live in tools/testmedia/ and are gitignored (plan/09: the corpus
+// The clips live in tools/testmedia/ and are gitignored (docs/design/09: the corpus
 // does not go in git). Only tools/testmedia/generate.sh is tracked.
 //
 // WHY THIS HEADER EXISTS. The three video test files each had their own copy of

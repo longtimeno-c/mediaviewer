@@ -483,7 +483,7 @@ void tile_service::run() noexcept {
     work.clear();
     if (made > 0 && on_ready_) on_ready_(user_);
     if (more) {
-      // plan/03 rule 3: a few tile creates per refresh, the rest waits. This
+      // docs/design/03 rule 3: a few tile creates per refresh, the rest waits. This
       // thread may wait; the render thread never waits on it.
       std::this_thread::sleep_until(tick_start + std::chrono::milliseconds(k_tile_tick_ms));
     }

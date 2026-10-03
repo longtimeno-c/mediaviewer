@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// Managed half of crash reporting (plan/13 Part 2, "two capture paths"). A
+/// Managed half of crash reporting (docs/design/13 Part 2, "two capture paths"). A
 /// native crash is a Crashpad minidump; an unhandled managed exception is a
 /// small text report in the same %LocalAppData%\MediaViewer\Crashes folder,
 /// under managed\. Nothing here uploads.

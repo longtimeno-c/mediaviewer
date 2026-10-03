@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 19 -- the Core Audio endpoint behind audio_sink.h (D9 / plan/15): the
+// PR 19 -- the Core Audio endpoint behind audio_sink.h (D9 / docs/design/15): the
 // counterpart of audio_win.cpp and the only place a host audio API is named.
-// "Core Audio is the master clock. AVPlayer is forbidden." (plan/10 PR 19)
+// "Core Audio is the master clock. AVPlayer is forbidden." (docs/design/10 PR 19)
 //
 // A default-output AudioUnit. It converts our float32 interleaved stream to the
 // device's format and follows the system default device on its own; we still

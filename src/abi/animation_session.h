@@ -1,9 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Animated GIF / APNG / WebP playback feed (plan/04 "Animation").
+// Animated GIF / APNG / WebP playback feed (docs/design/04 "Animation").
 //
 // One decode thread per session pulls frames from a codec::animation_source
-// and uploads each as an immutable texture (plan/02: workers create GPU
+// and uploads each as an immutable texture (docs/design/02: workers create GPU
 // textures with initial data; the render thread never Maps a frame) into a
 // small SPSC ring. The render thread takes a frame when it is due. Frame 0
 // already went through the still path, so the animation is never the first

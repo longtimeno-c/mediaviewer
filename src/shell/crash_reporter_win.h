@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Crashpad client for the Windows host — plan/13 Part 2, PR 7.
+// Crashpad client for the Windows host — docs/design/13 Part 2, PR 7.
 //
 //  - crashpad_handler.exe beside the exe, started out-of-process and
 //    asynchronously (the unhandled-exception filter is live immediately; a

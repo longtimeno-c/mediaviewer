@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Immutable Metal texture produced on a decode worker (plan/15 PR 17 — the
+// Immutable Metal texture produced on a decode worker (docs/design/15 PR 17 — the
 // Metal twin of image/gpu_image.h, which is D3D11-only and stays that way).
 #pragma once
 

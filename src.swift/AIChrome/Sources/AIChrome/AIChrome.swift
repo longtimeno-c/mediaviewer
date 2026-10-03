@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// AI.bundle's principal class (plan/17 "UI and commands"; the chrome brief):
+// AI.bundle's principal class (docs/design/17 "UI and commands"; the chrome brief):
 // the host (src/shell/addons_mac.mm) instantiates it with NSBundle and talks to
 // it by message send only. It owns the search panel, the Settings management
 // view, and everything they read from the pack through mv.ai.1.

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Preview → full without a visible pop (plan/04, "Progressive display", step 4).
+// Preview → full without a visible pop (docs/design/04, "Progressive display", step 4).
 //
 // A still reaches the render thread more than once: a first-pixel preview (JPEG
 // DCT 1/4, a RAW's embedded JPEG), then the full decode, sometimes a top-level
@@ -65,8 +65,8 @@ enum class publish_kind : std::uint8_t {
   return h == 0 ? 1 : h;
 }
 
-// plan/04: "Cross-fade preview → full over 80 ms so the swap isn't a visible
-// pop." Driven from real elapsed time (plan/03 rule 2), never a frame count.
+// docs/design/04: "Cross-fade preview → full over 80 ms so the swap isn't a visible
+// pop." Driven from real elapsed time (docs/design/03 rule 2), never a frame count.
 inline constexpr double k_refine_fade_seconds = 0.080;
 // A RAW's embedded JPEG and LibRaw's full render (camera WB, auto-bright) of
 // the same frame measured 7-41 sRGB luma levels apart on real CR2/NEF/ARW/CR3/

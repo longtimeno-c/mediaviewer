@@ -30,7 +30,7 @@ char* slot_ptr(std::size_t i) noexcept { return g_slots.data() + i * kSlotBytes;
 void write_slot(std::uint32_t w, std::uint32_t h, std::uint32_t bits) noexcept {
   char* s = slot_ptr(my_slot());
   char tmp[kSlotBytes]{};
-  // Whitelisted fields only (plan/13). Literals and integers.
+  // Whitelisted fields only (docs/design/13). Literals and integers.
   if (w != 0 || h != 0) {
     (void)std::snprintf(tmp, sizeof(tmp), "fmt=%s dec=%s/%s cid=%llu %ux%u %ubit", t_info.family,
                         t_info.decoder, t_info.version,

@@ -182,7 +182,7 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, const 
   std::lock_guard lock(d->m_);
   // Faces from another embedder (a new model in the People piece): their
   // vectors are in another space, so nothing here compares them, and the
-  // re-analysis that replaces them is a re-run (plan/17 "People model").
+  // re-analysis that replaces them is a re-run (docs/design/17 "People model").
   {
     std::string last;
     {
@@ -1015,7 +1015,7 @@ expected faces_db::rescan(std::int64_t asset, const std::string& spec) {
   return s.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
 }
 
-// ---- re-run (plan/17 "People model") -----------------------------------------------
+// ---- re-run (docs/design/17 "People model") -----------------------------------------------
 
 expected faces_db::rerun_all() {
   std::lock_guard lock(m_);

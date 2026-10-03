@@ -5,7 +5,7 @@
 // core/spsc_ring.h static_asserts trivially_copyable and stores T by value, so
 // a variable-length buffer cannot go through it. Fixed POD blocks are the
 // answer: no allocation on the hot path, no arena bookkeeping, and the ring
-// stays exactly the lock-free primitive plan/02 asks for.
+// stays exactly the lock-free primitive docs/design/02 asks for.
 #pragma once
 
 #include <cstdint>
@@ -15,7 +15,7 @@
 namespace mv::player {
 
 // 1024 frames of stereo float32. At 48 kHz that is ~21.3 ms per block; 64 slots
-// is ~1.4 s of audio, inside plan/05's "bounded, ~2 s" queue budget, for 512 KB
+// is ~1.4 s of audio, inside docs/design/05's "bounded, ~2 s" queue budget, for 512 KB
 // total. Multichannel content fits fewer frames per block, which is correct
 // rather than a bug: the block carries its own frame count.
 inline constexpr std::uint32_t audio_block_samples = 2048;

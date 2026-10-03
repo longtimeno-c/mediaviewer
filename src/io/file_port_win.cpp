@@ -202,7 +202,7 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode, bool conc
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
   // FILE_FLAG_NO_BUFFERING: the read-back comes from the device, not from the
-  // pages the writer just filled (plan/18 "read back uncached").
+  // pages the writer just filled (docs/design/18 "read back uncached").
   DWORD flags = mode == read_mode::uncached ? FILE_FLAG_NO_BUFFERING : FILE_FLAG_SEQUENTIAL_SCAN;
   if (concurrent) flags |= FILE_FLAG_OVERLAPPED;
   HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,

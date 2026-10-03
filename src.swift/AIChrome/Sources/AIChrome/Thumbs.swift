@@ -3,7 +3,7 @@
 // Result tiles and people covers, decoded off the main thread (rule 1) with
 // ImageIO into a small in-memory LRU. Face crops are cut from the picture the
 // pack names (face_thumb: the viewer's JPEG-512 of the image or moment the face
-// was found in) in memory and never written anywhere (plan/17 PR 24 "never
+// was found in) in memory and never written anywhere (docs/design/17 PR 24 "never
 // exported"; the chrome brief: "crop the cover thumbnail with cover_box").
 import AppKit
 import CAiApi

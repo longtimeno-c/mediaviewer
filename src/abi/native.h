@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Native-only entry points. Not in the C ABI, not P/Invoked. The language
-// boundary does not carry ID3D11* (plan/14); the present lab, being C++, is
+// boundary does not carry ID3D11* (docs/design/14); the present lab, being C++, is
 // allowed to bind the device that lives on the render thread to the session
 // that owns decode jobs.
 #pragma once
@@ -19,7 +19,7 @@ struct ID3D11Device;
 
 namespace mv::abi {
 
-// Exported from mediaviewer_core.dll. These are not in the C ABI (plan/14
+// Exported from mediaviewer_core.dll. These are not in the C ABI (docs/design/14
 // forbids ID3D11* there); they exist so the native present lab can bind the
 // render thread's device to the session that owns decode jobs. Ownership of a
 // taken gpu_image returns to the DLL via release_gpu_image — new and delete
@@ -33,7 +33,7 @@ MV_API void detach_device(mv_session_t session);
 [[nodiscard]] MV_API image::gpu_image* take_ready_image(mv_session_t session);
 MV_API void release_gpu_image(image::gpu_image* image);
 
-// PR 7 tiled pyramid (plan/04), for an image whose `tiles` is set. Render
+// PR 7 tiled pyramid (docs/design/04), for an image whose `tiles` is set. Render
 // thread only, never blocks: marks and requests what `view` needs, evicts over
 // budget, and returns the ready tiles to draw coarse to fine (valid until the
 // next call for this image). Empty for an untiled image.
@@ -41,8 +41,8 @@ MV_API void release_gpu_image(image::gpu_image* image);
                                                                  const image::tile_view& view) noexcept;
 [[nodiscard]] MV_API image::tile_stats tiles_stats(const image::gpu_image& image) noexcept;
 
-// PR 6 animated GIF / APNG / WebP (plan/04). Native-only like poll_video: not
-// in the C ABI, not P/Invoked (plan/16: no new hot-path ABI). The render thread
+// PR 6 animated GIF / APNG / WebP (docs/design/04). Native-only like poll_video: not
+// in the C ABI, not P/Invoked (docs/design/16: no new hot-path ABI). The render thread
 // pulls frames from the session's decode ring; none of these wait.
 //
 // Takes the next decoded frame for `generation`, if one is ready. The caller

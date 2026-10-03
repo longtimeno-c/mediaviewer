@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 5b - WASAPI shared-mode render client. Windows port (D9 / plan/15).
+// PR 5b - WASAPI shared-mode render client. Windows port (D9 / docs/design/15).
 //
 // OWNER: mediaviewer-08 (5b). This is the ONLY file in player/ permitted to
 // include <audioclient.h> / <mmdeviceapi.h> / <audiopolicy.h>:
@@ -9,7 +9,7 @@
 //
 // Shape, and why: the endpoint owns its own render thread, because WASAPI's
 // event-driven mode is a pull. The alternative — a passive sink the clock polls
-// — costs either a Sleep loop or a busy-wait, and plan/03 rule 1 says never
+// — costs either a Sleep loop or a busy-wait, and docs/design/03 rule 1 says never
 // Sleep. So there are exactly two threads and one lock-free handoff:
 //
 //     decode thread  --write()-->  sample_fifo  --render thread-->  WASAPI
@@ -277,7 +277,7 @@ class wasapi_sink final : public audio_sink {
     if (FAILED(hr)) {
       // Without IAudioClock there is no "samples actually played" and therefore
       // no audio master. Refuse rather than silently substituting a wall clock:
-      // plan/05 is explicit that a wall clock produces a slow drift ramp that
+      // docs/design/05 is explicit that a wall clock produces a slow drift ramp that
       // reads as a decode bug.
       safe_release(enumerator);
       close();
@@ -459,7 +459,7 @@ class wasapi_sink final : public audio_sink {
   // Diagnostic only, read by the clock for the overlay: the independent
   // estimate of the play position, from what we wrote minus what is still
   // queued. Disagreement with played_ns() is the signature of a wrong position
-  // query — which plan/05 warns is the failure that looks like a decode bug.
+  // query — which docs/design/05 warns is the failure that looks like a decode bug.
   [[nodiscard]] time_ns written_minus_padding_ns() const noexcept {
     if (client_ == nullptr || sample_rate_ == 0) return 0;
     UINT32 padding = 0;

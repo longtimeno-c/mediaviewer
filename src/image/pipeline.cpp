@@ -22,7 +22,7 @@ result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const 
     raster = codec::decode_jpeg_display(bytes, ctx, 4);
   } else if (family == codec::format_family::raw || family == codec::format_family::tiff ||
              codec::looks_like_raw(bytes)) {
-    // Embedded JPEG inside a RAW — first pixel in preview time (plan/04, PR 7).
+    // Embedded JPEG inside a RAW — first pixel in preview time (docs/design/04, PR 7).
     raster = codec::decode_raw_preview(bytes, ctx);
   } else {
     return err(status::unsupported_format);

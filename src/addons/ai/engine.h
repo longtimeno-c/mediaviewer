@@ -1,12 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The AI pack's engine (plan/17, PRs 21-24): remembered roots and their delta
+// The AI pack's engine (docs/design/17, PRs 21-24): remembered roots and their delta
 // scans, the background indexer and its yield policy, the search matrix, find
 // similar, model-upgrade migration, and people. The models arrive through
 // `engine_deps`, so the engine runs the same with the pack's ONNX Runtime
 // towers (pack.cpp) and with the tests' deterministic fakes.
 //
-// Threads (plan/17 "Not hurting the viewer"):
+// Threads (docs/design/17 "Not hurting the viewer"):
 //   control   loads models, scans roots, refreshes the status, merges people
 //   workers   min(2, cores / 4), at least 1, OS background priority: embed
 //   search    one, normal priority: queries answer while indexing runs
@@ -78,7 +78,7 @@ class face_analyzer {
   [[nodiscard]] virtual const std::string& spec_key() const noexcept = 0;
   [[nodiscard]] virtual float same_person() const noexcept = 0;
   [[nodiscard]] virtual std::uint32_t dim() const noexcept = 0;
-  // The embedder's thresholds (model.json; plan/17 "People model"). The
+  // The embedder's thresholds (model.json; docs/design/17 "People model"). The
   // default is SFace's with this model's same_person.
   [[nodiscard]] virtual face_tuning tuning() const noexcept {
     face_tuning t;
@@ -89,7 +89,7 @@ class face_analyzer {
   [[nodiscard]] virtual std::string name() const { return spec_key(); }
 };
 
-// Audio (plan/17 "Audio", 2026-09-27): what a clip sounds like, in the same
+// Audio (docs/design/17 "Audio", 2026-09-27): what a clip sounds like, in the same
 // vector space as a description of a sound (CLAP)...
 class sound_model {
  public:
@@ -139,7 +139,7 @@ struct engine_deps {
   // Which accelerated backends exist in the loaded runtime.
   std::function<bool(infer::backend)> backend_available;
   // Opens a tower on a compute choice (mv_ai_compute). Auto self-tests the
-  // provider against CPU and falls back (plan/17 "Runtime").
+  // provider against CPU and falls back (docs/design/17 "Runtime").
   std::function<result<loaded_clip>(std::uint32_t quality, std::uint32_t compute)> open_clip;
   // Null when the ai-faces piece is not installed.
   // The embedder on a compute choice (mv_ai_compute), self-tested against CPU.
@@ -156,7 +156,7 @@ struct engine_deps {
   // A vendor piece installed or removed since the runtime loaded: the
   // change needs the app to start again (the runtime cannot be swapped live).
   std::function<bool()> restart_needed;
-  // The power source (plan/17 "Yield policy"); null reads the OS
+  // The power source (docs/design/17 "Yield policy"); null reads the OS
   // (platform::power_state). The tests fake it.
   std::function<platform::power()> power;
   // Opening this tower on this compute choice compiles it for this machine
@@ -164,7 +164,7 @@ struct engine_deps {
   // at the cache folder, after `prepare`. Null or false: an ordinary load.
   std::function<bool(std::uint32_t quality, std::uint32_t compute)> first_compile;
 
-  // ---- a reader (engine_options::read_only; the search agent, plan/23) ----
+  // ---- a reader (engine_options::read_only; the search agent, docs/design/23) ----
   // A tower's index key ("clip-vit-b32/fp16/pre1") without opening it.
   std::function<std::string(std::uint32_t quality)> clip_spec_key;
   // The text tower and tokenizer alone, on CPU: queries against stored
@@ -184,7 +184,7 @@ struct engine_deps {
 };
 
 // How an engine runs. The app's engine indexes and owns the index; a reader
-// is a second process's view of the same files (the search agent, plan/23):
+// is a second process's view of the same files (the search agent, docs/design/23):
 // index.db and faces.db opened read-only, the text towers only, no scans, no
 // workers, no settings written. It answers search_text, search_similar on an
 // indexed still or moment (its stored vector: nothing is decoded or
@@ -279,7 +279,7 @@ class engine {
   // ---- people ------------------------------------------------------------------
   [[nodiscard]] expected faces_enable(bool enable);
   // People, or with `scope` (mv_ai_scope over scope_dir, as a search) the
-  // people with a face there: plan/17 "People in the open folder". [worker-thread]
+  // people with a face there: docs/design/17 "People in the open folder". [worker-thread]
   [[nodiscard]] std::string people_json(const std::string& scope_dir = std::string(),
                                         std::uint32_t scope = MV_AI_SCOPE_ALL);
   [[nodiscard]] std::string person_faces_json(std::int64_t person); // [worker-thread]
@@ -287,10 +287,10 @@ class engine {
   [[nodiscard]] expected person_merge(std::int64_t into, std::int64_t from);
   [[nodiscard]] expected face_reject(std::int64_t face);
   [[nodiscard]] result<std::int64_t> face_split(const std::vector<std::int64_t>& faces);
-  // "Refine": files this person's misplaced faces out (plan/17 "People
+  // "Refine": files this person's misplaced faces out (docs/design/17 "People
   // refinement"); how many left them. Only ever on request. [worker-thread]
   [[nodiscard]] result<std::uint32_t> person_refine(std::int64_t person);
-  // "Merge duplicates" (plan/17 "Merge duplicates"): person_refine's check
+  // "Merge duplicates" (docs/design/17 "Merge duplicates"): person_refine's check
   // over every face at once, then people whose faces vouch for each other
   // become one. Only ever on request. [worker-thread]
   struct dedupe_result {
@@ -299,12 +299,12 @@ class engine {
   };
   [[nodiscard]] result<dedupe_result> people_dedupe();
 
-  // "Re-analyse faces" (plan/17 "People model"): every asset through the
+  // "Re-analyse faces" (docs/design/17 "People model"): every asset through the
   // People pass again, then one settle. [no-block]
   [[nodiscard]] expected people_reanalyse();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
-  // ---- sharing an index (plan/17 "Sharing an index") ---------------------------
+  // ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------
   // An export / import runs on the control thread, one at a time (status::busy
   // while one is queued or running); transfer_json reports it. [no-block]
   [[nodiscard]] result<std::uint64_t> export_index(const std::string& dest, std::vector<std::int64_t> roots,
@@ -453,7 +453,7 @@ class engine {
   // The answering tower and the search matrix change together (a reload, the
   // end of a migration): answer_gen_ is odd while they do, and a search that
   // saw it change starts again on the new pair, so a query vector never
-  // scans vectors of another model (plan/17 "never mixed").
+  // scans vectors of another model (docs/design/17 "never mixed").
   void begin_answer_swap() noexcept { answer_gen_.fetch_add(1); }
   void end_answer_swap() noexcept { answer_gen_.fetch_add(1); }
   // An even generation (waits out a swap in progress: the vector reload).
@@ -660,7 +660,7 @@ class engine {
 };
 
 // Media by name, for the walk only (the host still probes bytes when it
-// decodes; plan/04 "probe by magic bytes"): what is worth offering it.
+// decodes; docs/design/04 "probe by magic bytes"): what is worth offering it.
 [[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video
 // A comparable form of a path: '/' separators, no trailing '/', and on
 // Windows ASCII case folded.

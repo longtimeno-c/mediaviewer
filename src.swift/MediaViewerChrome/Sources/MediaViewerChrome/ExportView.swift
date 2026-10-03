@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 10 export sheet (plan/10: "SwiftUI crop mode and export sheet"). The twin
+// PR 10 export sheet (docs/design/10: "SwiftUI crop mode and export sheet"). The twin
 // of the Windows export flyout (IslandHost.Commands.cs BuildExport): the same
 // four rows, the same keys, the same packed answer (shell/edit_session.h
 // pack_export). Keyboard-complete: ↑ ↓ pick a row, ← → change it, Return

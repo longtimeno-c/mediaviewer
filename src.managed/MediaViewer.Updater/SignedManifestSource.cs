@@ -20,7 +20,7 @@ public interface IManifestFetcher
 /// no query string, no cookies, nothing about the user's files (rule 6).
 /// </summary>
 /// <remarks>
-/// On the preview channel (plan/12, 2026-09-26) the newest release may be a
+/// On the preview channel (docs/design/12, 2026-09-26) the newest release may be a
 /// prerelease, which /releases/latest never serves, so the fetcher first reads
 /// the public release listing and takes the highest-versioned release that
 /// carries a manifest. That only chooses which signed manifest is evaluated:

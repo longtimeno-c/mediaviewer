@@ -100,7 +100,7 @@ bool date_range(std::string_view s, std::int64_t& start_day, std::int64_t& end_d
 }
 
 // Lead-ins a spoken or typed request starts with (the Voice add-on sends
-// its words here too, plan/19). The kind word inside one is kept, so
+// its words here too, docs/design/19). The kind word inside one is kept, so
 // "videos of Anna" still asks for videos.
 constexpr std::array<std::string_view, 9> kLeadIns = {
     "pull up all the ", "pull up ", "show me all the ", "show me all ", "show me the ", "show me ",
@@ -572,7 +572,7 @@ parsed parse(std::string_view utf8) {
   // "Tristan video"); in the middle it is part of a description ("a video
   // camera"). First, "videos of" / "clips of" still asks for videos, but
   // "photos of" / "pictures of" is how people ask for anything (a spoken
-  // request, plan/19): it is dropped, not a photos-only filter, as before
+  // request, docs/design/19): it is dropped, not a photos-only filter, as before
   // 2026-09-28.
   const auto take_kind = [&](std::size_t at, bool first) {
     const std::uint32_t k = kind_word(fold(p.words[at].text));

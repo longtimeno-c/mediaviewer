@@ -59,6 +59,6 @@ TEST_CASE("chrome host attaches and detaches an island on an hwnd") {
   // DesktopWindowXamlSource.Dispose is a native AccessViolation on a bare
   // DefWindowProc HWND (coreclr, not a failed REQUIRE). The lab's WM_CLOSE
   // path — detach while the parent is whole, pump, then DestroyWindow — is
-  // the real check, and the 30 chrome-on exits in plan/12 cover it.
+  // the real check, and the 30 chrome-on exits in docs/design/12 cover it.
   SUCCEED("XAML island Dispose AVs on a test HWND; covered by lab exit soaks");
 }

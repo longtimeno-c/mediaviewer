@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Present-or-idle policy. Shared by the D3D11 lab and the Metal lab.
 //
-// plan/03-rendering.md rule 4: idle → stop presenting (0 % GPU on a still).
+// docs/design/03-rendering.md rule 4: idle → stop presenting (0 % GPU on a still).
 // Any input, animation, or video frame → present every vblank. Keep presenting
 // for ~500 ms after the last input so a flick does not stutter at the tail.
 // A parked cursor is not activity. No input yet is not a fake 500 ms tail.

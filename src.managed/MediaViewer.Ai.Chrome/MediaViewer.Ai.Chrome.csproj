@@ -2,7 +2,7 @@
 
   <!-- Copyright (C) 2026 longtimeno-c -->
   <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-  <!-- Milestone H (plan/17): the AI pack's Windows chrome - the search panel,
+  <!-- Milestone H (docs/design/17): the AI pack's Windows chrome - the search panel,
        the management panel Settings embeds, and the people window. Shipped in
        the signed "ai" add-on archive beside mv_ai.dll, never in the base
        install. Loaded by IslandHost.Addons.cs into its own collectible

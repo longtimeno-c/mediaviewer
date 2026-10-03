@@ -81,7 +81,7 @@ TEST_CASE("list_still_files returns sorted jpeg/png/bmp names") {
   REQUIRE(parent);
 }
 
-TEST_CASE("companion files are never listed (plan/04)", "[io][dir][pairing]") {
+TEST_CASE("companion files are never listed (docs/design/04)", "[io][dir][pairing]") {
   const auto dir = temp_dir();
   write_bmp(dir, L"DSC_0001.JPG");
   write_bmp(dir, L"DSC_0001.NEF");  // decode not needed to list or pair

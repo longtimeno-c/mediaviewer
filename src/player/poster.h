@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // One still out of a clip, for the filmstrip and the gallery.
 //
-// plan/04's thumbnail cache is format-agnostic: it stores a JPEG-512 keyed by
+// docs/design/04's thumbnail cache is format-agnostic: it stores a JPEG-512 keyed by
 // (path, mtime, size). What it could not do was produce one for a video, so a
 // camera dump — which is photos AND clips in one folder — listed its clips as
 // blank tiles. This is the missing producer: software-decode one frame near the

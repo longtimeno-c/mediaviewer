@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# plan/13 Part 3: "What never leaves the machine ... enforced by a CI check on
+# docs/design/13 Part 3: "What never leaves the machine ... enforced by a CI check on
 # the telemetry payload schema."
 #
 # The runtime gate is src/shell/telemetry.cpp (looks_like_user_data), and it is
@@ -39,7 +39,7 @@ $headerText = Get-Content $header -Raw
 $sourceText = Get-Content $source -Raw
 
 # --- 1. no forbidden field name anywhere in the schema ----------------------
-# plan/13: paths, filenames, folder structure, drive labels, pixels,
+# docs/design/13: paths, filenames, folder structure, drive labels, pixels,
 # thumbnails, EXIF/XMP/IPTC, and anything derived including path hashes.
 $forbiddenField = @(
     'path', 'paths', 'filename', 'file', 'folder', 'directory', 'dir',
@@ -116,7 +116,7 @@ foreach ($hit in $callSites) {
 }
 
 if ($violations.Count) {
-    Write-Host "telemetry schema check FAILED (plan/13 Part 3):" -ForegroundColor Red
+    Write-Host "telemetry schema check FAILED (docs/design/13 Part 3):" -ForegroundColor Red
     $violations | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
     exit 1
 }

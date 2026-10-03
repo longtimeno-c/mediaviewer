@@ -79,7 +79,7 @@ float usable_window_h(const mv::shell::input_snapshot& s) noexcept {
                             static_cast<float>(s.chrome_bottom_px));
 }
 
-// PR 29 (plan/20): the same for width. A docked pane (chrome_right_px, the
+// PR 29 (docs/design/20): the same for width. A docked pane (chrome_right_px, the
 // Edit workspace) narrows the rect the picture is framed in; the swapchain
 // still spans the window and the blit's origin_x moves the frame, so docking
 // is a refit, never a resize.
@@ -362,7 +362,7 @@ void present_lab_mac::submit_prefetch(const std::vector<std::string>& paths_utf8
 
 // [any-thread]. Runs on the job pool: reads and decodes a file, then uploads
 // an immutable MTLTexture. Never on the render thread (rule 1, CLAUDE.md /
-// plan/02) -- device_.native_device() is safe to use from any thread. The
+// docs/design/02) -- device_.native_device() is safe to use from any thread. The
 // file read is a plain blocking std::ifstream on the worker rather than
 // io/file.h's async path: this is one folder-navigation stop, not the
 // directory scan itself (folder_model_mac already uses io/file.h for that).
@@ -377,7 +377,7 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
 
   void* mtl_device = device_.native_device();
   std::atomic<image::gpu_image_mac*>* pending = &pending_image_;
-  // PR 11 (plan/13): the decode carries the id of the call that opened it, so a
+  // PR 11 (docs/design/13): the decode carries the id of the call that opened it, so a
   // crash in it names that call in its mv_decode_N slot (Windows: the ABI).
   const std::uint64_t cid = *crash_context::last_call_address();
 
@@ -450,7 +450,7 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         // the current generation, so a navigation since abandons them.
         release_prefetch(item_id);
 
-        // Animated GIF/APNG/WebP (plan/04, folded into PR 18): frame 0 is
+        // Animated GIF/APNG/WebP (docs/design/04, folded into PR 18): frame 0 is
         // already up via the still path above (rule 3); if the file turns out
         // to have more frames, start the feed for frame 1 onward. `bytes` is
         // free to move now -- nothing above referenced it after decode_bytes_mac.
@@ -585,7 +585,7 @@ edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) co
   return place_through(edit_for(img.item_id), img.width, img.height);
 }
 
-// Crop mode (plan/16): the frame outside the draft rect is dimmed, the rect
+// Crop mode (docs/design/16): the frame outside the draft rect is dimmed, the rect
 // has a border and thirds. ImGui draws in the same present as the picture.
 void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || video_frame_) return;
@@ -660,7 +660,7 @@ void present_lab_mac::retire_media() noexcept {
   }
 }
 
-// Latched transport from the UI thread (plan/16 "Video"). Space/,/. are
+// Latched transport from the UI thread (docs/design/16 "Video"). Space/,/. are
 // shared between a real clip and an animated still (key_router.cpp maps both
 // item_kind::clip and item_kind::animation to mode::video on Windows for the
 // same reason); everything else here only ever applies to a clip. Returns
@@ -672,7 +672,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   // Navigation retires the previous item's animation feed exactly the way it
   // already retires a superseded still/clip load: compare against the live
   // job_system generation, same signal open_item()'s bump_generation() drives
-  // everywhere else (plan/02).
+  // everywhere else (docs/design/02).
   const std::uint32_t live_gen =
       options_.jobs ? options_.jobs->current_generation() : anim_generation_;
   if (live_gen != anim_generation_) {
@@ -752,7 +752,7 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
   }
   if (anim_open && !anim_seeking_) anim_finished_ = anim_session_->finished(anim_generation_);
   // Presents while it plays (or while a step is on its way); paused or played
-  // out, the canvas idles like any still (plan/03 rule 4).
+  // out, the canvas idles like any still (docs/design/03 rule 4).
   anim_live_ = anim_open && (anim_seeking_ || (!anim_schedule_.paused() && !anim_finished_));
   anim_active_.store(anim_open, std::memory_order_release);
 
@@ -980,7 +980,7 @@ void present_lab_mac::draw_photo_overlays(const input_snapshot& snapshot) noexce
 
   if (snapshot.info_overlay) {
     // Bottom-left, stacked upward: the item line, then whatever the property
-    // model could fill. An empty field simply has no line (plan/06).
+    // model could fill. An empty field simply has no line (docs/design/06).
     const float line_h = fs * 1.35f;
     float y = origin_y + win_h - fs - pad;
     char line[400];
@@ -1130,7 +1130,7 @@ void present_lab_mac::render_thread_main() noexcept {
       MV_LOG_ERROR("present_lab_mac: video blitter create failed (%s)", status_name(built.error()));
     }
 
-    // Animated GIF/APNG/WebP feed (plan/04). Each frame is colour managed like
+    // Animated GIF/APNG/WebP feed (docs/design/04). Each frame is colour managed like
     // a still and uploaded top level only (an animation is never mip-mapped),
     // the same recipe abi.cpp's Windows instantiation uses -- this is the same
     // template, just image::gpu_image_mac instead of image::gpu_image.
@@ -1164,7 +1164,7 @@ void present_lab_mac::render_thread_main() noexcept {
     }
     // No longer auto-loads options_.open_path here: MvLabApp now resolves
     // --open (and a bare argv path, and a drop) through folder_model_mac --
-    // "a file opens its folder with that file selected" (plan/16-commands.md)
+    // "a file opens its folder with that file selected" (docs/design/16-commands.md)
     // -- and calls open_item() itself once the async folder listing
     // resolves the selected index. See main_mac.mm's -openEntryPath:.
     ready_.store(true, std::memory_order_release);
@@ -1349,7 +1349,7 @@ void present_lab_mac::render_thread_main() noexcept {
                            usable_window_w(snapshot), usable_window_h(snapshot));
           } else {
             if (!clip_placeholder) stills_shown_.fetch_add(1, std::memory_order_acq_rel);
-            // plan/16 sticky zoom: off (default) fits every item; on keeps the
+            // docs/design/16 sticky zoom: off (default) fits every item; on keeps the
             // mode, or the zoom and pan fraction (same as the Windows lab).
             const auto new_w = static_cast<float>(landed.cropped.w);
             const auto new_h = static_cast<float>(landed.cropped.h);

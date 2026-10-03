@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The pack's models behind plan/17's IEmbedder: the CLIP image and text
+// The pack's models behind docs/design/17's IEmbedder: the CLIP image and text
 // towers (search) and the face detector + face embedder (PR 24). A model is
 // a folder in the pack with a model.json that names its files and fixes its
 // preprocessing, so choosing a larger tower is a pack change, not a code
@@ -35,7 +35,7 @@ struct clip_spec {
   std::string vocab_file;
   std::string merges_file;
   std::uint32_t context = 77;
-  float dedupe = 0.97f;           // plan/17 step 3
+  float dedupe = 0.97f;           // docs/design/17 step 3
   float query_margin = 0.04f;     // "nothing found" below this (PR 20 calibration)...
   float query_z = 2.5f;           // ...unless the top ten stand out by this z (2026-09-27)
   float result_z = 2.0f;          // then a row this many SDs above the mean shows too
@@ -48,7 +48,7 @@ struct clip_spec {
 
 [[nodiscard]] result<clip_spec> read_clip_spec(const std::string& folder_utf8);
 
-// plan/17's IEmbedder.
+// docs/design/17's IEmbedder.
 class embedder {
  public:
   virtual ~embedder() = default;
@@ -83,7 +83,7 @@ class clip_model final : public embedder {
                                                                 const session_options& options,
                                                                 provider_fault* fault = nullptr);
   // The text tower and tokenizer only, on CPU: a reader that answers
-  // descriptions against stored vectors (the search agent, plan/23) and never
+  // descriptions against stored vectors (the search agent, docs/design/23) and never
   // embeds a picture. embed_images is status::unsupported_format. The vector
   // is the same as open()'s, whose text tower runs on CPU too.
   [[nodiscard]] static result<std::unique_ptr<clip_model>> open_text_only(const runtime& rt,
@@ -111,7 +111,7 @@ class clip_model final : public embedder {
 
 struct face_spec {
   std::string detector_file;   // YuNet (MIT), 640 x 640 input
-  std::string embedder_file;   // 112 x 112 ArcFace-aligned input: SFace, or AdaFace (plan/17)
+  std::string embedder_file;   // 112 x 112 ArcFace-aligned input: SFace, or AdaFace (docs/design/17)
   std::uint32_t detector_side = 640;
   float min_confidence = 0.8f;
   float nms_iou = 0.3f;
@@ -122,7 +122,7 @@ struct face_spec {
   float embed_scale = 1.0f;
   bool embed_bgr = false;
   std::uint32_t dim = 128;
-  // Pairwise-cosine thresholds of this embedder (plan/17 "People model"):
+  // Pairwise-cosine thresholds of this embedder (docs/design/17 "People model"):
   // same_person joins (SFace ~0.363 verification + slack); keep / keep_weak
   // and margin are the refinement's; ambiguous is the online "two fit about
   // as well" gap; merge_at is the idle merge's average linkage.

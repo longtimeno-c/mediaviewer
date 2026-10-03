@@ -39,7 +39,7 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
   for (const auto& b : default_bindings()) {
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
-    // PR 7: Open RAW / Open JPEG ship listed but unbound (plan/04, plan/16).
+    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16).
     if (b.k == key::none) {
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
       continue;
@@ -90,7 +90,7 @@ TEST_CASE("command ids are dense, named and unique", "[shell][commands]") {
   for (int id = 1; id < kCommandCount; ++id) {
     INFO("id " << id);
     // `palette` (76) is retired since the Ctrl+K palette was dropped
-    // (plan/12 2026-09-13); it keeps its value so later ids do not shift.
+    // (docs/design/12 2026-09-13); it keeps its value so later ids do not shift.
     REQUIRE((ids.count(id) == 1 || is_reserved_notification(id) || is_retired_command(id)));
   }
   for (const auto& b : default_bindings()) REQUIRE(find_command(b.command) != nullptr);
@@ -266,7 +266,7 @@ TEST_CASE("visible gallery owns row navigation and Enter before focus moves", "[
     REQUIRE_FALSE(r.on_key(down(char_key('W')), s).handled);
     REQUIRE_FALSE(r.on_key(down(key::enter), s).handled);
   }
-  // PR 29 (plan/20): outside the gallery, Enter opens the Edit workspace.
+  // PR 29 (docs/design/20): outside the gallery, Enter opens the Edit workspace.
   REQUIRE(r.on_key(down(key::enter), still()).command == command_id::edit_workspace);
   REQUIRE(r.on_key(down(key::enter), clip()).command == command_id::edit_workspace);
   REQUIRE(r.on_key(down(key::f5), still()).command == command_id::slideshow_start);
@@ -734,7 +734,7 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     const std::string needle = std::string("\t") + name + "\t" + keys + "\t";
     return table.find(needle) != std::string::npos;
   };
-  // plan/10 PR 6 verify: open, next/prev, zoom/fit/100 %, mark, copy-to,
+  // docs/design/10 PR 6 verify: open, next/prev, zoom/fit/100 %, mark, copy-to,
   // delete to Recycle Bin, fullscreen, slideshow start/stop, and `?` itself.
   REQUIRE(has("Open media…", "Ctrl+O"));
   REQUIRE(has("Open folder…", "Ctrl+Shift+O"));
@@ -773,7 +773,7 @@ TEST_CASE("the command table the chrome gets lists every PR 6 verify binding",
     pos = end + 1;
     ++lines;
   }
-  // Import's two rows (plan/18) and three of the AI pack's four (plan/17) are
+  // Import's two rows (docs/design/18) and three of the AI pack's four (docs/design/17) are
   // absent while their add-ons are; Ctrl+F is file search then.
   REQUIRE(lines + 5 >= default_bindings().size());
 }
@@ -905,7 +905,7 @@ TEST_CASE("`;` plays a Live Photo once: edge only, on a still or over its motion
   REQUIRE(r.on_key(down(semi), still()).command == command_id::play_motion);
   // The motion playing is a clip on screen; `;` again stops it.
   REQUIRE(r.on_key(down(semi), clip()).command == command_id::play_motion);
-  // Hold-to-play on a repeating key is forbidden (plan/04).
+  // Hold-to-play on a repeating key is forbidden (docs/design/04).
   REQUIRE_FALSE(r.on_key(rep(semi), still()).handled);
   // Filmstrip focus: `;` is typeahead, not a command.
   view_state strip = still();
@@ -994,7 +994,7 @@ TEST_CASE("Esc leaves the empty-window runner, before it moves focus", "[keys][d
   s.focus = focus_kind::filmstrip;
   CHECK(resolve_back(s) == back_target::game);
 
-  // Overlays above the canvas close first, as in plan/16 "Esc walks out".
+  // Overlays above the canvas close first, as in docs/design/16 "Esc walks out".
   s.popup_open = true;
   CHECK(resolve_back(s) == back_target::popup);
   s.popup_open = false;
@@ -1041,7 +1041,7 @@ TEST_CASE("3 toggles the runner view on the down edge without stealing image zoo
   CHECK(router.on_key(down(char_key('3')), s).command == command_id::zoom_400);
 }
 
-// PR 9 (plan/16 "Pane"): the metadata pane and the folder tree are a focus kind.
+// PR 9 (docs/design/16 "Pane"): the metadata pane and the folder tree are a focus kind.
 // In-pane traversal belongs to XAML; Esc returns to the canvas; and a pane that is
 // merely shown is a level for Esc to walk out of.
 TEST_CASE("a focused pane owns its keys and Esc returns to the canvas", "[shell][router][pane]") {
@@ -1071,14 +1071,14 @@ TEST_CASE("Esc on the canvas closes a shown pane before the gallery or fullscree
   s.fullscreen = true;
   const auto out = r.on_key(down(key::escape), s);
   REQUIRE(out.handled);
-  REQUIRE(out.back == back_target::pane);  // plan/16: crop -> pane -> gallery -> fullscreen
+  REQUIRE(out.back == back_target::pane);  // docs/design/16: crop -> pane -> gallery -> fullscreen
   s.pane_open = false;
   REQUIRE(r.on_key(down(key::escape), s).back == back_target::fullscreen);
 }
 
 TEST_CASE("Shift+A opens the adjust pane on a still; E stays the clip's transport",
           "[shell][router][adjust]") {
-  // PR 11: plan/16 left `E` to Q / E and asked for another key.
+  // PR 11: docs/design/16 left `E` to Q / E and asked for another key.
   key_router r;
   REQUIRE(r.on_key(down(char_key('A'), mod_shift), still()).command == command_id::adjust_pane);
   // Plain A still walks the folder; on a clip Shift+A is not the pane.

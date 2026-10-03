@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 15: MediaViewerThumbs.dll, the Explorer thumbnail handler (plan/09
+// PR 15: MediaViewerThumbs.dll, the Explorer thumbnail handler (docs/design/09
 // "Windows integration"). An IThumbnailProvider over IInitializeWithStream.
 //
 // Out of process, never in Explorer: a handler that initialises from a
@@ -15,7 +15,7 @@
 // beyond the COM object count. Each request reads at most kMaxSourceBytes and
 // answers within kDeadline or not at all (shellext/thumb_request.h).
 //
-// Registered on the MediaViewer.Image ProgId only (plan/12 2026-09-25), so it
+// Registered on the MediaViewer.Image ProgId only (docs/design/12 2026-09-25), so it
 // runs for the types the user made MediaViewer the default for and never
 // replaces another handler.
 #include <windows.h>

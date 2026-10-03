@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The default map (plan/16-commands.md "Default map"). FastStone / IrfanView
+// The default map (docs/design/16-commands.md "Default map"). FastStone / IrfanView
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"
 
@@ -77,7 +77,7 @@ constexpr binding kBindings[] = {
     row(C('+'), mod_none, kImageZoom, repeat, zoom_in),
     row(C('='), mod_none, kImageZoom, repeat, zoom_in),  // the unshifted +/= key
     row(C('-'), mod_none, kImageZoom, repeat, zoom_out),
-    // plan/16 Browse: when zoomed ↑ ↓ pan and ← → still navigate; Shift+arrows
+    // docs/design/16 Browse: when zoomed ↑ ↓ pan and ← → still navigate; Shift+arrows
     // pan in all four directions.
     row(key::up, mod_none, kBrowse | kVideo, repeat, pan_up),
     row(key::down, mod_none, kBrowse | kVideo, repeat, pan_down),
@@ -134,13 +134,13 @@ constexpr binding kBindings[] = {
     row(C('.'), mod_none, kSlideshow, edge, blackout),
     row(C('R'), mod_none, kSlideshow, edge, shuffle),
 
-    // Help and find. The Ctrl+K palette was dropped (plan/12 2026-09-13): a
+    // Help and find. The Ctrl+K palette was dropped (docs/design/12 2026-09-13): a
     // TextBox in the island flyout fail-fasts, and bound keys never reach it.
     row(C('?'), mod_none, kAllModes, edge, help),
     row(C(','), mod_ctrl, kNotCrop, edge, open_settings),
     row(C('G'), mod_ctrl, kViewing, edge, go_to),
     row(C('E'), mod_ctrl | mod_shift, kNotCrop, edge, folder_tree),
-    // plan/16 typeahead (plan/12 2026-09-13): `/` opens find from the canvas;
+    // docs/design/16 typeahead (docs/design/12 2026-09-13): `/` opens find from the canvas;
     // with the filmstrip or gallery focused, plain typing jumps by name.
     // In the gallery, `/` with the folder row active finds a folder tile.
     row(C('/'), mod_none, kBrowse | kVideo | kGallery, edge, typeahead),
@@ -148,31 +148,31 @@ constexpr binding kBindings[] = {
     row(C('+'), mod_none, kGallery, repeat, gallery_larger),
     row(C('='), mod_none, kGallery, repeat, gallery_larger),
     row(C('-'), mod_none, kGallery, repeat, gallery_smaller),
-    // PR 7. `;` plays a Live Photo's motion once (plan/16 View). Edge only:
-    // hold-to-play on a repeating key is forbidden (plan/04). Video mode too,
+    // PR 7. `;` plays a Live Photo's motion once (docs/design/16 View). Edge only:
+    // hold-to-play on a repeating key is forbidden (docs/design/04). Video mode too,
     // because the motion playing *is* a clip on screen and `;` again stops it.
     row(C(';'), mod_none, kBrowse | kVideo, edge, play_motion),
-    // plan/04: "Open RAW" / "Open JPEG" stay reachable so a paired file is never
-    // trapped. The palette that was to hold them is gone (plan/12 2026-09-13)
-    // and plan/16 gives no key, so they are listed in Settings, unbound.
+    // docs/design/04: "Open RAW" / "Open JPEG" stay reachable so a paired file is never
+    // trapped. The palette that was to hold them is gone (docs/design/12 2026-09-13)
+    // and docs/design/16 gives no key, so they are listed in Settings, unbound.
     row(key::none, mod_none, kBrowse | kVideo, edge, open_raw),
     row(key::none, mod_none, kBrowse | kVideo, edge, open_jpeg),
-    // plan/16 Video: Shift+M is mute (M itself stays free for a Move preset).
+    // docs/design/16 Video: Shift+M is mute (M itself stays free for a Move preset).
     row(C('M'), mod_shift, kVideo, edge, mute),
     // Append: Settings persists the existing row indices.
     row(key::space, mod_none, kRunner, edge, next),
     row(C('3'), mod_none, kRunner, edge, game_toggle_3d),
     // PR 9. Appended, like every row before it, so saved Settings indices keep
-    // their meaning. plan/16 gives `I` the metadata pane; the two overlays are
+    // their meaning. docs/design/16 gives `I` the metadata pane; the two overlays are
     // Shift twins of the keys they sit beside (`O` info, `I` pane) because
     // every other letter on the canvas already has a job.
     row(C('I'), mod_none, kViewing, edge, metadata_pane),
     row(C('O'), mod_shift, kViewing, edge, af_points),
     row(C('I'), mod_shift, kViewing, edge, eyedropper),
-    // Ctrl+C (plan/16): with the eyedropper on it copies the colour; otherwise it
+    // Ctrl+C (docs/design/16): with the eyedropper on it copies the colour; otherwise it
     // copies the marked (or current / gallery-selected) files.
     row(C('C'), mod_ctrl, kViewing, edge, copy_clipboard),
-    // PR 10 (plan/16 View, Crop mode). Appended. `[` `]` H V act on a still in
+    // PR 10 (docs/design/16 View, Crop mode). Appended. `[` `]` H V act on a still in
     // browse (a clip takes `[` `]` for trim in PR 13); on a JPEG with nothing
     // else in its stack they rewrite the file losslessly, no pane needed.
     row(C('['), mod_none, kBrowse | kCrop, edge, rotate_ccw),
@@ -203,14 +203,14 @@ constexpr binding kBindings[] = {
     // the gallery, Left / Right already move among the tiles.
     row(key::left, mod_ctrl, kBrowse | kVideo, edge, folder_prev),
     row(key::right, mod_ctrl, kBrowse | kVideo, edge, folder_next),
-    // PR 11. plan/16 leaves `E` to the clip transport (Q / E) and asks PR 11
+    // PR 11. docs/design/16 leaves `E` to the clip transport (Q / E) and asks PR 11
     // for another key: the Shift twin of `A`djust, as PR 9 / 10 did for O, I
     // and C. Stills only; the pane's own close button sends the same id.
     row(C('A'), mod_shift, kBrowse, edge, adjust_pane),
-    // Milestone G: only while the Import add-on is installed (plan/18).
+    // Milestone G: only while the Import add-on is installed (docs/design/18).
     row(C('I'), mod_ctrl | mod_shift, kViewing, edge, open_import),
     row(key::f7, mod_ctrl | mod_shift, kViewing, edge, import_now),
-    // PR 12 (plan/16 Rate). Appended. The keypad digits are their own keys;
+    // PR 12 (docs/design/16 Rate). Appended. The keypad digits are their own keys;
     // the number row stays zoom (0 fit, 1 100 %), so a laptop with no keypad
     // rates on Ctrl+Shift+digit (Cmd+Shift on a Mac). Not in a slideshow or
     // crop mode: a rating is a write, and neither is a place to make one by
@@ -227,16 +227,16 @@ constexpr binding kBindings[] = {
     row(C('3'), mod_ctrl | mod_shift, kViewing, edge, set_rating_3),
     row(C('4'), mod_ctrl | mod_shift, kViewing, edge, set_rating_4),
     row(C('5'), mod_ctrl | mod_shift, kViewing, edge, set_rating_5),
-    // plan/16 gives the comment no key, only "user comment in the pane" and a
+    // docs/design/16 gives the comment no key, only "user comment in the pane" and a
     // rule that a focused text control owns the keyboard. Ctrl+I is `I`
     // (the pane) with the edit modifier, and puts the keyboard in the field so
     // the comment is reachable without the mouse.
     row(C('I'), mod_ctrl, kViewing, edge, edit_comment),
-    // PR 13 (plan/16 "Video and trim", plan/08). Appended. Trim mode layers
+    // PR 13 (docs/design/16 "Video and trim", docs/design/08). Appended. Trim mode layers
     // over video (key_router.cpp), so Space, J K L, Q E and , . keep driving
     // the clip; these rows are only what trim adds or takes over. `[` `]` are
     // the markers here and nothing on a clip otherwise. Ctrl+Left / Right are
-    // the keyframe walk plan/16 names, which in video stay folder nav.
+    // the keyframe walk docs/design/16 names, which in video stay folder nav.
     row(C('T'), mod_ctrl, kVideo | kTrim, edge, trim_mode),
     row(C('['), mod_none, kTrim, edge, trim_in),
     row(C(']'), mod_none, kTrim, edge, trim_out),
@@ -255,14 +255,14 @@ constexpr binding kBindings[] = {
     row(C('S'), mod_ctrl, kVideo | kTrim, edge, clip_tools),
     row(C('B'), mod_ctrl, kVideo | kTrim, edge, clip_split),
     row(C('X'), mod_ctrl, kTrim, edge, trim_remove_middle),
-    // PR 15 (plan/16 View): the keyboard twins of drag-out. Appended. Ctrl+C
+    // PR 15 (docs/design/16 View): the keyboard twins of drag-out. Appended. Ctrl+C
     // copies the file(s); the Shift twin their path(s); Ctrl+Alt+C what the
     // canvas shows with the edits baked (stills: a clip's frame is PR 14's
     // frame export). Ctrl+Shift+S is Share; Ctrl+S stays Export / clip tools.
     row(C('C'), mod_ctrl | mod_shift, kViewing, edge, copy_path),
     row(C('C'), mod_ctrl | mod_alt, kBrowse, edge, copy_flattened),
     row(C('S'), mod_ctrl | mod_shift, kViewing, edge, share),
-    // PR 29 (plan/20): the Edit workspace. Appended so every row above keeps
+    // PR 29 (docs/design/20): the Edit workspace. Appended so every row above keeps
     // its Settings index. Enter was unbound in browse and video; inside the
     // workspace it keeps meaning Apply (crop) / Save (trim), since crop and
     // trim resolve first. A and X are dead in crop (A/D do not walk mid-crop):
@@ -271,7 +271,7 @@ constexpr binding kBindings[] = {
     row(C('A'), mod_none, kCrop, edge, crop_aspect_cycle),
     row(C('X'), mod_none, kCrop, edge, crop_aspect_swap),
     row(C('Y'), mod_none, kBrowse, momentary, show_original, none, show_original_release),
-    // Milestone H, PR 22 (plan/17 "UI and commands"). Appended; only while
+    // Milestone H, PR 22 (docs/design/17 "UI and commands"). Appended; only while
     // the AI pack is loaded. Ctrl+F is find everywhere else; `/` stays
     // find-by-name in the gallery. N / Shift+N walk the matching moments of
     // the clip on screen; plain N is free in video.
@@ -536,7 +536,7 @@ bool rebind_live(int index, key k, std::uint8_t mods) noexcept {
 std::span<const command_info> command_infos() noexcept { return kCommands; }
 
 // Every bound command is handled by run_command as of PR 6 (6f emptied this;
-// the folder tree's command is handled as a documented slip, plan/12).
+// the folder tree's command is handled as a documented slip, docs/design/12).
 std::span<const command_id> pending_commands() noexcept { return {}; }
 
 namespace {
@@ -605,7 +605,7 @@ std::string describe_commands() {
     const command_info* info = find_command(id);
     if (!info || info->keyless || id == back) return;
     // Ctrl+F stays listed without the AI pack: it is file search then
-    // (plan/16 "File search", 2026-09-28).
+    // (docs/design/16 "File search", 2026-09-28).
     if (!addon_command_available(id) && id != search_open) return;
     out += std::to_string(static_cast<int>(id));
     out += '\t';

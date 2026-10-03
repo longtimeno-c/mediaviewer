@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // mv_import's one export, mv_addon_get, and the mv.import.1 table behind it.
 //
-// Every thunk is the ABI boundary: no exception crosses it (plan/14), a
+// Every thunk is the ABI boundary: no exception crosses it (docs/design/14), a
 // short output buffer reports the size it needs, and nothing here logs a
 // path (rule 6).
 #include <mediaviewer/mediaviewer_import.h>

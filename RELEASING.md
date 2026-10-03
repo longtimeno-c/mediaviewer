@@ -163,7 +163,7 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `appcast.xml` | Signed Sparkle feed |
 | `SHA256SUMS.txt` | Download checksums |
 
-Add-ons (Milestone G, [plan/18](plan/18-import.md)) publish beside the app on the same release,
+Add-ons (Milestone G, [docs/design/18](docs/design/18-import.md)) publish beside the app on the same release,
 one set per platform, signed with the **same** Ed25519 key as the update manifest:
 
 | Asset | Purpose |
@@ -178,7 +178,7 @@ one set per platform, signed with the **same** Ed25519 key as the update manifes
 > `git apply tools/package/release-addon.patch`, commit `.github/workflows/release.yml`, and delete
 > the patch. Until then releases carry no add-on and Settings says Import is not published yet.
 
-**Local search (the AI pack, plan/17)** ships the same way on every stable release, as three
+**Local search (the AI pack, docs/design/17)** ships the same way on every stable release, as three
 signed downloads per platform: `mediaviewer-addon-ai-*` (the Core pack: the native add-on, ONNX
 Runtime, the chrome and both CLIP towers), `mediaviewer-addon-ai-audio-*` (Sound: CLAP and
 Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
@@ -196,7 +196,7 @@ Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
   `-DMV_AI_CUDA_PIECE=ON`, which stages ONNX Runtime's CUDA 13 build (MIT, Microsoft-signed) in
   `build/addons/ai-cuda`, and packs it as a fourth Windows piece (~150 MB download). It carries
   no NVIDIA file: the CUDA runtime and cuDNN are user-supplied, and without them Local search
-  says so and runs on the CPU (plan/12, 2026-10-03). Bundling them still needs the licence review.
+  says so and runs on the CPU (docs/design/12, 2026-10-03). Bundling them still needs the licence review.
 - `publish` refuses a stable release without all seven (`MV_RELEASE_AI=1`): the three pieces on
   both platforms, plus `ai-cuda` on Windows.
 

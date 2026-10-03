@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 verify, the shared half (plan/10): colour adjusts in the linear FP16
+// PR 11 verify, the shared half (docs/design/10): colour adjusts in the linear FP16
 // working space (D6), the export bake, the histogram / clipping reduction,
 // the shader kernel's single source, and the edit session's slider ops.
 //
@@ -118,7 +118,7 @@ TEST_CASE("half floats round-trip every finite value and round to nearest even",
 
 TEST_CASE("with every slider at zero the working image bakes to the viewer's pixels",
           "[adjust][working]") {
-  // plan/07 "preview is the export", and D6: the working space round-trips
+  // docs/design/07 "preview is the export", and D6: the working space round-trips
   // the 8-bit display image exactly, so opening the pane changes nothing.
   const auto src = gradient(64, 48);
   auto working = image::linear_from_srgb8(src.rgba, src.width, src.height, src.format);

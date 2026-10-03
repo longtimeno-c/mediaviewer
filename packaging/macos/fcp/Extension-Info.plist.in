@@ -3,7 +3,7 @@
 <!--
   Copyright (C) 2026 longtimeno-c
   SPDX-License-Identifier: GPL-3.0-or-later
-  MediaViewerSearch.appex: the Final Cut Pro workflow extension (plan/23),
+  MediaViewerSearch.appex: the Final Cut Pro workflow extension (docs/design/23),
   in MediaViewer.app/Contents/PlugIns (arm64 only, like Local search). It ships
   with every app and stays hidden (a PlugInKit "ignore" election) until the
   owner turns Final Cut Pro on in Settings > Local search. FCP's own

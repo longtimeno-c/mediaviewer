@@ -8,7 +8,7 @@ using Windows.Storage;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 15 (plan/16 View): Ctrl+Shift+S opens Windows Share with the marked
+/// PR 15 (docs/design/16 View): Ctrl+Shift+S opens Windows Share with the marked
 /// files, else the current one. The share sheet is a WinRT object bound to the
 /// native window through <c>IDataTransferManagerInterop</c>, the same desktop
 /// contract SMTC uses (IslandHost.Video.cs).

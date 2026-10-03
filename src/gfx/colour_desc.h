@@ -10,7 +10,7 @@
 //
 // Values mirror the AVCOL_* enums numerically where the ITU-T H.273 code points
 // agree, but this header deliberately names no FFmpeg type: nothing outside
-// player/ may see one (plan/02 module graph, CLAUDE.md).
+// player/ may see one (docs/design/02 module graph, CLAUDE.md).
 #pragma once
 
 #include <cstdint>
@@ -35,7 +35,7 @@ enum class colour_primaries : std::uint8_t {
 };
 
 // The transfer function the samples are encoded with. hlg and pq are the two
-// that MUST be tone-mapped to SDR in v1 (plan/03, plan/05). A camera JPEG is
+// that MUST be tone-mapped to SDR in v1 (docs/design/03, docs/design/05). A camera JPEG is
 // display-referred sRGB and is never tone-mapped — that is the still path and
 // this enum does not reach it.
 enum class colour_transfer : std::uint8_t {

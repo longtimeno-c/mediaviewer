@@ -26,7 +26,7 @@ namespace mv::player {
 using time_ns = std::int64_t;
 
 // A frame in OUR presentation ring — never a decoder-pool (DPB) surface.
-// plan/05 "Surface ownership": a D3D11VA output surface is a (pool texture,
+// docs/design/05 "Surface ownership": a D3D11VA output surface is a (pool texture,
 // array slice) pair, and holding one removes it from the pool until the
 // decoder stalls. We CopySubresourceRegion out and release the AVFrame at once.
 struct video_frame {
@@ -47,14 +47,14 @@ struct video_frame {
   std::uint32_t    width      = 0;
   std::uint32_t    height     = 0;
   // The VIEW generation this frame was decoded at. Navigation bumps it; a stale
-  // frame is dropped at acquire, never presented (plan/02 generation counters).
+  // frame is dropped at acquire, never presented (docs/design/02 generation counters).
   std::uint32_t    generation = 0;
   gfx::colour_desc colour{};
   bool             ten_bit    = false;  // P010 when true, NV12 when false
 };
 
 // Where the pixels actually came from. The F3 overlay names this, so a software
-// fallback is never silent (plan/05: "Never silently — a silent software-decode
+// fallback is never silent (docs/design/05: "Never silently — a silent software-decode
 // fallback on a 4K clip reads to the user as 'this app is slow.'").
 enum class decoder_kind : std::uint8_t {
   none = 0,
@@ -97,7 +97,7 @@ class video_source {
   [[nodiscard]] virtual bool peek_next_pts(time_ns* out_pts_ns) const noexcept = 0;
 
   // [any-thread][no-block] Discard queued frames and flush the decoder
-  // (avcodec_flush_buffers) at the new generation. plan/05 transport.
+  // (avcodec_flush_buffers) at the new generation. docs/design/05 transport.
   virtual void flush(std::uint32_t generation) noexcept = 0;
 };
 

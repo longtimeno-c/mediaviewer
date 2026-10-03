@@ -344,7 +344,7 @@ result<std::vector<std::uint8_t>> rewrite_orientation(std::span<const std::uint8
     std::span<std::uint8_t> tiff(out.data() + exif->offset, exif->size);
     if (!codec::exif_set_orientation(tiff, orientation)) {
       // EXIF without an Orientation entry: adding one means growing IFD0 and
-      // moving every offset after it. Not done blind (plan/06: that is the
+      // moving every offset after it. Not done blind (docs/design/06: that is the
       // PR 12 writer's job, with maker-note preservation tests).
       return err(status::unsupported_format);
     }

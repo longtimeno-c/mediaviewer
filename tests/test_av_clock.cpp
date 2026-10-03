@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The drift measurement, tested headlessly — no device, no endpoint, no clip.
 //
-// These tests exist because of one specific failure mode. plan/05: "Steady-state
+// These tests exist because of one specific failure mode. docs/design/05: "Steady-state
 // drift must be flat — a slow ramp means your audio position query is wrong."
 // The instantaneous A/V error is flat BY CONSTRUCTION, because the presenter
 // drops and holds precisely to force it flat, so a flat err_ms graph passes even
@@ -120,7 +120,7 @@ TEST_CASE("a ramp buried in jitter is still recovered", "[drift]") {
 }
 
 TEST_CASE("the live window is a rolling window, not the whole run", "[drift]") {
-  // plan/05: "Track drift over a rolling window." The percentiles must follow
+  // docs/design/05: "Track drift over a rolling window." The percentiles must follow
   // recent behaviour, so a bad first minute does not haunt the overlay forever.
   drift_tracker tracker;
   tracker.reset();
@@ -156,7 +156,7 @@ TEST_CASE("both error tails are reported signed", "[drift]") {
 }
 
 TEST_CASE("a host clock gap is counted, not smoothed over", "[drift]") {
-  // The machine slept or power-throttled mid-run. plan/12's honesty rule and
+  // The machine slept or power-throttled mid-run. docs/design/12's honesty rule and
   // gfx::pacer's precedent: a run that trips this is re-run, not averaged.
   drift_tracker tracker;
   tracker.reset();

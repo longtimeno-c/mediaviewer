@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The child-process port: a helper program with its stdin and stdout piped to
-// the caller (plan/08 "Execution & UX": encode jobs run in a child process, so
+// the caller (docs/design/08 "Execution & UX": encode jobs run in a child process, so
 // a crash in an encoder cannot take the viewer down, and cancelling is a clean
 // kill).
 //

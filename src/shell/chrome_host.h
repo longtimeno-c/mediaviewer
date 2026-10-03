@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Loads the C# WinUI chrome and attaches a DesktopWindowXamlSource island.
 //
-// plan/10 PR 3, D1 amendment: the Win32 window and D3D11 swapchain stay the
+// docs/design/10 PR 3, D1 amendment: the Win32 window and D3D11 swapchain stay the
 // app; chrome is hosted inside them. C++ never talks to WinUI types — it loads
 // MediaViewer.Chrome.dll through hostfxr and calls a handful of entry points.
-// Canvas mouse-move does not cross this boundary (plan/02).
+// Canvas mouse-move does not cross this boundary (docs/design/02).
 #pragma once
 
 #include <windows.h>
@@ -48,7 +48,7 @@ enum chrome_command : int {
   chrome_cmd_rebind = 1001,          // packed: row | (key << 8) | (mods << 20)
   chrome_cmd_reset_keys = 1002,      // restore the default map
   // PR 8 updater. Chrome, not a command: no key, no row in `?` or Settings
-  // (plan/16 — an update affordance is chrome). arg 0: the user clicked
+  // (docs/design/16 — an update affordance is chrome). arg 0: the user clicked
   // "Update ready — restart"; arg 1: Update.exe is armed, close now.
   chrome_cmd_update_restart = 1003,
   // PR 9. tree_open: the user chose a folder in the tree; native pulls the path
@@ -64,7 +64,7 @@ enum chrome_command : int {
   chrome_cmd_open_crumb = 1008,       // arg is the breadcrumb index
   chrome_cmd_gallery_columns = 1009,  // arg is cells per row
   // Milestone G. arg 1: the Import add-on is installed and loaded, so its
-  // commands exist (plan/18 "Commands"); arg 0: it is not.
+  // commands exist (docs/design/18 "Commands"); arg 0: it is not.
   chrome_cmd_addon_state = 1010,
   // Milestone G. Open a file in the viewer (Import's Enter); native pulls the
   // path with take_tree_path, as for the tree.
@@ -91,7 +91,7 @@ enum chrome_command : int {
   // Native sizes the bar to it, so the island hugs its controls instead of
   // being a long empty box around them.
   chrome_cmd_transport_width = 1018,
-  // PR 29 (plan/20): the Edit workspace (moved up one again, 2026-09-27, when
+  // PR 29 (docs/design/20): the Edit workspace (moved up one again, 2026-09-27, when
   // main's transport_width took 1018). edit_tab: arg is the shell::edit_tab
   // the strip's tab row picked. edit_action: arg is a chrome_edit_action.
   chrome_cmd_edit_tab = 1019,
@@ -102,7 +102,7 @@ enum chrome_command : int {
   // into every capture-time tag; arg 1 removes them all (nothing parked).
   chrome_cmd_meta_tags = 1021,
   chrome_cmd_meta_date = 1022,
-  // PR 30 (plan/21): the Video Editor window's timeline. editor_seek: arg is
+  // PR 30 (docs/design/21): the Video Editor window's timeline. editor_seek: arg is
   // the program time in milliseconds (exact to 4.6 h in a float), and selects
   // the piece there; editor_action: arg is a chrome_editor_action.
   chrome_cmd_editor_seek = 1023,
@@ -177,7 +177,7 @@ struct chrome_popup_args {
 
 static_assert(sizeof(chrome_popup_args) == 8, "keep in sync with ChromePopupArgs");
 
-// File search (plan/16 "File search", 2026-09-28): find by name over the
+// File search (docs/design/16 "File search", 2026-09-28): find by name over the
 // gallery, base app, no index. The island answers whether it took the key;
 // if not, native does what it did without it. Mirrored by
 // IslandHost.FileSearch.cs (entry GallerySearch).
@@ -200,7 +200,7 @@ struct chrome_table_args {
 
 static_assert(sizeof(chrome_table_args) == 16, "keep in sync with ChromeTableArgs");
 
-// Commands and island notifications share one id space (plan/16). These pin
+// Commands and island notifications share one id space (docs/design/16). These pin
 // the values the island already sends; commands.h reserves the notifications.
 static_assert(chrome_cmd_open == static_cast<int>(command_id::open));
 static_assert(chrome_cmd_fit == static_cast<int>(command_id::fit));
@@ -401,7 +401,7 @@ struct chrome_meta_edit_args {
 
 static_assert(sizeof(chrome_meta_edit_args) == 24, "keep in sync with ChromeMetaEditArgs");
 
-// PR 29 (plan/20): what the Edit workspace's strip, its Crop / Trim pane and
+// PR 29 (docs/design/20): what the Edit workspace's strip, its Crop / Trim pane and
 // the command bar's Edit button show -- the Mac bridge's mv_edit_view plus the
 // item's name and the trim state. Pointers are valid for the call only.
 struct chrome_edit_args {
@@ -425,7 +425,7 @@ struct chrome_edit_args {
 
 static_assert(sizeof(chrome_edit_args) == 72, "keep in sync with IslandHost.Edit EditArgsSize");
 
-// PR 30 (plan/21): the Video Editor window. Its timeline is an island on the
+// PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is
 // an island on the viewer's. Native owns both rects, as for the panes.
 struct chrome_editor_attach_args {
@@ -512,7 +512,7 @@ struct chrome_flags_args {
 
 static_assert(sizeof(chrome_flags_args) == 8, "keep in sync with ChromeFlagsArgs");
 
-// Native owns the playback rate: the keyboard is the only router (plan/16), so
+// Native owns the playback rate: the keyboard is the only router (docs/design/16), so
 // the dropdown is a view of the rate rather than a second place it is decided.
 // Same one-direction rule as the settings flags — the menu changes only after
 // native has applied the change.
@@ -547,7 +547,7 @@ using chrome_entry_fn = int (*)(void* arg, std::int32_t arg_size_in_bytes);
 // DIP height of the command-bar strip. Physical pixels = this * dpi / 96.
 inline constexpr int kChromeBarDip = 48;
 inline constexpr int kFilmstripDip = 112;
-// The transport bar. Issue #38 (plan/12 2026-09-26): it floats over the bottom
+// The transport bar. Issue #38 (docs/design/12 2026-09-26): it floats over the bottom
 // of the video, centred and above the filmstrip, like the Mac's, and leaves
 // after an idle interval while the clip plays (shell/transport_autohide.h). It
 // no longer reserves canvas, so showing or hiding it never refits the video.
@@ -699,7 +699,7 @@ class chrome_host {
   // Optional: an older chrome ignores it.
   void set_trim(const chrome_trim_args& args) noexcept;
 
-  // PR 29 (plan/20): the Edit workspace, a fifth panel island at the top of
+  // PR 29 (docs/design/20): the Edit workspace, a fifth panel island at the top of
   // the right column: its strip, and under it the Crop or Trim pane (the
   // Colour / Info / Jobs tabs are the panes above, placed under the strip by
   // the host). Optional like the other panes.
@@ -709,7 +709,7 @@ class chrome_host {
   // whether or not the pane is up, so the button follows the item.
   void set_edit_view(const chrome_edit_args& args) noexcept;
 
-  // PR 30 (plan/21): the Video Editor window's islands -- its timeline, on the
+  // PR 30 (docs/design/21): the Video Editor window's islands -- its timeline, on the
   // editor's own window, and the card on the viewer's that says where the
   // picture went. Attached when the window opens, detached when it closes.
   // Optional: an older chrome without them fails attach_editor, and the host

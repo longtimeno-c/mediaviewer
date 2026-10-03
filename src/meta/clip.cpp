@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Clip metadata through libavformat: container facts, one inspector record per
 // stream (video / audio / subtitle / attachment), chapters and tags. FFmpeg is
-// already the video pipeline (plan/05), so this reads in-process rather than
-// shelling out to ffprobe (plan/06).
+// already the video pipeline (docs/design/05), so this reads in-process rather than
+// shelling out to ffprobe (docs/design/06).
 //
 // Only container and stream headers are read. No packet is decoded here, and
 // nothing about the file leaves the machine (rule 6).

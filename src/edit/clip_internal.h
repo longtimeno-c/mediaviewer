@@ -159,7 +159,7 @@ struct reencode_spec {
   // FFmpeg encoder names to try in order.
   std::vector<std::string> encoders;
   // Tests only: accept an encoder FFmpeg does not mark hardware/hybrid. The
-  // product path (run()) never sets it (plan/11).
+  // product path (run()) never sets it (docs/design/11).
   bool allow_software = false;
 };
 

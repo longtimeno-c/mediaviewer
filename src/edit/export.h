@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 10 export (plan/07 "Export"): the edit stack baked at full resolution
+// PR 10 export (docs/design/07 "Export"): the edit stack baked at full resolution
 // into a *new* file (rule 5 — the original is never the target), with a
 // metadata preservation policy.
 //
@@ -38,7 +38,7 @@ namespace mv::edit {
 struct export_options {
   encode_options encode{};
   metadata_policy policy = metadata_policy::all;
-  // Take the lossless path whenever it applies (plan/07: "Offer this whenever
+  // Take the lossless path whenever it applies (docs/design/07: "Offer this whenever
   // the requested edit stack contains only those ops"). Off forces a re-encode.
   bool prefer_lossless = true;
   // The export dialog's size: the long edge in pixels, applied on top of the

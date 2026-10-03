@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // AVIF via libavif + dav1d (BSD). Still and animated (`avis`) sequences
-// (plan/04).
+// (docs/design/04).
 //
 // libavif does NOT apply the container transforms, so clap → irot → imir are
 // applied here, in that order (ISO/IEC 23008-12), to match libheif's HEIC
@@ -52,7 +52,7 @@ constexpr std::uint64_t kMaxPixels = 128ull * 1000ull * 1000ull;
 // repeatedly, or for dav1d's own reference-frame pool (AV1 allows up to 8
 // resident references plus the current frame) holding several decoded
 // pictures at once. A camera-dump animated AVIF is a Live-Photo-style burst
-// or a sticker, not a video (that is the FFmpeg pipeline, plan/05) — 10 MP
+// or a sticker, not a video (that is the FFmpeg pipeline, docs/design/05) — 10 MP
 // clears a 4K frame (3840x2160 = 8.3 MP) with room to spare, and 9 buffers
 // at 10 MP and 3 bytes/px (10-bit 4:2:0 worst case) is under 280 MB for the
 // codec pool alone, a comfortable multiple below kMaxPixels' one-frame

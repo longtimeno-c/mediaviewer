@@ -14,10 +14,10 @@ using Microsoft.UI.Xaml.Controls;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// Add-ons (plan/18 "Add-ons: how Import is installed"): Settings → Add-ons,
+/// Add-ons (docs/design/18 "Add-ons: how Import is installed"): Settings → Add-ons,
 /// the download, the one-time card hint, and loading an installed add-on's
 /// chrome into its own <see cref="AssemblyLoadContext"/>. Milestone H adds the
-/// AI pack (plan/17 "The AI pack"): a second add-on with a chrome, and two
+/// AI pack (docs/design/17 "The AI pack"): a second add-on with a chrome, and two
 /// pieces of its family with none (IslandHost.LocalSearch.cs is its Settings).
 /// </summary>
 /// <remarks>
@@ -396,7 +396,7 @@ public static partial class IslandHost
         else SetLocalSearchStatus(text);
     }
 
-    /// <summary>The base chrome's services for an add-on (plan/18 IAddonHost; Milestone H IAddonHost2).</summary>
+    /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
     private sealed class AddonHost(AddonSlot slot) : IAddonHost2
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
@@ -693,7 +693,7 @@ public static partial class IslandHost
         _importHintDismiss = TextButton("Not now", () =>
         {
             ShowImportHint(false);
-            // "It never appears again after Not now" (plan/18).
+            // "It never appears again after Not now" (docs/design/18).
             _ = Task.Run(() =>
             {
                 try
@@ -749,7 +749,7 @@ public static partial class IslandHost
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
         // switch says: the person is looking at what can be installed, or
-        // updated (plan/18).
+        // updated (docs/design/18).
         ProbeOffer(ImportSlot);
     }
 

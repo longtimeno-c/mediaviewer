@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Stage the AI pack's model files (plan/17 "The AI pack").
+"""Stage the AI pack's model files (docs/design/17 "The AI pack").
 
     ai-models.py stage --piece ai --out build/addons/ai [--cache DIR]
     ai-models.py stage --piece ai-faces --out build/addons/ai-faces [--cache DIR]
     ai-models.py check
 
 An entry with `export` is a checkpoint the pack runs as ONNX it builds itself
-(the People embedder, plan/17 "People model"): `stage` verifies the pinned
+(the People embedder, docs/design/17 "People model"): `stage` verifies the pinned
 source, runs the named tool (tools/package/face-export.py) and keeps the result
 only if it reproduces `export.golden`. That step needs requirements-export.txt;
 `check` does not.
@@ -20,7 +20,7 @@ folder, and `licences.json` (relative path -> SPDX) for addon-pack.py. A file
 already in --cache with the right hash is not fetched again. The request is a
 plain GET of a fixed URL: no token, no identifier.
 
-`check` is the weights-licence gate plan/17 names: every file must carry a
+`check` is the weights-licence gate docs/design/17 names: every file must carry a
 licence from ALLOWED_LICENCES (non-commercial or research-only weights fail),
 and the Core pack's supported combinations must fit the 3 GB ceiling given
 the sizes listed. CI runs it; it needs no network.
@@ -39,7 +39,7 @@ MODELS = Path(__file__).with_name("ai-models.json")
 
 ALLOWED_LICENCES = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "CC0-1.0",
                     "GPL-3.0-or-later"}
-CEILING = 3_000_000_000  # plan/17: Core + one vendor piece + Faces, installed
+CEILING = 3_000_000_000  # docs/design/17: Core + one vendor piece + Faces, installed
 
 
 def sha256_file(path: Path) -> str:

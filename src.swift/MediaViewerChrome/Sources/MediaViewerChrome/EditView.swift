@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 29 (plan/20): the Edit workspace. The strip (title, tabs, Undo / Reset /
+// PR 29 (docs/design/20): the Edit workspace. The strip (title, tabs, Undo / Reset /
 // Original / Save copy) sits at the top of the right pane column; under it is
 // the tab's pane: Crop and Trim here, Colour / Info / Jobs the existing
 // AdjustView / MetadataView / JobsView. Every control runs a command the
