@@ -75,9 +75,16 @@ def prepare():
 # The optional add-ons, one signed package per add-on and platform. The apps
 # fetch them from releases/latest, so once the release workflow packs them every
 # stable release must carry them: Import (plan/18) with MV_RELEASE_ADDONS=1, and
-# the Local search pack and its pieces (plan/17) with MV_RELEASE_AI=1.
+# the Local search pack and its pieces (plan/17) with MV_RELEASE_AI=1. NVIDIA
+# acceleration (ai-cuda) is a Windows-only piece: ONNX Runtime's CUDA build
+# (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')
-AI_ADDONS = ('ai', 'ai-audio', 'ai-faces')
+AI_ADDONS = ('ai', 'ai-audio', 'ai-faces', 'ai-cuda')
+WINDOWS_ONLY_ADDONS = ('ai-cuda',)
+
+
+def addon_platforms(addon):
+    return ('win-x64',) if addon in WINDOWS_ONLY_ADDONS else ADDON_PLATFORMS
 
 
 def required_addons(mode):
@@ -125,7 +132,7 @@ def validate_assets(folder, version, mode, repo, tag):
                   'assets.win.json', 'mediaviewer-manifest.json', 'mediaviewer-manifest.json.sig',
                   f'MediaViewer-{version}.zip', 'appcast.xml']
         for addon in required_addons(mode):
-            for platform in ADDON_PLATFORMS:
+            for platform in addon_platforms(addon):
                 names += addon_asset_names(platform, addon)
     for name in names:
         path = folder / name
@@ -138,7 +145,7 @@ def validate_assets(folder, version, mode, repo, tag):
         if (folder / 'mediaviewer-manifest.json.sig').stat().st_size != 64:
             raise ValueError('Invalid Windows signature length')
         for addon in required_addons(mode):
-            for platform in ADDON_PLATFORMS:
+            for platform in addon_platforms(addon):
                 validate_addon(folder, version, platform, addon)
         for package in manifest['packages']:
             name = package['file']

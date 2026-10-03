@@ -291,7 +291,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   if (!ok) return fail(status::io);
   if (roots.empty()) return fail(status::invalid_arg);
   n.roots = roots.size();
-  std::unordered_map<std::int64_t, std::string> path_of;  // for thumbnails
+  std::unordered_map<std::int64_t, thumb_want> file_of;  // for thumbnails
   {
     stmt q(x, "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1");
     stmt ins(x, "INSERT INTO assets(id, root_id, rel, mtime, size, kind, duration_ms)"
@@ -306,7 +306,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
         ins.reset();
         ok = ins.bind(1, q.i64(0)).bind(2, id).bind(3, rel).bind(4, q.i64(2)).bind(5, q.i64(3))
                  .bind(6, q.i64(4)).bind(7, q.i64(5)).run();
-        if (o.thumbs) path_of.emplace(q.i64(0), path);
+        if (o.thumbs) file_of.emplace(q.i64(0), thumb_want{path, -1, q.i64(4) == 2, q.i64(5)});
         ++n.assets;
       }
       if (c.cancelled()) return fail(status::cancelled);
@@ -351,11 +351,12 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   if (with_faces) exec(x, "DETACH fdb");
   c.report(0.5);
 
-  // Thumbnails the viewer already made: the file's own, and each moment an
-  // embedding or a face was taken at.
+  // Thumbnails: the file's own, and each moment an embedding or a face was
+  // taken at. One the viewer never made is made now, so the file carries them
+  // all; that can decode, so cancel is polled every item.
   if (o.thumbs && o.thumb) {
     std::vector<std::pair<std::int64_t, std::int64_t>> want;
-    for (const auto& [id, path] : path_of) want.emplace_back(id, -1);
+    for (const auto& [id, file] : file_of) want.emplace_back(id, -1);
     {
       stmt m(x, "SELECT DISTINCT asset_id, pts_ms FROM frames WHERE pts_ms >= 0"
                 " UNION SELECT DISTINCT asset_id, pts_ms FROM faces WHERE pts_ms >= 0");
@@ -364,9 +365,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
     stmt ins(x, "INSERT OR IGNORE INTO thumbs(asset_id, pts_ms, jpeg) VALUES(?1, ?2, ?3)");
     if (!exec(x, "BEGIN")) return fail(status::io);
     for (std::size_t i = 0; i < want.size() && ok; ++i) {
-      const auto it = path_of.find(want[i].first);
-      if (it == path_of.end()) continue;
-      auto jpeg = o.thumb(it->second, want[i].second);
+      const auto it = file_of.find(want[i].first);
+      if (it == file_of.end()) continue;
+      thumb_want w = it->second;
+      w.pts_ms = want[i].second;
+      auto jpeg = o.thumb(w);
       if (!jpeg || jpeg->empty()) {
         ++n.thumbs_missing;
       } else {
@@ -374,13 +377,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
         ok = ins.bind(1, want[i].first).bind(2, want[i].second).bind_blob(3, jpeg->data(), jpeg->size()).run();
         ++n.thumbs;
       }
-      if ((i & 255) == 255) {
-        if (c.cancelled()) {
-          exec(x, "ROLLBACK");
-          return fail(status::cancelled);
-        }
-        c.report(0.5 + 0.5 * static_cast<double>(i) / static_cast<double>(want.size()));
+      if (c.cancelled()) {
+        exec(x, "ROLLBACK");
+        return fail(status::cancelled);
       }
+      if ((i & 15) == 15) c.report(0.5 + 0.5 * static_cast<double>(i) / static_cast<double>(want.size()));
     }
     if (!ok || !exec(x, "COMMIT")) return fail(status::io);
   }

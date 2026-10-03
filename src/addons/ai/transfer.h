@@ -54,6 +54,15 @@ struct control {
 
 // ---- export ---------------------------------------------------------------------
 
+// One thumbnail an export carries: the file's own (pts_ms -1; a clip's is its
+// poster) or a moment's.
+struct thumb_want {
+  std::string path;
+  std::int64_t pts_ms = -1;
+  bool video = false;
+  std::int64_t duration_ms = 0;
+};
+
 struct export_options {
   std::string index_db;               // read on its own connection
   std::string faces_db;               // "" : no People in the file
@@ -63,8 +72,9 @@ struct export_options {
   std::string picture_spec;           // the spec that answers here (info)
   std::string face_spec;              // the People model's (info)
   std::string from;                   // "macOS arm64", "Windows x64" (info)
-  // The cached JPEG-512 of a still (pts -1) or a moment: never made here.
-  std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms)> thumb;
+  // The JPEG-512 of a file (pts -1) or a moment: the viewer's cached one, or
+  // made now when it never was (the caller decodes; this file never does).
+  std::function<result<std::vector<std::uint8_t>>(const thumb_want&)> thumb;
 };
 
 struct export_counts {
@@ -75,7 +85,7 @@ struct export_counts {
   std::uint64_t faces = 0;
   std::uint64_t people = 0;
   std::uint64_t thumbs = 0;
-  std::uint64_t thumbs_missing = 0;  // not in the viewer's cache (an export never decodes)
+  std::uint64_t thumbs_missing = 0;  // could not be made (an unreadable or moved file)
   std::uint64_t bytes = 0;
 };
 
