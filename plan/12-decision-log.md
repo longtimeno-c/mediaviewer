@@ -3280,6 +3280,22 @@ review gates **bundling** NVIDIA's files, not publishing this piece. It stays op
 without CUDA/cuDNN on PATH (GPU used / CPU with the reason), and the PR 1 present-loop gate
 while it indexes on the GPU.
 
+## 2026-10-03 — Local search: the open folder always includes its subfolders (owner)
+
+Owner: "in ctrl f on both windows and mac os it should always do folders and sub folders. there
+shouldnt be an option for just this folder for indexing or search."
+
+- **Amended: plan/17 "Scope" and the index offer.** The search panel (`Ctrl+F` / `⌘F`) offers
+  **Folder & subfolders** (the default) · **Everywhere** (· **Photos** on the Mac once the
+  library is indexed). "This folder" is gone from the panel on both hosts.
+- The panel's offer for an unindexed folder is one button, **Index this folder and
+  subfolders**; Settings → Add a folder always adds the folder with its subfolders (Windows'
+  second button and the Mac's "and its subfolders" checkbox are gone).
+- Unchanged: the pack and the ABI keep `MV_AI_SCOPE_FOLDER` and the `recursive` flag (roots
+  already indexed folder-only still show as such and still work; the Mac's Photos scope rides on
+  FOLDER). People keeps its own "This folder" choice: it is not the search panel. The base app's
+  file search without Local search still filters the listing in memory (plan/16 "File search").
+
 ## 2026-10-03 — People: AdaFace IR-50 replaces SFace, and a re-run that keeps the user's people
 
 Owner: "can we improve / select a better people model … add a re-run that redoes the photos and

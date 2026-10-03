@@ -300,14 +300,15 @@ final class ManagementModel: ObservableObject {
     }
   }
 
-  func addFolder(recursive: Bool) {
+  /// Always with its subfolders (owner 2026-10-03).
+  func addFolder() {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
     panel.prompt = "Index"
     guard panel.runModal() == .OK, let url = panel.url else { return }
     var root: UInt64 = 0
-    _ = table.a.index_folder?(table.ctx, url.path, recursive ? 1 : 0, &root)
+    _ = table.a.index_folder?(table.ctx, url.path, 1, &root)
     reloadRoots()
     pollStatus()
   }
@@ -615,7 +616,6 @@ struct PrecisionControl: View {
 struct ManagementView: View {
   @ObservedObject var model: ManagementModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var subfolders = true
   @State private var openPerson: Person?
 
   var body: some View {
@@ -688,8 +688,8 @@ struct ManagementView: View {
           Rectangle().fill(AITheme.hairline).frame(height: 1)
         }
         HStack {
-          Button("Add a folder…") { model.addFolder(recursive: subfolders) }
-          Toggle("and its subfolders", isOn: $subfolders).toggleStyle(.checkbox)
+          Button("Add a folder…") { model.addFolder() }
+            .help("Index a folder and every folder inside it.")
           Spacer()
         }
         .font(AITheme.font(12))
