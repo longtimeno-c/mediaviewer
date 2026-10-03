@@ -84,6 +84,13 @@ OutputBaseFilename={#MvAppName}-{#MvVersion}-Setup
 ; try to show a splash over the top of its own progress.
 ShowLanguageDialog=no
 CloseApplications=no
+; Apps & features size. Inno only counts what it copies itself - here its own
+; uninstaller - so without this the entry said ~4 MB for a ~300 MB install.
+; build-release.ps1 passes the payload plus the retained full package; add-ons
+; are optional downloads and are not counted.
+#ifdef MvInstalledBytes
+UninstallDisplaySize={#MvInstalledBytes}
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -273,6 +280,12 @@ Type: filesandordirs; Name: "{app}\telemetry"
 ; PR 15: the versioned thumbnail handler copies. One still held by a
 ; surrogate is removed when that process ends (it idles out in minutes).
 Type: filesandordirs; Name: "{app}\shellext"
+; The session copy of the UI font (IslandHost.SessionFontCopy). [Code]
+; unregisters it first; Windows holds a registered font open.
+Type: filesandordirs; Name: "{app}\fonts"
+; Thumbnail cache (io::thumb_cache_dir): always under %LocalAppData%, and
+; only ever a cache. Add-ons are removed by [Code] below.
+Type: filesandordirs; Name: "{localappdata}\MediaViewer\thumbs"
 Type: files; Name: "{app}\MediaViewer.exe"
 Type: files; Name: "{app}\Update.exe"
 Type: files; Name: "{app}\sq.version"
@@ -295,11 +308,170 @@ const
 
 var
   DeleteInstaller: Boolean;
+  KeepDir: String;
+
+function RemoveFontResourceEx(Name: String; Flags: Cardinal; Reserved: Cardinal): Integer;
+  external 'RemoveFontResourceExW@gdi32.dll stdcall';
 
 procedure RemoveVelopackUninstallEntry;
 begin
   if RegKeyExists(HKEY_CURRENT_USER, VelopackUninstallKey) then
     RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, VelopackUninstallKey);
+end;
+
+(* The chrome registers its UI font session-wide (AddFontResourceEx, fl=0).
+   A viewer that never reached Detach - a crash, a kill, the TerminateProcess
+   exit under a running add-on - leaves it registered until sign-out, and
+   Windows holds the file open the whole time. Until this fix that file was in
+   current\, so --installto could not clear the directory and exited 1, and
+   every in-app update failed on the rename of current\. Drop every
+   registration of every .ttf in Dir (each AddFontResourceEx is counted). A
+   running viewer is unaffected: XAML loads its own copy by URI. *)
+procedure ReleaseSessionFonts(Dir: String);
+var
+  Find: TFindRec;
+  I: Integer;
+begin
+  if FindFirst(AddBackslash(Dir) + '*.ttf', Find) then
+  try
+    repeat
+      I := 0;
+      while (I < 64) and (RemoveFontResourceEx(AddBackslash(Dir) + Find.Name, 0, 0) <> 0) do
+        I := I + 1;
+      if I > 0 then
+        Log(Format('Released %d session registration(s) of %s', [I, Find.Name]));
+    until not FindNext(Find);
+  finally
+    FindClose(Find);
+  end;
+end;
+
+(* What --installto would wipe that is not the app: the add-ons and their
+   models (up to 3 GB, plan/17), the thumbnail cache, settings, crash reports.
+   These live in %LocalAppData%\MediaViewer, which is also the default install
+   directory, so a reinstall over the top deleted them - the "install local
+   search" offer came back after every reinstall. updater\ is deliberately not
+   kept: its trial and rollback state belong to the build being replaced. *)
+function KeptNames: TArrayOfString;
+begin
+  SetArrayLength(Result, 8);
+  Result[0] := 'addons';
+  Result[1] := 'thumbs';
+  Result[2] := 'metadata-snapshots';
+  Result[3] := 'Crashes';
+  Result[4] := 'clipboard';
+  Result[5] := 'telemetry';
+  Result[6] := 'settings.ini';
+  Result[7] := 'import-hint.dismissed';
+end;
+
+(* Same-volume renames into a sibling directory: instant, whatever the size.
+   A rename that fails means something holds the file - in practice a running
+   MediaViewer - so stop before --installto rather than let it wipe the rest. *)
+procedure SetUserDataAside;
+var
+  App, Name: String;
+  Names: TArrayOfString;
+  I, N: Integer;
+begin
+  App := ExpandConstant('{app}');
+  KeepDir := '';
+  if not DirExists(App) then
+    Exit;
+  N := 0;
+  repeat
+    N := N + 1;
+    KeepDir := App + '.keep' + IntToStr(N);
+  until not FileOrDirExists(KeepDir);
+  Names := KeptNames;
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    Name := Names[I];
+    if not FileOrDirExists(App + '\' + Name) then
+      Continue;
+    if not DirExists(KeepDir) then
+      if not CreateDir(KeepDir) then
+        RaiseException('Could not prepare ' + KeepDir + '.');
+    if not RenameFile(App + '\' + Name, KeepDir + '\' + Name) then
+      RaiseException('MediaViewer seems to be running (' + Name + ' is in use). ' +
+                     'Close MediaViewer and run Setup again. Nothing has been changed.');
+  end;
+end;
+
+procedure PutUserDataBack;
+var
+  App, Name: String;
+  Names: TArrayOfString;
+  I: Integer;
+begin
+  if (KeepDir = '') or not DirExists(KeepDir) then
+    Exit;
+  App := ExpandConstant('{app}');
+  ForceDirectories(App);
+  Names := KeptNames;
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    Name := Names[I];
+    if not FileOrDirExists(KeepDir + '\' + Name) then
+      Continue;
+    if FileOrDirExists(App + '\' + Name) then
+      Log('Not putting back ' + Name + ': the new install has one; it stays in ' + KeepDir)
+    else if not RenameFile(KeepDir + '\' + Name, App + '\' + Name) then
+      Log('Could not put back ' + Name + '; it stays in ' + KeepDir);
+  end;
+  RemoveDir(KeepDir);  { only if everything went back }
+end;
+
+(* plan/17 and plan/18: uninstalling the app removes the add-ons, with a
+   separate choice about the search index. Each add-on's data\ (the Local
+   search index, Import's history) goes only when the user says so; a silent
+   uninstall keeps it. *)
+procedure RemoveAddons;
+var
+  Addons, Dir: String;
+  Find, Inner: TFindRec;
+  DeleteData: Boolean;
+begin
+  Addons := ExpandConstant('{localappdata}\MediaViewer\addons');
+  if not DirExists(Addons) then
+    Exit;
+  DeleteData := False;
+  if not UninstallSilent then
+    DeleteData := MsgBox('Also delete your Local search index and Import history?' + #13#10#13#10 +
+                         'Keep them if you will reinstall MediaViewer; the add-ons themselves ' +
+                         'are removed either way.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+  if FindFirst(Addons + '\*', Find) then
+  try
+    repeat
+      if (Find.Name = '.') or (Find.Name = '..') or
+         (Find.Attributes and FILE_ATTRIBUTE_DIRECTORY = 0) then
+        Continue;
+      Dir := Addons + '\' + Find.Name;
+      if (Find.Name = '.staging') or DeleteData then
+      begin
+        DelTree(Dir, True, True, True);
+        Continue;
+      end;
+      if FindFirst(Dir + '\*', Inner) then
+      try
+        repeat
+          if (Inner.Name <> '.') and (Inner.Name <> '..') and (CompareText(Inner.Name, 'data') <> 0) then
+          begin
+            if Inner.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0 then
+              DelTree(Dir + '\' + Inner.Name, True, True, True)
+            else
+              DeleteFile(Dir + '\' + Inner.Name);
+          end;
+        until not FindNext(Inner);
+      finally
+        FindClose(Inner);
+      end;
+      RemoveDir(Dir);
+    until not FindNext(Find);
+  finally
+    FindClose(Find);
+  end;
+  RemoveDir(Addons);
 end;
 
 (* Lay the Velopack tree down FIRST, in ssInstall, which runs before Inno
@@ -318,12 +490,21 @@ var
 begin
   Bundle := ExpandConstant('{tmp}\{#ExtractFileName(MvPayloadSetup)}');
   ExtractTemporaryFile('{#ExtractFileName(MvPayloadSetup)}');
-  if not Exec(Bundle, '--silent --installto "' + ExpandConstant('{app}') + '"',
-              '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    RaiseException('Could not start the MediaViewer payload installer.');
-  if ResultCode <> 0 then
-    RaiseException('The MediaViewer payload installer failed with code '
-                   + IntToStr(ResultCode) + '.');
+  (* Installing over an existing copy: free what --installto has to delete,
+     and move what it must not delete out of its way. *)
+  ReleaseSessionFonts(ExpandConstant('{app}\current'));
+  ReleaseSessionFonts(ExpandConstant('{app}\fonts'));
+  SetUserDataAside;
+  try
+    if not Exec(Bundle, '--silent --installto "' + ExpandConstant('{app}') + '"',
+                '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('Could not start the MediaViewer payload installer.');
+    if ResultCode <> 0 then
+      RaiseException('The MediaViewer payload installer failed with code '
+                     + IntToStr(ResultCode) + '. If MediaViewer is open, close it and run Setup again.');
+  finally
+    PutUserDataBack;
+  end;
 end;
 
 (* The Finish page's "Delete the installer" box (see [Run]). *)
@@ -384,5 +565,11 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     RemoveVelopackUninstallEntry;
+    (* Before [UninstallDelete]: a registered font cannot be deleted. *)
+    ReleaseSessionFonts(ExpandConstant('{app}\current'));
+    ReleaseSessionFonts(ExpandConstant('{app}\fonts'));
+    RemoveAddons;
+  end;
 end;
