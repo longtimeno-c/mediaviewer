@@ -8,6 +8,9 @@
 // strangers near 0 (SFace's own genuine / impostor spread). The last two
 // cases run the same rules through faces.db: snapshot, compute, commit.
 #include <algorithm>
+#include <cstdlib>
+#include <cstdio>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -648,3 +651,266 @@ TEST_CASE("dedupe through faces.db: merge_auto pins nothing and leaves a split p
   CHECK((*db)->people(1).size() == 2);
 }
 
+TEST_CASE("a new face model inherits the user's people through a re-run", "[ai][faces][refine][rerun]") {
+  const std::string path = temp_db("rerun.db");
+  world w;
+  // The old embedder's space, and the new one's: unrelated directions, as two
+  // models' vectors are. Same width, so only the spec keeps them apart.
+  const auto anna_old = w.direction();
+  const auto ben_old = w.direction();
+  const auto anna_new = w.direction();
+  const auto ben_new = w.direction();
+  mv::ai::face_tuning loose;
+  loose.same_person = -1.0f;  // the old model glued Ben onto Anna
+  std::int64_t anna = 0;
+  {
+    auto db = mv::ai::faces_db::open(path, loose, kDim, "old/1");
+    REQUIRE(db);
+    CHECK_FALSE((*db)->rerun_pending());
+    for (int i = 0; i < 6; ++i) {
+      const mv::ai::face_in f = face_in_of(w, anna_old, 0.99f, 0.1f);
+      REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+      REQUIRE((*db)->mark_scanned(100 + i, "old/1"));
+    }
+    for (int i = 0; i < 4; ++i) {
+      const mv::ai::face_in f = face_in_of(w, ben_old, 0.85f, 0.1f);
+      REQUIRE((*db)->add(200 + i, "b", -1, std::span<const mv::ai::face_in>(&f, 1)));
+      REQUIRE((*db)->mark_scanned(200 + i, "old/1"));
+    }
+    const auto people = (*db)->people(1);
+    REQUIRE(people.size() == 1);
+    anna = people[0].id;
+    REQUIRE((*db)->rename(anna, "Anna"));  // its cover, an Anna face, is pinned
+  }
+
+  // A pack update brings the new embedder: a re-run is due by itself, and
+  // until an asset is re-analysed its faces still show their person but are
+  // compared with nothing.
+  auto db = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "new/2");
+  REQUIRE(db);
+  CHECK((*db)->rerun_pending());
+  CHECK((*db)->stale_count() == 10);
+  CHECK((*db)->scanned_assets("new/2").empty());
+  REQUIRE((*db)->people(1).size() == 1);
+  CHECK((*db)->people(1)[0].faces == 10);
+  {
+    const mv::ai::face_in probe = face_in_of(w, anna_new, 0.99f, 0.1f);
+    CHECK((*db)->nearest_person(probe.emb) == 0);  // no new-space vector yet
+  }
+
+  // The re-run: each asset analysed again. The same box keeps its row,
+  // person and pin; a new face (another box) waits; a face the new pass does
+  // not find again goes when the asset is marked done.
+  for (int i = 0; i < 6; ++i) {
+    const mv::ai::face_in f = face_in_of(w, anna_new, 0.99f, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+    REQUIRE((*db)->mark_scanned(100 + i, "new/2"));
+  }
+  for (int i = 0; i < 3; ++i) {
+    std::vector<mv::ai::face_in> found{face_in_of(w, ben_new, 0.85f, 0.1f)};
+    if (i == 0) found.push_back(face_in_of(w, ben_new, 0.9f, 0.6f));  // a second face, new here
+    REQUIRE((*db)->add(200 + i, "b", -1, found));
+    REQUIRE((*db)->mark_scanned(200 + i, "new/2"));
+  }
+  {
+    // Asset 203: nothing found this time, so its old face goes with it.
+    REQUIRE((*db)->mark_scanned(203, "new/2"));
+  }
+  CHECK((*db)->stale_count() == 0);
+  CHECK((*db)->face_count() == 10);           // 6 Anna, 3 Ben in place, 1 new Ben
+  CHECK((*db)->unassigned_count() == 1);      // the new one waits for the settle
+  REQUIRE((*db)->people(1).size() == 1);
+  CHECK((*db)->people(1)[0].faces == 9);
+
+  // The settle, as engine::settle_people runs it: a full refinement with no
+  // focus, then rerun_done.
+  const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+  CHECK(snap.faces.size() == 10);
+  const mv::ai::refine_stats st =
+      (*db)->refine_commit(snap, mv::ai::refine_people(input_of(snap), mv::ai::face_tuning{}.refine()));
+  CHECK(st.changed());
+  (*db)->rerun_done();
+  CHECK_FALSE((*db)->rerun_pending());
+
+  // Anna keeps her name and her pinned cover; Ben's faces, glued on by the
+  // old model, come out together with his new face as one person.
+  const auto people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  CHECK(people[0].id == anna);
+  CHECK(people[0].name == "Anna");
+  CHECK(people[0].faces == 6);
+  CHECK(people[0].cover.pinned);
+  CHECK(people[1].name.empty());
+  CHECK(people[1].faces == 4);
+  CHECK((*db)->unassigned_count() == 0);
+
+  // Reopening with the same model: nothing more to re-run.
+  db->reset();
+  auto again = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "new/2");
+  REQUIRE(again);
+  CHECK_FALSE((*again)->rerun_pending());
+}
+
+TEST_CASE("re-analysing with the same model keeps every person and correction", "[ai][faces][refine][rerun]") {
+  const std::string path = temp_db("rerun_same.db");
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  auto db = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "m/1");
+  REQUIRE(db);
+  for (int i = 0; i < 4; ++i) {
+    const mv::ai::face_in a = face_in_of(w, anna, 0.95f, 0.1f);
+    const mv::ai::face_in b = face_in_of(w, ben, 0.95f, 0.6f);
+    const std::vector<mv::ai::face_in> both{a, b};
+    REQUIRE((*db)->add(10 + i, "p", -1, both));
+    REQUIRE((*db)->mark_scanned(10 + i, "m/1"));
+  }
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  REQUIRE((*db)->rename(people[0].id, "Anna"));
+  REQUIRE((*db)->rename(people[1].id, "Ben"));
+
+  REQUIRE((*db)->rerun_all());
+  CHECK((*db)->rerun_pending());
+  CHECK((*db)->scanned_assets("m/1").empty());
+  for (int i = 0; i < 4; ++i) {
+    const std::vector<mv::ai::face_in> both{face_in_of(w, anna, 0.95f, 0.1f), face_in_of(w, ben, 0.95f, 0.6f)};
+    REQUIRE((*db)->add(10 + i, "p", -1, both));
+    REQUIRE((*db)->mark_scanned(10 + i, "m/1"));
+  }
+  CHECK((*db)->face_count() == 8);
+  CHECK((*db)->unassigned_count() == 0);
+  const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+  const mv::ai::refine_stats st = (*db)->refine_commit(snap, mv::ai::refine_people(input_of(snap), {}));
+  CHECK_FALSE(st.changed());
+  (*db)->rerun_done();
+  people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  CHECK(people[0].faces == 4);
+  CHECK(people[1].faces == 4);
+  CHECK(((people[0].name == "Anna" && people[1].name == "Ben") || (people[0].name == "Ben" && people[1].name == "Anna")));
+}
+
+// ---- the People bench (plan/17 "People model") ------------------------------------------
+//
+// mv_ai_tests "[.people-bench]" with MV_FACE_EVAL=<file>: real face vectors
+// (tools: an LFW export, uint32 n, uint32 dim, n int32 identity labels, n x dim
+// float32 L2-normalised rows) through faces.db exactly as the engine files
+// them: online add in a shuffled order, then the settle (a full refinement
+// with no focus, up to three calls) and the merge. BCubed precision / recall
+// of the people against the labels, before and after the settle. Thresholds:
+// MV_FACE_TUNING="same keep keep_weak margin ambiguous merge_at" (SFace's
+// defaults otherwise). Prints; asserts nothing about the numbers.
+
+namespace {
+
+struct bcubed_score {
+  double p = 0, r = 0, f = 0;
+  std::size_t people = 0, unfiled = 0;
+};
+
+// Unfiled faces each count as a person of their own (they are found by
+// nobody's name), so they cost recall, never precision.
+bcubed_score bcubed(const std::vector<std::int32_t>& label, const std::vector<std::int64_t>& person) {
+  std::map<std::pair<std::int64_t, std::int32_t>, double> pc;
+  std::map<std::int64_t, double> cs;
+  std::map<std::int32_t, double> ls;
+  bcubed_score out;
+  std::int64_t solo = -1;
+  std::vector<std::int64_t> p = person;
+  for (std::int64_t& x : p) {
+    if (x == 0) {
+      x = solo--;
+      ++out.unfiled;
+    }
+  }
+  for (std::size_t i = 0; i < p.size(); ++i) {
+    pc[{p[i], label[i]}] += 1;
+    cs[p[i]] += 1;
+    ls[label[i]] += 1;
+  }
+  for (std::size_t i = 0; i < p.size(); ++i) {
+    const double c = pc[{p[i], label[i]}];
+    out.p += c / cs[p[i]];
+    out.r += c / ls[label[i]];
+  }
+  out.p /= static_cast<double>(p.size());
+  out.r /= static_cast<double>(p.size());
+  out.f = 2 * out.p * out.r / (out.p + out.r);
+  for (const auto& [id, n] : cs) out.people += id > 0 ? 1 : 0;
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("People bench: real face vectors through faces.db, online and settled", "[.people-bench]") {
+  const char* file = std::getenv("MV_FACE_EVAL");
+  if (!file) {
+    WARN("MV_FACE_EVAL is not set");
+    return;
+  }
+  std::FILE* fp = std::fopen(file, "rb");
+  REQUIRE(fp);
+  std::uint32_t head[2] = {0, 0};
+  REQUIRE(std::fread(head, sizeof head, 1, fp) == 1);
+  const std::uint32_t n = head[0], dim = head[1];
+  std::vector<std::int32_t> label(n);
+  std::vector<float> emb(std::size_t{n} * dim);
+  REQUIRE(std::fread(label.data(), sizeof(std::int32_t), n, fp) == n);
+  REQUIRE(std::fread(emb.data(), sizeof(float), emb.size(), fp) == emb.size());
+  std::fclose(fp);
+
+  mv::ai::face_tuning t;
+  if (const char* tv = std::getenv("MV_FACE_TUNING")) {
+    std::sscanf(tv, "%f %f %f %f %f %f", &t.same_person, &t.keep, &t.keep_weak, &t.margin, &t.ambiguous,
+                &t.merge_at);
+  }
+  const std::string path = temp_db("bench.db");
+  auto db = mv::ai::faces_db::open(path, t, dim, "bench/1");
+  REQUIRE(db);
+  std::vector<std::uint32_t> order(n);
+  for (std::uint32_t i = 0; i < n; ++i) order[i] = i;
+  std::mt19937 rng(7);
+  std::shuffle(order.begin(), order.end(), rng);
+  // One face per asset; the asset id is the row, so the label is found again.
+  for (std::uint32_t i : order) {
+    mv::ai::face_in f;
+    f.x = 0.3f;
+    f.y = 0.3f;
+    f.w = 0.3f;
+    f.h = 0.3f;
+    f.score = 0.95f;
+    f.quality = 0.8f;
+    f.emb.assign(emb.begin() + std::ptrdiff_t{i} * dim, emb.begin() + std::ptrdiff_t{i + 1} * dim);
+    REQUIRE((*db)->add(i, "f", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  const auto measure = [&] {
+    std::vector<std::int64_t> person(n, 0);
+    for (const mv::ai::person_row& p : (*db)->people(1)) {
+      for (const mv::ai::face_row& f : (*db)->faces_of(p.id)) person[static_cast<std::size_t>(f.asset)] = p.id;
+    }
+    return bcubed(label, person);
+  };
+  const auto report = [&](const char* what, const bcubed_score& s) {
+    std::printf("%-10s BCubed P %.4f R %.4f F %.4f  people %zu  unfiled %zu\n", what, s.p, s.r, s.f, s.people,
+                s.unfiled);
+  };
+  report("online", measure());
+  (void)(*db)->consolidate(t.merge_at);
+  report("+merge", measure());
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int round = 0; round < 3; ++round) {
+    const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+    refine_input in = input_of(snap);
+    in.dim = dim;
+    const mv::ai::refine_stats st = (*db)->refine_commit(snap, mv::ai::refine_people(in, t.refine()));
+    std::printf("settle %d: evicted %u moved %u admitted %u regrouped %u (groups %u)\n", round, st.evicted,
+                st.moved, st.admitted, st.regrouped, st.groups);
+    if (!st.changed()) break;
+  }
+  (void)(*db)->consolidate(t.merge_at);
+  const double ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  report("settled", measure());
+  std::printf("settle took %.0f ms for %u faces of %u-d\n", ms, n, dim);
+}

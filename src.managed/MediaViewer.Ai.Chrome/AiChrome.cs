@@ -378,7 +378,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     // ---- status -----------------------------------------------------------------------------
 
     // AI_STATUS can arrive per asset; the line changes at most 4 times a second.
-    private void RequestStatus()
+    internal void RequestStatus()
     {
         long now = Environment.TickCount64;
         if (now - _lastStatusTick >= 250 || _statusThrottle is null)

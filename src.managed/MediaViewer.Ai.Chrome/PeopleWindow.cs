@@ -74,6 +74,13 @@ internal sealed class PeopleWindow : Window
     private readonly Button _scopeButton;
     private readonly TextBlock _scopeFolder;
     private readonly TextBlock _empty;
+    // "Re-analyse faces" (plan/17 "People model"): every photo and clip again
+    // with the pack's face model; the people carry over. Progress from status.
+    private readonly Button _reanalyse;
+    private readonly TextBlock _rerunText;
+    // FlatBar, not a WinUI ProgressBar: that fail-fasts in this island host
+    // (tools/check-winui-controls.ps1).
+    private readonly MediaViewer.Shared.FlatBar _rerunBar;
     private MvAiScope _scope = MvAiScope.Tree;
     private static readonly string[] ScopeNames = { "This folder", "+ Subfolders", "Everywhere" };
     private static readonly string[] ScopeHelp =
@@ -285,6 +292,20 @@ internal sealed class PeopleWindow : Window
         _note = _look.Text("", 12, AddonColour.Title);
         _note.Visibility = Visibility.Collapsed;
         leftHead.Children.Add(_note);
+        _reanalyse = _look.Button("Re-analyse faces", Reanalyse);
+        ToolTipService.SetToolTip(_reanalyse,
+            "Look at every photo and video again, then file the faces into the people you have. Names, merges and splits are kept.");
+        _rerunText = _look.Text("", 12, wrap: false);
+        _rerunText.VerticalAlignment = VerticalAlignment.Center;
+        _rerunBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
+        _rerunBar.Root.Width = 160;
+        _rerunBar.Root.Visibility = Visibility.Collapsed;
+        _rerunBar.Root.VerticalAlignment = VerticalAlignment.Center;
+        var rerunRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        rerunRow.Children.Add(_reanalyse);
+        rerunRow.Children.Add(_rerunBar.Root);
+        rerunRow.Children.Add(_rerunText);
+        leftHead.Children.Add(rerunRow);
         left.Children.Add(leftHead);
         Grid.SetRow(_peopleGrid, 1);
         left.Children.Add(_peopleGrid);
@@ -299,6 +320,37 @@ internal sealed class PeopleWindow : Window
         Content = root;
         UpdateButtons();
         UpdateScope();
+        UpdateRerun();
+        _chrome.StatusChanged += UpdateRerun;
+        Closed += (_, _) => _chrome.StatusChanged -= UpdateRerun;
+    }
+
+    // ---- re-analysing ------------------------------------------------------------------
+
+    private void Reanalyse()
+    {
+        try { _api.PeopleReanalyse(); }
+        catch (MediaViewerException)
+        {
+            ShowNote("Faces could not be re-analysed. Try again.");
+            return;
+        }
+        _chrome.RequestStatus();
+    }
+
+    private void UpdateRerun()
+    {
+        MvAiStatus s = _chrome.Status;
+        bool settling = (s.Flags & MvAiStatus.FlagPeopleSettling) != 0;
+        bool running = (s.Flags & MvAiStatus.FlagPeopleRerun) != 0;
+        _reanalyse.Visibility = running || settling ? Visibility.Collapsed : Visibility.Visible;
+        _rerunBar.Root.Visibility = running || settling ? Visibility.Visible : Visibility.Collapsed;
+        _rerunBar.IsIndeterminate = settling || s.PeopleScanTotal == 0;
+        _rerunBar.Value = s.PeopleScanTotal == 0 ? 0 : (double)s.PeopleScanDone / s.PeopleScanTotal;
+        string model = s.PeopleModelText;
+        _rerunText.Text = settling ? "Filing faces into people…"
+            : running ? $"Re-analysing faces… {s.PeopleScanDone:N0} of {s.PeopleScanTotal:N0}"
+            : model.Length > 0 ? $"Faces are found with {model}." : "";
     }
 
     // ---- the open folder -------------------------------------------------------------

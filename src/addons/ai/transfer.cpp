@@ -77,6 +77,16 @@ class stmt {
 
 bool exec(sqlite3* db, const char* sql) { return sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK; }
 
+// An SQL string literal ('it''s').
+std::string quoted(const std::string& v) {
+  std::string o = "'";
+  for (char ch : v) {
+    o += ch;
+    if (ch == '\'') o += '\'';
+  }
+  return o + "'";
+}
+
 std::filesystem::path fs_path(const std::string& utf8) {
   return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
 }
@@ -332,9 +342,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   if (with_faces) {
     ok = exec(x, "INSERT INTO face_scanned SELECT s.asset_id, s.spec FROM fdb.scanned s"
                  " JOIN assets a ON a.id = s.asset_id") &&
-         exec(x, "INSERT INTO faces SELECT f.id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score,"
-                 " f.person_id, f.emb, f.pinned, f.quality, f.tta FROM fdb.faces f"
-                 " JOIN assets a ON a.id = f.asset_id");
+         // The file is one embedder's (face_spec): a face another made (a
+         // re-run under way) stays behind.
+         exec(x, ("INSERT INTO faces SELECT f.id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score,"
+                  " f.person_id, f.emb, f.pinned, f.quality, f.tta FROM fdb.faces f"
+                  " JOIN assets a ON a.id = f.asset_id WHERE f.spec = " + quoted(o.face_spec)).c_str());
     n.faces = count_of(x, "SELECT COUNT(*) FROM faces");
     ok = ok &&
          exec(x, "INSERT INTO people SELECT p.id, p.name, p.created_at FROM fdb.people p"
@@ -693,8 +705,8 @@ expected import_faces(sqlite3* fdb, const std::string& file, const std::string& 
   std::unordered_map<std::int64_t, std::int64_t> face_here;
   {
     stmt f(x, "SELECT id, asset_id, pts_ms, x, y, w, h, score, person_id, emb, pinned, quality, tta FROM faces");
-    stmt ins(fdb, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, pinned, quality, tta)"
-                  " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)");
+    stmt ins(fdb, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, pinned, quality,"
+                  " tta, spec) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)");
     const auto unit = [](double v) { return std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 0.0; };
     std::uint64_t i = 0;
     while (ok && f.step_row()) {
@@ -721,7 +733,7 @@ expected import_faces(sqlite3* fdb, const std::string& file, const std::string& 
       } else {
         ins.bind_real(12, unit(f.real(11)));
       }
-      ins.bind(13, std::int64_t{f.i64(12) != 0 ? 1 : 0});
+      ins.bind(13, std::int64_t{f.i64(12) != 0 ? 1 : 0}).bind(14, face_spec);
       ok = ins.run();
       face_here[f.i64(0)] = sqlite3_last_insert_rowid(fdb);
       ++n.faces;

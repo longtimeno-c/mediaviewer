@@ -214,7 +214,8 @@ Write-Host ("private .NET runtime: {0} ({1} MB)" -f $fxr[0].Name,
 #
 # This is the app. Velopack's packages\ cache is measured separately after the
 # pack, because it is a working set that plan/13 prunes, not the application.
-$size = [math]::Round((Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+$payloadBytes = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
+$size = [math]::Round($payloadBytes / 1MB, 1)
 Write-Host "payload (the app): $size MB"
 if ($size -gt 250) { Fail "payload is $size MB; plan/09 caps the app at 250 MB" }
 
@@ -293,7 +294,9 @@ if (-not $setup) { Fail "vpk produced no Setup bundle" }
 # (plan/13 "Rollback and the kill switch"). Reported rather than gated - the
 # cap is on the application, and this cache is neither shipped nor permanent.
 $fullPkg = Get-ChildItem $releases -Filter "$packId-$Version-full.nupkg" | Select-Object -First 1
+$installedBytes = $payloadBytes
 if ($fullPkg) {
+    $installedBytes += $fullPkg.Length
     $pkgMb = [math]::Round($fullPkg.Length / 1MB, 1)
     Write-Host ("on disk after install: {0} MB (app {1} + retained package {2})" -f `
         [math]::Round($size + $pkgMb, 1), $size, $pkgMb)
@@ -324,6 +327,9 @@ if (-not $NoWizard) {
         "/DMvVersion=$Version",
         "/DMvRepoRoot=$repo",
         "/DMvPayloadSetup=$($setup.FullName)",
+        # Apps & features size: Inno only counts what it copies itself, which
+        # is its own uninstaller (~4 MB), never the Velopack tree.
+        "/DMvInstalledBytes=$installedBytes",
         "/O$OutputDir",
         (Join-Path $repo "tools\package\mediaviewer.iss")
     )
