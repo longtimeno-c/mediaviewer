@@ -418,7 +418,7 @@ final class ManagementModel: ObservableObject {
                coverBox: ($0["cover_box"] as? [NSNumber] ?? []).map { $0.doubleValue })
       }
       await MainActor.run {
-        if list != self.people { self.people = list }
+        self.applyPeople(list)
         guard self.peopleAgain else {
           self.peopleLoading = false
           return
@@ -432,6 +432,12 @@ final class ManagementModel: ObservableObject {
         }
       }
     }
+  }
+
+  /// The grid's list, as a read of the index returned it (the bench seeds
+  /// 200 people through this too).
+  func applyPeople(_ list: [Person]) {
+    if list != people { people = list }
   }
 
   /// A line under People that clears itself after a few seconds.
@@ -507,6 +513,23 @@ final class ManagementModel: ObservableObject {
     }.value
     reloadPeople()
     return removed
+  }
+
+  /// A pack built before people_dedupe was appended has no "Merge duplicates".
+  var canDedupe: Bool { table.has(\mv_ai_api.people_dedupe) }
+
+  /// "Merge duplicates" (plan/17 "Merge duplicates"): the pack re-checks
+  /// every face, then merges people who are the same person. Only ever on
+  /// request. People merged away and faces moved; nil when it could not run.
+  func mergeDuplicates() async -> (merged: UInt32, moved: UInt32)? {
+    guard canDedupe else { return nil }
+    let t = table
+    let result: (UInt32, UInt32)? = await Task.detached {
+      var merged: UInt32 = 0, moved: UInt32 = 0
+      return t.call { t.a.people_dedupe?(t.ctx, &merged, &moved) } == MV_OK ? (merged, moved) : nil
+    }.value
+    reloadPeople()
+    return result.map { (merged: $0.0, moved: $0.1) }
   }
 
   /// A pack built before people_reanalyse was appended has no re-run.

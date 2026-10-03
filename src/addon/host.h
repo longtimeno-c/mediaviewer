@@ -56,6 +56,11 @@ struct host_services {
   std::function<expected(const std::string& path, std::int64_t pts_ms,
                          std::span<const std::uint8_t> jpeg)>
       store_thumbnail_jpeg;
+  // The Recycle Bin / Trash for one file (PR 54, find duplicates): true when
+  // it went to the bin, false when the location has none and nothing was
+  // removed. Never a permanent delete. Empty leaves the table's recycle_file
+  // NULL, and an add-on offers no delete.
+  std::function<result<bool>(const std::string& path)> recycle;
   // The verified folder of an installed piece of the add-on's family.
   // loaded_addon::load fills it from the store when left empty.
   std::function<result<std::string>(const std::string& piece_id)> piece_dir;
@@ -125,9 +130,14 @@ class loaded_addon {
   // library and calls mv_addon_get with a fresh host table. A file changed
   // since install is refused: status::corrupt. An add-on built for another
   // host API: status::unsupported_format ("needs an update").
+  // `entry`: the export to call. A second host of an add-on's code (the
+  // search agent, plan/23) names its own door (MV_AI_READER_ENTRY_SYMBOL); an
+  // add-on without that symbol is status::unsupported_format ("needs an
+  // update"), never loaded through mv_addon_get instead.
   [[nodiscard]] static result<std::unique_ptr<loaded_addon>> load(const store& s,
                                                                    const std::string& id,
-                                                                   host_services services);
+                                                                   host_services services,
+                                                                   const char* entry = MV_ADDON_ENTRY_SYMBOL);
 
  private:
   loaded_addon() = default;

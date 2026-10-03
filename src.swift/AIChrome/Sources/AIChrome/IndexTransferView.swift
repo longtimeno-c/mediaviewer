@@ -213,10 +213,14 @@ final class IndexTransferModel: ObservableObject {
   private static func exportNote(_ status: Int32, _ o: [String: Any]) -> String {
     if status == MV_ERR_CANCELLED.rawValue { return "The export was cancelled." }
     guard status == MV_OK.rawValue else { return "The index could not be exported." }
-    var s = "Exported \(countText(UInt64(max(0, int64(o["assets"]))))) files (\(bytesText(UInt64(max(0, int64(o["bytes"])))))."
+    let files = countText(UInt64(max(0, int64(o["assets"]))))
+    let size = bytesText(UInt64(max(0, int64(o["bytes"]))))
+    let thumbs = int64(o["thumbs"])
+    var s = thumbs > 0 ? "Exported \(files) files and \(countText(UInt64(thumbs))) thumbnails (\(size))."
+                       : "Exported \(files) files (\(size))."
     if o["people_included"] as? Bool ?? false { s += " People included." }
     let missing = int64(o["thumbs_missing"])
-    if missing > 0 { s += " \(countText(UInt64(missing))) thumbnails were not made yet and were left out." }
+    if missing > 0 { s += " \(countText(UInt64(missing))) thumbnails could not be made and were left out." }
     return s
   }
 

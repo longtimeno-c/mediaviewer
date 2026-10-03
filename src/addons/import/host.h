@@ -64,6 +64,11 @@ class host {
                               std::vector<std::uint32_t>& kind) const;
   [[nodiscard]] result<std::string> thumbnail(const std::string& path) const;
 
+  // The Recycle Bin / Trash (find duplicates): absent on an older host.
+  [[nodiscard]] bool can_recycle() const noexcept;
+  // true: in the bin; false: the location has no bin, nothing was removed.
+  [[nodiscard]] result<bool> recycle(const std::string& path) const;
+
   [[nodiscard]] bool should_yield() const noexcept;
   void post(mv_addon_event_kind kind, mv_status status, std::uint64_t id,
             std::int64_t payload) const noexcept;

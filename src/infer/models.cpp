@@ -158,8 +158,25 @@ result<std::unique_ptr<clip_model>> clip_model::open(const runtime& rt, const cl
   return m;
 }
 
+result<std::unique_ptr<clip_model>> clip_model::open_text_only(const runtime& rt, const clip_spec& spec,
+                                                               const session_options& options) {
+  std::unique_ptr<clip_model> m(new clip_model());
+  m->spec_ = spec;
+  m->key_ = spec.spec_key();
+  MV_TRY(std::string vocab, read_text(spec.vocab_file));
+  MV_TRY(std::string merges, read_text(spec.merges_file));
+  MV_TRY(clip_tokenizer tok, clip_tokenizer::load(vocab, merges, spec.context));
+  m->tok_ = std::move(tok);
+  session_options text_opts = options;
+  text_opts.on = backend::cpu;
+  MV_TRY(auto text, session::open(rt, spec.text_file, text_opts, nullptr));
+  m->text_ = std::move(text);
+  return m;
+}
+
 expected clip_model::embed_images(std::span<const rgb_view> images, std::vector<float>& out) {
   out.clear();
+  if (!image_) return err(status::unsupported_format);
   if (images.empty()) return {};
   if (image_batch_ > 0 && images.size() != image_batch_) {
     // A fixed batch: run it in slices, padding the last with its final image.

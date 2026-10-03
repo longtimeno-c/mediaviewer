@@ -133,6 +133,9 @@ public unsafe struct MvImportApi
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> PreviewNamesJson;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, uint*, MvStatus> HistoryJson;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, ulong*, MvStatus> VerifyFolder;
+    // Not appended here: PR 54's find_duplicates / trash_duplicate follow, and
+    // the Import chrome reads them itself (DuplicatesApi.cs), so this struct's
+    // size stays what every installed Import chrome was built against.
 }
 
 /// <summary>

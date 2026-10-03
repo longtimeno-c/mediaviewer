@@ -245,6 +245,8 @@ public unsafe struct MvAiApi
     // people refinement on request (2026-09-28, plan/17 "People refinement")
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint*, MvStatus> PersonRefine;
 
+    // appended 2026-09-28 (plan/23): a result clip's length for an NLE hand-off
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, long*, MvStatus> ResultDuration;
     // sharing an index (2026-09-28, plan/17 "Sharing an index")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, ulong*, uint, uint, ulong*, MvStatus> ExportIndex;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> InspectExport;
@@ -259,6 +261,9 @@ public unsafe struct MvAiApi
 
     // people in the open folder (2026-09-28, plan/17 "People in the open folder")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, byte*, uint, uint*, MvStatus> PeopleInJson;
+
+    // merge duplicates on request (2026-10-03, plan/17 "Merge duplicates")
+    public delegate* unmanaged[Cdecl]<IntPtr, uint*, uint*, MvStatus> PeopleDedupe;
 
     // re-analysing people (2026-10-03, plan/17 "People model")
     public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> PeopleReanalyse;
@@ -476,6 +481,17 @@ public sealed unsafe class AiApi
     }
 
     /// <summary>
+    /// "Merge duplicates": every face re-checked, then people who are the same
+    /// person merged. People merged away, and faces that moved. Worker.
+    /// </summary>
+    public (uint Merged, uint Moved) PeopleDedupe()
+    {
+        uint merged, moved;
+        Check(_api->PeopleDedupe(Ctx, &merged, &moved));
+        return (merged, moved);
+    }
+
+    /// <summary>
     /// No-block: "Re-analyse faces". Every photo and clip goes through the
     /// People pass again with the pack's face model; the user's people carry
     /// over. Progress: <see cref="MvAiStatus.FlagPeopleRerun"/> and
@@ -506,6 +522,19 @@ public sealed unsafe class AiApi
     /// <summary>Worker: the words that matched, for a speech result; "" otherwise.</summary>
     public string ResultSnippet(ulong search, uint index) =>
         ReadPath((b, c) => _api->ResultSnippet(Ctx, search, index, (byte*)b, c));
+
+    /// <summary>
+    /// Worker: a result clip's length in ms as the index recorded it (0 for a
+    /// still or an unknown length), for an FCPXML hand-off (plan/23). 0 from an
+    /// older pack whose table stops before the field.
+    /// </summary>
+    public long ResultDurationMs(ulong search, uint index)
+    {
+        if (_api->StructSize < (uint)sizeof(MvAiApi) || _api->ResultDuration == null) return 0;
+        long ms = 0;
+        Check(_api->ResultDuration(Ctx, search, index, &ms));
+        return ms;
+    }
 
     /// <summary>
     /// Worker (reads faces.db): named people for the word being typed, as

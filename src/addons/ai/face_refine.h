@@ -35,6 +35,8 @@
 #include <atomic>
 #include <cstdint>
 #include <span>
+#include <utility>
+#include <string>
 #include <vector>
 
 namespace mv::ai {
@@ -110,6 +112,36 @@ struct refine_output {
 };
 
 [[nodiscard]] refine_output refine_people(const refine_input& in, const refine_params& p);
+
+// ---- duplicates (plan/17 "Merge duplicates") ----------------------------------
+
+struct dedupe_person {
+  std::int64_t id = 0;
+  std::string name;          // "" unnamed
+  std::uint32_t faces = 0;
+};
+
+struct dedupe_input {
+  std::uint32_t dim = 0;
+  std::span<const person_proto> protos;   // every person, as a full refinement rebuilt them
+  std::span<const dedupe_person> people;  // names and sizes (any order); a proto without one is unnamed, 0 faces
+  // (min, max) pairs never merged: a split kept them apart, or a face of one
+  // was rejected from the other. Sorted.
+  std::span<const std::pair<std::int64_t, std::int64_t>> apart;
+  const std::atomic<bool>* cancel = nullptr;  // set: stop early, return nothing
+};
+
+// People who are the same person. Two people link when each one's exemplars
+// vouch for the other's, both ways, at `join` (support, the refinement's own
+// measure: each exemplar's top-k mean cosine to the other's exemplars,
+// averaged), unless they are apart or both named and named differently. Links
+// are taken strongest first into groups by complete linkage: a group takes a
+// person only when every member links to it, so a chain of lookalikes cannot
+// walk. Each group lists its survivor first: named over unnamed, then the
+// most faces, then the oldest id. Pairs whose cores are far apart (mean
+// pairwise below join - 2 margins) are not scored.
+[[nodiscard]] std::vector<std::vector<std::int64_t>> find_duplicates(const dedupe_input& in,
+                                                                     const refine_params& p);
 
 // 0..1 from what the analyser knows of a crop: detector score, the face's
 // short side in pixels of the analysed image, the aligned crop's sharpness

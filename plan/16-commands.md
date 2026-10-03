@@ -466,7 +466,7 @@ Standard-viewer ideas that fail the speed bar, D4/D5, or "this is not a library"
 | PiP / compact overlay | v1.1. Second window is a second present path unless it is DWM-only |
 | Focus peaking, zebras, RGB channels | v1.1 shaders |
 | Cloud albums, AI cull | Rule 6; also not a viewer. Local search and faces are planned separately in [17](17-local-ai-search.md) (post-v1, opt-in) |
-| Duplicate finder, catalog, albums | Library product |
+| Catalog, albums | Library product. (An exact-duplicate finder is in the Import add-on, PR 54, [18](18-import.md#find-duplicates-pr-54).) |
 | Slideshow crossfade / music | Drops frames / movie player |
 | Plugins, scripting, hex view, WIA capture, PDF, Cast | Out of scope |
 | Growing XAML over the canvas | D1 amendment |

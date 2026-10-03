@@ -522,6 +522,23 @@ public static partial class IslandHost
         }
         _localSearchPanel.Children.Add(card);
 
+        // Every piece with a newer version, in one click, Core first.
+        AddonSlot[] updates = UpdateAllSlots();
+        if (AiSlot.State.Installed && !AnyAiPending() && updates.Length > 1)
+        {
+            long archive = updates.Sum(s => s.Offer.ArchiveSize);
+            string names = string.Join(", ", updates.Select(s => s == AiSlot ? "Core" : s.Name));
+            string[] versions = updates.Select(s => s.Offer.Version).Distinct().ToArray();
+            string head = versions.Length == 1 ? $"Update all to {versions[0]}" : "Update all";
+            Button updateAll = SettingsButton($"{head} ({names}) — downloads ~{Gb(archive)}", () =>
+            {
+                foreach (AddonSlot each in UpdateAllSlots()) StartPieceInstall(each);
+            });
+            updateAll.HorizontalAlignment = HorizontalAlignment.Left;
+            ToolTipService.SetToolTip(updateAll, "Core first, then the others, one after another.");
+            _localSearchPanel.Children.Add(updateAll);
+        }
+
         // The pieces, each with its size and its own Install / Remove.
         var pieces = new StackPanel { Spacing = 4 };
         pieces.Children.Add(PieceRow(AiSlot, "Core", "Search by description. Required."));
@@ -642,6 +659,7 @@ public static partial class IslandHost
             {
                 Button update = SettingsButton($"Update to {newer}", () => StartPieceInstall(slot));
                 update.IsEnabled = !slot.Removing;
+                if (slot != AiSlot && CoreBehind()) ToolTipService.SetToolTip(update, "Core updates first.");
                 AutomationProperties.SetName(update, $"Update {title} to {newer}");
                 var both = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 both.Children.Add(update);
@@ -694,6 +712,18 @@ public static partial class IslandHost
     private static AddonSlot[] InstallAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot }
         .Where(s => !s.State.Installed && !s.Removing && !AiQueuedOrInstalling(s) && s.Offer.Kind == OfferKind.Available)
         .ToArray();
+
+    // What "Update all" fetches: every installed piece the channel has a newer
+    // version of; the queue puts Core first. Owner, 2026-10-03: the pieces had
+    // been updated one by one and the 1 GB Core left behind, so a piece ran
+    // ahead of the engine it was built with.
+    private static AddonSlot[] UpdateAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot, CudaSlot }
+        .Where(s => UpdateVersion(s) is not null && !s.Removing && !AiQueuedOrInstalling(s))
+        .ToArray();
+
+    // Core is behind the channel and not on its way: a piece's install or
+    // update queues Core first.
+    private static bool CoreBehind() => UpdateVersion(AiSlot) is not null && !AiQueuedOrInstalling(AiSlot) && !AiSlot.Removing;
 
     private static void AddAiNote(string text)
     {
@@ -910,6 +940,9 @@ public static partial class IslandHost
             return;
         }
         if (!AnyAiPending()) _aiBatchNotes.Clear();
+        // A piece behind a Core that is itself behind: Core first (its 3 GB
+        // check runs when its turn comes, like every queued piece's).
+        if (slot != AiSlot && CoreBehind()) _aiQueue.Insert(0, AiSlot);
         if (slot == AiSlot) _aiQueue.Insert(0, slot);
         else _aiQueue.Add(slot);
         StartNextPiece();

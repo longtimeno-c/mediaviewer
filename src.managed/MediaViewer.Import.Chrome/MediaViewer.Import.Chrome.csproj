@@ -39,8 +39,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The add-ons' progress bar (a WinUI ProgressBar fail-fasts in this host). -->
+    <!-- The add-ons' progress bar and type-in field (a WinUI ProgressBar or
+         TextBox fail-fasts in this host). -->
     <Compile Include="..\Shared\FlatBar.cs" Link="Shared\FlatBar.cs" />
+    <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
   </ItemGroup>
 
   <ItemGroup>

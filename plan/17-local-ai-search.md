@@ -631,7 +631,10 @@ offered Local search.
   previous matching moment; listed only while the pack is loaded.
 - **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
   status pill, scrub-bar match dots, Settings -> Local search with per-piece install (clicks
-  queue, Core first; "Install all"), compute / precision (the model stays on Auto), roots, People.
+  queue, Core first; "Install all"; from 2026-10-03 "Update all" when more than one installed
+  piece has a newer version, and a piece's Install or Update queues a Core that is itself
+  behind first, so no piece runs ahead of the engine it was built with), compute / precision
+  (the model stays on Auto), roots, People.
 
 ### Audio (added 2026-09-27, owner)
 
@@ -928,6 +931,41 @@ refinement live, the real SFace pack (so flip averaging's gain and the threshold
 real faces), a labelled people set (none exists; it is what should tune join / keep / margin),
 and PR 1's present-loop gate on either platform while a full call runs.
 
+### Merge duplicates (2026-10-03, owner)
+
+Owner: "a rescan all option that goes through and does A/B testing on images and tries to merge
+them into the right person … I have a lot of duplicates." Shared core, `mv.ai.1` appended
+(`people_dedupe`), a button in both chromes. Only ever on request (plan/12, 2026-09-28: nothing
+refines People in the background; the idle consolidate merge is unchanged).
+
+**What a click does** (`engine::people_dedupe`):
+
+1. **Every face re-checked.** The refinement above, with no focus: a full snapshot, every
+   person rebuilt, every unpinned face judged (move, evict, admit, regroup), Jacobi passes,
+   then `refine_commit` (the user's later changes win, as before).
+2. **The same person twice** (`find_duplicates` in `face_refine.h`, pure, no lock held). Over
+   the rebuilt prototypes: two people link when each one's exemplars **vouch** for the other's
+   at `join` (the model's `same_person`, 0.40), vouching being the refinement's own support
+   (each exemplar's top-3 mean cosine to the other's exemplars), averaged, both ways, the
+   smaller kept. Links are grouped strongest first by **complete linkage**: a group takes a
+   person only when every member links to it, so a chain of lookalikes cannot walk (the lesson
+   of the old consolidate). Exemplars are pinned and good-quality faces, so weak crops that
+   drag a cluster's average down do not hide a duplicate: this is what the idle consolidate,
+   which compares whole-cluster averages at 0.42, misses. Never linked: two people **named
+   differently**, a pair a **split** kept apart (`no_merge`), a pair where a face of one was
+   **rejected** from the other. Cores far apart (mean pairwise below 0.24) are not scored.
+3. **Who survives.** In a group: a named person over an unnamed one, then the one with more
+   faces, then the older; the others merge into it (`faces_db::merge_auto`, which checks the
+   pair again). Nothing is pinned: the user did not say "same person".
+
+The call returns people merged away and faces moved; the chrome says "3 people merged, 12 faces
+moved." or "No duplicates found, and every face matches." Undo is Split (a split pair never
+merges again on its own). Cost is the full refinement's (above) plus pairs × exemplars²:
+negligible beside it at hundreds of people. `mv_ai_tests "[dedupe]"` covers it on synthetic
+SFace-like vectors (a duplicate the cluster average misses, strangers, a lookalike chain, names,
+apart pairs, survivors) and through faces.db and the engine (a split stays apart, a second call
+changes nothing).
+
 ### People in the open folder (2026-09-28, owner)
 
 Owner: "in people I can see everyone in any folder I open; can I just show people from the
@@ -965,7 +1003,8 @@ roots with each asset's path **relative to its root** (`/`-separated), its `(mti
 kind and duration, and the rows that describe it: `progress` (done and partial only),
 `frames`, `speech`. Optional: **People** (`people`, `faces` without a path, `rejected`,
 `no_merge`, `face_scanned`) and **thumbnails** (the JPEG-512 cache's bytes for a still and each
-stored moment; only what the cache already holds; an export never decodes a library). The
+stored moment, a clip's own as the frame its poster lands near; one the cache does not hold yet
+is made then, between the viewer's busy spells, amended 2026-10-03). The
 roots keep their original absolute path and a display name so an import can offer the same
 place (a NAS mounted at the same path answers itself). Written to `<dest>.part` and renamed.
 The export reads index.db and faces.db on its own read connections: indexing is never paused
@@ -1081,7 +1120,8 @@ same_person 0.26, keep 0.16, keep_weak 0.20, merge 0.28; through faces.db that l
 precision on full-size faces (0.9888 vs SFace's 0.9938). Stricter is better for People (a wrong
 person is the owner's complaint; a split is one drag to merge), so the shipped values sit at
 IR-50's FAR ~1e-4 point: **same_person 0.30, keep 0.20, keep_weak 0.24, margin 0.10, ambiguous
-0.04, merge_at 0.32.** Measured through the real code (`mv_ai_tests "[.people-bench]"`: online
+0.04, merge_at 0.32.** "Merge duplicates" (`people_dedupe`, landed beside this) and "Refine
+faces" take the same values from the model, not SFace's 0.40. Measured through the real code (`mv_ai_tests "[.people-bench]"`: online
 add in a shuffled order, the merge, then the settle below), BCubed on the 5,985 faces:
 
 | | Precision | Recall | F | People (423 true) |

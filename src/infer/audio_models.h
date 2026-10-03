@@ -47,11 +47,15 @@ class clap_model {
   [[nodiscard]] static result<std::unique_ptr<clap_model>> open(const runtime& rt, const clap_spec& spec,
                                                                 const session_options& options,
                                                                 provider_fault* fault = nullptr);
+  // The text tower only (the search agent, plan/23): embed_audio is
+  // status::unsupported_format.
+  [[nodiscard]] static result<std::unique_ptr<clap_model>> open_text_only(const runtime& rt, const clap_spec& spec,
+                                                                          const session_options& options);
   // One L2-normalised vector per window (48 kHz mono PCM).
   [[nodiscard]] expected embed_audio(std::span<const std::span<const float>> windows, std::vector<float>& out);
   [[nodiscard]] result<std::vector<float>> embed_text(std::string_view utf8);
   [[nodiscard]] const clap_spec& spec() const noexcept { return spec_; }
-  [[nodiscard]] backend on() const noexcept { return audio_->on(); }
+  [[nodiscard]] backend on() const noexcept { return audio_ ? audio_->on() : backend::cpu; }
 
  private:
   clap_spec spec_;

@@ -3,7 +3,10 @@
 // The portable part of io/file_port.h: buffers and path strings.
 #include "io/file_port.h"
 
+#include <atomic>
+#include <chrono>
 #include <new>
+#include <thread>
 #include <utility>
 
 namespace mv::io {
@@ -75,5 +78,20 @@ std::string native_relative(std::string_view relative_slash) {
   }
   return out;
 }
+
+namespace detail {
+namespace {
+std::atomic<std::uint32_t> g_round_trip_us{0};
+}  // namespace
+
+void set_simulated_round_trip_us(std::uint32_t micros) noexcept {
+  g_round_trip_us.store(micros, std::memory_order_relaxed);
+}
+
+void simulated_round_trip() noexcept {
+  const std::uint32_t us = g_round_trip_us.load(std::memory_order_relaxed);
+  if (us != 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+}
+}  // namespace detail
 
 }  // namespace mv::io
