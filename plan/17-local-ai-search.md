@@ -1067,6 +1067,122 @@ export leaves it out and the chrome's picker does not offer it.
 **Rule 6.** The file carries folder and file names, and, if ticked, faces and names. It is the
 user's own export to a place they chose; nothing about it is logged or sent.
 
+### People model (2026-10-03, owner)
+
+Owner: "can we improve / select a better people model … add a re-run that redoes the photos and
+it should also take a look at already separated people and assign". Shared core, `mv.ai.1`
+appended, both chromes, the ai-faces piece's model.
+
+**The model: AdaFace IR-50 (WebFace4M), fp16, replacing SFace.** The refinement notes above said
+a second face model waited for numbers; these are they. Every candidate went through *our*
+pipeline (YuNet 2023mar boxes and landmarks, the ArcFace 112 template, flip averaging, L2) on LFW
+(13,233 photos, kept out of git): the 6,000 standard pairs (10-fold), and the 5,985 photos of the
+423 people with five or more as a clustering set, at full size and with the face shrunk to ~40 px
+and ~24 px (a crowd in a phone photo). TAR at a fixed false-accept rate over all 17.9 M pairs;
+BCubed F of average-linkage clustering at the FAR 1e-4 threshold.
+
+| Embedder (licence) | Size | LFW | TAR@1e-4 full | @1e-4 40 px | @1e-4 24 px | F 24 px | CPU, 1 thread | Core ML |
+|---|---|---|---|---|---|---|---|---|
+| SFace 2021dec (Apache-2.0), today | 39 MB | 99.38 % | 99.00 % | 98.52 % | 94.33 % | 0.958 | 17 ms | — |
+| AdaFace IR-18 WebFace4M (MIT) | 96 MB | 99.43 % | 99.62 % | 99.40 % | 97.26 % | — | — | 17 ms |
+| **AdaFace IR-50 WebFace4M (MIT)** | 175 MB / **87 MB fp16** | **99.80 %** | **99.93 %** | **99.92 %** | **99.81 %** | **0.998** | 97 ms | **6 ms (fp16)** |
+| AdaFace IR-101 WebFace12M (MIT) | 261 MB | 99.80 % | 99.94 % | 99.94 % | 99.90 % | 0.998 | 2x IR-50 | — |
+
+Times are one face, both flip runs, Apple M5, ORT 1.30, a quiet machine; the SFace and IR-18/101
+LFW numbers match their published ones (SFace 99.40, CVLface's IR-50 99.78), so the pipeline is
+faithful. LFW saturates, so the published harder sets order the rest: IJB-C TAR@1e-4 97.0 (IR-50)
+and 97.7 (IR-101), TinyFace rank-1 70.2 / 72.4; SFace publishes none for the shipped
+MobileFaceNet. IR-101 buys ~0.1 point here for twice IR-50's compute and +86 MB: not taken.
+fp16 IR-50 agrees with fp32 at cosine 0.99998 on the export check and at >= 0.99999 on every one of
+the 5,985 clustering faces, and settles to the same people (BCubed 0.9994 / 0.9982).
+
+**Licence gate.** CVLface's code and AdaFace's are MIT (github.com/mk-minchul/CVLface, /AdaFace);
+the Hugging Face repos carry no licence tag and their cards say to follow the training data's
+licence. **WebFace4M is distributed for non-commercial research.** SFace (MS1M-derived) and YuNet
+(WIDER FACE) carry the same class of caveat, which the PR 24 licence check did not record. Weights
+licence passes `ai-models.py check`; whether the training data's terms reach the weights is an
+owner / legal call, listed under *Open decisions*. Rejected outright: InsightFace's models
+(buffalo_l, antelopev2, SCRFD, and their re-uploads tagged MIT / Apache, e.g. the ONNX Model Zoo's
+`arcfaceresnet100-8`), EdgeFace and ElasticFace (CC BY-NC-SA), TransFace and TopoFR (no licence),
+YOLO-face variants (GPL-3.0-only or AGPL). Not better: FaceNet (MIT), dlib (CC0), GhostFaceNets.
+
+**No ONNX upstream, so the pack builds it.** `tools/package/face-export.py` re-declares the IR
+backbone and loads the pinned safetensors **as data** (never the repo's `trust_remote_code`
+Python), exports fp16 weights with fp32 input and output, and checks ONNX against PyTorch.
+`ai-models.json` pins the source (revision, size, SHA-256) with an `export` block: `stage` runs
+the exporter and keeps the file only if it reproduces 16 values and the norm of a fixed input's
+embedding (`golden`), so a re-export is verified by output, not by bytes (torch.onnx's bytes move
+with its version). `installed_size` is what the ceiling counts: worst supported combination
+~2.93 GB of 3 GB (SFace: ~2.88). Pack builders need `requirements-export.txt`; the app does not.
+
+**Running it.** The embedder now runs on the towers' compute choice (Auto: Core ML on a Mac, CUDA
+with the ai-cuda piece) and keeps the provider only if a fixed crop agrees with CPU at cosine
+>= 0.99, the towers' rule; the detector stays on CPU. Core ML takes 6 ms a face (10.9 ms through
+`face_models` with the alignment), 2.8x faster than SFace on CPU. **Windows without the CUDA
+piece runs it on CPU at ~6x SFace's cost** (measured on the M5; a Windows CPU number is owed).
+That is People indexing time on the background workers, which yield to the viewer; it is not on
+any thread the viewer waits for.
+
+**Thresholds** (`model.json`; `infer::face_spec`, `face_tuning`). SFace's were set by hand around
+its 0.363 verification point. Mapping each to IR-50 at the same impostor FAR on LFW gives
+same_person 0.26, keep 0.16, keep_weak 0.20, merge 0.28; through faces.db that lost a little
+precision on full-size faces (0.9888 vs SFace's 0.9938). Stricter is better for People (a wrong
+person is the owner's complaint; a split is one drag to merge), so the shipped values sit at
+IR-50's FAR ~1e-4 point: **same_person 0.30, keep 0.20, keep_weak 0.24, margin 0.10, ambiguous
+0.04, merge_at 0.32.** "Merge duplicates" (`people_dedupe`, landed beside this) and "Refine
+faces" take the same values from the model, not SFace's 0.40. Measured through the real code (`mv_ai_tests "[.people-bench]"`: online
+add in a shuffled order, the merge, then the settle below), BCubed on the 5,985 faces:
+
+| | Precision | Recall | F | People (423 true) |
+|---|---|---|---|---|
+| SFace (today's thresholds), full size | 0.9938 | 0.9938 | 0.9938 | 433 |
+| SFace, ~24 px faces | 0.9972 | 0.9760 | 0.9865 | 473 |
+| **IR-50 (0.30), full size** | **0.9994** | **0.9982** | **0.9988** | 426 |
+| **IR-50 (0.30), ~24 px faces** | **0.9994** | **0.9966** | **0.9980** | 429 |
+
+Wrong-person rate 0.62 % -> 0.06 % at full size; missed 0.62 % -> 0.18 %, and 2.4 % -> 0.34 %
+for small faces. (0.9994 is the ceiling every setting reached: LFW's own label noise.) The real
+staged piece through `face_models` on 302 LFW photos of 60 people (`"[people]"`): genuine median
+0.596, impostor p99.9 0.222, 99.84 % of same-person pairs above 0.30, 1 of 44,818 strangers.
+
+**Re-run** (`people_reanalyse`, appended to `mv.ai.1`; "Re-analyse faces" in Settings → People on
+the Mac, the People window on Windows). It forgets what the People pass scanned and the workers
+analyse every photo and clip again with the pack's model. faces.db records each vector's
+embedder (`faces.spec`, migrated from the asset's `scanned` spec) and compares only vectors of the
+current one, so the two spaces never mix. A re-analysed face whose box matches one already there
+(IoU >= 0.5, as the refinement's recheck) **keeps its row: id, person, name, pin, "not this
+person"**, so the user's separation carries to the new model; a new face waits unassigned; an old
+face the new pass does not find again goes when its asset is marked done. Until then old faces
+still show their person (the grid does not empty) but are compared with nothing. When every asset
+is done and indexing is idle, the control thread **settles** once: a full refinement with no focus
+(every unpinned face judged against every person's core, up to three calls until nothing moves:
+leave a person, move to the right one, waiting faces join the person they clearly match, waiting
+faces that match each other but nobody become new people), then the merge. Pinned faces never
+move. A **new face model in a pack update starts the same re-run by itself** (faces.db notes the
+spec it last opened with), so updating to IR-50 inherits every name. Progress:
+`MV_AI_STATUS_PEOPLE_RERUN` / `_SETTLING` and `people_scan_total` / `_done`, `people_model_utf8`
+(appended to `mv_ai_status`). An offline folder's old faces wait for their asset; an index export
+carries only the current model's faces.
+
+The settle is a library-wide refinement on request, which plan/12 2026-09-28 had narrowed to one
+person: the user asked for this one explicitly ("take a look at already separated people and
+assign"); see plan/12 2026-10-03. Cost: 0.2 s (SFace) / 0.3 s (IR-50) for 6 k faces on the control
+thread on a quiet M5 (1.1-1.2 s with the evals running beside it), which does nothing else
+meanwhile; at 100 k faces it is untested (the 128-d full
+call was 2.7 s; 512-d is ~4x the dot products).
+
+**Tests.** `"[rerun]"`: a new model inherits Anna's name and pinned cover while Ben, glued on by
+the old model, comes out with his new face; a same-model re-run keeps every person; through the
+engine, re-analysing keeps the names and counts and replaces faces in place. `"[people]"` (real
+piece, `MV_AI_FACES_DIR` + `MV_AI_FACE_SET`), `"[.people-bench]"` (`MV_FACE_EVAL`, LFW vectors).
+
+**Not done / owed.** The training-data call (*Open decisions*). Windows: built only as C# compile
+(`dotnet msbuild -t:Compile`) and the shared core on the Mac; the WinUI half, the CUDA path and a
+Windows CPU timing need a Windows run. The app was not run end to end with the new piece (no
+sideloaded pack in this change), so the Settings rows are compiled, not seen. The settle at 100 k
+faces, and PR 1's present-loop gate while a re-run indexes, on either platform. AdaFace's feature
+norm is a quality signal the face quality measure could use; not used yet.
+
 ## Photos library source (macOS, issue #72, 2026-09-28)
 
 **Status: built on branch `mac-photos-library-source` (PR #86). The owner settled its calls on
@@ -1230,6 +1346,10 @@ What the numbers say:
 6. ~~**A Mac-only source in a dual-track add-on (D9).**~~ **Settled 2026-09-28:** yes, it is Mac
    only. The base-app `NSPhotoLibraryUsageDescription` and photos-library entitlement are
    accepted too.
+7. **People model training data (2026-10-03).** AdaFace IR-50's weights are MIT, trained on
+   WebFace4M, whose terms are non-commercial research; SFace (MS1M-derived) and YuNet (WIDER
+   FACE) have the same kind of caveat. Ship IR-50 on the weights licence, or hold for a legal
+   read? (plan/17 "People model")
 
 ## Explicitly not in this feature
 

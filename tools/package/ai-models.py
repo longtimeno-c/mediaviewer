@@ -7,6 +7,12 @@
     ai-models.py stage --piece ai-faces --out build/addons/ai-faces [--cache DIR]
     ai-models.py check
 
+An entry with `export` is a checkpoint the pack runs as ONNX it builds itself
+(the People embedder, plan/17 "People model"): `stage` verifies the pinned
+source, runs the named tool (tools/package/face-export.py) and keeps the result
+only if it reproduces `export.golden`. That step needs requirements-export.txt;
+`check` does not.
+
 `stage` downloads every file ai-models.json lists for a piece from its pinned
 revision, verifies size and SHA-256, and lays it out as the add-on reads it
 (src/addons/ai/pack.h): models/<folder>/<file> plus a model.json per model
@@ -65,6 +71,19 @@ def fetch(entry: dict, cache: Path) -> Path:
     return target
 
 
+def export(entry: dict, src: Path, target: Path) -> None:
+    ex = entry["export"]
+    if ex.get("tool") != "face-export.py":
+        raise ValueError(f"{entry['as']}: unknown export tool {ex.get('tool')}")
+    golden = " ".join(str(v) for v in ex["golden"])
+    cmd = [sys.executable, str(Path(__file__).with_name("face-export.py")), "--arch", ex["arch"],
+           "--weights", str(src), "--out", str(target), "--expect", golden]
+    if ex.get("fp16"):
+        cmd.append("--fp16")
+    import subprocess
+    subprocess.run(cmd, check=True)
+
+
 def stage(args) -> int:
     spec = load()["pieces"].get(args.piece)
     if spec is None:
@@ -79,7 +98,9 @@ def stage(args) -> int:
         for entry in f["files"]:
             src = fetch(entry, cache)
             target = dest / entry["as"]
-            if not target.exists() or sha256_file(target) != entry["sha256"]:
+            if "export" in entry:
+                export(entry, src, target)
+            elif not target.exists() or sha256_file(target) != entry["sha256"]:
                 shutil.copyfile(src, target)
             licences[f"{folder}/{entry['as']}"] = entry["licence"]
         if "model" in f:
@@ -110,9 +131,12 @@ def check(_args) -> int:
                 for key in ("repo", "revision", "file", "as", "size", "sha256"):
                     if key not in entry:
                         bad.append(f"{piece}:{folder}/{entry.get('as', '?')} lacks {key}")
+                ex = entry.get("export")
+                if ex is not None and (ex.get("tool") != "face-export.py" or len(ex.get("golden", [])) != 17):
+                    bad.append(f"{piece}:{folder}/{entry.get('as', '?')} has an export without its golden check")
                 if len(entry.get("revision", "")) != 40 or len(entry.get("sha256", "")) != 64:
                     bad.append(f"{piece}:{folder}/{entry.get('as', '?')} is not pinned")
-                total += entry.get("size", 0)
+                total += (ex or {}).get("installed_size", entry.get("size", 0))
         sizes[piece] = total
     # The largest supported combination: Core models + Faces + the runtime and
     # a vendor piece (ORT CUDA: ~205 MB; allow 400 MB for native code and chrome).

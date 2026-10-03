@@ -365,7 +365,19 @@ class ort_faces final : public face_analyzer {
   }
   const std::string& spec_key() const noexcept override { return m_->spec().spec_key; }
   float same_person() const noexcept override { return m_->spec().same_person; }
-  std::uint32_t dim() const noexcept override { return 128; }
+  std::uint32_t dim() const noexcept override { return m_->spec().dim; }
+  std::string name() const override { return m_->spec().name; }
+  face_tuning tuning() const noexcept override {
+    const infer::face_spec& s = m_->spec();
+    face_tuning t;
+    t.same_person = s.same_person;
+    t.keep = s.keep;
+    t.keep_weak = s.keep_weak;
+    t.margin = s.margin;
+    t.ambiguous = s.ambiguous;
+    t.merge_at = s.merge_at;
+    return t;
+  }
 
  private:
   std::unique_ptr<infer::face_models> m_;
@@ -531,14 +543,26 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     s.spec_key = spec->spec_key();
     return s;
   };
-  d.open_faces = [p]() -> result<std::unique_ptr<face_analyzer>> {
+  d.open_faces = [p](std::uint32_t compute) -> result<std::unique_ptr<face_analyzer>> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-faces"));
     MV_TRY(infer::face_spec spec, infer::read_face_spec(join(join(dir, "models"), "faces")));
     infer::session_options cpu;
     cpu.threads = 1;
-    MV_TRY(auto models, infer::face_models::open(*p->rt, spec, cpu));
+    // The embedder on the towers' compute choice (the detector stays on CPU:
+    // it is small, and its shape follows the image).
+    infer::session_options acc = cpu;
+    switch (compute) {
+      case MV_AI_COMPUTE_AUTO: acc.on = accelerated(*p->rt); break;
+      case MV_AI_COMPUTE_CUDA: acc.on = infer::backend::cuda; break;
+      case MV_AI_COMPUTE_OPENVINO: acc.on = infer::backend::openvino; break;
+      case MV_AI_COMPUTE_COREML: acc.on = infer::backend::coreml; break;
+      default: acc.on = infer::backend::cpu; break;
+    }
+    if (!p->rt->has_provider(acc.on)) acc.on = infer::backend::cpu;
+    acc.cache_dir_utf8 = coreml_cache(*p);
+    MV_TRY(auto models, infer::face_models::open(*p->rt, spec, cpu, &acc));
     return std::unique_ptr<face_analyzer>(new ort_faces(std::move(models)));
   };
   d.restart_needed = [p] {

@@ -409,12 +409,25 @@ void engine::refresh_counts() {
   std::uint64_t face_total = 0;
   std::uint32_t people = 0;
   bool faces_ready = false;
+  bool rerun = false;
+  std::uint64_t people_total = 0, people_done = 0;
+  std::string people_model;
   {
     std::lock_guard lock(models_m_);
     faces_ready = faces_model_ != nullptr;
+    if (faces_model_) people_model = faces_model_->name();
     if (faces_) {
       face_total = faces_->face_count();
       people = faces_->person_count(kPeopleMinFaces);
+      rerun = faces_->rerun_pending();
+      std::lock_guard al(assets_m_);
+      people_total = assets_.size();
+      if (rerun) {
+        // Exact while a re-run shows progress; one pass over the assets.
+        for (const auto& [id, m] : assets_) people_done += faces_scanned_.count(id);
+      } else {
+        people_done = std::min<std::uint64_t>(faces_scanned_.size(), people_total);
+      }
     }
   }
   {
@@ -445,6 +458,9 @@ void engine::refresh_counts() {
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
   status_.people = people;
+  status_.people_scan_total = people_total;
+  status_.people_scan_done = people_done;
+  copy_str(status_.people_model_utf8, sizeof(status_.people_model_utf8), people_model);
   // Read live: on the Mac, Core ML takes over from CPU once it has compiled.
   status_.backend = static_cast<std::uint32_t>(build.model ? build.model->on() : build.on);
   const infer::provider_fault fault =
@@ -462,6 +478,8 @@ void engine::refresh_counts() {
   if (models_failed_) flags |= MV_AI_STATUS_NO_MODELS;
   if (first_compile_ && (loading_ || !models_ready_) && !models_failed_) flags |= MV_AI_STATUS_FIRST_COMPILE;
   if (!sound_spec.empty() || !speech_spec.empty()) flags |= MV_AI_STATUS_AUDIO_READY;
+  if (rerun) flags |= MV_AI_STATUS_PEOPLE_RERUN;
+  if (settling_) flags |= MV_AI_STATUS_PEOPLE_SETTLING;
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -801,8 +819,7 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
   {
     std::lock_guard lock(models_m_);
     if (!faces_ || !faces_model_ || person <= 0) return err(status::invalid_arg);
-    params.join = faces_model_->same_person();
-    params.core = faces_model_->same_person();
+    params = faces_model_->tuning().refine();
     spec = faces_model_->spec_key();
     dim = faces_model_->dim();
     snap = faces_->refine_begin(true);
@@ -852,8 +869,7 @@ result<engine::dedupe_result> engine::people_dedupe() {
   {
     std::lock_guard lock(models_m_);
     if (!faces_ || !faces_model_) return err(status::invalid_arg);
-    params.join = faces_model_->same_person();
-    params.core = faces_model_->same_person();
+    params = faces_model_->tuning().refine();  // the model's own (model.json)
     spec = faces_model_->spec_key();
     dim = faces_model_->dim();
     snap = faces_->refine_begin(true);
@@ -922,15 +938,94 @@ result<engine::dedupe_result> engine::people_dedupe() {
   return r;
 }
 
+// "Re-analyse faces" (plan/17 "People model"): forget what the People pass
+// has scanned, so the workers analyse every asset again. faces_db::add then
+// replaces each face in place (box by box, keeping person, pin, rejections)
+// and holds new faces back until settle_people files them.
+expected engine::people_reanalyse() {
+  if (importing_elsewhere()) return err(status::busy);
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_) return err(status::invalid_arg);
+    MV_TRY_VOID(faces_->rerun_all());
+    faces_scanned_.clear();
+  }
+  {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+  }
+  work_cv_.notify_all();
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  return {};
+}
+
+// The settle at the end of a re-run. Every face is this model's now, the
+// people are the user's (carried box by box); a full refinement with no
+// focus judges every unpinned face: it may leave a person the new vectors
+// say it never belonged to, move to the one it does, or (waiting since its
+// re-analysis) join the person it clearly matches; waiting faces that match
+// each other but nobody become new people. A few calls, until nothing moves,
+// then the merge. Same lock discipline as person_refine: the snapshot and
+// commit hold the People lock, the compute holds nothing.
+void engine::settle_people() {
+  settling_ = true;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  bool any = false;
+  for (int round = 0; round < 3 && !stopping_; ++round) {
+    refine_snapshot snap;
+    refine_params params;
+    std::uint32_t dim = 0;
+    {
+      std::lock_guard lock(models_m_);
+      if (!faces_ || !faces_model_) break;
+      params = faces_model_->tuning().refine();
+      dim = faces_model_->dim();
+      snap = faces_->refine_begin(true);
+    }
+    refine_input in;
+    in.dim = dim;
+    in.emb = snap.emb;
+    in.faces = snap.faces;
+    in.fixed = snap.fixed;
+    in.named = snap.named;
+    in.regroup = true;
+    in.cancel = &stopping_;
+    const refine_output out = refine_people(in, params);
+    if (stopping_) break;
+    refine_stats st;
+    {
+      std::lock_guard lock(models_m_);
+      if (!faces_ || faces_->serial() != snap.serial) break;
+      st = faces_->refine_commit(snap, out);
+    }
+    if (!st.changed()) break;
+    any = true;
+  }
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_ && faces_model_ && !stopping_) {
+      if (faces_->consolidate(faces_model_->tuning().merge_at) > 0) any = true;
+      faces_->rerun_done();
+    }
+  }
+  settling_ = false;
+  refresh_counts();
+  if (any) post(MV_ADDON_EVENT_AI_PEOPLE);
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {
   faces_parts out;
   if (!s.faces) return out;
   if (!model && deps_.open_faces) {
-    if (auto f = deps_.open_faces(); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
+    if (auto f = deps_.open_faces(s.compute); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
   }
   if (model) {
     out.model = std::move(model);
-    auto db = faces_db::open(join(data_dir_, "faces.db"), out.model->same_person(), out.model->dim());
+    auto db = faces_db::open(join(data_dir_, "faces.db"), out.model->tuning(), out.model->dim(),
+                             out.model->spec_key());
     if (db) {
       out.db = std::move(*db);
       for (std::int64_t a : out.db->scanned_assets(out.model->spec_key())) out.scanned.insert(a);
@@ -971,7 +1066,7 @@ void engine::load_pieces() {
   if (s.faces || !faces_spec.empty()) {
     std::shared_ptr<face_analyzer> model;
     if (s.faces && deps_.open_faces) {
-      if (auto f = deps_.open_faces(); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
+      if (auto f = deps_.open_faces(s.compute); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
     }
     if (model && !faces_spec.empty() && model->spec_key() == faces_spec) {
       std::lock_guard lock(models_m_);
@@ -1226,20 +1321,30 @@ void engine::control_loop() {
     reap_retired();
     // Plugging in ends an override even while no worker is asking (idle).
     if (battery_override_ && !power_state().on_battery) battery_override_ = false;
-    if (t - last_consolidate > 60) {
+    {
       bool idle = false;
       {
         std::lock_guard wl(work_m_);
         idle = queue_exhausted_ && busy_workers_ == 0;
       }
+      bool settle = false;
       {
-        // Mean pairwise cosine now (faces_db::consolidate): 0.42 is just past
-        // same_person's 0.40, where 0.55 to a normalised centroid let two
-        // clusters whose faces averaged ~0.28 merge.
+        // Mean pairwise cosine now (faces_db::consolidate): the model's
+        // merge_at (SFace 0.42) is just past same_person, where 0.55 to a
+        // normalised centroid let two clusters whose faces averaged ~0.28
+        // merge. Not during a re-run: its settle merges once, at the end,
+        // as soon as the last asset is analysed.
         std::lock_guard lock(models_m_);
-        if (faces_ && idle && faces_->consolidate(0.42f) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+        if (faces_ && faces_model_ && idle) {
+          if (faces_->rerun_pending()) {
+            settle = true;
+          } else if (t - last_consolidate > 60) {
+            if (faces_->consolidate(faces_model_->tuning().merge_at) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+            last_consolidate = t;
+          }
+        }
       }
-      last_consolidate = t;
+      if (settle) settle_people();
     }
     std::uint32_t state;
     {
@@ -2656,7 +2761,8 @@ expected engine::clear_index() {
       faces_.reset();
       faces_db::destroy(join(data_dir_, "faces.db"));
       if (faces_model_) {
-        if (auto db = faces_db::open(join(data_dir_, "faces.db"), faces_model_->same_person(), faces_model_->dim())) {
+        if (auto db = faces_db::open(join(data_dir_, "faces.db"), faces_model_->tuning(), faces_model_->dim(),
+                                     faces_model_->spec_key())) {
           faces_ = std::move(*db);
         }
       }
