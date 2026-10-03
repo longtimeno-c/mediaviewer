@@ -429,28 +429,62 @@ this change. The cause was not found here (the lab loads the installed first-par
 and the machine was in use); it is filed as its own task. Until the base passes, "both
 present-loop gates hold" is not shown for this PR.
 
+Measured on Windows (Windows 11, x64, MSVC Release, 2026-10-03, the owner's machine while in
+use). Base is `b9c65c3` built in its own worktree and build directory; "theme" is the new build
+with the example add-on installed and Dusk on. Runs alternated; one untimed warm-up open per file
+first; `mediaviewer_lab --soak 6 --static`:
+
+| File | Build | First pixel, s | Full resolution, s | Dropped |
+|---|---|---|---|---|
+| `sony_ilce7rm3.arw` | base | 0.038 · 0.060 · 0.051 · 0.041 · 0.048 · 0.050 | 1.261 · 1.458 · 1.633 · 1.249 · 1.319 · 1.346 | 0 |
+| | new | 0.048 · 0.047 · 0.055 | 1.385 · 1.235 · 1.580 | 0 |
+| | theme | 0.049 · 0.046 · 0.044 | 1.146 · 1.165 · 1.216 | 0 |
+| `canon_eosr6.cr3` | base (18 runs) | 0.038 – 0.072 | 0.607 – 0.804 | 0 |
+| | new | 0.052 · 0.053 · 0.044 | 0.759 · 0.762 · 0.744 | 0 |
+| | theme (15 runs) | 0.039 – 0.077, and one 0.827 | 0.629 – 0.692, and one 2.068 | 0 |
+
+The ranges overlap in every row. One themed CR3 run in 15 was slow (0.83 s / 2.07 s); 6 further
+alternated pairs did not repeat it. PR 1's gate (`frametime --seconds 60`), alternated:
+
+| Run | Build | Animated: frames · dropped · p99 ms · max ms | Idle: presents · CPU of one core |
+|---|---|---|---|
+| 1 | base | 3597 · 0 · 16.95 · 19.16 | 0 · **4.7 %** |
+| 2 | new | 3597 · 0 · 16.90 · 17.14 | 0 · **4.7 %** |
+| 3 | base | 3442 · 13 · 50.15 · 80.81 | 0 · **4.8 %** |
+| 4 | new | 3588 · 3 · 17.05 · 33.38 | 0 · **4.6 %** |
+| 5 | new | 3597 · 0 · 16.95 · 17.22 | 0 · **4.8 %** |
+| 6 | base | 3597 · 0 · 16.95 · 17.27 | 0 · **4.6 %** |
+| 7 | theme | 3588 · 1 · 16.95 · 83.41 | 0 · **5.1 %** |
+| 8 | base | 3593 · 2 · 16.90 · 50.07 | 4 · **4.9 %** |
+
+Pacing is the same on all builds; the drops land on base and new alike, from the machine being in
+use. **The idle clause (≤ 1 %) fails on every run, the base included**, as on the Mac, so the
+Windows gate as a whole is not shown either. Not caused here, as far as alternated runs can tell.
+
 PR 48's verify line, where each part stands:
 
 | Verify | State |
 |---|---|
-| A package from the SDK with a fresh key installs from a file, shows publisher and fingerprint, themes the chrome; Default restores it exactly | **Mac: run in the app** (`MV_ADDON_SELFTEST`): sheet, install, Dusk (`home_rgb` 1c1b1a), Paper, Default (back to 1e1e1e, the value before), by log and screenshot. **Windows: not run** |
-| …and from an `https` link | **Not run on either host.** The download code is written and compiled; no server was stood up. Owed |
+| A package from the SDK with a fresh key installs from a file, shows publisher and fingerprint, themes the chrome; Default restores it exactly | **Mac: run in the app** (`MV_ADDON_SELFTEST`): sheet, install, Dusk (`home_rgb` 1c1b1a), Paper, Default (back to 1e1e1e, the value before), by log and screenshot. **Windows: run in the app** (2026-10-03, by hand): sheet with publisher and fingerprint, Cancel focused; Install by mouse and by keyboard alone; Dusk (`1c1b1a`), Paper (`22201d`, its dark palette), Default (back to `21232a`, the value before, and `theme.json` deleted), read from the screen |
+| …and from an `https` link | **Not run on either host.** The download code is written and compiled; no server was stood up. Owed. Windows: an `http://` link is refused before any connection ("A link to an add-on starts with https://.") |
 | Each refusal, with its reason | Tested in C++ under ASan / UBSan and from the SDK against the C++ reader: changed byte (file, manifest, signature), extra entry, missing file or signature, compressed, encrypted, data descriptor, extra field, ZIP64, comment, gap, trailing bytes, truncation at every length, unsafe paths, case-folded duplicates, code keys, another publisher, older version, contrast floor, package swapped after inspection, every single-byte change |
-| An installed add-on changed on disk is not used | Tested; and run in the Mac app (the chrome fell back to Default and Settings said why) |
+| An installed add-on changed on disk is not used | Tested; and run in the Mac app (the chrome fell back to Default and Settings said why). Windows: run in the app (one colour digit of the installed `dusk.json` changed: Default at next start, Settings said why, the add-on "did not pass verification"). Also run there: a package changed after its sheet was shown, and the same id signed by another key ("already installed from a different maker"), both refused; a second plain launch hands the package to the running viewer |
 | The link request carries no cookie, query or identifier of ours | By construction (ephemeral session, cookies off, fixed User-Agent; `HttpClient` with cookies and auto-redirect off); **not captured on the wire** |
-| Launch → first pixel and → full resolution within noise, add-on installed, theme on | **Mac: measured**, above. **Windows: owed** |
-| 0 presents idle | Mac: 0 on all runs. Windows: owed |
-| Both present-loop gates | **Not shown**: see above. Windows: owed |
-| With none installed: no folder created, nothing of an add-on read at start | Tested (the store creates nothing on list, find or inspect); on the Mac the profile was checked after every run |
+| Launch → first pixel and → full resolution within noise, add-on installed, theme on | **Measured on both**, above |
+| 0 presents idle | Mac: 0 on all runs. Windows: 0 on every run but one base run (4) |
+| Both present-loop gates | **Not shown on either**: pacing holds, the idle CPU clause fails on base and new alike |
+| With none installed: no folder created, nothing of an add-on read at start | Tested (the store creates nothing on list, find or inspect); on the Mac the profile was checked after every run; on Windows no `open-addons` folder or `theme.json` after ~20 launches |
 
 Owed before this merges:
 
-- **The Windows half has not run.** Its C# compiles (`dotnet msbuild -t:Compile`, warnings as
-  errors) on the Mac; its native side (`main.cpp`, `chrome_host.cpp`, `addon_abi.cpp`,
-  `paths_win.cpp`) has met no Windows compiler. CI builds both.
+- **Windows, seen in its first run** (2026-10-03; it builds with no warnings and ctest passes
+  all 897): the Theme picker reads "Not installed" when the chosen add-on is installed but failed
+  verification (the line beside it is right); a refused link clears the field, losing what was
+  typed. Under a theme the system controls keep the system accent on Windows (by design, §8).
 - **Install from a link and Check for update, end to end**, on both hosts, including a redirect
   to `http` and a body over 64 MB.
-- **VoiceOver and Narrator** on the sheet; keyboard-only install on both hosts.
+- **VoiceOver and Narrator** on the sheet; keyboard-only install on the Mac (done on Windows:
+  Tab to Install, Enter).
 - **libFuzzer harnesses** for the package reader, the manifest and the theme parser, beside the
   decoders' (`tools/fuzz` is a Windows clang-cl build).
 - **Opening a `.mvaddon` by double-click** (owner call 3): no file type is registered with
@@ -458,3 +492,11 @@ Owed before this merges:
 - **Light appearance, increased contrast and a two-palette theme following a system change**
   were not looked at by eye; the machine was in Dark Mode throughout.
 - **Intel Macs:** built for arm64 only here.
+
+Raised 2026-10-03, for later: **Import's window on the screen vocabulary.** Not now: screens are
+PR 51, after code (PR 50, owner call 1), and §1 keeps Import on its own path, so moving its
+window reverses that and needs a row in [12](12-decision-log.md). If taken, Import's engine (copy,
+BLAKE3 skip, verify, resume) stays native and only its window, today written twice
+(`MediaViewer.Import.Chrome.dll`, `Import.bundle`), becomes one view tree both hosts render, which
+would make it PR 51's first real screen. Possible now with no owner call: PR 49's "first-party
+chromes read the host's tokens", so Import's and Local search's windows follow the theme.
