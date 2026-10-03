@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Copyright (C) 2026 longtimeno-c
+  SPDX-License-Identifier: GPL-3.0-or-later
+  MediaViewerSearch.appex: the Final Cut Pro workflow extension (plan/23),
+  in MediaViewer.app/Contents/PlugIns (arm64 only, like Local search). It ships
+  with every app and stays hidden (a PlugInKit "ignore" election) until the
+  owner turns Final Cut Pro on in Settings > Local search. FCP's own
+  ProExtension framework declares the extension point
+  (com.apple.FinalCut.WorkflowExtension) and its context and principal
+  classes. This bundle embeds none of it: its main loads the framework from
+  the installed Final Cut Pro (extension_mac.mm). Our view controller is
+  ProExtensionPrincipalViewControllerClass, shown in a floating window.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>MediaViewerSearch</string>
+  <key>CFBundleIdentifier</key>
+  <string>@MV_MAC_BUNDLE_ID@.finalcut</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>MediaViewer Search</string>
+  <key>CFBundleDisplayName</key>
+  <string>MediaViewer Search</string>
+  <key>CFBundlePackageType</key>
+  <string>XPC!</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@PROJECT_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@MV_MAC_BUILD_NUMBER@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>MediaViewer Search asks Final Cut Pro which library is open, to search the footage beside it.</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.FinalCut.WorkflowExtension</string>
+    <!-- No NSExtensionPrincipalClass: the extension point's own
+         ProExtensionRequestHandling (FCP's ProExtension.framework, loaded
+         by main in extension_mac.mm) makes the view controller below. It
+         reads infoDictionary[NSExtension][ProExtensionPrincipalViewControllerClass]
+         (kProExtensionPrincipalViewControllerClassKey), directly in this
+         dictionary: under NSExtensionAttributes it is not found and FCP
+         shows an empty panel (0.1.19, 2026-09-28). -->
+    <key>ProExtensionPrincipalViewControllerClass</key>
+    <string>MVSearchViewController</string>
+  </dict>
+</dict>
+</plist>

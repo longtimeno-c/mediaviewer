@@ -36,6 +36,10 @@ from typing import Callable, Iterable
 APP_NAME = "MediaViewer"
 APPEX_NAME = "MediaViewerThumbnails"
 MDIMPORTER_NAME = "MediaViewerSpotlight"
+# plan/23: Final Cut Pro search, dormant until turned on in Settings (arm64 only).
+# The agent is MediaViewer's own executable (`--search-agent`); only its
+# launchd job and the extension are separate files.
+FCP_APPEX_NAME = "MediaViewerSearch"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
@@ -343,9 +347,29 @@ def cmd_assemble(args: argparse.Namespace) -> None:
         shutil.copyfile(args.mdimporter_plist, importer / "Info.plist")
         roots.append((importer_exe, "@loader_path/../../../../../Frameworks"))
 
+    # plan/23: the Final Cut Pro search agent's launchd job (the app registers
+    # it only when turned on; it runs this app's executable) and the workflow
+    # extension, which links the system only.
+    if args.fcp_appex_exe:
+        missing = [n for n in ("fcp_agent_plist", "fcp_appex_plist", "fcp_appex_entitlements")
+                   if not getattr(args, n)]
+        if missing:
+            raise SystemExit("macpack: --fcp-appex-exe needs " + ", ".join("--" + m.replace("_", "-") for m in missing))
+        agents = contents / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(args.fcp_agent_plist, agents / Path(args.fcp_agent_plist).name)
+        fcp = contents / "PlugIns" / f"{FCP_APPEX_NAME}.appex" / "Contents"
+        (fcp / "MacOS").mkdir(parents=True)
+        fcp_exe = fcp / "MacOS" / FCP_APPEX_NAME
+        shutil.copyfile(args.fcp_appex_exe, fcp_exe)
+        fcp_exe.chmod(0o755)
+        shutil.copyfile(args.fcp_appex_plist, fcp / "Info.plist")
+        roots.append((fcp_exe, "@executable_path/../../../../Frameworks"))
+
     bundle_dylibs(app, roots, [args.dylib_dir])
 
-    sign_app(app, identity="-", appex_entitlements=Path(args.appex_entitlements), hardened=False)
+    sign_app(app, identity="-", appex_entitlements=Path(args.appex_entitlements), hardened=False,
+             fcp_appex_entitlements=Path(args.fcp_appex_entitlements) if args.fcp_appex_entitlements else None)
     print(f"macpack: {app} (ad-hoc signed; `macpack.py release` for a shippable build)")
 
 
@@ -375,10 +399,17 @@ def codesign(path: Path, identity: str, hardened: bool, entitlements: Path | Non
 APP_ENTITLEMENTS = REPO_ROOT / "packaging" / "macos" / "MediaViewer.entitlements"
 
 
-def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool) -> None:
+def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
+             fcp_appex_entitlements: Path | None = None) -> None:
     """Inside out: every nested binary before the bundle that seals it. No
     --deep: it signs everything with one set of options, which is wrong for
-    the sandboxed extension."""
+    the sandboxed extension.
+
+    The Final Cut Pro extension (plan/23) is signed with the entitlements given
+    at assemble (its app group names the team); a release, which gets no path,
+    keeps the ones it already carries. lipo_merge copies it untouched (arm64
+    only), so the assemble signature and its entitlements survive to the
+    release. The search agent is the app's own executable, signed with it."""
     frameworks = app / "Contents" / "Frameworks"
     for dylib in sorted(frameworks.glob("*.dylib")):
         codesign(dylib, identity, hardened)
@@ -397,6 +428,10 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool)
     importer = app / "Contents" / "Library" / "Spotlight" / f"{MDIMPORTER_NAME}.mdimporter"
     if importer.exists():
         codesign(importer, identity, hardened)
+    fcp_appex = app / "Contents" / "PlugIns" / f"{FCP_APPEX_NAME}.appex"
+    if fcp_appex.exists():
+        codesign(fcp_appex, identity, hardened, entitlements=fcp_appex_entitlements,
+                 preserve_entitlements=fcp_appex_entitlements is None)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
     codesign(app, identity, hardened, entitlements=APP_ENTITLEMENTS)
@@ -570,6 +605,11 @@ def main(argv: list[str]) -> None:
     a.add_argument("--clipjob", help="the MediaViewerClipJob helper (PR 13 / 14)")
     a.add_argument("--mdimporter-exe", help="the Spotlight importer's binary (PR 15)")
     a.add_argument("--mdimporter-plist", help="its Info.plist (PR 15)")
+    a.add_argument("--fcp-appex-exe", help="MediaViewerSearch, the Final Cut Pro workflow extension (plan/23)")
+    a.add_argument("--fcp-agent-plist",
+                   help="the search agent's launchd job, <Mach service>.plist (runs MediaViewer --search-agent)")
+    a.add_argument("--fcp-appex-plist", help="its Info.plist")
+    a.add_argument("--fcp-appex-entitlements", help="its sandbox and app group")
     a.set_defaults(func=cmd_assemble)
 
     r = sub.add_parser("release", help="sign, notarize, disk image, update archive, appcast")
