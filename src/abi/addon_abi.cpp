@@ -86,6 +86,26 @@ status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* nee
   return status::ok;
 }
 
+// plan/25: what a manifest contributes, as the chromes and the shell read it.
+void write_contributions(mv::json::writer& w, const mv::addon::manifest& m) {
+  w.key("description").string(m.description);
+  w.key("hint_on").string(m.hint_on);
+  w.key("hint_text").string(m.hint_text);
+  w.key("commands").begin_array();
+  for (const mv::addon::manifest_command& c : m.commands) {
+    w.begin_object();
+    w.key("addon").string(m.id);
+    w.key("id").string(c.id);
+    w.key("name").string(c.name);
+    w.key("windows").string(c.windows);
+    w.key("mac").string(c.mac);
+    w.key("modes").string(c.modes);
+    w.key("payload").string(c.payload);
+    w.end_object();
+  }
+  w.end_array();
+}
+
 const char* state_name(mv::addon::install_state s) {
   switch (s) {
     case mv::addon::install_state::ok: return "ok";
@@ -181,6 +201,7 @@ MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32
       // Milestone H: pieces name their parent ("ai-faces" is part_of "ai").
       w.key("part_of").string(i.m.part_of);
       w.key("installed_size").integer(static_cast<std::int64_t>(i.m.installed_size));
+      write_contributions(w, i.m);
       w.end_object();
     }
     w.end_array();
@@ -217,6 +238,10 @@ MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t 
       w.key("sha256").string(d.m.archive.sha256);
       w.key("size").integer(static_cast<std::int64_t>(d.m.archive.size));
       w.end_object();
+      // plan/25: Settings' line and the card hint come from the manifest.
+      w.key("description").string(d.m.description);
+      w.key("hint_on").string(d.m.hint_on);
+      w.key("hint_text").string(d.m.hint_text);
     }
     w.end_object();
     return write_out(w.str(), out, cap, needed);
@@ -319,6 +344,33 @@ MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out
     *out_used = room.used;
     *out_ceiling = room.ceiling;
     return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_commands_json(char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_commands_json", [&] {
+    mv::json::writer w;
+    w.begin_array();
+    {
+      std::lock_guard lock(g_mutex);
+      for (const auto& [id, entry] : g_loaded) {
+        if (!entry.addon) continue;
+        const mv::addon::manifest& m = entry.addon->info().m;
+        for (const mv::addon::manifest_command& c : m.commands) {
+          w.begin_object();
+          w.key("addon").string(m.id);
+          w.key("id").string(c.id);
+          w.key("name").string(c.name);
+          w.key("windows").string(c.windows);
+          w.key("mac").string(c.mac);
+          w.key("modes").string(c.modes);
+          w.key("payload").string(c.payload);
+          w.end_object();
+        }
+      }
+    }
+    w.end_array();
+    return write_out(w.str(), out, cap, needed);
   }));
 }
 

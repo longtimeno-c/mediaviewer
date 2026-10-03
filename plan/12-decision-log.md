@@ -3458,3 +3458,34 @@ On pull request #98 the owner answered the five calls plan/25 left open on 2026-
   the permission for later versions; nothing published loses it. MediaViewer's own add-ons, which
   link the core, stay GPL.
 - **"From others"** stays the wording.
+
+## 2026-10-04 — Import described by its manifest (plan/25, PR 56's first half)
+
+Owner: "can I now convert all of the Import add-on to be an actual add-on? it's still included in
+app code mostly". Import's engine and both windows already ship in the add-on package, not the
+app; what the app held was the plumbing that named Import: two command rows, their dispatch,
+the Settings text, the card hint, and selectors each chrome knew by name. This slice makes the
+manifest say those things and the app read them.
+
+- **Schema 1 gains `description`, `contributes.commands` and `contributes.hint`**, all optional
+  and additive; an older manifest is the same add-on as before.
+- **Eight reserved command ids** (`addon_cmd_0..7`) take the loaded add-ons' rows at load. Kept
+  as named keyless placeholders so the wire ids stay dense; a filled slot answers with the
+  add-on's own name. Appended after the built-in rows so built-in remaps keep their indices.
+- **A manifest's rows supersede the built-in rows of the same add-on** (their key is cleared
+  while the add-on's rows are live) rather than being removed: indices never move, and the
+  router cannot answer the old row ahead of the new one on the same key.
+- **Compatibility first:** an installed Import from before this (the owner's is 0.1.20) has no
+  `contributes` and no generic entry; it keeps the built-in rows and the two frozen calls.
+  The built-in rows and the fallback go once the published Import carries contributions.
+- **The AI pack stays on its built-in rows** for now: Ctrl+F without the pack is the app's file
+  search, which a contributed row cannot express. The list of first-party channels stays in the
+  app: it is what the app can offer to download.
+- **ABI 0.17:** `mv_addon_commands_json`, additive; `mv_addon_installed_json` and
+  `mv_addon_check_manifest` carry `description`, `hint_on`, `hint_text`.
+
+Verified on the Mac: the shell suite (contributed rows, the key-label round trip over every
+built-in binding, superseding and restoring), the manifest cases, the packer's cross-check,
+the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
+the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
+

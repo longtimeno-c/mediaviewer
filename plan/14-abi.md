@@ -354,6 +354,14 @@ the JSON says: a refused package is an answer, not an error. `install` takes the
 for a size. The Mac host reaches the same code through `mv_open_addons_*` in the chrome bridge.
 Both are thin wrappers over `src/addon/open_json.h`, which writes the one JSON both chromes read.
 
+## PR 56 — contributed commands (ABI 0.17)
+
+Minor bump, additive: `mv_addon_commands_json` returns the rows the loaded first-party add-ons'
+manifests contribute (`[{"addon","id","name","windows","mac","modes","payload"}]`), which the
+Windows shell turns into live command rows (plan/25 §7). `mv_addon_installed_json` and
+`mv_addon_check_manifest` gain `description`, `hint_on` and `hint_text`. The Mac host reads the
+same manifests directly.
+
 ## PR 1 deliverable
 
 A header, a `mv_guard`, one round-tripping call, a `SafeHandle`, and a completion drain — proving

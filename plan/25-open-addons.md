@@ -159,6 +159,7 @@ introduced it, exists on both hosts, and has a default the base app provides.
 
 | Point | API | PR | What the add-on supplies | Base default | Performance rule |
 |---|---|---|---|---|---|
+| **Built-in add-ons by manifest** | — | 56 (first half, built 2026-10-04) | A first-party manifest (schema 1) says its one-line description, its commands with their default keys and modes, and the hint it asks for; the app reads them instead of naming the add-on | Import's two built-in rows and its hard-coded Settings text, for a manifest from before it said any | Rows are resolved once at load into eight reserved command slots (`addon_cmd_0..7`), appended to the live table; dispatch is still an array index |
 | **Theme** | 1 | 55 | Colour tokens (dark and / or light), a font family | The system-following palette, CozetteVector | Tokens cached by the chrome; read before the add-on is verified, corrected after |
 | **Theme, shape** | 2 | 56 | Corner radius scale, density, type scale | Today's literals | Same table |
 | **Settings page** | 2 | 56 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
@@ -336,6 +337,37 @@ installed.
 **Sequencing:** 55 is useful alone and decides nothing about code. 57 → 58 → 59 → 60 are the
 spine of "add new screens"; with the owner's calls made (2026-10-03) they can start, 56 before
 or beside them.
+
+### PR 56, first half: Import described by its manifest (2026-10-04)
+
+Built ahead of the open-add-on settings pages, because it is what makes Import "an installed
+add-on whose manifest says what it contributes" rather than a special case in both chromes:
+
+- **Schema 1 manifests gain `description`, `contributes.commands` and `contributes.hint`**
+  (`src/addon/manifest.*`, optional, a mistyped key is malformed). The packer writes Import's
+  (`tools/package/addon-pack.py`): "Import…" on `Ctrl+Shift+I` / `Cmd+Shift+I` with the viewer's
+  marks, "Import marked now" on `Ctrl+Shift+F7` / `Cmd+Shift+F7` with the marked or current
+  files, and the card hint's words.
+- **Eight command slots** (`addon_cmd_0..7`, `shell/commands.h`) take the loaded add-ons' rows
+  at load (`set_addon_commands`): name, key (parsed from the manifest's label by
+  `parse_key_label`, the inverse of `key_label`), modes and payload. They are appended after the
+  built-in rows, so remaps of built-in rows keep their indices; a remap of a contributed row is
+  lost when the add-on set changes. An add-on that contributes rows **supersedes the rows the
+  table has built in for it** (Import's two lose their key while its own are live, and get it
+  back when they go), so the router never answers the old row ahead of the new one on the same
+  key. The eight placeholder infos keep the wire ids dense.
+- **One run path per host.** Windows: `chrome_host::run_addon_command` → `IslandHost.RunAddonCommand`
+  → the add-on's `IAddonCommands.RunCommand(id, json)`; the core serves the loaded manifests'
+  rows through `mv_addon_commands_json` (ABI, additive) when the chrome reports an add-on
+  loaded or unloaded. Mac: `MvAddonsRunContributedCommand` → the bundle's optional
+  `runCommand:payload:`; the host reads the rows from the loaded add-on's manifest itself.
+  **An Import built before this** (no `contributes`, no generic entry) keeps the built-in rows
+  and is driven through its two frozen calls: nothing installed today breaks.
+- **Settings' Import line and the card hint** come from the manifest (installed, else the
+  channel's), with the built-in words for a manifest from before.
+- **Not moved:** the AI pack's four commands (Ctrl+F's file-search fallback is the app's own
+  behaviour, not the pack's), and the hard-coded list of first-party channels, which the app must
+  know to offer a download at all.
 
 ## 15. Not in this plan
 
