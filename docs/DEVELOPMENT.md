@@ -680,8 +680,9 @@ which runs real vectors through faces.db's online clustering and the re-run's se
 BCubed precision and recall.
 
 The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
-the viewer has open: **People in · This folder | + Subfolders | Everywhere**, + Subfolders by
-default (plan/17 "People in the open folder"; `people_in_json` in `mediaviewer_ai.h`).
+the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
+everyone shows only when no folder is open (plan/17 "People in the open folder", amended
+2026-10-03; `people_in_json` in `mediaviewer_ai.h`).
 `mv_ai_tests "[faces]"` covers the scoping with the fake face model.
 
 Tests with the real pack: `MV_AI_PACK_DIR`, `MV_AI_AUDIO_DIR`, `MV_AI_SPEECH_CLIP`,
