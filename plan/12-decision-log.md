@@ -3197,6 +3197,24 @@ Release, warm cache, `mv_import_tests "[.perf-bench]"`, one run): 2,400 files / 
 copies, 805 sharing a size: first scan 1,042 ms, rescan 84 ms reading no file contents. **Owed:** the Windows native build (`addon_abi.cpp`) in
 CI; both live windows (a local build cannot load its own unsigned Import); both present-loop gates
 while a scan runs.
+
+## 2026-10-03 — Local search: an export with thumbnails makes the missing ones (owner)
+
+Owner: an export of a 503-file folder said 658 thumbnails "were not made yet and were left
+out", and asked that the file carry them. The export only copied what the viewer's JPEG-512
+cache held, so every photo, clip or moment never on screen was missing (here 110 photos, 91
+clips, 457 moments of 5,722).
+
+- **Amended: plan/17 "an export never decodes a library".** With "Include thumbnails" ticked, a
+  thumbnail the cache does not hold is made then, through the host calls a result tile already
+  uses (`thumbnail_path` for a still; `video_frame` + `moment_thumbnail` for a moment). A clip's
+  own tile is the frame its poster lands near (10 % in, at most 3 s), kept as a moment row; the
+  viewer's poster row stays the viewer's to make. No host-table change.
+- It runs on the pack's control thread and waits out the viewer's busy spells as an import's
+  thumbnails do; cancel (and quit) are polled every thumbnail. Export without thumbnails is
+  unchanged and still decodes nothing.
+- The summary now says how many thumbnails went in; "left out" means one could not be made.
+
 ## 2026-09-29 — Open add-ons: anyone can make one; a contribution model (issue #79, owner)
 
 Owner, on issue #79: "add-ons can be made and installed by anyone, not just our repo… if people

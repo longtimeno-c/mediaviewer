@@ -453,10 +453,13 @@ internal sealed partial class ManagePanel
     {
         if (status == (int)MvStatus.Cancelled) return "The export was cancelled.";
         if (status != (int)MvStatus.Ok) return "The index could not be exported.";
-        string s = $"Exported {Count(o, "assets"):N0} files ({Look.Size(Count(o, "bytes"))}).";
+        long thumbs = Count(o, "thumbs");
+        string s = thumbs > 0
+            ? $"Exported {Count(o, "assets"):N0} files and {thumbs:N0} thumbnails ({Look.Size(Count(o, "bytes"))})."
+            : $"Exported {Count(o, "assets"):N0} files ({Look.Size(Count(o, "bytes"))}).";
         if (o.TryGetProperty("people_included", out JsonElement p) && p.ValueKind == JsonValueKind.True) s += " People included.";
         long missing = Count(o, "thumbs_missing");
-        if (missing > 0) s += $" {missing:N0} thumbnails were not made yet and were left out.";
+        if (missing > 0) s += $" {missing:N0} thumbnails could not be made and were left out.";
         return s;
     }
 
