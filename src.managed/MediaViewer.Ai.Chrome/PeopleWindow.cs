@@ -72,7 +72,11 @@ internal sealed class PeopleWindow : Window
     private readonly TextBlock _scopeFolder;
     private readonly TextBlock _empty;
     private MvAiScope _scope = MvAiScope.Tree;
+    // Indexed by MvAiScope. Only the first two are choices (owner, 2026-10-03):
+    // a folder shows its own people, and "Everywhere" is what the button reads
+    // when no folder is open.
     private static readonly string[] ScopeNames = { "This folder", "+ Subfolders", "Everywhere" };
+    private const int ScopeChoices = 2;
     private static readonly string[] ScopeHelp =
     {
         "People with a face in the open folder only",
@@ -216,7 +220,7 @@ internal sealed class PeopleWindow : Window
         leftHead.Children.Add(_look.Text("People", 20, AddonColour.Title));
         leftHead.Children.Add(_look.Text("Found on this computer only. Face data is never shared, and can be deleted in Settings.", 12));
         var scopeMenu = new MenuFlyout();
-        for (int i = 0; i < ScopeNames.Length; ++i)
+        for (int i = 0; i < ScopeChoices; ++i)
         {
             var scope = (MvAiScope)i;
             var item = new ToggleMenuFlyoutItem { Text = ScopeNames[i], IsChecked = scope == _scope };
@@ -297,6 +301,8 @@ internal sealed class PeopleWindow : Window
     /// <summary>The viewer opened another folder: the grid follows it.</summary>
     internal void OnFolderChanged()
     {
+        // A folder is open: its people, never everyone.
+        if (!string.IsNullOrEmpty(_chrome.Folder) && _scope == MvAiScope.All) _scope = MvAiScope.Tree;
         UpdateScope();
         Refresh();
     }
@@ -309,7 +315,7 @@ internal sealed class PeopleWindow : Window
         Refresh();
     }
 
-    /// <summary>The pack's scope for the grid: none when no folder is open or Everywhere is chosen.</summary>
+    /// <summary>The pack's scope for the grid: none when no folder is open.</summary>
     private string? ScopeDir => _scope == MvAiScope.All ? null : _chrome.Folder;
 
     private static string FolderName(string? dir)
@@ -343,8 +349,8 @@ internal sealed class PeopleWindow : Window
         _empty.Text = ScopeDir is null
             ? "No people yet. Faces are grouped as your folders are indexed."
             : _scope == MvAiScope.Folder
-                ? $"Nobody in {FolderName(folder)} yet. Faces are grouped as the folder is indexed; Everywhere shows every person found."
-                : $"Nobody in {FolderName(folder)} or its subfolders yet. Faces are grouped as the folder is indexed; Everywhere shows every person found.";
+                ? $"Nobody in {FolderName(folder)} yet. Faces are grouped as the folder is indexed; everyone found shows when no folder is open."
+                : $"Nobody in {FolderName(folder)} or its subfolders yet. Faces are grouped as the folder is indexed; everyone found shows when no folder is open.";
         _empty.Visibility = Visibility.Visible;
     }
 

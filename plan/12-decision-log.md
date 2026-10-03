@@ -3109,3 +3109,18 @@ was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
   once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
   what D5 covers is unchanged on Windows.
 
+## 2026-10-03 — People: a folder shows only its own people; everyone only when no folder is open
+
+Owner: "people should just show the currently opened folder … it should only show all when I'm
+on the home page with no open folder." The 2026-09-28 control (plan/17 "People in the open
+folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the default.
+
+- **Reversed: "Everywhere" as a choice while a folder is open.** The control is
+  "This folder | + Subfolders"; everyone shows only when no folder is open, as the viewer's home
+  (no scope control then). A scope of Everywhere left from before reads as + Subfolders when a
+  folder opens. Both chromes; no core or ABI change (`people_in_json` already takes the scope).
+- Why: a folder open is the user saying what they are looking at. Everyone-from-everywhere in a
+  folder reads as a leak (the owner saw their whole iCloud library's people while in one folder
+  and took it for a bug), and the home page already shows everyone.
+- The search panel keeps its three scopes: a search is a question, a folder is a place.
+
