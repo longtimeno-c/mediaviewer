@@ -114,6 +114,7 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_content_hash.cpp"
   "${MV_ROOT}/tests/test_verified_copy.cpp"
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
+  "${MV_ROOT}/tests/test_open_addons.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
   "${MV_ROOT}/tests/test_json.cpp"
@@ -136,6 +137,11 @@ if(Python3_FOUND)
   add_test(NAME addon_pack COMMAND Python3::Interpreter
            "${MV_ROOT}/tools/package/test_addon_pack.py" -v)
   set_tests_properties(addon_pack PROPERTIES
+    ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
+  # plan/25: the add-on SDK's packages, read by the app's own reader.
+  add_test(NAME addon_sdk COMMAND Python3::Interpreter
+           "${MV_ROOT}/tools/addon-sdk/test_mvaddon.py" -v)
+  set_tests_properties(addon_sdk PROPERTIES
     ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
 endif()
 

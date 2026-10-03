@@ -391,7 +391,7 @@ public static partial class IslandHost
 
     private static UIElement BuildEditorTimeline()
     {
-        var root = new Grid { Background = Brush(Canvas), RequestedTheme = ElementTheme.Default };
+        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // rule
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // toolbar
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // rule
@@ -834,7 +834,7 @@ public static partial class IslandHost
 
     private static UIElement BuildEditorAway()
     {
-        var root = new Grid { Background = Brush(Canvas), RequestedTheme = ElementTheme.Default };
+        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme };
         var col = new StackPanel
         {
             Spacing = 10,

@@ -49,6 +49,7 @@
 
 #include "addon/host.h"
 #include "addon/manifest.h"
+#include "addon/open_json.h"
 #include "abi/addon_media.h"
 #include "addon/store.h"
 #include "core/json.h"
@@ -823,6 +824,64 @@ extern "C" int32_t mv_addons_check_manifest(const uint8_t* manifest, int32_t man
   }
   w.end_object();
   return copy_out(w.str(), buf, size);
+}
+
+// ---- open add-ons (plan/25) ---------------------------------------------------
+// Data only: nothing below loads code, so none of it touches the loaded
+// add-ons above. One writer at a time; reads need no lock (the store keeps no
+// state beyond its root).
+
+namespace {
+std::mutex& open_writes() {
+  static std::mutex* const m = new std::mutex;
+  return *m;
+}
+
+mv::result<mv::addon::open_store> open_store_once() {
+  auto s = mv::addon::default_open_store();
+  if (s) {
+    static std::once_flag cleaned;
+    std::call_once(cleaned, [&] { s->startup_cleanup(); });
+  }
+  return s;
+}
+}  // namespace
+
+extern "C" int32_t mv_open_addons_inspect(const char* package, char* buf, int32_t size) {
+  auto s = open_store_once();
+  if (!package || !s) return copy_out({}, buf, size);
+  return copy_out(mv::addon::open_inspect_json(*s, package), buf, size);
+}
+
+extern "C" int32_t mv_open_addons_install(const char* package, const char* approved_sha256,
+                                          char* buf, int32_t size) {
+  auto s = open_store_once();
+  if (!package || !approved_sha256 || !s) return copy_out({}, buf, size);
+  // Without room for the answer the install is not attempted: the caller
+  // could not learn what happened.
+  if (!buf || size < 1024) return 1024;
+  std::lock_guard<std::mutex> lock(open_writes());
+  return copy_out(mv::addon::open_install_json(*s, package, approved_sha256), buf, size);
+}
+
+extern "C" int32_t mv_open_addons_list(char* buf, int32_t size) {
+  auto s = open_store_once();
+  return copy_out(s ? mv::addon::open_list_json(*s) : std::string("[]"), buf, size);
+}
+
+extern "C" bool mv_open_addons_remove(const char* folder) {
+  auto s = open_store_once();
+  if (!folder || !s) return false;
+  std::lock_guard<std::mutex> lock(open_writes());
+  return s->remove(folder).has_value();
+}
+
+extern "C" int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id, char* buf,
+                                        int32_t size) {
+  auto s = open_store_once();
+  if (!addon_id || !theme_id || !s) return copy_out({}, buf, size);
+  auto theme = s->theme_json(addon_id, theme_id);
+  return copy_out(theme ? *theme : std::string(), buf, size);
 }
 
 extern "C" int32_t mv_addons_sha256(const char* path, char* buf, int32_t size) {

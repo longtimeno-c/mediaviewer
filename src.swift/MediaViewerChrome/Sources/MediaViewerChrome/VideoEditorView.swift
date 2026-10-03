@@ -504,7 +504,7 @@ private struct TimelineArea: View {
     guard let (a, b) = store.markedRange else { return }
     let top = Self.rulerH + Self.gap
     let band = CGRect(x: x(a), y: top, width: max(1, x(b) - x(a)), height: height - top)
-    ctx.fill(Path(band), with: .color(Color.accentColor.opacity(0.18)))
+    ctx.fill(Path(band), with: .color(MVTheme.accent.opacity(0.18)))
     // Brackets at the ends that are set: shape, not only colour, says "marked".
     for (t, isIn) in [(store.markIn, true), (store.markOut, false)] where t >= 0 {
       let xx = x(t)
@@ -514,7 +514,7 @@ private struct TimelineArea: View {
       bracket.addLine(to: CGPoint(x: xx, y: top))
       bracket.addLine(to: CGPoint(x: xx, y: height - 2))
       bracket.addLine(to: CGPoint(x: xx + arm, y: height - 2))
-      ctx.stroke(bracket, with: .color(.accentColor), lineWidth: 2)
+      ctx.stroke(bracket, with: .color(MVTheme.accent), lineWidth: 2)
     }
   }
 
@@ -539,7 +539,7 @@ private struct TimelineArea: View {
       }
     }
     let selected = index == store.selected
-    ctx.stroke(shape, with: .color(selected ? Color.accentColor : MVTheme.hairline), lineWidth: selected ? 3 : 1)
+    ctx.stroke(shape, with: .color(selected ? MVTheme.accent : MVTheme.hairline), lineWidth: selected ? 3 : 1)
   }
 
   private func drawWave(_ ctx: GraphicsContext, piece: (inNs: Int64, outNs: Int64), rect: CGRect) {
@@ -562,7 +562,7 @@ private struct TimelineArea: View {
       wave.move(to: CGPoint(x: xx, y: mid - h))
       wave.addLine(to: CGPoint(x: xx, y: mid + h))
     }
-    ctx.stroke(wave, with: .color(Color.accentColor.opacity(0.75)), lineWidth: 1.2)
+    ctx.stroke(wave, with: .color(MVTheme.accent.opacity(0.75)), lineWidth: 1.2)
   }
 }
 

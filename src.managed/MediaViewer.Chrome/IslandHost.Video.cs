@@ -279,7 +279,7 @@ public static partial class IslandHost
         // controls centred. The island window is rectangular, so no rounding.
         var root = new Border
         {
-            RequestedTheme = ElementTheme.Default,
+            RequestedTheme = IslandTheme,
             Background = Brush(Canvas),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),

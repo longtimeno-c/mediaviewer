@@ -57,3 +57,35 @@ TEST_CASE("the first existing entry decides what opens", "[shell][open]") {
     REQUIRE(resolve_open({}).kind == open_kind::none);
   }
 }
+
+TEST_CASE("an add-on package goes to the install sheet, never the viewer", "[shell][open]") {
+  REQUIRE(is_addon_package(L"C:\\Downloads\\film-tones.mvaddon"));
+  REQUIRE(is_addon_package(L"C:\\Downloads\\FILM.MVADDON"));
+  REQUIRE(is_addon_package(L"a.mvaddon"));
+  REQUIRE_FALSE(is_addon_package(L"C:\\Downloads\\film-tones.mvaddon.jpg"));
+  REQUIRE_FALSE(is_addon_package(L"C:\\Downloads\\mvaddon"));
+  REQUIRE_FALSE(is_addon_package(L"C:\\Downloads\\.mvaddon"));
+  REQUIRE_FALSE(is_addon_package(L".mvaddon"));
+  REQUIRE_FALSE(is_addon_package(L""));
+
+  SECTION("first in a drop") {
+    const std::vector<path_probe> drop = {{L"C:\\dl\\tones.mvaddon", true, false},
+                                          {L"C:\\dump\\a.jpg", true, false}};
+    const auto r = resolve_open(drop);
+    REQUIRE(r.kind == open_kind::addon_package);
+    REQUIRE(r.path == L"C:\\dl\\tones.mvaddon");
+  }
+  SECTION("a photo first opens the photo") {
+    const std::vector<path_probe> drop = {{L"C:\\dump\\a.jpg", true, false},
+                                          {L"C:\\dl\\tones.mvaddon", true, false}};
+    REQUIRE(resolve_open(drop).kind == open_kind::file);
+  }
+  SECTION("a folder with that name is a folder") {
+    const std::vector<path_probe> drop = {{L"C:\\dl\\odd.mvaddon", true, true}};
+    REQUIRE(resolve_open(drop).kind == open_kind::folder);
+  }
+  SECTION("one that does not exist is skipped") {
+    const std::vector<path_probe> drop = {{L"C:\\dl\\gone.mvaddon", false, false}};
+    REQUIRE(resolve_open(drop).kind == open_kind::missing);
+  }
+}

@@ -85,6 +85,14 @@ const char* rejection_name(rejection r) noexcept {
     case rejection::unexpected_file: return "unexpected_file";
     case rejection::needs_update: return "needs_update";
     case rejection::over_ceiling: return "over_ceiling";
+    case rejection::too_large: return "too_large";
+    case rejection::bad_package: return "bad_package";
+    case rejection::code_not_allowed: return "code_not_allowed";
+    case rejection::other_publisher: return "other_publisher";
+    case rejection::downgrade: return "downgrade";
+    case rejection::not_approved: return "not_approved";
+    case rejection::changed: return "changed";
+    case rejection::invalid_theme: return "invalid_theme";
   }
   return "unknown";
 }
@@ -381,11 +389,15 @@ void note_verified_move(const std::string& from_dir, const std::string& to_dir) 
 }
 
 rejection verify_files(const std::string& dir, const manifest& m) {
+  return verify_files(dir, std::span<const manifest_file>(m.files));
+}
+
+rejection verify_files(const std::string& dir, std::span<const manifest_file> files) {
   std::set<std::string> listed;
   std::string key = dir;
   verified_snapshot now;
-  now.files.reserve(m.files.size());
-  for (const manifest_file& f : m.files) {
+  now.files.reserve(files.size());
+  for (const manifest_file& f : files) {
     const std::string full = io::join_path(dir, io::native_relative(f.path));
     auto st = io::stat_path(full);
     if (!st || st->is_directory) return rejection::file_missing;
@@ -416,7 +428,7 @@ rejection verify_files(const std::string& dir, const manifest& m) {
         g_verified_cv.notify_all();
       }
     } const release{key};
-    for (const manifest_file& f : m.files) {
+    for (const manifest_file& f : files) {
       if (sha256_file(io::join_path(dir, io::native_relative(f.path))) != f.sha256) {
         std::lock_guard lock(g_verified_m);
         g_verified.erase(key);
@@ -428,7 +440,7 @@ rejection verify_files(const std::string& dir, const manifest& m) {
     std::lock_guard lock(g_verified_m);
     g_verified[key] = now;
   }
-  for (const manifest_file& f : m.files) listed.insert(f.path);
+  for (const manifest_file& f : files) listed.insert(f.path);
   // Nothing else may sit beside them: a dropped-in DLL would otherwise ride
   // along with a valid signature. The walk skips nothing (a hidden DLL loads
   // as well as a visible one) and follows no link: a link, a junction, or a

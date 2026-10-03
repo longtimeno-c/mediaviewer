@@ -36,6 +36,8 @@ public static partial class IslandHost
     private static bool _updatingSettingsUi;
     private static bool _settingsVisible;
     private static bool _settingsKeyboard;
+    // plan/25: an add-on's install sheet is on the General page.
+    private static Action? _showGeneralSettings;
     private static Button? _captureButton;
     private static Button? _cancelCapture;
     private static TextBlock? _captureHint;
@@ -116,6 +118,8 @@ public static partial class IslandHost
         view.Children.Add(SettingsRow("Descending order", "Reverse the selected sort order.", _sortDescending));
         view.Children.Add(SettingsSection("Appearance"));
         view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
+        // plan/25: the chrome's colours, from an installed add-on.
+        view.Children.Add(BuildThemeRow());
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);
         AddTelemetrySettingsRow(view);
@@ -127,6 +131,10 @@ public static partial class IslandHost
         var localSearch = new StackPanel { Spacing = 8, Margin = new Thickness(0, 16, 0, 0) };
         AddLocalSearchSettings(localSearch);
         addons.Children.Add(localSearch);
+        // plan/25: add-ons from other makers, under their own heading.
+        var fromOthers = new StackPanel { Spacing = 8, Margin = new Thickness(0, 16, 0, 0) };
+        AddOpenAddonsSettings(fromOthers);
+        addons.Children.Add(fromOthers);
         view.Children.Add(addons);
 
         var keysHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
@@ -217,6 +225,7 @@ public static partial class IslandHost
             SetCaptureHint(keyboard ? CaptureInstructions : "Changes are saved automatically.");
             if (focus) FocusSettings();
         }
+        _showGeneralSettings = () => SelectCategory(false, false);
         generalTab.Click += (_, _) => SelectCategory(false, true);
         keysTab.Click += (_, _) => SelectCategory(true, true);
 
@@ -370,6 +379,8 @@ public static partial class IslandHost
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();
+            // plan/25: what is installed from others may have changed on disk.
+            RefreshOpenAddons();
             _settingsHost.Visibility = Visibility.Visible;
             _chromeRoot.UpdateLayout();
             FocusSettings();

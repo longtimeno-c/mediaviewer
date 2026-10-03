@@ -3157,7 +3157,7 @@ Import"). Design and verify line: [18 "Find duplicates"](18-import.md#find-dupli
   Recycle Bin / Trash, never a permanent delete: plan/16 already says delete uses only the bin and
   is refused where there is none, and a tool that removes "the same file" must not be the one
   place that rule bends.
-- **Its own PR number:** 54, the first free one (48–53 are the open add-ons branch's; 49–50 the network copies').
+- **Its own PR number:** 54, the first free one (49–50 the network copies'; the open add-ons branch, then 48–53, is now 55–60, [25](25-open-addons.md)).
 
 **Calls made building it:**
 
@@ -3280,6 +3280,66 @@ review gates **bundling** NVIDIA's files, not publishing this piece. It stays op
 without CUDA/cuDNN on PATH (GPU used / CPU with the reason), and the PR 1 present-loop gate
 while it indexes on the GPU.
 
+## 2026-09-29 — Open add-ons: anyone can make one; a contribution model (issue #79, owner)
+
+Owner, on issue #79: "add-ons can be made and installed by anyone, not just our repo… if people
+have a compatible file / URL they can install their add-on… add-ons can do a wide range of
+things like add new screens". Planned in [25](25-open-addons.md) as Milestone L (PRs 55–60); PR 55
+is built on both hosts. Not a D-decision, and none is reversed.
+
+- **Amended: plan/18 "Signed, verified, then loaded"** said every add-on is signed with the
+  update-manifest key. That stays true of MediaViewer's own add-ons (Import, Local search,
+  Voice), whose channel, key, folder and native code are untouched. Beside them there is now a
+  second kind, the **open add-on**: manifest schema 2, signed by its **publisher's** Ed25519 key,
+  which is a field of the manifest. The signature proves the files and the continuity of
+  updates, **not who the publisher is**, and the install sheet says so. The two kinds cannot
+  meet: open ids have a dot and ours do not, `mediaviewer.` is reserved, our release key is
+  refused as a publisher key, and each kind has its own folder and its own store.
+- **The key is pinned per add-on at first install** (`publisher.json`, written by the app outside
+  the version folders). Another key under an installed id is refused; so is an older version; a
+  folder put in place by hand has no record of consent and is not loaded.
+- **Consent is bound to bytes:** the sheet shows a package whose SHA-256 the core returned, and
+  install refuses a file that differs.
+- **The package is a ZIP with nothing compressed** (stored entries only, no ZIP64, encryption,
+  extra fields, comments or gaps; 64 MB, 2,048 entries). A stranger's file gets the narrowest
+  reader there is, and no inflate code to attack; the cost is download size, which for themes and
+  scripts is kilobytes. No new dependency.
+- **Contribution API 1 is data only: themes.** A manifest that names code (`native`, `chrome`,
+  `scripts`, `main`) is refused whatever API range it claims. **How a stranger's code runs is
+  left to the owner** ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)): the plan
+  recommends a sandboxed script with declarative screens over third-party native code, because
+  native code in process cannot be held to rules 1 and 6 and on the Mac needs library validation
+  switched off for the whole app. (Answered 2026-10-03: the script; see that day's row.)
+- **Themes realise the backlog's "theme" row** ([10](10-roadmap.md) Viewer backlog) for the
+  chrome: seven colour tokens per palette and a font family, one table for both hosts. The
+  canvas's pixels are never themed (rule 2). The host refuses a palette below a WCAG contrast
+  floor (title 4.5 : 1, body and accent 3 : 1), since Settings is where a theme is turned off.
+  The backlog's canvas colour scheme, F3 overlay and user font file stay where they were.
+- **Nothing automatic reaches a third party's server.** Install from a link and Check for update
+  are clicks; there is no background check, so a publisher cannot learn when the app runs. The
+  GET is https at every hop, with no cookies and the fixed User-Agent.
+- **Start-up reads no add-on.** The chrome paints with the tokens it cached and verifies the
+  add-on on a worker afterwards. On the Mac the cache is in the defaults; on Windows it is
+  `theme.json` beside `settings.ini`, read once when the chrome starts, like the font beside the
+  exe (the canvas is already drawing and does not wait for the chrome).
+- **One wording for both hosts:** what the sheet says an add-on adds, can and cannot do, and why
+  one is refused, is written by the core (`src/addon/open_json.cpp`) and shown as given.
+- **The SDK and the example are MIT**, the app stays GPL-3.0-or-later: making an add-on with our
+  tool puts no licence on it. The SDK signs with its own Ed25519 (RFC 8032's reference
+  arithmetic, tested against the RFC's vectors and against libsodium through the C++ reader), so
+  an author installs nothing but Python.
+- **ABI 0.16:** `mv_open_addon_inspect`, `_install`, `_list_json`, `_remove`, `_theme_json`.
+  Additive.
+
+**Measured (Mac, arm64, Release, 2026-09-29; base in its own worktree and build directory, runs
+alternated, warm cache):** in [25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
+
+**Measured (Windows, x64, MSVC Release, 2026-10-03):** in the same notes; the Windows half was run
+in the app by hand.
+
+**Not verified, owed:** in the same notes. In short: install from a link on both hosts; the idle
+clause of both present-loop gates, which fails on the base too; the owner calls in [25 §17](25-open-addons.md#17-decisions-owner-2026-10-03) are open.
+
 ## 2026-10-03 — Local search: the open folder always includes its subfolders (owner)
 
 Owner: "in ctrl f on both windows and mac os it should always do folders and sub folders. there
@@ -3372,3 +3432,29 @@ folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the
   folder reads as a leak (the owner saw their whole iCloud library's people while in one folder
   and took it for a bug), and the home page already shows everyone.
 - The search panel keeps its three scopes: a search is a question, a folder is a place.
+
+## 2026-10-03 — Open add-ons: the owner's calls (plan/25 §17)
+
+On pull request #98 the owner answered the five calls plan/25 left open on 2026-09-29.
+
+- **A stranger's code runs in a sandboxed script, with screens described as data** (plan/25 §9
+  A, as recommended; Lua 5.4 unless PR 57's spike shows its sandbox cannot hold the limits).
+  Third-party native code in the app's process stays out: rules 1 and 6 could not be promised
+  for it, and the Mac would need library validation off for everyone.
+- **No `network` permission, ever.** Rule 6 then holds for other people's code by construction:
+  the host API has no way to open a connection. The app contacts a third party's server only on
+  a click (install from a link, check for update). plan/25 §9, §14 (PR 60) and §16 amended.
+- **`.mvaddon` is registered with the OS**, in PR 55: Windows gets a `MediaViewer.Addon` ProgId
+  with the extension pointing at it (our own type, so the association is set, not only offered;
+  plan/09's "never silently hijack" is about taking photo types), the Mac a document type with
+  `LSHandlerRank` Owner over an exported UTI (`io.github.longtimeno-c.mediaviewer.addon`,
+  conforming to `public.data`). The default-viewer prompt and the plist policy check leave that
+  type alone: it is not a photo type. Not yet seen working: neither installer was rebuilt here.
+- **Add-ons may carry any licence** (delegated to the writer): `LICENSE-ADDONS.md` is an
+  additional permission under GPL-3.0 section 7 for works that reach MediaViewer only through the
+  documented add-on interfaces, named from `LICENSE` and the author's guide. Reason: whether a
+  script that calls a GPL program's interpreter bindings is a derivative is unsettled, and a
+  theme author should not need a lawyer to publish. The SDK stays MIT. Only the owner can withdraw
+  the permission for later versions; nothing published loses it. MediaViewer's own add-ons, which
+  link the core, stay GPL.
+- **"From others"** stays the wording.

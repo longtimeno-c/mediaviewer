@@ -30,7 +30,7 @@ Read in order:
 | [07-photo-editing.md](07-photo-editing.md) | Non-destructive GPU edit stack, first editing update vs later ops |
 | [08-video-editing.md](08-video-editing.md) | Post-v1 two-path trim, smart cut later |
 | [09-build-and-test.md](09-build-and-test.md) | CMake/vcpkg, perf regression harness, fuzzing |
-| [10-roadmap.md](10-roadmap.md) | One PR number per feature on both platforms: PRs 1–8 (Windows v1 + their Mac halves), 9–15 dual-track updates, 16–19 Import add-on, 20–24 AI search, 27–28 Voice query — each with a verify line |
+| [10-roadmap.md](10-roadmap.md) | One PR number per feature on both platforms: PRs 1–8 (Windows v1 + their Mac halves), 9–15 dual-track updates, 16–19 Import add-on, 20–24 AI search, 27–28 Voice query, 55–60 open add-ons — each with a verify line |
 | [11-licensing.md](11-licensing.md) | FFmpeg LGPL, codec patents, the Exiv2 GPL trap — settle in PR 1 |
 | [12-decision-log.md](12-decision-log.md) | What changed, when, and why |
 | [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | First-install wizard, Velopack updates, crash reporting, the privacy line |
@@ -45,6 +45,7 @@ Read in order:
 | [22-editor-addon.md](22-editor-addon.md) | PRs 32–47, proposed: the optional Editor add-on — colour-managed grading (wheels, curves, qualifiers, tracked windows, nodes, LUTs, NR, scopes), a multi-track timeline, titles and captions, an audio mixer, delivery, and local model packs. |
 | [23-nle-search.md](23-nle-search.md) | Issue #71: Local search from inside Final Cut Pro — a workflow extension and a read-only search agent in MediaViewer.app, off until turned on (Mac-only, a D9 exception), and search results as FCPXML on both platforms. |
 | [24-transfer.md](24-transfer.md) | PRs 49–50: fast copies to and from a network share (several requests and files in flight, still verified), and Transfer, a general copier for any files. |
+| [25-open-addons.md](25-open-addons.md) | PRs 55–60 (PR 55 built, the owner's calls made 2026-10-03): add-ons anyone can make and install from a file or a link, signed by their publisher; a contribution model (themes, settings, keymaps, commands, screens, slots, search providers) both hosts read from one table. Read before any work on third-party add-ons, themes or contribution points. |
 
 ## The rules that don't bend
 

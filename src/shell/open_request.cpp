@@ -33,10 +33,26 @@ std::wstring normalize_open_path(std::wstring_view raw) {
   return out;
 }
 
+bool is_addon_package(std::wstring_view path) noexcept {
+  constexpr std::wstring_view kExtension = L".mvaddon";
+  if (path.size() <= kExtension.size()) return false;
+  const std::wstring_view tail = path.substr(path.size() - kExtension.size());
+  for (std::size_t i = 0; i < kExtension.size(); ++i) {
+    const wchar_t c = tail[i] >= L'A' && tail[i] <= L'Z' ? static_cast<wchar_t>(tail[i] - L'A' + L'a')
+                                                         : tail[i];
+    if (c != kExtension[i]) return false;
+  }
+  // ".mvaddon" alone, or "folder\.mvaddon", is a hidden file's name, not an
+  // extension.
+  const wchar_t before = path[path.size() - kExtension.size() - 1];
+  return before != L'\\' && before != L'/' && before != L':';
+}
+
 open_request resolve_open(std::span<const path_probe> candidates) {
   if (candidates.empty()) return {};
   for (const path_probe& c : candidates) {
     if (!c.exists || c.path.empty()) continue;
+    if (!c.is_directory && is_addon_package(c.path)) return {open_kind::addon_package, c.path};
     return {c.is_directory ? open_kind::folder : open_kind::file, c.path};
   }
   return {open_kind::missing, {}};

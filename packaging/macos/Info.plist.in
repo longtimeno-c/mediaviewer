@@ -99,6 +99,43 @@
         <string>public.mpeg-2-transport-stream</string>
       </array>
     </dict>
+    <!-- plan/25: an add-on package (.mvaddon) is MediaViewer's own type, so
+         it owns it. Opening one shows Settings' install sheet, never the
+         viewer; it is not a photo type and the default-viewer prompt does
+         not list it (main_mac.mm MvDeclaredContentTypes). -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Add-on</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>io.github.longtimeno-c.mediaviewer.addon</string>
+      </array>
+    </dict>
+  </array>
+
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>io.github.longtimeno-c.mediaviewer.addon</string>
+      <key>UTTypeDescription</key>
+      <string>MediaViewer add-on</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>mvaddon</string>
+        </array>
+      </dict>
+    </dict>
   </array>
 
   <!-- macOS 14 declares every type above except AVIF, Matroska and WebM,

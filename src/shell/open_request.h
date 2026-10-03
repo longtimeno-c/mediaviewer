@@ -8,6 +8,10 @@
 // several files from one folder open the folder on the first of them, and a
 // mixed drop opens the first file's folder. Entries that do not exist are
 // skipped; if none exists the request is `missing` and nothing is opened.
+//
+// An add-on package (plan/25, a file named *.mvaddon) is never opened in the
+// viewer: when it is the first entry that exists, the request is
+// `addon_package` and the host hands it to Settings' install sheet.
 #pragma once
 
 #include <cstdint>
@@ -23,7 +27,7 @@ struct path_probe {
   bool is_directory = false;
 };
 
-enum class open_kind : std::uint8_t { none, folder, file, missing };
+enum class open_kind : std::uint8_t { none, folder, file, missing, addon_package };
 
 struct open_request {
   open_kind kind = open_kind::none;
@@ -36,5 +40,9 @@ struct open_request {
 [[nodiscard]] std::wstring normalize_open_path(std::wstring_view raw);
 
 [[nodiscard]] open_request resolve_open(std::span<const path_probe> candidates);
+
+// A path whose name ends in ".mvaddon", whatever its case. The name only:
+// what the file holds is the core's to judge (src/addon/package.h).
+[[nodiscard]] bool is_addon_package(std::wstring_view path) noexcept;
 
 }  // namespace mv::shell

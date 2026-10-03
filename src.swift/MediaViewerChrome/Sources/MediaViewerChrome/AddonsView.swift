@@ -433,6 +433,8 @@ struct AddonsSection: View {
       // The second add-on: install-only until Core is loaded, then the pack's
       // own management view (LocalSearchView.swift).
       LocalSearchSection().padding(.top, 16)
+      // plan/25: add-ons from other makers, under their own heading.
+      OpenAddonsSection().padding(.top, 16)
     }
     // Opening Settings asks the channel, whatever the automatic-check switch
     // says: the person is looking at what can be installed.
@@ -509,11 +511,11 @@ struct ActivityBar: View {
       ZStack(alignment: .leading) {
         Capsule().fill(Color.primary.opacity(0.10))
         if let f = fraction {
-          Capsule().fill(Color.accentColor)
+          Capsule().fill(MVTheme.accent)
             .frame(width: max(height, geo.size.width * f))
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: f)
         } else if reduceMotion {
-          Capsule().fill(Color.accentColor.opacity(0.45))
+          Capsule().fill(MVTheme.accent.opacity(0.45))
         } else {
           TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
             let period = 1.4
@@ -521,7 +523,7 @@ struct ActivityBar: View {
             let pulse = geo.size.width * 0.35
             // An eased sweep from off the left edge to off the right edge.
             let eased = 0.5 - 0.5 * cos(t * .pi)
-            LinearGradient(colors: [Color.accentColor.opacity(0), Color.accentColor, Color.accentColor.opacity(0)],
+            LinearGradient(colors: [MVTheme.accent.opacity(0), MVTheme.accent, MVTheme.accent.opacity(0)],
                            startPoint: .leading, endPoint: .trailing)
               .frame(width: pulse)
               .offset(x: -pulse + (geo.size.width + pulse) * eased)

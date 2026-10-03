@@ -43,6 +43,7 @@
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "io/collision_name.h"
+#include "io/paths.h"
 #include "io/file.h"
 #include "io/replace.h"
 #include "io/dir.h"
@@ -433,6 +434,11 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)galleryVisible;
 - (void)runMenuCmd:(NSInteger)cmd;
 - (void)syncHomeAppearance;
+- (void)setThemeCanvasActive:(BOOL)active
+                     hasDark:(BOOL)hasDark
+                        dark:(uint32_t)dark
+                    hasLight:(BOOL)hasLight
+                       light:(uint32_t)light;
 
 // One key router, one command table (plan/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
@@ -658,6 +664,17 @@ extern "C" void mv_chrome_menu(int32_t cmd) {
 }
 extern "C" bool mv_chrome_settings_visible(void) {
   return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
+}
+// plan/25: a theme's canvas colour stands in for the window's where the
+// viewer draws its own "System" background (the welcome screen, the letterbox).
+extern "C" void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
+                                           bool has_light, uint32_t light_rgb) {
+  if (!g_chrome_app) return;
+  [g_chrome_app setThemeCanvasActive:active ? YES : NO
+                             hasDark:has_dark ? YES : NO
+                                dark:dark_rgb
+                            hasLight:has_light ? YES : NO
+                               light:light_rgb];
 }
 extern "C" int32_t mv_chrome_view_flags(void) {
   return g_chrome_app ? [g_chrome_app viewFlags] : 0;
@@ -1800,6 +1817,9 @@ static NSArray<NSString*>* MvDeclaredContentTypes(NSString* name) {
   NSMutableArray<NSString*>* types = [NSMutableArray array];
   for (NSDictionary* docType in NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"]) {
     if (name != nil && ![docType[@"CFBundleTypeName"] isEqual:name]) continue;
+    // plan/25: the add-on package is ours already (LSHandlerRank Owner) and is
+    // not a photo type; "all supported photos and videos" is never it.
+    if (name == nil && [docType[@"CFBundleTypeName"] isEqual:@"Add-on"]) continue;
     for (NSString* identifier in docType[@"LSItemContentTypes"]) [types addObject:identifier];
   }
   return types;
@@ -1975,6 +1995,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   // rows of the live table that differ from the defaults.
   mv::shell::key_router _router;
   BOOL _settingsVisible;
+  // plan/25: the theme's canvas colours, when a theme is on.
+  BOOL _themeCanvasActive;
+  BOOL _themeHasDark;
+  BOOL _themeHasLight;
+  uint32_t _themeDarkRgb;
+  uint32_t _themeLightRgb;
 
   // Issue #38: the clip transport's idle state (shell/transport_autohide.h, the
   // same rule Windows runs). One one-shot timer at most, only while a clip
@@ -2513,6 +2539,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   g_chrome_app = self;
   [self scheduleChromeCrashTest];
   [self scheduleEditSelfTest];
+  [self scheduleAddonSelfTest];
 
   _snap.window_visible = YES;
   _snap.window_active = YES;
@@ -2782,6 +2809,17 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 
 - (BOOL)openEntryPath:(const char*)utf8_path {
+  // plan/25: an add-on package handed to the app (a drop, Open With, the
+  // command line) goes to Settings' install sheet, never to the viewer.
+  // Nothing is read here; the chrome inspects it on a worker.
+  if (utf8_path && *utf8_path) {
+    NSString* path = [NSString stringWithUTF8String:utf8_path];
+    if (path && [path.pathExtension caseInsensitiveCompare:@"mvaddon"] == NSOrderedSame) {
+      [self setSettingsVisible:YES];
+      [MVChromeHost offerAddonPackage:path];
+      return YES;
+    }
+  }
   return [self openPath:utf8_path navigation:NO];
 }
 
@@ -3125,10 +3163,36 @@ static void MvAdoptNewDefaultViewerTypes() {
   _lab.wake();
 }
 
+- (void)setThemeCanvasActive:(BOOL)active
+                     hasDark:(BOOL)hasDark
+                        dark:(uint32_t)dark
+                    hasLight:(BOOL)hasLight
+                       light:(uint32_t)light {
+  _themeCanvasActive = active && (hasDark || hasLight);
+  _themeHasDark = hasDark;
+  _themeHasLight = hasLight;
+  _themeDarkRgb = dark & 0xFFFFFFu;
+  _themeLightRgb = light & 0xFFFFFFu;
+  [self syncHomeAppearance];
+}
+
 - (void)syncHomeAppearance {
   // AppKit resolves the semantic colour for this window's effective appearance.
   // Do this on the UI thread; the Metal thread reads only the POD snapshot.
   if (!self.view.window) return;
+  if (_themeCanvasActive) {
+    // A theme with one palette keeps the chrome in that appearance, so the
+    // palette it has is the one in use.
+    NSAppearanceName match = [self.view.effectiveAppearance
+        bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]];
+    const bool dark = [match isEqualToString:NSAppearanceNameDarkAqua];
+    const std::uint32_t themed = (dark && _themeHasDark) || !_themeHasLight ? _themeDarkRgb
+                                                                            : _themeLightRgb;
+    if (_snap.home_background_rgb == themed) return;
+    _snap.home_background_rgb = themed;
+    [self publish];
+    return;
+  }
   // A dynamic colour resolves against the current drawing appearance, so
   // convert it while this view's appearance is current (macOS 11+).
   __block NSColor* c = nil;
@@ -6256,6 +6320,104 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self noticeShow:exact ? std::string("Exporting the edit (exact) — see Jobs")
                          : std::string("Exporting the edit — see Jobs")];
   ++_editorGeneration;
+}
+
+// ---- plan/25: the open add-ons' verify rig ---------------------------------------
+
+// MV_ADDON_SELFTEST=<folder>, launched with a .mvaddon as the path to open.
+// Inert unless set. It walks what a person would: the sheet for the package,
+// Install, each of its themes, Default again, a file of the installed add-on
+// changed on disk (the chrome must fall back and say so), Remove; and writes
+// the window as PNGs plus state.txt into <folder>, then quits. Nothing of the
+// user's is touched: the add-ons install under <folder>/store and the theme
+// choice is kept in memory (ThemeStore, Theme.swift).
+- (void)scheduleAddonSelfTest {
+  const char* dir = std::getenv("MV_ADDON_SELFTEST");
+  if (dir == nullptr || *dir == '\0') return;
+  NSString* out = [NSString stringWithUTF8String:dir];
+  NSString* store = [out stringByAppendingPathComponent:@"store"];
+  [[NSFileManager defaultManager] removeItemAtPath:store error:nil];
+  [[NSFileManager defaultManager] createDirectoryAtPath:out withIntermediateDirectories:YES attributes:nil error:nil];
+  [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
+  mv::io::set_open_addons_dir_override(store.UTF8String);
+  MV_LOG_WARN("addons: MV_ADDON_SELFTEST armed; the app will quit when it is done");
+  [self addonSelfTestStep:0 dir:out];
+}
+
+- (void)addonSelfTestSnap:(NSString*)name dir:(NSString*)dir {
+  NSView* v = self.window.contentView;
+  [v layoutSubtreeIfNeeded];
+  NSBitmapImageRep* rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+  [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+  NSData* png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+  [png writeToFile:[dir stringByAppendingPathComponent:[name stringByAppendingString:@".png"]] atomically:YES];
+  NSString* state = [MVChromeHost addonSelfTest:@"state" argument:@""];
+  [self editSelfTestLine:[NSString stringWithFormat:@"%@ settings=%d home_rgb=%06x %@\n", name,
+                                                    _settingsVisible ? 1 : 0, _snap.home_background_rgb, state]
+                     dir:dir];
+}
+
+- (void)addonSelfTestStep:(int)step dir:(NSString*)dir {
+  BOOL done = NO;
+  NSString* addon = [MVChromeHost addonSelfTest:@"offered" argument:@""];  // its id, once inspected
+  switch (step) {
+    case 0: break;  // the package is inspected on a worker
+    case 1: [self addonSelfTestSnap:@"a1-sheet" dir:dir];
+      (void)[MVChromeHost addonSelfTest:@"confirm" argument:@""];
+      break;
+    case 2: [self addonSelfTestSnap:@"a2-installed" dir:dir];
+      (void)[MVChromeHost addonSelfTest:@"choose-first" argument:@""];
+      break;
+    case 3: [self addonSelfTestSnap:@"a3-first-theme" dir:dir];
+      [self setSettingsVisible:NO];
+      break;
+    case 4: [self addonSelfTestSnap:@"a4-first-theme-viewer" dir:dir];
+      [self setSettingsVisible:YES];
+      (void)[MVChromeHost addonSelfTest:@"choose-last" argument:@""];
+      break;
+    case 5: [self addonSelfTestSnap:@"a5-last-theme" dir:dir];
+      (void)[MVChromeHost addonSelfTest:@"choose" argument:@""];
+      break;
+    case 6: [self addonSelfTestSnap:@"a6-default" dir:dir];
+      (void)[MVChromeHost addonSelfTest:@"choose-first" argument:@""];
+      break;
+    case 7: {
+      // One byte of an installed file changed behind the app's back.
+      [self addonSelfTestSnap:@"a7-first-theme-again" dir:dir];
+      NSString* root = [[dir stringByAppendingPathComponent:@"store"] stringByAppendingPathComponent:addon];
+      NSDirectoryEnumerator<NSString*>* walk = [[NSFileManager defaultManager] enumeratorAtPath:root];
+      for (NSString* rel in walk) {
+        if (![rel.pathExtension isEqualToString:@"json"] || [rel.lastPathComponent hasPrefix:@"manifest"] ||
+            [rel.lastPathComponent isEqualToString:@"publisher.json"]) {
+          continue;
+        }
+        NSString* path = [root stringByAppendingPathComponent:rel];
+        NSMutableData* bytes = [NSMutableData dataWithContentsOfFile:path];
+        if (bytes.length > 0) {
+          static_cast<unsigned char*>(bytes.mutableBytes)[bytes.length / 2] ^= 1;
+          [bytes writeToFile:path atomically:NO];
+        }
+      }
+      (void)[MVChromeHost addonSelfTest:@"changed" argument:@""];
+      break;
+    }
+    case 8: [self addonSelfTestSnap:@"a8-tampered" dir:dir];
+      (void)[MVChromeHost addonSelfTest:@"remove" argument:addon];
+      break;
+    case 9: [self addonSelfTestSnap:@"a9-removed" dir:dir];
+      done = YES;
+      break;
+    default: done = YES; break;
+  }
+  if (done) {
+    [NSApp terminate:nil];
+    return;
+  }
+  __weak MvLabApp* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(1.2 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf addonSelfTestStep:step + 1 dir:dir];
+                 });
 }
 
 // ---- PR 29: the Edit workspace's verify rig ------------------------------------

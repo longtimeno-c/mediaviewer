@@ -40,6 +40,18 @@ add_library(mv_addon STATIC
   ${R}/src/addon/manifest.h
   ${R}/src/addon/store.cpp
   ${R}/src/addon/store.h
+  # Open add-ons (plan/25): packages from other makers, signed by their
+  # publisher. Data only; none of this loads code.
+  ${R}/src/addon/package.cpp
+  ${R}/src/addon/package.h
+  ${R}/src/addon/open_manifest.cpp
+  ${R}/src/addon/open_manifest.h
+  ${R}/src/addon/open_store.cpp
+  ${R}/src/addon/open_store.h
+  ${R}/src/addon/open_json.cpp
+  ${R}/src/addon/open_json.h
+  ${R}/src/addon/theme.cpp
+  ${R}/src/addon/theme.h
   ${R}/src/addon/host.cpp
   ${R}/src/addon/host.h
   ${MV_ADDON_LOADER}

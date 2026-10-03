@@ -21,6 +21,7 @@ namespace {
 std::mutex g_mu;
 std::string g_override;
 std::string g_addons_override;
+std::string g_open_addons_override;
 std::string g_snapshot_override;
 std::string g_clipboard_override;
 
@@ -96,6 +97,21 @@ result<std::string> addons_dir() {
   const std::string dir = app + "/Add-ons";
   if (!ensure_dir(support) || !ensure_dir(app) || !ensure_dir(dir)) return err(status::io);
   return dir;
+}
+
+void set_open_addons_dir_override(std::string_view utf8_dir) {
+  std::lock_guard lock(g_mu);
+  g_open_addons_override.assign(utf8_dir);
+}
+
+result<std::string> open_addons_dir() {
+  {
+    std::lock_guard lock(g_mu);
+    if (!g_open_addons_override.empty()) return g_open_addons_override;
+  }
+  const std::string home = home_dir();
+  if (home.empty()) return err(status::io);
+  return home + "/Library/Application Support/MediaViewer/Open Add-ons";
 }
 
 void set_clipboard_dir_override(std::string_view utf8_dir) {

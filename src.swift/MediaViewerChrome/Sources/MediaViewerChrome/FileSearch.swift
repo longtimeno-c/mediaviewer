@@ -230,7 +230,7 @@ struct FileSearchBar: View {
     .padding(.horizontal, 10)
     .frame(height: 30)
     .background(RoundedRectangle(cornerRadius: 6).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Color.accentColor : MVTheme.hairline,
+    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? MVTheme.accent : MVTheme.hairline,
                                                              lineWidth: 1))
     .onAppear { takeFocus() }
     .onChange(of: store.focusRequest) { _, _ in takeFocus() }

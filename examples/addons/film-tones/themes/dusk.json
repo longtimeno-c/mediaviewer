@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "dark": {
+    "canvas": "#1c1b1a",
+    "surface": "#262523",
+    "title": "#f2efe9",
+    "body": "#b9b4aa",
+    "disabled": "#6f6b64",
+    "hairline": "#3a3835",
+    "accent": "#e0793a"
+  }
+}

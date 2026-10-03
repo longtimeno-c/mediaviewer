@@ -33,6 +33,7 @@ Mac are both at PR 9.** The order from here is:
 | 31 | Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)) | both | Planned |
 | 32–47 | **Editor add-on**, Milestone K ([22](22-editor-addon.md)): GPU port + colour management, grading (primaries, curves, secondaries, tracking, node graph, LUTs, NR), multi-track editing, motion / titles / captions, audio mixer and repair, delivery, proxies, model packs | both | Proposed (2026-09-26); S1 run on the Mac |
 | 54 | **Find duplicates** in the Import add-on ([18](18-import.md#find-duplicates-pr-54)): a folder tree compared by content (size, then BLAKE3), each copy opened, shown, or moved to the Recycle Bin / Trash, never the last | both | **Written** (2026-10-03): engine tested on the Mac (Release and TSan); Mac chrome and the Windows C# compile; the Windows native build, both live UIs and both gates while scanning are owed |
+| 55–60 | **Open add-ons**, Milestone L ([25](25-open-addons.md), issue #79): add-ons anyone can make, installed from a file or a link; themes, then settings pages and keymaps, then code, screens, slots and search providers | both | **PR 55 built** (2026-09-29): shared core and SDK tested, Mac half run in the app, Windows half compiles and awaits its first run. 56 planned; 57–60 the owner's calls were made 2026-10-03 (plan/25 §17) |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
@@ -662,7 +663,7 @@ slice is dual-track, with a verify line on each platform, and both present-loop 
 
 - **PR 54 — Find duplicates** (added 2026-10-03, owner). A folder and every folder under it,
   every file type, grouped by identical bytes; open, show, or move one copy to the Recycle Bin /
-  Trash, never the last. Its own number: 48–53 are taken by the open add-ons branch, 49–50 by network copies. Verify line:
+  Trash, never the last. Its own number: 49–50 are network copies, and the open add-ons branch is 55–60 ([25](25-open-addons.md)). Verify line:
   [18 "Find duplicates"](18-import.md#find-duplicates-pr-54).
 
 The add-on mechanism built in PR 16 is the one the AI pack (PR 20) and the Voice add-on (PR 27) install through.
@@ -809,6 +810,34 @@ its number. Both present-loop gates hold **while listening and while speaking**.
 
 ---
 
+## Milestone L — Open add-ons (PR 55–60, both platforms, proposed)
+
+**Anyone can make an add-on, and an add-on can change much more of the app** (issue #79, owner
+2026-09-29). One `.mvaddon` file, signed by its publisher, installed from a file or a link with
+a sheet that says what it is, what it can and cannot do, and that MediaViewer has not checked
+it. What it contributes goes through named points both hosts read from one table, so a
+contribution point is written twice once, not once per add-on. MediaViewer's own add-ons
+(Milestones G, H, I, K) keep their key, channel and native code. Full design, trust model,
+contribution points and verify lines: [25-open-addons.md](25-open-addons.md).
+
+- **PR 55 — Open packages and themes.** The package reader, manifest schema 2, publisher keys,
+  the install sheet, install from file and link, check for update, remove, the theme token
+  table on both hosts, the SDK and the author's guide.
+- **PR 56 — Declarative contributions.** Settings pages from a schema, keymap packs, theme
+  shape (radius, density, type scale); the first-party chromes read the host's tokens.
+- **PR 57 — Code.** A sandboxed script runtime (Lua; owner, 2026-10-03, [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
+  the runtime, one worker per add-on, limits, permissions in the sheet, commands.
+- **PR 58 — Screens.** A view vocabulary both hosts render natively; windows, panes, sheets.
+- **PR 59 — Slots and search providers.** Bar items, context menus, info-pane sections, tile
+  badges; file-name search and Local search as providers (#76).
+- **PR 60 — Files.** New files in a folder the user chose; metadata through PR 12's writer.
+
+Every slice holds both present-loop gates and the launch numbers **with add-ons installed**.
+55 and 56 decide nothing about code. The owner's calls for 57–60 were made on 2026-10-03 (script
+sandbox, no network permission, `.mvaddon` registered, add-ons under the author's licence).
+
+---
+
 ## Further backlog — after the first feature updates
 
 Older specs use **v1.1** for this backlog. It remains deferred beyond its prerequisite
@@ -823,7 +852,7 @@ feature slices; that label does not promise everything in one release.
 | Formats | JPEG XL, OpenEXR, HDR, PSD, SVG, DDS, JPEG 2000, VVC (D5) |
 | Display | HDR output + FP16 swapchain (D6), wide-gamut |
 | Metadata | Batch date-shift, copy-metadata, strip-on-share, renaming files already in a library (Import's rename-on-import, PR 18, is not this), colour labels, keywords |
-| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim); **theme**: colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
+| Viewer | JSON keymap import/export and named layouts (FastStone / IrfanView / vim) (as keymap packs, PR 56, [25](25-open-addons.md)); **theme** (the chrome's colours and font family arrive as add-on themes, PR 55, [25](25-open-addons.md); what follows is what remains): colour scheme for chrome + canvas + F3 overlay, and a user font (TTF/OTF copied into `%LocalAppData%\MediaViewer\fonts`, never off-machine; CozetteVector remains the default and the fallback). Side-by-side compare, burst-stack grouping, print/contact sheet, GPS map, quick-export presets, PiP/compact overlay, focus peaking / zebras / channel isolation |
 | Security | AppContainer decode process (D8) |
 | Distribution | Per-machine MSI for enterprise (Store MSIX remains excluded by the licence decision) |
 | Platform | Windows ARM64. **Apple Silicon macOS landed as the Mac halves of PRs 1–8; it is not v1.1.** Intel Macs shipped 2026-09-24 as a universal app (pacing unverified on Intel). |

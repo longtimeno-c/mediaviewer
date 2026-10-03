@@ -20,6 +20,7 @@
 #include "abi/guard.h"
 #include "addon/host.h"
 #include "addon/manifest.h"
+#include "addon/open_json.h"
 #include "abi/addon_media.h"
 #include "addon/store.h"
 #include "core/json.h"
@@ -219,6 +220,62 @@ MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t 
     }
     w.end_object();
     return write_out(w.str(), out, cap, needed);
+  }));
+}
+
+// ---- open add-ons (plan/25) ---------------------------------------------------
+
+MV_API mv_status MV_CALL mv_open_addon_inspect(const char* package_utf8, char* out, uint32_t cap,
+                                               uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_inspect", [&] {
+    MV_REQUIRE(package_utf8 && *package_utf8, "package path is empty");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    return write_out(mv::addon::open_inspect_json(*s, package_utf8), out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_addon_install(const char* package_utf8,
+                                               const char* approved_sha256, char* out,
+                                               uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_install", [&] {
+    MV_REQUIRE(package_utf8 && *package_utf8, "package path is empty");
+    MV_REQUIRE(approved_sha256, "approved_sha256 is null");
+    MV_REQUIRE(out && cap >= 1024, "the result buffer is too small to say what happened");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    return write_out(mv::addon::open_install_json(*s, package_utf8, approved_sha256), out, cap,
+                     needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_addon_list_json(char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_list_json", [&] {
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    return write_out(mv::addon::open_list_json(*s), out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_addon_remove(const char* folder) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_remove", [&] {
+    MV_REQUIRE(folder && *folder, "folder is empty");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    auto removed = s->remove(folder);
+    return removed ? status::ok : removed.error();
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const char* theme_id,
+                                                  char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_theme_json", [&] {
+    MV_REQUIRE(addon_id && theme_id, "addon_id and theme_id are required");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    auto theme = s->theme_json(addon_id, theme_id);
+    if (!theme) return theme.error();
+    return write_out(*theme, out, cap, needed);
   }));
 }
 
