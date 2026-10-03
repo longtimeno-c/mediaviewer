@@ -1,0 +1,10 @@
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
+# tools/package/face-export.py (ai-models.py stage --piece ai-faces): the People
+# embedder's safetensors -> ONNX. Pack builders only; the app never loads these.
+torch==2.14.1
+safetensors==0.8.0
+onnx==1.23.1
+onnxruntime==1.30.0
+numpy
+onnxscript==0.7.2

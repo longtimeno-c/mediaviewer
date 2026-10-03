@@ -5,7 +5,9 @@
 // deletes every face vector while the frame index stays intact.
 //
 //   faces(id, asset_id, path, pts_ms, x, y, w, h, score, person_id, emb,
-//         pinned, quality, tta)       -- pinned: the user put it there
+//         pinned, quality, tta, spec) -- pinned: the user put it there;
+//                                        spec: the embedder of emb
+//   meta(key, value)                 -- 'rerun': a re-run is under way
 //   people(id, name, created_at)
 //   rejected(face_id, person_id)     -- "not this person": never rejoins it
 //   no_merge(a, b)                   -- a split: never merged back automatically
@@ -42,6 +44,26 @@
 struct sqlite3;
 
 namespace mv::ai {
+
+// An embedder's pairwise-cosine thresholds (infer::face_spec; plan/17
+// "People model"). The defaults are SFace's.
+struct face_tuning {
+  float same_person = 0.40f;  // join a person; also the refinement's join and core
+  float keep = 0.30f;         // the refinement's stay
+  float keep_weak = 0.34f;
+  float margin = 0.08f;       // a move beats own and runner-up by this
+  float ambiguous = 0.03f;    // online: a runner-up this close leaves the face unassigned
+  float merge_at = 0.42f;     // the idle merge (average linkage)
+  [[nodiscard]] refine_params refine() const noexcept {
+    refine_params p;
+    p.join = same_person;
+    p.core = same_person;
+    p.keep = keep;
+    p.keep_weak = keep_weak;
+    p.margin = margin;
+    return p;
+  }
+};
 
 struct face_in {
   float x = 0, y = 0, w = 0, h = 0;  // 0..1 of the image
@@ -94,6 +116,12 @@ class faces_db {
   faces_db(const faces_db&) = delete;
   faces_db& operator=(const faces_db&) = delete;
 
+  // `spec` names the embedder whose vectors this session adds and compares;
+  // rows of another spec stay (and keep showing their person) until a re-run
+  // re-analyses their asset. The short form is SFace's spec and thresholds.
+  [[nodiscard]] static result<std::unique_ptr<faces_db>> open(const std::string& path_utf8,
+                                                              const face_tuning& tuning, std::uint32_t dim,
+                                                              const std::string& spec);
   [[nodiscard]] static result<std::unique_ptr<faces_db>> open(const std::string& path_utf8,
                                                               float same_person, std::uint32_t dim);
   // Closes and deletes the file and its WAL: every face vector, box and name.
@@ -144,6 +172,17 @@ class faces_db {
   [[nodiscard]] expected rescan(std::int64_t asset, const std::string& spec);
   [[nodiscard]] std::uint64_t serial() const noexcept { return serial_; }
 
+  // Re-run (plan/17 "People model"): every asset is analysed again, new boxes
+  // replacing old ones in place (person and pin kept), new faces waiting
+  // unassigned; then the engine settles (a full refinement and merge) and
+  // calls rerun_done. Pending from open too, when rows of another embedder
+  // are present. Survives a restart (meta).
+  [[nodiscard]] expected rerun_all();
+  [[nodiscard]] bool rerun_pending();
+  [[nodiscard]] std::uint64_t stale_count();       // faces of another embedder
+  [[nodiscard]] std::uint64_t unassigned_count();  // this embedder's faces with no person
+  void rerun_done();
+  [[nodiscard]] const std::string& spec() const noexcept { return spec_; }
   // Sharing an index (transfer.h): `fn` writes on this file's connection with
   // its lock held; the clusters are then rebuilt from the rows and the next
   // refinement is a full one.
@@ -161,6 +200,7 @@ class faces_db {
   void recompute_locked(std::int64_t person);
   void pin_cover_locked(std::int64_t person);
   void touch_locked(std::int64_t person);
+  void set_rerun_locked(bool on);
 
   struct cluster {
     std::vector<float> sum;  // unnormalised
@@ -170,7 +210,10 @@ class faces_db {
   sqlite3* db_ = nullptr;
   std::string path_;
   float same_ = 0.4f;
+  float ambiguous_ = 0.03f;
   std::uint32_t dim_ = 128;
+  std::string spec_;
+  bool rerun_ = false;
   std::map<std::int64_t, cluster> clusters_;
   // Refinement state (in memory: rebuilt by the first, full, pass after open).
   std::set<std::int64_t> dirty_;               // persons whose faces changed

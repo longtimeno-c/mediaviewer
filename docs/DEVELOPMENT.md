@@ -656,6 +656,19 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
 **Refine faces** on a person under Settings → People.
 
+The People embedder is AdaFace IR-50 (plan/17 "People model"). It has no upstream ONNX: staging
+`ai-faces` runs `tools/package/face-export.py` on the pinned safetensors, so the pack builder needs
+`pip install -r tools/package/requirements-export.txt` (torch, onnx); `ai-models.py check` does
+not. **Re-analyse faces** (Settings → People on the Mac, the People window on Windows;
+`people_reanalyse`) runs every photo through the People pass again and keeps the user's people;
+a pack with a new face model does the same by itself. Tests: `mv_ai_tests "[rerun]"` (no pack);
+`"[people]"` with `MV_AI_PACK_DIR` (the ORT folder), `MV_AI_FACES_DIR` (a staged ai-faces) and
+`MV_AI_FACE_SET` (a `<person>/<photo>` folder such as LFW, kept out of git); and
+`"[.people-bench]"` with `MV_FACE_EVAL` (a vector file: uint32 n, uint32 dim, n int32 labels,
+n x dim float32) and optionally `MV_FACE_TUNING="same keep keep_weak margin ambiguous merge"`,
+which runs real vectors through faces.db's online clustering and the re-run's settle and prints
+BCubed precision and recall.
+
 The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
 the viewer has open: **People in · This folder | + Subfolders | Everywhere**, + Subfolders by
 default (plan/17 "People in the open folder"; `people_in_json` in `mediaviewer_ai.h`).

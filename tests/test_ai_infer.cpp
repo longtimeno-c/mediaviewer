@@ -13,7 +13,10 @@
 //   MV_AI_EVAL_DIR a labelled folder (images + labels.json, kept out of git
 //                  like the RAW corpus): a description ranks the right photos
 //                  first, including "guy on a skateboard"; nonsense finds nothing
-//   MV_AI_FACES_DIR the ai-faces piece: faces are found in the labelled photos
+//   MV_AI_FACES_DIR the ai-faces piece (staged), with MV_AI_FACE_SET a folder of
+//                  <person>/<photo> (e.g. LFW, kept out of git): the model.json
+//                  thresholds separate the people, and the accelerated
+//                  embedder agrees with CPU (plan/17 "People model")
 #include "catch_compat.h"
 
 #include <algorithm>
@@ -1642,6 +1645,100 @@ TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai
       if (!jsonl.empty()) outs[jsonl].flush();
     }
   }
+#else
+  SKIP("a build without the host decoders");
+#endif
+}
+
+// plan/17 "People model": the staged ai-faces piece through face_models as the
+// pack runs it (decode at 1024, detect, align, flip-averaged embed), on a
+// labelled folder. Same-person pairs sit well above model.json's same_person,
+// strangers below it, and the accelerated embedder gives the CPU's vectors.
+TEST_CASE("the face model separates labelled people at its own thresholds", "[ai][infer][faces][people]") {
+#if defined(MV_AI_TEST_DECODE)
+  const std::string pack = env("MV_AI_PACK_DIR");
+  const std::string faces = env("MV_AI_FACES_DIR");
+  const std::string set = env("MV_AI_FACE_SET");
+  if (pack.empty() || faces.empty() || set.empty()) SKIP("MV_AI_PACK_DIR, MV_AI_FACES_DIR and MV_AI_FACE_SET not set");
+  auto rt = mv::infer::runtime::load(pack);
+  REQUIRE(rt);
+  auto spec = mv::infer::read_face_spec(utf8(fs::path(faces) / "models" / "faces"));
+  REQUIRE(spec);
+  mv::infer::session_options cpu;
+  cpu.threads = 1;
+  auto on_cpu = mv::infer::face_models::open(**rt, *spec, cpu);
+  REQUIRE(on_cpu);
+  mv::infer::session_options acc = cpu;
+  for (auto b : {mv::infer::backend::coreml, mv::infer::backend::cuda}) {
+    if ((*rt)->has_provider(b)) acc.on = b;
+  }
+  auto fast = mv::infer::face_models::open(**rt, *spec, cpu, &acc);
+  REQUIRE(fast);
+  // People with at least four photos, in name order, at most 60 of them.
+  std::vector<std::pair<std::string, std::vector<fs::path>>> people;
+  for (const auto& d : fs::directory_iterator(set)) {
+    if (!d.is_directory()) continue;
+    std::vector<fs::path> files;
+    for (const auto& f : fs::directory_iterator(d.path())) files.push_back(f.path());
+    if (files.size() < 4) continue;
+    std::sort(files.begin(), files.end());
+    files.resize(std::min<std::size_t>(files.size(), 6));
+    people.emplace_back(d.path().filename().string(), std::move(files));
+  }
+  std::sort(people.begin(), people.end());
+  if (people.size() > 60) people.resize(60);
+  if (people.size() < 10) SKIP("fewer than ten people with four photos in MV_AI_FACE_SET");
+  std::vector<std::vector<float>> embs;
+  std::vector<std::size_t> who;
+  float worst_agree = 1.0f;
+  double ms = 0;
+  for (std::size_t p = 0; p < people.size(); ++p) {
+    for (const fs::path& f : people[p].second) {
+      auto still = mv::addon::media::decode_still(utf8(f), 1024);
+      if (!still) continue;
+      const mv::infer::rgb_view view{still->rgb.data(), still->width, still->height};
+      auto boxes = (*on_cpu)->detect(view);
+      if (!boxes || boxes->empty()) continue;
+      // The subject: the face nearest the centre.
+      const float cx = static_cast<float>(still->width) / 2, cy = static_cast<float>(still->height) / 2;
+      const auto near = std::min_element(boxes->begin(), boxes->end(), [&](const auto& a, const auto& b) {
+        return std::hypot(a.x + a.w / 2 - cx, a.y + a.h / 2 - cy) < std::hypot(b.x + b.w / 2 - cx, b.y + b.h / 2 - cy);
+      });
+      auto e = (*on_cpu)->embed(view, *near);
+      REQUIRE(e);
+      REQUIRE(e->size() == spec->dim);
+      const auto t0 = std::chrono::steady_clock::now();
+      auto g = (*fast)->embed(view, *near);
+      ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      REQUIRE(g);
+      worst_agree = std::min(worst_agree, mv::infer::dot(*e, *g));
+      embs.push_back(std::move(*e));
+      who.push_back(p);
+    }
+  }
+  REQUIRE(embs.size() >= 40);
+  std::vector<float> gen, imp;
+  for (std::size_t i = 0; i < embs.size(); ++i) {
+    for (std::size_t j = i + 1; j < embs.size(); ++j) {
+      (who[i] == who[j] ? gen : imp).push_back(mv::infer::dot(embs[i], embs[j]));
+    }
+  }
+  std::sort(gen.begin(), gen.end());
+  std::sort(imp.begin(), imp.end());
+  const float gen_median = gen[gen.size() / 2];
+  const float imp_p999 = imp[std::min(imp.size() - 1, imp.size() * 999 / 1000)];
+  const auto above = std::count_if(gen.begin(), gen.end(), [&](float v) { return v >= spec->same_person; });
+  const auto false_accept = std::count_if(imp.begin(), imp.end(), [&](float v) { return v >= spec->same_person; });
+  std::printf("%s: %zu faces of %zu people; genuine median %.3f, impostor p99.9 %.3f; at same_person %.2f "
+              "%.4f of genuine pairs pass, %lld of %zu impostor pairs; embedder on %s agrees with CPU >= %.5f, "
+              "%.1f ms a face\n",
+              spec->name.c_str(), embs.size(), people.size(), gen_median, imp_p999, spec->same_person,
+              static_cast<double>(above) / static_cast<double>(gen.size()), static_cast<long long>(false_accept),
+              imp.size(), mv::infer::backend_name((*fast)->on()), worst_agree, ms / static_cast<double>(embs.size()));
+  CHECK(gen_median > spec->same_person + 0.15f);
+  CHECK(imp_p999 < spec->same_person);
+  CHECK(static_cast<double>(above) / static_cast<double>(gen.size()) > 0.95);
+  CHECK(worst_agree >= 0.99f);
 #else
   SKIP("a build without the host decoders");
 #endif

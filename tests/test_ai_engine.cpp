@@ -522,7 +522,7 @@ struct rig {
       c.meta.generic_prompts = {"a photo.", "an image."};
       return c;
     };
-    d.open_faces = [this]() -> mv::result<std::unique_ptr<mv::ai::face_analyzer>> {
+    d.open_faces = [this](std::uint32_t) -> mv::result<std::unique_ptr<mv::ai::face_analyzer>> {
       if (!faces_available) return mv::err(mv::status::io);
       return std::unique_ptr<mv::ai::face_analyzer>(new fake_faces());
     };
@@ -2041,4 +2041,45 @@ TEST_CASE("an import refuses what is not an index, and one transfer runs at a ti
   // The index is untouched by a refused file.
   REQUIRE(r.idle());
   CHECK(r.status().frames_indexed == 1);
+}
+
+TEST_CASE("re-analysing faces keeps the user's people and settles once at the end",
+          "[ai][engine][faces][rerun]") {
+  rig r;
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.file("anna_3.jpg");
+  r.file("ben_1.jpg");
+  r.file("ben_2.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.eng->people_reanalyse());  // People is off
+  REQUIRE(r.eng->faces_enable(true));
+  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 2);
+  const std::int64_t anna = *people->a[0].integer("id");
+  REQUIRE(r.eng->person_rename(anna, "Anna"));
+  CHECK(r.status().people_scan_total == 5);
+  CHECK(r.status().people_scan_done == 5);
+
+  REQUIRE(r.eng->people_reanalyse());
+  CHECK(r.status().flags & MV_AI_STATUS_PEOPLE_RERUN);
+  REQUIRE(wait_for([&] { return (r.status().flags & (MV_AI_STATUS_PEOPLE_RERUN | MV_AI_STATUS_PEOPLE_SETTLING)) == 0; },
+                   20000));
+  CHECK(r.status().people_scan_done == 5);
+  people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 2);
+  CHECK(*people->a[0].integer("id") == anna);
+  CHECK(*people->a[0].str("name") == "Anna");
+  CHECK(*people->a[0].integer("faces") == 3);
+  CHECK(*people->a[1].integer("faces") == 2);
+  CHECK(r.status().faces_total == 5);  // replaced in place, not added again
+  CHECK(r.search("photos of Anna").size() == 3);
 }

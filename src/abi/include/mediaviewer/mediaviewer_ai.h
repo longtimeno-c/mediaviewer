@@ -116,6 +116,11 @@ typedef enum mv_ai_scope {
 #define MV_AI_STATUS_FIRST_COMPILE 32u /* LOADING, and the model is being prepared for this
                                           machine for the first time (Core ML's first compile,
                                           minutes; later starts read its cache) */
+#define MV_AI_STATUS_PEOPLE_RERUN 64u  /* People is re-analysing every photo and clip
+                                          (people_reanalyse, or a new face model): see
+                                          people_scan_total / _done (2026-10-03) */
+#define MV_AI_STATUS_PEOPLE_SETTLING 128u /* ...every one is analysed: the faces are being
+                                             filed into the people (seconds) */
 
 /* Settings -> Local search -> the Photos library (issue #72; macOS only):
  * PhotoKit's authorization, as the add-on sees it. */
@@ -169,6 +174,12 @@ typedef struct mv_ai_status {
    * local could be indexed (an iCloud-only clip's poster is). Not failed, not
    * pending: counted apart. */
   uint64_t assets_unavailable;
+  /* People (2026-10-03, plan/17 "People model"): assets the People pass must
+   * (re-)analyse with the current face model, and those it has. While
+   * MV_AI_STATUS_PEOPLE_RERUN is set this is the re-run's progress. */
+  uint64_t people_scan_total;
+  uint64_t people_scan_done;
+  char people_model_utf8[64];  /* "AdaFace IR-50": the face model in use; "" none */
 } mv_ai_status;
 
 /* One result: a photo, or the best moment of a clip with the others grouped
@@ -399,6 +410,21 @@ typedef struct mv_ai_api {
    * people_json. [worker-thread] */
   mv_status(MV_CALL* people_in_json)(void* ctx, const char* scope_dir_utf8, uint32_t scope, char* out,
                                      uint32_t cap, uint32_t* needed);
+
+  /* ---- re-analysing people (2026-10-03, plan/17 "People model") ---------- */
+  /* "Re-analyse faces": every photo and clip is analysed again with the face
+   * model the pack carries now, in the background like any People pass. A
+   * face found where one was before keeps its person, name, pin and "not
+   * this person" (so a new model inherits the user's people); a new face
+   * waits. When every asset is done the pack settles once: it re-checks every
+   * person's faces with the new vectors (the user's pinned faces never move),
+   * files the waiting faces into the people they match, groups the rest, and
+   * merges people that turn out to be one. Progress: mv_ai_status
+   * MV_AI_STATUS_PEOPLE_RERUN / _SETTLING and people_scan_*. The same happens
+   * by itself when a pack update brings a new face model. MV_ERR_INVALID_ARG
+   * while People is off or its piece is not loaded. Posts
+   * MV_ADDON_EVENT_AI_PEOPLE as faces move. [no-block] */
+  mv_status(MV_CALL* people_reanalyse)(void* ctx);
 } mv_ai_api;
 
 #ifdef __cplusplus

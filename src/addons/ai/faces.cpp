@@ -81,9 +81,8 @@ float mean_cosine(const std::vector<float>& sum, std::uint32_t n, std::span<cons
   return static_cast<float>(d / n);
 }
 
-// A second person this close to the best makes a new face ambiguous: it waits
-// unassigned for the refinement, which judges it against both persons' cores.
-constexpr float kAmbiguous = 0.03f;
+// The embedder every row predates the `spec` column with (2026-10-03).
+constexpr const char* kLegacySpec = "yunet-2023mar+sface-2021dec/pre1";
 
 std::atomic<std::uint64_t> g_serial{0};
 
@@ -143,11 +142,20 @@ void faces_db::destroy(const std::string& path) {
 
 result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, float same_person,
                                                  std::uint32_t dim) {
+  face_tuning t;
+  t.same_person = same_person;
+  return open(path, t, dim, kLegacySpec);
+}
+
+result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, const face_tuning& tuning,
+                                                 std::uint32_t dim, const std::string& spec) {
   std::unique_ptr<faces_db> d(new faces_db());
   d->path_ = path;
   d->serial_ = ++g_serial;
-  d->same_ = same_person;
+  d->same_ = tuning.same_person;
+  d->ambiguous_ = tuning.ambiguous;
   d->dim_ = dim;
+  d->spec_ = spec;
   if (sqlite3_open_v2(path.c_str(), &d->db_,
                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                       nullptr) != SQLITE_OK) {
@@ -161,18 +169,47 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, float 
       "CREATE TABLE IF NOT EXISTS faces(id INTEGER PRIMARY KEY, asset_id INTEGER NOT NULL,"
       " path TEXT NOT NULL, pts_ms INTEGER NOT NULL, x REAL, y REAL, w REAL, h REAL, score REAL,"
       " person_id INTEGER, emb BLOB NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, quality REAL,"
-      " tta INTEGER NOT NULL DEFAULT 0);"
+      " tta INTEGER NOT NULL DEFAULT 0, spec TEXT NOT NULL DEFAULT '');"
       "CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id);"
       "CREATE INDEX IF NOT EXISTS faces_asset ON faces(asset_id);"
       "CREATE TABLE IF NOT EXISTS rejected(face_id INTEGER NOT NULL, person_id INTEGER NOT NULL,"
       " PRIMARY KEY(face_id, person_id));"
       "CREATE TABLE IF NOT EXISTS no_merge(a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b));"
       "CREATE TABLE IF NOT EXISTS scanned(asset_id INTEGER NOT NULL, spec TEXT NOT NULL,"
-      " PRIMARY KEY(asset_id, spec));";
+      " PRIMARY KEY(asset_id, spec));"
+      "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);";
   if (!d->exec(schema) || !d->migrate()) return err(status::corrupt);
   std::lock_guard lock(d->m_);
+  // Faces from another embedder (a new model in the People piece): their
+  // vectors are in another space, so nothing here compares them, and the
+  // re-analysis that replaces them is a re-run (plan/17 "People model").
+  {
+    std::string last;
+    {
+      stmt m(d->db_, "SELECT value FROM meta WHERE key = 'spec'");
+      if (m.step_row()) last = m.text(0);
+    }
+    if (last != spec) {
+      // First open with this embedder (or with the spec column at all).
+      stmt other(d->db_, "SELECT 1 FROM faces WHERE spec != ?1 LIMIT 1");
+      if (other.bind(1, spec).step_row()) d->set_rerun_locked(true);
+      stmt w(d->db_, "INSERT OR REPLACE INTO meta(key, value) VALUES('spec', ?1)");
+      (void)w.bind(1, spec).run();
+    }
+    stmt r(d->db_, "SELECT value FROM meta WHERE key = 'rerun'");
+    d->rerun_ = r.step_row() && r.text(0) == "1";
+  }
   d->load_locked();
   return d;
+}
+
+void faces_db::set_rerun_locked(bool on) {
+  rerun_ = on;
+  if (on) {
+    exec("INSERT OR REPLACE INTO meta(key, value) VALUES('rerun', '1')");
+  } else {
+    exec("DELETE FROM meta WHERE key = 'rerun'");
+  }
 }
 
 // faces.db from before the refinement (2026-09-28): the columns, and the
@@ -184,9 +221,17 @@ bool faces_db::migrate() {
     stmt s(db_, "PRAGMA table_info(faces)");
     while (s.step_row()) cols.insert(s.text(1));
   }
-  if (cols.count("pinned") && cols.count("quality") && cols.count("tta")) return true;
+  if (cols.count("pinned") && cols.count("quality") && cols.count("tta") && cols.count("spec")) return true;
   if (!exec("BEGIN")) return false;
   bool ok = true;
+  if (!cols.count("spec")) {
+    // Which embedder made each vector (2026-10-03): the spec its asset was
+    // scanned under, else the only one there was.
+    ok = ok && exec("ALTER TABLE faces ADD COLUMN spec TEXT NOT NULL DEFAULT ''");
+    stmt u(db_, "UPDATE faces SET spec = COALESCE((SELECT s.spec FROM scanned s WHERE s.asset_id = faces.asset_id"
+                " ORDER BY s.spec LIMIT 1), ?1) WHERE spec = ''");
+    ok = ok && u.bind(1, std::string(kLegacySpec)).run();
+  }
   if (!cols.count("pinned")) ok = ok && exec("ALTER TABLE faces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   if (!cols.count("quality")) ok = ok && exec("ALTER TABLE faces ADD COLUMN quality REAL");
   if (!cols.count("tta")) ok = ok && exec("ALTER TABLE faces ADD COLUMN tta INTEGER NOT NULL DEFAULT 0");
@@ -221,7 +266,8 @@ void faces_db::pin_cover_locked(std::int64_t person) {
 void faces_db::load_locked() {
   clusters_.clear();
   full_due_ = true;
-  stmt s(db_, "SELECT person_id, emb FROM faces WHERE person_id IS NOT NULL");
+  stmt s(db_, "SELECT person_id, emb FROM faces WHERE person_id IS NOT NULL AND spec = ?1");
+  s.bind(1, spec_);
   while (s.step_row()) {
     const std::int64_t p = s.i64(0);
     const std::vector<float> e = s.floats(1);
@@ -263,7 +309,7 @@ std::int64_t faces_db::assign_locked(std::span<const float> emb, const std::set<
   }
   if (best_score < same_) {
     best = 0;
-  } else if (second > best_score - kAmbiguous) {
+  } else if (second > best_score - ambiguous_) {
     return 0;  // two people fit about as well: unassigned until refined
   }
   if (best == 0) {
@@ -281,8 +327,8 @@ std::int64_t faces_db::assign_locked(std::span<const float> emb, const std::set<
 
 void faces_db::recompute_locked(std::int64_t person) {
   cluster c;
-  stmt s(db_, "SELECT emb FROM faces WHERE person_id = ?1");
-  s.bind(1, person);
+  stmt s(db_, "SELECT emb FROM faces WHERE person_id = ?1 AND spec = ?2");
+  s.bind(1, person).bind(2, spec_);
   while (s.step_row()) {
     const std::vector<float> e = s.floats(0);
     if (c.sum.empty()) c.sum.assign(e.size(), 0.0f);
@@ -294,7 +340,10 @@ void faces_db::recompute_locked(std::int64_t person) {
     clusters_.erase(person);
     protos_.erase(person);
     dirty_.erase(person);
-    stmt d(db_, "DELETE FROM people WHERE id = ?1 AND name = ''");
+    // Gone only when no face is left at all: during a re-run its faces from
+    // the old embedder still show the person until they are re-analysed.
+    stmt d(db_, "DELETE FROM people WHERE id = ?1 AND name = '' AND NOT EXISTS"
+                " (SELECT 1 FROM faces WHERE person_id = ?1)");
     (void)d.bind(1, person).run();
   } else {
     clusters_[person] = std::move(c);
@@ -320,8 +369,9 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
                        std::span<const face_in> faces) {
   std::lock_guard lock(m_);
   if (faces.empty()) return {};
-  // A re-analysis (rescan) finds the same boxes: those rows take the new
-  // vector and keep their id, person and pin.
+  // A re-analysis (rescan, or a re-run with another embedder) finds the same
+  // boxes: those rows take the new vector and keep their id, person and pin,
+  // so the people the user named, merged and split carry over.
   struct old_face {
     std::int64_t id, person;
     float x, y, w, h;
@@ -337,10 +387,10 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
     }
   }
   if (!exec("BEGIN")) return err(status::io);
-  stmt ins(db_, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, quality, tta)"
-                " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)");
+  stmt ins(db_, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, quality, tta, spec)"
+                " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)");
   stmt upd(db_, "UPDATE faces SET x = ?2, y = ?3, w = ?4, h = ?5, score = ?6, emb = ?7, quality = ?8,"
-                " tta = ?9 WHERE id = ?1");
+                " tta = ?9, spec = ?10 WHERE id = ?1");
   std::set<std::int64_t> refreshed;
   std::vector<std::int64_t> loose;
   for (const face_in& f : faces) {
@@ -363,11 +413,13 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
       } else {
         upd.bind_null(8);
       }
-      upd.bind(9, std::int64_t{f.tta ? 1 : 0});
+      upd.bind(9, std::int64_t{f.tta ? 1 : 0}).bind(10, spec_);
       ok = upd.run();
       if (same->person > 0) refreshed.insert(same->person);
     } else {
-      const std::int64_t person = assign_locked(f.emb, {});
+      // During a re-run a new face waits unassigned: the people it could join
+      // are still mostly old vectors. The settle pass at the end files it.
+      const std::int64_t person = rerun_ ? 0 : assign_locked(f.emb, {});
       ins.reset();
       ins.bind(1, asset).bind(2, path).bind(3, pts_ms).bind_real(4, f.x).bind_real(5, f.y)
           .bind_real(6, f.w).bind_real(7, f.h).bind_real(8, f.score)
@@ -382,7 +434,7 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
       } else {
         ins.bind_null(11);
       }
-      ins.bind(12, std::int64_t{f.tta ? 1 : 0});
+      ins.bind(12, std::int64_t{f.tta ? 1 : 0}).bind(13, spec_);
       ok = ins.run();
       if (ok && person == 0) loose.push_back(sqlite3_last_insert_rowid(db_));
     }
@@ -404,7 +456,24 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
 expected faces_db::mark_scanned(std::int64_t asset, const std::string& spec) {
   std::lock_guard lock(m_);
   stmt s(db_, "INSERT OR IGNORE INTO scanned(asset_id, spec) VALUES(?1, ?2)");
-  return s.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
+  if (!s.bind(1, asset).bind(2, spec).run()) return err(status::io);
+  if (spec != spec_) return {};
+  // The asset is analysed with this embedder: a face of another one that the
+  // new pass did not find again (its box matched nothing) has no vector here.
+  std::set<std::int64_t> touched;
+  {
+    stmt q(db_, "SELECT DISTINCT person_id FROM faces WHERE asset_id = ?1 AND spec != ?2 AND person_id IS NOT NULL");
+    q.bind(1, asset).bind(2, spec_);
+    while (q.step_row()) touched.insert(q.i64(0));
+  }
+  stmt r(db_, "DELETE FROM rejected WHERE face_id IN (SELECT id FROM faces WHERE asset_id = ?1 AND spec != ?2)");
+  stmt d(db_, "DELETE FROM faces WHERE asset_id = ?1 AND spec != ?2");
+  if (!r.bind(1, asset).bind(2, spec_).run() || !d.bind(1, asset).bind(2, spec_).run()) return err(status::io);
+  for (std::int64_t p : touched) {
+    recompute_locked(p);
+    touch_locked(p);
+  }
+  return {};
 }
 
 expected faces_db::forget_asset(std::int64_t asset) {
@@ -533,10 +602,10 @@ expected faces_db::reject(std::int64_t face) {
   std::int64_t person = 0;
   std::vector<float> emb;
   {
-    stmt q(db_, "SELECT COALESCE(person_id, 0), emb FROM faces WHERE id = ?1");
+    stmt q(db_, "SELECT COALESCE(person_id, 0), emb, spec FROM faces WHERE id = ?1");
     if (!q.bind(1, face).step_row()) return err(status::invalid_arg);
     person = q.i64(0);
-    emb = q.floats(1);
+    if (q.text(2) == spec_) emb = q.floats(1);  // another embedder's: re-run files it
   }
   if (person == 0) return {};
   stmt r(db_, "INSERT OR IGNORE INTO rejected(face_id, person_id) VALUES(?1, ?2)");
@@ -546,6 +615,7 @@ expected faces_db::reject(std::int64_t face) {
   if (!clear.bind(1, face).run()) return err(status::io);
   recompute_locked(person);
   touch_locked(person);
+  if (emb.size() != dim_) return {};
   std::set<std::int64_t> no;
   stmt all(db_, "SELECT person_id FROM rejected WHERE face_id = ?1");
   all.bind(1, face);
@@ -758,21 +828,23 @@ refine_snapshot faces_db::refine_begin(bool full) {
       snap.faces.push_back(std::move(f));
     }
   };
+  // This embedder's faces only: another's vectors are in another space.
   constexpr const char* kCols = "SELECT id, COALESCE(person_id, 0), pinned, quality, score, w, emb, h FROM faces";
   if (snap.full) {
-    stmt s(db_, (std::string(kCols) + " ORDER BY id").c_str());
+    stmt s(db_, (std::string(kCols) + " WHERE spec = ?1 ORDER BY id").c_str());
+    s.bind(1, spec_);
     take(s);
   } else {
-    stmt s(db_, (std::string(kCols) + " WHERE person_id = ?1 ORDER BY id").c_str());
+    stmt s(db_, (std::string(kCols) + " WHERE person_id = ?1 AND spec = ?2 ORDER BY id").c_str());
     for (std::int64_t p : snap.rebuilt) {
       s.reset();
-      s.bind(1, p);
+      s.bind(1, p).bind(2, spec_);
       take(s);
     }
-    stmt l(db_, (std::string(kCols) + " WHERE id = ?1 AND person_id IS NULL").c_str());
+    stmt l(db_, (std::string(kCols) + " WHERE id = ?1 AND person_id IS NULL AND spec = ?2").c_str());
     for (std::int64_t f : loose_) {
       l.reset();
-      l.bind(1, f);
+      l.bind(1, f).bind(2, spec_);
       take(l);
     }
   }
@@ -890,6 +962,45 @@ expected faces_db::rescan(std::int64_t asset, const std::string& spec) {
   std::lock_guard lock(m_);
   stmt s(db_, "DELETE FROM scanned WHERE asset_id = ?1 AND spec = ?2");
   return s.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
+}
+
+// ---- re-run (plan/17 "People model") -----------------------------------------------
+
+expected faces_db::rerun_all() {
+  std::lock_guard lock(m_);
+  if (!exec("DELETE FROM scanned")) return err(status::io);
+  set_rerun_locked(true);
+  rechecked_.clear();
+  return {};
+}
+
+bool faces_db::rerun_pending() {
+  std::lock_guard lock(m_);
+  return rerun_;
+}
+
+std::uint64_t faces_db::stale_count() {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT COUNT(*) FROM faces WHERE spec != ?1");
+  s.bind(1, spec_);
+  return s.step_row() ? static_cast<std::uint64_t>(s.i64(0)) : 0;
+}
+
+std::uint64_t faces_db::unassigned_count() {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT COUNT(*) FROM faces WHERE person_id IS NULL AND spec = ?1");
+  s.bind(1, spec_);
+  return s.step_row() ? static_cast<std::uint64_t>(s.i64(0)) : 0;
+}
+
+void faces_db::rerun_done() {
+  std::lock_guard lock(m_);
+  // Faces of another embedder whose asset was not read this time (an offline
+  // folder, Photos access withdrawn) stay as they are: they show their person
+  // and are compared with nothing until their asset is analysed again, when
+  // add / mark_scanned replace them like any other.
+  full_due_ = true;
+  set_rerun_locked(false);
 }
 
 }  // namespace mv::ai

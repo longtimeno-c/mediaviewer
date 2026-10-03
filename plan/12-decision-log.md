@@ -2941,3 +2941,31 @@ the pack runs on, with toggles for face data and thumbnails.
 - **Not changed:** Intel Macs still get no pack (ORT ships no x86_64 macOS build). An index
   from an Apple silicon Mac is of use on another Apple silicon Mac or a Windows PC.
 
+
+## 2026-10-03 — People: AdaFace IR-50 replaces SFace, and a re-run that keeps the user's people
+
+Owner: "can we improve / select a better people model … add a re-run that redoes the photos and
+it should also take a look at already separated people and assign". Numbers and design: plan/17
+"People model".
+
+- **Reversed: SFace as the People embedder** (PR 24; the 2026-09-28 refinement notes said a second
+  model waited for numbers). AdaFace IR-50 WebFace4M (MIT weights, fp16, 87 MB): through our own
+  pipeline on LFW, TAR@1e-4 99.00 -> 99.93 % at full size and 94.33 -> 99.81 % on ~24 px faces;
+  through faces.db, BCubed precision 0.9938 -> 0.9994 and recall 0.9938 -> 0.9982. The pack builds
+  its ONNX from the pinned safetensors (`tools/package/face-export.py`, verified by output).
+- **Changed: the face embedder runs on the towers' compute choice** (Core ML / CUDA when it agrees
+  with CPU at cosine 0.99, else CPU). It was CPU only. IR-50 is ~6x SFace on one CPU thread and
+  ~3x faster than SFace on Core ML; Windows without the CUDA piece pays the CPU cost in background
+  indexing.
+- **Thresholds per model** (`model.json`): IR-50 same_person 0.30, keep 0.20 / 0.24, margin 0.10,
+  ambiguous 0.04, merge 0.32, set stricter than an equal-FAR mapping of SFace's because a face
+  under the wrong person is the complaint being fixed.
+- **Amended: refinement only on request** (2026-09-28). "Re-analyse faces" (and a pack update with
+  a new face model) ends with one library-wide refinement, the settle. It is still only ever the
+  user's request or the model change they installed, never an idle pass; the per-person "Refine
+  faces" stays focused. faces.db tags every vector with its embedder so a re-run never compares
+  two models' vectors; re-found faces keep their person, name, pin and rejections.
+- **3 GB ceiling unchanged**: fp16 IR-50 fits (~2.93 GB worst case). The owner allowed exceeding it
+  for a dramatic gain; IR-101 (+86 MB, 2x compute) gained ~0.1 point here, so it was not needed.
+- **Open, owner:** WebFace4M's non-commercial research terms (the weights are MIT). SFace and YuNet
+  carry the same kind of caveat. plan/17 *Open decisions* 7.

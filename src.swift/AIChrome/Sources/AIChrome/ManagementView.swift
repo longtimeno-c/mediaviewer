@@ -91,6 +91,12 @@ final class ManagementModel: ObservableObject {
   /// What the last People action did ("Merged 2 people into Sam."), shown in
   /// the People section itself: the top line is out of sight down there.
   @Published private(set) var peopleNote = ""
+  /// "Re-analyse faces" (plan/17 "People model"): the face model in use, and
+  /// while a re-run goes, how far it is (assets analysed of all) and whether
+  /// it is filing the faces into people at the end.
+  @Published private(set) var peopleModel = ""
+  @Published private(set) var rerun: (done: UInt64, total: UInt64)?
+  @Published private(set) var settling = false
 
   enum Confirm: Equatable {
     case clearIndex, removeRoot(UInt64), facesOff
@@ -172,6 +178,15 @@ final class ManagementModel: ObservableObject {
       faceCounts = (s.faces_total, s.people)
       if facesReady { reloadPeople() }
     }
+    let model = withUnsafeBytes(of: s.people_model_utf8) { raw in
+      String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+    }
+    if model != peopleModel { peopleModel = model }
+    let running = s.flags & MV_AI_STATUS_PEOPLE_RERUN != 0
+    let next = running ? (done: s.people_scan_done, total: s.people_scan_total) : nil
+    if next?.done != rerun?.done || next?.total != rerun?.total { rerun = next }
+    let filing = s.flags & MV_AI_STATUS_PEOPLE_SETTLING != 0
+    if filing != settling { settling = filing }
     let line = StatusLine(s)
     if line != status { status = line }
     transfer.poll()
@@ -494,6 +509,24 @@ final class ManagementModel: ObservableObject {
     return removed
   }
 
+  /// A pack built before people_reanalyse was appended has no re-run.
+  var canReanalyse: Bool { table.has(\mv_ai_api.people_reanalyse) }
+
+  /// "Re-analyse faces": every photo and clip through the People pass again
+  /// with the face model the pack has now. The user's people carry over;
+  /// progress arrives in the status poll.
+  func reanalyse() {
+    guard canReanalyse else { return }
+    let t = table
+    Task.detached {
+      let ok = t.call { t.a.people_reanalyse?(t.ctx) } == MV_OK
+      await MainActor.run {
+        if !ok { self.note("Faces could not be re-analysed. Try again.") }
+        self.pollStatus()
+      }
+    }
+  }
+
   /// "Not this person" for each face, then one reload.
   func reject(_ faces: [UInt64]) {
     guard !faces.isEmpty else { return }
@@ -690,6 +723,9 @@ struct ManagementView: View {
           Text("Install People above to find faces. Until then nothing about faces is computed.")
             .font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .padding(.horizontal, 12).padding(.bottom, 10)
+        }
+        if model.facesOn && model.facesReady && model.canReanalyse {
+          reanalyseRow
         }
         if model.facesOn && model.facesReady {
           PeopleGrid(model: model, open: { openPerson = $0 })
@@ -895,6 +931,34 @@ struct ManagementView: View {
     }
     .font(AITheme.font(12))
     .padding(12)
+  }
+
+  /// "Re-analyse faces": the model in use, a button, and while it runs how
+  /// far it is. The people named, merged and split carry over.
+  @ViewBuilder private var reanalyseRow: some View {
+    if model.settling {
+      progressRow("Filing faces into people…", fraction: nil)
+    } else if let r = model.rerun {
+      progressRow("Re-analysing faces… \(r.done.formatted()) of \(r.total.formatted())",
+                  fraction: r.total > 0 ? Double(r.done) / Double(r.total) : nil)
+    } else {
+      row("Re-analyse faces",
+          detail: "Looks at every photo and video again\(model.peopleModel.isEmpty ? "" : " with \(model.peopleModel)"), then files the faces into the people you have. Names, merges and splits are kept.") {
+        Button("Re-analyse") { model.reanalyse() }
+      }
+    }
+  }
+
+  private func progressRow(_ text: String, fraction: Double?) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(text).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+      if let fraction {
+        ProgressView(value: fraction).progressViewStyle(.linear)
+      } else {
+        ProgressView().progressViewStyle(.linear)
+      }
+    }
+    .padding(.horizontal, 12).padding(.vertical, 10)
   }
 
   private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {

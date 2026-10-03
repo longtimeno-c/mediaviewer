@@ -103,7 +103,7 @@ public enum MvAiMatch : uint
     Speech = 4,
 }
 
-/// <summary>Mirrors <c>mv_ai_status</c> field for field (1248 bytes).</summary>
+/// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
 {
@@ -114,6 +114,8 @@ public unsafe struct MvAiStatus
     public const uint FlagAudioReady = 16;  // ai-audio is installed and loaded
     public const uint FlagFirstCompile = 32; // loading, and compiling the model for this machine the first
                                              // time (Core ML on a Mac; never set on Windows today)
+    public const uint FlagPeopleRerun = 64;     // People is re-analysing every photo and clip (2026-10-03)
+    public const uint FlagPeopleSettling = 128; // ...all analysed: filing the faces into people
 
     public uint StructSize;
     public MvAiState State;
@@ -144,6 +146,13 @@ public unsafe struct MvAiStatus
     public ulong SoundDone;
     public ulong SpeechTotal;
     public ulong SpeechDone;
+    // The Mac's Photos library (issue #72), appended: iCloud-only assets.
+    public ulong AssetsUnavailable;
+    // People (2026-10-03, plan/17 "People model"), appended: assets the People
+    // pass must (re-)analyse and has; the face model in use.
+    public ulong PeopleScanTotal;
+    public ulong PeopleScanDone;
+    public fixed byte PeopleModel[64];
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText
@@ -154,6 +163,12 @@ public unsafe struct MvAiStatus
     public readonly string ModelText
     {
         get { fixed (byte* p = Model) return Marshal.PtrToStringUTF8((IntPtr)p) ?? ""; }
+    }
+
+    /// <summary>"AdaFace IR-50": the face model in use; "" none.</summary>
+    public readonly string PeopleModelText
+    {
+        get { fixed (byte* p = PeopleModel) return Marshal.PtrToStringUTF8((IntPtr)p) ?? ""; }
     }
 }
 
@@ -244,6 +259,9 @@ public unsafe struct MvAiApi
 
     // people in the open folder (2026-09-28, plan/17 "People in the open folder")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, byte*, uint, uint*, MvStatus> PeopleInJson;
+
+    // re-analysing people (2026-10-03, plan/17 "People model")
+    public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> PeopleReanalyse;
 }
 
 /// <summary>
@@ -263,7 +281,7 @@ public sealed unsafe class AiApi
         if (table == IntPtr.Zero) throw new ArgumentNullException(nameof(table));
         // The POD layouts, pinned against mediaviewer_ai.h: a drift here reads
         // as garbage progress rather than as an error.
-        if (sizeof(MvAiStatus) != 1248 || sizeof(MvAiResult) != 32)
+        if (sizeof(MvAiStatus) != 1336 || sizeof(MvAiResult) != 32)
             throw new InvalidOperationException("mv_ai_status / mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
         if (_api->StructSize < (uint)sizeof(MvAiApi))
@@ -456,6 +474,14 @@ public sealed unsafe class AiApi
         Check(_api->PersonRefine(Ctx, person, &removed));
         return removed;
     }
+
+    /// <summary>
+    /// No-block: "Re-analyse faces". Every photo and clip goes through the
+    /// People pass again with the pack's face model; the user's people carry
+    /// over. Progress: <see cref="MvAiStatus.FlagPeopleRerun"/> and
+    /// <see cref="MvAiStatus.PeopleScanDone"/>.
+    /// </summary>
+    public void PeopleReanalyse() => Check(_api->PeopleReanalyse(Ctx));
 
     public ulong FaceSplit(IReadOnlyList<ulong> faces)
     {
