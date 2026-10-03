@@ -78,12 +78,20 @@ expected folder_model::open_list(std::string title_utf8, std::vector<list_entry>
   items.reserve(entries.size());
   moments.reserve(entries.size());
   for (list_entry& e : entries) {
-    auto st = io::stat_path(e.path_utf8);
-    if (!st || st.value().is_directory) continue;
     io::dir_entry d;
-    d.name_utf8 = std::string(io::file_name_of(e.path_utf8));
-    d.size = st.value().size;
-    d.mtime_unix = st.value().mtime_unix;
+    if (e.is_virtual) {
+      // plan/26: no file to stat; the provider's name and stamp stand.
+      if (e.name_utf8.empty()) continue;
+      d.name_utf8 = std::move(e.name_utf8);
+      d.size = e.size;
+      d.mtime_unix = e.mtime_unix;
+    } else {
+      auto st = io::stat_path(e.path_utf8);
+      if (!st || st.value().is_directory) continue;
+      d.name_utf8 = std::string(io::file_name_of(e.path_utf8));
+      d.size = st.value().size;
+      d.mtime_unix = st.value().mtime_unix;
+    }
     d.path_utf8 = std::move(e.path_utf8);
     items.push_back(std::move(d));
     moments.push_back(e.moment_ms);
@@ -121,6 +129,18 @@ folder_model::listing folder_model::snapshot() const {
 void folder_model::set_changed_notify(changed_fn fn, void* user) noexcept {
   state_->notify = fn;
   state_->notify_user = user;
+}
+
+void folder_model::set_virtual_items(std::string prefix, virtual_thumb_fn thumb) noexcept {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  state_->virtual_prefix = std::move(prefix);
+  state_->virtual_thumb = std::move(thumb);
+}
+
+bool folder_model::is_virtual_path(std::string_view path_utf8) const noexcept {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  const std::string& p = state_->virtual_prefix;
+  return !p.empty() && path_utf8.size() > p.size() && path_utf8.substr(0, p.size()) == p;
 }
 
 status folder_model::relist_now(shared_state& state, const std::string& dir) {
@@ -275,6 +295,48 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                      if (stale()) {
                        if (on_ready) on_ready(path, {});
                        return status::cancelled;
+                     }
+
+                     // plan/26: a virtual item (a Photos asset). Its row in the
+                     // cache first (the pack stores moment rows under the same
+                     // key); then the provider's picture, stored like a file's.
+                     bool is_virtual = false;
+                     virtual_thumb_fn virtual_thumb;
+                     {
+                       std::lock_guard<std::mutex> lock(state->mutex);
+                       const std::string& p = state->virtual_prefix;
+                       is_virtual = !p.empty() && path.size() > p.size() && path.compare(0, p.size(), p) == 0;
+                       if (is_virtual) virtual_thumb = state->virtual_thumb;
+                     }
+                     if (is_virtual) {
+                       if (moment_ms >= 0) {
+                         const image::thumb_key mkey = image::moment_thumb_key(path, moment_ms, mtime_unix, size);
+                         if (auto hit = state->thumbs.lookup(mkey); hit && !hit.value().empty()) {
+                           if (on_ready) on_ready(path, hit.value());
+                           return status::ok;
+                         }
+                       }
+                       const image::thumb_key key{path, mtime_unix, size};
+                       if (auto hit = state->thumbs.lookup(key); hit && !hit.value().empty()) {
+                         if (on_ready) on_ready(path, hit.value());
+                         return status::ok;
+                       }
+                       if (!virtual_thumb) {
+                         if (on_ready) on_ready(path, {});
+                         return status::unsupported_format;
+                       }
+                       auto jpeg = virtual_thumb(path);
+                       if (!jpeg || stale()) {
+                         if (on_ready) on_ready(path, {});
+                         return jpeg ? status::cancelled : jpeg.error();
+                       }
+                       auto stored = state->thumbs.store(key, jpeg.value());
+                       if (!stored) {
+                         if (on_ready) on_ready(path, {});
+                         return stored.error();
+                       }
+                       if (on_ready) on_ready(path, stored.value());
+                       return status::ok;
                      }
 
                      // A result list's clip tile: the matched moment, not the

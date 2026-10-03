@@ -233,7 +233,6 @@ struct SearchRootView: View {
       Rectangle().fill(AITheme.hairline).frame(height: 1)
       content
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottom) { preparingBanner }
       Rectangle().fill(AITheme.hairline).frame(height: 1)
       footer
     }
@@ -245,8 +244,7 @@ struct SearchRootView: View {
     .opacity(panel.shown ? 1 : 0)
     .padding(SearchPanelController.margin)
     .onChange(of: panel.escSeq) { _, _ in
-      if model.preparing != nil { model.cancelPreparing() }  // stop opening, stay here
-      else if focus == .grid && model.reference == nil { focus = .field } else { close() }
+      if focus == .grid && model.reference == nil { focus = .field } else { close() }
     }
     .onKeyPress(characters: ["f"]) { press in
       guard press.modifiers.contains(.command) else { return .ignored }
@@ -475,27 +473,6 @@ struct SearchRootView: View {
           }
         }
       }
-    }
-  }
-
-  /// Opening Photos results: each becomes a file first (usually milliseconds
-  /// each, so this shows only for a long list).
-  @ViewBuilder
-  private var preparingBanner: some View {
-    if let p = model.preparing {
-      HStack(spacing: 10) {
-        ProgressView(value: p.total == 0 ? 0 : Double(p.done) / Double(p.total))
-          .progressViewStyle(.linear).frame(width: 120)
-        Text("Getting \(p.total == 1 ? "the photo" : "\(p.total) items") from your Photos library…")
-          .font(AITheme.font(12)).foregroundStyle(AITheme.title)
-        Button("Cancel") { model.cancelPreparing() }.controlSize(.small)
-      }
-      .padding(.horizontal, 14).padding(.vertical, 8)
-      .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.regularMaterial))
-      .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AITheme.hairline, lineWidth: 1))
-      .padding(.bottom, 12)
-      .transition(.opacity.combined(with: .move(edge: .bottom)))
-      .accessibilityElement(children: .combine)
     }
   }
 

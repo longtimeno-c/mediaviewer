@@ -21,7 +21,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | Planned |
 | 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
 | 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](../plan/18-import.md)) | In main, optional download; release packing is `tools/package/release-addon.patch`, to apply; hardware verify owed |
-| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed. Mac Photos library as a source (issue #72): built on a branch, with engine tests and a real-library bench; its owner calls are open (plan/17) |
+| 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed. Mac Photos library as a source (issue #72): in main (PR #86). Plan/25 (2026-10-03, branch): the library as a folder (virtual list items), its backup to a folder or NAS, and the display-matrix fix for clips on both platforms; engine tests pass, the in-app Photos walk-through needs a build with Photos access |
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
 | 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete, marked ranges (`I` `O`, Delete, `X`), Trim start / end (`[` `]`), draggable piece edges, `J K L` shuttle, frame timecode, Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.13 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
@@ -726,6 +726,25 @@ A local app build that should try the library in Settings needs the new `Info.pl
 `packaging/macos/MediaViewer.entitlements` entitlement. `mediaviewer_app` adds both. Configure
 with `-DMV_MAC_BUNDLE_ID=io.github.longtimeno-c.mediaviewer.dev`, so that the dev app's Photos
 permission and preferences stay apart from an installed MediaViewer.
+
+**The Photos library as a folder, and its backup (Mac; plan/26, 2026-10-03).** Once the library
+was added in Local search's Settings, the folder tree (`⌘⇧E`) shows a *Photos Library* row and
+File gains *Open Photos Library*: the host lists the library as **virtual items** (`photos:<id>`,
+`shell/folder_model_mac.h` `list_entry::is_virtual`) and resolves each to a file as it is shown
+(`shell/photos_items_mac.h`). Search results take the same path. Settings → *Photos Library* →
+**Back Up Now** runs `shell/photos_backup.h` over PhotoKit into a chosen folder. Tests, no library
+needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
+`"[photos_backup]"` (the engine over a fake library: layout, verified copies, the manifest, a
+collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
+poster; the thumbnail spec is `jpg512.3`). A dev build shows the row and the section only when
+its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set in its
+defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
+without the pack loaded can be pointed at it by hand (`defaults write
+io.github.longtimeno-c.mediaviewer.dev mv.photosLibrary.added -bool true`) once macOS has
+granted that bundle Photos access. The viewer's on-view downloads and previews live in
+`~/Library/Caches/MediaViewer/Photos Library/` (write-protected, emptied at launch); a backup's
+fetched originals wait in `~/Library/Caches/MediaViewer/Photos Backup/` and are removed when
+the run ends.
 
 ## Test
 

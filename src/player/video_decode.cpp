@@ -199,6 +199,7 @@ struct sw_convert {
   slot->height = static_cast<std::uint32_t>(frame->height);
   slot->generation = generation;
   slot->ten_bit = ten_bit;
+  slot->rotation = static_cast<std::uint8_t>((pipe.info.rotation / 90u) & 3u);
   slot->colour = gfx::resolve_unspecified(
       colour_from_stream(frame->colorspace, frame->color_primaries, frame->color_trc,
                          frame->color_range, ten_bit ? 10 : 8), slot->width, slot->height);

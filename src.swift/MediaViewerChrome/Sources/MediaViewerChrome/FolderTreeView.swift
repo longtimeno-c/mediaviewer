@@ -79,6 +79,10 @@ final class FolderTreeStore: ObservableObject {
   /// can be scrolled into view once it exists.
   @Published private(set) var scrollTick = 0
   @Published private(set) var visible = false
+  /// plan/26: the Photos library was added in Settings and may be opened as a
+  /// folder; whether its listing is what is on screen.
+  @Published private(set) var photosAvailable = false
+  @Published private(set) var photosOpen = false
   private var timer: Timer?
   private var revealedKey = ""
 
@@ -98,6 +102,10 @@ final class FolderTreeStore: ObservableObject {
     let nowVisible = mv_chrome_tree_visible()
     if nowVisible != visible { visible = nowVisible }
     guard nowVisible else { return }
+    let photos = mv_chrome_photos_library_available()
+    if photos != photosAvailable { photosAvailable = photos }
+    let photosShown = mv_chrome_photos_library_open()
+    if photosShown != photosOpen { photosOpen = photosShown }
     let crumbs = readCrumbs()
     guard let first = crumbs.first else {
       root = nil
@@ -170,10 +178,35 @@ private struct TreeRow: View {
 struct FolderTreeView: View {
   @ObservedObject private var store = FolderTreeStore.shared
 
+  /// plan/26: the Photos library, a folder beside the folders, once it was
+  /// added in Settings. Opening it lists the whole library.
+  private var photosRow: some View {
+    Button {
+      mv_chrome_open_photos_library()
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: store.photosOpen ? "photo.on.rectangle.angled.fill" : "photo.on.rectangle.angled")
+        Text("Photos Library").lineLimit(1)
+        Spacer(minLength: 0)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .fontWeight(store.photosOpen ? .semibold : .regular)
+    .foregroundStyle(store.photosOpen ? Color.accentColor : Color.primary)
+    .help("Your Photos library, iCloud Photos included, as a folder. Read-only: nothing in it is changed.")
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Text("Folders").font(.headline).padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
       Divider()
+      if store.photosAvailable {
+        photosRow
+        Divider()
+      }
       if let root = store.root {
         ScrollViewReader { proxy in
           ScrollView {
@@ -200,8 +233,10 @@ struct FolderTreeView: View {
             proxy.scrollTo(path, anchor: .center)
           }
         }
-      } else {
+      } else if !store.photosOpen {
         Text("No folder open").foregroundStyle(.secondary).padding(14)
+        Spacer()
+      } else {
         Spacer()
       }
     }

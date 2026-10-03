@@ -34,8 +34,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/job_system.h"
@@ -88,6 +90,9 @@
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
+#include "shell/photos_items_mac.h"
+#include "shell/photos_backup.h"
+#include "shell/photos_backup_mac.h"
 
 // Whether two file URLs are on one volume, where a move is a rename. Unknown
 // counts as different, so an unanswerable case takes the verified path.
@@ -391,6 +396,34 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // NSFileManager call and the "F7"/"F8" verb in the resulting NSBeep-on-
 // failure path, not in destination resolution or collision handling.
 - (void)transferMarkedPickDestination:(BOOL)pick move:(BOOL)move;
+
+// plan/26: the Photos library as a listing of virtual items ("photos:<id>",
+// shell/photos_items_mac.h). -openPhotosLibrary lists it (the folder row, the
+// File menu, mv_chrome_open_photos_library); an item resolves to its file on a
+// worker as it is about to be shown; a preview's original is fetched after a
+// short stay. Downloads are cleared when the list ends and at quit.
+- (void)openPhotosLibrary;
+- (BOOL)photosListOpen;
+- (BOOL)photosLibraryAvailable;
+- (void)photosListEnding;
+- (void)openPhotosEntry:(const mv::io::dir_entry&)entry moment:(std::int64_t)moment;
+- (void)showResolvedPhotos:(const mv::shell::photos::resolved&)resolved
+                     entry:(const mv::io::dir_entry&)entry
+                    moment:(std::int64_t)moment;
+- (void)fetchPhotosOriginal:(const std::string&)key;
+// plan/26 "Backup" (shell/photos_backup.h), from Settings.
+- (BOOL)startPhotosBackupTo:(const std::string&)destination;
+- (void)cancelPhotosBackup;
+- (void)photosBackupProgress:(mv_chrome_photos_backup*)out;
+- (std::string)photosBackupDestination;
+- (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out;
+- (BOOL)openListTitled:(const std::string&)title
+               entries:(std::vector<mv::shell::folder_model::list_entry>)entries
+                select:(std::size_t)select
+               gallery:(BOOL)gallery;
+// The real file behind an item: the path itself, or what a Photos key resolved
+// to ("" while unresolved or when only a preview stands in).
+- (std::string)fileForEntry:(const mv::io::dir_entry&)entry;
 
 // Fullscreen (F11 / F) and slideshow (F5), plan/16's Browse and Slideshow
 // tables. No video on Mac yet (PR 19), so slideshow is a plain interval
@@ -1073,6 +1106,40 @@ extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && dir_utf8) [g_chrome_app openFolderPath:dir_utf8];
+}
+// plan/26: the Photos library as a folder.
+extern "C" bool mv_chrome_photos_library_available(void) {
+  return g_chrome_app && [g_chrome_app photosLibraryAvailable] == YES;
+}
+extern "C" bool mv_chrome_photos_library_open(void) {
+  return g_chrome_app && [g_chrome_app photosListOpen] == YES;
+}
+extern "C" void mv_chrome_open_photos_library(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app openPhotosLibrary];
+}
+// plan/26 "Backup".
+extern "C" bool mv_chrome_photos_backup_start(const char* destination_utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || !destination_utf8 || !*destination_utf8) return false;
+  return [g_chrome_app startPhotosBackupTo:std::string(destination_utf8)] == YES;
+}
+extern "C" void mv_chrome_photos_backup_cancel(void) {
+  if (g_chrome_app) [g_chrome_app cancelPhotosBackup];
+}
+extern "C" void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out) {
+  if (!out) return;
+  if (!g_chrome_app) {
+    *out = {};
+    return;
+  }
+  [g_chrome_app photosBackupProgress:out];
+}
+extern "C" int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app photosBackupDestination] : std::string{}, buf, size);
+}
+extern "C" bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out) {
+  return g_chrome_app && out && [g_chrome_app photosBackupLast:out] == YES;
 }
 extern "C" int32_t mv_chrome_sort_order(void) {
   return g_chrome_app ? [g_chrome_app sortOrder] : 0;
@@ -2055,6 +2122,18 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::shell::edit_session _edits;
   std::uint64_t _itemId;
   NSTimer* _rotateDebounce;
+  // plan/26: Photos library items. What each key resolved to (a file in place,
+  // a cache preview, or a fetched original); the sequence that tells a stale
+  // resolve from the current one; the 400 ms stay before a preview's original
+  // is fetched; and the cancel for the fetch in flight.
+  std::unordered_map<std::string, mv::shell::photos::resolved> _photosResolved;
+  std::uint64_t _photosResolveSeq;
+  NSTimer* _photosFetchTimer;
+  std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
+  // plan/26 "Backup": the one run, on its own thread; whether its end has
+  // been written to the defaults (the "last backup" line).
+  std::unique_ptr<mv::shell::backup::engine> _photosBackup;
+  BOOL _photosBackupRecorded;
   BOOL _exportVisible;
   int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
   // PR 11 (plan/07, plan/16). The adjust pane's state and the preview-sized
@@ -2567,6 +2646,17 @@ static void MvAdoptNewDefaultViewerTypes() {
         });
       },
       nullptr);
+  // plan/26: Photos library items. Their tiles come from PhotoKit under the
+  // "photos:" key; every file in the cache folder (previews, on-view
+  // downloads) is read-only; the folder starts the session empty.
+  mv::shell::set_read_only_prefix(mv::shell::photos::cache_dir());
+  _folder.set_virtual_items(std::string(mv::shell::photos::kKeyPrefix), [](const std::string& key) {
+    return mv::shell::photos::thumb_jpeg(key, mv::image::kThumbLongEdge);
+  });
+  _jobs.submit_at(mv::background_generation, [](const mv::job_context&) -> mv::status {
+    mv::shell::photos::clear_cache();
+    return mv::status::ok;
+  });
   _launched = YES;
   if (!_options.open_path.empty() && ![self openEntryPath:_options.open_path.c_str()]) {
     NSBeep();
@@ -2840,6 +2930,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   _folderQuery.clear();
   // Opening a directory ends a result listing (mv_folder_open_list's rule).
   if (_listOpen) {
+    [self photosListEnding];
     _listOpen = NO;
     _listTitle.clear();
     _listReturnDir.clear();
@@ -3039,6 +3130,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self nowPlayingItemChanged];
 
   if (!_scrubMs.empty()) ++_scrubGeneration;  // markers belong to one clip
+  // plan/26: a preview's pending fetch belongs to the item the user has left.
+  [_photosFetchTimer invalidate];
+  _photosFetchTimer = nil;
   if (_items.empty()) {
     MvAddonsItemChanged(std::string());
     _wantSelectedPath.clear();
@@ -3066,7 +3160,17 @@ static void MvAdoptNewDefaultViewerTypes() {
                       moment == _shownMoment &&
                       (_shownMtime == kShownStampUnknown ||
                        (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
-    if (!same) _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+    if (!same) {
+      if (mv::shell::photos::is_key(entry.path_utf8)) {
+        // plan/26: through its file, resolved on a worker if not yet.
+        if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
+        _photosFetchCancel.reset();
+        _shownItem = 0;
+        [self openPhotosEntry:entry moment:moment];
+      } else {
+        _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
+      }
+    }
     _shownMoment = moment;
     _shownPath = entry.path_utf8;
     _shownMtime = entry.mtime_unix;
@@ -3082,10 +3186,12 @@ static void MvAdoptNewDefaultViewerTypes() {
       for (const int off : {1, -1, 2, -2}) {
         const auto i = static_cast<std::ptrdiff_t>(cur) + off;
         if (i >= 0 && static_cast<std::size_t>(i) < _items.size()) {
-          near.push_back(_items[static_cast<std::size_t>(i)].path_utf8);
+          const std::string& p = _items[static_cast<std::size_t>(i)].path_utf8;
+          // A Photos item prefetches through its resolve (openPhotosEntry).
+          if (!mv::shell::photos::is_key(p)) near.push_back(p);
         }
       }
-      _lab.prefetch(near);
+      if (!near.empty()) _lab.prefetch(near);
     }
     _snap.item_index = static_cast<std::uint32_t>(_index.current());
     _snap.item_count = static_cast<std::uint32_t>(_items.size());
@@ -3141,7 +3247,9 @@ static void MvAdoptNewDefaultViewerTypes() {
 
 - (NSString*)currentItemPathForDrag {
   if (_items.empty() || _index.current() >= _items.size()) return nil;
-  const std::string& path = _items[_index.current()].path_utf8;
+  // plan/26: a Photos item drags as its file, once it has one (not a preview).
+  const std::string path = [self fileForEntry:_items[_index.current()]];
+  if (path.empty()) return nil;
   return [NSString stringWithUTF8String:path.c_str()];
 }
 
@@ -3267,6 +3375,17 @@ static void MvAdoptNewDefaultViewerTypes() {
         succeeded.reserve(src_paths.size());
 
         for (std::size_t i = 0; i < src_paths.size(); ++i) {
+          // plan/26: a Photos item copies out as its original, fetched from
+          // iCloud here if this Mac does not hold it (the user asked for the file).
+          std::string src_path = src_paths[i];
+          if (mv::shell::photos::is_key(src_path)) {
+            auto r = mv::shell::photos::resolve(src_path, true);
+            if (!r) {
+              ++failures;
+              continue;
+            }
+            src_path = std::move(r).value().path;
+          }
           // unique_name's `exists` callback is a plain fileExistsAtPath check
           // against the destination directory -- cheap, and exactly the
           // "never overwrite" rule collision_name.h was written for.
@@ -3284,7 +3403,7 @@ static void MvAdoptNewDefaultViewerTypes() {
             continue;
           }
           NSString* chosenName = [NSString stringWithUTF8String:chosen.c_str()];
-          NSURL* srcURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_paths[i].c_str()]];
+          NSURL* srcURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:src_path.c_str()]];
           NSURL* dstURL = [destDir URLByAppendingPathComponent:chosenName];
 
           NSError* error = nil;
@@ -3296,7 +3415,7 @@ static void MvAdoptNewDefaultViewerTypes() {
             // delete with no check in between.
             const std::string targets[] = {std::string(dstURL.path.UTF8String)};
             const auto copied =
-                mv::io::verified_copy(src_paths[i], targets, mv::io::copy_options{});
+                mv::io::verified_copy(src_path, targets, mv::io::copy_options{});
             ok = copied && copied->targets[0].outcome == mv::io::copy_target_outcome::verified &&
                  [fm removeItemAtURL:srcURL error:&error];
             if (copied && !ok && mv::io::copy_succeeded(copied->targets[0].outcome)) {
@@ -4038,6 +4157,8 @@ enum MvMenuCmd : NSInteger {
   kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
   kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
   kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
+  // plan/26
+  kMenuOpenPhotos,
   // PR 9
   kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
   kMenuSortDateTaken, kMenuSortDescending,
@@ -4058,6 +4179,7 @@ enum MvMenuCmd : NSInteger {
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
+    case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
     case kMenuCopyTo: [self copyMarkedPickDestination:YES]; break;
     case kMenuMoveTo: [self moveMarkedPickDestination:YES]; break;
@@ -4146,6 +4268,9 @@ enum MvMenuCmd : NSInteger {
     case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
       return YES;
+    case kMenuOpenPhotos:
+      item.hidden = ![self photosLibraryAvailable];
+      return !item.hidden;
     case kMenuTrash:
     case kMenuMoveTo: {
       // Photos library files are never trashed or moved (issue #72). The
@@ -4239,6 +4364,8 @@ enum MvMenuCmd : NSInteger {
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
+  // plan/26: shown once the library was added in Settings (validateMenuItem:).
+  [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
   _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
   _openRecentMenu.delegate = self;
@@ -5054,7 +5181,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _showOriginal = NO;
   [self publishEdit];
   if (carried_turn) [self scheduleRotationWrite];
-  [self adjustItemChanged:mv::shell::is_video_name(entry.path_utf8) ? 0 : item];
+  [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
 }
@@ -6791,7 +6918,14 @@ static double mv_wall_seconds() {
   [_metaDebounce invalidate];
   _metaDebounce = nil;
   if (_metaRecord || _items.empty() || _index.current() >= _items.size()) return;
-  const mv::io::dir_entry entry = _items[_index.current()];
+  mv::io::dir_entry entry = _items[_index.current()];
+  // plan/26: a Photos item's record is its file's (in place, or the preview /
+  // the fetched original); nothing to read until it has resolved.
+  if (mv::shell::photos::is_key(entry.path_utf8)) {
+    const auto hit = _photosResolved.find(entry.path_utf8);
+    if (hit == _photosResolved.end()) return;
+    entry.path_utf8 = hit->second.path;
+  }
   MvLabApp* app = self;
   auto record = _meta.get(entry, _jobs, [app](std::string path) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -6803,7 +6937,12 @@ static double mv_wall_seconds() {
 
 - (void)metadataArrived:(const std::string&)path {
   if (_items.empty() || _index.current() >= _items.size()) return;
-  const mv::io::dir_entry& entry = _items[_index.current()];
+  mv::io::dir_entry entry = _items[_index.current()];
+  if (mv::shell::photos::is_key(entry.path_utf8)) {
+    const auto hit = _photosResolved.find(entry.path_utf8);
+    if (hit == _photosResolved.end()) return;
+    entry.path_utf8 = hit->second.path;
+  }
   if (entry.path_utf8 != path || _metaRecord) return;  // navigated on, or already adopted
   if (auto record = _meta.peek(entry)) [self adoptMetadata:record];
 }
@@ -7182,6 +7321,16 @@ static double mv_wall_seconds() {
       _listNames.push_back(e.name_utf8);
       continue;
     }
+    if (mv::shell::photos::is_key(e.path_utf8)) {
+      // plan/26: a library item has no folder; its date tells two IMG_0001s apart.
+      char date[32] = {};
+      const time_t t = static_cast<time_t>(e.mtime_unix);
+      struct tm tmv {};
+      localtime_r(&t, &tmv);
+      std::strftime(date, sizeof(date), "%Y-%m-%d %H:%M", &tmv);
+      _listNames.push_back(e.name_utf8 + " \u2014 " + date);
+      continue;
+    }
     const std::string parent = mv::shell::browse_path::parent_of(e.path_utf8);
     _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
   }
@@ -7201,6 +7350,23 @@ static double mv_wall_seconds() {
                gallery:(BOOL)gallery {
   if (paths.empty()) return NO;
   moments.resize(paths.size(), -1);
+  std::vector<mv::shell::folder_model::list_entry> entries;
+  entries.reserve(paths.size());
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    mv::shell::folder_model::list_entry e;
+    e.path_utf8 = std::move(paths[i]);
+    e.moment_ms = moments[i];
+    entries.push_back(std::move(e));
+  }
+  return [self openListTitled:title entries:std::move(entries) select:select gallery:gallery];
+}
+
+- (BOOL)openListTitled:(const std::string&)title
+               entries:(std::vector<mv::shell::folder_model::list_entry>)entries
+                select:(std::size_t)select
+               gallery:(BOOL)gallery {
+  if (entries.empty()) return NO;
+  [self photosListEnding];
   if (!_listOpen) _listReturnDir = _currentDir;
   _listOpen = YES;
   _listTitle = title;
@@ -7215,7 +7381,7 @@ static double mv_wall_seconds() {
   _siblingIndex = -1;
   _revealChild.clear();
   _galleryIfEmptyDir.clear();
-  _wantSelectedPath = select < paths.size() ? paths[select] : std::string();
+  _wantSelectedPath = select < entries.size() ? entries[select].path_utf8 : std::string();
   // A new search lands its chosen clip on its moment again, even when that
   // result is already on screen (and has since played on).
   if (_shownMoment >= 0) _shownMoment = kShownMomentStale;
@@ -7227,11 +7393,6 @@ static double mv_wall_seconds() {
   ++_metaGeneration;
   ++_listingGeneration;
 
-  std::vector<mv::shell::folder_model::list_entry> entries;
-  entries.reserve(paths.size());
-  for (std::size_t i = 0; i < paths.size(); ++i) {
-    entries.push_back({std::move(paths[i]), moments[i]});
-  }
   // A stat per result and the thumbnail cache: never on the main thread
   // (rule 1). Superseded like -openPath:'s own open.
   mv::shell::folder_model* folder = &_folder;
@@ -7245,6 +7406,44 @@ static double mv_wall_seconds() {
                     std::lock_guard<std::mutex> lock(*open_mutex);
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
+                    }
+                    // plan/26: a Photos key given as a plain path (a search
+                    // result) becomes a virtual entry: one PhotoKit fetch for
+                    // the lot gives names and stamps; a deleted asset drops out.
+                    std::vector<std::string> keys;
+                    for (const auto& e : entries) {
+                      if (!e.is_virtual && mv::shell::photos::is_key(e.path_utf8)) keys.push_back(e.path_utf8);
+                    }
+                    if (!keys.empty()) {
+                      auto described = mv::shell::photos::describe(keys);
+                      std::unordered_map<std::string, const mv::shell::photos::item*> by_key;
+                      if (described) {
+                        for (std::size_t i = 0; i < keys.size(); ++i) {
+                          if (described.value()[i]) by_key[keys[i]] = &*described.value()[i];
+                        }
+                      }
+                      std::vector<mv::shell::folder_model::list_entry> kept;
+                      kept.reserve(entries.size());
+                      for (auto& e : entries) {
+                        if (e.is_virtual || !mv::shell::photos::is_key(e.path_utf8)) {
+                          kept.push_back(std::move(e));
+                          continue;
+                        }
+                        const auto hit = by_key.find(e.path_utf8);
+                        if (hit == by_key.end()) continue;
+                        e.is_virtual = true;
+                        e.name_utf8 = hit->second->name;
+                        e.mtime_unix = hit->second->mtime;
+                        e.size = hit->second->size;
+                        kept.push_back(std::move(e));
+                      }
+                      entries.swap(kept);
+                      if (entries.empty()) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                          NSBeep();
+                        });
+                        return mv::status::not_found;
+                      }
                     }
                     auto opened = folder->open_list(title, std::move(entries), *jobs);
                     if (!opened) {
@@ -7267,6 +7466,7 @@ static double mv_wall_seconds() {
 
 - (void)closeList {
   if (!_listOpen) return;
+  [self photosListEnding];
   const std::string back = _listReturnDir;
   if (!back.empty() && [self openPath:back.c_str() navigation:NO]) return;
   // Nothing to return to: an empty window, as before anything was opened.
@@ -7282,6 +7482,284 @@ static double mv_wall_seconds() {
 }
 
 - (BOOL)listOpen { return _listOpen; }
+
+// ---- plan/26: the Photos library as a folder -----------------------------------
+
+- (BOOL)photosListOpen {
+  return _listOpen && _listTitle == mv::shell::photos::kListTitle;
+}
+
+// Settings' flag and PhotoKit access, both: the row, the menu item, the backup.
+- (BOOL)photosLibraryAvailable {
+  return mv::shell::photos::available() ? YES : NO;
+}
+
+// The whole library, oldest first, as a list of virtual items; the newest
+// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit
+// on a worker: a second on a 23 k-asset library (plan/17 measured 0.9 s).
+- (void)openPhotosLibrary {
+  if (![self photosLibraryAvailable]) {
+    NSBeep();
+    return;
+  }
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf](const mv::job_context&) -> mv::status {
+    auto listed = mv::shell::photos::enumerate();
+    if (!listed) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        NSBeep();
+      });
+      return listed.error();
+    }
+    auto entries = std::make_shared<std::vector<mv::shell::folder_model::list_entry>>();
+    entries->reserve(listed->size());
+    for (auto& it : listed.value()) {
+      mv::shell::folder_model::list_entry e;
+      e.path_utf8 = std::move(it.key);
+      e.is_virtual = true;
+      e.name_utf8 = std::move(it.name);
+      e.mtime_unix = it.mtime;
+      e.size = it.size;
+      entries->push_back(std::move(e));
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      if (entries->empty()) {
+        [strongSelf noticeShow:"Your Photos library has no photos or videos MediaViewer can show."];
+        return;
+      }
+      const std::size_t newest = entries->size() - 1;
+      [strongSelf openListTitled:std::string(mv::shell::photos::kListTitle)
+                         entries:std::move(*entries)
+                          select:newest
+                         gallery:YES];
+    });
+    return mv::status::ok;
+  });
+}
+
+// A list is ending (another opens, a folder opens, Back): the on-view iCloud
+// downloads go ("cleared after", owner 2026-09-28) and so does what the keys
+// resolved to. Previews stay until the next launch; they are tiny.
+- (void)photosListEnding {
+  [_photosFetchTimer invalidate];
+  _photosFetchTimer = nil;
+  if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
+  _photosFetchCancel.reset();
+  ++_photosResolveSeq;
+  if (_photosResolved.empty()) return;
+  _photosResolved.clear();
+  _jobs.submit_at(mv::background_generation, [](const mv::job_context&) -> mv::status {
+    mv::shell::photos::clear_downloads();
+    return mv::status::ok;
+  });
+}
+
+- (std::string)fileForEntry:(const mv::io::dir_entry&)entry {
+  if (!mv::shell::photos::is_key(entry.path_utf8)) return entry.path_utf8;
+  const auto hit = _photosResolved.find(entry.path_utf8);
+  if (hit == _photosResolved.end() || hit->second.preview) return {};
+  return hit->second.path;
+}
+
+// Opens a Photos item through its file. Memoised, the second visit is as
+// direct as a file's; otherwise PhotoKit resolves it on a worker (milliseconds
+// in place; a preview JPEG written once for an iCloud-only original) and the
+// open follows on the main thread if the user is still on it. The neighbours
+// resolve in the same job, so the next arrow does not wait.
+- (void)openPhotosEntry:(const mv::io::dir_entry&)entry moment:(std::int64_t)moment {
+  const auto hit = _photosResolved.find(entry.path_utf8);
+  if (hit != _photosResolved.end()) {
+    [self showResolvedPhotos:hit->second entry:entry moment:moment];
+    return;
+  }
+  const std::uint64_t seq = ++_photosResolveSeq;
+  const std::string key = entry.path_utf8;
+  std::vector<std::string> near;
+  const std::size_t cur = _index.current();
+  for (const int off : {1, -1, 2, -2}) {
+    const auto i = static_cast<std::ptrdiff_t>(cur) + off;
+    if (i < 0 || static_cast<std::size_t>(i) >= _items.size()) continue;
+    const std::string& p = _items[static_cast<std::size_t>(i)].path_utf8;
+    if (mv::shell::photos::is_key(p) && !_photosResolved.count(p)) near.push_back(p);
+  }
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit([weakSelf, key, near, seq](const mv::job_context& ctx) -> mv::status {
+    auto got = mv::shell::photos::resolve(key, false);
+    auto extra = std::make_shared<std::vector<std::pair<std::string, mv::shell::photos::resolved>>>();
+    if (got) {
+      for (const std::string& n : near) {
+        if (ctx.cancelled()) break;
+        if (auto r = mv::shell::photos::resolve(n, false)) extra->emplace_back(n, std::move(r).value());
+      }
+    }
+    const mv::status st = got ? mv::status::ok : got.error();
+    auto resolved = std::make_shared<std::optional<mv::shell::photos::resolved>>();
+    if (got) *resolved = std::move(got).value();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      std::vector<std::string> prefetch;
+      for (auto& [k, r] : *extra) {
+        if (!r.preview || !strongSelf->_photosResolved.count(k)) strongSelf->_photosResolved[k] = r;
+        if (!mv::shell::is_video_name(r.path)) prefetch.push_back(r.path);
+      }
+      if (*resolved) strongSelf->_photosResolved[key] = **resolved;
+      if (seq != strongSelf->_photosResolveSeq) return;  // the user has moved on
+      if (strongSelf->_items.empty() || strongSelf->_index.current() >= strongSelf->_items.size()) return;
+      const mv::io::dir_entry& now = strongSelf->_items[strongSelf->_index.current()];
+      if (now.path_utf8 != key) return;
+      if (!*resolved) {
+        [strongSelf noticeShow:st == mv::status::not_found
+                                   ? "This item is no longer in your Photos library."
+                                   : "This item could not be read from Photos."];
+        return;
+      }
+      const std::int64_t at = strongSelf->_listOpen && strongSelf->_index.current() < strongSelf->_moments.size()
+                                  ? strongSelf->_moments[strongSelf->_index.current()]
+                                  : -1;
+      [strongSelf showResolvedPhotos:**resolved entry:now moment:at];
+      if (!prefetch.empty()) strongSelf->_lab.prefetch(prefetch);
+    });
+    return st;
+  });
+}
+
+- (void)showResolvedPhotos:(const mv::shell::photos::resolved&)resolved
+                     entry:(const mv::io::dir_entry&)entry
+                    moment:(std::int64_t)moment {
+  // With the file's stamp: a revisit is a still-cache hit, as for any file.
+  _shownItem = _lab.open_item(resolved.path,
+                              resolved.mtime_unix != 0 ? resolved.mtime_unix : mv::shell::present_lab_mac::kNoStamp,
+                              resolved.size, moment);
+  [self editItemOpened:entry item:_shownItem];
+  [self metadataSelectionChanged];
+  [_photosFetchTimer invalidate];
+  _photosFetchTimer = nil;
+  if (!resolved.preview) return;
+  // A preview: after a short stay (arrowing past fetches nothing), the
+  // original comes from iCloud and replaces it in place -- the viewer's usual
+  // first-picture-then-full-resolution refinement, over the network.
+  const std::string key = entry.path_utf8;
+  MvLabApp* __weak weakSelf = self;
+  _photosFetchTimer = [NSTimer scheduledTimerWithTimeInterval:0.4
+                                                      repeats:NO
+                                                        block:^(NSTimer*) {
+                                                          [weakSelf fetchPhotosOriginal:key];
+                                                        }];
+}
+
+- (void)fetchPhotosOriginal:(const std::string&)key {
+  _photosFetchTimer = nil;
+  if (_items.empty() || _index.current() >= _items.size() || _items[_index.current()].path_utf8 != key) return;
+  if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
+  auto cancel = std::make_shared<std::atomic<bool>>(false);
+  _photosFetchCancel = cancel;
+  MvLabApp* __weak weakSelf = self;
+  // Background generation: the download outlives a navigation; the cancel
+  // flag, not the generation, is what stops it (and removes the part file).
+  _jobs.submit_at(mv::background_generation, [weakSelf, key, cancel](const mv::job_context&) -> mv::status {
+    auto got = mv::shell::photos::resolve(key, true, cancel.get());
+    if (!got) return got.error();
+    auto resolved = std::make_shared<mv::shell::photos::resolved>(std::move(got).value());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf || cancel->load(std::memory_order_acquire)) return;
+      strongSelf->_photosResolved[key] = *resolved;
+      if (strongSelf->_items.empty() || strongSelf->_index.current() >= strongSelf->_items.size()) return;
+      if (strongSelf->_items[strongSelf->_index.current()].path_utf8 != key) return;
+      strongSelf->_shownItem = 0;  // the bytes changed: reopen on the original
+      [strongSelf selectIndex:strongSelf->_index.current()];
+    });
+    return mv::status::ok;
+  });
+}
+
+// ---- plan/26 "Backup": the Photos library's originals to a folder ------------
+
+static NSString* const kPhotosBackupDestinationDefault = @"mv.photosBackup.destination";
+static NSString* const kPhotosBackupLastDefault = @"mv.photosBackup.last";
+
+static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::progress& p) {
+  *out = {};
+  out->state = static_cast<uint32_t>(p.state);
+  out->total = p.total;
+  out->done = p.done;
+  out->skipped = p.skipped;
+  out->failed = p.failed;
+  out->fetched = p.fetched;
+  out->bytes = p.bytes;
+  out->started_unix = p.started_unix;
+  out->finished_unix = p.finished_unix;
+  std::snprintf(out->current, sizeof(out->current), "%s", p.current.c_str());
+  std::snprintf(out->error, sizeof(out->error), "%s", p.error.c_str());
+}
+
+- (BOOL)startPhotosBackupTo:(const std::string&)destination {
+  if (destination.empty() || ![self photosLibraryAvailable]) return NO;
+  if (_photosBackup && _photosBackup->running()) return NO;
+  if (!_photosBackup) _photosBackup = std::make_unique<mv::shell::backup::engine>();
+  mv::shell::backup::options opts;
+  opts.destination = destination;
+  // Fetched originals wait here for their verified copy; emptied at the end.
+  NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+  NSString* base = caches.firstObject ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"];
+  opts.scratch = std::string([[[base stringByAppendingPathComponent:@"MediaViewer"]
+      stringByAppendingPathComponent:@"Photos Backup"] UTF8String]);
+  if (!_photosBackup->start(mv::shell::backup::make_photos_source(), std::move(opts))) return NO;
+  _photosBackupRecorded = NO;
+  [[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithUTF8String:destination.c_str()]
+                                            forKey:kPhotosBackupDestinationDefault];
+  return YES;
+}
+
+- (void)cancelPhotosBackup {
+  if (_photosBackup) _photosBackup->cancel();
+}
+
+- (void)photosBackupProgress:(mv_chrome_photos_backup*)out {
+  if (!out) return;
+  if (!_photosBackup) {
+    *out = {};
+    return;
+  }
+  const mv::shell::backup::progress p = _photosBackup->snapshot();
+  MvFillBackup(out, p);
+  // A run that has ended is remembered once, for the "last backup" line.
+  const bool ended = p.state == mv::shell::backup::run_state::done ||
+                     p.state == mv::shell::backup::run_state::cancelled ||
+                     p.state == mv::shell::backup::run_state::failed;
+  if (ended && !_photosBackupRecorded && !_photosBackup->running()) {
+    _photosBackupRecorded = YES;
+    [[NSUserDefaults standardUserDefaults] setObject:@{
+      @"finished" : @(p.finished_unix),
+      @"done" : @(p.done),
+      @"skipped" : @(p.skipped),
+      @"failed" : @(p.failed),
+      @"state" : @(static_cast<int>(p.state)),
+    }
+                                              forKey:kPhotosBackupLastDefault];
+  }
+}
+
+- (std::string)photosBackupDestination {
+  NSString* dest = [[NSUserDefaults standardUserDefaults] stringForKey:kPhotosBackupDestinationDefault];
+  return dest.UTF8String ? std::string(dest.UTF8String) : std::string();
+}
+
+- (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out {
+  if (!out) return NO;
+  NSDictionary* last = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kPhotosBackupLastDefault];
+  if (!last) return NO;
+  *out = {};
+  out->finished_unix = [last[@"finished"] longLongValue];
+  out->done = static_cast<uint64_t>([last[@"done"] unsignedLongLongValue]);
+  out->skipped = static_cast<uint64_t>([last[@"skipped"] unsignedLongLongValue]);
+  out->failed = static_cast<uint64_t>([last[@"failed"] unsignedLongLongValue]);
+  out->state = static_cast<uint32_t>([last[@"state"] intValue]);
+  return out->finished_unix != 0;
+}
 // The clip the render thread has adopted is the item on screen, not the one
 // before it while the new one is still opening.
 - (BOOL)liveClipIsShown {
@@ -7295,7 +7773,7 @@ static double mv_wall_seconds() {
 }
 - (std::string)itemPathAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return {};
-  return _items[static_cast<std::size_t>(index)].path_utf8;
+  return [self fileForEntry:_items[static_cast<std::size_t>(index)]];
 }
 
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms
@@ -7880,6 +8358,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _rotateDebounce = nil;
   [_metaWriteDebounce invalidate];
   _metaWriteDebounce = nil;
+  // plan/26: a Photos original being fetched stops; the downloads go (below).
+  [_photosFetchTimer invalidate];
+  _photosFetchTimer = nil;
+  if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
   std::optional<mv::shell::rotation_write> exitTurn = _edits.take_pending_write();
   std::vector<mv::shell::meta_job> exitMeta = _metaWriter.drain_for_exit();
   // Add-on chromes shut down here, before their packs stop (below, off the
@@ -7897,6 +8379,12 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     // removed (no partial output); joins the queue's workers.
     _clipJobs.reset();
     _jobs.shutdown();
+    mv::shell::photos::clear_downloads();  // "cleared after" (owner, 2026-09-28)
+    // plan/26: a backup run stops between buffers and leaves no part file.
+    if (_photosBackup) {
+      _photosBackup->cancel();
+      _photosBackup->join();
+    }
     if (exitTurn && !mv::shell::run_rotation_write(*exitTurn)) MV_LOG_WARN("exit: rotation write failed");
     for (const mv::shell::meta_job& job : exitMeta) {
       const mv::shell::meta_outcome out = mv::shell::run_meta_job(job);

@@ -750,6 +750,31 @@ still holds.
 
 ---
 
+## Standalone PR 51 — The Photos library as a folder, its backup, and upright clips
+
+Owner, 2026-10-03, trying the Photos source (issue #72, PR #86). Design:
+[26-photos-library.md](26-photos-library.md). Mac for the library (D9, like the source); the
+rotation fix on both platforms.
+
+- **The library as a folder**, once added in Settings: a *Photos Library* row in the folder
+  tree, File → Open Photos Library. The folder model lists **virtual items** (`photos:<id>`,
+  no stat), tiled from PhotoKit's cache, resolved to a file by the host as they are shown; an
+  iCloud-only original opens as a preview and is fetched after a 400 ms stay. Search results
+  take the same path; the AI chrome's own pre-resolve is gone.
+- **Backup** (Settings → Photos Library): every original, verified into
+  `YYYY/YYYY-MM-DD`, with a manifest in the destination so a re-run writes nothing for what is
+  there. iCloud-only originals are downloaded for it.
+- **Clips with a display matrix play upright** and their posters turn with them
+  (`jpg512.3`).
+
+**Verify:** `mv_tests "[poster]" "[write_guard]" "[photos_backup]" "[folder][photos]"`; a 90°
+fixture clip shows portrait and upright; with the library added, the row opens the library in
+the gallery, an iCloud-only item becomes its original after a moment, writes are refused, Copy
+To copies the original; a backup to a folder, then a second run that writes zero bytes; the
+Mac PR 1 present-loop gate still holds.
+
+---
+
 ## Milestone I — Voice query add-on (PR 27–28, both platforms)
 
 An **optional add-on installed from Settings**, separate from the AI pack. Hold a key and say
