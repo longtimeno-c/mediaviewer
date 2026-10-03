@@ -48,6 +48,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
 | `plan/21-video-editor.md` | PRs 30–31: the Video Editor window (base) |
 | `plan/22-editor-addon.md` | PRs 32–47, proposed: the Editor add-on — GPU port, colour management and grading, multi-track editing, audio, delivery, model packs. Read before any add-on GPU, colour or timeline work |
+| `plan/23-nle-search.md` | Issue #71: Local search inside Final Cut Pro (agent and extension in MediaViewer.app, off until turned on; Mac-only D9 exception) over the pack's read-only reader, and FCPXML export on both platforms |
 | `plan/24-transfer.md` | PRs 49–50: fast copies to and from a network share (deep I/O, files in flight), and Transfer, the general copier. Read before touching `io/verified_copy` or the file port |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
@@ -114,7 +115,7 @@ numbers say otherwise.
 | **D2** | FFmpeg + D3D11VA on *your* `ID3D11Device`, presented on the same swapchain as photos. Not libmpv. Not MF as the primary path. `IMFMediaEngine` is an escape hatch behind `IVideoSource` if the A/V clock overruns PR 5. |
 | **D3** | Bundle decoders. Never require a Store pack. |
 | **D4** | v1 ships the PR 1–7 viewer in PR 8. Photo editing/export waits for PR 10–11; metadata tools and further Windows integration are future updates. |
-| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2. JPEG XL / EXR / PSD / SVG / DDS wait. |
+| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2; **on the Mac also Apple ProRes** (amended 2026-09-29, hardware decode only). JPEG XL / EXR / PSD / SVG / DDS wait. |
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
@@ -269,6 +270,7 @@ src/edit     EditStack, GPU ops, export
 src/canvas   pan/zoom/springs; host publishes a POD input snapshot
 src/abi      C ABI surface
 src/shell    Windows host (Win32 window, islands, CLI) and the Mac host (AppKit + Metal, `*_mac.mm`)
+src/nle      Local search from an editing app (plan/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
 src.swift    SwiftUI chrome for the Mac host
 src.managed  C# WinUI 3 chrome
 tests/

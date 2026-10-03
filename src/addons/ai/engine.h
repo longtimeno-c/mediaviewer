@@ -152,6 +152,18 @@ struct engine_deps {
   // with nothing cached yet (Core ML's first compile: minutes). Cheap: a look
   // at the cache folder, after `prepare`. Null or false: an ordinary load.
   std::function<bool(std::uint32_t quality, std::uint32_t compute)> first_compile;
+
+  // ---- a reader (engine_options::read_only; the search agent, plan/23) ----
+  // A tower's index key ("clip-vit-b32/fp16/pre1") without opening it.
+  std::function<std::string(std::uint32_t quality)> clip_spec_key;
+  // The text tower and tokenizer alone, on CPU: queries against stored
+  // vectors, never a picture embedded.
+  std::function<result<loaded_clip>(std::uint32_t quality)> open_clip_text;
+  // CLAP's text tower alone; an error when the ai-audio piece is not installed.
+  std::function<result<loaded_sound>()> open_sound_text;
+  // The transcript spec Whisper would write at this quality, without opening
+  // it; "" when the ai-audio piece is not installed.
+  std::function<std::string(std::uint32_t quality)> speech_spec_key;
   // The system Photos library (issue #72): null uses make_photos_source()
   // (PhotoKit on macOS, none elsewhere). The tests pass a fake.
   std::function<std::unique_ptr<photos_source>()> photos;
@@ -159,6 +171,20 @@ struct engine_deps {
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
 };
+
+// How an engine runs. The app's engine indexes and owns the index; a reader
+// is a second process's view of the same files (the search agent, plan/23):
+// index.db and faces.db opened read-only, the text towers only, no scans, no
+// workers, no settings written. It answers search_text, search_similar on an
+// indexed still or moment (its stored vector: nothing is decoded or
+// embedded), search_person, and the result calls; every call that would
+// change the index or the settings returns status::unsupported_format. It
+// catches up with what the app commits (index_db::data_version) at most
+// every kReaderCatchUpSeconds, appending new frames rather than reloading.
+struct engine_options {
+  bool read_only = false;
+};
+inline constexpr double kReaderCatchUpSeconds = 5.0;
 
 struct settings {
   std::uint32_t compute = MV_AI_COMPUTE_AUTO;
@@ -183,13 +209,14 @@ struct settings {
 
 class engine {
  public:
-  engine(const mv_host_api* api, engine_deps deps);
+  engine(const mv_host_api* api, engine_deps deps, engine_options options = {});
   ~engine();
   engine(const engine&) = delete;
   engine& operator=(const engine&) = delete;
 
   [[nodiscard]] expected start();
   void stop() noexcept;
+  [[nodiscard]] bool read_only() const noexcept { return options_.read_only; }
 
   // ---- state and settings ------------------------------------------------------
   void status(mv_ai_status& out) const;
@@ -232,6 +259,8 @@ class engine {
       std::uint64_t id, const std::string& path) const;
   void search_release(std::uint64_t id);
   [[nodiscard]] result<std::string> result_snippet(std::uint64_t id, std::uint32_t index) const;
+  // The clip's length as the index recorded it (0: a still, or not known). [worker-thread]
+  [[nodiscard]] result<std::int64_t> result_duration(std::uint64_t id, std::uint32_t index) const;
   // Named people for the word being typed (query.h suggest):
   // [{"id":1,"name":"Tristan","completion":"Tristan "}]  [worker-thread]
   [[nodiscard]] std::string suggest_json(const std::string& query);
@@ -306,6 +335,14 @@ class engine {
 
   // threads
   void control_loop();
+  void reader_loop();  // a reader's control thread: load, then catch up
+  // A reader: the answering tower's text half, its vectors, People's names and
+  // the audio index, all read-only. False when there is nothing to answer
+  // from (no index yet, or the pack lacks the model that wrote it).
+  bool load_reader();
+  // A reader: what the app committed since the last look.
+  void catch_up_reader();
+  void load_assets();
   void worker_loop(unsigned index);
   void search_loop();
   // work
@@ -461,6 +498,12 @@ class engine {
 
   host host_;
   engine_deps deps_;
+  engine_options options_;
+  // A reader's catch-up marks (reader_loop only).
+  std::int64_t reader_version_ = 0;
+  std::int64_t reader_frame_ = 0;  // the last picture frame id taken
+  std::int64_t reader_sound_ = 0;  // the last sound frame id taken
+  std::string reader_speech_spec_;
   // The Photos library (issue #72): the source, its root's id (0 none) and
   // whether it is readable now (read by the control thread each scan).
   std::unique_ptr<photos_source> photos_;

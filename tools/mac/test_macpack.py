@@ -397,5 +397,73 @@ class LipoMergeTests(unittest.TestCase):
                                     {"Contents/_CodeSignature/CodeResources": b"b"})
         self.assertEqual(warnings, [])
 
+    def test_final_cut_pro_pieces_may_be_arm64_only(self):
+        # plan/23: the Intel build has no AI pack, so no agent or extension.
+        fcp = {"Contents/Library/LaunchAgents/x.search.plist": b"job",
+               "Contents/PlugIns/MediaViewerSearch.appex/Contents/MacOS/MediaViewerSearch": self._macho("arm64"),
+               "Contents/PlugIns/MediaViewerSearch.appex/Contents/_CodeSignature/CodeResources": b"sig"}
+        warnings, out = self._merge({"Contents/MacOS/MediaViewer": self._macho("arm64"), **fcp},
+                                    {"Contents/MacOS/MediaViewer": self._macho("x86_64")})
+        self.assertEqual(warnings, [])
+        for rel, data in fcp.items():
+            self.assertEqual(out[rel], data)  # untouched, signature included
+        self.assertEqual(self._archs_of_bytes(out["Contents/MacOS/MediaViewer"]), {"arm64", "x86_64"})
+
+    def test_other_arm64_only_files_still_fail(self):
+        with self.assertRaises(SystemExit):
+            self._merge({"Contents/Helpers/SomethingElse": self._macho("arm64")}, {})
+
+
+class FinalCutProPackTests(unittest.TestCase):
+    """plan/23: the extension is signed before the app, with the assemble
+    entitlements or (a release) the ones it carries. The agent is the app's
+    own executable."""
+
+    def _app(self, root: Path) -> Path:
+        app = root / "MediaViewer.app"
+        (app / "Contents" / "Frameworks").mkdir(parents=True)
+        (app / "Contents" / "PlugIns" / f"{macpack.FCP_APPEX_NAME}.appex").mkdir(parents=True)
+        return app
+
+    def _sign(self, app: Path, **kw) -> list:
+        calls = []
+        with patch.object(macpack, "codesign", side_effect=lambda p, *a, **k: calls.append((p, k))), \
+             patch.object(macpack, "run"):
+            macpack.sign_app(app, "-", Path("QuickLook.entitlements"), hardened=True, **kw)
+        return calls
+
+    def test_assemble_signs_with_the_given_entitlements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(Path(tmp))
+            calls = dict((str(p), k) for p, k in self._sign(
+                app, fcp_appex_entitlements=Path("Extension.entitlements")))
+            appex = str(app / "Contents" / "PlugIns" / f"{macpack.FCP_APPEX_NAME}.appex")
+            self.assertEqual(calls[appex]["entitlements"], Path("Extension.entitlements"))
+            self.assertFalse(calls[appex]["preserve_entitlements"])
+
+    def test_release_keeps_its_entitlements_and_signs_it_before_the_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(Path(tmp))
+            calls = self._sign(app)
+            paths = [p for p, _ in calls]
+            appex = app / "Contents" / "PlugIns" / f"{macpack.FCP_APPEX_NAME}.appex"
+            k = calls[paths.index(appex)][1]
+            self.assertTrue(k["preserve_entitlements"])
+            self.assertIsNone(k["entitlements"])
+            self.assertLess(paths.index(appex), paths.index(app))
+
+    def test_assemble_refuses_a_partial_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            for name in ("e", "x", "i", "p", "q", "c", "f", "appex"):
+                (t / name).write_bytes(b"")
+            with patch.object(macpack, "make_icns"), self.assertRaises(SystemExit) as cm:
+                macpack.main(["assemble", "--app", str(t / "a.app"), "--exe", str(t / "e"),
+                              "--appex-exe", str(t / "x"), "--info-plist", str(t / "i"),
+                              "--appex-plist", str(t / "p"), "--appex-entitlements", str(t / "q"),
+                              "--icon-png", str(t / "c"), "--font", str(t / "f"), "--dylib-dir", tmp,
+                              "--fcp-appex-exe", str(t / "appex")])
+            self.assertIn("--fcp-agent-plist", str(cm.exception))
+
 if __name__ == "__main__":
     unittest.main()

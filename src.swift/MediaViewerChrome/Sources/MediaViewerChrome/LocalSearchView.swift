@@ -94,6 +94,11 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var removing: Set<String> = []
   /// Moves whenever the chrome is (re)attached, so the embedded view is rebuilt.
   @Published private(set) var chromeGeneration = 0
+  /// plan/23: Final Cut Pro search (mv_fcp_state): 0 not in this app or Mac,
+  /// 1 off, 2 on, 3 on once allowed in Login Items. The agent and extension
+  /// ship in MediaViewer.app; turning this on only registers them.
+  @Published private(set) var finalCut: Int32 = 0
+  @Published private(set) var finalCutBusy = false
 
   // The command bar pill (mv.ai.1 status, no-block).
   @Published private(set) var pillVisible = false
@@ -125,6 +130,8 @@ final class LocalSearchStore: ObservableObject {
 
   private func poll() {
     ticks += 1
+    // Waiting on Login Items approval: notice it being given while Settings is open.
+    if finalCut == 3, !finalCutBusy, SettingsStore.shared.visible, ticks % 8 == 0 { refreshFinalCut() }
     if !removing.isEmpty, ticks % 2 == 0 { checkRemovals() }
     // Nothing loaded and nothing loading: every 2 s is enough, unless
     // Settings is open or a piece is being installed (it shows the change).
@@ -216,8 +223,10 @@ final class LocalSearchStore: ObservableObject {
       }
       var u: UInt64 = 0, c: UInt64 = 0
       let room = mv_addon2_family_usage("ai", &u, &c)
+      let fcp = mv_fcp_state()
       let states = read, used = u, ceiling = c
       await MainActor.run {
+        if !self.finalCutBusy { self.finalCut = fcp }
         for i in self.pieces.indices {
           // A queued removal is not undone by a read that raced it.
           if self.removing.contains(self.pieces[i].id) { continue }
@@ -233,6 +242,29 @@ final class LocalSearchStore: ObservableObject {
         }
         self.stateKnown = true
         then?()
+      }
+    }
+  }
+
+  /// Final Cut Pro's state alone (an XPC call to the service manager).
+  func refreshFinalCut() {
+    Task.detached {
+      let fcp = mv_fcp_state()
+      await MainActor.run { if !self.finalCutBusy { self.finalCut = fcp } }
+    }
+  }
+
+  /// Registers or unregisters the search agent and shows or hides the
+  /// extension in Final Cut Pro. Nothing is downloaded: the pieces are in the
+  /// app, and the bulk (Core) is already installed.
+  func setFinalCut(_ on: Bool) {
+    guard !finalCutBusy else { return }
+    finalCutBusy = true
+    Task.detached {
+      let after = mv_fcp_set_enabled(on)
+      await MainActor.run {
+        self.finalCutBusy = false
+        self.finalCut = after
       }
     }
   }
@@ -455,6 +487,8 @@ final class LocalSearchStore: ObservableObject {
     confirmingRemove = nil
     let title = pieces.first(where: { $0.id == id })?.title ?? id
     if id == "ai" { openWhenLoaded = false }
+    // Final Cut Pro search hosts Core: without it, the agent and panel go too.
+    if id == "ai", finalCut == 2 || finalCut == 3 { setFinalCut(false) }
     if id == "ai" && loaded {
       // The embedded management view stops using the table now, not at the
       // next poll: the pack is unloaded by the call below.
@@ -535,6 +569,7 @@ struct LocalSearchSection: View {
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.pieces)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.queued)
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.busyPiece)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.finalCut)
   }
 
   @ViewBuilder
@@ -552,6 +587,13 @@ struct LocalSearchSection: View {
     }
     .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    // plan/23: offered once Core is installed, on a Mac that carries the pieces.
+    if store.coreInstalled, !store.removing.contains("ai"), store.finalCut != 0 {
+      finalCutRow
+        .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+        .transition(.opacity)
+    }
     if let id = store.confirmingRemove {
       removeConfirm(id)
         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -580,6 +622,46 @@ struct LocalSearchSection: View {
         .id(store.chromeGeneration)
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
+    }
+  }
+
+  /// Final Cut Pro search on or off (plan/23). Off, nothing of it runs and
+  /// Final Cut Pro lists no MediaViewer extension.
+  private var finalCutRow: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 16) {
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 6) {
+          Text("Final Cut Pro").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+          Text(store.finalCut == 2 ? "On" : store.finalCut == 3 ? "Waiting for approval" : "Off")
+            .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        }
+        Text(finalCutDetail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if store.finalCutBusy {
+        ProgressView().controlSize(.small)
+      } else if store.finalCut == 1 {
+        Button("Turn on") { store.setFinalCut(true) }
+      } else {
+        if store.finalCut == 3 {
+          Button("Open Login Items…") { mv_fcp_open_login_items() }
+        }
+        Button("Turn off") { store.setFinalCut(false) }
+      }
+    }
+    .padding(12)
+  }
+
+  private var finalCutDetail: String {
+    switch store.finalCut {
+    case 2:
+      return "In Final Cut Pro, click the Extensions button in the browser and choose MediaViewer Search. "
+        + "Drag results onto the timeline."
+    case 3:
+      return "Allow MediaViewer in System Settings → General → Login Items so Final Cut Pro can reach Local search."
+    default:
+      return "Search your footage from a panel inside Final Cut Pro, using this index. Nothing is downloaded."
     }
   }
 

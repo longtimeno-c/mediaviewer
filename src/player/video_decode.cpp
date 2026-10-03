@@ -4,8 +4,13 @@
 // fallback, copied out of the decoder pool into our own presentation ring.
 //
 // OWNER: mediaviewer-48 (5a).
+#include <atomic>
 #include <chrono>
 #include <vector>
+
+extern "C" {
+#include <libavutil/hwcontext.h>
+}
 
 #include "core/trace.h"
 #include "player/video_internal.h"
@@ -16,10 +21,41 @@ namespace {
 // avcodec calls this to let us pick the surface format. Returning AV_PIX_FMT_D3D11
 // is what selects the hardware path; anything else and the decoder produces CPU
 // frames and we take the software fallback.
+// ProRes on the Mac (D5 amended, plan/12 2026-09-29): VideoToolbox decodes it
+// in hardware on Apple silicon, but to 4:2:2 or 4:4:4, and the ring and the
+// shader take 4:2:0. VideoToolbox converts to any layout it is asked for, so
+// ask it for P010 (10-bit 4:2:0, the HEVC Main10 layout) and ProRes stays on
+// the GPU path. Other codecs keep FFmpeg's default frames (their native 4:2:0).
+// False when VideoToolbox would not take the request: the software path then
+// decodes the clip, visibly.
+[[nodiscard]] bool request_420_frames(AVCodecContext* ctx) noexcept {
+  if constexpr (kHwDeviceType != AV_HWDEVICE_TYPE_VIDEOTOOLBOX) {
+    return true;
+  } else {
+    if (ctx->codec_id != AV_CODEC_ID_PRORES) return true;
+    AVBufferRef* frames = nullptr;
+    if (avcodec_get_hw_frames_parameters(ctx, ctx->hw_device_ctx, kHwPixFmt, &frames) < 0 || !frames) {
+      return false;
+    }
+    auto* fc = reinterpret_cast<AVHWFramesContext*>(frames->data);
+    fc->sw_format = AV_PIX_FMT_P010;
+    if (av_hwframe_ctx_init(frames) < 0) {
+      av_buffer_unref(&frames);
+      return false;
+    }
+    av_buffer_unref(&ctx->hw_frames_ctx);
+    ctx->hw_frames_ctx = frames;
+    MV_LOG_INFO("player: ProRes via %s, as 10-bit 4:2:0", kHwDecoderName);
+    return true;
+  }
+}
+
 AVPixelFormat pick_hw_format(AVCodecContext* ctx, const AVPixelFormat* formats) {
-  (void)ctx;
   for (const AVPixelFormat* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
-    if (*p == kHwPixFmt) return *p;
+    if (*p == kHwPixFmt) {
+      if (request_420_frames(ctx)) return *p;
+      break;  // software, as below
+    }
   }
   // plan/05: "Fall back to software decode (with a visible indicator in the
   // debug overlay) when the GPU lacks a profile. Never silently."
@@ -71,6 +107,27 @@ struct sw_convert {
     int strides[4] = {pitch, ((width + 1) / 2) * 2 * (ten_bit ? 2 : 1), 0, 0};
     return sws_scale(scaler.get(), frame->data, frame->linesize, 0, height, dst, strides) ==
            height;
+  }
+
+  // A hardware frame in a layout the ring cannot take (4:2:2 / 4:4:4 decoder
+  // output): copied back to memory and converted like a software frame, so
+  // the clip plays -- slower, and said so -- rather than every frame being
+  // dropped while the audio plays over nothing (plan/05 "never silently").
+  frame_ptr readback;
+  bool readback_logged = false;
+
+  [[nodiscard]] bool convert_hw(const AVFrame* hw) noexcept {
+    if (!readback) readback.reset(av_frame_alloc());
+    if (!readback) return false;
+    av_frame_unref(readback.get());
+    if (av_hwframe_transfer_data(readback.get(), hw, 0) < 0) return false;
+    if (!readback_logged) {
+      readback_logged = true;
+      const char* name = av_get_pix_fmt_name(static_cast<AVPixelFormat>(readback->format));
+      MV_LOG_WARN("player: %s surface layout %s is not 4:2:0; copying frames back for software conversion",
+                  kHwDecoderName, name ? name : "?");
+    }
+    return convert(readback.get());
   }
 };
 
@@ -127,15 +184,19 @@ struct sw_convert {
 // not be placed and should be dropped.
 [[nodiscard]] bool publish_frame(video_pipeline& pipe, AVFrame* frame, sw_convert& sw,
                                  std::uint32_t generation, video_frame* slot) noexcept {
-  const bool hardware = frame->format == kHwPixFmt;
+  bool hardware = frame->format == kHwPixFmt;
 
   std::uint32_t texture_w = 0;
   std::uint32_t texture_h = 0;
   bool ten_bit = false;
 
-  if (hardware) {
-    if (describe_hw_surface(frame, &texture_w, &texture_h, &ten_bit) != status::ok) return false;
-  } else {
+  if (hardware && describe_hw_surface(frame, &texture_w, &texture_h, &ten_bit) != status::ok) {
+    if (!sw.convert_hw(frame)) return false;
+    hardware = false;  // the software upload below, and the overlay says so
+    texture_w = static_cast<std::uint32_t>(sw.width) & ~1u;
+    texture_h = static_cast<std::uint32_t>(sw.height) & ~1u;
+    ten_bit = sw.ten_bit;
+  } else if (!hardware) {
     if (!sw.convert(frame)) return false;
     texture_w = static_cast<std::uint32_t>(frame->width);
     texture_h = static_cast<std::uint32_t>(frame->height);

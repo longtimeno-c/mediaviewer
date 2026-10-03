@@ -50,6 +50,10 @@
 #include "io/in_flight.h"
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
+#include "shell/fcp_mac.h"
+#if defined(MV_WITH_SEARCH_AGENT)
+#include "nle/mac/agent_mac.h"
+#endif
 #include "shell/adjust_pane.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
@@ -2179,6 +2183,8 @@ static void MvAdoptNewDefaultViewerTypes() {
           if (app && path) (void)[app openEntryPath:path];
         },
         nullptr);
+    // plan/23: Final Cut Pro search stays as Settings left it (background, later).
+    MvFcpStart();
   }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
@@ -8085,6 +8091,12 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(MV_WITH_SEARCH_AGENT)
+  // plan/23: launchd runs this executable as Final Cut Pro's search agent
+  // (Contents/Library/LaunchAgents). Before anything of the viewer: no window,
+  // no crash reporter, no add-ons.
+  if (argc == 2 && std::strcmp(argv[1], "--search-agent") == 0) return MvSearchAgentMain();
+#endif
   mv::trace::provider_register();
   mv::shell::mac_lab_options options;
   for (int i = 1; i < argc; ++i) {

@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.16
+  VERSION 0.1.22
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -1141,8 +1141,9 @@ if(MV_BUILD_TESTS)
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
     tests/test_ai_query.cpp
+    tests/test_nle.cpp
   )
-  target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_io
+  target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
     Catch2::Catch2WithMain)
   target_include_directories(mv_ai_tests PRIVATE src tests)
   target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE

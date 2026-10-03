@@ -35,6 +35,17 @@ extern "C" {
 
 #define MV_AI_INTERFACE "mv.ai.1"
 
+/* A second export beside mv_addon_get (plan/23, the search agent): the same
+ * table over the same data folder, read-only. index.db and faces.db open
+ * SQLITE_OPEN_READONLY, the text towers only load, nothing is scanned or
+ * indexed, and every call that would change the index, the people or the
+ * settings returns MV_ERR_UNSUPPORTED_FORMAT. The app stays the one writer;
+ * the reader catches up with what it commits. A pack without this symbol
+ * predates the reader and must not be loaded by one. Portable: the Mac search
+ * agent hosts it today, and a Windows host (a Premiere/Resolve bridge) can
+ * load it the same way. */
+#define MV_AI_READER_ENTRY_SYMBOL "mv_ai_reader_get"
+
 /* Where inference runs (plan/17 "Runtime"). CPU is always underneath. */
 typedef enum mv_ai_backend {
   MV_AI_BACKEND_CPU = 0,
@@ -333,6 +344,12 @@ typedef struct mv_ai_api {
    * MV_ADDON_EVENT_AI_PEOPLE when anything moved. [worker-thread] */
   mv_status(MV_CALL* person_refine)(void* ctx, uint64_t person_id, uint32_t* out_removed);
 
+  /* ---- appended 2026-09-28 (plan/23): an NLE hand-off's clip length -------- */
+  /* The length of a result's clip in ms, as the index recorded it; 0 for a
+   * still or a clip whose length is not known yet. An FCPXML asset needs it
+   * (nle/fcpxml.h). Check struct_size before calling. [worker-thread] */
+  mv_status(MV_CALL* result_duration)(void* ctx, uint64_t search_id, uint32_t index,
+                                      int64_t* out_ms);
   /* ---- sharing an index (2026-09-28, plan/17 "Sharing an index") ---------- */
   /* Writes the index of `root_ids` (NULL / 0: every root) to `dest_utf8` (a
    * .mvindex file, through dest.part), with the MV_AI_TRANSFER_* extras in
