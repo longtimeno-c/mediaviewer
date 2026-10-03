@@ -447,10 +447,13 @@ struct rig {
     // One cache, as the host's: a still's thumbnail and a stored moment are
     // what thumbnail_jpeg then finds.
     svc.thumbnail = [this](const std::string& path) -> mv::result<std::string> {
-      if (utf8(fs::path(path).filename()).find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
       std::lock_guard lock(thumbs_m);
-      jpegs.try_emplace(path + "#-1", std::vector<std::uint8_t>{0xFF, 0xD8, 9});
-      return path + ".thumb.jpg";
+      std::vector<std::uint8_t>& jpeg = jpegs[path + "#-1"];
+      if (jpeg.empty()) jpeg = {0xFF, 0xD8, 9};
+      std::string out = path + ".thumb.jpg";
+      return out;
     };
     svc.still_rgb = [this](const std::string& path, std::uint32_t) -> mv::result<mv::addon::rgb_image> {
       ++stills_decoded;
