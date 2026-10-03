@@ -365,7 +365,19 @@ class ort_faces final : public face_analyzer {
   }
   const std::string& spec_key() const noexcept override { return m_->spec().spec_key; }
   float same_person() const noexcept override { return m_->spec().same_person; }
-  std::uint32_t dim() const noexcept override { return 128; }
+  std::uint32_t dim() const noexcept override { return m_->spec().dim; }
+  std::string name() const override { return m_->spec().name; }
+  face_tuning tuning() const noexcept override {
+    const infer::face_spec& s = m_->spec();
+    face_tuning t;
+    t.same_person = s.same_person;
+    t.keep = s.keep;
+    t.keep_weak = s.keep_weak;
+    t.margin = s.margin;
+    t.ambiguous = s.ambiguous;
+    t.merge_at = s.merge_at;
+    return t;
+  }
 
  private:
   std::unique_ptr<infer::face_models> m_;
@@ -531,14 +543,26 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     s.spec_key = spec->spec_key();
     return s;
   };
-  d.open_faces = [p]() -> result<std::unique_ptr<face_analyzer>> {
+  d.open_faces = [p](std::uint32_t compute) -> result<std::unique_ptr<face_analyzer>> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-faces"));
     MV_TRY(infer::face_spec spec, infer::read_face_spec(join(join(dir, "models"), "faces")));
     infer::session_options cpu;
     cpu.threads = 1;
-    MV_TRY(auto models, infer::face_models::open(*p->rt, spec, cpu));
+    // The embedder on the towers' compute choice (the detector stays on CPU:
+    // it is small, and its shape follows the image).
+    infer::session_options acc = cpu;
+    switch (compute) {
+      case MV_AI_COMPUTE_AUTO: acc.on = accelerated(*p->rt); break;
+      case MV_AI_COMPUTE_CUDA: acc.on = infer::backend::cuda; break;
+      case MV_AI_COMPUTE_OPENVINO: acc.on = infer::backend::openvino; break;
+      case MV_AI_COMPUTE_COREML: acc.on = infer::backend::coreml; break;
+      default: acc.on = infer::backend::cpu; break;
+    }
+    if (!p->rt->has_provider(acc.on)) acc.on = infer::backend::cpu;
+    acc.cache_dir_utf8 = coreml_cache(*p);
+    MV_TRY(auto models, infer::face_models::open(*p->rt, spec, cpu, &acc));
     return std::unique_ptr<face_analyzer>(new ort_faces(std::move(models)));
   };
   d.restart_needed = [p] {
@@ -570,6 +594,57 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
       if (in && std::getline(in, model) && model == it->second.image_file) return false;
     }
     return true;
+  };
+  // A reader (engine_options::read_only, plan/23): text towers only, on CPU.
+  d.clip_spec_key = [p](std::uint32_t quality) {
+    p->ensure();
+    auto it = p->towers.find(quality);
+    return it == p->towers.end() ? std::string() : it->second.spec_key();
+  };
+  d.open_clip_text = [p](std::uint32_t quality) -> result<loaded_clip> {
+    p->ensure();
+    if (!p->rt) return err(status::unsupported_format);
+    auto it = p->towers.find(quality);
+    if (it == p->towers.end()) return err(status::unsupported_format);
+    infer::session_options cpu;
+    cpu.on = infer::backend::cpu;
+    cpu.threads = 2;
+    MV_TRY(auto m, infer::clip_model::open_text_only(*p->rt, it->second, cpu));
+    loaded_clip out;
+    out.meta = meta_of(it->second);
+    out.model = std::shared_ptr<infer::embedder>(std::move(m));
+    out.on = infer::backend::cpu;
+    return out;
+  };
+  d.open_sound_text = [p]() -> result<loaded_sound> {
+    p->ensure();
+    if (!p->rt) return err(status::unsupported_format);
+    MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
+    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(join(dir, "models"), "clap-general")));
+    infer::session_options cpu;
+    cpu.on = infer::backend::cpu;
+    cpu.threads = 2;
+    MV_TRY(auto m, infer::clap_model::open_text_only(*p->rt, spec, cpu));
+    loaded_sound s;
+    s.model = std::make_shared<ort_sound>(std::move(m));
+    s.name = spec.name;
+    s.spec_key = spec.spec_key();
+    s.dim = spec.dim;
+    s.window_ms = spec.window_ms;
+    s.hop_ms = spec.hop_ms;
+    s.dedupe = spec.dedupe;
+    s.query_margin = spec.query_margin;
+    s.result_margin = spec.result_margin;
+    s.generic_prompts = spec.generic_prompts;
+    return s;
+  };
+  d.speech_spec_key = [p](std::uint32_t quality) {
+    auto dir = p->h->piece_dir("ai-audio");
+    if (!dir) return std::string();
+    const char* folder = quality >= MV_AI_QUALITY_HIGH ? "whisper-small" : "whisper-base";
+    auto spec = infer::read_whisper_spec(join(join(*dir, "models"), folder));
+    if (!spec) spec = infer::read_whisper_spec(join(join(*dir, "models"), "whisper-base"));
+    return spec ? spec->spec_key() : std::string();
   };
   d.runtime_version = [p] {
     if (!p->ready) return std::string();

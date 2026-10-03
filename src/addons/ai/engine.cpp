@@ -3,6 +3,7 @@
 #include "addons/ai/engine.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -136,7 +137,8 @@ std::string path_key(const std::string& path) {
 
 // ---- lifetime ------------------------------------------------------------------------
 
-engine::engine(const mv_host_api* api, engine_deps deps) : host_(api), deps_(std::move(deps)) {
+engine::engine(const mv_host_api* api, engine_deps deps, engine_options options)
+    : host_(api), deps_(std::move(deps)), options_(options) {
   status_.struct_size = sizeof(mv_ai_status);
   status_.state = MV_AI_STATE_LOADING;
   status_.eta_low_seconds = -1;
@@ -148,35 +150,53 @@ engine::~engine() { stop(); }
 expected engine::start() {
   MV_TRY(std::string dir, host_.data_dir());
   data_dir_ = dir;
-  MV_TRY_VOID(host_.make_directories(data_dir_));
-  load_settings();
-  MV_TRY(auto db, index_db::open(join(data_dir_, "index.db")));
-  db_ = std::move(db);
-  {
-    std::lock_guard lock(assets_m_);
-    for (asset_row& a : db_->all_assets()) {
-      asset_meta m;
-      m.key = path_key(a.path);
-      m.dir_key = dir_of(m.key);
-      m.path = std::move(a.path);
-      m.kind = a.kind;
-      m.root = a.root_id;
-      m.mtime = a.mtime;
-      assets_.emplace(a.id, std::move(m));
-    }
+  if (options_.read_only) {
+    // A reader creates nothing: no folder, no schema, no settings file.
+    load_settings();
+    MV_TRY(auto db, index_db::open_read_only(join(data_dir_, "index.db")));
+    db_ = std::move(db);
+  } else {
+    MV_TRY_VOID(host_.make_directories(data_dir_));
+    load_settings();
+    MV_TRY(auto db, index_db::open(join(data_dir_, "index.db")));
+    db_ = std::move(db);
   }
+  load_assets();
   roots_cache_ = db_->roots();
-  photos_ = deps_.photos ? deps_.photos() : make_photos_source();
+  // A reader (the search agent) never touches PhotoKit: that would ask for
+  // Photos access from a background process. It still knows the Photos root.
+  if (!options_.read_only) photos_ = deps_.photos ? deps_.photos() : make_photos_source();
   for (const root_row& r : roots_cache_) {
     if (is_photos_key(r.path)) photos_root_ = r.id;
   }
-  control_ = std::thread([this] { control_loop(); });
+  if (options_.read_only) {
+    control_ = std::thread([this] { reader_loop(); });
+  } else {
+    control_ = std::thread([this] { control_loop(); });
+  }
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
 }
 
+void engine::load_assets() {
+  std::unordered_map<std::int64_t, asset_meta> all;
+  for (asset_row& a : db_->all_assets()) {
+    asset_meta m;
+    m.key = path_key(a.path);
+    m.dir_key = dir_of(m.key);
+    m.path = std::move(a.path);
+    m.kind = a.kind;
+    m.root = a.root_id;
+    m.mtime = a.mtime;
+    all.emplace(a.id, std::move(m));
+  }
+  std::lock_guard lock(assets_m_);
+  assets_ = std::move(all);
+}
+
 void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
+  transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
@@ -286,6 +306,7 @@ std::string engine::settings_json() const {
 }
 
 expected engine::set_setting(const std::string& key, const std::string& value_json) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   const auto v = json::parse(value_json, 2);
   if (!v || v->k != json::kind::number) return err(status::invalid_arg);
   const double x = v->is_integer ? static_cast<double>(v->i) : v->d;
@@ -343,6 +364,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
 }
 
 void engine::pause(bool paused) {
+  if (options_.read_only) return;
   paused_ = paused;
   work_cv_.notify_all();
   control_cv_.notify_all();
@@ -387,12 +409,25 @@ void engine::refresh_counts() {
   std::uint64_t face_total = 0;
   std::uint32_t people = 0;
   bool faces_ready = false;
+  bool rerun = false;
+  std::uint64_t people_total = 0, people_done = 0;
+  std::string people_model;
   {
     std::lock_guard lock(models_m_);
     faces_ready = faces_model_ != nullptr;
+    if (faces_model_) people_model = faces_model_->name();
     if (faces_) {
       face_total = faces_->face_count();
       people = faces_->person_count(kPeopleMinFaces);
+      rerun = faces_->rerun_pending();
+      std::lock_guard al(assets_m_);
+      people_total = assets_.size();
+      if (rerun) {
+        // Exact while a re-run shows progress; one pass over the assets.
+        for (const auto& [id, m] : assets_) people_done += faces_scanned_.count(id);
+      } else {
+        people_done = std::min<std::uint64_t>(faces_scanned_.size(), people_total);
+      }
     }
   }
   {
@@ -423,6 +458,9 @@ void engine::refresh_counts() {
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
   status_.people = people;
+  status_.people_scan_total = people_total;
+  status_.people_scan_done = people_done;
+  copy_str(status_.people_model_utf8, sizeof(status_.people_model_utf8), people_model);
   // Read live: on the Mac, Core ML takes over from CPU once it has compiled.
   status_.backend = static_cast<std::uint32_t>(build.model ? build.model->on() : build.on);
   const infer::provider_fault fault =
@@ -440,6 +478,8 @@ void engine::refresh_counts() {
   if (models_failed_) flags |= MV_AI_STATUS_NO_MODELS;
   if (first_compile_ && (loading_ || !models_ready_) && !models_failed_) flags |= MV_AI_STATUS_FIRST_COMPILE;
   if (!sound_spec.empty() || !speech_spec.empty()) flags |= MV_AI_STATUS_AUDIO_READY;
+  if (rerun) flags |= MV_AI_STATUS_PEOPLE_RERUN;
+  if (settling_) flags |= MV_AI_STATUS_PEOPLE_SETTLING;
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -779,8 +819,7 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
   {
     std::lock_guard lock(models_m_);
     if (!faces_ || !faces_model_ || person <= 0) return err(status::invalid_arg);
-    params.join = faces_model_->same_person();
-    params.core = faces_model_->same_person();
+    params = faces_model_->tuning().refine();
     spec = faces_model_->spec_key();
     dim = faces_model_->dim();
     snap = faces_->refine_begin(true);
@@ -822,15 +861,171 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
   return st.evicted + st.moved + st.regrouped;
 }
 
+result<engine::dedupe_result> engine::people_dedupe() {
+  refine_snapshot snap;
+  refine_params params;
+  std::string spec;
+  std::uint32_t dim = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_) return err(status::invalid_arg);
+    params = faces_model_->tuning().refine();  // the model's own (model.json)
+    spec = faces_model_->spec_key();
+    dim = faces_model_->dim();
+    snap = faces_->refine_begin(true);
+  }
+  // 1. Every face re-checked: person_refine's pass, for everyone at once.
+  //    Misfiled faces move, unassigned faces join or regroup.
+  refine_input in;
+  in.dim = dim;
+  in.emb = snap.emb;
+  in.faces = snap.faces;
+  in.fixed = snap.fixed;
+  in.named = snap.named;
+  in.regroup = true;
+  in.cancel = &stopping_;
+  const refine_output out = refine_people(in, params);
+  if (stopping_) return err(status::cancelled);
+
+  // 2. Commit the moves (the user's later changes win), then read who is
+  //    named, how large, and which pairs the user kept apart.
+  dedupe_result r;
+  refine_stats st;
+  std::size_t rescanned = 0;
+  std::vector<dedupe_person> people;
+  std::vector<std::pair<std::int64_t, std::int64_t>> apart;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);  // People turned off or reopened
+    st = faces_->refine_commit(snap, out);
+    for (std::int64_t asset : st.recheck_assets) {
+      if (faces_->rescan(asset, spec)) {
+        faces_scanned_.erase(asset);
+        ++rescanned;
+      }
+    }
+    for (const person_row& p : faces_->people(0, nullptr)) people.push_back({p.id, p.name, p.faces});
+    apart = faces_->merge_blocks();
+  }
+  // 3. The same person twice (face_refine.h find_duplicates), computed with
+  //    no lock held; then the merges, survivor first. merge_auto checks the
+  //    pair again (a split or a rejection since) and pins nothing.
+  dedupe_input din;
+  din.dim = dim;
+  din.protos = out.protos;
+  din.people = people;
+  din.apart = apart;
+  din.cancel = &stopping_;
+  const auto groups = find_duplicates(din, params);
+  if (stopping_) return err(status::cancelled);
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);
+    for (const std::vector<std::int64_t>& g : groups) {
+      for (std::size_t i = 1; i < g.size(); ++i) {
+        const auto merged = faces_->merge_auto(g[0], g[i]);
+        if (merged && merged.value()) ++r.merged;
+      }
+    }
+  }
+  if (rescanned > 0) {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+    work_cv_.notify_all();
+  }
+  r.moved = st.evicted + st.moved + st.admitted + st.regrouped;
+  if (st.changed() || r.merged > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+  return r;
+}
+
+// "Re-analyse faces" (plan/17 "People model"): forget what the People pass
+// has scanned, so the workers analyse every asset again. faces_db::add then
+// replaces each face in place (box by box, keeping person, pin, rejections)
+// and holds new faces back until settle_people files them.
+expected engine::people_reanalyse() {
+  if (importing_elsewhere()) return err(status::busy);
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_) return err(status::invalid_arg);
+    MV_TRY_VOID(faces_->rerun_all());
+    faces_scanned_.clear();
+  }
+  {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+  }
+  work_cv_.notify_all();
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  return {};
+}
+
+// The settle at the end of a re-run. Every face is this model's now, the
+// people are the user's (carried box by box); a full refinement with no
+// focus judges every unpinned face: it may leave a person the new vectors
+// say it never belonged to, move to the one it does, or (waiting since its
+// re-analysis) join the person it clearly matches; waiting faces that match
+// each other but nobody become new people. A few calls, until nothing moves,
+// then the merge. Same lock discipline as person_refine: the snapshot and
+// commit hold the People lock, the compute holds nothing.
+void engine::settle_people() {
+  settling_ = true;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  bool any = false;
+  for (int round = 0; round < 3 && !stopping_; ++round) {
+    refine_snapshot snap;
+    refine_params params;
+    std::uint32_t dim = 0;
+    {
+      std::lock_guard lock(models_m_);
+      if (!faces_ || !faces_model_) break;
+      params = faces_model_->tuning().refine();
+      dim = faces_model_->dim();
+      snap = faces_->refine_begin(true);
+    }
+    refine_input in;
+    in.dim = dim;
+    in.emb = snap.emb;
+    in.faces = snap.faces;
+    in.fixed = snap.fixed;
+    in.named = snap.named;
+    in.regroup = true;
+    in.cancel = &stopping_;
+    const refine_output out = refine_people(in, params);
+    if (stopping_) break;
+    refine_stats st;
+    {
+      std::lock_guard lock(models_m_);
+      if (!faces_ || faces_->serial() != snap.serial) break;
+      st = faces_->refine_commit(snap, out);
+    }
+    if (!st.changed()) break;
+    any = true;
+  }
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_ && faces_model_ && !stopping_) {
+      if (faces_->consolidate(faces_model_->tuning().merge_at) > 0) any = true;
+      faces_->rerun_done();
+    }
+  }
+  settling_ = false;
+  refresh_counts();
+  if (any) post(MV_ADDON_EVENT_AI_PEOPLE);
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {
   faces_parts out;
   if (!s.faces) return out;
   if (!model && deps_.open_faces) {
-    if (auto f = deps_.open_faces(); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
+    if (auto f = deps_.open_faces(s.compute); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
   }
   if (model) {
     out.model = std::move(model);
-    auto db = faces_db::open(join(data_dir_, "faces.db"), out.model->same_person(), out.model->dim());
+    auto db = faces_db::open(join(data_dir_, "faces.db"), out.model->tuning(), out.model->dim(),
+                             out.model->spec_key());
     if (db) {
       out.db = std::move(*db);
       for (std::int64_t a : out.db->scanned_assets(out.model->spec_key())) out.scanned.insert(a);
@@ -871,7 +1066,7 @@ void engine::load_pieces() {
   if (s.faces || !faces_spec.empty()) {
     std::shared_ptr<face_analyzer> model;
     if (s.faces && deps_.open_faces) {
-      if (auto f = deps_.open_faces(); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
+      if (auto f = deps_.open_faces(s.compute); f && *f) model = std::shared_ptr<face_analyzer>(std::move(*f));
     }
     if (model && !faces_spec.empty() && model->spec_key() == faces_spec) {
       std::lock_guard lock(models_m_);
@@ -1126,20 +1321,30 @@ void engine::control_loop() {
     reap_retired();
     // Plugging in ends an override even while no worker is asking (idle).
     if (battery_override_ && !power_state().on_battery) battery_override_ = false;
-    if (t - last_consolidate > 60) {
+    {
       bool idle = false;
       {
         std::lock_guard wl(work_m_);
         idle = queue_exhausted_ && busy_workers_ == 0;
       }
+      bool settle = false;
       {
-        // Mean pairwise cosine now (faces_db::consolidate): 0.42 is just past
-        // same_person's 0.40, where 0.55 to a normalised centroid let two
-        // clusters whose faces averaged ~0.28 merge.
+        // Mean pairwise cosine now (faces_db::consolidate): the model's
+        // merge_at (SFace 0.42) is just past same_person, where 0.55 to a
+        // normalised centroid let two clusters whose faces averaged ~0.28
+        // merge. Not during a re-run: its settle merges once, at the end,
+        // as soon as the last asset is analysed.
         std::lock_guard lock(models_m_);
-        if (faces_ && idle && faces_->consolidate(0.42f) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+        if (faces_ && faces_model_ && idle) {
+          if (faces_->rerun_pending()) {
+            settle = true;
+          } else if (t - last_consolidate > 60) {
+            if (faces_->consolidate(faces_model_->tuning().merge_at) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+            last_consolidate = t;
+          }
+        }
       }
-      last_consolidate = t;
+      if (settle) settle_people();
     }
     std::uint32_t state;
     {
@@ -1160,6 +1365,172 @@ void engine::control_loop() {
       return !transfer_queue_.empty();
     });
   }
+}
+
+// ---- a reader (plan/23) ------------------------------------------------------------------
+
+void engine::reader_loop() {
+  loading_ = true;
+  const bool ok = load_reader();
+  loading_ = false;
+  models_ready_ = ok;
+  models_failed_ = !ok;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  double last = now_s();
+  while (!stopping_) {
+    {
+      std::unique_lock lock(control_m_);
+      control_cv_.wait_for(lock, std::chrono::milliseconds(500), [this] { return stopping_.load(); });
+    }
+    if (stopping_) return;
+    const double t = now_s();
+    if (t - last < kReaderCatchUpSeconds) continue;
+    last = t;
+    if (db_->data_version() == reader_version_) continue;
+    if (!models_ready_ || db_->meta("active_spec") != active_spec()) {
+      // A first index, or the app finished a migration: start over.
+      loading_ = true;
+      const bool again = load_reader();
+      loading_ = false;
+      models_ready_ = again;
+      models_failed_ = !again;
+    } else {
+      catch_up_reader();
+    }
+    refresh_counts();
+    post(MV_ADDON_EVENT_AI_STATUS);
+  }
+}
+
+bool engine::load_reader() {
+  if (deps_.prepare) deps_.prepare();
+  reader_version_ = db_->data_version();
+  load_assets();
+  const std::string active = db_->meta("active_spec");
+  if (active.empty() || !deps_.open_clip_text || !deps_.qualities) return false;
+  settings s;
+  {
+    std::lock_guard lock(settings_m_);
+    s = settings_;
+  }
+  // The tower whose vectors are in the index answers; the reader never
+  // changes which (the app decides, and a migration it finishes shows up as
+  // a new active_spec).
+  loaded_clip answer;
+  for (std::uint32_t q : deps_.qualities()) {
+    if (deps_.clip_spec_key && deps_.clip_spec_key(q) != active) continue;
+    auto c = deps_.open_clip_text(q);
+    if (c && c->meta.spec_key == active) {
+      answer = std::move(*c);
+      break;
+    }
+  }
+  if (!answer.model) return false;
+  answer.generic.clear();
+  for (const std::string& p : answer.meta.generic_prompts) {
+    if (auto v = answer.model->embed_text(p)) answer.generic.push_back(std::move(*v));
+  }
+  // People: names and faces only (search, the query language). The reader
+  // clusters nothing, so the threshold and width it is opened with are unused.
+  std::unique_ptr<faces_db> people;
+  if (s.faces) {
+    if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) people = std::move(*f);
+  }
+  loaded_sound sound;
+  if (deps_.open_sound_text) {
+    if (auto so = deps_.open_sound_text()) {
+      sound = std::move(*so);
+      sound.generic.clear();
+      for (const std::string& g : sound.generic_prompts) {
+        if (auto v = sound.model->embed_text(g)) sound.generic.push_back(std::move(*v));
+      }
+    }
+  }
+  // Speech needs no model: the transcripts are rows, matched as words.
+  reader_speech_spec_ = deps_.speech_spec_key ? deps_.speech_spec_key(answer.meta.quality) : std::string();
+  loaded_clip old;
+  begin_answer_swap();
+  {
+    std::lock_guard lock(models_m_);
+    old = std::move(answer_);
+    build_ = answer;  // what status reads; a reader builds nothing
+    answer_ = std::move(answer);
+    faces_ = std::move(people);
+    sound_ = std::move(sound);
+    speech_ = {};
+    speech_.spec_key = reader_speech_spec_;
+    publish_pieces_locked();
+  }
+  reader_frame_ = 0;
+  store_.reset(answer_.meta.dim);
+  (void)db_->each_frame(active, [&](const frame_out& f) {
+    store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    reader_frame_ = f.id;
+  });
+  reader_sound_ = 0;
+  sounds_.reset(sound_.model ? sound_.dim : 0);
+  if (sound_.model) {
+    (void)db_->each_frame(sound_.spec_key, [&](const frame_out& f) {
+      sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+      reader_sound_ = f.id;
+    });
+  }
+  if (!reader_speech_spec_.empty()) {
+    load_speech(reader_speech_spec_);
+  } else {
+    std::lock_guard lock(speech_m_);
+    speech_rows_.clear();
+  }
+  end_answer_swap();
+  old = {};
+  return true;
+}
+
+void engine::catch_up_reader() {
+  reader_version_ = db_->data_version();
+  // Assets that went or changed (mtime, size) lost their frames in the app:
+  // drop them here before appending what was committed since.
+  std::unordered_map<std::int64_t, asset_meta> before;
+  {
+    std::lock_guard lock(assets_m_);
+    before = assets_;
+  }
+  load_assets();
+  std::vector<std::int64_t> gone;
+  {
+    std::lock_guard lock(assets_m_);
+    for (const auto& [id, m] : before) {
+      auto it = assets_.find(id);
+      if (it == assets_.end() || it->second.mtime != m.mtime) gone.push_back(id);
+    }
+  }
+  const std::string active = active_spec();
+  std::string sound_spec;
+  {
+    std::lock_guard lock(models_m_);
+    sound_spec = sound_.model ? sound_.spec_key : std::string();
+    if (faces_) {
+      if (auto f = faces_db::open_read_only(join(data_dir_, "faces.db"), 0.40f, 128)) faces_ = std::move(*f);
+    }
+  }
+  begin_answer_swap();
+  for (std::int64_t a : gone) {
+    store_.remove_asset(a);
+    sounds_.remove_asset(a);
+  }
+  (void)db_->each_frame(active, [&](const frame_out& f) {
+    store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    reader_frame_ = f.id;
+  }, reader_frame_);
+  if (!sound_spec.empty()) {
+    (void)db_->each_frame(sound_spec, [&](const frame_out& f) {
+      sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+      reader_sound_ = f.id;
+    }, reader_sound_);
+  }
+  if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
+  end_answer_swap();
 }
 
 void engine::scan_all() {
@@ -2162,6 +2533,7 @@ std::string engine::roots_json() {
 }
 
 result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (dir.empty() || is_photos_key(dir)) return err(status::invalid_arg);
   if (importing_elsewhere()) return err(status::busy);
   const std::string key = path_key(dir);
@@ -2198,6 +2570,7 @@ photos_access engine::photos_library_access() const {
 }
 
 result<std::int64_t> engine::index_photos_library() {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   const photos_access access = photos_library_access();
   if (access == photos_access::unsupported) return err(status::unsupported_format);
   if (!readable(access)) return err(status::permission_denied);
@@ -2214,6 +2587,7 @@ result<std::int64_t> engine::index_photos_library() {
 }
 
 expected engine::root_set_enabled(std::int64_t id, bool enabled) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
   MV_TRY_VOID(db_->set_root_enabled(id, enabled));
   {
@@ -2232,6 +2606,7 @@ expected engine::root_set_enabled(std::int64_t id, bool enabled) {
 }
 
 expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
   if (media > MV_AI_MEDIA_BOTH) return err(status::invalid_arg);
   MV_TRY_VOID(db_->set_root_media(id, media));
@@ -2247,6 +2622,7 @@ expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
 }
 
 expected engine::root_rescan(std::int64_t id) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(id);
@@ -2256,6 +2632,7 @@ expected engine::root_rescan(std::int64_t id) {
 }
 
 expected engine::root_remove(std::int64_t id) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
   std::vector<std::int64_t> gone;
   {
@@ -2322,6 +2699,7 @@ std::uint32_t engine::folder_coverage(const std::string& dir) const {
 }
 
 void engine::note_folder_opened(const std::string& dir) {
+  if (options_.read_only) return;
   const std::string key = path_key(dir);
   std::int64_t root = 0;
   {
@@ -2345,6 +2723,7 @@ void engine::note_folder_opened(const std::string& dir) {
 }
 
 expected engine::clear_index() {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
   clearing_ = true;
   // Let in-flight work land (or fail) before the rows go.
@@ -2382,7 +2761,8 @@ expected engine::clear_index() {
       faces_.reset();
       faces_db::destroy(join(data_dir_, "faces.db"));
       if (faces_model_) {
-        if (auto db = faces_db::open(join(data_dir_, "faces.db"), faces_model_->same_person(), faces_model_->dim())) {
+        if (auto db = faces_db::open(join(data_dir_, "faces.db"), faces_model_->tuning(), faces_model_->dim(),
+                                     faces_model_->spec_key())) {
           faces_ = std::move(*db);
         }
       }
@@ -2420,6 +2800,7 @@ std::string machine_label() {
 
 result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<std::int64_t> roots,
                                            std::uint32_t flags) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader runs no jobs
   if (dest.empty()) return err(status::invalid_arg);
   std::lock_guard lock(transfer_m_);
   if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
@@ -2438,6 +2819,7 @@ result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<
 
 result<std::uint64_t> engine::import_index(const std::string& file, const std::string& map_json,
                                            std::uint32_t flags) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (file.empty()) return err(status::invalid_arg);
   const auto doc = json::parse(map_json, 4);
   if (!doc || doc->k != json::kind::array) return err(status::invalid_arg);
@@ -2629,7 +3011,7 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
   if (o.thumbs && host_.has_thumbnail_bytes()) {
-    o.thumb = [this](const std::string& path, std::int64_t pts_ms) { return host_.thumbnail_jpeg(path, pts_ms); };
+    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w); };
   }
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   auto r = transfer::write(job.file, o, c);
@@ -2651,6 +3033,31 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   w.key("bytes").integer(static_cast<std::int64_t>(r->bytes));
   w.end_object();
   return w.take();
+}
+
+result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w) {
+  if (auto hit = host_.thumbnail_jpeg(w.path, w.pts_ms)) return hit;
+  // Never made here (the file or moment was never on screen): made now, as
+  // the viewer and a result tile would, between the viewer's busy spells.
+  for (int i = 0; i < 500 && !stopping_ && !transfer_cancel_ && host_.should_yield(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (stopping_ || transfer_cancel_) return err(status::cancelled);
+  if (w.pts_ms < 0 && !w.video) {
+    if (auto made = host_.thumbnail(w.path); !made) return err(made.error());
+    return host_.thumbnail_jpeg(w.path, -1);
+  }
+  // A clip's own tile is its poster: the frame the viewer's poster lands near
+  // (10 % in, at most 3 s), kept as a moment row. The viewer's poster row is
+  // the viewer's to make.
+  const std::int64_t ms =
+      w.pts_ms >= 0 ? w.pts_ms : std::min<std::int64_t>(std::max<std::int64_t>(w.duration_ms, 0) / 10, 3000);
+  if (w.pts_ms < 0) {
+    if (auto hit = host_.thumbnail_jpeg(w.path, ms)) return hit;
+  }
+  MV_TRY(rgb_frame f, host_.video_frame(w.path, ms, 512));
+  if (auto made = host_.moment_thumbnail(w.path, ms, &f); !made) return err(made.error());
+  return host_.thumbnail_jpeg(w.path, ms);
 }
 
 std::string engine::run_import(const transfer_job& job, mv::status& st) {
@@ -3384,6 +3791,9 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
       q.clear();
       bool have = false;
       if (self != 0 && pts_ms < 0) have = store_.vector_of(self, -1, q);
+      // A reader embeds nothing: an indexed moment is its nearest stored
+      // frame's vector (plan/23 "Find similar").
+      if (!have && self != 0 && options_.read_only) have = store_.vector_of(self, pts_ms, q);
       if (!have) {
         if (!model) return;
         if (!img) {
@@ -3508,6 +3918,19 @@ result<std::string> engine::result_snippet(std::uint64_t id, std::uint32_t index
   return it->second->rows[index].snippet;
 }
 
+result<std::int64_t> engine::result_duration(std::uint64_t id, std::uint32_t index) const {
+  std::int64_t asset = 0;
+  {
+    std::lock_guard lock(search_m_);
+    auto it = searches_.find(id);
+    if (it == searches_.end() || index >= it->second->rows.size()) return err(status::invalid_arg);
+    if (it->second->rows[index].kind != MV_AI_KIND_VIDEOS) return std::int64_t{0};
+    asset = it->second->rows[index].asset;
+  }
+  MV_TRY(asset_row a, db_->asset_by_id(asset));
+  return a.duration_ms;
+}
+
 result<std::string> engine::result_path(std::uint64_t id, std::uint32_t index) const {
   std::lock_guard lock(search_m_);
   auto it = searches_.find(id);
@@ -3561,6 +3984,7 @@ void engine::search_release(std::uint64_t id) {
 // ---- people -----------------------------------------------------------------------------------------
 
 expected engine::faces_enable(bool enable) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
   {
     std::lock_guard lock(settings_m_);
@@ -3638,6 +4062,7 @@ std::string engine::person_faces_json(std::int64_t person) {
 }
 
 expected engine::person_rename(std::int64_t person, const std::string& name) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY_VOID(faces_->rename(person, name));
@@ -3646,6 +4071,7 @@ expected engine::person_rename(std::int64_t person, const std::string& name) {
 }
 
 expected engine::person_merge(std::int64_t into, std::int64_t from) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY_VOID(faces_->merge(into, from));
@@ -3654,6 +4080,7 @@ expected engine::person_merge(std::int64_t into, std::int64_t from) {
 }
 
 expected engine::face_reject(std::int64_t face) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY_VOID(faces_->reject(face));
@@ -3673,6 +4100,7 @@ result<std::string> engine::face_thumb(std::int64_t face) const {
 }
 
 result<std::int64_t> engine::face_split(const std::vector<std::int64_t>& faces) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
   MV_TRY(std::int64_t id, faces_->split(faces));

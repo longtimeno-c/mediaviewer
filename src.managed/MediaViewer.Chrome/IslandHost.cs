@@ -431,6 +431,17 @@ public static partial class IslandHost
     /// Native checks GetFocus() itself for the canvas, so a stale island value
     /// after focus returns to the swapchain is harmless.
     /// </summary>
+    // Shared\FakeInput.cs, whichever assembly compiled it: each add-on links
+    // its own copy, so it is found by name, not by `is`.
+    private static bool IsTypeInField(object? element)
+    {
+        for (Type? t = element?.GetType(); t is not null; t = t.BaseType)
+        {
+            if (t.FullName == "MediaViewer.Shared.FakeInput") return true;
+        }
+        return false;
+    }
+
     private static void OnXamlGotFocus(object? sender,
                                        Microsoft.UI.Xaml.Input.FocusManagerGotFocusEventArgs e)
     {
@@ -439,8 +450,7 @@ public static partial class IslandHost
         try
         {
             int kind = FocusKind.CommandBar;
-            if (_popupTakesText ||
-                e.NewFocusedElement is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or FakeInput)
+            if (_popupTakesText || IsTypeInField(e.NewFocusedElement))
             {
                 kind = FocusKind.Text;
             }
@@ -771,10 +781,56 @@ public static partial class IslandHost
         if (_gdiFontPath is not null) return;
         string? path = FindUiFontPath();
         if (path is null) return;
+        path = SessionFontCopy(path) ?? path;
         // fl=0 so DirectWrite can see it. FR_PRIVATE is GDI-only and WinUI
         // silently falls back to Segoe. Session-wide until UnregisterUiFont.
         if (AddFontResourceExW(path, 0, IntPtr.Zero) != 0)
             _gdiFontPath = path;
+    }
+
+    // A session-wide font outlives a process that never reaches Detach (a
+    // crash, a kill, the TerminateProcess exit under a running add-on), and
+    // until sign-out Windows holds the file open. Registered from current\,
+    // that lock made Update.exe's rename of current\ fail ("Access is denied"
+    // x10, update never applies) and Setup's --installto exit 1. So an
+    // installed app registers a copy in <root>\fonts, which neither touches.
+    // The name carries the source's size and mtime: an existing copy is used
+    // as is (one stat), and a new version never overwrites a held one.
+    // Returns null on a dev build or any failure: register in place.
+    private static string? SessionFontCopy(string source)
+    {
+        try
+        {
+            string? current = Path.GetDirectoryName(source);
+            string? root = current is null ? null : Path.GetDirectoryName(current);
+            if (root is null || !File.Exists(Path.Combine(root, "Update.exe")) ||
+                !File.Exists(Path.Combine(current!, "sq.version")))
+                return null;
+            var info = new FileInfo(source);
+            string dir = Path.Combine(root, "fonts");
+            string name = $"{Path.GetFileNameWithoutExtension(UiFontFile)}-{info.Length}-{info.LastWriteTimeUtc.Ticks:x}.ttf";
+            string copy = Path.Combine(dir, name);
+            if (!File.Exists(copy))
+            {
+                Directory.CreateDirectory(dir);
+                string part = copy + ".part";
+                File.Copy(source, part, overwrite: true);
+                File.Move(part, copy);
+                // Older copies go once nothing holds them; one still registered
+                // by a leaked session stays until a later start.
+                foreach (string old in Directory.EnumerateFiles(dir))
+                {
+                    if (string.Equals(old, copy, StringComparison.OrdinalIgnoreCase)) continue;
+                    try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
+            }
+            return copy;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return null;
+        }
     }
 
     private static void UnregisterUiFont()
@@ -893,8 +949,17 @@ public static partial class IslandHost
         };
         ControlTemplate? template = FlatButtonTemplate();
         if (template is not null) button.Template = template;
-        button.Click += (_, _) => click();
+        button.Click += (_, _) => Guarded(click);
         return button;
+    }
+
+    // Every chrome click runs through here. An exception escaping a XAML event
+    // handler is a fail-fast (0xC000027B) with no managed report, so a bug in
+    // one button must not take the viewer down with it.
+    private static void Guarded(Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
     }
 
     private static Style FlyoutPresenterStyle()
@@ -1011,7 +1076,7 @@ public static partial class IslandHost
         // Same as TextButton: a focused menu item parks keys on the island
         // until the window is deactivated and reactivated.
         item.AllowFocusOnInteraction = false;
-        item.Click += (_, _) => action();
+        item.Click += (_, _) => Guarded(action);
         return item;
     }
 

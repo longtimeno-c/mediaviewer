@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.16
+  VERSION 0.1.24
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -306,6 +306,8 @@ add_library(mv_codec STATIC
   src/codec/jpeg.cpp
   src/codec/png.cpp
   src/codec/bmp.cpp
+  src/codec/dib.cpp
+  src/codec/dib.h
   src/codec/anim.cpp
   src/codec/anim.h
   src/codec/apng.cpp
@@ -582,6 +584,11 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # app) and its WinUI chrome. cmake/ai.cmake.
 include("${CMAKE_SOURCE_DIR}/cmake/ai.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/ai-chrome-win.cmake" OPTIONAL)
+# copybench: the copy engine headless, base vs new (plan/12 2026-10-01).
+add_executable(copybench tools/copybench/main.cpp)
+target_link_libraries(copybench PRIVATE mv_io mv_core mv_project_options)
+target_include_directories(copybench PRIVATE src)
+
 # ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
 add_executable(ai-bench tools/ai-bench/main.cpp)
 target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
@@ -788,6 +795,7 @@ set(MV_CHROME_SOURCES
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Addons.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Panels.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Edit.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/Shared/FakeInput.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/Addons.cs"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
   "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
@@ -1000,6 +1008,7 @@ if(MV_BUILD_TESTS)
     tests/test_dino_game.cpp
     src/shell/minidump_scrub.cpp
     tests/test_tiff_ico.cpp
+    tests/test_decode_variants.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
     src/shell/key_router.cpp
@@ -1141,8 +1150,9 @@ if(MV_BUILD_TESTS)
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
     tests/test_ai_query.cpp
+    tests/test_nle.cpp
   )
-  target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_addon mv_addon_media mv_io
+  target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
     Catch2::Catch2WithMain)
   target_include_directories(mv_ai_tests PRIVATE src tests)
   target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE

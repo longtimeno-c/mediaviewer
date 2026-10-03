@@ -124,11 +124,15 @@ destination file, or any upload.
 - **Verify:** hash while reading the source (one pass over the card). Write to `name.tmp`,
   flush (`FlushFileBuffers` / `F_FULLFSYNC`), read back uncached (`FILE_FLAG_NO_BUFFERING`
   / `F_NOCACHE`), compare, then rename into place. On mismatch: delete the temp file, retry
-  once, then fail that file.
+  once, then fail that file. On a share, an uncached read-back proves the bytes the server
+  holds and returns; that may come from the NAS's RAM, not its disks.
 - **Throughput:** one reader thread per physical source, one writer per physical destination,
   and 2–4 large buffers in flight between them. Reads and writes overlap. **No parallel reads
   of one card** (it slows a card down). Two sources on different devices run concurrently.
-  Measured MB/s drives the ETA.
+  Measured MB/s drives the ETA. **A network destination** (2026-10-01, [24](24-transfer.md)):
+  the copy keeps several writes in flight at their offsets (depth 8, 2 MiB chunks) and its
+  read-back several reads; each request on a share is a round trip. The card side is unchanged:
+  one request at a time.
 - **Units:** RAW+JPEG and Live Photo pairs (PR 7 pairing) and camera sidecars are one unit,
   copied, verified, skipped and sorted together, never split across dated folders.
 - **Resume and cancel:** the job journal lives in `import.db`. After a crash or unplug, verified
@@ -352,6 +356,57 @@ PR 16–19 verify lines, where each stands:
 | One card read → two verified copies | Tested (one copy call and one read per file) |
 | Rename identical on Windows and Mac; auto-import only for its card, never deletes; preview matches disk | Tested (pure naming functions; auto-import; preview vs files on disk) |
 | Library scope skips files kept elsewhere; verify-a-folder flags a one-bit flip | Tested |
+
+## Find duplicates (PR 54)
+
+*Added 2026-10-03 at the owner's request; reverses "library-wide duplicate finding" being out
+([12](12-decision-log.md)).* A tool in the Import window, on both platforms: pick a folder, and
+Import finds every set of files with identical bytes in it and every folder under it, wherever
+they sit and whatever they are called.
+
+- **What counts as a duplicate:** the same bytes. Size first; BLAKE3-256 only where two files
+  share a size, the same test an import uses. **Never the name**, never a picture that merely
+  looks alike (near-duplicates stay out, below).
+- **Every file, not only media** (owner). Hidden and system entries and macOS packages are not
+  walked (the import walk's rule: a Photos library is never opened up), links are not followed,
+  and empty files are not compared.
+- **Fast the second time.** Each hash is remembered in `import.db` (`seen_hashes`: path, size,
+  mtime) and trusted while size and mtime match, as the library index is. A second scan of an
+  unchanged folder reads no file contents; a finished scan forgets files that have gone.
+- **Where it runs:** the add-on's own I/O thread, one reader per physical device (it waits behind
+  an import from the same disk), yielding to the viewer like a background import (rule 1). Cached
+  reads: this is a comparison, not verify-a-folder's check for rot.
+- **What you see:** groups, largest waste first, with the space that could be freed. Each file can
+  be **opened in the viewer**, **shown in Explorer / the Finder**, or **moved to the Recycle Bin /
+  Trash** (owner: "the options to delete one"). Several copies can be picked at once (Ctrl / Shift
+  or ⌘ / ⇧ click, as in Explorer and the Finder) and moved in one go, with the count and the space
+  they free shown beside the button (owner, 2026-10-03). A local report lists every group.
+- **Deleting is safe by construction:**
+  - only ever to the Recycle Bin / Trash; where a location has none (a network share, some
+    removable drives), nothing is removed and the file says so. There is no permanent delete;
+  - **a group is never emptied**: before the move, the engine checks the file is unchanged since
+    it was hashed, and reads another copy in the group again to be sure the same bytes are still
+    there. If none is, the request is refused ("the last copy is always kept");
+  - only the files the person picked: one, or several in one batch (owner, 2026-10-03; it was one
+    at a time). A pick that takes **every** copy of some file is not sent at all, and says so,
+    so which copy survives is never down to the order the requests ran in. Still no "delete all
+    duplicates" and no keep rules: nothing is picked for the person.
+- **Keys** (keyboard-complete, plan/16): arrows move through files (`Shift`+arrows / `Ctrl+Space`,
+  `⇧`-arrows on the Mac, pick several), `Enter` opens one in the viewer, `Delete` / `⌘⌫` moves the
+  picked copies to the bin, `Ctrl+E` / `⌘R` shows it in Explorer / the Finder, `Esc`
+  closes (a running scan carries on, with a line in the command bar).
+- **Privacy:** paths and hashes stay in `import.db` and the local report (rule 6).
+
+**Verify (both platforms):**
+- A tree with copies under other names and folders: every group is found, a same-size file with
+  other bytes is not in one, and the scan changes nothing on disk.
+- A second scan of an unchanged folder reads zero file bytes; one edited file is the only one read.
+- Asking for every copy in a group: all but the last go to the bin, the last is refused (the
+  engine's guard). Picking every copy of a file in the window sends nothing; picking several copies
+  across groups, leaving one of each, moves exactly those. A copy
+  edited since the scan, or a group whose other copy has rotted, is refused. On a location with no
+  bin, nothing is deleted.
+- **Both present-loop gates hold while a scan runs.**
 
 ## Not in Import
 

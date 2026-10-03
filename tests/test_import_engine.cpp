@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -20,6 +22,7 @@
 
 #include "addon/host.h"
 #include "addons/import/engine.h"
+#include "addons/import/naming.h"
 #include "core/json.h"
 #include "import_fixture.h"
 
@@ -27,8 +30,19 @@ using namespace mv::test;
 
 namespace {
 
+fs::path from_utf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
+
 constexpr std::int64_t kSat = 1789999385;  // 2026-09-21 14:03:05
 constexpr std::int64_t kSun = 1790069400;  // 2026-09-22 09:30:00
+
+// The card's file time: the UTC instant this machine shows as a minute before
+// kSat. Capture times are local wall clock, and the scanner reads a file time
+// as local wall clock too, so stamping kSat - 60 as UTC sorts the dateless HEIC
+// after kSat on any machine east of UTC.
+std::int64_t card_mtime() {
+  const std::int64_t wall = kSat - 60;
+  return wall - (mv::import::local_wall_from_utc(wall) - wall);
+}
 
 // Wraps the real host table: counts copies and hashes, injects faults, and
 // answers volume_of for fake "cards" (a Linux temp folder is no removable
@@ -93,6 +107,10 @@ struct rig {
   std::unique_ptr<mv::addon::host_table> table;
   mv_host_api api{};
   std::unique_ptr<mv::import::engine> eng;
+  // A stand-in Recycle Bin / Trash: a folder beside the test tree, so a test
+  // never touches the machine's own bin. `bin_refuses` plays a network share.
+  bool bin_refuses = false;
+  int binned = 0;
 
   rig() {
     mv::addon::host_services svc;
@@ -107,6 +125,15 @@ struct rig {
     svc.post = [this](const mv_addon_event& e) {
       std::lock_guard lock(events_m);
       events.push_back(e);
+    };
+    svc.recycle = [this](const std::string& path) -> mv::result<bool> {
+      if (bin_refuses) return false;
+      const fs::path to = dir / "Bin" / std::to_string(binned++);
+      fs::create_directories(to);
+      std::error_code ec;
+      fs::rename(from_utf8(path), to / from_utf8(path).filename(), ec);
+      if (ec) return mv::err(mv::status::io);
+      return true;
     };
     svc.data_dir = utf8(dir / "data");
     svc.default_library = utf8(dir / "Pictures/MediaViewer");
@@ -157,7 +184,7 @@ struct rig {
     dates["MVI_0003.MP4"] = kSun;
     // Every file gets a fixed mtime, like a camera's.
     for (const auto& e : fs::recursive_directory_iterator(card())) {
-      if (e.is_regular_file()) set_mtime(e.path(), kSat - 60);
+      if (e.is_regular_file()) set_mtime(e.path(), card_mtime());
     }
     wrap.cards[utf8(card())] = "uuid:CARD-A";
   }
@@ -444,7 +471,7 @@ TEST_CASE("a duplicate already in the library still goes to a backup that lacks 
   const fs::path other = r.dir / "OTHER_CARD";
   fs::copy(r.card(), other, fs::copy_options::recursive);
   for (const auto& e : fs::recursive_directory_iterator(other)) {
-    if (e.is_regular_file()) set_mtime(e.path(), kSat - 60);  // as make_card() stamps them
+    if (e.is_regular_file()) set_mtime(e.path(), card_mtime());  // as make_card() stamps them
   }
   r.wrap.cards[utf8(other)] = "uuid:CARD-B";
   auto [p1, pl1] = r.plan(other, r.preset());
@@ -666,4 +693,233 @@ TEST_CASE("selection changes rename on the control thread and post PLAN_READY",
   REQUIRE(totals(v, "selected_units") == 2);
   const auto& first = v.find("units")->a[0];
   REQUIRE(first.find("names")->a[0].s.rfind("2026-09-21_0001", 0) == 0);
+}
+
+// ---- find duplicates (PR 54) ------------------------------------------------
+
+namespace {
+
+// A tree with one three-way group under different names and folders, a pair
+// of same-size files with different bytes, empty files, and a lone file.
+fs::path make_dup_tree(rig& r) {
+  const fs::path t = r.dir / "Library";
+  write_bytes(t / "2024/IMG_0001.JPG", pattern(250000, 11));
+  write_bytes(t / "Backup/old copy.jpg", pattern(250000, 11));
+  write_bytes(t / "Desktop/export/renamed.bin", pattern(250000, 11));
+  write_bytes(t / "2024/IMG_0002.JPG", pattern(250000, 12));  // same size, other bytes
+  write_bytes(t / "2025/clip.mov", pattern(400000, 13));
+  write_bytes(t / "2025/clip (1).mov", pattern(400000, 13));
+  write_bytes(t / "2025/unique.txt", pattern(1234, 14));
+  write_bytes(t / "empty-a", {});
+  write_bytes(t / "empty-b", {});
+  write_bytes(t / ".hidden/IMG_0001.JPG", pattern(250000, 11));  // hidden: never walked
+  for (const auto& e : fs::recursive_directory_iterator(t)) {
+    if (e.is_regular_file()) set_mtime(e.path(), kSat);
+  }
+  return t;
+}
+
+std::uint64_t find_dups(rig& r, const fs::path& dir) {
+  auto job = r.eng->find_duplicates(utf8(dir));
+  REQUIRE(job);
+  r.eng->wait_idle();
+  return *job;
+}
+
+std::vector<std::string> group_names(const mv::json::value& g) {
+  std::vector<std::string> out;
+  for (const auto& f : g.find("files")->a) out.push_back(utf8(from_utf8(*f.str("path")).filename()));
+  return out;
+}
+
+const mv::json::value* file_in(const mv::json::value& s, const fs::path& p) {
+  for (const auto& g : s.find("groups")->a) {
+    for (const auto& f : g.find("files")->a) {
+      if (from_utf8(*f.str("path")) == p) return &f;  // either separator
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("find duplicates groups identical bytes, never names", "[import][engine][duplicates]") {
+  rig r;
+  const fs::path t = make_dup_tree(r);
+  const auto job = find_dups(r, t);
+  REQUIRE(r.progress(job).state == MV_IMPORT_JOB_DONE);
+  const auto s = r.summary(job);
+  REQUIRE(*s.str("kind") == "duplicates");
+  REQUIRE(*s.integer("files") == 7);      // empty and hidden files aside
+  REQUIRE(*s.integer("compared") == 6);   // unique.txt shares no size
+  REQUIRE(*s.integer("hashed") == 6);
+  const auto& groups = s.find("groups")->a;
+  REQUIRE(groups.size() == 2);
+  // Largest waste first: three 250 kB copies (500 kB) before two 400 kB (400 kB).
+  REQUIRE(*groups[0].integer("size") == 250000);
+  REQUIRE(group_names(groups[0]) ==
+          std::vector<std::string>{"IMG_0001.JPG", "old copy.jpg", "renamed.bin"});
+  REQUIRE(group_names(groups[1]) == std::vector<std::string>{"clip (1).mov", "clip.mov"});
+  REQUIRE(*s.integer("duplicate_files") == 3);
+  REQUIRE(*s.integer("wasted_bytes") == 2 * 250000 + 400000);
+  REQUIRE(*s.boolean("can_trash"));
+  // Same size, different bytes: not a duplicate.
+  REQUIRE(!file_in(s, t / "2024/IMG_0002.JPG"));
+  // A scan removes nothing.
+  REQUIRE(list_tree(t).size() == 10);
+
+  // History keeps the counts, not every path.
+  const auto history = mv::json::parse(r.eng->history_json());
+  REQUIRE(history);
+  REQUIRE(*history->a[0].str("kind") == "duplicates");
+  REQUIRE(*history->a[0].find("summary")->integer("group_count") == 2);
+  REQUIRE(!history->a[0].find("summary")->find("groups"));
+}
+
+TEST_CASE("a second duplicate scan reads only what changed", "[import][engine][duplicates]") {
+  rig r;
+  const fs::path t = make_dup_tree(r);
+  (void)find_dups(r, t);
+  REQUIRE(r.wrap.hashes == 6);
+
+  r.restart();  // remembered in import.db, not in memory
+  const auto again = find_dups(r, t);
+  REQUIRE(r.wrap.hashes == 6);
+  REQUIRE(*r.summary(again).integer("hashed") == 0);
+  REQUIRE(r.summary(again).find("groups")->a.size() == 2);
+
+  // One copy edited: only it is read again, and it leaves its group.
+  write_bytes(t / "Backup/old copy.jpg", pattern(250000, 99));
+  set_mtime(t / "Backup/old copy.jpg", kSun);
+  const auto third = find_dups(r, t);
+  REQUIRE(r.wrap.hashes == 7);
+  const auto s = r.summary(third);
+  REQUIRE(group_names(s.find("groups")->a[1]) ==
+          std::vector<std::string>{"IMG_0001.JPG", "renamed.bin"});
+}
+
+TEST_CASE("trashing a duplicate never empties its group", "[import][engine][duplicates]") {
+  rig r;
+  const fs::path t = make_dup_tree(r);
+  const auto job = find_dups(r, t);
+  const fs::path a = t / "2024/IMG_0001.JPG";
+  const fs::path b = t / "Backup/old copy.jpg";
+  const fs::path c = t / "Desktop/export/renamed.bin";
+
+  // All three asked for: two go to the bin, the last is refused.
+  REQUIRE(r.eng->trash_duplicate(job, utf8(b)));
+  REQUIRE(r.eng->trash_duplicate(job, utf8(c)));
+  REQUIRE(r.eng->trash_duplicate(job, utf8(a)));
+  r.eng->wait_idle();
+  const auto s = r.summary(job);
+  REQUIRE(*file_in(s, b)->str("state") == "trashed");
+  REQUIRE(*file_in(s, c)->str("state") == "trashed");
+  REQUIRE(*file_in(s, a)->str("state") == "refused");
+  REQUIRE(*file_in(s, a)->str("reason") == "last_copy");
+  REQUIRE(fs::exists(a));
+  REQUIRE(!fs::exists(b));
+  REQUIRE(!fs::exists(c));
+  REQUIRE(r.binned == 2);
+  REQUIRE(*s.integer("wasted_bytes") == 400000);  // only the clip pair left
+  // Not a file of this job: refused at once.
+  REQUIRE(!r.eng->trash_duplicate(job, utf8(t / "2025/unique.txt")));
+}
+
+TEST_CASE("trash re-checks both copies before it moves anything", "[import][engine][duplicates]") {
+  rig r;
+  const fs::path t = make_dup_tree(r);
+  const auto job = find_dups(r, t);
+  const fs::path clip = t / "2025/clip.mov";
+  const fs::path copy = t / "2025/clip (1).mov";
+
+  // The other copy rotted since the scan (same size and time, other bytes):
+  // it is no longer a copy, so this one stays.
+  auto bytes = read_bytes(copy);
+  bytes[777] ^= 0x01;
+  write_bytes(copy, bytes);
+  set_mtime(copy, kSat);
+  REQUIRE(r.eng->trash_duplicate(job, utf8(clip)));
+  r.eng->wait_idle();
+  REQUIRE(*file_in(r.summary(job), clip)->str("reason") == "last_copy");
+  REQUIRE(fs::exists(clip));
+
+  // Edited since the scan: a different file now, not a duplicate.
+  set_mtime(copy, kSun);
+  REQUIRE(r.eng->trash_duplicate(job, utf8(copy)));
+  r.eng->wait_idle();
+  REQUIRE(*file_in(r.summary(job), copy)->str("reason") == "changed");
+  REQUIRE(fs::exists(copy));
+  REQUIRE(r.binned == 0);
+}
+
+TEST_CASE("no bin, no delete", "[import][engine][duplicates]") {
+  rig r;
+  const fs::path t = make_dup_tree(r);
+  const fs::path b = t / "Backup/old copy.jpg";
+
+  // A location without a bin (a network share): refused, the file stays.
+  r.bin_refuses = true;
+  const auto job = find_dups(r, t);
+  REQUIRE(r.eng->trash_duplicate(job, utf8(b)));
+  r.eng->wait_idle();
+  REQUIRE(*file_in(r.summary(job), b)->str("reason") == "no_bin");
+  REQUIRE(fs::exists(b));
+
+  // An app without the bin call (an older host table): no delete offered.
+  r.api.recycle_file = nullptr;
+  r.restart();
+  const auto old = find_dups(r, t);
+  REQUIRE(!*r.summary(old).boolean("can_trash"));
+  const auto refused = r.eng->trash_duplicate(old, utf8(b));
+  REQUIRE(!refused);
+  REQUIRE(refused.error() == mv::status::unsupported_format);
+  REQUIRE(fs::exists(b));
+}
+
+// Timing, not part of the normal run:
+//
+//     mv_import_tests "[.perf-bench]"
+//
+// A synthetic tree (2,000 files of 100-600 kB, 400 of them copied again
+// under other names), or MV_DUP_BENCH_DIR=folder for a real one: the folder
+// is only read, and the hash cache lives in the rig's scratch import.db,
+// removed with it. Warm page cache either way: the first scan's figure is
+// hashing speed, not the disk's.
+TEST_CASE("perf: find duplicates, first scan and rescan", "[.perf-bench]") {
+  rig r;
+  fs::path tree;
+  if (const char* env = std::getenv("MV_DUP_BENCH_DIR")) {
+    tree = from_utf8(env);
+  } else {
+    tree = r.dir / "Bench";
+    std::uint32_t seed = 7;
+    for (int i = 0; i < 2000; ++i) {
+      seed = seed * 1664525u + 1013904223u;
+      const std::size_t size = 100000 + (seed >> 8) % 500000;
+      const auto bytes = pattern(size, static_cast<std::uint32_t>(i) + 1000);
+      write_bytes(tree / ("DCIM/" + std::to_string(i / 200)) / ("IMG_" + std::to_string(i) + ".JPG"), bytes);
+      if (i % 5 == 0) write_bytes(tree / "Backup" / ("copy of " + std::to_string(i) + ".jpg"), bytes);
+    }
+  }
+  const auto timed = [&] {
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto job = find_dups(r, tree);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return std::pair{job, ms};
+  };
+  const auto [first, first_ms] = timed();
+  const auto s1 = r.summary(first);
+  const int hashes_first = r.wrap.hashes.load();
+  const auto [second, second_ms] = timed();
+  const auto s2 = r.summary(second);
+  std::printf("find duplicates: %lld files, %lld MB, %lld compared, %lld groups\n",
+              static_cast<long long>(*s1.integer("files")),
+              static_cast<long long>(*s1.integer("bytes") / 1000000),
+              static_cast<long long>(*s1.integer("compared")),
+              static_cast<long long>(*s1.integer("group_count")));
+  std::printf("  first scan  %8.1f ms  (%d files hashed)\n", first_ms, hashes_first);
+  std::printf("  rescan      %8.1f ms  (%lld files hashed)\n", second_ms,
+              static_cast<long long>(*s2.integer("hashed")));
+  REQUIRE(*s2.integer("hashed") == 0);
+  REQUIRE(*s2.integer("group_count") == *s1.integer("group_count"));
 }

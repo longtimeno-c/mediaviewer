@@ -75,6 +75,7 @@ bool is_package(std::string_view name) noexcept {
 }  // namespace
 
 result<file_stat> stat_path(std::string_view utf8_path) {
+  detail::simulated_round_trip();
   if (utf8_path.empty()) return err(status::invalid_arg);
   const std::string path(utf8_path);
   struct stat st{};
@@ -139,6 +140,7 @@ expected remove_tree(std::string_view utf8_dir) {
 }
 
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {
+  detail::simulated_round_trip();
   if (from_utf8.empty() || to_utf8.empty()) return err(status::invalid_arg);
   const std::string from(from_utf8);
   const std::string to(to_utf8);
@@ -194,7 +196,8 @@ file_reader::~file_reader() = default;
 file_reader::file_reader(file_reader&&) noexcept = default;
 file_reader& file_reader::operator=(file_reader&&) noexcept = default;
 
-expected file_reader::open(std::string_view utf8_path, read_mode mode) {
+expected file_reader::open(std::string_view utf8_path, read_mode mode, bool /*concurrent*/) {
+  detail::simulated_round_trip();
   close();
   if (utf8_path.empty()) return err(status::invalid_arg);
   const std::string path(utf8_path);
@@ -224,10 +227,28 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode) {
 }
 
 result<std::size_t> file_reader::read(std::span<std::uint8_t> into) {
+  detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
   std::size_t filled = 0;
   while (filled < into.size()) {
     const ssize_t n = ::read(impl_->fd, into.data() + filled, into.size() - filled);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return err(status::io);
+    }
+    if (n == 0) break;
+    filled += static_cast<std::size_t>(n);
+  }
+  return filled;
+}
+
+result<std::size_t> file_reader::read_at(std::uint64_t offset, std::span<std::uint8_t> into) {
+  detail::simulated_round_trip();
+  if (!impl_) return err(status::invalid_arg);
+  std::size_t filled = 0;
+  while (filled < into.size()) {
+    const ssize_t n = ::pread(impl_->fd, into.data() + filled, into.size() - filled,
+                              static_cast<off_t>(offset + filled));
     if (n < 0) {
       if (errno == EINTR) continue;
       return err(status::io);
@@ -254,7 +275,8 @@ file_writer::~file_writer() = default;
 file_writer::file_writer(file_writer&&) noexcept = default;
 file_writer& file_writer::operator=(file_writer&&) noexcept = default;
 
-result<rename_outcome> file_writer::create_new(std::string_view utf8_path) {
+result<rename_outcome> file_writer::create_new(std::string_view utf8_path, bool /*concurrent*/) {
+  detail::simulated_round_trip();
   impl_.reset();
   if (utf8_path.empty()) return err(status::invalid_arg);
   const std::string path(utf8_path);
@@ -274,6 +296,7 @@ result<rename_outcome> file_writer::create_new(std::string_view utf8_path) {
 }
 
 expected file_writer::write(std::span<const std::uint8_t> bytes) {
+  detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
   std::size_t done = 0;
   while (done < bytes.size()) {
@@ -288,12 +311,37 @@ expected file_writer::write(std::span<const std::uint8_t> bytes) {
   return {};
 }
 
+expected file_writer::write_at(std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+  detail::simulated_round_trip();
+  if (!impl_) return err(status::invalid_arg);
+  std::size_t done = 0;
+  while (done < bytes.size()) {
+    const ssize_t n = ::pwrite(impl_->fd, bytes.data() + done, bytes.size() - done,
+                               static_cast<off_t>(offset + done));
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return err(status::io);
+    }
+    if (n == 0) return err(status::io);
+    done += static_cast<std::size_t>(n);
+  }
+  return {};
+}
+
+expected file_writer::set_size(std::uint64_t bytes) {
+  detail::simulated_round_trip();
+  if (!impl_) return err(status::invalid_arg);
+  return ::ftruncate(impl_->fd, static_cast<off_t>(bytes)) == 0 ? expected{} : err(status::io);
+}
+
 expected file_writer::flush_durable() {
+  detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
   return durable_sync(impl_->fd) ? expected{} : err(status::io);
 }
 
 expected file_writer::set_mtime(std::int64_t mtime_unix) {
+  detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
   struct timespec times[2]{};
   times[0].tv_nsec = UTIME_OMIT;
@@ -302,6 +350,7 @@ expected file_writer::set_mtime(std::int64_t mtime_unix) {
 }
 
 expected file_writer::close() {
+  detail::simulated_round_trip();
   if (!impl_) return {};
   const int fd = impl_->fd;
   impl_->fd = -1;

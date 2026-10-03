@@ -77,6 +77,16 @@ class stmt {
 
 bool exec(sqlite3* db, const char* sql) { return sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK; }
 
+// An SQL string literal ('it''s').
+std::string quoted(const std::string& v) {
+  std::string o = "'";
+  for (char ch : v) {
+    o += ch;
+    if (ch == '\'') o += '\'';
+  }
+  return o + "'";
+}
+
 std::filesystem::path fs_path(const std::string& utf8) {
   return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
 }
@@ -291,7 +301,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   if (!ok) return fail(status::io);
   if (roots.empty()) return fail(status::invalid_arg);
   n.roots = roots.size();
-  std::unordered_map<std::int64_t, std::string> path_of;  // for thumbnails
+  std::unordered_map<std::int64_t, thumb_want> file_of;  // for thumbnails
   {
     stmt q(x, "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1");
     stmt ins(x, "INSERT INTO assets(id, root_id, rel, mtime, size, kind, duration_ms)"
@@ -306,7 +316,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
         ins.reset();
         ok = ins.bind(1, q.i64(0)).bind(2, id).bind(3, rel).bind(4, q.i64(2)).bind(5, q.i64(3))
                  .bind(6, q.i64(4)).bind(7, q.i64(5)).run();
-        if (o.thumbs) path_of.emplace(q.i64(0), path);
+        if (o.thumbs) file_of.emplace(q.i64(0), thumb_want{path, -1, q.i64(4) == 2, q.i64(5)});
         ++n.assets;
       }
       if (c.cancelled()) return fail(status::cancelled);
@@ -332,9 +342,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   if (with_faces) {
     ok = exec(x, "INSERT INTO face_scanned SELECT s.asset_id, s.spec FROM fdb.scanned s"
                  " JOIN assets a ON a.id = s.asset_id") &&
-         exec(x, "INSERT INTO faces SELECT f.id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score,"
-                 " f.person_id, f.emb, f.pinned, f.quality, f.tta FROM fdb.faces f"
-                 " JOIN assets a ON a.id = f.asset_id");
+         // The file is one embedder's (face_spec): a face another made (a
+         // re-run under way) stays behind.
+         exec(x, ("INSERT INTO faces SELECT f.id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score,"
+                  " f.person_id, f.emb, f.pinned, f.quality, f.tta FROM fdb.faces f"
+                  " JOIN assets a ON a.id = f.asset_id WHERE f.spec = " + quoted(o.face_spec)).c_str());
     n.faces = count_of(x, "SELECT COUNT(*) FROM faces");
     ok = ok &&
          exec(x, "INSERT INTO people SELECT p.id, p.name, p.created_at FROM fdb.people p"
@@ -351,11 +363,12 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   if (with_faces) exec(x, "DETACH fdb");
   c.report(0.5);
 
-  // Thumbnails the viewer already made: the file's own, and each moment an
-  // embedding or a face was taken at.
+  // Thumbnails: the file's own, and each moment an embedding or a face was
+  // taken at. One the viewer never made is made now, so the file carries them
+  // all; that can decode, so cancel is polled every item.
   if (o.thumbs && o.thumb) {
     std::vector<std::pair<std::int64_t, std::int64_t>> want;
-    for (const auto& [id, path] : path_of) want.emplace_back(id, -1);
+    for (const auto& [id, file] : file_of) want.emplace_back(id, -1);
     {
       stmt m(x, "SELECT DISTINCT asset_id, pts_ms FROM frames WHERE pts_ms >= 0"
                 " UNION SELECT DISTINCT asset_id, pts_ms FROM faces WHERE pts_ms >= 0");
@@ -364,9 +377,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
     stmt ins(x, "INSERT OR IGNORE INTO thumbs(asset_id, pts_ms, jpeg) VALUES(?1, ?2, ?3)");
     if (!exec(x, "BEGIN")) return fail(status::io);
     for (std::size_t i = 0; i < want.size() && ok; ++i) {
-      const auto it = path_of.find(want[i].first);
-      if (it == path_of.end()) continue;
-      auto jpeg = o.thumb(it->second, want[i].second);
+      const auto it = file_of.find(want[i].first);
+      if (it == file_of.end()) continue;
+      thumb_want w = it->second;
+      w.pts_ms = want[i].second;
+      auto jpeg = o.thumb(w);
       if (!jpeg || jpeg->empty()) {
         ++n.thumbs_missing;
       } else {
@@ -374,13 +389,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
         ok = ins.bind(1, want[i].first).bind(2, want[i].second).bind_blob(3, jpeg->data(), jpeg->size()).run();
         ++n.thumbs;
       }
-      if ((i & 255) == 255) {
-        if (c.cancelled()) {
-          exec(x, "ROLLBACK");
-          return fail(status::cancelled);
-        }
-        c.report(0.5 + 0.5 * static_cast<double>(i) / static_cast<double>(want.size()));
+      if (c.cancelled()) {
+        exec(x, "ROLLBACK");
+        return fail(status::cancelled);
       }
+      if ((i & 15) == 15) c.report(0.5 + 0.5 * static_cast<double>(i) / static_cast<double>(want.size()));
     }
     if (!ok || !exec(x, "COMMIT")) return fail(status::io);
   }
@@ -692,8 +705,8 @@ expected import_faces(sqlite3* fdb, const std::string& file, const std::string& 
   std::unordered_map<std::int64_t, std::int64_t> face_here;
   {
     stmt f(x, "SELECT id, asset_id, pts_ms, x, y, w, h, score, person_id, emb, pinned, quality, tta FROM faces");
-    stmt ins(fdb, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, pinned, quality, tta)"
-                  " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)");
+    stmt ins(fdb, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, pinned, quality,"
+                  " tta, spec) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)");
     const auto unit = [](double v) { return std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 0.0; };
     std::uint64_t i = 0;
     while (ok && f.step_row()) {
@@ -720,7 +733,7 @@ expected import_faces(sqlite3* fdb, const std::string& file, const std::string& 
       } else {
         ins.bind_real(12, unit(f.real(11)));
       }
-      ins.bind(13, std::int64_t{f.i64(12) != 0 ? 1 : 0});
+      ins.bind(13, std::int64_t{f.i64(12) != 0 ? 1 : 0}).bind(14, face_spec);
       ok = ins.run();
       face_here[f.i64(0)] = sqlite3_last_insert_rowid(fdb);
       ++n.faces;

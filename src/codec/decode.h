@@ -17,6 +17,7 @@ namespace mv::codec {
 
 // `ctx` may be null (tests). When present, cancelled() is checked between
 // scanline blocks so a generation bump abandons a large decode.
+// `raw_thread_limit` also caps a HEIC grid's tile threads (the bundled path).
 [[nodiscard]] result<raster> decode(std::span<const std::uint8_t> bytes,
                                     const job_context* ctx = nullptr,
                                     unsigned raw_thread_limit = 4);
@@ -49,8 +50,17 @@ struct jpeg_size {
                                          const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_ico(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
+// `thread_limit` > 1 decodes a grid's tiles in parallel (an iPhone still is
+// 48 tiles); pixels do not depend on it.
 [[nodiscard]] result<raster> decode_heic(std::span<const std::uint8_t> bytes,
-                                         const job_context* ctx = nullptr);
+                                         const job_context* ctx = nullptr,
+                                         unsigned thread_limit = 1);
+// The primary image's largest thumbnail item (an iPhone writes 320x240), with
+// the primary's colour when it carries none. First pixel for HEIC (plan/04).
+// `unsupported_format` when there is none, or it is not smaller than the image
+// or not its shape (a thumbnail without the primary's rotation).
+[[nodiscard]] result<raster> decode_heic_thumbnail(std::span<const std::uint8_t> bytes,
+                                                   const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_avif(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
 // How many LibRaw threads the image on screen may use. Leaves processors for

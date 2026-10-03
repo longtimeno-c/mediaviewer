@@ -22,5 +22,9 @@ let package = Package(
     // The C view of mediaviewer_ai.h (the table's types).
     .target(name: "CAiApi"),
     .target(name: "AIChrome", dependencies: ["CAiApi"]),
+    // The chrome's own measurements (docs/DEVELOPMENT.md "Test"): the People
+    // grid at 200 people, with an empty table. `swift test -c release
+    // -Xswiftc -enable-testing` here; not part of the cmake build.
+    .testTarget(name: "AIChromeTests", dependencies: ["AIChrome"]),
   ]
 )

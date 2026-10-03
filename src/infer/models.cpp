@@ -158,8 +158,25 @@ result<std::unique_ptr<clip_model>> clip_model::open(const runtime& rt, const cl
   return m;
 }
 
+result<std::unique_ptr<clip_model>> clip_model::open_text_only(const runtime& rt, const clip_spec& spec,
+                                                               const session_options& options) {
+  std::unique_ptr<clip_model> m(new clip_model());
+  m->spec_ = spec;
+  m->key_ = spec.spec_key();
+  MV_TRY(std::string vocab, read_text(spec.vocab_file));
+  MV_TRY(std::string merges, read_text(spec.merges_file));
+  MV_TRY(clip_tokenizer tok, clip_tokenizer::load(vocab, merges, spec.context));
+  m->tok_ = std::move(tok);
+  session_options text_opts = options;
+  text_opts.on = backend::cpu;
+  MV_TRY(auto text, session::open(rt, spec.text_file, text_opts, nullptr));
+  m->text_ = std::move(text);
+  return m;
+}
+
 expected clip_model::embed_images(std::span<const rgb_view> images, std::vector<float>& out) {
   out.clear();
+  if (!image_) return err(status::unsupported_format);
   if (images.empty()) return {};
   if (image_batch_ > 0 && images.size() != image_batch_) {
     // A fixed batch: run it in slices, padding the last with its final image.
@@ -292,19 +309,58 @@ result<face_spec> read_face_spec(const std::string& folder) {
   s.min_confidence = number_or(*doc, "min_confidence", s.min_confidence);
   s.nms_iou = number_or(*doc, "nms_iou", s.nms_iou);
   s.min_face_fraction = number_or(*doc, "min_face_fraction", s.min_face_fraction);
+  s.embed_mean = number_or(*doc, "embed_mean", s.embed_mean);
+  s.embed_scale = number_or(*doc, "embed_scale", s.embed_scale);
+  if (const std::string* order = doc->str("embed_order")) s.embed_bgr = *order == "bgr";
+  s.dim = static_cast<std::uint32_t>(doc->integer("dim").value_or(s.dim));
+  if (s.dim == 0 || s.dim > 4096) return err(status::corrupt);
   s.same_person = number_or(*doc, "same_person", s.same_person);
+  s.keep = number_or(*doc, "keep", s.keep);
+  s.keep_weak = number_or(*doc, "keep_weak", s.keep_weak);
+  s.margin = number_or(*doc, "margin", s.margin);
+  s.ambiguous = number_or(*doc, "ambiguous", s.ambiguous);
+  s.merge_at = number_or(*doc, "merge_at", s.merge_at);
+  if (const std::string* name = doc->str("name")) s.name = *name;
   if (const std::string* key = doc->str("spec")) s.spec_key = *key;
   return s;
 }
 
 result<std::unique_ptr<face_models>> face_models::open(const runtime& rt, const face_spec& spec,
-                                                       const session_options& options) {
+                                                       const session_options& options,
+                                                       const session_options* embedder) {
   auto m = std::make_unique<face_models>();
   m->spec_ = spec;
   MV_TRY(auto det, session::open(rt, spec.detector_file, options, nullptr));
   MV_TRY(auto emb, session::open(rt, spec.embedder_file, options, nullptr));
   m->detector_ = std::move(det);
   m->embedder_ = std::move(emb);
+  if (embedder && embedder->on != backend::cpu) {
+    // An AdaFace IR-50 is ~5x SFace's cost on one CPU thread and ~15x
+    // faster on Core ML (plan/17 "People model"): worth a provider when it
+    // gives the same vectors. One fixed crop through both decides.
+    session_options acc = *embedder;
+    acc.fixed_dims.emplace_back("n", 1);  // face-export.py's batch: Core ML wants static shapes
+    if (auto fast = session::open(rt, spec.embedder_file, acc, nullptr)) {
+      tensor_f32 in;
+      in.shape = {1, 3, 112, 112};
+      in.data.resize(3 * 112 * 112);
+      for (std::size_t i = 0; i < in.data.size(); ++i) {
+        in.data[i] = static_cast<float>((i * 7919) % 255);
+        in.data[i] = (in.data[i] - spec.embed_mean) * spec.embed_scale;
+      }
+      auto a = m->embedder_->run(std::span<const tensor_f32>(&in, 1));
+      auto b = (*fast)->run(std::span<const tensor_f32>(&in, 1));
+      if (a && b && !a->empty() && !b->empty() && (*a)[0].data.size() == (*b)[0].data.size()) {
+        std::vector<float> va = (*a)[0].data, vb = (*b)[0].data;
+        l2_normalise(va);
+        l2_normalise(vb);
+        if (dot(va, vb) >= 0.99f) {
+          m->embedder_ = std::move(*fast);
+          m->on_ = embedder->on;
+        }
+      }
+    }
+  }
   return m;
 }
 
@@ -388,18 +444,27 @@ result<std::vector<face_box>> face_models::detect(const rgb_view& img) const {
 }
 
 result<std::vector<float>> face_models::embed(const rgb_view& img, const face_box& face,
-                                              std::vector<float>* aligned) const {
+                                              std::vector<float>* aligned, float* norm) const {
   tensor_f32 in;
   sface_tensor(img, face.landmarks, in.data);
-  in.shape = {1, 3, 112, 112};
+  constexpr std::size_t kSide = 112;
+  constexpr std::size_t kPlane = kSide * kSide;
+  if (aligned) *aligned = in.data;  // the crop as seen, for the caller's quality measure
+  // The embedder's own input: channel order and normalisation (model.json).
+  if (spec_.embed_bgr) {
+    std::swap_ranges(in.data.begin(), in.data.begin() + kPlane, in.data.begin() + 2 * kPlane);
+  }
+  if (spec_.embed_mean != 0.0f || spec_.embed_scale != 1.0f) {
+    for (float& v : in.data) v = (v - spec_.embed_mean) * spec_.embed_scale;
+  }
+  in.shape = {1, 3, kSide, kSide};
   MV_TRY(auto outs, embedder_->run(std::span<const tensor_f32>(&in, 1)));
-  if (outs.empty() || outs[0].data.empty()) return err(status::corrupt);
+  if (outs.empty() || outs[0].data.size() != spec_.dim) return err(status::corrupt);
   std::vector<float> v = outs[0].data;
   // Flip averaging (plan/17 "People refinement"): the ArcFace template is
   // mirror-symmetric, so the mirrored crop is aligned too; the mean of the
   // two vectors is steadier on a turned or unevenly lit face. A second run of
-  // a 112 x 112 embedder: ~1 ms on a CPU, small beside the 640 detector.
-  constexpr std::size_t kSide = 112;
+  // the 112 x 112 embedder.
   for (std::size_t ch = 0; ch < 3; ++ch) {
     for (std::size_t y = 0; y < kSide; ++y) {
       float* r = in.data.data() + (ch * kSide + y) * kSide;
@@ -408,19 +473,14 @@ result<std::vector<float>> face_models::embed(const rgb_view& img, const face_bo
   }
   if (auto mirrored = embedder_->run(std::span<const tensor_f32>(&in, 1));
       mirrored && !mirrored->empty() && (*mirrored)[0].data.size() == v.size()) {
-    for (std::size_t i = 0; i < v.size(); ++i) v[i] += (*mirrored)[0].data[i];
+    for (std::size_t i = 0; i < v.size(); ++i) v[i] = 0.5f * (v[i] + (*mirrored)[0].data[i]);
+  }
+  if (norm) {
+    double n2 = 0;
+    for (float x : v) n2 += static_cast<double>(x) * x;
+    *norm = static_cast<float>(std::sqrt(n2));
   }
   l2_normalise(v);
-  if (aligned) {
-    // The crop, unmirrored, for the caller's quality measure.
-    for (std::size_t ch = 0; ch < 3; ++ch) {
-      for (std::size_t y = 0; y < kSide; ++y) {
-        float* r = in.data.data() + (ch * kSide + y) * kSide;
-        std::reverse(r, r + kSide);
-      }
-    }
-    *aligned = std::move(in.data);
-  }
   return v;
 }
 

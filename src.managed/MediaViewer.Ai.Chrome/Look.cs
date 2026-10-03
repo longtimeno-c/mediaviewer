@@ -48,6 +48,20 @@ internal sealed class Look
     public double FontSize => _host.UiFontSize;
     public bool Motion => _host.AnimationsEnabled;
 
+    /// <summary>A type-in field's look (Shared\FakeInput.cs; a WinUI TextBox
+    /// fail-fasts in this host) in these colours, at <paramref name="fontSize"/>.</summary>
+    public MediaViewer.Shared.FakeInputLook Input(double fontSize) => new()
+    {
+        Font = () => Font,
+        FontSize = () => fontSize,
+        Title = () => this[AddonColour.Title],
+        Body = () => this[AddonColour.Body],
+        Canvas = () => this[AddonColour.Canvas],
+        Hairline = () => this[AddonColour.Hairline],
+        Selection = () => LiveTint(AddonColour.Accent, 96),
+        SelectionInk = () => this[AddonColour.Title],
+    };
+
     /// <summary>A fresh brush (not shared) for a tinted variant of a role.</summary>
     public SolidColorBrush Tint(AddonColour role, byte alpha)
     {
@@ -240,7 +254,7 @@ internal sealed class Look
     {
         0 => null,
         1 => "GPU acceleration is not in this install — using CPU",
-        2 => "CUDA runtime not found — using CPU",
+        2 => "CUDA 13 or cuDNN 9 not found — using CPU",
         3 => "The GPU provider failed — using CPU",
         4 => "GPU results did not match the CPU's — using CPU",
         5 => "The GPU was slower than the CPU here — using CPU",

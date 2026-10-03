@@ -98,7 +98,7 @@ src/infer   IEmbedder { load(pack), embed_image(span<u8 rgb>, w, h), embed_text(
   their hardware uses: **OpenVINO** (Intel iGPU/NPU, Apache-2.0), **CUDA/TensorRT** (NVIDIA;
   redistribution is under NVIDIA's EULA, not an OSI licence — legal check against the app's
   GPL-3.0-or-later status before shipping it, and if it fails the gate it is user-supplied
-  instead). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
+  instead; it ships user-supplied, plan/12 2026-10-03). **AMD GPUs have no good ORT provider on Windows without DirectML**; they run CPU
   until a provider exists. That is a known gap, not a hidden one. Adding DirectML later as one
   more provider would need the CLAUDE.md D3D12 rule reworded and is not planned.
 - ORT owns whatever device the provider creates. It never shares our render `ID3D11Device` (or `MTLDevice` on Mac),
@@ -192,8 +192,8 @@ roots(id, path, scope, enabled, last_scan_at)                        -- remember
 meta(model_id, dim, spec, ...)
 ```
 
-- **Folder roots persist.** Choosing "this folder" or "this folder and below" writes a `roots`
-  row. Reopening the app or that folder does not rebuild it: a watcher plus a startup delta scan
+- **Folder roots persist.** Indexing a folder (always with its subfolders, 2026-10-03) writes a
+  `roots` row. Reopening the app or that folder does not rebuild it: a watcher plus a startup delta scan
   queues only new, changed or removed assets. The user can pause, rescan or remove each root.
 - Keyed like the thumbnail cache: change `(path, mtime, size)` or the model `spec` and the row is
   stale and re-queued. No content hashing pass over a camera dump.
@@ -214,7 +214,8 @@ meta(model_id, dim, spec, ...)
   problem that may not exist at camera-dump scale.
 - **Ranking:** top-K frames, then **group per clip** with the best moment first and "N more in
   this clip" — otherwise one 40-minute video with a dog in it fills the whole page.
-- **Scope:** current folder (default) · this folder and below · all indexed folders. Kind filter
+- **Scope:** the open folder and its subfolders (default) · all indexed folders. There is no
+  folder-only scope in the search panel (owner 2026-10-03; plan/12). Kind filter
   (photos / video). Min-score cutoff so a nonsense query returns "nothing found", not the
   least-bad ten.
 - **Find similar:** the current still or the paused frame's embedding as the query. For a paused
@@ -234,8 +235,9 @@ Reuse, do not grow a router or a second present path ([16-commands.md](16-comman
   `search.prev_match` (within a clip). Key assignment is done then, against the live table, so
   it cannot collide. Everything reachable without the mouse, per 16's verify.
 - When an unindexed folder is open and the Core pack is installed, Local search offers
-  **Index this folder** and **Index this folder and subfolders**. The recursive action is also
-  available from the folder toolbar/menu. It adds a remembered root, starts background work,
+  **Index this folder and subfolders**, the one way to index it (owner 2026-10-03: no
+  folder-only choice here or in Settings → Add a folder). It is also available from the folder
+  toolbar/menu. It adds a remembered root, starts background work,
   and makes that scope searchable as results commit; the user does not have to wait for the
   entire tree before trying a query.
 - A visible **indexing status** (progress, pause/resume, "paused — playing video"). Never a modal.
@@ -598,7 +600,8 @@ the pack (tested).
 
 **Sizes:** Core ~1.18 GB installed (both towers, tokenizer, ORT CPU, mv_ai, chrome), People
 piece 39 MB, NVIDIA piece ~205 MB (ORT's CUDA 13 build only: the CUDA runtime and cuDNN are
-**user-supplied**, NVIDIA's EULA review against GPL-3.0-or-later not done). Worst supported
+**user-supplied**, NVIDIA's EULA review against GPL-3.0-or-later not done, so they are not
+bundled; the piece itself is published on stable Windows releases from 2026-10-03, plan/12). Worst supported
 combination ~1.4-1.85 GB of 3 GB. OpenVINO has a code path but no piece yet (no Intel dev box).
 **macOS: arm64 only** - Microsoft ships no x86_64 macOS build of ORT 1.30; Intel Macs are not
 offered Local search.
@@ -631,7 +634,10 @@ offered Local search.
   previous matching moment; listed only while the pack is loaded.
 - **Chrome**: WinUI `MediaViewer.Ai.Chrome` and SwiftUI `AI.bundle` - search panel, results,
   status pill, scrub-bar match dots, Settings -> Local search with per-piece install (clicks
-  queue, Core first; "Install all"), compute / precision (the model stays on Auto), roots, People.
+  queue, Core first; "Install all"; from 2026-10-03 "Update all" when more than one installed
+  piece has a newer version, and a piece's Install or Update queues a Core that is itself
+  behind first, so no piece runs ahead of the engine it was built with), compute / precision
+  (the model stays on Auto), roots, People.
 
 ### Audio (added 2026-09-27, owner)
 
@@ -928,6 +934,41 @@ refinement live, the real SFace pack (so flip averaging's gain and the threshold
 real faces), a labelled people set (none exists; it is what should tune join / keep / margin),
 and PR 1's present-loop gate on either platform while a full call runs.
 
+### Merge duplicates (2026-10-03, owner)
+
+Owner: "a rescan all option that goes through and does A/B testing on images and tries to merge
+them into the right person … I have a lot of duplicates." Shared core, `mv.ai.1` appended
+(`people_dedupe`), a button in both chromes. Only ever on request (plan/12, 2026-09-28: nothing
+refines People in the background; the idle consolidate merge is unchanged).
+
+**What a click does** (`engine::people_dedupe`):
+
+1. **Every face re-checked.** The refinement above, with no focus: a full snapshot, every
+   person rebuilt, every unpinned face judged (move, evict, admit, regroup), Jacobi passes,
+   then `refine_commit` (the user's later changes win, as before).
+2. **The same person twice** (`find_duplicates` in `face_refine.h`, pure, no lock held). Over
+   the rebuilt prototypes: two people link when each one's exemplars **vouch** for the other's
+   at `join` (the model's `same_person`, 0.40), vouching being the refinement's own support
+   (each exemplar's top-3 mean cosine to the other's exemplars), averaged, both ways, the
+   smaller kept. Links are grouped strongest first by **complete linkage**: a group takes a
+   person only when every member links to it, so a chain of lookalikes cannot walk (the lesson
+   of the old consolidate). Exemplars are pinned and good-quality faces, so weak crops that
+   drag a cluster's average down do not hide a duplicate: this is what the idle consolidate,
+   which compares whole-cluster averages at 0.42, misses. Never linked: two people **named
+   differently**, a pair a **split** kept apart (`no_merge`), a pair where a face of one was
+   **rejected** from the other. Cores far apart (mean pairwise below 0.24) are not scored.
+3. **Who survives.** In a group: a named person over an unnamed one, then the one with more
+   faces, then the older; the others merge into it (`faces_db::merge_auto`, which checks the
+   pair again). Nothing is pinned: the user did not say "same person".
+
+The call returns people merged away and faces moved; the chrome says "3 people merged, 12 faces
+moved." or "No duplicates found, and every face matches." Undo is Split (a split pair never
+merges again on its own). Cost is the full refinement's (above) plus pairs × exemplars²:
+negligible beside it at hundreds of people. `mv_ai_tests "[dedupe]"` covers it on synthetic
+SFace-like vectors (a duplicate the cluster average misses, strangers, a lookalike chain, names,
+apart pairs, survivors) and through faces.db and the engine (a split stays apart, a second call
+changes nothing).
+
 ### People in the open folder (2026-09-28, owner)
 
 Owner: "in people I can see everyone in any folder I open; can I just show people from the
@@ -951,6 +992,12 @@ folder / subfolders I'm on?" Both halves, one shared core change.
   counted. Everywhere is exactly what the grid showed before.
 - **Not persisted:** the choice is per window / per Settings session; reopening starts at
   + Subfolders. The status bar's people count (`mv_ai_status.people`) stays the whole index's.
+- **Amended 2026-10-03 (owner):** "Everywhere" is no longer a choice while a folder is open.
+  The control is "This folder | + Subfolders"; a folder shows its own people, and everyone
+  shows only when no folder is open (the control is then absent on the Mac, disabled and
+  reading "Everywhere" on Windows). A scope of Everywhere left from before reads as
+  + Subfolders when a folder opens. "Show photos" and the empty-grid wording follow.
+  plan/12, 2026-10-03.
 - A pack from before the entry (its `struct_size` stops short) shows everyone, as before.
 
 ### Sharing an index (2026-09-28, owner)
@@ -965,7 +1012,8 @@ roots with each asset's path **relative to its root** (`/`-separated), its `(mti
 kind and duration, and the rows that describe it: `progress` (done and partial only),
 `frames`, `speech`. Optional: **People** (`people`, `faces` without a path, `rejected`,
 `no_merge`, `face_scanned`) and **thumbnails** (the JPEG-512 cache's bytes for a still and each
-stored moment; only what the cache already holds; an export never decodes a library). The
+stored moment, a clip's own as the frame its poster lands near; one the cache does not hold yet
+is made then, between the viewer's busy spells, amended 2026-10-03). The
 roots keep their original absolute path and a display name so an import can offer the same
 place (a NAS mounted at the same path answers itself). Written to `<dest>.part` and renamed.
 The export reads index.db and faces.db on its own read connections: indexing is never paused
@@ -1018,6 +1066,122 @@ export leaves it out and the chrome's picker does not offer it.
 
 **Rule 6.** The file carries folder and file names, and, if ticked, faces and names. It is the
 user's own export to a place they chose; nothing about it is logged or sent.
+
+### People model (2026-10-03, owner)
+
+Owner: "can we improve / select a better people model … add a re-run that redoes the photos and
+it should also take a look at already separated people and assign". Shared core, `mv.ai.1`
+appended, both chromes, the ai-faces piece's model.
+
+**The model: AdaFace IR-50 (WebFace4M), fp16, replacing SFace.** The refinement notes above said
+a second face model waited for numbers; these are they. Every candidate went through *our*
+pipeline (YuNet 2023mar boxes and landmarks, the ArcFace 112 template, flip averaging, L2) on LFW
+(13,233 photos, kept out of git): the 6,000 standard pairs (10-fold), and the 5,985 photos of the
+423 people with five or more as a clustering set, at full size and with the face shrunk to ~40 px
+and ~24 px (a crowd in a phone photo). TAR at a fixed false-accept rate over all 17.9 M pairs;
+BCubed F of average-linkage clustering at the FAR 1e-4 threshold.
+
+| Embedder (licence) | Size | LFW | TAR@1e-4 full | @1e-4 40 px | @1e-4 24 px | F 24 px | CPU, 1 thread | Core ML |
+|---|---|---|---|---|---|---|---|---|
+| SFace 2021dec (Apache-2.0), today | 39 MB | 99.38 % | 99.00 % | 98.52 % | 94.33 % | 0.958 | 17 ms | — |
+| AdaFace IR-18 WebFace4M (MIT) | 96 MB | 99.43 % | 99.62 % | 99.40 % | 97.26 % | — | — | 17 ms |
+| **AdaFace IR-50 WebFace4M (MIT)** | 175 MB / **87 MB fp16** | **99.80 %** | **99.93 %** | **99.92 %** | **99.81 %** | **0.998** | 97 ms | **6 ms (fp16)** |
+| AdaFace IR-101 WebFace12M (MIT) | 261 MB | 99.80 % | 99.94 % | 99.94 % | 99.90 % | 0.998 | 2x IR-50 | — |
+
+Times are one face, both flip runs, Apple M5, ORT 1.30, a quiet machine; the SFace and IR-18/101
+LFW numbers match their published ones (SFace 99.40, CVLface's IR-50 99.78), so the pipeline is
+faithful. LFW saturates, so the published harder sets order the rest: IJB-C TAR@1e-4 97.0 (IR-50)
+and 97.7 (IR-101), TinyFace rank-1 70.2 / 72.4; SFace publishes none for the shipped
+MobileFaceNet. IR-101 buys ~0.1 point here for twice IR-50's compute and +86 MB: not taken.
+fp16 IR-50 agrees with fp32 at cosine 0.99998 on the export check and at >= 0.99999 on every one of
+the 5,985 clustering faces, and settles to the same people (BCubed 0.9994 / 0.9982).
+
+**Licence gate.** CVLface's code and AdaFace's are MIT (github.com/mk-minchul/CVLface, /AdaFace);
+the Hugging Face repos carry no licence tag and their cards say to follow the training data's
+licence. **WebFace4M is distributed for non-commercial research.** SFace (MS1M-derived) and YuNet
+(WIDER FACE) carry the same class of caveat, which the PR 24 licence check did not record. Weights
+licence passes `ai-models.py check`; whether the training data's terms reach the weights is an
+owner / legal call, listed under *Open decisions*. Rejected outright: InsightFace's models
+(buffalo_l, antelopev2, SCRFD, and their re-uploads tagged MIT / Apache, e.g. the ONNX Model Zoo's
+`arcfaceresnet100-8`), EdgeFace and ElasticFace (CC BY-NC-SA), TransFace and TopoFR (no licence),
+YOLO-face variants (GPL-3.0-only or AGPL). Not better: FaceNet (MIT), dlib (CC0), GhostFaceNets.
+
+**No ONNX upstream, so the pack builds it.** `tools/package/face-export.py` re-declares the IR
+backbone and loads the pinned safetensors **as data** (never the repo's `trust_remote_code`
+Python), exports fp16 weights with fp32 input and output, and checks ONNX against PyTorch.
+`ai-models.json` pins the source (revision, size, SHA-256) with an `export` block: `stage` runs
+the exporter and keeps the file only if it reproduces 16 values and the norm of a fixed input's
+embedding (`golden`), so a re-export is verified by output, not by bytes (torch.onnx's bytes move
+with its version). `installed_size` is what the ceiling counts: worst supported combination
+~2.93 GB of 3 GB (SFace: ~2.88). Pack builders need `requirements-export.txt`; the app does not.
+
+**Running it.** The embedder now runs on the towers' compute choice (Auto: Core ML on a Mac, CUDA
+with the ai-cuda piece) and keeps the provider only if a fixed crop agrees with CPU at cosine
+>= 0.99, the towers' rule; the detector stays on CPU. Core ML takes 6 ms a face (10.9 ms through
+`face_models` with the alignment), 2.8x faster than SFace on CPU. **Windows without the CUDA
+piece runs it on CPU at ~6x SFace's cost** (measured on the M5; a Windows CPU number is owed).
+That is People indexing time on the background workers, which yield to the viewer; it is not on
+any thread the viewer waits for.
+
+**Thresholds** (`model.json`; `infer::face_spec`, `face_tuning`). SFace's were set by hand around
+its 0.363 verification point. Mapping each to IR-50 at the same impostor FAR on LFW gives
+same_person 0.26, keep 0.16, keep_weak 0.20, merge 0.28; through faces.db that lost a little
+precision on full-size faces (0.9888 vs SFace's 0.9938). Stricter is better for People (a wrong
+person is the owner's complaint; a split is one drag to merge), so the shipped values sit at
+IR-50's FAR ~1e-4 point: **same_person 0.30, keep 0.20, keep_weak 0.24, margin 0.10, ambiguous
+0.04, merge_at 0.32.** "Merge duplicates" (`people_dedupe`, landed beside this) and "Refine
+faces" take the same values from the model, not SFace's 0.40. Measured through the real code (`mv_ai_tests "[.people-bench]"`: online
+add in a shuffled order, the merge, then the settle below), BCubed on the 5,985 faces:
+
+| | Precision | Recall | F | People (423 true) |
+|---|---|---|---|---|
+| SFace (today's thresholds), full size | 0.9938 | 0.9938 | 0.9938 | 433 |
+| SFace, ~24 px faces | 0.9972 | 0.9760 | 0.9865 | 473 |
+| **IR-50 (0.30), full size** | **0.9994** | **0.9982** | **0.9988** | 426 |
+| **IR-50 (0.30), ~24 px faces** | **0.9994** | **0.9966** | **0.9980** | 429 |
+
+Wrong-person rate 0.62 % -> 0.06 % at full size; missed 0.62 % -> 0.18 %, and 2.4 % -> 0.34 %
+for small faces. (0.9994 is the ceiling every setting reached: LFW's own label noise.) The real
+staged piece through `face_models` on 302 LFW photos of 60 people (`"[people]"`): genuine median
+0.596, impostor p99.9 0.222, 99.84 % of same-person pairs above 0.30, 1 of 44,818 strangers.
+
+**Re-run** (`people_reanalyse`, appended to `mv.ai.1`; "Re-analyse faces" in Settings → People on
+the Mac, the People window on Windows). It forgets what the People pass scanned and the workers
+analyse every photo and clip again with the pack's model. faces.db records each vector's
+embedder (`faces.spec`, migrated from the asset's `scanned` spec) and compares only vectors of the
+current one, so the two spaces never mix. A re-analysed face whose box matches one already there
+(IoU >= 0.5, as the refinement's recheck) **keeps its row: id, person, name, pin, "not this
+person"**, so the user's separation carries to the new model; a new face waits unassigned; an old
+face the new pass does not find again goes when its asset is marked done. Until then old faces
+still show their person (the grid does not empty) but are compared with nothing. When every asset
+is done and indexing is idle, the control thread **settles** once: a full refinement with no focus
+(every unpinned face judged against every person's core, up to three calls until nothing moves:
+leave a person, move to the right one, waiting faces join the person they clearly match, waiting
+faces that match each other but nobody become new people), then the merge. Pinned faces never
+move. A **new face model in a pack update starts the same re-run by itself** (faces.db notes the
+spec it last opened with), so updating to IR-50 inherits every name. Progress:
+`MV_AI_STATUS_PEOPLE_RERUN` / `_SETTLING` and `people_scan_total` / `_done`, `people_model_utf8`
+(appended to `mv_ai_status`). An offline folder's old faces wait for their asset; an index export
+carries only the current model's faces.
+
+The settle is a library-wide refinement on request, which plan/12 2026-09-28 had narrowed to one
+person: the user asked for this one explicitly ("take a look at already separated people and
+assign"); see plan/12 2026-10-03. Cost: 0.2 s (SFace) / 0.3 s (IR-50) for 6 k faces on the control
+thread on a quiet M5 (1.1-1.2 s with the evals running beside it), which does nothing else
+meanwhile; at 100 k faces it is untested (the 128-d full
+call was 2.7 s; 512-d is ~4x the dot products).
+
+**Tests.** `"[rerun]"`: a new model inherits Anna's name and pinned cover while Ben, glued on by
+the old model, comes out with his new face; a same-model re-run keeps every person; through the
+engine, re-analysing keeps the names and counts and replaces faces in place. `"[people]"` (real
+piece, `MV_AI_FACES_DIR` + `MV_AI_FACE_SET`), `"[.people-bench]"` (`MV_FACE_EVAL`, LFW vectors).
+
+**Not done / owed.** The training-data call (*Open decisions*). Windows: built only as C# compile
+(`dotnet msbuild -t:Compile`) and the shared core on the Mac; the WinUI half, the CUDA path and a
+Windows CPU timing need a Windows run. The app was not run end to end with the new piece (no
+sideloaded pack in this change), so the Settings rows are compiled, not seen. The settle at 100 k
+faces, and PR 1's present-loop gate while a re-run indexes, on either platform. AdaFace's feature
+norm is a quality signal the face quality measure could use; not used yet.
 
 ## Photos library source (macOS, issue #72, 2026-09-28)
 
@@ -1187,6 +1351,10 @@ What the numbers say:
 6. ~~**A Mac-only source in a dual-track add-on (D9).**~~ **Settled 2026-09-28:** yes, it is Mac
    only. The base-app `NSPhotoLibraryUsageDescription` and photos-library entitlement are
    accepted too.
+7. **People model training data (2026-10-03).** AdaFace IR-50's weights are MIT, trained on
+   WebFace4M, whose terms are non-commercial research; SFace (MS1M-derived) and YuNet (WIDER
+   FACE) have the same kind of caveat. Ship IR-50 on the weights licence, or hold for a legal
+   read? (plan/17 "People model")
 
 ## Explicitly not in this feature
 

@@ -94,7 +94,10 @@ jobs:
         uses: ./.github/actions/windows-vcpkg
 
       - name: Configure
-        run: cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION" "-DMV_AI_VERSION=$env:VERSION"
+        run: |
+          # NVIDIA acceleration (ai-cuda) is packed on stable runs only, like the other add-ons.
+          $cuda = if ($env:MODE -eq 'stable') { 'ON' } else { 'OFF' }
+          cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION" "-DMV_AI_VERSION=$env:VERSION" "-DMV_AI_CUDA_PIECE=$cuda"
 
       - name: Save dependencies before packaging can fail
         if: steps.vcpkg.outputs.cache-hit != 'true'
@@ -274,6 +277,9 @@ jobs:
           $notices = Get-ChildItem build/_ort -Recurse -Filter ThirdPartyNotices.txt | Select-Object -First 1
           if (-not $notices) { throw 'ONNX Runtime ThirdPartyNotices.txt not found' }
           Copy-Item $notices.FullName build/addons/ai
+          # Staging ai-faces re-exports the People embedder (face-export.py, torch).
+          python -m pip install --disable-pip-version-check -r tools/package/requirements-export.txt
+          if ($LASTEXITCODE) { throw 'pip install (model export) failed' }
           # Pinned revisions, SHA-256 and licence checked (plan/17 licence gate).
           foreach ($piece in 'ai', 'ai-audio', 'ai-faces') {
             python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece"
@@ -282,6 +288,14 @@ jobs:
               --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
             if ($LASTEXITCODE) { throw "packing $piece failed" }
           }
+          # NVIDIA acceleration: ORT's CUDA build only (MIT, Microsoft-signed), no models;
+          # the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
+          foreach ($f in 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'onnxruntime_providers_cuda.dll') {
+            if (-not (Test-Path "build/addons/ai-cuda/$f")) { throw "ai-cuda: $f was not staged" }
+          }
+          python tools/package/addon-pack.py pack --addon ai-cuda --platform win-x64 --src build/addons/ai-cuda `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'packing ai-cuda failed' }
           python tools/package/addon-pack.py ceiling (Get-ChildItem dist/addon/mediaviewer-addon-ai*-win-x64.json).FullName
           if ($LASTEXITCODE) { throw 'the AI family is over its 3 GB ceiling' }
 
@@ -296,7 +310,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (plan/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces') {
+            foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
           }
@@ -338,6 +352,9 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       MODE: ${{ inputs.mode }}
       TRIPLET: ${{ matrix.triplet }}
+      # plan/23: the Final Cut Pro agent's Mach service and the extension's app
+      # group are named under the team that signs the app.
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -401,6 +418,10 @@ jobs:
                 -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic")
           if [ "$MODE" != "artifacts" ]; then
             args+=(-DMV_SPARKLE_PUBLIC_ED_KEY="$MV_SPARKLE_PUBLIC_ED_KEY")
+          fi
+          # Both legs: the app compiles the agent's name on both architectures.
+          if [ -n "${APPLE_TEAM_ID:-}" ]; then
+            args+=(-DMV_FCP_TEAM_ID="$APPLE_TEAM_ID")
           fi
           cmake -S . -B build "${args[@]}"
 
@@ -541,12 +562,15 @@ jobs:
 
       # A job-local venv: the runner's Homebrew Python owns packages such as
       # cryptography that pip cannot uninstall, so pinned versions go here.
+      # requirements-export.txt: staging ai-faces re-exports the People embedder
+      # (face-export.py, torch); the stable add-on step needs it.
       - name: Python tools (dmgbuild, add-on packer)
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/pyenv"
-          "$RUNNER_TEMP/pyenv/bin/python" -m pip install --disable-pip-version-check \
-            -r tools/mac/requirements.txt -r tools/package/requirements.txt
+          reqs=(-r tools/mac/requirements.txt -r tools/package/requirements.txt)
+          if [ "$MODE" = "stable" ]; then reqs+=(-r tools/package/requirements-export.txt); fi
+          "$RUNNER_TEMP/pyenv/bin/python" -m pip install --disable-pip-version-check "${reqs[@]}"
           echo "$RUNNER_TEMP/pyenv/bin" >> "$GITHUB_PATH"
 
       - name: Disk image
@@ -645,7 +669,8 @@ jobs:
           MODE: ${{ inputs.mode }}
           # The jobs above pack the Import add-on; publish requires it (stable).
           MV_RELEASE_ADDONS: '1'
-          # ...and the Local search pack with its Sound and People pieces.
+          # ...and the Local search pack with its Sound and People pieces (and,
+          # on Windows, NVIDIA acceleration).
           MV_RELEASE_AI: '1'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}

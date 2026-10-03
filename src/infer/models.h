@@ -82,9 +82,16 @@ class clip_model final : public embedder {
                                                                 const clip_spec& spec,
                                                                 const session_options& options,
                                                                 provider_fault* fault = nullptr);
+  // The text tower and tokenizer only, on CPU: a reader that answers
+  // descriptions against stored vectors (the search agent, plan/23) and never
+  // embeds a picture. embed_images is status::unsupported_format. The vector
+  // is the same as open()'s, whose text tower runs on CPU too.
+  [[nodiscard]] static result<std::unique_ptr<clip_model>> open_text_only(const runtime& rt,
+                                                                          const clip_spec& spec,
+                                                                          const session_options& options);
   [[nodiscard]] std::uint32_t dim() const noexcept override { return spec_.dim; }
   [[nodiscard]] const std::string& spec_key() const noexcept override { return key_; }
-  [[nodiscard]] backend on() const noexcept override { return image_->on(); }
+  [[nodiscard]] backend on() const noexcept override { return image_ ? image_->on() : backend::cpu; }
   [[nodiscard]] expected embed_images(std::span<const rgb_view> images, std::vector<float>& out) override;
   [[nodiscard]] result<std::vector<float>> embed_text(std::string_view utf8) override;
   [[nodiscard]] result<std::vector<float>> embed_text_mean(std::span<const std::string> texts) override;
@@ -104,12 +111,28 @@ class clip_model final : public embedder {
 
 struct face_spec {
   std::string detector_file;   // YuNet (MIT), 640 x 640 input
-  std::string embedder_file;   // SFace (Apache-2.0), 112 x 112 aligned input
+  std::string embedder_file;   // 112 x 112 ArcFace-aligned input: SFace, or AdaFace (plan/17)
   std::uint32_t detector_side = 640;
   float min_confidence = 0.8f;
   float nms_iou = 0.3f;
   float min_face_fraction = 0.04f;  // faces smaller than this share of the short side are skipped
-  float same_person = 0.40f;        // cosine at or above: the same person (SFace ~0.363)
+  // The embedder's input: RGB (or BGR) 0..255, then (x - mean) * scale; SFace
+  // takes raw RGB, AdaFace (x - 127.5) / 127.5. Its output: `dim` floats.
+  float embed_mean = 0.0f;
+  float embed_scale = 1.0f;
+  bool embed_bgr = false;
+  std::uint32_t dim = 128;
+  // Pairwise-cosine thresholds of this embedder (plan/17 "People model"):
+  // same_person joins (SFace ~0.363 verification + slack); keep / keep_weak
+  // and margin are the refinement's; ambiguous is the online "two fit about
+  // as well" gap; merge_at is the idle merge's average linkage.
+  float same_person = 0.40f;
+  float keep = 0.30f;
+  float keep_weak = 0.34f;
+  float margin = 0.08f;
+  float ambiguous = 0.03f;
+  float merge_at = 0.42f;
+  std::string name = "SFace";
   std::string spec_key = "yunet-2023mar+sface-2021dec/pre1";
 };
 
@@ -123,18 +146,27 @@ struct face_box {
 
 class face_models {
  public:
+  // The detector runs on `options` (CPU). The embedder runs on `embedder`
+  // when given and it agrees with CPU on a fixed crop (cosine >= 0.99, the
+  // towers' Auto rule), else on `options`; on() says which.
   [[nodiscard]] static result<std::unique_ptr<face_models>> open(const runtime& rt,
                                                                  const face_spec& spec,
-                                                                 const session_options& options);
+                                                                 const session_options& options,
+                                                                 const session_options* embedder = nullptr);
   [[nodiscard]] result<std::vector<face_box>> detect(const rgb_view& img) const;
-  // 128 floats, L2-normalised: the mean of the aligned face and its mirror
-  // (flip averaging). `aligned`, if given, receives the 3 x 112 x 112 crop.
+  // spec().dim floats, L2-normalised: the mean of the aligned face and its
+  // mirror (flip averaging). `aligned`, if given, receives the 3 x 112 x 112
+  // crop (RGB 0..255, before the embedder's normalisation). `norm`, if given,
+  // receives the raw output's L2 norm (AdaFace's quality signal).
   [[nodiscard]] result<std::vector<float>> embed(const rgb_view& img, const face_box& face,
-                                                 std::vector<float>* aligned = nullptr) const;
+                                                 std::vector<float>* aligned = nullptr,
+                                                 float* norm = nullptr) const;
   [[nodiscard]] const face_spec& spec() const noexcept { return spec_; }
+  [[nodiscard]] backend on() const noexcept { return on_; }
 
  private:
   face_spec spec_;
+  backend on_ = backend::cpu;
   std::unique_ptr<session> detector_;
   std::unique_ptr<session> embedder_;
 };

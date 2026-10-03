@@ -14,9 +14,15 @@
 # export rows, the 0.1.14-0.1.18 launch crash (the update bar's ProgressBar),
 # and the Local search indexing pill.
 #
+# TextBox too, by another route: its default context flyout is a
+# TextCommandBarFlyout (a controls-library type), looked up when the box's
+# template changes, which cannot be created here. Measured the same day: a
+# TextBox added to the live tree crashes, on 0.1.19 and 0.1.20 alike; it was the
+# Local search panel's Ctrl+F crash. The editors built on it go with it.
+#
 # Use the plain stand-ins instead: IslandHost.JobBar / Shared\FlatBar.cs for a
 # progress bar, an Ellipse or text for activity, a Button with a Flyout for a
-# drop-down. Comment lines are not checked.
+# drop-down, Shared\FakeInput.cs for text entry. Comment lines are not checked.
 #
 # Exit 0 clean, 1 on a violation.
 
@@ -31,9 +37,10 @@ if (-not $SourceRoot) {
     $SourceRoot = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\src.managed'
 }
 
-# Measured crashing: ProgressBar, ProgressRing, DropDownButton. The rest are the
-# same family (styled in the controls library's generic.xaml).
+# Measured crashing: ProgressBar, ProgressRing, DropDownButton, TextBox. The rest
+# are the same family (styled in, or built on, the controls library).
 $banned = @(
+    'TextBox', 'PasswordBox', 'RichEditBox', 'AutoSuggestBox',
     'ProgressBar', 'ProgressRing', 'DropDownButton', 'SplitButton', 'ToggleSplitButton',
     'InfoBar', 'InfoBadge', 'NumberBox', 'Expander', 'TeachingTip', 'TabView',
     'TreeView', 'NavigationView', 'BreadcrumbBar', 'RatingControl', 'PipsPager',

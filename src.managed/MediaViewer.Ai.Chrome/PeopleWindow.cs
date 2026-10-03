@@ -48,13 +48,16 @@ internal sealed class PeopleWindow : Window
     private readonly ObservableCollection<FaceVm> _faceItems = new();
     private readonly GridView _peopleGrid;
     private readonly GridView _faceGrid;
-    private readonly TextBox _name;
+    private readonly MediaViewer.Shared.FakeInput _name;
     private readonly TextBlock _detailTitle;
     private readonly Button _reject;
     private readonly Button _split;
     private readonly Button _photos;
     private readonly Button _refine;
     private bool _refining;
+    // "Merge duplicates" (plan/17): the whole library, on request.
+    private readonly Button _dedupe;
+    private bool _deduping;
     // Buttons with a Flyout, not DropDownButtons: that control has no default
     // style in this island host and fail-fasts when it enters the tree.
     private readonly Button _merge;
@@ -71,8 +74,19 @@ internal sealed class PeopleWindow : Window
     private readonly Button _scopeButton;
     private readonly TextBlock _scopeFolder;
     private readonly TextBlock _empty;
+    // "Re-analyse faces" (plan/17 "People model"): every photo and clip again
+    // with the pack's face model; the people carry over. Progress from status.
+    private readonly Button _reanalyse;
+    private readonly TextBlock _rerunText;
+    // FlatBar, not a WinUI ProgressBar: that fail-fasts in this island host
+    // (tools/check-winui-controls.ps1).
+    private readonly MediaViewer.Shared.FlatBar _rerunBar;
     private MvAiScope _scope = MvAiScope.Tree;
+    // Indexed by MvAiScope. Only the first two are choices (owner, 2026-10-03):
+    // a folder shows its own people, and "Everywhere" is what the button reads
+    // when no folder is open.
     private static readonly string[] ScopeNames = { "This folder", "+ Subfolders", "Everywhere" };
+    private const int ScopeChoices = 2;
     private static readonly string[] ScopeHelp =
     {
         "People with a face in the open folder only",
@@ -167,14 +181,13 @@ internal sealed class PeopleWindow : Window
         _faceGrid.SelectionChanged += (_, _) => UpdateButtons();
 
         _detailTitle = _look.Text("", 18, AddonColour.Title, wrap: false);
-        _name = new TextBox { PlaceholderText = "Add a name", FontFamily = _look.Font, FontSize = 16, MinWidth = 240 };
+        // Not a TextBox, which fail-fasts in this host (Shared\FakeInput.cs).
+        _name = new MediaViewer.Shared.FakeInput(_look.Input(16), "Add a name") { MinWidth = 240 };
         AutomationProperties.SetName(_name, "Name");
-        _name.KeyDown += (_, e) =>
+        _name.Submitted += () =>
         {
-            if (e.Key != VirtualKey.Enter) return;
             CommitName();
             _faceGrid.Focus(FocusState.Keyboard);
-            e.Handled = true;
         };
         _name.LostFocus += (_, _) => CommitName();
         _merge = new Button { Content = "Merge into…  ▾", Flyout = new MenuFlyout() };
@@ -186,6 +199,10 @@ internal sealed class PeopleWindow : Window
         _split = _look.Button("Split into new person", SplitSelected);
         _refine = _look.Button("Refine faces", RefinePerson);
         ToolTipService.SetToolTip(_refine, "Check every face against this person and move out the ones that don't match");
+        _dedupe = _look.Button("Merge duplicates", MergeDuplicates);
+        ToolTipService.SetToolTip(_dedupe,
+            "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.");
+        AutomationProperties.SetName(_dedupe, "Merge duplicate people");
 
         var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         head.Children.Add(_name);
@@ -216,7 +233,7 @@ internal sealed class PeopleWindow : Window
         leftHead.Children.Add(_look.Text("People", 20, AddonColour.Title));
         leftHead.Children.Add(_look.Text("Found on this computer only. Face data is never shared, and can be deleted in Settings.", 12));
         var scopeMenu = new MenuFlyout();
-        for (int i = 0; i < ScopeNames.Length; ++i)
+        for (int i = 0; i < ScopeChoices; ++i)
         {
             var scope = (MvAiScope)i;
             var item = new ToggleMenuFlyoutItem { Text = ScopeNames[i], IsChecked = scope == _scope };
@@ -250,6 +267,9 @@ internal sealed class PeopleWindow : Window
         scopeRow.Children.Add(_scopeButton);
         scopeRow.Children.Add(_scopeFolder);
         leftHead.Children.Add(scopeRow);
+        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        tools.Children.Add(_dedupe);
+        leftHead.Children.Add(tools);
         _hint = _look.Text("Double-click a person to see their photos. The same person twice? Drag one onto the other, or Ctrl-click several and merge them.", 12);
         leftHead.Children.Add(_hint);
         _empty = _look.Text("", 12);
@@ -276,6 +296,20 @@ internal sealed class PeopleWindow : Window
         _note = _look.Text("", 12, AddonColour.Title);
         _note.Visibility = Visibility.Collapsed;
         leftHead.Children.Add(_note);
+        _reanalyse = _look.Button("Re-analyse faces", Reanalyse);
+        ToolTipService.SetToolTip(_reanalyse,
+            "Look at every photo and video again, then file the faces into the people you have. Names, merges and splits are kept.");
+        _rerunText = _look.Text("", 12, wrap: false);
+        _rerunText.VerticalAlignment = VerticalAlignment.Center;
+        _rerunBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
+        _rerunBar.Root.Width = 160;
+        _rerunBar.Root.Visibility = Visibility.Collapsed;
+        _rerunBar.Root.VerticalAlignment = VerticalAlignment.Center;
+        var rerunRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        rerunRow.Children.Add(_reanalyse);
+        rerunRow.Children.Add(_rerunBar.Root);
+        rerunRow.Children.Add(_rerunText);
+        leftHead.Children.Add(rerunRow);
         left.Children.Add(leftHead);
         Grid.SetRow(_peopleGrid, 1);
         left.Children.Add(_peopleGrid);
@@ -290,6 +324,37 @@ internal sealed class PeopleWindow : Window
         Content = root;
         UpdateButtons();
         UpdateScope();
+        UpdateRerun();
+        _chrome.StatusChanged += UpdateRerun;
+        Closed += (_, _) => _chrome.StatusChanged -= UpdateRerun;
+    }
+
+    // ---- re-analysing ------------------------------------------------------------------
+
+    private void Reanalyse()
+    {
+        try { _api.PeopleReanalyse(); }
+        catch (MediaViewerException)
+        {
+            ShowNote("Faces could not be re-analysed. Try again.");
+            return;
+        }
+        _chrome.RequestStatus();
+    }
+
+    private void UpdateRerun()
+    {
+        MvAiStatus s = _chrome.Status;
+        bool settling = (s.Flags & MvAiStatus.FlagPeopleSettling) != 0;
+        bool running = (s.Flags & MvAiStatus.FlagPeopleRerun) != 0;
+        _reanalyse.Visibility = running || settling ? Visibility.Collapsed : Visibility.Visible;
+        _rerunBar.Root.Visibility = running || settling ? Visibility.Visible : Visibility.Collapsed;
+        _rerunBar.IsIndeterminate = settling || s.PeopleScanTotal == 0;
+        _rerunBar.Value = s.PeopleScanTotal == 0 ? 0 : (double)s.PeopleScanDone / s.PeopleScanTotal;
+        string model = s.PeopleModelText;
+        _rerunText.Text = settling ? "Filing faces into people…"
+            : running ? $"Re-analysing faces… {s.PeopleScanDone:N0} of {s.PeopleScanTotal:N0}"
+            : model.Length > 0 ? $"Faces are found with {model}." : "";
     }
 
     // ---- the open folder -------------------------------------------------------------
@@ -297,6 +362,8 @@ internal sealed class PeopleWindow : Window
     /// <summary>The viewer opened another folder: the grid follows it.</summary>
     internal void OnFolderChanged()
     {
+        // A folder is open: its people, never everyone.
+        if (!string.IsNullOrEmpty(_chrome.Folder) && _scope == MvAiScope.All) _scope = MvAiScope.Tree;
         UpdateScope();
         Refresh();
     }
@@ -309,7 +376,7 @@ internal sealed class PeopleWindow : Window
         Refresh();
     }
 
-    /// <summary>The pack's scope for the grid: none when no folder is open or Everywhere is chosen.</summary>
+    /// <summary>The pack's scope for the grid: none when no folder is open.</summary>
     private string? ScopeDir => _scope == MvAiScope.All ? null : _chrome.Folder;
 
     private static string FolderName(string? dir)
@@ -343,8 +410,8 @@ internal sealed class PeopleWindow : Window
         _empty.Text = ScopeDir is null
             ? "No people yet. Faces are grouped as your folders are indexed."
             : _scope == MvAiScope.Folder
-                ? $"Nobody in {FolderName(folder)} yet. Faces are grouped as the folder is indexed; Everywhere shows every person found."
-                : $"Nobody in {FolderName(folder)} or its subfolders yet. Faces are grouped as the folder is indexed; Everywhere shows every person found.";
+                ? $"Nobody in {FolderName(folder)} yet. Faces are grouped as the folder is indexed; everyone found shows when no folder is open."
+                : $"Nobody in {FolderName(folder)} or its subfolders yet. Faces are grouped as the folder is indexed; everyone found shows when no folder is open.";
         _empty.Visibility = Visibility.Visible;
     }
 
@@ -472,7 +539,7 @@ internal sealed class PeopleWindow : Window
         _person = p;
         _detail.Visibility = Visibility.Visible;
         _detailTitle.Text = p.Faces == 1 ? $"{p.Label} · 1 photo" : $"{p.Label} · {p.Faces:N0} photos";
-        _name.Text = p.Name;
+        _name.SetText(p.Name);
         _faceItems.Clear();
         UpdateButtons();
         ulong id = p.Id;
@@ -723,6 +790,37 @@ internal sealed class PeopleWindow : Window
         });
     }
 
+    /// <summary>
+    /// "Merge duplicates": the pack re-checks every face and merges people who
+    /// are the same person (plan/17 "Merge duplicates"). Only ever on request.
+    /// </summary>
+    private void MergeDuplicates()
+    {
+        if (_deduping) return;
+        _deduping = true;
+        _dedupe.IsEnabled = false;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            (uint Merged, uint Moved)? result = null;
+            try { result = api.PeopleDedupe(); }
+            catch (MediaViewerException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _deduping = false;
+                _dedupe.IsEnabled = true;
+                ShowNote(result switch
+                {
+                    null => "Couldn't check for duplicates. Try again.",
+                    (0, 0) => "No duplicates found, and every face matches.",
+                    var (m, f) => (m == 1 ? "1 person" : $"{m} people") + " merged, " + (f == 1 ? "1 face" : $"{f} faces") + " moved.",
+                });
+                Refresh();
+                if (_person is not null) ShowPerson(_person, focusFaces: false);
+            });
+        });
+    }
+
     private void FillMergeMenu()
     {
         var menu = (MenuFlyout)_merge.Flyout;
@@ -832,7 +930,7 @@ internal sealed class PeopleWindow : Window
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
         object? focused = FocusManager.GetFocusedElement(Content.XamlRoot);
-        if (focused is TextBox) return;
+        if (focused is MediaViewer.Shared.FakeInput) return;
         bool inFaces = focused is GridViewItem item && ReferenceEquals(ItemsControl.ItemsControlFromItemContainer(item), _faceGrid);
         switch (e.Key)
         {

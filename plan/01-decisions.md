@@ -250,6 +250,12 @@ WebM, AVI, TS — H.264, HEVC, VP9, AV1, MPEG-2.
 AVIF stays in v1 only because dav1d already ships for AV1 video, so it is nearly free. Everything
 else waits.
 
+**Amended 2026-09-29 (owner), Mac only: Apple ProRes** (422 and 4444, in MOV). Final Cut Pro
+exports ProRes by default and hands the file to the default viewer, and Apple silicon decodes it
+in hardware (VideoToolbox), so on the Mac it costs no bundled decoder and no CPU. Windows keeps
+this list: there it would be software decode, which is not measured to hold 4K pacing.
+[12-decision-log.md](12-decision-log.md) has the reason and the numbers.
+
 **v1.1+:** JPEG XL, OpenEXR, Radiance HDR, PSD, SVG, DDS/KTX2, JPEG 2000, QOI, VVC, BRAW. These
 are collector behaviour. Adding one is a file and a registry line
 ([04-image-pipeline.md](04-image-pipeline.md)) — that's the point of the decoder registry, and it

@@ -216,8 +216,8 @@ internal sealed partial class ManagePanel
         _roots = new StackPanel { Spacing = 6 };
         Root.Children.Add(_roots);
         var add = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        add.Children.Add(_look.Button("Add a folder…", () => _ = AddFolder(false)));
-        add.Children.Add(_look.Button("Add a folder and its subfolders…", () => _ = AddFolder(true)));
+        // A folder is always indexed with its subfolders (owner 2026-10-03).
+        add.Children.Add(_look.Button("Add a folder…", () => _ = AddFolder()));
         Root.Children.Add(add);
 
         _indexRow = new StackPanel { Spacing = 8 };
@@ -371,6 +371,10 @@ internal sealed partial class ManagePanel
         {
             _audioReady = audio;
             ShowVideoIndex();
+            // Each folder's "Videos:" menu too: built with the readiness of its
+            // day, it kept Sound and Both off until the folder list happened to
+            // rebuild (the Mac's per-folder menu follows audioReady at once).
+            RefreshRoots();
         }
         RefreshIndexRow(s);
         uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
@@ -394,7 +398,11 @@ internal sealed partial class ManagePanel
             _videoIndex[i].IsEnabled = media == MvAiMedia.Pictures || audio;
             _videoIndex[i].IsChecked = media == _videoIndexValue;
         }
-        _videoIndexHint.Text = audio ? "" : "Install Audio above to index sounds and speech.";
+        // Installed but not yet picked up by the pack: say so, not "install".
+        _videoIndexHint.Text = audio ? ""
+            : _chrome.Host.IsPieceInstalled("ai-audio")
+                ? "Audio is loading. Sound and Both turn on when it is ready."
+                : "Install Audio above to index sounds and speech.";
         _videoIndexHint.Visibility = audio ? Visibility.Collapsed : Visibility.Visible;
     }
 
@@ -604,7 +612,7 @@ internal sealed partial class ManagePanel
         _chrome.ReadStatus();
     }
 
-    private async Task AddFolder(bool recursive)
+    private async Task AddFolder()
     {
         var picker = new FolderPicker();
         picker.FileTypeFilter.Add("*");
@@ -616,7 +624,7 @@ internal sealed partial class ManagePanel
             return;
         }
         if (folder is null) return;
-        RootCall(() => _api.IndexFolder(folder.Path, recursive));
+        RootCall(() => _api.IndexFolder(folder.Path, recursive: true));
     }
 
     // ---- people -----------------------------------------------------------------------

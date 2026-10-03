@@ -38,6 +38,7 @@
 #include "addons/ai/index_db.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
+#include "addons/ai/transfer.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
 #include "infer/audio_models.h"
@@ -77,6 +78,15 @@ class face_analyzer {
   [[nodiscard]] virtual const std::string& spec_key() const noexcept = 0;
   [[nodiscard]] virtual float same_person() const noexcept = 0;
   [[nodiscard]] virtual std::uint32_t dim() const noexcept = 0;
+  // The embedder's thresholds (model.json; plan/17 "People model"). The
+  // default is SFace's with this model's same_person.
+  [[nodiscard]] virtual face_tuning tuning() const noexcept {
+    face_tuning t;
+    t.same_person = same_person();
+    return t;
+  }
+  // "AdaFace IR-50": for the status line and Settings.
+  [[nodiscard]] virtual std::string name() const { return spec_key(); }
 };
 
 // Audio (plan/17 "Audio", 2026-09-27): what a clip sounds like, in the same
@@ -132,7 +142,8 @@ struct engine_deps {
   // provider against CPU and falls back (plan/17 "Runtime").
   std::function<result<loaded_clip>(std::uint32_t quality, std::uint32_t compute)> open_clip;
   // Null when the ai-faces piece is not installed.
-  std::function<result<std::unique_ptr<face_analyzer>>()> open_faces;
+  // The embedder on a compute choice (mv_ai_compute), self-tested against CPU.
+  std::function<result<std::unique_ptr<face_analyzer>>(std::uint32_t compute)> open_faces;
   // Audio: an error when the ai-audio piece is not installed.
   std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
@@ -152,6 +163,18 @@ struct engine_deps {
   // with nothing cached yet (Core ML's first compile: minutes). Cheap: a look
   // at the cache folder, after `prepare`. Null or false: an ordinary load.
   std::function<bool(std::uint32_t quality, std::uint32_t compute)> first_compile;
+
+  // ---- a reader (engine_options::read_only; the search agent, plan/23) ----
+  // A tower's index key ("clip-vit-b32/fp16/pre1") without opening it.
+  std::function<std::string(std::uint32_t quality)> clip_spec_key;
+  // The text tower and tokenizer alone, on CPU: queries against stored
+  // vectors, never a picture embedded.
+  std::function<result<loaded_clip>(std::uint32_t quality)> open_clip_text;
+  // CLAP's text tower alone; an error when the ai-audio piece is not installed.
+  std::function<result<loaded_sound>()> open_sound_text;
+  // The transcript spec Whisper would write at this quality, without opening
+  // it; "" when the ai-audio piece is not installed.
+  std::function<std::string(std::uint32_t quality)> speech_spec_key;
   // The system Photos library (issue #72): null uses make_photos_source()
   // (PhotoKit on macOS, none elsewhere). The tests pass a fake.
   std::function<std::unique_ptr<photos_source>()> photos;
@@ -159,6 +182,20 @@ struct engine_deps {
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
 };
+
+// How an engine runs. The app's engine indexes and owns the index; a reader
+// is a second process's view of the same files (the search agent, plan/23):
+// index.db and faces.db opened read-only, the text towers only, no scans, no
+// workers, no settings written. It answers search_text, search_similar on an
+// indexed still or moment (its stored vector: nothing is decoded or
+// embedded), search_person, and the result calls; every call that would
+// change the index or the settings returns status::unsupported_format. It
+// catches up with what the app commits (index_db::data_version) at most
+// every kReaderCatchUpSeconds, appending new frames rather than reloading.
+struct engine_options {
+  bool read_only = false;
+};
+inline constexpr double kReaderCatchUpSeconds = 5.0;
 
 struct settings {
   std::uint32_t compute = MV_AI_COMPUTE_AUTO;
@@ -183,13 +220,14 @@ struct settings {
 
 class engine {
  public:
-  engine(const mv_host_api* api, engine_deps deps);
+  engine(const mv_host_api* api, engine_deps deps, engine_options options = {});
   ~engine();
   engine(const engine&) = delete;
   engine& operator=(const engine&) = delete;
 
   [[nodiscard]] expected start();
   void stop() noexcept;
+  [[nodiscard]] bool read_only() const noexcept { return options_.read_only; }
 
   // ---- state and settings ------------------------------------------------------
   void status(mv_ai_status& out) const;
@@ -232,6 +270,8 @@ class engine {
       std::uint64_t id, const std::string& path) const;
   void search_release(std::uint64_t id);
   [[nodiscard]] result<std::string> result_snippet(std::uint64_t id, std::uint32_t index) const;
+  // The clip's length as the index recorded it (0: a still, or not known). [worker-thread]
+  [[nodiscard]] result<std::int64_t> result_duration(std::uint64_t id, std::uint32_t index) const;
   // Named people for the word being typed (query.h suggest):
   // [{"id":1,"name":"Tristan","completion":"Tristan "}]  [worker-thread]
   [[nodiscard]] std::string suggest_json(const std::string& query);
@@ -250,6 +290,18 @@ class engine {
   // "Refine": files this person's misplaced faces out (plan/17 "People
   // refinement"); how many left them. Only ever on request. [worker-thread]
   [[nodiscard]] result<std::uint32_t> person_refine(std::int64_t person);
+  // "Merge duplicates" (plan/17 "Merge duplicates"): person_refine's check
+  // over every face at once, then people whose faces vouch for each other
+  // become one. Only ever on request. [worker-thread]
+  struct dedupe_result {
+    std::uint32_t merged = 0;  // people merged away
+    std::uint32_t moved = 0;   // faces that moved, left, joined or regrouped
+  };
+  [[nodiscard]] result<dedupe_result> people_dedupe();
+
+  // "Re-analyse faces" (plan/17 "People model"): every asset through the
+  // People pass again, then one settle. [no-block]
+  [[nodiscard]] expected people_reanalyse();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
   // ---- sharing an index (plan/17 "Sharing an index") ---------------------------
@@ -306,6 +358,14 @@ class engine {
 
   // threads
   void control_loop();
+  void reader_loop();  // a reader's control thread: load, then catch up
+  // A reader: the answering tower's text half, its vectors, People's names and
+  // the audio index, all read-only. False when there is nothing to answer
+  // from (no index yet, or the pack lacks the model that wrote it).
+  bool load_reader();
+  // A reader: what the app committed since the last look.
+  void catch_up_reader();
+  void load_assets();
   void worker_loop(unsigned index);
   void search_loop();
   // work
@@ -376,6 +436,11 @@ class engine {
   };
   // With the opt-in on: `model` (opened when null) and its database.
   faces_parts open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model = nullptr);
+  // The end of a re-run: every asset analysed with this model, so the faces
+  // are filed into the people (a full refinement, no focus), then merged.
+  // The control thread, when indexing is idle.
+  void settle_people();
+  std::atomic<bool> settling_{false};
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends
@@ -436,6 +501,8 @@ class engine {
   };
   void run_transfer(transfer_job job);  // control thread
   [[nodiscard]] std::string run_export(const transfer_job& job, mv::status& st);
+  // An export's thumbnail: the viewer's cached one, else made now.
+  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w);
   [[nodiscard]] std::string run_import(const transfer_job& job, mv::status& st);
   // The picture specs a file's rows may land under here, and the Quality to
   // adopt (0 none) when this index is empty and the file's tower is carried.
@@ -461,6 +528,12 @@ class engine {
 
   host host_;
   engine_deps deps_;
+  engine_options options_;
+  // A reader's catch-up marks (reader_loop only).
+  std::int64_t reader_version_ = 0;
+  std::int64_t reader_frame_ = 0;  // the last picture frame id taken
+  std::int64_t reader_sound_ = 0;  // the last sound frame id taken
+  std::string reader_speech_spec_;
   // The Photos library (issue #72): the source, its root's id (0 none) and
   // whether it is readable now (read by the control thread each scan).
   std::unique_ptr<photos_source> photos_;

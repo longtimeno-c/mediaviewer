@@ -78,13 +78,13 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private Grid _root = null!;
     private Border _card = null!;
-    private TextBox _query = null!;
+    private MediaViewer.Shared.FakeInput _query = null!;
     private Border _similarChip = null!;
     private TextBlock _similarText = null!;
-    private readonly ToggleButton[] _scopeChips = new ToggleButton[3];
+    private readonly ToggleButton[] _scopeChips = new ToggleButton[2];
     private readonly ToggleButton[] _kindChips = new ToggleButton[3];
     private readonly ToggleButton[] _findChips = new ToggleButton[3];
-    private readonly string[] _scopeTips = new string[3];
+    private readonly string[] _scopeTips = new string[2];
     private bool _findAudio;  // the audio availability ShowFind last drew
     private StackPanel _findRow = null!;
     private TextBlock _count = null!;
@@ -112,7 +112,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private bool? _openWhenReady;
     private ulong _focusWhenReady;  // Enter in the query: enter the grid when this search lands
     private AiChrome.SimilarTo? _similar;
-    private MvAiScope _scope = MvAiScope.Folder;
+    private MvAiScope _scope = MvAiScope.Tree;
     private MvAiKinds _kinds = MvAiKinds.All;
     private MvAiKinds _find;  // MV_AI_FIND_* bits; none = all
     private bool _visible;
@@ -125,7 +125,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private ulong _lastRunFrames;
     private int _batch;
     private bool _indexOffered;
-    private bool? _startedIndexing;  // Index chosen in this showing (recursive?)
+    private bool _startedIndexing;  // Index chosen in this showing
 
     public event Action? Hidden;
 
@@ -217,19 +217,15 @@ internal sealed class SearchWindow : Window, IDisposable
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
-        _query = new TextBox
+        // The query card draws the box: a bare field. Not a TextBox, which
+        // fail-fasts in this host (Shared\FakeInput.cs): opening search crashed.
+        _query = new MediaViewer.Shared.FakeInput(_look.Input(22), "Describe a photo or a moment, or name someone", bare: true)
         {
-            FontFamily = _look.Font,
-            FontSize = 22,
-            PlaceholderText = "Describe a photo or a moment, or name someone",
-            BorderThickness = new Thickness(0),
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             Padding = new Thickness(8, 6, 8, 6),
             VerticalAlignment = VerticalAlignment.Center,
-            IsSpellCheckEnabled = false,
         };
         AutomationProperties.SetName(_query, "Search photos and videos");
-        _query.TextChanged += (_, _) => OnQueryChanged();
+        _query.Changed += OnQueryChanged;
         var glyph = _look.Text("⌕", 26, AddonColour.Body, wrap: false);
         glyph.VerticalAlignment = VerticalAlignment.Center;
         var queryRow = new Grid { ColumnSpacing = 8 };
@@ -270,18 +266,19 @@ internal sealed class SearchWindow : Window, IDisposable
         // that says how to get them: a disabled control shows no tooltip. High
         // contrast keeps the system's own toggle visuals.
         bool hc = HighContrast();
-        (string Name, string Tip)[] scopeNames =
+        // The open folder always takes in its subfolders (owner 2026-10-03): there
+        // is no folder-only scope.
+        (string Name, string Tip, MvAiScope Scope)[] scopeNames =
         {
-            ("This folder", "Search the open folder only."),
-            ("+ Subfolders", "Search the open folder and the folders inside it."),
-            ("Everywhere", "Search every folder in the index."),
+            ("Folder & subfolders", "Search the open folder and every folder inside it.", MvAiScope.Tree),
+            ("Everywhere", "Search every folder in the index.", MvAiScope.All),
         };
         var scopes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 2; ++i)
         {
-            int s = i;
+            MvAiScope sc = scopeNames[i].Scope;
             _scopeTips[i] = scopeNames[i].Tip;
-            _scopeChips[i] = Segment(scopeNames[i].Name, () => SetScope((MvAiScope)s), hc);
+            _scopeChips[i] = Segment(scopeNames[i].Name, () => SetScope(sc), hc);
             ToolTipService.SetToolTip(_scopeChips[i], scopeNames[i].Tip);
             scopes.Children.Add(_scopeChips[i]);
         }
@@ -499,7 +496,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _card = new Border { Child = body, Background = _look.Tint(AddonColour.Canvas, 110) };
         _root.Children.Add(_card);
         _root.PreviewKeyDown += OnPreviewKeyDown;
-        SetScope(MvAiScope.Folder, run: false);
+        SetScope(MvAiScope.Tree, run: false);
         SetKinds(MvAiKinds.All, run: false);
         return _root;
     }
@@ -784,7 +781,7 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (!_visible) return;
         _visible = false;
-        _startedIndexing = null;
+        _startedIndexing = false;
         _poll.Stop();
         _debounce.Stop();
         _look.PanelOut(_card, () =>
@@ -819,7 +816,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private void OnQueryChanged()
     {
         if (_settingText) return;
-        _startedIndexing = null;
+        _startedIndexing = false;
         if (_similar is not null && _query.Text.Length > 0) ClearSimilar(runQuery: false);
         _openWhenReady = null;
         _focusWhenReady = 0;
@@ -940,23 +937,21 @@ internal sealed class SearchWindow : Window, IDisposable
         bool changed = scope != _scope;
         _scope = scope;
         // Re-checked every time: a click on the chosen segment unchecks it.
-        for (int i = 0; i < 3; ++i) _scopeChips[i].IsChecked = i == (int)scope;
+        _scopeChips[0].IsChecked = scope == MvAiScope.Tree;
+        _scopeChips[1].IsChecked = scope == MvAiScope.All;
         if (run && changed) RunQuery(quiet: false);
     }
 
     private void UpdateScopeAvailability()
     {
-        // Without a folder the first two are dimmed, not disabled, so their
-        // tooltip can still say why; SetScope keeps the choice on Everywhere.
+        // Without a folder the first is dimmed, not disabled, so its tooltip
+        // can still say why; SetScope keeps the choice on Everywhere.
         bool folder = _chrome.Folder is not null;
         string name = folder ? System.IO.Path.GetFileName(_chrome.Folder!.TrimEnd('\\', '/')) : "";
-        for (int i = 0; i < 2; ++i)
-        {
-            SetAvailable(_scopeChips[i], folder);
-            ToolTipService.SetToolTip(_scopeChips[i], folder
-                ? $"{_scopeTips[i]} (“{name}”)"
-                : "Open a folder to search just that folder.");
-        }
+        SetAvailable(_scopeChips[0], folder);
+        ToolTipService.SetToolTip(_scopeChips[0], folder
+            ? $"{_scopeTips[0]} (“{name}”)"
+            : "Open a folder to search it and its subfolders.");
     }
 
     private void SetKinds(MvAiKinds kinds, bool run = true)
@@ -1147,7 +1142,7 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private void ShowStart()
     {
-        if (_startedIndexing is not null)
+        if (_startedIndexing)
         {
             ShowIndexing();
             return;
@@ -1166,7 +1161,7 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private void ShowNothing()
     {
-        if (_startedIndexing is not null && _similar is null)
+        if (_startedIndexing && _similar is null)
         {
             ShowIndexing();
             return;
@@ -1203,9 +1198,7 @@ internal sealed class SearchWindow : Window, IDisposable
             "Indexing runs in the background at low priority and pauses while you watch or pan: " +
             "you can close this panel and keep viewing. You can search as soon as the first files are done.", 14)));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center };
-        Button here = _look.Button("Index this folder", () => IndexFolder(false), accent: true);
-        buttons.Children.Add(here);
-        buttons.Children.Add(_look.Button("Index this folder and subfolders", () => IndexFolder(true)));
+        buttons.Children.Add(_look.Button("Index this folder and subfolders", IndexFolder, accent: true));
         _empty.Children.Add(buttons);
         _empty.Visibility = Visibility.Visible;
         FadeIn(_empty);
@@ -1250,11 +1243,11 @@ internal sealed class SearchWindow : Window, IDisposable
         DispatcherQueue.TryEnqueue(() => e.Opacity = 1);
     }
 
-    private void IndexFolder(bool recursive)
+    private void IndexFolder()
     {
         string? dir = _chrome.Folder;
         if (dir is null) return;
-        try { _api.IndexFolder(dir, recursive); }
+        try { _api.IndexFolder(dir, recursive: true); }
         catch (MediaViewerException)
         {
             ShowEmpty("This folder could not be added.", "Check that it is still there, then try again.");
@@ -1262,7 +1255,7 @@ internal sealed class SearchWindow : Window, IDisposable
         }
         _chrome.RefreshCoverage();
         _chrome.ReadStatus();
-        _startedIndexing = recursive;
+        _startedIndexing = true;
         ShowIndexing();
         FocusQuery();
         if (_query.Text.Trim().Length > 0) RunQuery(quiet: false);
@@ -1274,15 +1267,13 @@ internal sealed class SearchWindow : Window, IDisposable
     /// </summary>
     private void ShowIndexing()
     {
-        bool recursive = _startedIndexing ?? false;
         _indexOffered = false;
         _gridHost.Visibility = Visibility.Collapsed;
         _empty.Children.Clear();
         _count.Text = "";
         string name = _chrome.Folder is string f ? System.IO.Path.GetFileName(f.TrimEnd('\\', '/')) : "this folder";
-        _empty.Children.Add(Centre(_look.Text(recursive
-            ? $"Indexing “{name}” and its subfolders in the background"
-            : $"Indexing “{name}” in the background", 18, AddonColour.Title)));
+        _empty.Children.Add(Centre(_look.Text(
+            $"Indexing “{name}” and its subfolders in the background", 18, AddonColour.Title)));
         string q = _query.Text.Trim();
         _empty.Children.Add(Centre(_look.Text(
             "You can close this and carry on: indexing continues on its own, at low priority, and pauses " +

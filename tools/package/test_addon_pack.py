@@ -201,6 +201,24 @@ class AiPackTest(unittest.TestCase):
         self.assertEqual(m["chrome"], "")
         self.assertEqual(m["name"], "AI Faces")
 
+    def test_the_nvidia_piece_carries_only_onnx_runtime(self):
+        cuda = self.tmp / "ai-cuda"
+        cuda.mkdir()
+        for name in ("onnxruntime.dll", "onnxruntime_providers_shared.dll", "onnxruntime_providers_cuda.dll"):
+            (cuda / name).write_bytes(b"MZ" + os.urandom(512))
+        (cuda / "LICENSE").write_text("MIT License")
+        (cuda / "ThirdPartyNotices.txt").write_text("notices")
+        # The user's CUDA runtime is never picked up, even when it sits beside the build.
+        (cuda / "cudart64_13.dll").write_bytes(b"MZ")
+        m = self.pack("ai-cuda", cuda)
+        self.assertEqual(m["part_of"], "ai")
+        self.assertEqual(m["native"], "")
+        lic = {f["path"]: f["licence"] for f in m["files"]}
+        self.assertEqual(lic["onnxruntime_providers_cuda.dll"], "MIT")
+        self.assertEqual(lic["LICENSES/LICENSE"], "MIT")
+        self.assertIn("LICENSES/ThirdPartyNotices.txt", lic)
+        self.assertFalse(any(p.startswith("cud") for p in lic))
+
     def test_the_mac_pack_is_arm64_only(self):
         m = self.pack("ai-faces", self.faces, "macos")
         self.assertEqual(m["arch"], "arm64")

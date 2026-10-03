@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <unordered_map>
 
 #include "addons/import/naming.h"
 #include "addons/import/paths.h"
@@ -54,6 +55,15 @@ bool same_char(char a, char b) {
   return a == b;
 }
 
+// The same file named two ways: either separator, and on Windows either case.
+bool same_path(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!same_char(a[i], b[i])) return false;
+  }
+  return true;
+}
+
 // Whether `path` is `dir` or inside it.
 bool under(const std::string& dir, const std::string& path) {
   const std::string d = normalize_root(dir);
@@ -79,6 +89,91 @@ std::string rel_under(const std::string& root, const std::string& target) {
 
 // io/verified_copy.h's temporary names; the add-on does not link io, so the
 // rule is restated here and pinned by a test.
+// Find duplicates (kind 2): what one scan found, and what has happened to
+// each file since.
+struct dup_file {
+  std::string path;
+  std::int64_t mtime = 0;
+  const char* state = "kept";  // kept | queued | trashed | refused
+  const char* reason = "";     // refused: last_copy | changed | no_bin | failed
+};
+struct dup_group {
+  std::uint64_t size = 0;
+  digest hash{};
+  std::vector<dup_file> files;
+};
+struct dup_scan {
+  std::string folder;
+  std::uint64_t files = 0;   // non-empty files walked
+  std::uint64_t bytes = 0;
+  std::uint32_t compared = 0;  // files whose size another file shares
+  std::uint32_t hashed = 0;    // of those, read now (the rest were remembered)
+  std::vector<dup_group> groups;
+  std::vector<std::string> unreadable;
+  bool walk_failed = false;
+  bool cancelled = false;
+  bool can_trash = false;
+};
+
+// The summary: counts, then (with `groups`) every group, largest waste
+// first. import.db keeps the counts only; the groups are for this session
+// and the report file.
+std::string dup_json(std::uint64_t job_id, const dup_scan& d, std::int64_t elapsed_ms,
+                     bool groups) {
+  std::uint64_t dup_files = 0;
+  std::uint64_t wasted = 0;
+  for (const dup_group& g : d.groups) {
+    std::uint64_t alive = 0;
+    for (const dup_file& f : g.files) alive += std::strcmp(f.state, "trashed") != 0 ? 1 : 0;
+    if (alive > 1) {
+      dup_files += alive - 1;
+      wasted += g.size * (alive - 1);
+    }
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("job").integer(static_cast<std::int64_t>(job_id));
+  w.key("kind").string("duplicates");
+  w.key("folder").string(d.folder);
+  w.key("files").integer(static_cast<std::int64_t>(d.files));
+  w.key("bytes").integer(static_cast<std::int64_t>(d.bytes));
+  w.key("compared").integer(d.compared);
+  w.key("hashed").integer(d.hashed);
+  w.key("group_count").integer(static_cast<std::int64_t>(d.groups.size()));
+  w.key("duplicate_files").integer(static_cast<std::int64_t>(dup_files));
+  w.key("wasted_bytes").integer(static_cast<std::int64_t>(wasted));
+  if (groups) {
+    w.key("groups").begin_array();
+    for (const dup_group& g : d.groups) {
+      w.begin_object();
+      w.key("size").integer(static_cast<std::int64_t>(g.size));
+      w.key("files").begin_array();
+      for (const dup_file& f : g.files) {
+        w.begin_object();
+        w.key("path").string(f.path);
+        w.key("mtime").integer(f.mtime);
+        w.key("state").string(f.state);
+        w.key("reason").string(f.reason);
+        w.end_object();
+      }
+      w.end_array();
+      w.end_object();
+    }
+    w.end_array();
+    w.key("unreadable").begin_array();
+    for (const std::string& p : d.unreadable) w.string(p);
+    w.end_array();
+  } else {
+    w.key("unreadable_count").integer(static_cast<std::int64_t>(d.unreadable.size()));
+  }
+  w.key("walk_failed").boolean(d.walk_failed);
+  w.key("cancelled").boolean(d.cancelled);
+  w.key("can_trash").boolean(d.can_trash);
+  w.key("elapsed_ms").integer(elapsed_ms);
+  w.end_object();
+  return w.take();
+}
+
 std::string temp_name(const std::string& final_path, int attempt) {
   return final_path + ".mvtmp" + (attempt > 0 ? std::to_string(attempt + 1) : std::string());
 }
@@ -105,7 +200,7 @@ struct engine::plan_slot {
 
 struct engine::job {
   std::uint64_t id = 0;
-  std::uint32_t kind = 0;  // 0 import, 1 verify-a-folder
+  std::uint32_t kind = 0;  // 0 import, 1 verify-a-folder, 2 find duplicates
   std::atomic<std::uint32_t> state{MV_IMPORT_JOB_QUEUED};
   std::atomic<bool> cancel{false};
   std::atomic<bool> paused{false};
@@ -137,6 +232,12 @@ struct engine::job {
   std::string verify_json;
   std::string report;
   std::string summary;
+  dup_scan dups;  // kind 2
+
+  // kind 2: files waiting for the bin, drained in order by trash_loop on
+  // `thread` once the scan has finished. Guarded by engine::mutex_.
+  std::deque<std::string> trash_queue;
+  bool trash_busy = false;
 };
 
 engine::engine(const mv_host_api* api) : host_(api) {}
@@ -235,7 +336,7 @@ void engine::wait_idle() {
       std::unique_lock lock(mutex_);
       cv_.wait(lock, [this] { return stopping_ || (tasks_.empty() && !busy_); });
       for (auto& [id, j] : jobs_) {
-        if (j->thread.joinable() && !j->finished) any_running = true;
+        if ((j->thread.joinable() && !j->finished) || j->trash_busy) any_running = true;
       }
       if (!any_running && tasks_.empty() && !busy_) return;
     }
@@ -692,6 +793,8 @@ void engine::launch(const std::shared_ptr<job>& j) {
   j->thread = std::thread([this, j] {
     if (j->kind == 1) {
       run_verify(j, j->source_root);
+    } else if (j->kind == 2) {
+      run_duplicates(j, j->source_root);
     } else {
       run_job(j);
     }
@@ -1071,6 +1174,7 @@ void engine::run_job(const std::shared_ptr<job>& j) {
 std::string engine::make_summary(job& j, std::uint32_t state) {
   std::lock_guard lock(j.m);
   if (j.kind == 1) return j.verify_json;
+  if (j.kind == 2) return dup_json(j.id, j.dups, j.prog.elapsed_ms, true);
   std::uint32_t copied_units = 0;
   std::uint32_t copied_files = 0;
   std::uint64_t copied_bytes = 0;
@@ -1166,6 +1270,15 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
       if (j->kind == 1) {
         text += j->verify_json + "\n";
       }
+      if (j->kind == 2) {
+        text += "Find duplicates in " + j->dups.folder + "\n";
+        for (const dup_group& g : j->dups.groups) {
+          text += "\n" + std::to_string(g.files.size()) + " identical files, " +
+                  std::to_string(g.size) + " bytes each:\n";
+          for (const dup_file& f : g.files) text += "  " + f.path + "\n";
+        }
+        for (const std::string& p : j->dups.unreadable) text += "unreadable  " + p + "\n";
+      }
       for (const journal_row& r : j->rows) {
         const char* word = r.state == member_state::done      ? "copied   "
                            : r.state == member_state::skipped ? "skipped  "
@@ -1179,7 +1292,7 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
     }
     for (int n = 0; n < 100; ++n) {
       const std::string path = join_native(
-          dir, "import-" + std::to_string(j->id) + (n ? "-" + std::to_string(n) : "") + ".txt");
+          dir, std::string(j->kind == 2 ? "duplicates-" : "import-") + std::to_string(j->id) + (n ? "-" + std::to_string(n) : "") + ".txt");
       if (host_.write_new_file(path, text)) {
         std::lock_guard lock(j->m);
         j->report = path;
@@ -1192,13 +1305,20 @@ void engine::finish_job(const std::shared_ptr<job>& j, std::uint32_t state) {
     std::lock_guard lock(j->m);
     j->summary = summary;
   }
-  if (j->persisted) idx_->set_job_state(j->id, state, now_unix(), summary);
+  std::string stored = summary;
+  if (j->kind == 2) {
+    std::lock_guard lock(j->m);
+    stored = dup_json(j->id, j->dups, j->prog.elapsed_ms, false);
+  }
+  if (j->persisted) idx_->set_job_state(j->id, state, now_unix(), stored);
   {
     std::lock_guard lock(mutex_);
     j->finished = true;
   }
-  host_.post(j->kind == 1 ? MV_ADDON_EVENT_VERIFY_DONE : MV_ADDON_EVENT_JOB_DONE, MV_OK, j->id,
-             state);
+  host_.post(j->kind == 1   ? MV_ADDON_EVENT_VERIFY_DONE
+             : j->kind == 2 ? MV_ADDON_EVENT_DUPLICATES_DONE
+                            : MV_ADDON_EVENT_JOB_DONE,
+             MV_OK, j->id, state);
   cv_.notify_all();
 }
 
@@ -1496,7 +1616,7 @@ std::string engine::history_json() {
   for (const job_row& r : idx_->jobs(500)) {
     w.begin_object();
     w.key("job").integer(static_cast<std::int64_t>(r.id));
-    w.key("kind").string(r.kind == 1 ? "verify" : "import");
+    w.key("kind").string(r.kind == 1 ? "verify" : r.kind == 2 ? "duplicates" : "import");
     w.key("created").integer(r.created);
     w.key("finished").integer(r.finished);
     w.key("state").string(state_word(r.state));
@@ -1624,6 +1744,327 @@ void engine::run_verify(const std::shared_ptr<job>& j, const std::string& dir) {
   source_lock.unlock();
   finish_job(j, j->cancel ? MV_IMPORT_JOB_CANCELLED
                           : (bad.empty() ? MV_IMPORT_JOB_DONE : MV_IMPORT_JOB_FAILED));
+}
+
+// ---------------------------------------------------------------------------
+// Find duplicates (PR 54)
+//
+// Size first, then BLAKE3-256 where a size repeats; never by name (the same
+// test Import uses, plan/18 "The engine"). Every file type, empty files
+// aside. Hashes are remembered by path, size and mtime in import.db, so a
+// second scan of a folder reads only what changed. Nothing is removed by the
+// scan; trash_duplicate moves one file the user picked to the bin, and only
+// while another copy with the same bytes is still there.
+
+namespace {
+// Deep enough for any real photo tree; a link is never followed (walk_files).
+constexpr int kDuplicateDepth = 64;
+}  // namespace
+
+result<std::uint64_t> engine::find_duplicates(const std::string& dir) {
+  if (dir.empty()) return err(status::invalid_arg);
+  auto j = make_job(2, preset{});
+  j->source_root = normalize_root(dir);
+  j->label = "duplicates";
+  j->device_key = "dup:" + j->source_root;
+  post_task([this, j] {
+    if (auto v = host_.volume_of(j->source_root); v && v->device_key[0]) j->device_key = v->device_key;
+    persist(j);
+    launch(j);
+  });
+  return j->id;
+}
+
+void engine::run_duplicates(const std::shared_ptr<job>& j, const std::string& dir) {
+  // One reader per physical device, as for an import: the scan never
+  // competes with a copy from the same disk.
+  std::unique_lock source_lock(device_lock(j->device_key));
+  {
+    std::lock_guard lock(j->m);
+    j->started = clock_type::now();
+    j->dups = dup_scan{};
+    j->dups.folder = dir;
+  }
+  j->state = MV_IMPORT_JOB_RUNNING;
+  idx_->set_job_state(j->id, MV_IMPORT_JOB_RUNNING, 0, "");
+
+  copy_callbacks cb;
+  cb.cancelled = [&j] { return j->cancel.load(); };
+  cb.yield = [this, &j] {
+    while (!j->cancel.load() && (j->paused.load() || (!j->fast.load() && host_.should_yield()))) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  };
+
+  // 1. The walk: sizes only, no reads.
+  struct entry {
+    std::string path;
+    std::uint64_t size;
+    std::int64_t mtime;
+  };
+  std::vector<entry> files;
+  std::uint64_t bytes = 0;
+  auto last_post = clock_type::now();
+  const auto walked = host_.walk(dir, kDuplicateDepth, [&](const mv_addon_file_entry& e) {
+    if (e.size > 0) {
+      files.push_back({e.path_utf8, e.size, e.mtime_unix});
+      bytes += e.size;
+    }
+    if (const auto now = clock_type::now(); now - last_post > std::chrono::milliseconds(250)) {
+      last_post = now;
+      {
+        std::lock_guard lock(j->m);
+        j->prog.units_total = static_cast<std::uint32_t>(files.size());
+        std::snprintf(j->prog.current_name_utf8, sizeof j->prog.current_name_utf8, "%s",
+                      e.relative_utf8);
+      }
+      host_.post(MV_ADDON_EVENT_JOB_PROGRESS, MV_OK, j->id, 0);
+    }
+    return !j->cancel.load();
+  });
+
+  // 2. Only a size two files share can hide a duplicate.
+  std::unordered_map<std::uint64_t, std::uint32_t> per_size;
+  for (const entry& f : files) ++per_size[f.size];
+  std::vector<std::size_t> candidates;
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    if (per_size[files[i].size] > 1) candidates.push_back(i);
+  }
+
+  // 3. Hashes: remembered where size and mtime still match, read otherwise.
+  const std::string prefix = join_native(dir, "");
+  std::unordered_map<std::string, seen_row> seen;
+  for (seen_row& r : idx_->seen_under(prefix)) seen.emplace(r.path, std::move(r));
+  std::vector<const digest*> known(candidates.size(), nullptr);
+  std::uint64_t to_read = 0;
+  for (std::size_t c = 0; c < candidates.size(); ++c) {
+    const entry& f = files[candidates[c]];
+    const auto it = seen.find(f.path);
+    if (it != seen.end() && it->second.size == f.size && it->second.mtime == f.mtime) {
+      known[c] = &it->second.hash;
+    } else {
+      to_read += f.size;
+    }
+  }
+  {
+    std::lock_guard lock(j->m);
+    j->prog.units_total = static_cast<std::uint32_t>(candidates.size());
+    j->prog.units_done = 0;
+    j->prog.bytes_total = to_read;
+    j->prog.current_name_utf8[0] = '\0';
+  }
+
+  std::vector<seen_row> store;
+  store.reserve(candidates.size());
+  std::vector<std::string> unreadable;
+  std::uint32_t hashed = 0;
+  for (std::size_t c = 0; c < candidates.size() && !j->cancel; ++c) {
+    const entry& f = files[candidates[c]];
+    digest h{};
+    if (known[c]) {
+      h = *known[c];
+    } else {
+      {
+        std::lock_guard lock(j->m);
+        std::snprintf(j->prog.current_name_utf8, sizeof j->prog.current_name_utf8, "%s",
+                      f.path.c_str() + std::min(prefix.size(), f.path.size()));
+      }
+      // Cached reads: this is a comparison, not a check for rot on the disk.
+      auto r = host_.hash(f.path, false, cb);
+      progress_tick(*j, f.size);
+      if (!r) {
+        if (r.error() == status::cancelled) break;
+        unreadable.push_back(f.path);
+        continue;
+      }
+      h = *r;
+      ++hashed;
+    }
+    store.push_back({f.path, f.size, f.mtime, h});
+    std::lock_guard lock(j->m);
+    ++j->prog.units_done;
+  }
+  const bool cancelled = j->cancel.load();
+
+  // 4. Groups: identical size and hash, two files or more.
+  std::map<std::pair<std::uint64_t, digest>, std::vector<std::size_t>> by_content;
+  for (std::size_t i = 0; i < store.size(); ++i) {
+    by_content[{store[i].size, store[i].hash}].push_back(i);
+  }
+  std::vector<dup_group> groups;
+  for (auto& [key, members] : by_content) {
+    if (members.size() < 2) continue;
+    dup_group g;
+    g.size = key.first;
+    g.hash = key.second;
+    for (std::size_t i : members) g.files.push_back({store[i].path, store[i].mtime});
+    std::sort(g.files.begin(), g.files.end(),
+              [](const dup_file& a, const dup_file& b) { return a.path < b.path; });
+    groups.push_back(std::move(g));
+  }
+  std::sort(groups.begin(), groups.end(), [](const dup_group& a, const dup_group& b) {
+    const std::uint64_t wa = a.size * (a.files.size() - 1);
+    const std::uint64_t wb = b.size * (b.files.size() - 1);
+    if (wa != wb) return wa > wb;
+    return a.files.front().path < b.files.front().path;
+  });
+
+  // 5. Remember the hashes. A finished walk also forgets files that have
+  // gone; a cancelled one only adds what it read.
+  const bool complete = walked.has_value() && !cancelled;
+  idx_->seen_store(store, complete ? &prefix : nullptr);
+
+  {
+    std::lock_guard lock(j->m);
+    dup_scan& d = j->dups;
+    d.files = files.size();
+    d.bytes = bytes;
+    d.compared = static_cast<std::uint32_t>(candidates.size());
+    d.hashed = hashed;
+    d.groups = std::move(groups);
+    d.unreadable = std::move(unreadable);
+    d.walk_failed = !walked && !cancelled && files.empty();
+    d.cancelled = cancelled;
+    d.can_trash = host_.can_recycle();
+  }
+  source_lock.unlock();
+  // A subfolder that cannot be read is skipped by the walk; only a folder
+  // that yields nothing at all is a failure.
+  finish_job(j, cancelled                        ? MV_IMPORT_JOB_CANCELLED
+                : (!walked && files.empty()) ? MV_IMPORT_JOB_FAILED
+                                             : MV_IMPORT_JOB_DONE);
+}
+
+expected engine::trash_duplicate(std::uint64_t id, const std::string& path) {
+  auto j = find_job(id);
+  if (!j || j->kind != 2) return err(status::invalid_arg);
+  if (!host_.can_recycle()) return err(status::unsupported_format);
+  {
+    std::lock_guard lock(mutex_);
+    if (stopping_) return err(status::cancelled);
+    if (!j->finished) return err(status::invalid_arg);  // still scanning
+  }
+  std::string found;
+  {
+    std::lock_guard lock(j->m);
+    dup_file* hit = nullptr;
+    for (dup_group& g : j->dups.groups) {
+      for (dup_file& f : g.files) {
+        if (same_path(f.path, path)) hit = &f;
+      }
+    }
+    if (!hit) return err(status::invalid_arg);
+    if (std::strcmp(hit->state, "queued") == 0 || std::strcmp(hit->state, "trashed") == 0) return {};
+    hit->state = "queued";
+    hit->reason = "";
+    // The scan's own spelling from here on: trash_one matches it exactly.
+    found = hit->path;
+    j->summary = dup_json(j->id, j->dups, j->prog.elapsed_ms, true);
+  }
+  std::lock_guard lock(mutex_);
+  if (stopping_) return err(status::cancelled);
+  j->trash_queue.push_back(std::move(found));
+  if (!j->trash_busy) {
+    j->trash_busy = true;
+    // The scan's thread, or the last drain's, has finished: it takes no lock
+    // after marking itself done, so this join returns at once.
+    if (j->thread.joinable()) j->thread.join();
+    j->cancel = false;
+    j->thread = std::thread([this, j] { trash_loop(j); });
+  }
+  return {};
+}
+
+void engine::trash_loop(const std::shared_ptr<job>& j) {
+  for (;;) {
+    std::string path;
+    {
+      std::lock_guard lock(mutex_);
+      if (j->trash_queue.empty() || j->cancel) {
+        j->trash_queue.clear();
+        j->trash_busy = false;
+        cv_.notify_all();
+        return;
+      }
+      path = std::move(j->trash_queue.front());
+      j->trash_queue.pop_front();
+    }
+    const bool gone = trash_one(*j, path);
+    host_.post(MV_ADDON_EVENT_DUPLICATE_TRASHED, MV_OK, j->id, gone ? 1 : 0);
+  }
+}
+
+bool engine::trash_one(job& j, const std::string& path) {
+  std::uint64_t size = 0;
+  std::int64_t mtime = 0;
+  digest hash{};
+  std::vector<std::string> others;
+  {
+    std::lock_guard lock(j.m);
+    for (const dup_group& g : j.dups.groups) {
+      for (const dup_file& f : g.files) {
+        if (f.path != path) continue;
+        size = g.size;
+        mtime = f.mtime;
+        hash = g.hash;
+        // A queued or refused copy still counts: requests run one at a time,
+        // so of a whole group asked for the bin, the last is refused.
+        for (const dup_file& o : g.files) {
+          if (o.path != path && std::strcmp(o.state, "trashed") != 0) others.push_back(o.path);
+        }
+      }
+    }
+  }
+  const auto settle = [&](const char* state, const char* reason) {
+    std::lock_guard lock(j.m);
+    for (dup_group& g : j.dups.groups) {
+      for (dup_file& f : g.files) {
+        if (f.path == path) {
+          f.state = state;
+          f.reason = reason;
+        }
+      }
+    }
+    j.summary = dup_json(j.id, j.dups, j.prog.elapsed_ms, true);
+  };
+
+  // The file must still be what was hashed: an edit since the scan makes it
+  // a different file, not a duplicate.
+  const auto st = host_.stat(path);
+  if (!st || st->is_directory || st->size != size || st->mtime != mtime) {
+    settle("refused", "changed");
+    return false;
+  }
+  // And another copy must hold the same bytes now, read again rather than
+  // trusted: the bin is recoverable, but a group is never emptied.
+  copy_callbacks cb;
+  cb.cancelled = [&j] { return j.cancel.load(); };
+  bool kept = false;
+  for (const std::string& o : others) {
+    if (j.cancel) break;
+    const auto os = host_.stat(o);
+    if (!os || os->is_directory || os->size != size) continue;
+    auto h = host_.hash(o, false, cb);
+    if (h && *h == hash) {
+      kept = true;
+      break;
+    }
+  }
+  if (!kept) {
+    settle("refused", "last_copy");
+    return false;
+  }
+  auto r = host_.recycle(path);
+  if (!r) {
+    settle("refused", "failed");
+    return false;
+  }
+  if (!*r) {
+    settle("refused", "no_bin");
+    return false;
+  }
+  settle("trashed", "");
+  return true;
 }
 
 }  // namespace mv::import

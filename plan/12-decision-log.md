@@ -2823,6 +2823,146 @@ Owner: "mountain" found nothing while "mountains" found hundreds, "Trist" found 
   words search speech transcripts only: the index has no OCR.
 - The search field's placeholder no longer suggests "dog on a beach" (owner).
 
+## 2026-09-28 — Final Cut Pro: a Mac-only add-on (D9 exception), and a read-only reader of Local search (issue #71)
+
+Owner, on issue #71 ("search your library with Local search from inside FCP"): build Phase 0
+and Phase 1, ship the extension **as another add-on that can be installed**, and take a
+**Mac-only exception to D9** rather than pair it with a Premiere UXP panel now. Plan:
+[23-nle-search.md](23-nle-search.md).
+
+- **D9 exception, scoped.** D9 (amended 2026-09-24) makes every PR from 9 dual-track. A Final
+  Cut Pro workflow extension cannot have a Windows twin: FCP is Mac-only. The exception covers
+  the FCP-specific pieces only (the workflow extension, its container app, the XPC agent). What
+  sits under them is shared and built on both platforms: the pack's read-only reader
+  (`mv_ai_reader_get`), the wire format, `search_session`, the read-only thumbnail lookup and
+  the FCPXML writer (`src/nle`, `cmake/nle.cmake`), plus `mv-nle-export`, which writes
+  a search as FCPXML on Windows and macOS (Resolve and Premiere import it). A Premiere UXP or
+  Resolve panel would be the Windows half if the owner later wants one (plan/23 Phase 4).
+- **Delivery: its own add-on ("fcp"), a separate container app.** Embedding the `.appex` in
+  MediaViewer.app would change the base bundle and show an FCP Extensions entry to everyone,
+  breaking plan/18's "absent means absent". "MediaViewer for Final Cut Pro.app" carries the
+  extension and the agent; installing it is opt-in, like Import and Local search.
+- **One search implementation.** The agent is a second, read-only *host* of the installed AI
+  pack: it loads `libmv_ai` through the verified add-on store and calls a new export,
+  `mv_ai_reader_get`, which runs the same engine over the app's data folder with
+  `engine_options::read_only`. No ranking code was copied, so the agent's top-K is the app's
+  by construction; `[search-agent]` checks it. A pack without the export is refused rather than
+  loaded through `mv_addon_get`, which would start a second indexer on the app's files.
+- **`mv.ai.1` gains `result_duration` (appended).** An FCPXML asset needs the clip's length;
+  the index has it. The C# table mirrors the field; Swift reads the header.
+- **No Apple SDK framework linked or embedded.** FCP 12.3 carries `ProExtensionHost`,
+  `ProExtension` and `ProExtensionSupport` in its own bundle, and its `ProExtension` declares
+  the `com.apple.FinalCut.WorkflowExtension` point. The extension's principal class is ours.
+  If FCP accepts that (Phase 0's hands-on step, owed), open question 5 (redistributing the SDK
+  framework in a GPL product) does not arise for Phases 0–2. Phase 3's `FCPXHost` proxies are
+  the case that may still need it.
+- **Idle exit at 50 s, not 60.** The verify line asks for the agent to be gone within 60 s of its
+  last client. At 60 s the measured exit was 62 s (the timer starts at invalidation, plus
+  teardown); at 50 s it was 52 s.
+
+## 2026-09-28 — Final Cut Pro search ships inside MediaViewer.app, off until turned on (amends the delivery call above)
+
+Owner, reviewing PR 87: a separate "MediaViewer for Final Cut Pro.app" to install and open is
+annoying. Ship the pieces in the standard app bundle and download only the bulk when the add-on
+is installed. The bulk is already the Local search pack, which the agent hosts. The FCP-specific
+code is small: the extension is about 180 KB and links the system only.
+
+- **In MediaViewer.app, arm64 only:** `Contents/PlugIns/MediaViewerSearch.appex` and the agent's
+  launchd job in `Contents/Library/LaunchAgents`. The container app, `fcp_bundle` and
+  `fcp_bundle.py` are gone. `macpack.py` assembles and signs the pieces with the app, and a
+  Sparkle update replaces them with it. `lipo_merge.py` lets these paths be arm64 only (the Intel
+  build has no AI pack).
+- **The agent is MediaViewer's own executable** (owner, the same review: "9/10 users won't have
+  Final Cut Pro"). A separate agent binary was 1.8 MB, mostly copies of the add-on store, the
+  verifier and SQLite that the app already links. The job runs
+  `Contents/MacOS/MediaViewer --search-agent`, and `main()` hands over before anything of the viewer
+  starts (no window, no crash reporter, no add-ons). The executable grew 49 KB (12.56 → 12.61 MB)
+  and the bundle shrank 54 → 52 MB. Measured against the standalone agent, same pack and index
+  (504 assets), alternated new/old/new/old: cold first query 4.69 / 4.71 s vs 4.46 / 5.55 s; RSS
+  914 MB vs 916 / 921 MB; warm p95 3.69 / 3.58 ms vs 4.10 / 3.02 ms (20 runs × 5 queries), with
+  identical rows; idle exit 52 s. The agent now shares the app's signature and entitlements.
+  `shell` may include `nle` (`check-module-graph.ps1`).
+- **Off until turned on.** Settings > Local search shows a Final Cut Pro row once Core is installed.
+  **Turn on** registers the agent with `SMAppService` and elects the extension in with `pluginkit`.
+  **Turn off**, or removing Core, unregisters the agent and elects it out. Off, nothing runs and
+  Login Items lists nothing. Nothing is downloaded: the pieces are in the app, and the pack is the
+  bulk the owner already installed.
+- **"Absent means absent" (plan/18), kept by an election rather than by the bundle.** macOS
+  registers every extension in an installed app, so a fresh install would list "MediaViewer
+  Search" in FCP for everyone. The app elects it out once (`pluginkit -e ignore`) in a background
+  block 10 s after launch, and records that in user defaults. Whether FCP honours the election is
+  checked in the Phase 0 hands-on run; if it does not, the panel reads "turn on Final Cut Pro in
+  MediaViewer".
+- **The base bundle changes, at no runtime cost to the viewer.** The viewer never loads the
+  extension or runs agent code. Its launch gains one argument compare in `main()` and one
+  background block 10 s after launch (two `stat`s, then at most one service manager call or one
+  `pluginkit`); nothing on the launch or render path. The Mac launch → first pixel and PR 1 soak
+  are still to be re-run against the base to confirm.
+- **The names follow the app.** The extension is `<app id>.finalcut`, the agent's job is associated
+  with the app's bundle id (so Login Items shows "MediaViewer"), and the app group and Mach service
+  keep their names (`<team>.<app id>.fcp`, `….search`). `MV_FCP_TEAM_ID` is the team the app is
+  signed by. The extension's entitlements are applied when the app is assembled, and
+  `macpack.py release` keeps them.
+
+## 2026-09-28 — Final Cut Pro: the extension loads FCP's own ProExtension.framework (Phase 0 finding)
+
+Phase 0's hands-on run (owner, FCP on macOS 26, the 0.1.18 release) answered open question 5.
+FCP **does not** accept a workflow extension without Apple's framework. Its
+`ProExtension.framework` declares the extension point (`NSExtensionSDK`) with
+`ProExtensionRemoteContext` as every extension's context class and `ProExtensionRequestHandling`
+as its principal class. ExtensionFoundation looks the context class up when FCP connects and
+traps if it is absent. That was the spinning puzzle piece and four `MediaViewerSearch` crash
+reports.
+
+- **Load FCP's copy at runtime; ship nothing of Apple's** (owner chose this over embedding the
+  Workflow Extensions SDK framework, and over a stand-in class). The extension's own `main`
+  finds Final Cut Pro by bundle id (`com.apple.FinalCut`, then the trial, then `/Applications`),
+  `dlopen`s `Contents/Frameworks/ProExtension.framework`, and only then calls
+  `NSExtensionMain`. If the framework or the class is missing, it logs a fault and exits rather
+  than trap. The framework always matches the running FCP, and nothing is redistributed.
+- **The Info.plist no longer names a principal class.** The point's `ProExtensionRequestHandling`
+  applies, and it makes our view controller from `ProExtensionPrincipalViewControllerClass`.
+- **`com.apple.security.cs.disable-library-validation` on the extension only.** Apple
+  (`PTN9T2S29T`) signs the framework, not our team. The sandbox is unchanged: the app group is
+  still the only grant, and reading and mapping `/Applications` is within it. Checked with a
+  Developer ID-signed build: `main` loads the framework and resolves the class in the sandbox.
+  FCP's own run of the fix is the next hands-on step.
+- **Licence.** Loading a proprietary Apple framework into GPL-3.0-or-later code at run time is
+  the owner's call as copyright holder: no Apple code is distributed, and the extension is
+  useless without Final Cut Pro, which carries the framework. See `plan/11`.
+- **Risk.** An FCP update that moves or renames the framework or the classes stops the panel. It
+  fails safe: an exit with a logged fault, never a hang. Apple's SDK framework is the fallback.
+
+## 2026-09-28 — Final Cut Pro panel, Phase 2: library scope, playback with sound, an AppKit grid (plan/23)
+
+Owner, once the 0.1.20 panel showed: a better UI, better search options, a better preview of
+clips, and search linked to the Final Cut Pro project rather than the whole index. Three calls,
+all the owner's (asked, 2026-09-28):
+
+- **Scope: the open library's folder by default.** The panel reads the open library from FCP's
+  own host objects (`ProExtensionHost.framework`, loaded like `ProExtension`: `FCPXHostSingleton`
+  > `timeline.activeSequence` > `container` ... > `FCPXLibrary.url`). It searches that folder
+  and everything below it (`MV_AI_SCOPE_TREE`). A picker switches to any indexed folder or the
+  whole index, and the choice is remembered per library. "Media the project uses" was offered
+  and not chosen: FCP does not expose it, and reading the library's database would break on
+  updates. The host objects travel as Apple Events to FCP, so the extension gains
+  `com.apple.security.automation.apple-events` and a `temporary-exception.apple-events` for
+  `com.apple.FinalCut` / `com.apple.FinalCutTrial`, and `NSAppleEventsUsageDescription`.
+- **Playback with sound: the sandbox widens to read-only files.** The owner chose full playback
+  over silent frames from the agent. The extension gains
+  `com.apple.security.temporary-exception.files.absolute-path.read-only` for `/`: it can read
+  any file the user can, and write none. That is a Developer ID-only entitlement; the Mac App
+  Store is not a channel (plan/11). Hover-scrub decodes frames in the panel from the same
+  access. Results and tiles still come from the agent. Checked in a sandboxed harness with the
+  extension's entitlements and the owner's installed 0.1.20 agent: a search answers, a result's
+  clip opens and plays, and a write is refused.
+- **An AppKit grid, not SwiftUI** (plan/23 named a SwiftUI grid for Phase 2). The extension is
+  one Objective-C++ file built by CMake with `-fapplication-extension`. SwiftUI would add a
+  second Swift package build to the `.appex`, for no difference the owner sees. The grid is an
+  `NSCollectionView` with an `AVPlayerView` above it.
+- **The agent answers two more read-only questions:** the indexed folders (`roots_json`) and
+  names as they are typed (`suggest_json`). `[search-agent]` checks both against the app's engine.
+
 ## 2026-09-28 — The Mac's Photos library as a Local search source (issue #72): built, with its owner calls left open
 
 Issue #72 asked whether Local search can index the Photos library (iCloud Photos on a Mac)
@@ -2940,6 +3080,298 @@ the pack runs on, with toggles for face data and thumbnails.
   the index file itself (opened read-only, defensive, schema untrusted; paths with `..` refused).
 - **Not changed:** Intel Macs still get no pack (ORT ships no x86_64 macOS build). An index
   from an Apple silicon Mac is of use on another Apple silicon Mac or a Windows PC.
+
+## 2026-09-29 — D5 amended, Mac only: Apple ProRes plays, and a hardware frame the ring cannot take is no longer dropped
+
+Owner report: exporting from Final Cut Pro opens the file in MediaViewer (the default viewer),
+which then sits on its empty canvas with the transport running. The export was Apple ProRes 422,
+3840 x 2160, 10-bit, with PCM audio: FCP's default. Nothing was wrong with the open. The player
+has no codec allow-list, so it chose VideoToolbox, which decodes ProRes on Apple silicon, but to
+10-bit 4:2:2. `describe_hw_surface` takes only 4:2:0 (the NV12 / P010 shader), so every frame
+was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
+
+- **D5, amended by the owner for the Mac: ProRes 422 and 4444.** Asked with the alternatives
+  (both platforms; only a clear failure), the owner chose the Mac. When the decoder is ProRes on
+  VideoToolbox, `pick_hw_format` gives FFmpeg a frames context with `sw_format = P010`, so
+  VideoToolbox converts to 10-bit 4:2:0 in hardware and the existing P010 path takes it. No
+  shader, ring or bundled decoder changes. Windows keeps D5: ProRes there would be software
+  decode, not measured to hold 4K pacing.
+- **Measured** (M5, `playprobe`, 15 s, alternated HEVC / ProRes / HEVC / ProRes, the same 2.7K
+  59.94 fps GoPro clip converted to ProRes 422 with `avconvert`): frames 57.0 / 58.5 / 56.6 /
+  58.1 per s; late drops 43 / 20 / 49 / 26 (a headless 60 Hz timer against 59.94 fps content);
+  A/V error p99 9.01 / 6.74 / 8.62 / 6.66 ms. The drift slope is worse on ProRes: 1.6 / 114.1 /
+  57.5 / 114.1 ms/min, a 15 s estimate over PCM audio against AAC. It is owed a minute-long run.
+  The owner's 4K ProRes export: 24.3 frames/s of a 25 fps clip over its 3 s, result OK.
+- **Both platforms: a hardware frame in a layout the ring cannot take is copied back and
+  converted in software** (`sw_convert::convert_hw`, `av_hwframe_transfer_data`) instead of
+  dropped, with one warning in the log and the overlay naming the decoder "software" (plan/05
+  "never silently"). This covers 4:2:2 / 4:4:4 hardware output from any codec. Forced through it
+  once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
+  what D5 covers is unchanged on Windows.
+
+## 2026-10-01 — Fast network copies, and a general copier (owner; PRs 49–50, plan/24)
+
+Owner: a NAS on 10 GbE copies at about 300 MB/s. Asked to "massively improve file transfer
+with a NAS", to and from it, F8 included; then chose **full read-back verify stays the default
+on a share** and **MediaViewer gets a general copier**, not only media. New product scope, so
+it is written down here and in [24](24-transfer.md); not a D-decision (no D1–D9 call is
+touched: no new present path, no format, nothing leaves the machine).
+
+- **Why ours was slow:** `verified_copy` had one blocking request in flight per file and
+  copied one file at a time, so on a share every chunk, create, flush, read-back and rename
+  waited a round trip. Fixed by a deep path (several positional requests per file, hashed in
+  order) and several files at once, **only when an end is a network share**.
+- **New budget** (CLAUDE.md "Budgets are budgets"): network profile depth 8, 2 MiB chunks,
+  4 files in flight = 80 MiB of copy buffers, capped at 128 MiB (`kCopyBufferBudget`).
+  Measured with `copybench` on this Mac's SSD with a 300 us simulated round trip: deep vs
+  sequential, verify on, runs alternated — 200 KB files 69-75 → 123-131 files/s, 16 MB files
+  484-488 → 916-941 MB/s, 512 MB files 745-758 → 1,620-1,899 MB/s. A real share is owed
+  (PR 49 verify).
+- **Unchanged on purpose:** a card is never read deep or by two files at once (plan/18
+  "Throughput"); local disks and cards keep the sequential path (base vs new within noise,
+  alternated runs). Local SSD → SSD would also gain about 2x from the deep path in the same
+  bench; not turned on, because it is unmeasured on Windows and on cards.
+- **F8 copy keeps the OS copier** (`CopyFileExW` / `copyItemAtURL`), unverified as before:
+  making it verified would add a read-back to every local copy, a regression the owner did not
+  ask for. It does get several files at once to a share. F8 move across volumes stays verified,
+  now deep.
+- **Not changed:** plan/18's read-back stays; on SMB an uncached read-back proves the bytes
+  the server holds and returns, which may come from the NAS's RAM rather than its disks.
+- **Out of the app's hands:** SMB signing, channel count and MTU. PR 50 detects and explains;
+  it never changes an OS or NAS setting.
+
+## 2026-10-03 — Find duplicates in the Import add-on (PR 54): exact duplicates are no longer out
+
+**Reverses** two "out" calls: "library-wide duplicate finding" in the 2026-09-24 Ingest entry's
+"Still out", and "Duplicate finder" in plan/16's not-in-v1 table ("Library product"). The owner
+asked for a tool in the Import add-on that checks a whole folder and its subfolders for duplicate
+media, by hash. It is a tool in an optional add-on, not a catalogue: it keeps no library of its
+own beyond remembered hashes, and near-duplicate and burst grouping stay out (plan/18 "Not in
+Import"). Design and verify line: [18 "Find duplicates"](18-import.md#find-duplicates-pr-54).
+
+**Owner calls (asked 2026-10-03):**
+
+- **Every file, not only media.** Hidden and system entries and packages are still not walked
+  (the import walk's rule), and empty files are not compared.
+- **Report each group, let each file be viewed, and offer to delete one.** Delete is taken as the
+  Recycle Bin / Trash, never a permanent delete: plan/16 already says delete uses only the bin and
+  is refused where there is none, and a tool that removes "the same file" must not be the one
+  place that rule bends.
+- **Its own PR number:** 54, the first free one (48–53 are the open add-ons branch's; 49–50 the network copies').
+
+**Calls made building it:**
+
+- **A group is never emptied.** The engine, not the chrome, checks before each move that the file
+  is unchanged since it was hashed (size and mtime) and reads another copy of the group again; with
+  no copy holding the same bytes, the request is refused. Requests run one at a time, so asking
+  for every copy leaves the last.
+- **No confirm per file**, unlike the viewer's `Delete` (plan/16, "Recycle Bin, confirm"): that
+  key may act on the only copy of a photo, while here every request is checked to leave an
+  identical copy and goes to the bin. A person clearing a few hundred copies is not asked a few
+  hundred times. The button and the hint say "Move to Recycle Bin / Trash", not "Delete".
+- **The bin is a host service.** `mv_host_api` gains `recycle_file`, appended like v2's
+  `thumbnail_jpeg` without bumping `MV_ADDON_HOST_API`: an add-on reads it only when `struct_size`
+  covers it and it is non-NULL. Windows serves it with `io::recycle_file` (already refusing where
+  there is no bin); the Mac shell with `NSFileManager trashItemAtURL`, so `io/` stays free of
+  Objective-C. Import now accepts a host table as short as table v1 (it calls nothing from v2) and
+  offers no delete when the field is missing, so a new Import still loads in an older app.
+- **`mv.import.1` gains `find_duplicates` and `trash_duplicate`** at the end of the table. The
+  Windows host's `MvImportApi` (Interop, shipped with the app) is **not** extended: the Import
+  chrome reads the two entries itself (`DuplicatesApi.cs`), so an older app runs the new chrome and
+  a newer app runs an older Import, the compatibility Milestone H's note on `IAddonHost` keeps.
+- **Hashes are remembered** in a new `import.db` table, `seen_hashes` (path, size, mtime, hash),
+  trusted while size and mtime match, as the library index is; a finished scan drops rows for files
+  under the folder that have gone. Additive (`CREATE TABLE IF NOT EXISTS`); the schema version
+  stays 1.
+- **Cached reads**, unlike verify-a-folder's uncached ones: this compares files, it does not look
+  for rot on the disk. One reader per device, and the same yield to the viewer as an import.
+- **`import.db` keeps the counts only** for a find-duplicates job; the groups live in memory for the
+  session and in the local report, so history does not carry thousands of paths.
+
+**Verified (Mac, 2026-10-03):** five engine cases on the real host table (grouping by content, the
+hash cache across a restart, the last-copy rule, a rotted and an edited copy refused, no bin and no
+host bin), green in Release and under TSan; the whole import suite under TSan with no report (one
+failure, `rename templates number per day…`, is on main already). The Swift chrome builds, and both
+C# projects compile with warnings as errors, and the whole Mac app builds. Timing (M-series Mac,
+Release, warm cache, `mv_import_tests "[.perf-bench]"`, one run): 2,400 files / 846 MB with 400
+copies, 805 sharing a size: first scan 1,042 ms, rescan 84 ms reading no file contents. **Owed:** the Windows native build (`addon_abi.cpp`) in
+CI; both live windows (a local build cannot load its own unsigned Import); both present-loop gates
+while a scan runs.
+
+## 2026-10-03 — Local search: an export with thumbnails makes the missing ones (owner)
+
+Owner: an export of a 503-file folder said 658 thumbnails "were not made yet and were left
+out", and asked that the file carry them. The export only copied what the viewer's JPEG-512
+cache held, so every photo, clip or moment never on screen was missing (here 110 photos, 91
+clips, 457 moments of 5,722).
+
+- **Amended: plan/17 "an export never decodes a library".** With "Include thumbnails" ticked, a
+  thumbnail the cache does not hold is made then, through the host calls a result tile already
+  uses (`thumbnail_path` for a still; `video_frame` + `moment_thumbnail` for a moment). A clip's
+  own tile is the frame its poster lands near (10 % in, at most 3 s), kept as a moment row; the
+  viewer's poster row stays the viewer's to make. No host-table change.
+- It runs on the pack's control thread and waits out the viewer's busy spells as an import's
+  thumbnails do; cancel (and quit) are polled every thumbnail. Export without thumbnails is
+  unchanged and still decodes nothing.
+- The summary now says how many thumbnails went in; "left out" means one could not be made.
+
+## 2026-10-03 — HEIC: thumbnail item as first pixel; grid tiles on the foreground thread budget
+
+plan/04 rule 3 already named it ("HEIC has a thumbnail item … decode that immediately"), but HEIC
+had no first-pixel stage: the canvas waited for the full decode. libheif also decoded an
+iPhone's 48 grid tiles on one thread (`heif_context_set_max_decoding_threads(ctx, 0)`).
+
+- **First pixel:** `codec::decode_heic_thumbnail` decodes the primary's largest thumbnail item,
+  in the primary's colour when it has none of its own (D6). It is refused when it is not
+  smaller than the image or not its shape to 2 % (a thumbnail missing the primary's `irot`
+  would jump). `image::decode_first_pixel` serves it to the canvas only (both open paths, the
+  hand-off preview, the Mac lab); thumbnailers and search keep `decode_preview`, since a
+  320 px stand-in is below what they draw. As with a RAW's embedded preview, the full decode
+  then goes up once with mips: staging a mip-less copy over the thumbnail added a second
+  12 MP upload during the fade and cost 30-250 ms of launch → full resolution when measured.
+- **Budget:** a HEIC grid's tiles use the caller's thread limit, the one RAW already takes
+  (`raw_foreground_threads()` for the image on screen, 1 for prefetch and thumbnails). Pixels
+  do not depend on it (test). This only applies to the bundled path; WIC is unchanged.
+- **Measured** (Ryzen 7 5700X3D, Release, `make-grid-heic.py`'s 12 MP grid file, base and new
+  built in separate trees, runs alternated). `mv_tests "[.perf-bench]"` medians: first pixel
+  none → 10.8 ms (320x240); full via WIC 282/296 → 289/288 ms (unchanged); full via libheif
+  (`MV_OS_CODEC=0`) 610/615 → 248/275 ms. `mediaviewer_lab --soak 6 --static`, after one warm-up,
+  4 runs each: first pixel 495-530 → 29-40 ms; full 587-634 → 579-610 ms (overlapping);
+  with `MV_OS_CODEC=0` (3 runs) first pixel 693-696 → 29-32 ms, full 794-797 → 360-365 ms. 0
+  dropped frames in every lab run. The PR 1 `frametime` gate failed for base and new alike on
+  this machine today (3-4 vs 0-2 drops, idle 4.8 % of a core for both: other sessions,
+  Steam and Stream Deck running); not a quiet-machine result. Not measured on a real iPhone
+  file (none licensed for the corpus; plan/09).
+- **Mac** (Apple M5, Release, same generated file, base `main` and new built in separate trees,
+  runs alternated; the Mac always takes libheif): bench (3 runs) first pixel none → 5.3-5.6 ms,
+  full 506-553 → 177-187 ms, every other row unchanged. Lab `--soak 6 --static`, after one
+  warm-up, 4 runs each: first pixel 548-559 → 15-17 ms, full 548-559 → 231-246 ms, 0 dropped
+  frames. Mac PR 1 `frametime --seconds 60`: 3,600 frames, 0 dropped, p99 16.95 ms, 0 idle
+  presents for base and new alike; both failed only on idle CPU (28 / 27 % of a core, a
+  Simulator from another session running), so not a quiet-machine result either.
+- **Open, D3, not decided here:** with tiles in parallel the bundled path (360 ms) now opens a
+  12 MP HEIC faster than the WIC/HEVC-extension path D3 prefers (~600 ms) on this machine.
+  D3 says to prefer the OS codec *when hardware-backed*; whether WIC here is, and whether
+  routing should change, is the owner's call.
+
+## 2026-10-03 — NVIDIA acceleration (`ai-cuda`) is published, CUDA and cuDNN user-supplied (owner)
+
+**Was:** RELEASING.md held the `ai-cuda` piece back "until its licence review is done" (log
+2026-09-26, plan/17 "Sizes").
+
+**Now:** every stable Windows release packs and publishes it. That review asked whether NVIDIA's
+CUDA runtime and cuDNN, under NVIDIA's EULA, can be *redistributed* inside a GPL-3.0-or-later
+app's download. The piece as built redistributes neither: it is ONNX Runtime's CUDA 13 build
+(three Microsoft-signed DLLs, MIT) and ORT's own LICENSE and notices. The person installs CUDA 13
+and cuDNN 9 from NVIDIA themselves; ORT, not our code, loads them at run time, and without them the
+Auto self-test falls back to the CPU and says "CUDA 13 or cuDNN 9 not found — using CPU". So the
+review gates **bundling** NVIDIA's files, not publishing this piece. It stays open for that.
+
+- `release.yml` configures stable runs with `-DMV_AI_CUDA_PIECE=ON` and packs `ai-cuda` for
+  `win-x64` only; `github-release.py` requires it on Windows with `MV_RELEASE_AI=1` and never on
+  the Mac (Core ML there; `addons_mac.mm` already never offers it). The family ceiling check
+  includes it.
+- The piece row says it needs CUDA 13 and cuDNN 9 installed separately, before anyone downloads
+  ~150 MB that will not help them without those.
+- Never installed unasked: offered only on a machine with an NVIDIA adapter, and not part of
+  "Install all" (plan/17), unchanged.
+
+**Owed on hardware:** an install from a real stable release on an NVIDIA machine, both with and
+without CUDA/cuDNN on PATH (GPU used / CPU with the reason), and the PR 1 present-loop gate
+while it indexes on the GPU.
+
+## 2026-10-03 — Local search: the open folder always includes its subfolders (owner)
+
+Owner: "in ctrl f on both windows and mac os it should always do folders and sub folders. there
+shouldnt be an option for just this folder for indexing or search."
+
+- **Amended: plan/17 "Scope" and the index offer.** The search panel (`Ctrl+F` / `⌘F`) offers
+  **Folder & subfolders** (the default) · **Everywhere** (· **Photos** on the Mac once the
+  library is indexed). "This folder" is gone from the panel on both hosts.
+- The panel's offer for an unindexed folder is one button, **Index this folder and
+  subfolders**; Settings → Add a folder always adds the folder with its subfolders (Windows'
+  second button and the Mac's "and its subfolders" checkbox are gone).
+- Unchanged: the pack and the ABI keep `MV_AI_SCOPE_FOLDER` and the `recursive` flag (roots
+  already indexed folder-only still show as such and still work; the Mac's Photos scope rides on
+  FOLDER). People keeps its own "This folder" choice: it is not the search panel. The base app's
+  file search without Local search still filters the listing in memory (plan/16 "File search").
+
+## 2026-10-03 — People: AdaFace IR-50 replaces SFace, and a re-run that keeps the user's people
+
+Owner: "can we improve / select a better people model … add a re-run that redoes the photos and
+it should also take a look at already separated people and assign". Numbers and design: plan/17
+"People model".
+
+- **Reversed: SFace as the People embedder** (PR 24; the 2026-09-28 refinement notes said a second
+  model waited for numbers). AdaFace IR-50 WebFace4M (MIT weights, fp16, 87 MB): through our own
+  pipeline on LFW, TAR@1e-4 99.00 -> 99.93 % at full size and 94.33 -> 99.81 % on ~24 px faces;
+  through faces.db, BCubed precision 0.9938 -> 0.9994 and recall 0.9938 -> 0.9982. The pack builds
+  its ONNX from the pinned safetensors (`tools/package/face-export.py`, verified by output).
+- **Changed: the face embedder runs on the towers' compute choice** (Core ML / CUDA when it agrees
+  with CPU at cosine 0.99, else CPU). It was CPU only. IR-50 is ~6x SFace on one CPU thread and
+  ~3x faster than SFace on Core ML; Windows without the CUDA piece pays the CPU cost in background
+  indexing.
+- **Thresholds per model** (`model.json`): IR-50 same_person 0.30, keep 0.20 / 0.24, margin 0.10,
+  ambiguous 0.04, merge 0.32, set stricter than an equal-FAR mapping of SFace's because a face
+  under the wrong person is the complaint being fixed.
+- **Amended: refinement only on request** (2026-09-28). "Re-analyse faces" (and a pack update with
+  a new face model) ends with one library-wide refinement, the settle. It is still only ever the
+  user's request or the model change they installed, never an idle pass; the per-person "Refine
+  faces" stays focused. faces.db tags every vector with its embedder so a re-run never compares
+  two models' vectors; re-found faces keep their person, name, pin and rejections.
+- **3 GB ceiling unchanged**: fp16 IR-50 fits (~2.93 GB worst case). The owner allowed exceeding it
+  for a dramatic gain; IR-101 (+86 MB, 2x compute) gained ~0.1 point here, so it was not needed.
+- **Open, owner:** WebFace4M's non-commercial research terms (the weights are MIT). SFace and YuNet
+  carry the same kind of caveat. plan/17 *Open decisions* 7.
+
+## 2026-10-03 — Find duplicates: several copies to the bin in one go; the Import windows get the app mark
+
+**Reverses** PR 54's "one file at a time, picked by the person" (plan/18 "Find duplicates"), at
+the owner's request: "select more than one of the found duplicates and delete the duplicates in
+batch". What stays: only what the person picked goes, only to the Recycle Bin / Trash, and the
+engine's checks per file (unchanged since the scan, another identical copy re-read) are untouched.
+Still no "delete all duplicates" and no keep rules.
+
+- **Picking** is the platform's own: Ctrl / Shift-click and Shift+arrows in Explorer's
+  `ListView` Extended mode on Windows, ⌘ / ⇧ in a SwiftUI `List` with a `Set` selection on the
+  Mac. No check boxes and no new keys: `Delete` / `⌘⌫` now act on the pick.
+- **A pick that takes every copy of a file sends nothing.** The engine would still keep one (the
+  last request in the group is refused), but which one would depend on queue order, which the
+  person cannot see. The window says to leave one copy of each file unpicked instead.
+- **No engine or ABI change.** `trash_duplicate` already queues; the chrome calls it once per
+  picked file and the add-on's thread drains them in order.
+- **No confirm for a batch**, as for one file (PR 54's reasoning: every move is checked to leave
+  an identical copy and is recoverable from the bin). The button names the count, and the line
+  beside it the space it frees.
+- **Windows look:** the Duplicates window takes Mica, Windows 11 style cards and Segoe Fluent
+  glyphs, built only from controls that load in this island host (`tools/check-winui-controls.ps1`).
+  The Fluent brushes (`TextFillColor*`, `CardBackgroundFillColor*`) do **not** resolve here (no
+  XamlControlsResources; a XAML reference to one throws "undeclared prefix" and, from a click, fail-
+  fasts the app; seen in the first live run): secondary text is opacity and cards a neutral tint. Both Import windows load the exe's own icon (resource 1, as
+  the main window) instead of WinUI's generic one (`src.managed/Shared/AppIcon.cs`). The Mac
+  windows already carry the app's icon.
+
+**Verified (Windows, 2026-10-03):** a dev-key Release build of this tree with this Import
+sideloaded, on a tree of 10 files in 4 groups, five runs: the window opens, a pick of every copy
+of a file leaves the button off, a pick of the 5 extras moves exactly those 5 and keeps one of
+each; the Import window shows the app icon. One earlier run never received the scan's done event
+(window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
+compile (CI), the Mac live run, both present-loop gates while a scan runs.
+
+## 2026-10-03 — People: a folder shows only its own people; everyone only when no folder is open
+
+Owner: "people should just show the currently opened folder … it should only show all when I'm
+on the home page with no open folder." The 2026-09-28 control (plan/17 "People in the open
+folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the default.
+
+- **Reversed: "Everywhere" as a choice while a folder is open.** The control is
+  "This folder | + Subfolders"; everyone shows only when no folder is open, as the viewer's home
+  (no scope control then). A scope of Everywhere left from before reads as + Subfolders when a
+  folder opens. Both chromes; no core or ABI change (`people_in_json` already takes the scope).
+- Why: a folder open is the user saying what they are looking at. Everyone-from-everywhere in a
+  folder reads as a leak (the owner saw their whole iCloud library's people while in one folder
+  and took it for a bug), and the home page already shows everyone.
+- The search panel keeps its three scopes: a search is a question, a folder is a place.
 
 
 ## 2026-10-03 — The Photos library as a folder and its backup; clips with a display matrix (owner)

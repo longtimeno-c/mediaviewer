@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <string_view>
 #include <span>
 #include <thread>
 #include <vector>
@@ -131,6 +132,9 @@ mv_status MV_CALL t_copy(void* host, const mv_addon_copy_request* req, mv_addon_
     }
     std::atomic<bool> cancel{false};
     io::copy_options o;
+    // Deep writes to a share, deep reads only from one: a card is still read
+    // one request at a time (plan/18 "Throughput"; plan/12 2026-10-01).
+    io::copy_profile_for(req->source_utf8, targets.front()).apply(o);
     o.read_back = req->read_back != 0;
     o.retries = static_cast<int>(std::min<uint32_t>(req->retries, 3));
     o.cancel = &cancel;
@@ -536,6 +540,18 @@ mv_status MV_CALL t_thumbnail_store_jpeg(void* host, const char* path, int64_t p
   });
 }
 
+mv_status MV_CALL t_recycle(void* host, const char* path, uint32_t* out_refused) {
+  return guarded([&] {
+    if (!path || !out_refused) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().recycle;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto r = fn(path);
+    if (!r) return to_mv(r.error());
+    *out_refused = *r ? 0u : 1u;
+    return MV_OK;
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -579,6 +595,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.audio_close = &t_audio_close;
   api_.thumbnail_jpeg = &t_thumbnail_jpeg;
   api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
+  api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
@@ -631,7 +648,7 @@ const void* loaded_addon::query(const char* interface_id) const noexcept {
 }
 
 result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const std::string& id,
-                                                         host_services services) {
+                                                         host_services services, const char* entry) {
   MV_TRY(installed info, s.find(id));
   if (info.state == install_state::needs_update) return err(status::unsupported_format);
   if (info.state != install_state::ok) return err(status::corrupt);
@@ -655,8 +672,13 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   MV_TRY(shared_library lib,
          shared_library::open(io::join_path(info.dir, io::native_relative(info.m.native))));
   out->lib_ = std::move(lib);
-  auto get = reinterpret_cast<mv_addon_get_fn>(out->lib_.symbol(MV_ADDON_ENTRY_SYMBOL));
-  if (!get) return err(status::corrupt);
+  if (!entry) return err(status::invalid_arg);
+  auto get = reinterpret_cast<mv_addon_get_fn>(out->lib_.symbol(entry));
+  if (!get) {
+    // The one export missing is a broken add-on; another door missing is an
+    // add-on older than the host asking for it.
+    return err(std::string_view(entry) == MV_ADDON_ENTRY_SYMBOL ? status::corrupt : status::unsupported_format);
+  }
   mv_addon_api api{};
   const mv_status st = get(version, out->table_->api(), &api);
   if (st != MV_OK) return err(static_cast<status>(st));

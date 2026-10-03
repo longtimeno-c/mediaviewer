@@ -33,4 +33,14 @@ result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const 
   return to_display(std::move(raster).value(), ctx);
 }
 
+result<display_image> decode_first_pixel(std::span<const std::uint8_t> bytes,
+                                         const job_context* ctx) {
+  if (codec::probe(bytes) != codec::format_family::heic) return decode_preview(bytes, ctx);
+  auto raster = codec::decode_heic_thumbnail(bytes, ctx);
+  if (!raster) return err(raster.error());
+  if (raster->width < 16 || raster->height < 16) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  return to_display(std::move(raster).value(), ctx);
+}
+
 }  // namespace mv::image

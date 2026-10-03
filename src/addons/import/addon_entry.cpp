@@ -7,6 +7,8 @@
 // path (rule 6).
 #include <mediaviewer/mediaviewer_import.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -244,6 +246,16 @@ mv_status MV_CALL history_json(void* ctx, char* out, uint32_t cap, uint32_t* nee
 mv_status MV_CALL verify_folder(void* ctx, const char* dir, uint64_t* out_id) {
   return guard([&] { return dir ? id_out(eng(ctx).verify_folder(dir), out_id) : MV_ERR_INVALID_ARG; });
 }
+mv_status MV_CALL find_duplicates(void* ctx, const char* dir, uint64_t* out_id) {
+  return guard([&] { return dir ? id_out(eng(ctx).find_duplicates(dir), out_id) : MV_ERR_INVALID_ARG; });
+}
+mv_status MV_CALL trash_duplicate(void* ctx, uint64_t job_id, const char* path) {
+  return guard([&] {
+    if (!path) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).trash_duplicate(job_id, path);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
 
 void MV_CALL shutdown(void* addon) {
   auto* state = static_cast<addon_state*>(addon);
@@ -272,9 +284,14 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api,
     if (host_api < kHostApiMin || host_api > kHostApiMax || host->host_api < kHostApiMin) {
       return MV_ERR_UNSUPPORTED_FORMAT;
     }
-    if (host->struct_size < sizeof(mv_host_api)) return MV_ERR_UNSUPPORTED_FORMAT;
+    // Import calls only table v1 and the appended recycle_file. An older
+    // host's shorter table is copied as far as it goes; the rest stays NULL,
+    // and find-duplicates then offers no delete.
+    if (host->struct_size < offsetof(mv_host_api, decode_still_rgb)) {
+      return MV_ERR_UNSUPPORTED_FORMAT;
+    }
     auto state = std::make_unique<addon_state>();
-    state->host = *host;
+    std::memcpy(&state->host, host, std::min<std::size_t>(host->struct_size, sizeof(mv_host_api)));
     state->eng = std::make_unique<engine>(&state->host);
     if (auto started = state->eng->start(); !started) return to_mv(started.error());
 
@@ -310,6 +327,8 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api,
     a.preview_names_json = &preview_names_json;
     a.history_json = &history_json;
     a.verify_folder = &verify_folder;
+    a.find_duplicates = &find_duplicates;
+    a.trash_duplicate = &trash_duplicate;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);
