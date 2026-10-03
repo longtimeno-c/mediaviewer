@@ -29,6 +29,7 @@ struct jpeg_error_trap {
   jpeg_error_mgr pub;
   jmp_buf jump;
   unsigned char* icc;
+  void* rows;  // the slow path's sample rows; freed on the longjmp path too
 };
 
 void jpeg_error_exit(j_common_ptr cinfo) {
@@ -89,6 +90,57 @@ bool extract_icc(j_decompress_ptr cinfo, unsigned char** out, unsigned* out_len)
   return true;
 }
 
+// What the slow path's sample rows hold. Lossy files get libjpeg-turbo's own
+// YCbCr → RGB and YCCK → CMYK; lossless files are read in their own space.
+enum class jpeg_px : std::uint8_t { grey, rgb, cmyk };
+
+inline std::uint8_t sample_to8(unsigned v, unsigned max) noexcept {
+  if (max == 255u) return static_cast<std::uint8_t>(v);
+  return static_cast<std::uint8_t>((v * 255u + max / 2u) / max);
+}
+
+// Naive CMYK → RGB, as tiff.cpp does; the CMYK profile is not applied.
+// Photoshop (any file with an Adobe APP14 marker) stores the inks inverted:
+// 255 is no ink. Without the marker, 255 is full ink.
+inline std::uint8_t ink_to_rgb(unsigned c, unsigned k, bool adobe) noexcept {
+  if (!adobe) {
+    c = 255u - c;
+    k = 255u - k;
+  }
+  return static_cast<std::uint8_t>((c * k + 127u) / 255u);
+}
+
+// `src` holds `width` pixels of JSAMPLE / J12SAMPLE / J16SAMPLE in the layout
+// `px` names; `max` is the data precision's largest sample.
+template <typename T>
+void jpeg_row_to_rgba(const T* src, std::uint32_t width, jpeg_px px, unsigned max, bool adobe,
+                      std::uint8_t* dst) noexcept {
+  const auto get = [max](T v) noexcept {
+    const long s = static_cast<long>(v);  // J12SAMPLE is signed
+    return s <= 0 ? 0u : s >= static_cast<long>(max) ? max : static_cast<unsigned>(s);
+  };
+  for (std::uint32_t x = 0; x < width; ++x) {
+    std::uint8_t* d = dst + static_cast<std::size_t>(x) * 4;
+    d[3] = 255;
+    switch (px) {
+      case jpeg_px::grey:
+        d[0] = d[1] = d[2] = sample_to8(get(src[x]), max);
+        break;
+      case jpeg_px::rgb: {
+        const T* s = src + static_cast<std::size_t>(x) * 3;
+        for (int c = 0; c < 3; ++c) d[c] = sample_to8(get(s[c]), max);
+        break;
+      }
+      case jpeg_px::cmyk: {
+        const T* s = src + static_cast<std::size_t>(x) * 4;
+        const unsigned k = sample_to8(get(s[3]), max);
+        for (int c = 0; c < 3; ++c) d[c] = ink_to_rgb(sample_to8(get(s[c]), max), k, adobe);
+        break;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_context* ctx,
@@ -124,6 +176,7 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
 #endif
     jpeg_destroy_decompress(&cinfo);
     std::free(jerr.icc);
+    std::free(jerr.rows);
     return err(status::corrupt);
   }
 
@@ -141,12 +194,35 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   unsigned icc_len = 0;
   (void)extract_icc(&cinfo, &jerr.icc, &icc_len);
 
-  // libjpeg-turbo's SIMD colour converter writes RGBX with alpha 255 straight
-  // into the raster, instead of RGB into a row buffer and a scalar expand.
-  cinfo.out_color_space = JCS_EXT_RGBA;
+  // jpeg_read_header stops after the first SOS. A lossless (SOF3) scan is not
+  // progressive and has Se = 0; a sequential DCT scan always has Se = 63.
+  const bool lossless = !cinfo.progressive_mode && cinfo.Se == 0;
+  const J_COLOR_SPACE jcs = cinfo.jpeg_color_space;
+  // Every camera JPEG: 8-bit lossy YCbCr, grey or RGB. libjpeg-turbo's SIMD
+  // colour converter writes RGBX with alpha 255 straight into the raster,
+  // instead of RGB into a row buffer and a scalar expand.
+  const bool fast = cinfo.data_precision == 8 && !lossless &&
+                    (jcs == JCS_YCbCr || jcs == JCS_GRAYSCALE || jcs == JCS_RGB);
+  if (fast) {
+    cinfo.out_color_space = JCS_EXT_RGBA;
+  } else if (!lossless) {
+    // CMYK / YCCK (Photoshop), 12-bit, or an unlabelled component set: the
+    // library converts what it can, rows are expanded to RGBA8 below.
+    cinfo.out_color_space = jcs == JCS_YCCK ? JCS_CMYK : jcs == JCS_YCbCr ? JCS_RGB : jcs;
+  } else if (jcs == JCS_YCbCr || jcs == JCS_YCCK) {
+    // libjpeg-turbo allows no colour conversion in lossless mode, and its own
+    // encoder does not round-trip lossless YCbCr, so there is nothing to check
+    // a converter here against. Refused rather than shown wrong; lossless
+    // files in practice are grey or RGB.
+    jpeg_destroy_decompress(&cinfo);
+    std::free(jerr.icc);
+    return err(status::unsupported_format);
+  } else {
+    cinfo.out_color_space = jcs;  // lossless: null conversion only
+  }
   if (scale_denom != 2 && scale_denom != 4 && scale_denom != 8) scale_denom = 1;
   cinfo.scale_num = 1;
-  cinfo.scale_denom = scale_denom;
+  cinfo.scale_denom = scale_denom;  // lossless decodes at 1:1 whatever is asked
   jpeg_start_decompress(&cinfo);
 
   const auto width = static_cast<std::uint32_t>(cinfo.output_width);
@@ -157,16 +233,34 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
     std::free(jerr.icc);
     return err(status::unsupported_format);
   }
-  if (cinfo.output_components != 4) {
+
+  jpeg_px px = jpeg_px::rgb;
+  const int comps = cinfo.output_components;
+  bool layout_ok = fast ? comps == 4 : false;
+  if (!fast) {
+    switch (cinfo.out_color_space) {
+      case JCS_GRAYSCALE: px = jpeg_px::grey; layout_ok = comps == 1; break;
+      case JCS_RGB: px = jpeg_px::rgb; layout_ok = comps == 3; break;
+      case JCS_CMYK: px = jpeg_px::cmyk; layout_ok = comps == 4; break;
+      default:  // JCS_UNKNOWN: read by component count
+        px = comps == 1 ? jpeg_px::grey : comps == 3 ? jpeg_px::rgb : jpeg_px::cmyk;
+        layout_ok = comps == 1 || comps == 3 || comps == 4;
+        break;
+    }
+  }
+  if (!layout_ok) {
     jpeg_destroy_decompress(&cinfo);
     std::free(jerr.icc);
     return err(status::unsupported_format);
   }
+  // A CMYK profile describes the inks, not the RGB we hand out (tiff.cpp
+  // drops it the same way): the display stage builds RGBA transforms.
+  const bool keep_icc = fast || px != jpeg_px::cmyk;
 
   const std::size_t stride = static_cast<std::size_t>(width) * 4;
   try {
     out->rgba.resize(stride * height);
-    if (jerr.icc && icc_len > 0) out->icc.assign(jerr.icc, jerr.icc + icc_len);
+    if (keep_icc && jerr.icc && icc_len > 0) out->icc.assign(jerr.icc, jerr.icc + icc_len);
   } catch (const std::bad_alloc&) {
     jpeg_destroy_decompress(&cinfo);
     std::free(jerr.icc);
@@ -179,17 +273,70 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   // (2 for 4:2:0) per call, and fancy upsampling otherwise goes through its
   // spare row buffer one row at a time.
   constexpr int kRowsPerCall = 16;
-  JSAMPROW rows[kRowsPerCall];
   unsigned char* const pixels = out->rgba.data();
-  while (cinfo.output_scanline < cinfo.output_height) {
-    if (ctx && ctx->cancelled()) {
-      jpeg_destroy_decompress(&cinfo);
-      return err(status::cancelled);
+  if (fast) {
+    JSAMPROW rows[kRowsPerCall];
+    while (cinfo.output_scanline < cinfo.output_height) {
+      if (ctx && ctx->cancelled()) {
+        jpeg_destroy_decompress(&cinfo);
+        return err(status::cancelled);
+      }
+      const JDIMENSION first = cinfo.output_scanline;
+      const int n = static_cast<int>(std::min<JDIMENSION>(kRowsPerCall, cinfo.output_height - first));
+      for (int r = 0; r < n; ++r) rows[r] = pixels + static_cast<std::size_t>(first + r) * stride;
+      if (jpeg_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n)) == 0) break;
     }
-    const JDIMENSION first = cinfo.output_scanline;
-    const int n = static_cast<int>(std::min<JDIMENSION>(kRowsPerCall, cinfo.output_height - first));
-    for (int r = 0; r < n; ++r) rows[r] = pixels + static_cast<std::size_t>(first + r) * stride;
-    if (jpeg_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n)) == 0) break;
+  } else {
+    // Samples are JSAMPLE (2-8 bits), J12SAMPLE (9-12) or J16SAMPLE (13-16),
+    // each read through its own libjpeg-turbo entry point.
+    const int precision = cinfo.data_precision;
+    const unsigned max = (1u << precision) - 1u;
+    const std::size_t sample_size = precision <= 8 ? 1 : 2;
+    const std::size_t row_bytes = static_cast<std::size_t>(width) * comps * sample_size;
+    jerr.rows = std::malloc(row_bytes * kRowsPerCall);
+    if (!jerr.rows) {
+      jpeg_destroy_decompress(&cinfo);
+      return err(status::out_of_memory);
+    }
+    auto* const buf = static_cast<unsigned char*>(jerr.rows);
+    const bool adobe = cinfo.saw_Adobe_marker != 0;
+    while (cinfo.output_scanline < cinfo.output_height) {
+      if (ctx && ctx->cancelled()) {
+        jpeg_destroy_decompress(&cinfo);
+        std::free(jerr.rows);
+        return err(status::cancelled);
+      }
+      const JDIMENSION first = cinfo.output_scanline;
+      const int n = static_cast<int>(std::min<JDIMENSION>(kRowsPerCall, cinfo.output_height - first));
+      JDIMENSION got = 0;
+      if (precision <= 8) {
+        JSAMPROW rows[kRowsPerCall];
+        for (int r = 0; r < n; ++r) rows[r] = buf + r * row_bytes;
+        got = jpeg_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n));
+      } else if (precision <= 12) {
+        J12SAMPROW rows[kRowsPerCall];
+        for (int r = 0; r < n; ++r) rows[r] = reinterpret_cast<J12SAMPROW>(buf + r * row_bytes);
+        got = jpeg12_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n));
+      } else {
+        J16SAMPROW rows[kRowsPerCall];
+        for (int r = 0; r < n; ++r) rows[r] = reinterpret_cast<J16SAMPROW>(buf + r * row_bytes);
+        got = jpeg16_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n));
+      }
+      for (JDIMENSION r = 0; r < got; ++r) {
+        const unsigned char* src = buf + r * row_bytes;
+        std::uint8_t* dst = pixels + static_cast<std::size_t>(first + r) * stride;
+        if (precision <= 8) {
+          jpeg_row_to_rgba(src, width, px, max, adobe, dst);
+        } else if (precision <= 12) {
+          jpeg_row_to_rgba(reinterpret_cast<const J12SAMPLE*>(src), width, px, max, adobe, dst);
+        } else {
+          jpeg_row_to_rgba(reinterpret_cast<const J16SAMPLE*>(src), width, px, max, adobe, dst);
+        }
+      }
+      if (got == 0) break;
+    }
+    std::free(jerr.rows);
+    jerr.rows = nullptr;
   }
 
   jpeg_finish_decompress(&cinfo);

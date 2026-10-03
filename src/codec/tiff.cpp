@@ -6,11 +6,13 @@
 //
 // What the raster holds (RGBA8, source-encoded, stored pixel order):
 //  - uint 1/2/4/8/16/32-bit grey (min-is-black / min-is-white), palette, RGB,
-//    CMYK; strips or tiles; contiguous or (>= 8-bit) separate planes; any
-//    compression the linked libtiff decodes (none/LZW/ZIP/PackBits/JPEG/CCITT).
+//    CMYK; strips or tiles; contiguous or separate planes; any compression
+//    the linked libtiff decodes (none/LZW/ZIP/PackBits/JPEG/CCITT).
+//  - Signed 8/16/32-bit grey/RGB/CMYK is shown offset-binary (most negative
+//    is black, zero is mid-grey).
 //  - 16/32-bit samples round to 8 bits: the raster is RGBA8.
 //  - Unassociated alpha passes straight; associated alpha is un-premultiplied.
-//  - 32/64-bit float grey/RGB is clamped to [0,1]. Untagged float is taken as
+//  - 16/32/64-bit float grey/RGB is clamped to [0,1]. Untagged float is taken as
 //    linear with sRGB primaries and sRGB-encoded; a tagged float keeps its
 //    profile and is not re-encoded (the profile's TRC applies, D6).
 //  - CMYK is naïve (1-C)(1-K); its CMYK profile is dropped.
@@ -140,6 +142,7 @@ struct layout {
   alpha_kind alpha = alpha_kind::none;
   bool min_is_white = false;
   bool is_float = false;
+  bool is_signed = false;    // SAMPLEFORMAT_INT: two's complement, shown offset-binary
   bool encode_srgb = false;  // untagged float
   bool cmap_8bit = false;
   const std::uint16_t* cmap[3] = {nullptr, nullptr, nullptr};
@@ -182,7 +185,33 @@ inline std::uint8_t to8(std::uint32_t v, std::uint16_t bps) noexcept {
   }
 }
 
+// Signed samples are shown offset-binary: the most negative value is black.
+inline std::uint32_t fetch_sample(const layout& L, const std::uint8_t* row, std::size_t i) noexcept {
+  const std::uint32_t v = fetch_uint(row, i, L.bps);
+  return L.is_signed ? v ^ (1u << (L.bps - 1u)) : v;
+}
+
+inline float half_to_float(std::uint16_t h) noexcept {
+  const std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000u) << 16;
+  const std::uint32_t exp = (h >> 10) & 0x1Fu;
+  const std::uint32_t mant = h & 0x3FFu;
+  if (exp == 0) {  // zero / subnormal
+    const float f = std::ldexp(static_cast<float>(mant), -24);
+    return sign ? -f : f;
+  }
+  const std::uint32_t bits =
+      exp == 0x1Fu ? (sign | 0x7F800000u | (mant << 13)) : (sign | ((exp + 112u) << 23) | (mant << 13));
+  float f = 0;
+  std::memcpy(&f, &bits, 4);
+  return f;
+}
+
 inline float fetch_float(const std::uint8_t* row, std::size_t i, std::uint16_t bps) noexcept {
+  if (bps == 16) {
+    std::uint16_t h = 0;
+    std::memcpy(&h, row + i * 2, 2);
+    return half_to_float(h);
+  }
   if (bps == 64) {
     double d = 0;
     std::memcpy(&d, row + i * 8, 8);
@@ -269,27 +298,27 @@ void convert_row(const layout& L, const std::uint8_t* src, std::uint32_t count,
     } else {
       switch (L.m) {
         case model::grey: {
-          std::uint8_t v = to8(fetch_uint(src, s, bps), bps);
+          std::uint8_t v = to8(fetch_sample(L, src, s), bps);
           if (L.min_is_white) v = static_cast<std::uint8_t>(255u - v);
           r = g = b = v;
           break;
         }
         case model::palette: {
-          const std::uint32_t i = fetch_uint(src, s, bps);  // < 2^bps == colormap size
+          const std::uint32_t i = fetch_sample(L, src, s);  // < 2^bps == colormap size
           r = cmap_to8(L, L.cmap[0][i]);
           g = cmap_to8(L, L.cmap[1][i]);
           b = cmap_to8(L, L.cmap[2][i]);
           break;
         }
         case model::rgb:
-          r = to8(fetch_uint(src, s, bps), bps);
-          g = to8(fetch_uint(src, s + 1, bps), bps);
-          b = to8(fetch_uint(src, s + 2, bps), bps);
+          r = to8(fetch_sample(L, src, s), bps);
+          g = to8(fetch_sample(L, src, s + 1), bps);
+          b = to8(fetch_sample(L, src, s + 2), bps);
           break;
         case model::cmyk: {
-          const unsigned k = 255u - to8(fetch_uint(src, s + 3, bps), bps);
+          const unsigned k = 255u - to8(fetch_sample(L, src, s + 3), bps);
           const auto ink = [&](std::size_t o) {
-            const unsigned c = 255u - to8(fetch_uint(src, s + o, bps), bps);
+            const unsigned c = 255u - to8(fetch_sample(L, src, s + o), bps);
             return static_cast<std::uint8_t>((c * k + 127u) / 255u);
           };
           r = ink(0);
@@ -299,7 +328,7 @@ void convert_row(const layout& L, const std::uint8_t* src, std::uint32_t count,
         }
       }
       if (L.alpha != alpha_kind::none) {
-        a = to8(fetch_uint(src, s + ai, bps), bps);
+        a = to8(fetch_sample(L, src, s + ai), bps);
         if (L.alpha == alpha_kind::associated) {
           r = unpremultiply(r, a);
           g = unpremultiply(g, a);
@@ -390,7 +419,7 @@ result<route> inspect(TIFF* tif, layout& L) {
   if (spp < L.colour) return err(status::corrupt);
 
   if (fmt == SAMPLEFORMAT_IEEEFP) {
-    if (bps != 32 && bps != 64) return err(status::unsupported_format);
+    if (bps != 16 && bps != 32 && bps != 64) return err(status::unsupported_format);
     if (L.m != model::grey && L.m != model::rgb) return err(status::unsupported_format);
     L.is_float = true;
   } else if (fmt == SAMPLEFORMAT_UINT || fmt == SAMPLEFORMAT_VOID) {
@@ -398,10 +427,13 @@ result<route> inspect(TIFF* tif, layout& L) {
       return err(status::unsupported_format);
     }
     if (L.m == model::palette && bps > 16) return err(status::unsupported_format);
+  } else if (fmt == SAMPLEFORMAT_INT) {
+    if (bps != 8 && bps != 16 && bps != 32) return err(status::unsupported_format);
+    if (L.m == model::palette) return err(status::unsupported_format);
+    L.is_signed = true;
   } else {
-    return err(status::unsupported_format);  // signed integer, complex
+    return err(status::unsupported_format);  // complex
   }
-  if (planar == PLANARCONFIG_SEPARATE && bps < 8) return err(status::unsupported_format);
 
   if (L.m == model::palette) {
     std::uint16_t* r = nullptr;
@@ -519,7 +551,13 @@ status read_native(TIFF* tif, const layout& L, raster& out, const job_context* c
   for (auto& b : bufs) {
     if (!try_resize(b, buf_size)) return status::out_of_memory;
   }
-  const std::size_t sample_bytes = L.bps / 8u;  // separate planes are >= 8-bit
+  // Separate planes are gathered into one contiguous row. Sub-byte samples
+  // (1/2/4-bit planes) are widened to 8 bits on the way: palette indices as
+  // they are, everything else scaled.
+  const bool packed_planes = separate && L.bps < 8;
+  const std::size_t sample_bytes = packed_planes ? 1u : L.bps / 8u;
+  layout L8 = L;
+  if (packed_planes) L8.bps = 8;
   std::vector<std::uint8_t> contig;
   if (separate && !try_resize(contig, std::min(bw, w) * L.spp * sample_bytes)) {
     return status::out_of_memory;
@@ -552,12 +590,18 @@ status read_native(TIFF* tif, const layout& L, raster& out, const job_context* c
         }
         for (std::uint64_t x = 0; x < cols; ++x) {
           for (std::uint16_t p = 0; p < planes; ++p) {
+            if (packed_planes) {
+              const std::uint32_t v = fetch_uint(bufs[p].data() + src_off, static_cast<std::size_t>(x), L.bps);
+              contig[static_cast<std::size_t>(x * L.spp + p)] =
+                  (L.m == model::palette && p == 0) ? static_cast<std::uint8_t>(v) : to8(v, L.bps);
+              continue;
+            }
             std::memcpy(contig.data() + static_cast<std::size_t>((x * L.spp + p) * sample_bytes),
                         bufs[p].data() + src_off + static_cast<std::size_t>(x * sample_bytes),
                         sample_bytes);
           }
         }
-        convert_row(L, contig.data(), static_cast<std::uint32_t>(cols), dst);
+        convert_row(packed_planes ? L8 : L, contig.data(), static_cast<std::uint32_t>(cols), dst);
       }
     }
   }

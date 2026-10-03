@@ -8,6 +8,7 @@
 // is unreadable the next one is tried; the first error is returned when none
 // decode. Every offset and size is checked against the buffer.
 #include "codec/decode.h"
+#include "codec/dib.h"
 
 #include <algorithm>
 #include <cstring>
@@ -18,8 +19,6 @@
 namespace mv::codec {
 namespace {
 
-constexpr std::uint32_t kMaxDim = 65535;
-constexpr std::uint64_t kMaxPixels = 256ull * 1000ull * 1000ull;
 constexpr std::size_t kDirHeader = 6;
 constexpr std::size_t kDirEntry = 16;
 constexpr std::uint8_t kPngSig[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
@@ -80,113 +79,64 @@ inline bool mask_bit(const std::uint8_t* row, std::uint32_t x) noexcept {
   return ((row[x >> 3] >> (7u - (x & 7u))) & 1u) != 0;
 }
 
-// BITMAPINFOHEADER + palette + XOR (colour) rows + AND (1-bit mask) rows. The
-// header height counts both bitmaps.
+// Info header + colour tables + XOR (colour) rows + AND (1-bit mask) rows.
+// The header height counts both bitmaps; codec/dib.h decodes the XOR rows.
 result<raster> decode_dib(std::span<const std::uint8_t> e, const job_context* ctx) {
+  auto parsed = dib::parse(e, e.size(), true);
+  if (!parsed) return err(parsed.error());
+  const dib::header& h = *parsed;
+  if (h.compression == dib::bi_jpeg || h.compression == dib::bi_png) {
+    return err(status::unsupported_format);  // an icon's PNG is a bare PNG entry
+  }
   const std::uint64_t n = e.size();
-  if (n < 40) return err(status::corrupt);
-  const std::uint8_t* p = e.data();
-  const std::uint32_t hdr = u32(p);
-  if (hdr < 40 || hdr > n) return err(status::corrupt);
-  const std::int32_t ws = i32(p + 4);
-  const std::int32_t hs = i32(p + 8);
-  const std::uint16_t bpp = u16(p + 14);
-  const std::uint32_t compression = u32(p + 16);
-  const std::uint32_t clr_used = u32(p + 32);
-  if (ws <= 0 || hs == 0 || hs == std::numeric_limits<std::int32_t>::min()) {
-    return err(status::corrupt);
+  const std::uint64_t xor_off = h.after_tables;
+  // RLE rows have no fixed size; the AND mask then sits at the end of the entry.
+  const bool rle = h.compression == dib::bi_rle8 || h.compression == dib::bi_rle4;
+  const std::uint64_t xor_stride = (static_cast<std::uint64_t>(h.width) * h.bpp + 31) / 32 * 4;
+  const std::uint64_t and_stride = (static_cast<std::uint64_t>(h.width) + 31) / 32 * 4;
+  const std::uint64_t and_bytes = and_stride * h.height;
+  if (xor_off >= n) return err(status::corrupt);
+  std::uint64_t xor_end = 0;
+  if (rle) {
+    xor_end = n >= xor_off + and_bytes ? n - and_bytes : n;
+  } else {
+    xor_end = xor_off + xor_stride * h.height;
+    if (xor_end > n) return err(status::corrupt);
   }
-  const auto width = static_cast<std::uint32_t>(ws);
-  const bool bottom_up = hs > 0;
-  const std::uint32_t height = static_cast<std::uint32_t>(hs > 0 ? hs : -hs) / 2u;
-  if (height == 0) return err(status::corrupt);
-  if (width > kMaxDim || height > kMaxDim ||
-      static_cast<std::uint64_t>(width) * height > kMaxPixels) {
-    return err(status::unsupported_format);
-  }
-  if (compression != 0) return err(status::unsupported_format);  // BI_RGB only
-  if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 24 && bpp != 32) {
-    return err(status::unsupported_format);
-  }
-
-  std::uint64_t palette = 0;
-  if (bpp <= 8) {
-    const std::uint64_t max = 1ull << bpp;
-    palette = clr_used ? clr_used : max;
-    if (palette > max) return err(status::corrupt);
-  }
-  const std::uint64_t pal_off = hdr;
-  const std::uint64_t xor_off = pal_off + palette * 4;
-  const std::uint64_t xor_stride = (static_cast<std::uint64_t>(width) * bpp + 31) / 32 * 4;
-  const std::uint64_t and_stride = (static_cast<std::uint64_t>(width) + 31) / 32 * 4;
-  const std::uint64_t xor_end = xor_off + xor_stride * height;
-  if (xor_end > n) return err(status::corrupt);
   // The AND mask is optional in practice: a writer that dropped it gets opaque.
-  const bool has_mask = xor_end + and_stride * height <= n;
+  const bool has_mask = xor_end + and_bytes <= n && xor_end > xor_off;
 
   raster out;
   out.format = format_family::ico;
   out.intent = transfer_intent::display_referred;
-  out.width = width;
-  out.height = height;
+  out.width = h.width;
+  out.height = h.height;
   try {
-    out.rgba.resize(static_cast<std::size_t>(width) * height * 4);
+    out.rgba.resize(static_cast<std::size_t>(h.width) * h.height * 4);
   } catch (const std::bad_alloc&) {
     return err(status::out_of_memory);
   }
 
-  bool any_alpha = false;
-  for (std::uint32_t y = 0; y < height; ++y) {
-    if ((y & 63u) == 0 && ctx && ctx->cancelled()) return err(status::cancelled);
-    const std::uint64_t sy = bottom_up ? height - 1 - y : y;
-    const std::uint8_t* row = p + xor_off + sy * xor_stride;
-    const std::uint8_t* mask = has_mask ? p + xor_end + sy * and_stride : nullptr;
-    std::uint8_t* dst = out.rgba.data() + static_cast<std::size_t>(y) * width * 4;
-    for (std::uint32_t x = 0; x < width; ++x) {
-      std::uint8_t r = 0, g = 0, b = 0, a = 255;
-      if (bpp == 32) {
-        b = row[x * 4];
-        g = row[x * 4 + 1];
-        r = row[x * 4 + 2];
-        a = row[x * 4 + 3];
-        any_alpha = any_alpha || a != 0;
-      } else if (bpp == 24) {
-        b = row[x * 3];
-        g = row[x * 3 + 1];
-        r = row[x * 3 + 2];
-      } else {
-        std::uint32_t idx = 0;
-        if (bpp == 8) {
-          idx = row[x];
-        } else if (bpp == 4) {
-          idx = (static_cast<std::uint32_t>(row[x >> 1]) >> ((x & 1u) ? 0u : 4u)) & 0xFu;
-        } else {
-          idx = mask_bit(row, x) ? 1u : 0u;
-        }
-        if (idx < palette) {
-          const std::uint8_t* c = p + pal_off + static_cast<std::size_t>(idx) * 4;
-          b = c[0];
-          g = c[1];
-          r = c[2];
-        }
-      }
-      if (bpp != 32 && mask && mask_bit(mask, x)) a = 0;
-      dst[x * 4 + 0] = r;
-      dst[x * 4 + 1] = g;
-      dst[x * 4 + 2] = b;
-      dst[x * 4 + 3] = a;
-    }
-  }
+  bool alpha_seen = false;
+  const status s = dib::pixels(h, e, e.subspan(xor_off, xor_end - xor_off), out.rgba.data(), ctx,
+                               alpha_seen);
+  if (s != status::ok) return err(s);
 
-  // A 32-bit entry whose alpha is all zero predates alpha icons: its AND mask
-  // is the transparency (or it is opaque).
-  if (bpp == 32 && !any_alpha) {
-    for (std::uint32_t y = 0; y < height; ++y) {
-      const std::uint64_t sy = bottom_up ? height - 1 - y : y;
+  // Alpha the pixels really carry wins. Otherwise (no alpha channel, or a
+  // 32-bit entry whose alpha is all zero, which predates alpha icons) the AND
+  // mask is the transparency, or the entry is opaque.
+  if (!(h.alpha_channel() && alpha_seen)) {
+    const std::uint8_t* p = e.data();
+    for (std::uint32_t y = 0; y < h.height; ++y) {
+      const std::uint64_t sy = h.bottom_up ? h.height - 1 - y : y;
       const std::uint8_t* mask = has_mask ? p + xor_end + sy * and_stride : nullptr;
-      std::uint8_t* dst = out.rgba.data() + static_cast<std::size_t>(y) * width * 4;
-      for (std::uint32_t x = 0; x < width; ++x) {
-        dst[x * 4 + 3] = (mask && mask_bit(mask, x)) ? 0 : 255;
+      std::uint8_t* dst = out.rgba.data() + static_cast<std::size_t>(y) * h.width * 4;
+      for (std::uint32_t x = 0; x < h.width; ++x) {
+        if (mask && mask_bit(mask, x)) {
+          dst[x * 4 + 3] = 0;
+        } else if (!rle) {
+          dst[x * 4 + 3] = 255;
+        }
       }
     }
   }
